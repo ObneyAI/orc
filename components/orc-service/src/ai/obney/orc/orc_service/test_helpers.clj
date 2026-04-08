@@ -259,6 +259,16 @@
    :node-id node-id
    :instruction instruction})
 
+(defn make-set-node-context-command
+  "Create a set-node-context command for ontology context injection."
+  [sheet-id node-id context]
+  {:command/name :sheet/set-node-context
+   :command/id (random-uuid)
+   :command/timestamp (time/now)
+   :sheet-id sheet-id
+   :node-id node-id
+   :context context})
+
 (defn make-set-node-io-command
   "Create a set-node-io command."
   [sheet-id node-id reads writes]
@@ -344,7 +354,7 @@
 
 (defn make-set-repl-researcher-config-command
   "Create a set-repl-researcher-config command."
-  [sheet-id node-id instruction reads writes mcp-tools & {:keys [model max-iterations]}]
+  [sheet-id node-id instruction reads writes mcp-tools & {:keys [model max-iterations browser-tools]}]
   (cond-> {:command/name :sheet/set-repl-researcher-config
            :command/id (random-uuid)
            :command/timestamp (time/now)
@@ -353,9 +363,10 @@
            :instruction instruction
            :reads (vec reads)
            :writes (vec writes)
-           :mcp-tools (vec mcp-tools)}
+           :mcp-tools (vec (or mcp-tools []))}
     model (assoc :model model)
-    max-iterations (assoc :max-iterations max-iterations)))
+    max-iterations (assoc :max-iterations max-iterations)
+    browser-tools (assoc :browser-tools (vec browser-tools))))
 
 (defn make-set-delegate-config-command
   "Create a set-delegate-config command.

@@ -206,8 +206,8 @@
   "Define a repl-researcher node for iterative LLM+code research.
 
    The node executes an iteration loop where:
-   1. LLM generates Clojure code that calls MCP tools
-   2. Code executes in SCI sandbox with MCP tools injected
+   1. LLM generates Clojure code that calls available tools
+   2. Code executes in SCI sandbox with tools injected
    3. Stdout and results feed back to LLM
    4. Loop continues until FINAL_ANSWER or max iterations
 
@@ -216,9 +216,14 @@
      :instruction - Research goal/question
      :reads - Vector of blackboard keys (metadata only shown to LLM, not values)
      :writes - Vector of output keys (e.g., [:final-answer :iterations])
-     :mcp-tools - Vector of MCP tool names available for research
-     :max-iterations - Max research iterations (default 10)"
-  [name & {:keys [model instruction reads writes mcp-tools max-iterations]}]
+     :mcp-tools - Vector of MCP tool names (require :call-tool-fn in context)
+     :browser-tools - Vector of agent-browser tool names (e.g., [\"open\" \"snapshot\" \"click\"])
+     :max-iterations - Max research iterations (default 10)
+
+   Browser tools are shell-based (no session management) and include:
+     open, snapshot, click, fill, type, press, scroll, wait,
+     get-text, get-url, get-title, back, forward, screenshot"
+  [name & {:keys [model instruction reads writes mcp-tools browser-tools max-iterations]}]
   {:node-type :repl-researcher
    :name name
    :model model
@@ -226,6 +231,7 @@
    :reads (vec (or reads []))
    :writes (vec (or writes []))
    :mcp-tools (vec (or mcp-tools []))
+   :browser-tools (vec (or browser-tools []))
    :max-iterations (or max-iterations 10)})
 
 (defn delegate
@@ -462,7 +468,8 @@
           (h/make-set-repl-researcher-config-command sheet-id node-id
             (:instruction node) (:reads node) (:writes node) (:mcp-tools node)
             :model (:model node)
-            :max-iterations (:max-iterations node))))
+            :max-iterations (:max-iterations node)
+            :browser-tools (:browser-tools node))))
 
       :delegate
       (do

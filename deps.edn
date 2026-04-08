@@ -21,6 +21,7 @@
                               orc/colbert           {:local/root "components/colbert"}
                               orc/ontology          {:local/root "components/ontology"}
                               orc/mcp-sheet-builder {:local/root "components/mcp-sheet-builder"}
+                              orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
                               orc/grain-test-utils  {:local/root "components/grain-test-utils"}}}
 

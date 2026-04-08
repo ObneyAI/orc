@@ -119,23 +119,53 @@
                      (group-by :server ns-tools))})))
 
 ;; ============================================================================
+;; Browser Tool Bindings (agent-browser CLI)
+;; ============================================================================
+
+(defn- build-browser-tool-bindings
+  "Build SCI bindings for agent-browser tools.
+
+   browser-tools is a vector of tool names to expose.
+   Returns a map of {symbol -> fn}."
+  [browser-tools]
+  (when (seq browser-tools)
+    ;; Lazily require agent-browser to avoid circular deps
+    (try
+      (require '[ai.obney.orc.agent-browser.interface :as browser])
+      (let [all-tools (deref (resolve 'ai.obney.orc.agent-browser.interface/browser-tools))
+            selected (select-keys all-tools browser-tools)]
+        (reduce-kv
+         (fn [acc name fn]
+           (assoc acc (symbol name) fn))
+         {}
+         selected))
+      (catch Exception e
+        (u/log ::browser-tools-not-available :error (.getMessage e))
+        {}))))
+
+;; ============================================================================
 ;; SCI Context Building
 ;; ============================================================================
 
 (defn build-sci-context
-  "Build a SCI execution context with MCP tools injected.
+  "Build a SCI execution context with MCP and browser tools injected.
 
    The context provides:
    - Safe subset of clojure.core
-   - MCP tools as callable functions in 'user namespace
+   - MCP tools as callable functions (via :call-tool-fn)
+   - Browser tools as direct functions (via :browser-tools)
    - Custom bindings for print functions (capture stdout)
 
    Options:
    - :call-tool-fn - Function (tool-name args-map) -> result for MCP calls
-   - :mcp-tools - Vector of tool names to inject
+   - :mcp-tools - Vector of MCP tool names to inject
+   - :browser-tools - Vector of browser tool names to inject (e.g., [\"open\" \"snapshot\" \"click\"])
    - :stdout-writer - StringWriter to capture stdout (optional)"
-  [{:keys [call-tool-fn mcp-tools stdout-writer]}]
+  [{:keys [call-tool-fn mcp-tools browser-tools stdout-writer]}]
   (let [{:keys [flat namespaces]} (build-tool-bindings call-tool-fn mcp-tools)
+
+        ;; Browser tool bindings (shell-based, no session management)
+        browser-bindings (build-browser-tool-bindings browser-tools)
 
         ;; Build safe clojure.core namespace
         core-publics (ns-publics 'clojure.core)
@@ -164,13 +194,16 @@
                           'println (fn [& args]
                                      (.write stdout-writer (str (apply str args) "\n")))
                           'prn (fn [& args]
-                                 (.write stdout-writer (str (apply str (map pr-str args)) "\n")))})]
+                                 (.write stdout-writer (str (apply str (map pr-str args)) "\n")))})
+
+        ;; Merge all bindings: MCP tools + browser tools + print overrides
+        all-bindings (merge flat browser-bindings print-bindings)]
 
     (sci/init
      {:namespaces (merge {'clojure.core safe-core-final
-                          'user flat}
+                          'user (merge flat browser-bindings)}
                          namespaces)  ;; e.g., {'linear {'list_issues <fn>}}
-      :bindings (merge flat print-bindings)})))
+      :bindings all-bindings})))
 
 ;; ============================================================================
 ;; Code Execution
@@ -243,13 +276,14 @@
 ;; ============================================================================
 
 (defn execute-with-mcp
-  "Execute code with MCP tools available.
+  "Execute code with MCP and/or browser tools available.
 
    This is a convenience function that builds context and executes in one step.
 
    Options:
-   - :call-tool-fn - Function (tool-name args-map) -> result
-   - :mcp-tools - Vector of tool names to inject
+   - :call-tool-fn - Function (tool-name args-map) -> result for MCP tools
+   - :mcp-tools - Vector of MCP tool names to inject
+   - :browser-tools - Vector of agent-browser tool names to inject
    - :code - Code string to execute
 
    Returns:
@@ -257,9 +291,10 @@
    - :result - Evaluation result
    - :error - Error if any
    - :final-answer - Extracted answer if FINAL_ANSWER found"
-  [{:keys [call-tool-fn mcp-tools code]}]
+  [{:keys [call-tool-fn mcp-tools browser-tools code]}]
   (let [ctx (build-sci-context {:call-tool-fn call-tool-fn
-                                :mcp-tools mcp-tools})
+                                :mcp-tools mcp-tools
+                                :browser-tools browser-tools})
         exec-result (execute-code ctx code)
         final-answer (or (extract-final-answer (:result exec-result))
                          (extract-final-answer (:stdout exec-result)))]

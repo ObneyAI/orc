@@ -37,6 +37,7 @@
             [ai.obney.orc.mcp-sheet-builder.interface.schemas]
             [ai.obney.orc.langfuse.interface]
 
+            [dscloj.core :as dscloj]
             [integrant.core :as ig]
             [config.core :refer [env]]))
 
@@ -66,13 +67,13 @@
 
    ::periodic-tasks {:context (ig/ref ::context)}
 
+   ;; Note: command-registry and query-registry are added at init-key time
+   ;; to ensure they pick up any commands registered after system def
    ::context {:tenant-id system-tenant-id
               :system-tenant-id system-tenant-id
               :event-store (ig/ref ::event-store)
               :cache (ig/ref ::cache)
               :event-pubsub (ig/ref ::event-pubsub)
-              :command-registry (cp/global-command-registry)
-              :query-registry (qp/global-query-registry)
               :dscloj-provider (when-let [p (:dscloj-provider env)]
                                  (keyword p))}})
 
@@ -127,8 +128,39 @@
 (defmethod ig/halt-key! ::periodic-tasks [_ triggers]
   (pt/stop-periodic-triggers! triggers))
 
+;; Dynamic MCP registry for runtime MCP connection management
+(defonce ^{:doc "Atom holding the current MCP call-tool-fn.
+                 Set via (set-mcp-call-tool-fn! fn) after connecting to MCP servers."}
+  mcp-call-tool-fn*
+  (atom nil))
+
+(defn set-mcp-call-tool-fn!
+  "Set the MCP call-tool-fn for repl-researcher nodes.
+
+   Usage:
+     (require '[ai.obney.orc.mcp-sheet-builder.interface :as mcp])
+     (def pw-conn (mcp/connect {:type :http :url \"http://localhost:3001\"}))
+     (set-mcp-call-tool-fn! (partial mcp/call-tool pw-conn))"
+  [call-tool-fn]
+  (reset! mcp-call-tool-fn* call-tool-fn))
+
+(defn dynamic-call-tool-fn
+  "A call-tool-fn that dynamically resolves from the mcp-call-tool-fn* atom.
+   This allows MCP to be configured after the system starts."
+  [tool-name args]
+  (if-let [f @mcp-call-tool-fn*]
+    (f tool-name args)
+    (throw (ex-info "No MCP connection configured. Call (set-mcp-call-tool-fn! ...) first."
+                    {:tool-name tool-name :args args}))))
+
 (defmethod ig/init-key ::context [_ context]
-  context)
+  ;; Add registries at init time to pick up any commands/queries
+  ;; registered after the system def was evaluated.
+  ;; Include a dynamic call-tool-fn that resolves at call time from the atom.
+  (assoc context
+    :command-registry (cp/global-command-registry)
+    :query-registry (qp/global-query-registry)
+    :call-tool-fn dynamic-call-tool-fn))
 
 ;; =============================================================================
 ;; Public API
@@ -137,6 +169,9 @@
 (defn start
   "Start the ORC development system. Returns the Integrant system map."
   []
+  ;; Initialize DSCloj providers from environment variables
+  ;; (OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY)
+  (dscloj/quick-setup!)
   (ig/init system))
 
 (defn stop
