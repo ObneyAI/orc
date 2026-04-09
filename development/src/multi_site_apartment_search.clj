@@ -258,28 +258,51 @@ Examples:
             ;; Extract listings
             (sheet/repl-researcher "extract-listings"
               :model "google/gemini-2.5-flash"
-              :instruction "Extract apartment listings and LEARN the site's extraction patterns.
+              :instruction "Extract apartment listings with SMART PAGINATION.
 
 SITE: {site-domain}
 MAX RENT: {max-rent}
 LEARNED PATTERNS: {site-patterns}
 
-YOUR GOAL: Extract listings AND record how the site structures its data.
+YOUR GOAL: Extract AS MANY listings as possible using the right pagination strategy.
 
-STEPS:
-1. Use (snapshot) to see the current page
-2. Identify the listing structure:
-   - What element pattern contains each listing? (cards, rows, etc.)
-   - Where is the price? Title? Address?
-3. Extract up to 20 listings, filtering out those above max-rent
-4. Try scrolling to load more: (scroll :down) then (wait 1000)
-5. Note what pagination style the site uses (click, scroll, numbered)
+STEP 1 - DETECT PAGINATION STYLE:
+Use (snapshot) and look for:
+- Numbered page buttons (1, 2, 3..., 'Page X of Y') → Click pagination
+- 'Next' or '>' or '›' buttons → Click next
+- 'Load More', 'Show More', 'See More' buttons → Click load-more
+- No pagination controls visible → Infinite scroll (use scroll)
+
+Common patterns by site type:
+- Craigslist: Click numbered pagination or 'next >'
+- Zillow/Apartments.com: Infinite scroll
+- Redfin: Scroll on map view, click on list view
+- Rent.com: 'Load More' or 'See More' buttons
+
+STEP 2 - EXTRACT CURRENT PAGE:
+Parse listings visible in snapshot:
+- Title: apartment name or description
+- Price: look for $X,XXX/mo format
+- Address: street address, city
+- Bedrooms/Bathrooms: X bd / X ba or similar
+- Source: use '{site-domain}'
+
+STEP 3 - PAGINATE (repeat up to 5 times):
+Based on what you detected:
+- For infinite scroll: (scroll :down) then (wait 2000) then (snapshot)
+- For click: Find the button ref, (click \"@ref\") then (wait 2500) then (snapshot)
+- Look for '@ref' markers on pagination elements
+
+STEP 4 - STOP WHEN:
+- You have 30+ listings, OR
+- No new listings appear after pagination (compare counts), OR
+- 5 pagination attempts made
 
 BROWSER TOOLS:
-(snapshot) - Get page accessibility tree with @ref markers
-(scroll direction) - Scroll :up, :down
-(wait ms) - Wait milliseconds
-(click ref) - Click pagination or 'load more'
+(snapshot) - See page with @ref markers (use frequently!)
+(scroll :down) - Scroll for infinite scroll sites
+(click \"@ref\") - Click pagination buttons
+(wait ms) - Wait for content to load (use 2000-3000ms)
 
 CRITICAL - Return FINAL_ANSWER as a map with BOTH listings AND learning:
 {:listings [{:title \"Apartment Name\"
@@ -289,19 +312,24 @@ CRITICAL - Return FINAL_ANSWER as a map with BOTH listings AND learning:
              :bedrooms \"2 bd\"
              :bathrooms \"1 ba\"}]
  :should-record-pattern true
- :learned-pattern {:pattern-type :extraction
-                   :pattern-data {:listing-selector \"what pattern identifies listing cards\"
-                                  :pagination-type \"scroll OR click OR numbered\"
-                                  :price-location \"where price appears\"
+ :learned-pattern {:pattern-type :pagination
+                   :pattern-data {:pagination-style \"scroll OR click-numbered OR click-next OR load-more\"
+                                  :worked true
                                   :listings-per-page 20}
                    :confidence 0.85}}
 
-If no listings found, still record what you learned about the page structure."
+If extraction fails or no listings found, still return:
+{:listings []
+ :should-record-pattern true
+ :learned-pattern {:pattern-type :extraction
+                   :pattern-data {:error \"what went wrong\"
+                                  :page-structure \"what you observed\"}
+                   :confidence 0.5}}"
               :reads [:site-domain :max-rent :site-patterns]
               :writes [:listings :should-record-pattern :learned-pattern]
               :browser-tools ["snapshot" "scroll" "wait" "click"]
               :context {:self-learning? true}
-              :max-iterations 6))
+              :max-iterations 8))
 
           ;; 4e: Record learned patterns (navigation, extraction, bot-bypass)
           (sheet/code "record-learned-patterns"
