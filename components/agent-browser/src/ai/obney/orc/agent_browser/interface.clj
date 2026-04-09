@@ -7,6 +7,7 @@
    - Uses shell commands (no session management)
    - Returns compact accessibility tree snapshots (~200-400 tokens)
    - Uses @ref markers (e.g., @e1, @e2) designed for LLMs
+   - Supports headed mode for bypassing bot detection
 
    ## Quick Start
 
@@ -21,6 +22,21 @@
    ;; Interact using refs
    (browser/click \"@e2\")
    (browser/fill \"@e1\" \"search query\")
+   ```
+
+   ## Headed Mode (Bot Detection Bypass)
+
+   Sites like Zillow and apartments.com block headless browsers.
+   Use headed mode for human-like browsing:
+
+   ```clojure
+   ;; Option 1: Wrap in macro
+   (browser/with-human-like-browser
+     (browser/open \"https://zillow.com\")
+     (browser/snapshot))
+
+   ;; Option 2: Set globally for REPL session
+   (browser/set-headed-mode! true)
    ```
 
    ## For ORC repl-researcher Nodes
@@ -228,6 +244,92 @@
   (core/find-by-placeholder placeholder))
 
 ;; ============================================================================
+;; Mouse Operations (Bot Detection Bypass)
+;; ============================================================================
+
+(defn mouse-down
+  "Press mouse button without releasing.
+
+   Button: :left (default), :right, :middle
+
+   Example:
+   (mouse-down)         ;; left button
+   (mouse-down :right)  ;; right button"
+  ([] (core/mouse-down))
+  ([btn] (core/mouse-down btn)))
+
+(defn mouse-up
+  "Release mouse button.
+
+   Button: :left (default), :right, :middle"
+  ([] (core/mouse-up))
+  ([btn] (core/mouse-up btn)))
+
+(defn mouse-move
+  "Move mouse to absolute coordinates.
+
+   Example: (mouse-move 500 300)"
+  [x y]
+  (core/mouse-move x y))
+
+(defn mouse-wheel
+  "Scroll mouse wheel.
+
+   dy: vertical scroll (negative = up, positive = down)
+   dx: horizontal scroll (optional)"
+  ([dy] (core/mouse-wheel dy))
+  ([dy dx] (core/mouse-wheel dy dx)))
+
+(defn get-box
+  "Get bounding box of an element.
+
+   Returns: {:success true :box {:x :y :width :height}} or error"
+  [selector]
+  (core/get-box selector))
+
+(defn press-and-hold
+  "Press and hold on element for duration-ms milliseconds.
+
+   This is the key operation for bot detection bypass (e.g., Zillow's
+   'press and hold to verify' button).
+
+   How it works:
+   1. Hovers on the element (moves mouse to it)
+   2. Presses left mouse button
+   3. Waits for duration-ms
+   4. Releases mouse button
+
+   Example:
+   (press-and-hold \"@e123\" 2500)  ;; hold for 2.5 seconds"
+  [selector duration-ms]
+  (core/press-and-hold selector duration-ms))
+
+(defn dblclick
+  "Double-click on element.
+
+   Example: (dblclick \"@e1\")"
+  [selector]
+  (core/dblclick selector))
+
+(defn hover
+  "Hover over element (triggers mouseover events).
+
+   Useful for dropdowns, tooltips, and menus that activate on hover.
+
+   Example: (hover \"@e5\")"
+  [selector]
+  (core/hover selector))
+
+(defn drag
+  "Drag from source element to destination element.
+
+   Useful for slider CAPTCHAs, drag-and-drop interfaces.
+
+   Example: (drag \"@e10\" \"@e11\")"
+  [src-selector dst-selector]
+  (core/drag src-selector dst-selector))
+
+;; ============================================================================
 ;; Screenshots
 ;; ============================================================================
 
@@ -346,7 +448,17 @@
    "eval-js" eval-js
    "find-by-role" find-by-role
    "find-by-text" find-by-text
-   "find-by-label" find-by-label})
+   "find-by-label" find-by-label
+   ;; Mouse operations for bot detection bypass
+   "mouse-down" mouse-down
+   "mouse-up" mouse-up
+   "mouse-move" mouse-move
+   "mouse-wheel" mouse-wheel
+   "press-and-hold" press-and-hold
+   "dblclick" dblclick
+   "hover" hover
+   "drag" drag
+   "get-box" get-box})
 
 (defn create-tool-bindings
   "Create SCI bindings for browser tools.
@@ -358,3 +470,54 @@
      (assoc acc (symbol name) fn))
    {}
    browser-tools))
+
+;; ============================================================================
+;; Headed Mode (Bot Detection Bypass)
+;; ============================================================================
+
+(def ^:dynamic *browser-config*
+  "Browser configuration for controlling browser behavior.
+
+   Options:
+   - :headed  - Run visible browser (bypasses bot detection)
+   - :slow-mo - Milliseconds between actions (human-like behavior)
+
+   Re-exported from core for convenience."
+  core/*browser-config*)
+
+(defmacro with-headed-browser
+  "Execute browser commands with headed (visible) browser.
+
+   Use this to bypass bot detection on sites like Zillow, apartments.com.
+
+   Example:
+   (with-headed-browser
+     (open \"https://zillow.com\")
+     (snapshot))"
+  [& body]
+  `(core/with-headed-browser ~@body))
+
+(defmacro with-human-like-browser
+  "Execute browser commands with headed browser and 100ms slow-mo.
+
+   This creates more human-like browsing patterns to avoid bot detection.
+
+   Example:
+   (with-human-like-browser
+     (open \"https://zillow.com\")
+     (wait 2000)
+     (scroll :down)
+     (snapshot))"
+  [& body]
+  `(core/with-human-like-browser ~@body))
+
+(defn set-headed-mode!
+  "Globally enable or disable headed mode.
+
+   Use for REPL sessions where you want all browser operations to be headed.
+
+   Example:
+   (set-headed-mode! true)   ;; all commands now use visible browser
+   (set-headed-mode! false)  ;; back to headless"
+  [headed?]
+  (core/set-headed-mode! headed?))

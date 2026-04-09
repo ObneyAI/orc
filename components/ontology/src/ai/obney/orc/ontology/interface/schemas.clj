@@ -235,7 +235,87 @@
     [:embedding [:vector :double]]
     [:failure-uri {:optional true} :string]  ;; Classified failure
     [:model-id :string]
-    [:embedded-at :string]]})
+    [:embedded-at :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; Apartment Search Events
+   ;; -------------------------------------------------------------------------
+
+   :apartment/listing-recorded
+   [:map
+    [:listing-id :uuid]
+    [:source-site :string]                ;; "zillow.com", "apartments.com", etc.
+    [:source-url :string]                 ;; Full URL to listing
+    [:extracted-at :string]               ;; ISO timestamp
+    [:title :string]
+    [:price :string]                      ;; "$2,500/mo"
+    [:price-numeric {:optional true} :double]  ;; 2500.0 for queries
+    [:bedrooms {:optional true} :string]  ;; "2 bd" or "2"
+    [:bathrooms {:optional true} :string] ;; "1 ba" or "1"
+    [:sqft {:optional true} :string]      ;; "850 sqft"
+    [:address :string]
+    [:neighborhood {:optional true} :string]
+    [:city :string]
+    [:state :string]
+    [:amenities [:vector :string]]        ;; ["Pool", "Gym", "Parking"]
+    [:lat {:optional true} :double]
+    [:lng {:optional true} :double]]
+
+   :apartment/listing-updated
+   [:map
+    [:listing-id :uuid]
+    [:source-url :string]
+    [:previous-price :string]
+    [:price :string]
+    [:price-numeric {:optional true} :double]
+    [:updated-at :string]]
+
+   :apartment/search-recorded
+   [:map
+    [:search-id :uuid]
+    [:location :string]                   ;; "San Francisco, CA"
+    [:max-rent {:optional true} :int]
+    [:filters {:optional true} [:map-of :keyword :any]]
+    [:listing-count :int]
+    [:source-sites [:vector :string]]     ;; ["zillow.com", "apartments.com"]
+    [:listing-ids [:vector :uuid]]
+    [:searched-at :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; Site Registry Events (Multi-Site Discovery)
+   ;; -------------------------------------------------------------------------
+
+   :apartment/site-registered
+   [:map
+    [:site-id :uuid]
+    [:domain :string]                     ;; "redfin.com"
+    [:display-name :string]               ;; "Redfin"
+    [:category [:enum :corporate :peer-to-peer :aggregator :local]]
+    [:discovered-via [:enum :manual :web-search :referral]]
+    [:url-pattern {:optional true} :string]  ;; "https://www.{domain}/{location}/rentals/"
+    [:requires-headed {:optional true} :boolean]
+    [:known-challenges {:optional true} [:vector :string]]  ;; ["press-hold", "popup"]
+    [:notes {:optional true} :string]
+    [:registered-at :string]]
+
+   :apartment/site-trust-updated
+   [:map
+    [:site-id :uuid]
+    [:domain :string]
+    [:trust-score :double]                ;; 0.0-1.0
+    [:extraction-count :int]              ;; How many successful extractions
+    [:last-success-at {:optional true} :string]
+    [:last-failure-at {:optional true} :string]
+    [:updated-at :string]]
+
+   :apartment/site-pattern-learned
+   [:map
+    [:site-id :uuid]
+    [:domain :string]
+    [:pattern-type [:enum :navigation :search :extraction :bot-bypass :pagination]]
+    [:pattern-data [:map-of :keyword :any]]  ;; Site-specific tactics
+    [:confidence :double]
+    [:learned-at :string]]})
 
 ;; =============================================================================
 ;; Command Schemas
@@ -421,7 +501,69 @@
     [:index-id :uuid]
     [:index-name :string]
     [:document-count :int]
-    [:colbert-fields [:vector :keyword]]]})
+    [:colbert-fields [:vector :keyword]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; Apartment Search Commands
+   ;; -------------------------------------------------------------------------
+
+   :apartment/record-listing
+   [:map
+    [:listing-id :uuid]
+    [:source-site :string]
+    [:source-url :string]
+    [:extracted-at :string]
+    [:title :string]
+    [:price :string]
+    [:price-numeric {:optional true} :double]
+    [:bedrooms {:optional true} :string]
+    [:bathrooms {:optional true} :string]
+    [:sqft {:optional true} :string]
+    [:address :string]
+    [:neighborhood {:optional true} :string]
+    [:city :string]
+    [:state :string]
+    [:amenities {:optional true} [:vector :string]]
+    [:lat {:optional true} :double]
+    [:lng {:optional true} :double]]
+
+   :apartment/record-search
+   [:map
+    [:search-id :uuid]
+    [:location :string]
+    [:max-rent {:optional true} :int]
+    [:filters {:optional true} [:map-of :keyword :any]]
+    [:listing-count :int]
+    [:source-sites [:vector :string]]
+    [:listing-ids [:vector :uuid]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; Site Registry Commands (Multi-Site Discovery)
+   ;; -------------------------------------------------------------------------
+
+   :apartment/register-site
+   [:map
+    [:domain :string]
+    [:display-name :string]
+    [:category [:enum :corporate :peer-to-peer :aggregator :local]]
+    [:discovered-via [:enum :manual :web-search :referral]]
+    [:url-pattern {:optional true} :string]
+    [:requires-headed {:optional true} :boolean]
+    [:known-challenges {:optional true} [:vector :string]]
+    [:notes {:optional true} :string]]
+
+   :apartment/update-site-trust
+   [:map
+    [:domain :string]
+    [:success? :boolean]                  ;; true = successful extraction, false = failure
+    [:listings-extracted {:optional true} :int]]
+
+   :apartment/record-site-pattern
+   [:map
+    [:domain :string]
+    [:pattern-type [:enum :navigation :search :extraction :bot-bypass :pagination]]
+    [:pattern-data [:map-of :keyword :any]]
+    [:confidence {:optional true} :double]]})
 
 ;; =============================================================================
 ;; Query Schemas
@@ -487,7 +629,63 @@
 
    :ontology/get-concept-embedding
    [:map
-    [:uri :string]]})
+    [:uri :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; Apartment Search Queries
+   ;; -------------------------------------------------------------------------
+
+   :apartment/get-listing
+   [:map
+    [:listing-id :uuid]]
+
+   :apartment/get-listing-by-url
+   [:map
+    [:source-url :string]]
+
+   :apartment/get-listings-by-city
+   [:map
+    [:city :string]
+    [:limit {:optional true} :int]]
+
+   :apartment/get-listings-by-site
+   [:map
+    [:source-site :string]
+    [:limit {:optional true} :int]]
+
+   :apartment/get-listings-by-price-range
+   [:map
+    [:min-price :double]
+    [:max-price :double]
+    [:city {:optional true} :string]
+    [:limit {:optional true} :int]]
+
+   :apartment/get-price-history
+   [:map
+    [:listing-id :uuid]]
+
+   :apartment/get-recent-searches
+   [:map
+    [:location {:optional true} :string]
+    [:limit {:optional true} :int]]
+
+   ;; -------------------------------------------------------------------------
+   ;; Site Registry Queries (Multi-Site Discovery)
+   ;; -------------------------------------------------------------------------
+
+   :apartment/get-site
+   [:map
+    [:domain :string]]
+
+   :apartment/get-trusted-sites
+   [:map
+    [:min-trust {:optional true} :double]  ;; Default 0.5
+    [:limit {:optional true} :int]]
+
+   :apartment/get-site-patterns
+   [:map
+    [:domain :string]
+    [:pattern-type {:optional true} [:enum :navigation :search :extraction :bot-bypass :pagination]]]})
 
 ;; =============================================================================
 ;; Evolutionary Ontology Builder - Shared Domain Schemas
@@ -1086,4 +1284,82 @@
     [:map
      [:model-id :string]
      [:dimensions :int]
-     [:configured-at :string]]]})
+     [:configured-at :string]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; Apartment Search Read Models
+   ;; -------------------------------------------------------------------------
+
+   :apartment/listings
+   [:map
+    [:by-id [:map-of :uuid                ;; listing-id -> listing
+             [:map
+              [:listing-id :uuid]
+              [:source-site :string]
+              [:source-url :string]
+              [:extracted-at :string]
+              [:title :string]
+              [:price :string]
+              [:price-numeric {:optional true} :double]
+              [:bedrooms {:optional true} :string]
+              [:bathrooms {:optional true} :string]
+              [:sqft {:optional true} :string]
+              [:address :string]
+              [:neighborhood {:optional true} :string]
+              [:city :string]
+              [:state :string]
+              [:amenities [:vector :string]]
+              [:lat {:optional true} :double]
+              [:lng {:optional true} :double]]]]
+    [:by-url [:map-of :string :uuid]]     ;; source-url -> listing-id
+    [:by-city [:map-of :string [:set :uuid]]]  ;; city -> listing-ids
+    [:by-site [:map-of :string [:set :uuid]]]  ;; source-site -> listing-ids
+    [:price-history [:map-of :uuid        ;; listing-id -> price history
+                     [:vector [:map
+                               [:price :string]
+                               [:price-numeric {:optional true} :double]
+                               [:date :string]]]]]]
+
+   :apartment/searches
+   [:map
+    [:by-id [:map-of :uuid                ;; search-id -> search record
+             [:map
+              [:search-id :uuid]
+              [:location :string]
+              [:max-rent {:optional true} :int]
+              [:filters {:optional true} [:map-of :keyword :any]]
+              [:listing-count :int]
+              [:source-sites [:vector :string]]
+              [:listing-ids [:vector :uuid]]
+              [:searched-at :string]]]]
+    [:by-location [:map-of :string [:vector :uuid]]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; Site Registry Read Models (Multi-Site Discovery)
+   ;; -------------------------------------------------------------------------
+
+   :apartment/site-registry
+   [:map
+    [:by-domain [:map-of :string          ;; domain -> site
+                 [:map
+                  [:site-id :uuid]
+                  [:domain :string]
+                  [:display-name :string]
+                  [:category [:enum :corporate :peer-to-peer :aggregator :local]]
+                  [:discovered-via [:enum :manual :web-search :referral]]
+                  [:url-pattern {:optional true} :string]
+                  [:requires-headed {:optional true} :boolean]
+                  [:known-challenges {:optional true} [:vector :string]]
+                  [:notes {:optional true} :string]
+                  [:trust-score :double]
+                  [:extraction-count :int]
+                  [:last-success-at {:optional true} :string]
+                  [:last-failure-at {:optional true} :string]
+                  [:registered-at :string]]]]
+    [:by-trust [:vector :string]]         ;; domains sorted by trust score
+    [:patterns [:map-of :string           ;; domain -> patterns
+                [:vector [:map
+                          [:pattern-type [:enum :navigation :search :extraction :bot-bypass :pagination]]
+                          [:pattern-data [:map-of :keyword :any]]
+                          [:confidence :double]
+                          [:learned-at :string]]]]]]]})

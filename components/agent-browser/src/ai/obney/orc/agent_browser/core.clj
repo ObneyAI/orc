@@ -7,11 +7,29 @@
    - Shell-based execution (no session management needed)
    - Accessibility tree snapshots with @ref markers
    - Batch command execution for efficiency
-   - Direct integration with ORC's SCI sandbox"
+   - Direct integration with ORC's SCI sandbox
+   - Headed mode support for bypassing bot detection"
   (:require [clojure.java.shell :as shell]
             [clojure.string :as str]
             [cheshire.core :as json]
             [com.brunobonacci.mulog :as u]))
+
+;; ============================================================================
+;; Browser Configuration
+;; ============================================================================
+
+(def ^:dynamic *browser-config*
+  "Browser configuration for controlling browser behavior.
+
+   Options:
+   - :headed  - Run visible browser (bypasses bot detection on Zillow, etc.)
+   - :slow-mo - Milliseconds to wait between actions (human-like behavior)
+
+   Example:
+   (binding [*browser-config* {:headed true :slow-mo 100}]
+     (open \"https://zillow.com\"))"
+  {:headed false
+   :slow-mo nil})
 
 ;; ============================================================================
 ;; Shell Execution
@@ -20,13 +38,27 @@
 (defn- run-command
   "Execute an agent-browser command and return result.
 
+   Respects *browser-config* for headed mode and slow-mo settings.
+
    Returns:
    {:success true/false
     :output  string
     :error   string (if failed)}"
   [& args]
-  (u/trace ::run-command {:args args}
-    (let [result (apply shell/sh "agent-browser" (map str args))]
+  (u/trace ::run-command {:args args :config *browser-config*}
+    (let [;; Build environment variables for agent-browser
+          env (cond-> {}
+                (:headed *browser-config*)
+                (assoc "AGENT_BROWSER_HEADED" "true")
+
+                (:slow-mo *browser-config*)
+                (assoc "AGENT_BROWSER_SLOW_MO" (str (:slow-mo *browser-config*))))
+          ;; Merge with current environment
+          full-env (merge (into {} (System/getenv)) env)
+          ;; Execute command with environment
+          result (apply shell/sh "agent-browser"
+                        (concat (map str args)
+                                [:env full-env]))]
       (if (zero? (:exit result))
         {:success true
          :output (str/trim (:out result))}
@@ -271,6 +303,121 @@
      (run-command "close"))))
 
 ;; ============================================================================
+;; Mouse Operations
+;; ============================================================================
+
+(defn mouse-down
+  "Press mouse button without releasing.
+
+   Button: :left (default), :right, :middle
+
+   Example:
+   (mouse-down)         ;; left button
+   (mouse-down :right)  ;; right button"
+  ([] (mouse-down :left))
+  ([btn]
+   (run-command "mouse" "down" (name btn))))
+
+(defn mouse-up
+  "Release mouse button.
+
+   Button: :left (default), :right, :middle"
+  ([] (mouse-up :left))
+  ([btn]
+   (run-command "mouse" "up" (name btn))))
+
+(defn mouse-move
+  "Move mouse to absolute coordinates.
+
+   Example: (mouse-move 500 300)"
+  [x y]
+  (run-command "mouse" "move" (str x) (str y)))
+
+(defn mouse-wheel
+  "Scroll mouse wheel.
+
+   dy: vertical scroll (negative = up, positive = down)
+   dx: horizontal scroll (optional)"
+  ([dy] (run-command "mouse" "wheel" (str dy)))
+  ([dy dx] (run-command "mouse" "wheel" (str dy) (str dx))))
+
+(defn get-box
+  "Get bounding box of an element.
+
+   Returns: {:x :y :width :height} or error"
+  [selector]
+  (let [result (run-command "get" "box" selector)]
+    (if (:success result)
+      (try
+        (let [parsed (json/parse-string (:output result) true)]
+          (assoc result :box parsed))
+        (catch Exception _
+          ;; If not JSON, try to parse simple format
+          result))
+      result)))
+
+(defn- parse-box-center
+  "Parse bounding box and return center coordinates."
+  [box-output]
+  (try
+    (let [parsed (if (map? box-output)
+                   box-output
+                   (json/parse-string box-output true))]
+      {:x (+ (:x parsed 0) (/ (:width parsed 100) 2))
+       :y (+ (:y parsed 0) (/ (:height parsed 50) 2))})
+    (catch Exception _
+      ;; Fallback to reasonable defaults
+      {:x 500 :y 300})))
+
+(defn press-and-hold
+  "Press and hold on element for duration-ms milliseconds.
+
+   This is the key operation for bot detection bypass (e.g., Zillow's
+   'press and hold to verify' button).
+
+   Example:
+   (press-and-hold \"@e123\" 2500)  ;; hold for 2.5 seconds"
+  [selector duration-ms]
+  (let [;; First, hover to move mouse to element
+        hover-result (run-command "hover" selector)]
+    (if (:success hover-result)
+      (do
+        ;; Press, hold, release
+        (mouse-down :left)
+        (Thread/sleep duration-ms)
+        (mouse-up :left)
+        {:success true :held-ms duration-ms :selector selector})
+      ;; Hover failed
+      {:success false
+       :error "Could not hover on element"
+       :selector selector})))
+
+(defn dblclick
+  "Double-click on element.
+
+   Example: (dblclick \"@e1\")"
+  [selector]
+  (run-command "dblclick" selector))
+
+(defn hover
+  "Hover over element (triggers mouseover events).
+
+   Useful for dropdowns, tooltips, and menus that activate on hover.
+
+   Example: (hover \"@e5\")"
+  [selector]
+  (run-command "hover" selector))
+
+(defn drag
+  "Drag from source element to destination element.
+
+   Useful for slider CAPTCHAs, drag-and-drop interfaces.
+
+   Example: (drag \"@e10\" \"@e11\")"
+  [src-selector dst-selector]
+  (run-command "drag" src-selector dst-selector))
+
+;; ============================================================================
 ;; Batch Execution
 ;; ============================================================================
 
@@ -354,3 +501,46 @@
      (when (:success click-result)
        (wait wait-ms))
      click-result)))
+
+;; ============================================================================
+;; Headed Mode Macros (Bot Detection Bypass)
+;; ============================================================================
+
+(defmacro with-headed-browser
+  "Execute browser commands with headed (visible) browser.
+
+   Use this to bypass bot detection on sites like Zillow, apartments.com.
+
+   Example:
+   (with-headed-browser
+     (open \"https://zillow.com\")
+     (snapshot))"
+  [& body]
+  `(binding [*browser-config* (assoc *browser-config* :headed true)]
+     ~@body))
+
+(defmacro with-human-like-browser
+  "Execute browser commands with headed browser and 100ms slow-mo.
+
+   This creates more human-like browsing patterns to avoid bot detection.
+
+   Example:
+   (with-human-like-browser
+     (open \"https://zillow.com\")
+     (wait 2000)
+     (scroll :down)
+     (snapshot))"
+  [& body]
+  `(binding [*browser-config* {:headed true :slow-mo 100}]
+     ~@body))
+
+(defn set-headed-mode!
+  "Globally enable or disable headed mode.
+
+   Use for REPL sessions where you want all browser operations to be headed.
+
+   Example:
+   (set-headed-mode! true)   ;; all commands now use visible browser
+   (set-headed-mode! false)  ;; back to headless"
+  [headed?]
+  (alter-var-root #'*browser-config* assoc :headed headed?))

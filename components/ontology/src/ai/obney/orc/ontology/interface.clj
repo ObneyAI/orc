@@ -1226,3 +1226,74 @@
    - :domain-type - Domain that was analyzed"
   [ctx tree-id opts]
   (rule-extraction/extract-rules ctx tree-id opts))
+
+;; =============================================================================
+;; Apartment Search Data Access
+;; =============================================================================
+
+(def apartment-listing-events
+  "Event types that affect apartment listings read model."
+  rm/apartment-listing-events)
+
+(def apartment-search-events
+  "Event types that affect apartment searches read model."
+  rm/apartment-search-events)
+
+(defn get-listing
+  "Get an apartment listing by ID."
+  [ctx listing-id]
+  (rm/get-listing ctx listing-id))
+
+(defn get-listing-by-url
+  "Get an apartment listing by source URL."
+  [ctx source-url]
+  (rm/get-listing-by-url ctx source-url))
+
+(defn get-listings-by-city
+  "Get all apartment listings for a city.
+   Options:
+   - :limit - Maximum listings to return"
+  [ctx city & [opts]]
+  (rm/get-listings-by-city ctx city opts))
+
+(defn get-listings-by-site
+  "Get all apartment listings from a specific site.
+   Options:
+   - :limit - Maximum listings to return"
+  [ctx source-site & [opts]]
+  (rm/get-listings-by-site ctx source-site opts))
+
+(defn get-listings-by-price-range
+  "Get apartment listings within a price range.
+   Args:
+   - min-price: Minimum price (numeric)
+   - max-price: Maximum price (numeric)
+   Options:
+   - :city - Filter by city
+   - :limit - Maximum listings to return"
+  [ctx min-price max-price & [opts]]
+  (rm/get-listings-by-price-range ctx min-price max-price opts))
+
+(defn get-price-history
+  "Get price history for a listing."
+  [ctx listing-id]
+  (rm/get-price-history ctx listing-id))
+
+(defn get-recent-searches
+  "Get recent apartment searches.
+   Options:
+   - :location - Filter by location
+   - :limit - Maximum searches to return (default 20)"
+  [ctx & [opts]]
+  (rm/get-recent-searches ctx opts))
+
+(defn apartment-statistics
+  "Get statistics about stored apartment listings.
+   Returns:
+   - :total-listings - Total number of listings
+   - :listings-by-city - Map of city to count
+   - :listings-by-site - Map of site to count
+   - :total-searches - Total search sessions
+   - :price-range - {:min :max :avg} for numeric prices"
+  [ctx]
+  (rm/apartment-statistics ctx))

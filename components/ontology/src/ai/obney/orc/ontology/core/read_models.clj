@@ -724,3 +724,358 @@
      :avg-success-rate (when (seq all-rules-flat)
                          (/ (reduce + 0 (map :success-rate all-rules-flat))
                             (count all-rules-flat)))}))
+
+;; =============================================================================
+;; Apartment Listings Projection
+;; =============================================================================
+;; Builds indexes for apartment listings by ID, URL, city, and site
+
+(def apartment-listing-events
+  "Events that affect apartment listings read model"
+  #{:apartment/listing-recorded
+    :apartment/listing-updated})
+
+(defmulti apartment-listings*
+  "Apply event to apartment listings read model.
+   State: {:by-id {uuid -> listing}
+           :by-url {url -> listing-id}
+           :by-city {city -> #{listing-ids}}
+           :by-site {site -> #{listing-ids}}
+           :price-history {listing-id -> [{:price :date}]}}"
+  (fn [_state event] (:event/type event)))
+
+(defmethod apartment-listings* :apartment/listing-recorded
+  [state event]
+  (let [{:keys [listing-id source-url source-site city]} event
+        listing {:listing-id listing-id
+                 :source-site source-site
+                 :source-url source-url
+                 :extracted-at (str (:extracted-at event))
+                 :title (:title event)
+                 :price (:price event)
+                 :price-numeric (:price-numeric event)
+                 :bedrooms (:bedrooms event)
+                 :bathrooms (:bathrooms event)
+                 :sqft (:sqft event)
+                 :address (:address event)
+                 :neighborhood (:neighborhood event)
+                 :city city
+                 :state (:state event)
+                 :amenities (vec (or (:amenities event) []))
+                 :lat (:lat event)
+                 :lng (:lng event)}]
+    (-> state
+        (assoc-in [:by-id listing-id] listing)
+        (assoc-in [:by-url source-url] listing-id)
+        (update-in [:by-city city] (fnil conj #{}) listing-id)
+        (update-in [:by-site source-site] (fnil conj #{}) listing-id)
+        ;; Initialize price history
+        (assoc-in [:price-history listing-id]
+                  [{:price (:price event)
+                    :price-numeric (:price-numeric event)
+                    :date (str (:extracted-at event))}]))))
+
+(defmethod apartment-listings* :apartment/listing-updated
+  [state event]
+  (let [{:keys [listing-id price price-numeric updated-at]} event]
+    (-> state
+        ;; Update listing price
+        (update-in [:by-id listing-id] merge
+                   {:price price
+                    :price-numeric price-numeric})
+        ;; Add to price history
+        (update-in [:price-history listing-id]
+                   (fnil conj [])
+                   {:price price
+                    :price-numeric price-numeric
+                    :date (str updated-at)}))))
+
+(defmethod apartment-listings* :default [state _] state)
+
+(defn apartment-listings
+  "Build apartment listings from events."
+  [initial-state events]
+  (reduce apartment-listings* initial-state events))
+
+(defreadmodel :apartment listings
+  {:events apartment-listing-events, :version 1}
+  [state event] (apartment-listings* state event))
+
+;; =============================================================================
+;; Apartment Searches Projection
+;; =============================================================================
+
+(def apartment-search-events
+  "Events that affect apartment searches read model"
+  #{:apartment/search-recorded})
+
+(defmulti apartment-searches*
+  "Apply event to apartment searches read model.
+   State: {:by-id {uuid -> search}
+           :by-location {location -> [search-ids]}}"
+  (fn [_state event] (:event/type event)))
+
+(defmethod apartment-searches* :apartment/search-recorded
+  [state event]
+  (let [{:keys [search-id location]} event
+        search {:search-id search-id
+                :location location
+                :max-rent (:max-rent event)
+                :filters (:filters event)
+                :listing-count (:listing-count event)
+                :source-sites (vec (:source-sites event))
+                :listing-ids (vec (:listing-ids event))
+                :searched-at (str (:searched-at event))}]
+    (-> state
+        (assoc-in [:by-id search-id] search)
+        (update-in [:by-location location] (fnil conj []) search-id))))
+
+(defmethod apartment-searches* :default [state _] state)
+
+(defn apartment-searches
+  "Build apartment searches from events."
+  [initial-state events]
+  (reduce apartment-searches* initial-state events))
+
+(defreadmodel :apartment searches
+  {:events apartment-search-events, :version 1}
+  [state event] (apartment-searches* state event))
+
+;; =============================================================================
+;; Apartment Query Helpers
+;; =============================================================================
+
+(defn get-listing
+  "Get an apartment listing by ID."
+  [ctx listing-id]
+  (get-in (rmp/project ctx :apartment/listings {:tags #{[:listing listing-id]}})
+          [:by-id listing-id]))
+
+(defn get-listing-by-url
+  "Get an apartment listing by source URL."
+  [ctx source-url]
+  (let [state (rmp/project ctx :apartment/listings)]
+    (when-let [listing-id (get-in state [:by-url source-url])]
+      (get-in state [:by-id listing-id]))))
+
+(defn get-listings-by-city
+  "Get all apartment listings for a city."
+  [ctx city & [{:keys [limit]}]]
+  (let [state (rmp/project ctx :apartment/listings)
+        listing-ids (get-in state [:by-city city] #{})
+        listings (keep #(get-in state [:by-id %]) listing-ids)]
+    (if limit
+      (take limit listings)
+      listings)))
+
+(defn get-listings-by-site
+  "Get all apartment listings from a specific site."
+  [ctx source-site & [{:keys [limit]}]]
+  (let [state (rmp/project ctx :apartment/listings)
+        listing-ids (get-in state [:by-site source-site] #{})
+        listings (keep #(get-in state [:by-id %]) listing-ids)]
+    (if limit
+      (take limit listings)
+      listings)))
+
+(defn get-listings-by-price-range
+  "Get apartment listings within a price range."
+  [ctx min-price max-price & [{:keys [city limit]}]]
+  (let [state (rmp/project ctx :apartment/listings)
+        all-listings (vals (:by-id state))
+        filtered (filter (fn [l]
+                           (when-let [p (:price-numeric l)]
+                             (and (>= p min-price)
+                                  (<= p max-price)
+                                  (or (nil? city) (= city (:city l))))))
+                         all-listings)]
+    (if limit
+      (take limit filtered)
+      filtered)))
+
+(defn get-price-history
+  "Get price history for a listing."
+  [ctx listing-id]
+  (get-in (rmp/project ctx :apartment/listings {:tags #{[:listing listing-id]}})
+          [:price-history listing-id]))
+
+(defn get-recent-searches
+  "Get recent searches, optionally filtered by location."
+  [ctx & [{:keys [location limit] :or {limit 20}}]]
+  (let [state (rmp/project ctx :apartment/searches)
+        searches (if location
+                   (->> (get-in state [:by-location location] [])
+                        (keep #(get-in state [:by-id %])))
+                   (vals (:by-id state)))
+        sorted (->> searches
+                    (sort-by :searched-at)
+                    reverse)]
+    (take limit sorted)))
+
+;; =============================================================================
+;; Apartment Statistics
+;; =============================================================================
+
+(defn apartment-statistics
+  "Get statistics about stored apartment listings."
+  [ctx]
+  (let [listing-state (rmp/project ctx :apartment/listings)
+        search-state (rmp/project ctx :apartment/searches)
+        listings (vals (:by-id listing-state))]
+    {:total-listings (count listings)
+     :listings-by-city (into {}
+                             (map (fn [[city ids]] [city (count ids)])
+                                  (:by-city listing-state)))
+     :listings-by-site (into {}
+                             (map (fn [[site ids]] [site (count ids)])
+                                  (:by-site listing-state)))
+     :total-searches (count (:by-id search-state))
+     :price-range (when (seq listings)
+                    (let [prices (keep :price-numeric listings)]
+                      (when (seq prices)
+                        {:min (apply min prices)
+                         :max (apply max prices)
+                         :avg (/ (reduce + prices) (count prices))})))}))
+
+;; =============================================================================
+;; Site Registry Projection (Multi-Site Discovery)
+;; =============================================================================
+;; Builds site registry with trust scores and learned patterns
+
+(def site-registry-events
+  "Events that affect site registry read model"
+  #{:apartment/site-registered
+    :apartment/site-trust-updated
+    :apartment/site-pattern-learned})
+
+(defmulti site-registry*
+  "Apply event to site registry read model.
+   State: {:by-domain {domain -> site}
+           :by-trust [domains sorted by trust]
+           :patterns {domain -> [patterns]}}"
+  (fn [_state event] (:event/type event)))
+
+(defmethod site-registry* :apartment/site-registered
+  [state event]
+  (let [{:keys [site-id domain display-name category discovered-via
+                url-pattern requires-headed known-challenges notes registered-at]} event
+        site {:site-id site-id
+              :domain domain
+              :display-name display-name
+              :category category
+              :discovered-via discovered-via
+              :url-pattern url-pattern
+              :requires-headed (boolean requires-headed)
+              :known-challenges (vec (or known-challenges []))
+              :notes notes
+              :trust-score 0.5  ;; Initial trust score
+              :extraction-count 0
+              :registered-at (str registered-at)}]
+    (-> state
+        (assoc-in [:by-domain domain] site)
+        (update :by-trust (fn [domains]
+                            (->> (conj (or domains []) domain)
+                                 (sort-by (fn [d]
+                                            (- (get-in state [:by-domain d :trust-score] 0.5))))
+                                 vec))))))
+
+(defmethod site-registry* :apartment/site-trust-updated
+  [state event]
+  (let [{:keys [domain trust-score extraction-count
+                last-success-at last-failure-at updated-at]} event]
+    (-> state
+        (update-in [:by-domain domain] merge
+                   {:trust-score trust-score
+                    :extraction-count extraction-count
+                    :last-success-at last-success-at
+                    :last-failure-at last-failure-at})
+        ;; Re-sort by-trust list
+        (update :by-trust (fn [domains]
+                            (->> (or domains [])
+                                 (sort-by (fn [d]
+                                            (- (get-in state [:by-domain d :trust-score] 0.5))))
+                                 vec))))))
+
+(defmethod site-registry* :apartment/site-pattern-learned
+  [state event]
+  (let [{:keys [domain pattern-type pattern-data confidence learned-at]} event
+        pattern {:pattern-type pattern-type
+                 :pattern-data pattern-data
+                 :confidence confidence
+                 :learned-at (str learned-at)}]
+    (update-in state [:patterns domain] (fnil conj []) pattern)))
+
+(defmethod site-registry* :default [state _] state)
+
+(defn site-registry
+  "Build site registry from events."
+  [initial-state events]
+  (reduce site-registry* initial-state events))
+
+(defreadmodel :apartment site-registry
+  {:events site-registry-events, :version 1}
+  [state event] (site-registry* state event))
+
+;; =============================================================================
+;; Site Registry Query Helpers
+;; =============================================================================
+
+(defn get-site-by-domain
+  "Get a site by its domain."
+  [ctx domain]
+  (get-in (rmp/project ctx :apartment/site-registry) [:by-domain domain]))
+
+(defn get-all-sites
+  "Get all registered sites."
+  [ctx]
+  (vals (get (rmp/project ctx :apartment/site-registry) :by-domain {})))
+
+(defn get-trusted-sites
+  "Get sites with trust score above threshold, sorted by trust.
+
+   Args:
+   - min-trust: Minimum trust score (default 0.5)
+   - limit: Maximum sites to return"
+  [ctx & [{:keys [min-trust limit] :or {min-trust 0.5}}]]
+  (let [state (rmp/project ctx :apartment/site-registry)
+        all-sites (vals (:by-domain state))
+        trusted (->> all-sites
+                     (filter #(>= (:trust-score % 0) min-trust))
+                     (sort-by :trust-score >))]
+    (if limit
+      (take limit trusted)
+      trusted)))
+
+(defn get-site-patterns
+  "Get learned patterns for a site.
+
+   Args:
+   - domain: Site domain
+   - pattern-type: Optional filter by pattern type"
+  [ctx domain & [{:keys [pattern-type]}]]
+  (let [patterns (get-in (rmp/project ctx :apartment/site-registry) [:patterns domain] [])]
+    (if pattern-type
+      (filter #(= pattern-type (:pattern-type %)) patterns)
+      patterns)))
+
+(defn get-sites-requiring-headed
+  "Get sites that require headed browser mode."
+  [ctx]
+  (->> (get-all-sites ctx)
+       (filter :requires-headed)))
+
+(defn site-registry-statistics
+  "Get statistics about the site registry."
+  [ctx]
+  (let [state (rmp/project ctx :apartment/site-registry)
+        sites (vals (:by-domain state))
+        patterns (get state :patterns {})]
+    {:total-sites (count sites)
+     :by-category (frequencies (map :category sites))
+     :by-discovered-via (frequencies (map :discovered-via sites))
+     :sites-requiring-headed (count (filter :requires-headed sites))
+     :total-patterns (reduce + (map count (vals patterns)))
+     :avg-trust-score (when (seq sites)
+                        (/ (reduce + (map :trust-score sites))
+                           (count sites)))
+     :sites-with-extractions (count (filter #(> (:extraction-count % 0) 0) sites))}))

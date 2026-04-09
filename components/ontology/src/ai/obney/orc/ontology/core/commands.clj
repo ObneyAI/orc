@@ -636,3 +636,196 @@
                                 :domain-type (:domain-type result)
                                 :tree-id tree-id}
          :command-result/events events}))))
+
+;; =============================================================================
+;; Apartment Search Commands
+;; =============================================================================
+
+(defcommand :apartment record-listing
+  "Record an apartment listing extracted from a search.
+
+   Checks if listing already exists by source-url:
+   - If exists and price changed, emits listing-updated event
+   - If exists and price same, returns message (no event)
+   - If new, emits listing-recorded event"
+  [{{:keys [listing-id source-site source-url extracted-at title price price-numeric
+            bedrooms bathrooms sqft address neighborhood city state amenities
+            lat lng]} :command
+    :keys [event-store] :as ctx}]
+  (let [now (now-str)
+        ;; Check if listing already exists by URL
+        existing (rm/get-listing-by-url ctx source-url)]
+    (cond
+      ;; Existing listing with price change
+      (and existing (not= (:price existing) price))
+      {:command-result/events
+       [(->event
+         {:type :apartment/listing-updated
+          :tags #{[:listing (:listing-id existing)]}
+          :body (cond-> {:listing-id (:listing-id existing)
+                         :source-url source-url
+                         :previous-price (:price existing)
+                         :price price
+                         :updated-at now}
+                  price-numeric (assoc :price-numeric price-numeric))})]}
+
+      ;; Existing listing, unchanged
+      existing
+      {:command-result/message "Listing unchanged"
+       :command-result/data {:listing-id (:listing-id existing)}}
+
+      ;; New listing
+      :else
+      {:command-result/events
+       [(->event
+         {:type :apartment/listing-recorded
+          :tags #{[:listing listing-id]}
+          :body (cond-> {:listing-id listing-id
+                         :source-site source-site
+                         :source-url source-url
+                         :extracted-at (or extracted-at now)
+                         :title title
+                         :price price
+                         :address address
+                         :city city
+                         :state state
+                         :amenities (vec (or amenities []))}
+                  price-numeric (assoc :price-numeric price-numeric)
+                  bedrooms (assoc :bedrooms bedrooms)
+                  bathrooms (assoc :bathrooms bathrooms)
+                  sqft (assoc :sqft sqft)
+                  neighborhood (assoc :neighborhood neighborhood)
+                  lat (assoc :lat lat)
+                  lng (assoc :lng lng))})]
+       :command-result/data {:listing-id listing-id}})))
+
+(defcommand :apartment record-search
+  "Record an apartment search session.
+
+   Captures search parameters and links to extracted listings."
+  [{{:keys [search-id location max-rent filters listing-count source-sites listing-ids]} :command
+    :keys [event-store]}]
+  (let [now (now-str)]
+    {:command-result/events
+     [(->event
+       {:type :apartment/search-recorded
+        :tags #{[:search search-id]}
+        :body {:search-id search-id
+               :location location
+               :max-rent max-rent
+               :filters filters
+               :listing-count listing-count
+               :source-sites (vec source-sites)
+               :listing-ids (vec listing-ids)
+               :searched-at now}})]
+     :command-result/data {:search-id search-id}}))
+
+;; =============================================================================
+;; Site Registry Commands (Multi-Site Discovery)
+;; =============================================================================
+
+(defcommand :apartment register-site
+  "Register a new apartment listing site.
+
+   Checks if site already exists by domain.
+   If exists, returns existing site-id without emitting event.
+   If new, emits site-registered event with initial trust score."
+  [{{:keys [domain display-name category discovered-via
+            url-pattern requires-headed known-challenges notes]} :command
+    :keys [event-store] :as ctx}]
+  (let [existing (rm/get-site-by-domain ctx domain)]
+    (if existing
+      ;; Site already registered
+      {:command-result/message "Site already registered"
+       :command-result/data {:site-id (:site-id existing)
+                             :domain domain}}
+      ;; Register new site
+      (let [site-id (generate-uuid)
+            now (now-str)]
+        {:command-result/events
+         [(->event
+           {:type :apartment/site-registered
+            :tags #{[:site site-id]}
+            :body (cond-> {:site-id site-id
+                           :domain domain
+                           :display-name display-name
+                           :category category
+                           :discovered-via discovered-via
+                           :registered-at now}
+                    url-pattern (assoc :url-pattern url-pattern)
+                    (some? requires-headed) (assoc :requires-headed requires-headed)
+                    (seq known-challenges) (assoc :known-challenges (vec known-challenges))
+                    notes (assoc :notes notes))})]
+         :command-result/data {:site-id site-id
+                               :domain domain}}))))
+
+(defcommand :apartment update-site-trust
+  "Update trust score for a site based on extraction success/failure.
+
+   Trust score calculation:
+   - Success: trust = (current * count + 1) / (count + 1)
+   - Failure: trust = (current * count + 0) / (count + 1)
+
+   This is a moving average that weighs recent results appropriately."
+  [{{:keys [domain success? listings-extracted]} :command
+    :keys [event-store] :as ctx}]
+  (let [existing (rm/get-site-by-domain ctx domain)]
+    (if-not existing
+      {::anom/category ::anom/not-found
+       ::anom/message (str "Site not found: " domain)}
+
+      (let [now (now-str)
+            current-trust (or (:trust-score existing) 0.5)
+            current-count (or (:extraction-count existing) 0)
+            ;; Calculate new trust score as moving average
+            new-count (inc current-count)
+            new-trust (/ (+ (* current-trust current-count)
+                            (if success? 1.0 0.0))
+                         new-count)]
+        {:command-result/events
+         [(->event
+           {:type :apartment/site-trust-updated
+            :tags #{[:site (:site-id existing)]}
+            :body (cond-> {:site-id (:site-id existing)
+                           :domain domain
+                           :trust-score new-trust
+                           :extraction-count new-count
+                           :updated-at now}
+                    success? (assoc :last-success-at now)
+                    (not success?) (assoc :last-failure-at now))})]
+         :command-result/data {:domain domain
+                               :trust-score new-trust
+                               :extraction-count new-count}}))))
+
+(defcommand :apartment record-site-pattern
+  "Record a learned navigation/extraction pattern for a site.
+
+   Patterns are site-specific tactics learned over time:
+   - navigation: How to navigate to listings page
+   - search: How to use search filters
+   - extraction: Selectors and strategies for extracting listings
+   - bot-bypass: Techniques for avoiding bot detection
+   - pagination: How to navigate between pages"
+  [{{:keys [domain pattern-type pattern-data confidence]} :command
+    :keys [event-store] :as ctx}]
+  (let [existing (rm/get-site-by-domain ctx domain)]
+    (if-not existing
+      {::anom/category ::anom/not-found
+       ::anom/message (str "Site not found: " domain)}
+
+      (let [now (now-str)
+            pattern-type-kw (if (keyword? pattern-type)
+                              pattern-type
+                              (keyword pattern-type))]
+        {:command-result/events
+         [(->event
+           {:type :apartment/site-pattern-learned
+            :tags #{[:site (:site-id existing)]}
+            :body {:site-id (:site-id existing)
+                   :domain domain
+                   :pattern-type pattern-type-kw
+                   :pattern-data pattern-data
+                   :confidence (or confidence 0.8)
+                   :learned-at now}})]
+         :command-result/data {:domain domain
+                               :pattern-type pattern-type-kw}}))))
