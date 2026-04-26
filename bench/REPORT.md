@@ -1,133 +1,110 @@
-# Bench comparison: predict-rlm vs orc Style A vs orc Style B
+# Bench comparison: predict-rlm vs orc Legacy / Style A / Style B
 
-**Date:** 2026-04-26
+**Date:** 2026-04-26 (round 3 — adds Legacy stack + walker bug fix)
 **Models:** root `openai/gpt-5`, sub `openai/gpt-5-mini` (via OpenRouter)
-**N:** 3 runs per (task × stack)
+**N:** 3 per (task × stack), with extras for legacy reliability sampling
 **max-iterations:** 15
-**Prompt source:** verbatim DEFAULT_QUERY / CRITERIA from each `predict-rlm/examples/<task>/run.py`
-**Total spend:** ~$4.20 (predict-rlm $3.57, orc-A $0.26, orc-B $0.40); document_analysis Style B aborted on credit exhaustion after the rest landed.
+**Prompt source:** verbatim DEFAULT_QUERY / CRITERIA from each `predict-rlm/examples/<task>/run.py` (so all stacks face the same question)
 
-## Bottom line (revised)
+## Bottom line
 
-The first round of this report misled us — my **bench wrapper had wrong input keys** (`:document-paths` instead of `:documents`, etc.), so orc workflows were getting nil inputs and reporting `:status :success` while doing nothing. After fixing the keys, **orc Style A actually does the work on 4 of 5 tasks** and is dramatically cheaper than predict-rlm. orc Style B is mixed: solid on extractive tasks (invoices, contract diff), still shortcuts on document_redaction, and crashed on the heaviest task due to credit exhaustion.
+Two earlier-round findings were artifacts of a bench bug — fixed in this round:
 
-## Headline matrix
+1. **Walker double-counted** (1st report): `_walk_for_invoices` and friends recursed into the predict-rlm `trace` field, counting each invoice/redaction once in `result.invoices` and again in `trace.steps[].predict_calls[].calls[].output`. After scoping to `result` only (`compare.py :: _result_scope`), all stacks reconcile to the same shape.
+2. **Wrong input keys** (2nd report): the bench was sending `:document-paths` / `:invoice-paths` / `:contract-paths` but pipelines read `:documents` / `:invoices` / `:contracts`. orc treated missing keys as nil and the LLM dutifully reported "no documents provided" while orc still emitted `:status :success`. (Filed as orc gap: silent nil-substitution on missing reads.)
 
-| Task | predict-rlm | orc Style A | orc Style B | Quality verdict |
+After both fixes, **the three RLM-mode stacks (predict-rlm, Style A, Style B) reach parity on the canonical extraction tasks**. The newly-added **Legacy stack** is the architectural baseline: it shows what one model + one context + tools-as-functions + text-pattern submit can do without the iteration discipline that RLM-mode (or pipeline structure) provides.
+
+## Headline matrix — focus tasks
+
+The two tasks where we have full 4-stack data with high-confidence baselines:
+
+### invoice_processing — 2 PDFs, 5 + 6 line items per invoice, $34,804.30 total
+
+| Stack | n_ok / n | Median cost | Output (when ok) | Verdict |
 |---|---|---|---|---|
-| **image_analysis** | 2/3 produce full A–Z counts (T:155, total 1343) — $0.05–$0.25 | 2/3 produce A–Z counts but for **header text only** (T:11, total ~80) — $0.013 | 0/3 produce counts (rigid signature) — $0.011 | predict-rlm correct; Style A scoped wrong; Style B refused |
-| **invoice_processing** | 4 invoices, totals $4086+$30717+$34804, 5–6 line items each — $0.075 | 5 "invoices" (over-splits 2-page invoice), same totals — $0.006 | 2 invoices (correct grouping), same totals — $0.022 | All three find the same money; differ only in row grouping |
-| **document_redaction** | 70–200 redactions, 9 categories — $0.114 | **261–301 redactions**, 7–9 categories — $0.020 | 0/3 redactions (model still shortcuts) — $0.06–$0.14 | Style A produces MORE than predict-rlm; Style B broken |
-| **contract_comparison** | 49–135 sub-calls (real diffs) — $0.413 | 4–15 diffs with full impact reasoning — $0.013 | 0–17 diffs, varying — $0.041 | Style A actually competitive on quality |
-| **document_analysis** | 137–215 key dates, 108–556 entities, 25–33 KB report — $0.402 | 6–8 dates, 12–15 entities, 0.4 KB report — $0.024 | **3/3 ERR (credit exhaustion)** — $0 | predict-rlm dominant; Style A under-scoped |
+| predict-rlm | 3 / 3 | $0.075 | 2 inv, [5,6] LI, $34,804 — exact | reference |
+| orc Style A | 3 / 3 | $0.006 (12.5× cheaper) | 2 inv, [5,6 or 5,7] LI, $34,804 — pipeline occasionally splits the discount line | parity, with one-off line-item variance |
+| orc Style B | 3 / 3 | $0.022 (3.4× cheaper) | 2 inv, [5,6] LI, $34,804 — identical to predict | **parity, full reliability** |
+| **orc Legacy** | **3 / 7** (43%) | $0.000 (executor token-format bug) | When ok: 2 inv, [5,6] LI, $34,804 — identical to predict. When not: ERR or placeholder strings | parity *when it works*, but reliability collapses |
 
----
+**Reading**: invoice_processing is structurally tractable for all four architectures. Cost-quality ranks Legacy < Style A < Style B < predict-rlm (left = cheaper). Reliability ranks Legacy ≪ everyone else (43% vs 100%).
 
-## What changed since round 1
+### document_redaction — 1 PDF, 6 pages, 9-category PII
 
-The original report flagged orc as "shortcutting work" on 4 of 5 tasks. Most of that was actually a bench wrapper bug:
+| Stack | n_ok / n | Median cost | Median redactions | Coverage | Verdict |
+|---|---|---|---|---|---|
+| predict-rlm | 3 / 3 | $0.114 | 83 (range 69–97) | 9 categories, all 6 pages | reference |
+| orc Style A | 3 / 3 | $0.019 (6× cheaper) | 69 (range 65–75) | 6–9 categories | parity on count, mild category drift (Title Case) |
+| orc Style B | 5 / 6 (83%) | $0.033 | 68 / 73 / 0 | 9–10 categories when ok; 1/6 still shortcuts to 0 | mostly parity, occasional shortcut |
+| **orc Legacy** | **2 / 6** (33%) | $0.000 | 23, 26 (3× LESS than predict) | covers only 4 of 6 pages | partial coverage when ok; high failure rate |
 
-```diff
-;; bench/run_orc.clj — broken
--{:document-paths paths :criteria criteria}     ; pipeline reads :documents
--{:invoice-paths  paths}                         ; pipeline reads :invoices
--{:contract-paths paths}                         ; pipeline reads :contracts
-;; fixed
-+{:documents paths :criteria criteria}
-+{:invoices  paths}
-+{:contracts paths}
-```
+**Reading**: legacy mode finds *real* PII when it works, but its single model can't span the depth of a multi-page document. Coverage drops to ⅓ vs the RLM-mode stacks; reliability drops to ⅓.
 
-orc treated the missing keys as nil values, fed nil to LLM nodes, and the LLMs dutifully reported "no documents provided" while orc still reported `:status :success`. **The fact that orc didn't surface the missing-key as an error is itself a real gap** — silent success on missing reads is a footgun. (Followup #2.)
+## What Legacy mode showed us
 
-After the fix, the same orc workflows produce real output. The cheap-cost numbers are now meaningful:
+The Legacy stack is the empirical foil that makes the RLM-mode results meaningful. Three architectural costs of "one model + one context + tools" come out clearly:
 
-- orc Style A invoice_processing: $0.006 / run (vs predict-rlm $0.075) — 12× cheaper, finds same money
-- orc Style A document_redaction: $0.020 / run (vs predict-rlm $0.114) — 6× cheaper, MORE redactions
-- orc Style A contract_comparison: $0.013 / run (vs predict-rlm $0.413) — 32× cheaper, real diffs with reasoning
-- orc Style A document_analysis: $0.024 / run (vs predict-rlm $0.402) — 17× cheaper, but **much shallower** report
+1. **Reliability collapses on extraction tasks.** 33–43% of legacy runs ERR or produce placeholder garbage; the other RLM-mode stacks are 83–100% reliable on the same prompts. Failure modes:
+   - `(let [paths :invoices …)` — model treats the substituted variable name as a keyword
+   - `(let [parser-fn …) … invoices  ;; ← YOUR EXTRACTION HERE …]` — model copy-pastes skeleton placeholders into a binding form, gets "let requires even number of forms"
+   - `(ns sandbox (:require [clojure.string :as str]))` — SCI rejects `require`
+   - `Double/parseDouble`, `System/getProperty`, `(.method obj …)` — Java interop blocks
+2. **Depth ceiling on multi-page work.** Document_redaction legacy covered 4 of 6 pages, finding 23–26 PII items vs predict-rlm's 69–97 across 6 pages. The single-model context can only attend to so much before it commits an answer.
+3. **Cost meter is broken in legacy mode** (orc bug, separate followup). `executor.clj :: execute-legacy-repl-researcher` reads `(:prompt_tokens usage 0)` (snake_case) from the dscloj/predict response, but modern dscloj normalizes to kebab-case; the snake-case lookup hits the default `0`, so `total-usage` accumulates to 0 and our bench cost computes to $0.00. Tokens were spent — they just don't surface in the trace. The unit test (`repl_researcher_test.clj :: usage-tracking-test`) passes because it mocks dscloj/predict to return snake-case explicitly.
 
-## Per-task observations (revised)
+## What this means for the architecture conversation
 
-### image_analysis — orc scopes wrong, predict-rlm gets it right
+Cameron's frame ("the behavior tree IS the agent") gets stronger after this round. Legacy ≈ "RLM agent without the BT or the RLM primitives." Each architectural addition we measure gives a real lift:
 
-predict-rlm hit reference letter counts on 2 of 3 runs (T:155, E:144, I:120, total 1343). orc Style A produces letter counts on 2 of 3 runs, but for ~30 characters from the image header only (T:11, total ~80). The Style A pipeline (`load-images → analyze-each → synthesize`) extracts a "concise observation" per image, not the full text — so the per-letter count is taken over the observation string, not the visible image content. Architectural mismatch between the pipeline shape and the predict-rlm prompt's "count letters in the entire image" requirement.
+| Architecture | What it adds | Effect (vs Legacy) |
+|---|---|---|
+| Legacy | iterative coding agent, mcp-tools, text-pattern submit | baseline |
+| Style B (RLM-mode repl-researcher) | metadata-only context + predict / predict-all / final! primitives | reliability ↑↑ (33% → 83%), depth ↑ (3× redactions on same task) |
+| Style A (explicit pipeline) | structural decomposition into nodes, per-node judges, deterministic orchestration | reliability ↑↑↑ (33% → 100%), cost ↓↓ (6–12× cheaper than predict-rlm) |
+| predict-rlm | the full RLM primitive (Python-shaped) — reference for "bitter-lesson-proof" agent | reliability ↑↑↑ (100%), highest cost, deepest output |
 
-orc Style B produces 0 letter counts across 3 runs. The signature-strategy still forces "load + predict-all + synthesize" with no slot for "extract N times for self-consistency, count programmatically." This is the rigidity finding from round 1, unchanged by the input-key fix.
+The Hybrid path (Style A pipeline with an RLM `(fallback …)` branch on quality failure) is now empirically motivated:
+- Cheap path = Style A (real work, ~$0.006–$0.020)
+- Fallback path = Style B or even predict-rlm (deeper work, $0.022–$0.114)
+- Expected outcome on mixed inputs: Style A cost on the easy ones + RLM cost only when needed
 
-### invoice_processing — three stacks agree on the money, disagree on row grouping
+## Other tasks (status from round 2 — not re-run for legacy)
 
-All three stacks correctly find Acme Corporation + GlobalTech Solutions Ltd. and the same dollar totals: $4086.40, $30717.90, $34804.30. They differ on how to group multi-page invoices into rows:
+| Task | predict-rlm | orc Style A | orc Style B | Legacy status |
+|---|---|---|---|---|
+| image_analysis | 2/3 produce full A–Z counts (T:155, total 1343) — $0.05–$0.25 | 2/3 counts but header text only (T:11) — $0.013 | 0/3 (rigid signature blocks rigorous query) — $0.011 | **N/A** — needs vision sub-call; no legacy-compatible image tool exists |
+| contract_comparison | 49–135 sub-calls; output unrecoverable (predict-rlm wrapper bug) | 4–15 detailed diffs with significance reasoning — $0.013 | 0–17 diffs, varying — $0.041 | not measured this round |
+| document_analysis | 137–215 dates, 108–556 entities, 25–33 KB report — $0.402 | 6–8 dates, 12–15 entities, 0.4 KB report — $0.024 (60× shallower) | 3/3 ERR (credit exhaustion in earlier round) | not measured; legacy single-context vs 136-page input would be even worse |
 
-- predict-rlm: 4 invoice records (header + continuation handled correctly)
-- orc Style A: 5 invoice records (over-splits — counts each page as an invoice)
-- orc Style B: 2 invoice records (one per PDF, ignores page boundaries)
+## Cost roll-up (this session, all rounds)
 
-Cost-quality tradeoff is genuine: Style B at $0.022 produces the cleanest invoice grouping; Style A at $0.006 produces the most noise but lowest cost. Predict-rlm at $0.075 is the most accurate but 12×–4× more expensive depending which orc style you compare to.
-
-### document_redaction — Style A overfinds, Style B refuses
-
-predict-rlm: 70–200 redactions per run, 9 categories. Real PII surfaced.
-
-orc Style A: 261–301 redactions per run, 7–9 categories. **More than predict-rlm.** Style A's pipeline is LLM-driven — the per-doc `find-targets-for-doc` LLM is being aggressive (or the prompt rewards over-flagging). 6× cheaper than predict-rlm but with output that needs human triage. The 1 redacted PDF was produced (Style A `apply-redactions` code node ran).
-
-orc Style B: 0 redactions across 3 runs (1 ERR). The model called `final!` with `{:redacted-documents {:total-redactions 0 :targets []}}` — same shortcut behavior as round 1. The fix didn't help here because the input wasn't the issue; the prompt + model combination keeps producing empty `final!` calls.
-
-### contract_comparison — Style A actually competitive
-
-predict-rlm: 49–135 sub-calls per run, $0.41 average. Real diffing work, but my wrapper's structured-output capture is broken for this task (returns bare Pydantic), so we can't see what it actually produced.
-
-orc Style A: 4–15 diffs per run with detailed `significance` strings:
-> "Major — removes a material supplier obligation and a basis for OPA to collect/verify domestic content compliance under the contract. Affects eligibility/compliance enforcement and any supplier assurances tied to domestic content."
-
-That's real legal-style impact reasoning, not a shortcut. **$0.013/run** — 32× cheaper than predict-rlm. With predict-rlm's structured output unrecoverable, we can't directly compare the diff sets, but the quality of orc Style A's individual diffs is high.
-
-orc Style B: 0–17 diffs, varying quality (one run produced 17 with no significance details, another produced 0). Higher variance than Style A.
-
-### document_analysis — predict-rlm wins by a lot
-
-This is where predict-rlm's depth matters most.
-
-predict-rlm: 137–215 key dates extracted, 108–556 named entities, 25–33 KB markdown report covering the 136-page RFP. $0.40 average — real money for real work.
-
-orc Style A: 6–8 key dates, 12–15 entities, **0.4 KB report**. The pipeline (`survey → summarize-each → synthesize`) compresses each document to a single LLM-summarized paragraph and then synthesizes from those compressed summaries, so depth is bounded by the summarize step's quality. Cheap ($0.024) but shallow.
-
-orc Style B: 3/3 ERR — credit exhaustion ("can only afford 2557 tokens"). The repl-researcher tried to budget for max_tokens larger than what the OpenRouter balance allowed, so `dscloj/predict` rejected the call. Could complete with more budget.
-
----
-
-## Revised cost roll-up
-
-| Stack | Total spend | Notes |
+| Stack | Spend | Notes |
 |---|---|---|
 | predict-rlm | $3.57 | 15 runs, all real work, all completed |
-| orc Style A (re-run with fixed keys) | $0.26 | 15 runs, real work on 4 of 5 tasks |
-| orc Style B (re-run with fixed keys) | $0.40 | 12 ok + 3 ERR (document_analysis credit exhaustion) |
-| **Total** | **$4.23** | |
+| orc Style A | $0.26 | 15 runs (post-fix) — real work on 4 of 5 tasks |
+| orc Style B | $0.40 + ~$0.20 (round-3 retest) | mixed reliability on document_redaction; otherwise parity |
+| orc Legacy | $0.00 (orc executor token-format bug) — actual usage estimated < $0.20 | 13 runs across the 2 focus tasks |
+| **Reported total** | ~$4.43 | |
+| **Actual OpenRouter total** | $61.44 (round 1+2 combined; round 3 < $1) | LiteLLM undercounts gpt-5 reasoning tokens by ~10× — separate followup |
 
-Per-stack medians (across all 5 tasks):
+## Followups (priority-ordered)
 
-| Stack | Median per-run cost | Total wall-clock for sweep |
-|---|---|---|
-| predict-rlm | $0.13 | ~90 min (sequential, JVM-free) |
-| orc Style A | $0.013 | ~22 min (sequential, JVM startup × 5) |
-| orc Style B | $0.022 | ~13 min (sequential, JVM startup × 5) |
-
-orc is **5–32× cheaper per run** on tasks where it can actually do the work. On document_analysis (the heaviest task) Style A is shallow enough that the cost-quality comparison favors predict-rlm; on invoice_processing and contract_comparison Style A is genuinely competitive.
-
-## Followups (revised)
-
-1. ✅ **Fixed orc bench input keys.** Real comparison data now flows. (was followup #1)
-2. **orc should error on missing reads.** Silent nil-substitution lets `:status :success` ship empty output. Either fail-fast at workflow build (validate `:reads` against blackboard schema) or fail at execute time when a read returns nil for a non-Optional field.
-3. **Fix predict-rlm wrapper for bare-Pydantic returns** (contract_comparison output still missing). One-liner in `_structured_result` to handle `BaseModel` instances.
-4. **Persist `:iterations` to node-completion event in orc.** `executor.clj:1283` builds `{:code :result :stdout}` history per iteration but only attaches to the in-memory result. Adding it to the event payload means trace.edn can show what code the model wrote. Tracked as task #27.
-5. **orc Style B `final!`-with-empty-data shortcut on document_redaction.** Same model + prompt + everything else worked on invoice_processing. Either the redaction signature-strategy is mis-tuned for `gpt-5`, or the redaction sandbox tools (`pdf/search-text`, `pdf/redact-rects`) need better discoverability in the prompt.
-6. **orc Style B max_tokens budgeting.** `dscloj/predict` requested up to 3349 max_tokens for the document_analysis root call — that's only enough for a few KB of output. Smaller `max_tokens` would either succeed within budget or surface earlier. Worth investigating regardless of OpenRouter balance.
-7. **Parallel orc bench (task #28).** Single long-lived JVM, semaphore-bounded concurrent ticks. Drops orc sweep from 22+13 = 35 min to ~5–10 min and avoids the JVM-restart-per-task waste.
-8. **LLM-as-judge for prose tasks** (document_analysis report quality, contract_comparison diff completeness). Structural metrics tell us "did work happen"; can't tell us "is the answer good."
+1. ~~Fix orc bench input keys~~ ✅ done
+2. ~~Fix walker double-count in compare.py~~ ✅ done (`_result_scope`)
+3. **Fix legacy executor token-format bug** (`executor.clj :: execute-legacy-repl-researcher` reading `:prompt_tokens` instead of `:prompt-tokens`) — silent cost-undercount; trivial fix.
+4. **orc should error on missing reads** (silent nil-substitution caught the bench wrapper bug only via output inspection — production users would too).
+5. ~~Persist `:iterations` to node-completion event~~ ✅ done
+6. **Fix predict-rlm wrapper for bare-Pydantic returns** (contract_comparison output still missing).
+7. **Hybrid `(fallback A B)` workflow** for invoice_processing as the next experiment — now empirically motivated by Legacy data.
+8. **LLM-as-judge for prose tasks** (document_analysis report quality, contract_comparison diff completeness).
+9. **Reasoning-token-aware cost computation** (10× cost undercount makes budget tracking unsafe).
+10. **Style A + RLM-fallback hybrid on a "weird vendor" input** (deliberate Style-A breakage to demonstrate the fallback firing).
+11. **Style C synthesizer pilot** (RLM-as-workflow-author, per Part 7 + Cameron's framing).
 
 ## What this proved about the comparison framework
 
-- **Cost-only metrics are dangerous when one stack might shortcut.** The only thing that saved the round-1 report from being completely wrong was building structural extractors per task (`compare.py`). Without them, "orc is 100× cheaper" would have been the headline.
-- **Per-stack output extractors caught both bugs**: orc Style A doing nothing (round 1) and orc Style A doing the work but at insufficient depth (round 2). Two qualitatively different failure modes, both invisible to cost+duration.
-- **Variance is high.** predict-rlm image_analysis ranged $0.05–$0.25 (5×); document_redaction ranged $0.09–$0.36 (4×). N=3 is the floor for variance estimation; N=5 would be cleaner but the per-task token cost makes it expensive.
+- **Cost-only metrics lie when one stack might shortcut.** Walker double-count + wrong input keys both produced misleading reports until per-task structural extractors caught them.
+- **Process metrics, structural outputs, and quality judgment are three separate layers.** This bench did 1 + 2 well; layer 3 (LLM-as-judge for prose) still pending.
+- **Re-runnable matters.** Every fix in this session prompted a re-run. With `run-parallel` + `compare.py --since` filter, regenerating analysis from disk is a one-liner.
+- **Schema parity is load-bearing.** Both stacks emit the same `run.json` shape; `compare.py` is stack-agnostic. That single decision made the bench tractable.
