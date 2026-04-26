@@ -1,0 +1,52 @@
+;; Per-task degradations applied to the pristine Style A pipeline before
+;; handing the Sheet to the workflow-driver. Each entry weakens a specific
+;; node (matching by :name) so the eval-set's judge scores drop. The driver
+;; should detect the regression via judge feedback and emit a corrected
+;; (workflow …) form.
+;;
+;; Pattern matches Cameron's driver_demo.clj: degrade an `:instruction` and
+;; (optionally) drop a `:reads` key, run pristine baseline + degraded
+;; baseline + driver loop, measure recovery.
+;;
+;; Each entry:
+;;   :node-name    string — the node to mutate
+;;   :weak-instruction  the replacement instruction string
+;;   :drop-reads   optional vector of read keys to remove
+;;   :objective    string passed to driver — names the weak node + what to fix
+;;   :eval-set     vector of {:name :inputs} eval items
+;;   :judges       vector of judge keywords for run-eval-set!
+;;
+;; ⚠ Plain strings only — EDN reader doesn't eval (str …) forms.
+
+{:document_analysis
+ {:node-name "synthesize"
+  :weak-instruction "Output a brief summary."
+  :drop-reads [:criteria]
+  :objective "The 'synthesize' node's instruction is too vague — it just says \"Output a brief summary.\" and is missing :criteria from its :reads. Strengthen it so the analysis stays grounded in the per-document summaries, follows the criteria's section structure (Executive Summary, Key Dates, Entities, Financial Information), and forbids fabrication. Keep the node name and model. Restore :criteria to :reads."
+  :eval-set
+  [{:name "yyj-rfp-2025"
+    :inputs {:documents ["/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf"]
+             :criteria "Extract a structured analysis with these sections:\n  - Executive Summary (3-5 sentences)\n  - Key Dates (every important date in the RFP)\n  - Entities (named organizations / people / roles)\n  - Financial Information (any dollar figures, rates, or contractual financial terms).\n\nStay grounded — do not invent dates or entities not present in the source text."}}]
+  :judges [:grounding :completeness]}
+
+ :invoice_processing
+ {:node-name "extract-invoice-page"
+  :weak-instruction "Read the page."
+  :drop-reads []
+  :objective "The 'extract-invoice-page' node's instruction is too vague — it just says \"Read the page.\" Strengthen it so the per-page extraction produces structured invoice fields (vendor name, invoice number, date, due date, subtotal, tax, total, line items with description / quantity / unit-price / amount). Keep the node name and model. Stay grounded in the page text."
+  :eval-set
+  [{:name "two-invoices"
+    :inputs {:invoices ["/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf"
+                        "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf"]}}]
+  :judges [:grounding :completeness]}
+
+ :document_redaction
+ {:node-name "find-targets-for-doc"
+  :weak-instruction "Find PII."
+  :drop-reads [:criteria]
+  :objective "The 'find-targets-for-doc' node's instruction is too vague — it just says \"Find PII.\" and is missing :criteria from its :reads. Restore :criteria to :reads and strengthen the instruction so the LLM returns [{:page :text :category :reason}] entries that LITERALLY appear in the page text (otherwise pdf/search-text won't locate them for redaction). Keep the node name and model."
+  :eval-set
+  [{:name "pnfs-employment-agreement"
+    :inputs {:documents ["/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf"]
+             :criteria "Redact all personally identifiable information (PII), including:\n\n1. Names — Full names of individuals\n2. Contact info — Phone numbers, email addresses, fax numbers\n3. Addresses — Street addresses, P.O. boxes\n4. Government IDs — SSNs, tax IDs, passport numbers\n5. Financial info — Bank account numbers, credit card numbers\n6. Signatures — Handwritten signatures (redact bounding area)\n\nAlso redact any dates found in the document, in any format."}}]
+  :judges [:grounding :completeness]}}

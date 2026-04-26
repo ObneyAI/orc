@@ -28,6 +28,13 @@
             [dev]
             [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
+            [ai.obney.orc.orc-service.interface :as orc]
+            [ai.obney.orc.workflow-driver.interface :as driver]
+            ;; Force schema registration BEFORE dev/start! runs commands —
+            ;; otherwise driver/run-driver-loop! gets "Failed to append
+            ;; :driver/session-started" because the event store rejects
+            ;; the unknown event type.
+            [ai.obney.orc.workflow-driver.interface.schemas]
             [ai.obney.orc.doc-skills.core.pdf :as pdf]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -479,6 +486,134 @@
     record))
 
 ;; ---------------------------------------------------------------------------
+;; Driver-recovery (Cameron's workflow-driver agent)
+;; ---------------------------------------------------------------------------
+
+(def ^:private degradations-cache
+  (delay (edn/read-string (slurp (io/file repo-root "bench" "degradations.edn")))))
+
+(defn- apply-degradation
+  "Walk the workflow data, find the named node, replace its :instruction
+   and (optionally) drop keys from its :reads."
+  [workflow {:keys [node-name weak-instruction drop-reads]}]
+  (walk/postwalk
+    (fn [x]
+      (if (and (map? x) (= node-name (:name x)))
+        (cond-> (assoc x :instruction weak-instruction)
+          (seq drop-reads) (update :reads (fn [r] (vec (remove (set drop-reads) r)))))
+        x))
+    workflow))
+
+(defn- run-driver-once
+  "Driver-recovery bench cell:
+     1. Build pristine Style A pipeline.
+     2. Apply per-task degradation to a chosen node.
+     3. Run driver/run-driver-loop! with eval-set + judges + objective.
+     4. Capture turns / final-eval / version-number / total cost into run.json.
+
+   Stack tag: orc-driver-recovery."
+  [{:keys [ctx task main-model sub-model max-iterations sweep-dir run-idx
+           timeout-ms]}]
+  ;; Belt-and-suspenders: make sure :driver/* event schemas are loaded
+  ;; before any append. clj -X's entry-point resolution sometimes fires
+  ;; before transitive requires complete, leading to "Failed to append
+  ;; :driver/session-started" on the first try.
+  (require 'ai.obney.orc.workflow-driver.interface.schemas)
+  (let [run-dir (io/file sweep-dir (format "%s__%02d" (timestamp-id) run-idx))
+        _ (.mkdirs run-dir)
+        deg (get @degradations-cache task)
+        _ (when-not deg
+            (throw (ex-info (str "No degradation defined for " task
+                                 " in bench/degradations.edn")
+                            {:task task})))
+        ;; Style A pipeline, model-overridden
+        pristine (override-models (load-workflow task :a) main-model sub-model)
+        degraded (apply-degradation pristine deg)
+        sheet-id (dsl/build-workflow! ctx degraded)
+        _ (println (format "[%s style=driver run=%d] starting — degraded node \"%s\""
+                           (name task) run-idx (:node-name deg)))
+        start-ms (System/currentTimeMillis)
+        result (try
+                 (driver/run-driver-loop! ctx
+                   {:sheet-id sheet-id
+                    :objective (:objective deg)
+                    :eval-set (:eval-set deg)
+                    :judges (:judges deg)
+                    :max-turns 3
+                    :min-pass-rate 1.0
+                    :min-judge-score 0.7
+                    :model main-model
+                    :tick-timeout-ms timeout-ms
+                    :description (str "bench/driver-recovery " (name task) " run " run-idx)})
+                 (catch Throwable t
+                   (println "DRIVER FAULT:" (.getMessage t))
+                   (clojure.pprint/pprint (ex-data t))
+                   {:status :error
+                    :error (str (.getMessage t)
+                                (when-let [d (ex-data t)] (str " | " (pr-str d))))}))
+        duration-ms (- (System/currentTimeMillis) start-ms)
+        usage (or (:usage result) {})
+        ;; Driver usage is single-bucket (no root/sub split — every turn's
+        ;; LLM call goes to the same model). Treat as :root for schema parity.
+        root-in (or (:prompt-tokens usage) 0)
+        root-out (or (:completion-tokens usage) 0)
+        root-cost (cost-of main-model root-in root-out)
+        turns (vec (:turns result))
+        n-turns (count turns)
+        ;; Trace: read all events tagged by the driver session id
+        session-id (:session-id result)
+        events (when session-id
+                 (vec (es/read (:event-store ctx)
+                               {:tenant-id (:tenant-id ctx)
+                                :tags #{[:driver/session session-id]}})))
+        trace-file (io/file run-dir "trace.edn")
+        _ (spit trace-file (with-out-str (clojure.pprint/pprint events)))
+        ;; Summarize the final eval for the structured field
+        structured {:driver-status (:status result)
+                    :version-number (:version-number result)
+                    :reason (:reason result)
+                    :n-turns n-turns
+                    :final-eval (select-keys (:final-eval result)
+                                             [:pass-rate :avg-judge-score
+                                              :pass-count :fail-count :total])
+                    :turn-decisions (mapv :decision turns)}
+        record {:stack "orc-driver-recovery"
+                :task (name task)
+                :run_idx run-idx
+                :run_id (.getName run-dir)
+                :git_sha (git-sha)
+                :models {:root main-model :sub sub-model}
+                :max_iterations max-iterations
+                :degradation {:node (:node-name deg)
+                              :weak-instruction (:weak-instruction deg)
+                              :drop-reads (:drop-reads deg)}
+                :duration_seconds (/ duration-ms 1000.0)
+                :cost {:root_lm root-cost :sub_lm 0.0 :total root-cost
+                       :per_turn (when (pos? n-turns) (/ root-cost n-turns))}
+                :calls {:root n-turns :sub 0}
+                :tokens {:root {:input root-in :output root-out}
+                         :sub  {:input 0 :output 0}}
+                :outputs []
+                :structured structured
+                :trace_path "trace.edn"
+                :error (when (= :error (:status result)) (:error result))
+                :orc {:session_id (some-> session-id str)
+                      :sheet_id (str sheet-id)
+                      :driver_status (:status result)
+                      :event_count (count events)}}]
+    (spit (io/file run-dir "run.json") (json/generate-string record {:pretty true}))
+    (let [secs (/ duration-ms 1000.0)
+          status (case (:status result)
+                   :published "PUBLISHED"
+                   :surrendered "SURRENDERED"
+                   :error "ERR"
+                   (str (:status result)))]
+      (println (format "[%s style=driver run=%d] %s — %.1fs, $%.4f, turns=%d → %s"
+                       (name task) run-idx status secs root-cost n-turns
+                       (.getPath run-dir))))
+    record))
+
+;; ---------------------------------------------------------------------------
 ;; Entry point (clj -X)
 ;; ---------------------------------------------------------------------------
 
@@ -501,8 +636,8 @@
   (when-not (contains? tasks task)
     (throw (ex-info (str "Unknown task " task " — must be one of " (keys tasks))
                     {:task task})))
-  (when-not (#{:a :b :legacy} style)
-    (throw (ex-info (str "Style must be :a, :b, or :legacy, got " style) {:style style})))
+  (when-not (#{:a :b :legacy :driver} style)
+    (throw (ex-info (str "Style must be :a, :b, :legacy, or :driver, got " style) {:style style})))
   (when-not (#{:predict-rlm :orc} prompt-source)
     (throw (ex-info (str ":prompt-source must be :predict-rlm or :orc, got " prompt-source)
                     {:prompt-source prompt-source})))
@@ -513,14 +648,15 @@
     (let [sweep-dir (io/file repo-root "bench" "runs" (name task))
           _ (.mkdirs sweep-dir)
           ctx (dev/ctx)
+          run-fn (if (= :driver style) run-driver-once run-once)
           records (vec (for [i (range 1 (inc runs))]
-                         (run-once {:ctx ctx :task task :style style
-                                    :main-model model :sub-model sub-lm-model
-                                    :max-iterations max-iterations
-                                    :sweep-dir sweep-dir
-                                    :run-idx i
-                                    :timeout-ms timeout-ms
-                                    :prompt-source prompt-source})))
+                         (run-fn {:ctx ctx :task task :style style
+                                  :main-model model :sub-model sub-lm-model
+                                  :max-iterations max-iterations
+                                  :sweep-dir sweep-dir
+                                  :run-idx i
+                                  :timeout-ms timeout-ms
+                                  :prompt-source prompt-source})))
           successful (remove :error records)]
       (when (seq successful)
         (let [costs (sort (map #(get-in % [:cost :total]) successful))

@@ -36,6 +36,8 @@
             [ai.obney.orc.mcp-sheet-builder.interface]
             [ai.obney.orc.mcp-sheet-builder.interface.schemas]
             [ai.obney.orc.langfuse.interface]
+            [ai.obney.orc.workflow-driver.interface]
+            [ai.obney.orc.workflow-driver.interface.schemas]
 
             [integrant.core :as ig]
             [config.core :refer [env]]))
