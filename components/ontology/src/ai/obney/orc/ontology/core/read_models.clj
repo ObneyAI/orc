@@ -113,7 +113,7 @@
   (reduce concepts* initial-state events))
 
 (defreadmodel :ontology concepts
-  {:events concept-events, :version 1}
+  {:events concept-events, :version 1 :l1-ttl-ms 0}
   [state event] (concepts* state event))
 
 ;; =============================================================================
@@ -231,7 +231,7 @@
   (reduce tree-profiles* initial-state events))
 
 (defreadmodel :ontology tree-profiles
-  {:events tree-profile-events, :version 1}
+  {:events tree-profile-events, :version 1 :l1-ttl-ms 0}
   [state event] (tree-profiles* state event))
 
 ;; =============================================================================
@@ -267,7 +267,7 @@
   (reduce node-experiences* initial-state events))
 
 (defreadmodel :ontology node-experiences
-  {:events node-learning-events, :version 1}
+  {:events node-learning-events, :version 1 :l1-ttl-ms 0}
   [state event] (node-experiences* state event))
 
 ;; =============================================================================
@@ -408,7 +408,7 @@
   (reduce concept-embeddings* initial-state events))
 
 (defreadmodel :ontology concept-embeddings
-  {:events #{:ontology/concept-embedded}, :version 1}
+  {:events #{:ontology/concept-embedded}, :version 1 :l1-ttl-ms 0}
   [state event] (concept-embeddings* state event))
 
 (defmulti tree-profile-embeddings*
@@ -433,7 +433,7 @@
   (reduce tree-profile-embeddings* initial-state events))
 
 (defreadmodel :ontology tree-profile-embeddings
-  {:events #{:ontology/tree-profile-embedded}, :version 1}
+  {:events #{:ontology/tree-profile-embedded}, :version 1 :l1-ttl-ms 0}
   [state event] (tree-profile-embeddings* state event))
 
 (defmulti embedding-config*
@@ -456,7 +456,7 @@
   (reduce embedding-config* initial-state events))
 
 (defreadmodel :ontology embedding-config
-  {:events #{:ontology/embedding-model-configured}, :version 1}
+  {:events #{:ontology/embedding-model-configured}, :version 1 :l1-ttl-ms 0}
   [state event] (embedding-config* state event))
 
 ;; =============================================================================
@@ -532,7 +532,7 @@
     state))
 
 (defreadmodel :ontology ontology-colbert-indexes
-  {:events ontology-colbert-events :version 1}
+  {:events ontology-colbert-events :version 1 :l1-ttl-ms 0}
   [state event] (ontology-colbert-indexes* state event))
 
 ;; =============================================================================
@@ -589,7 +589,7 @@
     state))
 
 (defreadmodel :ontology ontology-embedding-state
-  {:events ontology-embedding-events :version 1}
+  {:events ontology-embedding-events :version 1 :l1-ttl-ms 0}
   [state event] (ontology-embedding-state* state event))
 
 ;; =============================================================================
@@ -665,7 +665,7 @@
   (reduce learned-rules* initial-state events))
 
 (defreadmodel :ontology learned-rules
-  {:events learned-rule-events, :version 1}
+  {:events learned-rule-events, :version 1 :l1-ttl-ms 0}
   [state event] (learned-rules* state event))
 
 ;; =============================================================================
@@ -801,7 +801,7 @@
   (reduce site-registry* initial-state events))
 
 (defreadmodel :site registry
-  {:events site-registry-events, :version 1}
+  {:events site-registry-events, :version 1 :l1-ttl-ms 0}
   [state event] (site-registry* state event))
 
 ;; =============================================================================
