@@ -669,21 +669,23 @@ Construction:
 
 ```clojure
 (case type
-  string  {:type :string :size (count v)         :hash (hash v) :preview (head-only v 600)}
-  map     {:type :map    :keys (vec (keys v)) :size (count s) :hash (hash v) :preview (head-only s 600)}
-  vector  {:type :vector :count (count v)     :size (count s) :hash (hash v) :preview (head-only s 600)}
-  coll    {:type :coll   :count (count v)     :size (count s) :hash (hash v) :preview (head-only s 600)}
+  string  {:type :string :size (count v)         :hash (hash v) :preview (head-tail v 600)}
+  map     {:type :map    :keys (vec (keys v)) :size (count s) :hash (hash v) :preview (head-tail s 600)}
+  vector  {:type :vector :count (count v)     :size (count s) :hash (hash v) :preview (head-tail s 600)}
+  coll    {:type :coll   :count (count v)     :size (count s) :hash (hash v) :preview (head-tail s 600)}
   scalar  {:type :scalar :size (count s)         :hash (hash v) :preview s})
 ```
 
-**Fields shown:** Malli schema description, custom desc, role marker (e.g. `[context — large; metadata only here]`), and a structured meta map: `:type` (Clojure-level kind), `:size` (chars), `:keys` (for maps) or `:count` (for vectors/colls), `:hash`, `:preview` (head-only string).
+`head-tail` keeps the head + ` … (N chars omitted) … ` + tail (matching dspy/predict-rlm); values shorter than the budget are returned verbatim with no marker. For very small budgets it degrades to head-only.
+
+**Fields shown:** Malli schema description, custom desc, role marker (e.g. `[context — large; metadata only here]`), and a structured meta map: `:type` (Clojure-level kind), `:size` (chars), `:keys` (for maps) or `:count` (for vectors/colls), `:hash`, `:preview` (head + tail string with omitted-count marker).
 
 ### Cross-cutting differences
 
 | Dimension                     | dspy.RLM / predict-rlm                                      | orc                                                                                                                              |
 | ----------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | **Output shape**              | Multi-line formatted prose block                            | Single line + structured EDN map (LM-readable as data)                                                                           |
-| **Truncation**                | head + "…" + tail (split at 500/500 = 1000 chars)           | head only (default 600 chars)                                                                                                    |
+| **Truncation**                | head + "…" + tail (split at 500/500 = 1000 chars)           | head + " … (N chars omitted) … " + tail (default 600-char total budget; degrades to head-only for very small budgets)            |
 | **Identity hash**             | none — LM can't detect "same value"                         | `(hash v)` — Clojure's structural hash on every preview                                                                          |
 | **Type info**                 | Python `type(v).__name__` (e.g. "list", "dict")             | Clojure kind (`:vector`, `:map`, `:coll`, `:scalar`) **plus** Malli schema description from blackboard                           |
 | **Size signal**               | `total_length` (string length of `str(value)`)              | `:size` (chars of `pr-str`) **plus** `:count` (collection length) **plus** `:keys` (for maps)                                    |
@@ -748,7 +750,7 @@ The bet: LMs are good at reading semi-structured prose. Don't over-engineer the 
 
 #### orc: "treat the LM like it can read data"
 
-Variables come back as **EDN maps** with named keys (`:type`, `:size`, `:hash`, `:keys`, `:preview`). The LM sees `{:type :vector :count 2 :hash 1684205321 :preview "..."}` and can reason about structure: "this is a 2-element vector, here's its hash for identity tracking." Truncation is **head-only** because the structured fields already carry the "what's the shape" signal — the preview is just an example.
+Variables come back as **EDN maps** with named keys (`:type`, `:size`, `:hash`, `:keys`, `:preview`). The LM sees `{:type :vector :count 2 :hash 1684205321 :preview "..."}` and can reason about structure: "this is a 2-element vector, here's its hash for identity tracking." The preview itself uses **head + tail** truncation matching dspy/predict-rlm — so the LM sees both the start (schema/structure) and the end (recent state) — but the structured fields (`:keys`, `:count`, `:hash`) carry the bulk of the "what's the shape" signal regardless of how the preview was clipped.
 
 Three orc-only signals worth highlighting:
 
@@ -766,9 +768,11 @@ Three orc-only signals worth highlighting:
 
 3. **The role marker `[context — large; metadata only here]`.** Tells the LM directly which variable is "the big one it's supposed to interrogate via predict()." dspy implicitly relies on the LM noticing that one variable's `total_length` is much larger than others.
 
-#### History truncation — the inverse trade
+#### History truncation — still head-only
 
-Here orc made the _less_ expressive choice. dspy's head+tail means the LM sees both "what code I wrote" and "what the tail of the output looked like." orc's per-section head-only means if your stdout has the answer in the _middle_ (e.g., `print(some_dict)` where the relevant key is alphabetically late), it's gone.
+Variable previews use head + tail (matching dspy/predict-rlm), but **iteration history** in `compress-history` is still per-section head-only — code (400 chars), stdout (600), result (300). dspy's head+tail history would catch "the answer is in the middle of a long stdout" cases that orc misses.
+
+This is a deliberate tradeoff: the variable preview is what the LM uses to plan; the history is what it uses to remember what just happened. For history, the most relevant signal is usually "what was the most recent print" (head of the recent iteration's stdout), and the per-section caps stay tight so the prompt doesn't bloat across many iterations.
 
 orc compensates by telling the LM (via the strategy docstring) to use `(println …)` sparingly and put real results in `(final! …)` — same teaching as predict-rlm's "store in variables, print summaries" guidance.
 
@@ -780,7 +784,7 @@ Three philosophies for the same surface:
 | --------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------- |
 | **dspy.RLM**    | Prose block: type + length + head/tail string                                                       | Prose block: code + head/tail of stdout (10K)                            | None                                                             |
 | **predict-rlm** | Same as dspy                                                                                        | Same as dspy with tighter cap (5K) and explicit teaching                 | None                                                             |
-| **orc**         | Structured EDN map: type + size + count/keys + **hash** + head preview + Malli schema + role marker | Per-section bullets: code (400) + stdout (600) + result (300), head-only | **Hash per variable** — LM can detect identity across iterations |
+| **orc**         | Structured EDN map: type + size + count/keys + **hash** + head+tail preview + Malli schema + role marker | Per-section bullets: code (400) + stdout (600) + result (300), head-only | **Hash per variable** — LM can detect identity across iterations |
 
 The shared thread: **never put the raw value in the prompt.** The differences are about whether the LM is consuming prose (dspy/predict-rlm) or data (orc), and whether identity is implicit (you'll notice it's the same string) or explicit (`:hash 1684205321`).
 

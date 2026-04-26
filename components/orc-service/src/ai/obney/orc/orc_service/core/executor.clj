@@ -777,12 +777,31 @@
   (or (:context-key rlm-cfg)
       (when (some #{:context} reads) :context)))
 
+(defn- head-tail-preview
+  "Compress s to at most max-chars by keeping head + ' … (N chars omitted) … ' + tail.
+   If s already fits, return as-is. For very small budgets, fall back to head-only."
+  [s max-chars]
+  (let [n (count s)]
+    (cond
+      (<= n max-chars) s
+      (< max-chars 24) (subs s 0 max-chars)
+      :else
+      (let [omitted (- n max-chars)
+            marker  (str " … (" omitted " chars omitted) … ")
+            budget  (- max-chars (count marker))
+            half    (max 1 (quot budget 2))]
+        (if (pos? budget)
+          (str (subs s 0 half) marker (subs s (- n half)))
+          (subs s 0 max-chars))))))
+
 (defn- value-preview
   "Compact preview describing a blackboard value WITHOUT including the raw value.
    Used to render large context fields in the root LM prompt while keeping the
-   full value reachable in SCI as a symbolic variable."
+   full value reachable in SCI as a symbolic variable. Long previews use
+   head + tail truncation (matching dspy/predict-rlm) so the LM sees both
+   the start (schema/structure) and the end (recent state)."
   [v max-preview-chars]
-  (let [trim (fn [s] (subs s 0 (min (count s) max-preview-chars)))]
+  (let [trim (fn [s] (head-tail-preview s max-preview-chars))]
     (cond
       (nil? v)
       {:type :nil}

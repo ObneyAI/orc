@@ -541,3 +541,76 @@
           (is (= :success (:status result)))
           (is (= "page-count,page-text" (-> result :outputs :answer))
               "ns-explore should return only tools in the requested namespace, sorted"))))))
+
+;; =============================================================================
+;; Value Preview Truncation
+;; =============================================================================
+;;
+;; The root LM sees a structured preview map for each blackboard variable.
+;; Long values use head + tail truncation (matching dspy/predict-rlm) so the
+;; LM gets both the start (schema/structure) and the end (recent state).
+
+(deftest value-preview-short-string-not-truncated-test
+  (testing "values shorter than the budget are returned verbatim, no marker"
+    (let [vp #'executor/value-preview
+          result (vp "hello world" 100)]
+      (is (= "hello world" (:preview result)))
+      (is (= 11 (:size result)))
+      (is (= :string (:type result)))
+      (is (not (clojure.string/includes? (:preview result) "…"))
+          "no truncation marker when value fits"))))
+
+(deftest value-preview-long-string-uses-head-tail-test
+  (testing "long strings show both head and tail with omitted-count marker"
+    (let [vp #'executor/value-preview
+          long-s (str (apply str (repeat 100 \A))
+                      (apply str (repeat 100 \B))
+                      (apply str (repeat 100 \C)))
+          result (vp long-s 80)]
+      (is (= 300 (:size result)))
+      (is (clojure.string/starts-with? (:preview result) "A")
+          "preview includes head")
+      (is (clojure.string/ends-with? (:preview result) "C")
+          "preview includes tail")
+      (is (clojure.string/includes? (:preview result) "chars omitted")
+          "preview includes truncation marker with omitted count")
+      (is (<= (count (:preview result)) 80)
+          "preview stays within the char budget"))))
+
+(deftest value-preview-vector-tail-shown-test
+  (testing "vectors show keys/items from the END as well as the start"
+    (let [vp #'executor/value-preview
+          ;; pr-str of this vector is ~120 chars; tail-only truncation would hide :z
+          v [:apple :banana :cherry :date :eggplant :fig :grape
+             :honeydew :iceberg :jicama :kiwi :lemon :mango :nectarine
+             :orange :papaya :quince :raspberry :strawberry :tomato
+             :ugli :vanilla :watermelon :xigua :yam :zucchini]
+          result (vp v 80)]
+      (is (= :vector (:type result)))
+      (is (= 26 (:count result)))
+      (is (clojure.string/includes? (:preview result) "apple")
+          "preview includes head item")
+      (is (clojure.string/includes? (:preview result) "zucchini")
+          "preview includes tail item — the whole point of head+tail")
+      (is (clojure.string/includes? (:preview result) "chars omitted")
+          "marker present when truncated"))))
+
+(deftest value-preview-map-keys-still-listed-test
+  (testing "maps expose :keys directly even when preview is truncated"
+    (let [vp #'executor/value-preview
+          m (into {} (for [i (range 20)] [(keyword (str "k" i)) (str "value-" i)]))
+          result (vp m 60)]
+      (is (= :map (:type result)))
+      (is (= 20 (count (:keys result))))
+      (is (some #{:k0} (:keys result)))
+      (is (some #{:k19} (:keys result))
+          ":keys gives the LM full structural shape regardless of preview budget"))))
+
+(deftest value-preview-tiny-budget-falls-back-to-head-test
+  (testing "very small budgets degrade to head-only (marker would exceed budget)"
+    (let [vp #'executor/value-preview
+          long-s (apply str (repeat 100 \X))
+          result (vp long-s 10)]
+      (is (= 10 (count (:preview result))))
+      (is (= "XXXXXXXXXX" (:preview result))
+          "tiny budget = head-only; no marker"))))
