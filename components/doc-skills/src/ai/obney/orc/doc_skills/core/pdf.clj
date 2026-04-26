@@ -5,7 +5,8 @@
    close them deterministically. Page numbers are 0-indexed throughout
    (matches predict-rlm's pymupdf API)."
   (:require [clojure.java.io :as io]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [ai.obney.orc.doc-skills.core.image :as image])
   (:import [org.apache.pdfbox Loader]
            [org.apache.pdfbox.pdmodel PDDocument]
            [org.apache.pdfbox.text PDFTextStripper TextPosition]
@@ -13,8 +14,7 @@
            [org.apache.pdfbox.pdmodel.graphics.color PDColor PDDeviceRGB]
            [java.awt.image BufferedImage]
            [java.io File ByteArrayOutputStream]
-           [javax.imageio ImageIO]
-           [java.util Base64]))
+           [javax.imageio ImageIO]))
 
 (set! *warn-on-reflection* true)
 
@@ -81,8 +81,7 @@
           ^BufferedImage img (.renderImageWithDPI renderer (int n) (float dpi) ImageType/RGB)
           baos (ByteArrayOutputStream.)]
       (ImageIO/write img "png" baos)
-      (str "data:image/png;base64,"
-           (.encodeToString (Base64/getEncoder) (.toByteArray baos))))))
+      (image/encode-data-uri "image/png" (.toByteArray baos)))))
 
 (defn search-text
   "Search for `query` text on page `n` (0-indexed). Returns a vector of hits,

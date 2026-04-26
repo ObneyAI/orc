@@ -21,7 +21,8 @@
   (:require [clojure.java.io :as io]
             [ai.obney.orc.doc-skills.core.pdf :as pdf]
             [ai.obney.orc.doc-skills.core.xlsx :as xlsx]
-            [ai.obney.orc.doc-skills.core.docx :as docx]))
+            [ai.obney.orc.doc-skills.core.docx :as docx]
+            [ai.obney.orc.doc-skills.core.image :as image]))
 
 ;; =============================================================================
 ;; SCI-friendly bindings
@@ -48,6 +49,10 @@
    'markdown->elements       docx/markdown->elements
    'write-markdown-as-docx   docx/write-markdown-as-docx})
 
+(def ^:private image-fns
+  {'load-data-uri image/load-data-uri
+   'file-info     image/file-info})
+
 (def sci-bindings
   "Namespaced symbol map for SCI exposure. Keys are quoted symbols matching
    the namespace they should appear under to LLM-authored code:
@@ -55,6 +60,7 @@
      (pdf/page-count …)
      (xlsx/write-workbook …)
      (docx/write-docx …)
+     (image/load-data-uri …)
 
    Pass to `build-sci-context :extra-bindings` after flattening if you want
    them in the user namespace, or wrap each fn into an orc-MCP-style flat
@@ -63,9 +69,10 @@
 
    For pure RLM mode, the executor flattens these into the user ns so the
    LLM writes (pdf/page-count …) directly."
-  {'pdf  pdf-fns
-   'xlsx xlsx-fns
-   'docx docx-fns})
+  {'pdf   pdf-fns
+   'xlsx  xlsx-fns
+   'docx  docx-fns
+   'image image-fns})
 
 (def sci-flat-bindings
   "Flat (symbol -> fn) map of all skill functions, with namespace prefix
@@ -114,7 +121,9 @@
    "xlsx/read-sheet-as-maps"   [:path :sheet-name]
    "docx/write-docx"           [:out-path :elements]
    "docx/markdown->elements"   [:md]
-   "docx/write-markdown-as-docx" [:out-path :md]})
+   "docx/write-markdown-as-docx" [:out-path :md]
+   "image/load-data-uri"       [:path]
+   "image/file-info"           [:path]})
 
 (defn- require-args!
   "Validate that `args` (a map) contains every key in `required`. Throws
@@ -192,6 +201,9 @@
         "docx/write-docx"             (docx/write-docx (:out-path args) (:elements args))
         "docx/markdown->elements"     (docx/markdown->elements (:md args))
         "docx/write-markdown-as-docx" (docx/write-markdown-as-docx (:out-path args) (:md args))
+        ;; IMAGE
+        "image/load-data-uri"         (image/load-data-uri (:path args))
+        "image/file-info"             (image/file-info (:path args))
         {:error (str "Unknown tool: " tool-name)}))))
 
 (def all-tool-names
@@ -202,7 +214,8 @@
    "pdf/search-text" "pdf/redact-rects" "pdf/page-bounds"
    "xlsx/write-workbook" "xlsx/list-sheets"
    "xlsx/read-sheet" "xlsx/read-sheet-as-maps"
-   "docx/write-docx" "docx/markdown->elements" "docx/write-markdown-as-docx"])
+   "docx/write-docx" "docx/markdown->elements" "docx/write-markdown-as-docx"
+   "image/load-data-uri" "image/file-info"])
 
 ;; =============================================================================
 ;; Instruction prose (LM-facing)
@@ -215,7 +228,8 @@
   {:pdf       (delay (read-resource "ai/obney/orc/doc_skills/instructions/pdf.md"))
    :xlsx      (delay (read-resource "ai/obney/orc/doc_skills/instructions/xlsx.md"))
    :docx      (delay (read-resource "ai/obney/orc/doc_skills/instructions/docx.md"))
-   :redaction (delay (read-resource "ai/obney/orc/doc_skills/instructions/redaction.md"))})
+   :redaction (delay (read-resource "ai/obney/orc/doc_skills/instructions/redaction.md"))
+   :image     (delay (read-resource "ai/obney/orc/doc_skills/instructions/image.md"))})
 
 (defn instruction
   "Realize and return the instruction text for a skill keyword."
