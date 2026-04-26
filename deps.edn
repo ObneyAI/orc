@@ -25,6 +25,7 @@
                               orc/langfuse          {:local/root "components/langfuse"}
                               orc/grain-test-utils  {:local/root "components/grain-test-utils"}
                               orc/doc-skills        {:local/root "components/doc-skills"}
+                              orc/workflow-driver   {:local/root "components/workflow-driver"}
 
                               ;; Example ports of predict-rlm/examples
                               orc/example-image-analysis
@@ -44,6 +45,7 @@
                                 "components/ontology/test"
                                 "components/mcp-sheet-builder/test"
                                 "components/doc-skills/test"
+                                "components/workflow-driver/test"
                                 "examples/image_analysis/test"
                                 "examples/document_analysis/test"
                                 "examples/invoice_processing/test"

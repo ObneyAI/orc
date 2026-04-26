@@ -12,6 +12,7 @@
         orc/ontology          {:local/root "../../components/ontology"}
         orc/mcp-sheet-builder {:local/root "../../components/mcp-sheet-builder"}
         orc/langfuse          {:local/root "../../components/langfuse"}
+        orc/workflow-driver   {:local/root "../../components/workflow-driver"}
 
         ;; LLM Providers
         litellm/bedrock       {:git/url "https://github.com/ObneyAI/litellm-clj.git"
