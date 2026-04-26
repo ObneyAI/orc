@@ -24,14 +24,31 @@
                               orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
                               orc/grain-test-utils  {:local/root "components/grain-test-utils"}
-                              orc/doc-skills        {:local/root "components/doc-skills"}}}
+                              orc/doc-skills        {:local/root "components/doc-skills"}
+
+                              ;; Example ports of predict-rlm/examples
+                              orc/example-image-analysis
+                              {:local/root "examples/image_analysis"}
+                              orc/example-document-analysis
+                              {:local/root "examples/document_analysis"}
+                              orc/example-invoice-processing
+                              {:local/root "examples/invoice_processing"}
+                              orc/example-contract-comparison
+                              {:local/root "examples/contract_comparison"}
+                              orc/example-document-redaction
+                              {:local/root "examples/document_redaction"}}}
 
            :test {:extra-paths ["components/orc-service/test"
                                 "components/gepa/test"
                                 "components/colbert/test"
                                 "components/ontology/test"
                                 "components/mcp-sheet-builder/test"
-                                "components/doc-skills/test"]}
+                                "components/doc-skills/test"
+                                "examples/image_analysis/test"
+                                "examples/document_analysis/test"
+                                "examples/invoice_processing/test"
+                                "examples/contract_comparison/test"
+                                "examples/document_redaction/test"]}
 
            :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]
                   :extra-deps {polylith/clj-poly {:mvn/version "0.2.22"}}

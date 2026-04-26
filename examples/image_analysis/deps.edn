@@ -1,0 +1,2 @@
+{:paths ["src"]
+ :deps  {orc/orc-service {:local/root "../../components/orc-service"}}}
