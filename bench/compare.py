@@ -253,11 +253,20 @@ EXTRACTORS: dict[str, Callable[[dict], dict[str, Any]]] = {
 # Reporting
 # ---------------------------------------------------------------------------
 
+def _total_tokens(r: dict) -> int:
+    t = r.get("tokens") or {}
+    def s(side):
+        x = t.get(side) or {}
+        return (x.get("input") or 0) + (x.get("output") or 0)
+    return s("root") + s("sub")
+
+
 def _summarize(runs: list[dict]) -> dict[str, Any]:
     ok = [r for r in runs if not r.get("error")]
     errs = [r for r in runs if r.get("error")]
     costs = sorted(r["cost"]["total"] for r in ok)
-    durs = sorted(r["duration_seconds"] for r in ok)
+    durs  = sorted(r["duration_seconds"] for r in ok)
+    toks  = sorted(_total_tokens(r) for r in ok)
     med = lambda xs: xs[len(xs)//2] if xs else None
     return {
         "n": len(runs),
@@ -267,6 +276,9 @@ def _summarize(runs: list[dict]) -> dict[str, Any]:
         "cost_min": costs[0] if costs else None,
         "cost_max": costs[-1] if costs else None,
         "dur_med_s": med(durs),
+        "tokens_med": med(toks),
+        "tokens_min": toks[0] if toks else None,
+        "tokens_max": toks[-1] if toks else None,
     }
 
 
@@ -295,14 +307,22 @@ def _report_task(task: str, only_recent: bool = True,
         s = _summarize(rs)
         print(f"### {stack}  —  n={s['n']} (ok={s['n_ok']}, err={s['n_err']})")
         if s["cost_med"] is not None:
-            print(f"  cost ${s['cost_min']:.4f}–${s['cost_max']:.4f} (med ${s['cost_med']:.4f})  "
+            print(f"  cost   ${s['cost_min']:.4f}–${s['cost_max']:.4f} (med ${s['cost_med']:.4f})  "
                   f"dur med {s['dur_med_s']:.1f}s")
+            print(f"  tokens {s['tokens_min']:,}–{s['tokens_max']:,} (med {s['tokens_med']:,})")
         for r in rs:
             ext = extractor(r)
             err = " ERR" if r.get("error") else ""
             cost = r["cost"]["total"]
             calls = r["calls"]
-            print(f"  • {r['run_id'][:13]} ${cost:7.4f} root={calls['root']:>2} sub={calls['sub']:>3}{err}")
+            tok = r.get("tokens") or {}
+            rin  = (tok.get("root") or {}).get("input")  or 0
+            rout = (tok.get("root") or {}).get("output") or 0
+            sin  = (tok.get("sub")  or {}).get("input")  or 0
+            sout = (tok.get("sub")  or {}).get("output") or 0
+            print(f"  • {r['run_id'][:13]} ${cost:7.4f} "
+                  f"root[{calls['root']:>2}] {rin:>6,}/{rout:>5,}  "
+                  f"sub[{calls['sub']:>3}] {sin:>6,}/{sout:>5,}{err}")
             for k, v in ext.items():
                 print(f"      {k}: {v}")
         print()
