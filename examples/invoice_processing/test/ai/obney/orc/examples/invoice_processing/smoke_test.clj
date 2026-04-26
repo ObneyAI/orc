@@ -67,16 +67,28 @@
     (with-ctx [ctx]
       (let [pdfs (discover-pdfs)
             _ (assert (seq pdfs))
+            ;; Alternating header / continuation per call so the merge logic
+            ;; sees one realistic header per invoice plus a follow-up page.
+            call-count (atom 0)
             mock (fn [_ _ _ _]
-                   {:outputs {:page-extract
-                              {:vendor-name "Acme"
-                               :invoice-number "INV-1"
-                               :date "2025-01-01"
-                               :due-date "2025-02-01"
-                               :subtotal 100.0 :tax 10.0 :total 110.0
-                               :line-items [{:description "x" :quantity 1.0
-                                             :unit-price 100.0 :amount 100.0}]}}
-                    :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
+                   (let [n (swap! call-count inc)
+                         header? (odd? n)]
+                     {:outputs {:page-extract
+                                (if header?
+                                  {:vendor-name (str "Vendor-" n)
+                                   :invoice-number (str "INV-" n)
+                                   :date "2025-01-01" :due-date "2025-02-01"
+                                   :subtotal 100.0 :tax 10.0 :total 110.0
+                                   :line-items [{:description "header item"
+                                                 :quantity 1.0 :unit-price 100.0
+                                                 :amount 100.0}]}
+                                  {:vendor-name "" :invoice-number ""
+                                   :date "" :due-date ""
+                                   :subtotal 0.0 :tax 0.0 :total 0.0
+                                   :line-items [{:description "continuation item"
+                                                 :quantity 2.0 :unit-price 50.0
+                                                 :amount 100.0}]})}
+                      :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}}))]
         (with-redefs [dscloj/predict mock]
           (let [sid (dsl/build-workflow! ctx pipeline/workflow)
                 {:keys [promise]} (dispatch! ctx sid {:invoices pdfs})
@@ -88,7 +100,9 @@
               (is (.exists (clojure.java.io/file wb))))
             (let [result (-> r :outputs :result)]
               (is (pos? (count (:invoices result))))
-              (is (number? (:total-amount result))))))))))
+              (is (number? (:total-amount result)))
+              (is (every? #(string? (:vendor-name %)) (:invoices result))
+                  "every invoice has a string vendor-name (no nils after schema tightening)"))))))))
 
 (deftest agentic-builds-and-executes
   (testing "Style B repl-researcher with :rlm true runs end-to-end"

@@ -29,12 +29,14 @@
 ;; =============================================================================
 
 (defn- normalize-usage
-  "Normalize DSCloj/litellm usage map from snake_case to kebab-case."
+  "Normalize a usage map to kebab-case keys.
+   Accepts either kebab-case (DSCloj's actual shape when :with-metadata? true)
+   or snake_case (litellm raw / legacy test mocks)."
   [usage]
   (when usage
-    {:prompt-tokens (:prompt_tokens usage 0)
-     :completion-tokens (:completion_tokens usage 0)
-     :total-tokens (:total_tokens usage 0)}))
+    {:prompt-tokens     (or (:prompt-tokens usage)     (:prompt_tokens usage)     0)
+     :completion-tokens (or (:completion-tokens usage) (:completion_tokens usage) 0)
+     :total-tokens      (or (:total-tokens usage)      (:total_tokens usage)      0)}))
 
 ;; =============================================================================
 ;; Schema Description Generation
@@ -519,7 +521,7 @@
         effective-provider (get-provider-with-model provider (:model node))
         ;; Request metadata for usage tracking
         ;; Disable validation since we serialize complex inputs to JSON strings
-        dscloj-options (assoc options :validate? false)
+        dscloj-options (assoc options :validate? false :with-metadata? true)
         ;; Retry config - defaults to 1 retry with 500ms delay
         max-retries (get options :max-retries 1)
         retry-delay-ms (get options :retry-delay-ms 500)
@@ -527,7 +529,8 @@
         ;; Single attempt function
         try-once (fn []
                    (let [result (dscloj/predict effective-provider dscloj-module inputs dscloj-options)
-                         ;; DSCloj returns outputs directly as a flat map, not wrapped in {:outputs ...}
+                         ;; With :with-metadata? true DSCloj returns {:outputs … :usage … :model …};
+                         ;; without metadata it returns the bare outputs map.
                          raw-outputs (or (:outputs result) result)
                          ;; Reassemble flattened outputs back into nested structure
                          outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
@@ -626,12 +629,11 @@
                              [key-name (:value entry)]))
         ;; Build effective provider config with model override if specified
         effective-provider (get-provider-with-model provider (:model node))
-        ;; Request metadata for usage tracking
-        ;; Disable validation since inputs may be JSON serialized
-        dscloj-options (assoc options :validate? false)]
+        ;; Request metadata for usage tracking; disable validation (JSON inputs)
+        dscloj-options (assoc options :validate? false :with-metadata? true)]
     (try
       (let [response (dscloj/predict effective-provider module input-values dscloj-options)
-            ;; Response now has {:outputs {...} :usage {...} :model "..."}
+            ;; Response shape: {:outputs {...} :usage {...} :model "..."}
             bool-result (get-in response [:outputs :result])
             duration-ms (- (System/currentTimeMillis) start-time)]
         {:status :success
@@ -855,19 +857,29 @@
         bullets))))
 
 (defn- accumulate-usage!
-  "Add a litellm/dscloj usage map (snake_case) into a kebab-case totals atom."
+  "Accumulate a usage map into a kebab-case totals atom.
+   Accepts either kebab-case (real DSCloj :with-metadata? true) or
+   snake_case (existing test mocks)."
   [totals-atom usage]
   (when usage
-    (swap! totals-atom
-           (fn [u]
-             {:prompt-tokens     (+ (:prompt-tokens u 0)     (:prompt_tokens usage 0))
-              :completion-tokens (+ (:completion-tokens u 0) (:completion_tokens usage 0))
-              :total-tokens      (+ (:total-tokens u 0)      (:total_tokens usage 0))}))))
+    (let [{:keys [prompt-tokens completion-tokens total-tokens]} (normalize-usage usage)]
+      (swap! totals-atom
+             (fn [u]
+               {:prompt-tokens     (+ (:prompt-tokens u 0)     prompt-tokens)
+                :completion-tokens (+ (:completion-tokens u 0) completion-tokens)
+                :total-tokens      (+ (:total-tokens u 0)      total-tokens)})))))
 
 (defn- make-rlm-predict-fn
   "Build the host-backed (predict {:name :instructions :inputs :schema :model?})
    that SCI code calls. Counts calls, accumulates subcall usage, throws on
-   budget/input-size violations."
+   budget/input-size violations.
+
+   Schema handling mirrors execute-ai's flatten/reassemble pipeline so that
+   DSCloj never sees a nested :map output as a single spec (it mishandles
+   such shapes — :total comes back as a map instead of a double). Top-level
+   :map fields are decomposed into separate DSCloj outputs, then reassembled
+   into a structured :result map for the SCI caller. Non-:map schemas are a
+   no-op pass-through (single :result output, identical to prior behavior)."
   [{:keys [provider rlm-cfg subcall-usage call-count default-model]}]
   (fn predict-fn [args]
     (let [{:keys [name instructions inputs schema model]
@@ -886,24 +898,40 @@
                           {:type :rlm/input-too-large
                            :size input-size
                            :limit (:max-predict-input-chars rlm-cfg)})))
-        (let [module {:inputs (mapv (fn [[k _]]
+        (let [;; Decompose [:map …] schemas into flat DSCloj outputs; non-map
+              ;; schemas come back as a single {:name :result :nested-key nil} entry.
+              flat-outputs   (flatten-output-schema :result schema)
+              output-mapping (into {} (map (fn [o] [(:name o) o])) flat-outputs)
+              dscloj-outputs (mapv (fn [o]
+                                     (cond-> (select-keys o [:name :spec :description])
+                                       ;; Honor user's instruction text for the
+                                       ;; :result-only path (keeps prior phrasing
+                                       ;; for scalar/vector schemas)
+                                       (and (= 1 (count flat-outputs))
+                                            (nil? (:nested-key o)))
+                                       (assoc :description
+                                              (or instructions
+                                                  (str "Output for " (or name "predict"))))))
+                                   flat-outputs)
+              module {:inputs (mapv (fn [[k _]]
                                       {:name k
                                        :spec :string
                                        :description (str "Input " (clojure.core/name k))})
                                     inputs)
-                      :outputs [{:name :result
-                                 :spec schema
-                                 :description (or instructions
-                                                  (str "Output for " (or name "predict")))}]
+                      :outputs dscloj-outputs
                       :instructions (or instructions
                                         (str "Compute " (or name "predict")))}
               eff-model (or model (:predict-model rlm-cfg) default-model)
               eff-provider (get-provider-with-model provider eff-model)
-              dscloj-opts (cond-> {:validate? false}
+              dscloj-opts (cond-> {:validate? false :with-metadata? true}
                             eff-model (assoc :model eff-model))
-              response (dscloj/predict eff-provider module serialized-inputs dscloj-opts)]
+              response (dscloj/predict eff-provider module serialized-inputs dscloj-opts)
+              raw-outputs (or (:outputs response) response)]
           (accumulate-usage! subcall-usage (:usage response))
-          (get-in response [:outputs :result]))))))
+          ;; Reassemble flat fields back under :result. For non-map schemas
+          ;; (output-mapping has :nested-key nil) reassemble returns
+          ;; {:result <bare value>}, identical to the prior single-output path.
+          (get (reassemble-flattened-outputs raw-outputs output-mapping) :result))))))
 
 (defn- make-rlm-predict-all-fn
   "Build (predict-all {:items :as :inputs :instructions :schema :max-concurrency :model?})
@@ -944,11 +972,75 @@
     (when (re-matches #"[a-zA-Z_][a-zA-Z0-9_*?!\-]*" s)
       (symbol s))))
 
+(defn- describe-value
+  "Return a small inspection map describing a value's type, size, and a
+   bounded preview. Pure inspection — never mutates or coerces. Useful
+   from inside SCI when the LLM wants to know 'what shape did predict
+   actually return?' before writing downstream code that assumes a shape."
+  [v]
+  (let [trim (fn [s n] (subs (or s "") 0 (min (count (or s "")) n)))]
+    (cond
+      (nil? v)     {:type :nil}
+      (string? v)  {:type :string :length (count v) :preview (trim v 200)}
+      (map? v)     {:type :map :keys (vec (keys v)) :preview (trim (pr-str v) 200)}
+      (vector? v)  {:type :vector :count (count v)
+                    :sample (when (seq v) (describe-value (first v)))}
+      (seq? v)     {:type :seq :count (count (take 10 v))
+                    :sample (when (seq v) (describe-value (first v)))}
+      (set? v)     {:type :set :count (count v)}
+      (number? v)  {:type :number :class (.getName (class v)) :value v}
+      (boolean? v) {:type :boolean :value v}
+      (keyword? v) {:type :keyword :value v}
+      :else        {:type :other :class (.getName (class v))
+                    :preview (trim (pr-str v) 200)})))
+
+(defn- check-shape*
+  "Validate `v` against a Malli `schema`. Returns
+     {:ok? true}                on success
+     {:ok? false :errors […] :preview \"…\"}  on failure
+   Pure validation — never coerces or fixes. Lets LLM-authored SCI code
+   branch on result shape before downstream operations that would crash on
+   the wrong shape (e.g. before (reduce + 0.0 (keep :total xs))).
+   Wrapped to handle malformed schemas without throwing."
+  [schema v]
+  (try
+    (if (m/validate schema v)
+      {:ok? true}
+      {:ok? false
+       :errors (mapv (fn [e]
+                       {:path (:path e)
+                        :message (str (or (:value e) "<no value>") " does not match "
+                                      (pr-str (:schema e)))})
+                     (-> (m/explain schema v) :errors))
+       :preview (subs (pr-str v) 0 (min (count (pr-str v)) 200))})
+    (catch Exception e
+      {:ok? false
+       :errors [{:path nil :message (str "schema-validation threw: " (.getMessage e))}]
+       :preview (subs (pr-str v) 0 (min (count (pr-str v)) 200))})))
+
+(defn- ns-explore*
+  "Return the (sorted) list of symbol names available under a given SCI
+   namespace prefix. Examples:
+     (ns-explore \"pdf\")       => [\"page-count\" \"page-text\" …]
+     (ns-explore \"clojure.core\") => [\"+\" \"-\" … ] (safe subset only)
+   Pure discovery — used by LLM code that wants to know what's actually
+   reachable in the sandbox before writing a call."
+  [available-tools ns-name]
+  (let [target (str ns-name "/")
+        tool-matches (filter #(clojure.string/starts-with? % target)
+                             available-tools)]
+    (vec (sort (map #(subs % (count target)) tool-matches)))))
+
 (defn- build-rlm-extra-bindings
   "Build the SCI :extra-bindings map for RLM mode.
-   Includes: inputs, context (resolved value), direct symbols for each read,
-   predict, predict-all, final!"
-  [{:keys [reads blackboard context-key predict-fn predict-all-fn final-fn]}]
+   Includes:
+     - inputs map + direct symbols for each :reads key
+     - context (resolved :context-key value)
+     - predict, predict-all, final!
+     - check-shape, describe, ns-explore (validation/inspection helpers
+       for the LLM to use defensively before downstream operations)"
+  [{:keys [reads blackboard context-key predict-fn predict-all-fn final-fn
+           available-tools]}]
   (let [read-vals (reduce (fn [m k]
                             (if-let [entry (get blackboard k)]
                               (assoc m k (:value entry))
@@ -967,7 +1059,11 @@
       {'inputs read-vals
        'predict predict-fn
        'predict-all predict-all-fn
-       'final! final-fn}
+       'final! final-fn
+       ;; Pure validation/inspection helpers — no coercion, surface mismatches
+       'check-shape (fn [schema v] (check-shape* schema v))
+       'describe describe-value
+       'ns-explore (fn [ns-name] (ns-explore* (or available-tools []) ns-name))}
       direct-bindings
       ctx-binding)))
 
@@ -1005,7 +1101,8 @@
                           :context-key context-key
                           :predict-fn predict-fn
                           :predict-all-fn predict-all-fn
-                          :final-fn final-fn})
+                          :final-fn final-fn
+                          :available-tools (concat mcp-tools browser-tools)})
 
         sci-ctx (sci-sandbox/build-sci-context
                   {:call-tool-fn call-tool-fn
@@ -1060,7 +1157,7 @@
                         :context bb-metadata
                         :history history-text
                         :tools (str/join ", " all-tools)}
-                dscloj-options (cond-> (assoc options :validate? false)
+                dscloj-options (cond-> (assoc options :validate? false :with-metadata? true)
                                  (:model node) (assoc :model (:model node)))
                 llm-result (dscloj/predict provider module inputs dscloj-options)
                 code (let [raw (or (:code llm-result) (get-in llm-result [:outputs :code]))]
@@ -1087,7 +1184,54 @@
                      :model (:model node)}}
 
               :else
-              (let [exec-result (sci-sandbox/execute-code sci-ctx code)
+              (let [;; Pre-execution validation: catch syntax errors and
+                    ;; sandbox-escape attempts BEFORE eval, so the LLM gets
+                    ;; a structured rejection it can act on instead of an
+                    ;; opaque "Output repeated" later.
+                    sandbox-opts {:call-tool-fn call-tool-fn
+                                  :mcp-tools mcp-tools
+                                  :browser-tools browser-tools
+                                  :extra-bindings extra-bindings}
+                    ;; Defensive: validation should NEVER abort the iteration loop.
+                    ;; If validation itself throws (SCI reader edge case, walker
+                    ;; hits something unexpected), fall through to eval and let
+                    ;; SCI surface the real error.
+                    syntax-err (try (sci-sandbox/validate-syntax code)
+                                    (catch Exception _ nil))
+                    unbound-info (when-not syntax-err
+                                   (try (sci-sandbox/unbound-symbols code sandbox-opts)
+                                        (catch Exception _ nil)))
+                    pre-exec-error
+                    (cond
+                      syntax-err
+                      (str "Pre-execution rejection: SYNTAX ERROR — "
+                           (:message syntax-err)
+                           (when (:line syntax-err) (str " (line " (:line syntax-err)
+                                                         ", col " (:column syntax-err) ")"))
+                           "\nFix the unbalanced/malformed delimiter and re-emit the full program.")
+
+                      (and unbound-info
+                           (or (seq (:unbound unbound-info))
+                               (seq (:java-interop unbound-info))))
+                      (str "Pre-execution rejection: SANDBOX ESCAPE — these symbols "
+                           "are not available in the SCI sandbox and the code was NOT "
+                           "executed.\n"
+                           (when (seq (:unbound unbound-info))
+                             (str "  Unbound: " (vec (:unbound unbound-info)) "\n"))
+                           (when (seq (:java-interop unbound-info))
+                             (str "  Java interop (disallowed): " (vec (:java-interop unbound-info)) "\n"))
+                           "Reformulate using only the symbols listed in your prompt "
+                           "(pdf/, xlsx/, docx/ tools, predict, predict-all, final!, "
+                           "and the safe clojure.core subset).")
+
+                      :else nil)
+                    exec-result (if pre-exec-error
+                                  ;; Skip eval; return a synthetic error result so the
+                                  ;; iteration loop processes it like any other failure
+                                  ;; (history captured, convergence checked).
+                                  {:stdout "" :result nil :raw-result nil
+                                   :error pre-exec-error}
+                                  (sci-sandbox/execute-code sci-ctx code))
                     new-history (conj history
                                       {:code code
                                        :result (:result exec-result)
@@ -1123,12 +1267,28 @@
                    :rlm rlm-meta}
 
                   (sci-sandbox/repeated-output? history exec-result)
-                  {:status :failure
-                   :error "Output repeated - possible infinite loop"
-                   :iterations new-history
-                   :duration-ms (- (System/currentTimeMillis) start-time)
-                   :usage @root-usage
-                   :rlm rlm-meta}
+                  (let [kind (sci-sandbox/repeat-kind history exec-result)
+                        underlying (or (:error exec-result)
+                                       (some :error (take-last 2 history)))
+                        msg (case kind
+                              :error
+                              (str "Iteration converged on the SAME ERROR twice "
+                                   "without making progress. The underlying error was:\n\n"
+                                   underlying
+                                   "\n\nRead it carefully and try a different approach "
+                                   "(check the symbol/argument shape, or simplify the code).")
+                              :output
+                              (str "Iteration produced the SAME OUTPUT twice without "
+                                   "calling (final! …). If this output is your answer, "
+                                   "wrap it in (final! {…}) explicitly. Otherwise change "
+                                   "approach.")
+                              "Output repeated - possible infinite loop")]
+                    {:status :failure
+                     :error msg
+                     :iterations new-history
+                     :duration-ms (- (System/currentTimeMillis) start-time)
+                     :usage @root-usage
+                     :rlm (assoc rlm-meta :repeat-kind kind)})
 
                   :else
                   (recur (inc iteration) new-history)))))))
@@ -1242,7 +1402,8 @@
                         :history (or (build-iteration-history history) "None")
                         :tools (str/join ", " all-tools)}
                 ;; Ensure model is passed in options for DSCloj
-                dscloj-options (cond-> (assoc options :validate? false)
+                ;; :with-metadata? true so :usage comes back for telemetry
+                dscloj-options (cond-> (assoc options :validate? false :with-metadata? true)
                                  (:model node) (assoc :model (:model node)))
 
                 ;; Generate code - use base provider, model is in dscloj-options

@@ -22,26 +22,69 @@
 (defn merge-invoices
   "Aggregate per-page extractions into an InvoiceExtractionResult.
 
-   Pages that share a vendor-name+invoice-number are merged; line-items are
-   concatenated across pages of the same invoice."
+   map-each :into yields the full iteration scope (item + writes), so each
+   element looks like {:path … :n … :text … :page-extract {:vendor-name …}}.
+   We pull :page-extract out of each iteration record before merging.
+
+   Convention: a 'header' page populates vendor-name + invoice-number with
+   real values; continuation pages set those to empty strings and only
+   carry line-items. We split by header presence and attach continuation
+   pages to the most-recent header."
   [{:keys [inputs]}]
-  (let [extracts (or (:page-extracts inputs) [])
-        by-key (group-by (fn [e] [(get e :vendor-name)
-                                  (get e :invoice-number)])
-                         (filter map? extracts))
-        invoices (mapv
-                   (fn [[_ pages]]
-                     (let [head (first pages)
-                           items (vec (mapcat #(get % :line-items []) pages))]
-                       (assoc (select-keys head [:vendor-name :invoice-number :date
-                                                 :due-date :subtotal :tax :total])
-                              :line-items items)))
-                   by-key)
+  (let [iter-results (or (:page-extracts inputs) [])
+        extracts (->> iter-results
+                      (keep (fn [r] (cond
+                                      ;; iteration-scope shape (preferred)
+                                      (and (map? r) (map? (:page-extract r)))
+                                      (:page-extract r)
+                                      ;; fallback: the writes were the whole iteration
+                                      (map? r) r
+                                      :else nil))))
+        header? (fn [e] (and (string? (:invoice-number e))
+                             (not (clojure.string/blank? (:invoice-number e)))))
+        ;; Walk in document order, attaching continuations to the prior header.
+        invoices (loop [[e & more] extracts
+                        current nil
+                        acc []]
+                   (cond
+                     (nil? e)
+                     (cond-> acc current (conj current))
+
+                     (header? e)
+                     (recur more
+                            (assoc (select-keys e [:vendor-name :invoice-number :date
+                                                   :due-date :subtotal :tax :total])
+                                   :line-items (vec (or (:line-items e) [])))
+                            (cond-> acc current (conj current)))
+
+                     :else
+                     (recur more
+                            (if current
+                              (update current :line-items (fnil into [])
+                                      (or (:line-items e) []))
+                              ;; Continuation with no prior header — treat as standalone
+                              {:vendor-name "" :invoice-number "" :date "" :due-date ""
+                               :subtotal 0.0 :tax 0.0 :total 0.0
+                               :line-items (vec (or (:line-items e) []))})
+                            acc)))
         total (reduce + 0.0 (keep :total invoices))]
     {:result {:invoices invoices
               :total-amount total
               :summary (str "Processed " (count invoices) " invoices across "
                             (count extracts) " pages.")}}))
+
+(defn- unique-sheet-names
+  "Dedupe sheet names by appending a counter to collisions. Excel/POI rejects
+   duplicates, and real LLM output may produce identical vendor+invoice combos
+   across multiple result entries."
+  [base-names]
+  (let [seen (volatile! {})]
+    (mapv (fn [name]
+            (let [n (clojure.string/trim (or name "Invoice"))
+                  base (if (clojure.string/blank? n) "Invoice" n)
+                  count-now ((vswap! seen update base (fnil inc 0)) base)]
+              (if (= 1 count-now) base (str base " #" count-now))))
+          base-names)))
 
 (defn build-workbook
   "Write the InvoiceExtractionResult to an .xlsx workbook with a Summary
@@ -57,23 +100,28 @@
                       {:header "Subtotal"   :width 12}
                       {:header "Tax"        :width 10}
                       {:header "Total"      :width 12}]
+        invoices    (or (:invoices result) [])
         summary-rows (mapv (fn [{:keys [vendor-name invoice-number date due-date
                                         subtotal tax total]}]
                              [vendor-name invoice-number date due-date
                               (or subtotal 0.0) (or tax 0.0) (or total 0.0)])
-                           (:invoices result))
+                           invoices)
         item-cols   [{:header "Description" :width 40}
                      {:header "Quantity"    :width 10}
                      {:header "Unit Price"  :width 12}
                      {:header "Amount"      :width 12}]
-        per-invoice (mapv (fn [{:keys [vendor-name invoice-number line-items]}]
-                            {:name (str (or vendor-name "Invoice") " "
-                                        (or invoice-number ""))
+        sheet-names (unique-sheet-names
+                      (mapv (fn [{:keys [vendor-name invoice-number]}]
+                              (str (or vendor-name "Invoice") " "
+                                   (or invoice-number "")))
+                            invoices))
+        per-invoice (mapv (fn [name {:keys [line-items]}]
+                            {:name name
                              :columns item-cols
                              :rows (mapv (fn [{:keys [description quantity unit-price amount]}]
                                            [description quantity unit-price amount])
                                          line-items)})
-                          (:invoices result))
+                          sheet-names invoices)
         spec (into [{:name "Summary" :columns summary-cols :rows summary-rows}]
                    per-invoice)]
     {:workbook (xlsx/write-workbook out-path spec)}))
@@ -93,7 +141,7 @@
         :into :page-extracts
         :parallel 8
         (dsl/llm "extract-invoice-page"
-          :model "google/gemini-2.5-flash"
+          :model "openai/gpt-5.4-mini"
           :instruction
           (str "Extract invoice fields from this single PDF page.\n\n"
                "If this page is the start of an invoice, populate vendor-name, "

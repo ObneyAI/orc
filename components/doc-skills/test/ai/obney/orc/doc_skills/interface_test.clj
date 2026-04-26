@@ -126,3 +126,56 @@
                                    (= (str "Unknown tool: " name) (:error r)))))
                           ds/all-tool-names)]
       (is (empty? missing) (str "Missing dispatch cases for: " (vec missing))))))
+
+;; =============================================================================
+;; Strict shape validation (NO silent slip-through on wrong/missing keys)
+;; =============================================================================
+
+(deftest call-tool-fn-rejects-wrong-keys-test
+  (testing "Passing :path instead of :out-path on xlsx/write-workbook throws
+            ex-info with a precise 'expected … got …' message — no silent
+            nil defaulting."
+    (let [dispatch (ds/call-tool-fn)]
+      (try
+        (dispatch "xlsx/write-workbook" {:path "/tmp/x.xlsx"
+                                         :sheets [{:name "S" :rows []}]})
+        (is false "Should have thrown")
+        (catch Exception e
+          (let [data (ex-data e)]
+            (is (= :doc-skills/missing-keys (:type data)))
+            (is (contains? (set (:missing data)) :out-path))
+            (is (contains? (set (:missing data)) :sheets-spec))
+            (is (re-find #":out-path" (.getMessage e)))
+            (is (re-find #":sheets-spec" (.getMessage e)))))))))
+
+(deftest call-tool-fn-rejects-missing-required-test
+  (testing "Calling pdf/page-text with only :path (missing :n) throws
+            with a clear missing-keys message"
+    (let [dispatch (ds/call-tool-fn)]
+      (try
+        (dispatch "pdf/page-text" {:path "/tmp/x.pdf"})
+        (is false "Should have thrown")
+        (catch Exception e
+          (let [data (ex-data e)]
+            (is (= :doc-skills/missing-keys (:type data)))
+            (is (= [:n] (:missing data)))))))))
+
+(deftest call-tool-fn-rejects-non-map-args-test
+  (testing "Passing a non-map (e.g. a string) as args throws with a clear
+            'expects a single map argument' message"
+    (let [dispatch (ds/call-tool-fn)]
+      (try
+        (dispatch "pdf/page-count" "/tmp/x.pdf")
+        (is false "Should have thrown")
+        (catch Exception e
+          (let [data (ex-data e)]
+            (is (= :doc-skills/bad-arg-shape (:type data)))
+            (is (re-find #"single map argument" (.getMessage e)))))))))
+
+(deftest call-tool-fn-accepts-correct-shape-test
+  (testing "Validation does not interfere with correct calls (regression-safe)"
+    ;; Use markdown->elements since it has no I/O side effects
+    (let [dispatch (ds/call-tool-fn)
+          result (dispatch "docx/markdown->elements" {:md "# Title\n\nbody"})]
+      (is (vector? result))
+      (is (= [:h1 "Title"] (first result))))))

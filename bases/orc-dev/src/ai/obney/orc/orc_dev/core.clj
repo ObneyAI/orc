@@ -135,9 +135,21 @@
 ;; =============================================================================
 
 (defn start
-  "Start the ORC development system. Returns the Integrant system map."
-  []
-  (ig/init system))
+  "Start the ORC development system. Returns the Integrant system map.
+
+   Optional opts (recognized at startup so todo processors get them):
+     :call-tool-fn  fn   — installed on ::context for repl-researcher MCP
+                            tool dispatch (e.g. doc-skills/call-tool-fn).
+                            Without this, RLM-mode workflows that declare
+                            :mcp-tools have NO bindings in their SCI
+                            sandbox and fail with 'Could not resolve
+                            symbol' on every tool call.
+   "
+  ([] (start {}))
+  ([{:keys [call-tool-fn] :as _opts}]
+   (let [cfg (cond-> system
+               call-tool-fn (assoc-in [::context :call-tool-fn] call-tool-fn))]
+     (ig/init cfg))))
 
 (defn stop
   "Stop the ORC development system."

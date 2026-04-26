@@ -260,3 +260,86 @@
           result (sandbox/execute-code ctx "(realize-all {:x 1})")]
       (is (nil? (:error result)))
       (is (= :overridden (:raw-result result))))))
+
+;; =============================================================================
+;; Pre-execution validation: validate-syntax + unbound-symbols
+;; =============================================================================
+
+(deftest validate-syntax-test
+  (testing "well-formed code returns nil"
+    (is (nil? (sandbox/validate-syntax "(+ 1 2)")))
+    (is (nil? (sandbox/validate-syntax "(let [x 1] (println x))")))
+    (is (nil? (sandbox/validate-syntax "(do (def y 5) (* y y))"))))
+
+  (testing "unbalanced parens return a structured syntax error"
+    (let [err (sandbox/validate-syntax "(+ 1 2")]
+      (is (= :syntax (:type err)))
+      (is (string? (:message err)))
+      (is (re-find #"EOF|expected|read" (:message err)))))
+
+  (testing "unbalanced brackets return a structured error"
+    (let [err (sandbox/validate-syntax "[1 2 3")]
+      (is (= :syntax (:type err)))
+      (is (string? (:message err))))))
+
+(deftest unbound-symbols-clean-test
+  (testing "code that uses only safe-clojure-core returns no unbound symbols"
+    (is (= {} (sandbox/unbound-symbols "(+ 1 2)" {})))
+    (is (= {} (sandbox/unbound-symbols "(let [x 1 y 2] (+ x y))" {})))
+    (is (= {} (sandbox/unbound-symbols "(map #(* % 2) [1 2 3])" {})))
+    (is (= {} (sandbox/unbound-symbols
+               "(reduce + 0 (map (fn [x] (* x x)) (range 5)))" {})))))
+
+(deftest unbound-symbols-flags-system-test
+  (testing "System/* is reported as Java interop AND as unbound (System is on the
+            dangerous-bare-symbols list — the LLM sees both signals at once)"
+    (let [r (sandbox/unbound-symbols "(System/currentTimeMillis)" {})]
+      (is (contains? (:java-interop r) 'System/currentTimeMillis))
+      (is (contains? (:unbound r) 'System/currentTimeMillis))))
+  (testing "Math/abs is Java interop only — Math isn't on the dangerous list"
+    (let [r (sandbox/unbound-symbols "(Math/abs -5)" {})]
+      (is (contains? (:java-interop r) 'Math/abs))
+      (is (nil? (:unbound r))
+          "Math itself isn't dangerous, just non-sandboxed Java interop"))))
+
+(deftest unbound-symbols-flags-non-safe-symbols-test
+  (testing "slurp / require / eval are unbound (not in safe-clojure-core)"
+    (let [r (sandbox/unbound-symbols "(slurp \"/etc/passwd\")" {})]
+      (is (contains? (:unbound r) 'slurp))
+      (is (nil? (:java-interop r))))
+    (let [r (sandbox/unbound-symbols "(eval '(println 1))" {})]
+      (is (contains? (:unbound r) 'eval)))))
+
+(deftest unbound-symbols-recognizes-mcp-tools-test
+  (testing "MCP-style namespaced tool names are recognized as bound"
+    (let [r (sandbox/unbound-symbols
+              "(pdf/page-count \"x\")"
+              {:call-tool-fn (fn [_ _]) :mcp-tools ["pdf/page-count"]})]
+      (is (= {} r))))
+  (testing "flat tool names are recognized"
+    (let [r (sandbox/unbound-symbols
+              "(lookup {:k 1})"
+              {:call-tool-fn (fn [_ _]) :mcp-tools ["lookup"]})]
+      (is (= {} r)))))
+
+(deftest unbound-symbols-recognizes-extra-bindings-test
+  (testing "host-supplied extra-bindings (e.g. predict, final!) are recognized"
+    (let [r (sandbox/unbound-symbols
+              "(predict {:name \"x\"})"
+              {:extra-bindings {'predict (fn [_]) 'final! (fn [_])}})]
+      (is (= {} r)))))
+
+(deftest unbound-symbols-mixed-test
+  (testing "mixed code: bound MCP tools pass, dangerous symbols (System) flag both
+            as :unbound and :java-interop, ordinary clojure.core fns (println,
+            count) pass via SCI built-ins"
+    (let [r (sandbox/unbound-symbols
+              "(let [pages (pdf/page-count \"x\")
+                     stamp (System/currentTimeMillis)]
+                 (println pages stamp))"
+              {:call-tool-fn (fn [_ _]) :mcp-tools ["pdf/page-count"]})]
+      (is (contains? (:java-interop r) 'System/currentTimeMillis))
+      (is (contains? (:unbound r) 'System/currentTimeMillis))
+      ;; pdf/page-count, println, let, etc. should NOT appear
+      (is (not (contains? (:unbound r) 'pdf/page-count)))
+      (is (not (contains? (:unbound r) 'println))))))

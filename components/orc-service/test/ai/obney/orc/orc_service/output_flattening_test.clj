@@ -10,7 +10,8 @@
    individual fields rather than generating a complete JSON object."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
-            [ai.obney.orc.orc-service.core.executor :as executor]))
+            [ai.obney.orc.orc-service.core.executor :as executor]
+            [dscloj.core]))
 
 ;; =============================================================================
 ;; Helper to access private functions for testing
@@ -274,3 +275,79 @@
       (is (= 2 (count result)))
       (let [nested-field (first (filter #(= :nested (:name %)) result))]
         (is (= [:map [:inner :int]] (:spec nested-field)))))))
+
+;; =============================================================================
+;; RLM-mode predict-fn flatten/reassemble (DSCloj nested-map bug regression test)
+;; =============================================================================
+;;
+;; Documents that make-rlm-predict-fn applies flatten-output-schema +
+;; reassemble-flattened-outputs the same way execute-ai does. Without this,
+;; DSCloj receives a single nested :map output as one spec, which it
+;; mishandles (numeric fields come back as maps).
+;;
+;; See: 2026-04-25 plan "Fix DSCloj Nested-Schema Flattening Bug in RLM-Mode predict"
+
+(deftest rlm-predict-flattens-map-schema-test
+  (testing "predict {:schema [:map …]} flattens top-level fields into separate
+            DSCloj outputs, then reassembles into a structured map for SCI"
+    (let [calls (atom 0)
+          ;; Mock simulates DSCloj returning flat fields (which it can do
+          ;; correctly when each field is its own output spec).
+          mock-predict (fn [_p module _i _o]
+                         (swap! calls inc)
+                         (let [out-names (set (mapv :name (:outputs module)))]
+                           (cond
+                             ;; First call is the SCI code-gen
+                             (= 1 @calls)
+                             {:outputs {:code "(final! {:answer (str (:vendor-name (predict {:schema [:map [:vendor-name :string] [:total :double]] :inputs {} :name \"x\"})) \"|\" (:total (predict {:schema [:map [:vendor-name :string] [:total :double]] :inputs {} :name \"x\"})))})"}
+                              :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}}
+                             ;; Subsequent calls are predict invocations from SCI
+                             :else
+                             (do
+                               ;; The fix means we see :vendor-name and :total as
+                               ;; separate top-level outputs, NOT a single :result.
+                               (is (contains? out-names :vendor-name))
+                               (is (contains? out-names :total))
+                               (is (not (contains? out-names :result)))
+                               {:outputs {:vendor-name "Acme" :total 100.0}
+                                :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}}))))]
+      (with-redefs [dscloj.core/predict mock-predict]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do it"
+                    :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 3
+                    :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q       {:key :q       :schema :string :value "?" :version 1}
+                  :answer  {:key :answer  :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})]
+          (is (= :success (:status result)))
+          (is (= "Acme|100.0" (-> result :outputs :answer))
+              "Reassembly should put both :vendor-name and :total under the SCI caller's view"))))))
+
+(deftest rlm-predict-non-map-schema-pass-through-test
+  (testing "Scalar / vector schemas remain a single :result output (no behavior change)"
+    (let [calls (atom 0)
+          mock-predict (fn [_p module _i _o]
+                         (swap! calls inc)
+                         (cond
+                           (= 1 @calls)
+                           {:outputs {:code "(final! {:answer (predict {:schema :string :inputs {} :name \"x\"})})"}
+                            :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}}
+                           :else
+                           (do
+                             (let [out-names (mapv :name (:outputs module))]
+                               (is (= [:result] out-names)
+                                   "Scalar schema must stay a single :result output (regression-safe path)"))
+                             {:outputs {:result "scalar value"}
+                              :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})))]
+      (with-redefs [dscloj.core/predict mock-predict]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 3 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})]
+          (is (= :success (:status result)))
+          (is (= "scalar value" (-> result :outputs :answer))))))))

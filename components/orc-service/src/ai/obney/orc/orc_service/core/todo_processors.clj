@@ -270,8 +270,10 @@
                              ;; No provider - use mock
                              :else
                              (executor/execute-leaf-mock node blackboard))
-                  {:keys [status outputs error duration-ms]} result]
-              ;; Use process-command to emit completion event
+                  {:keys [status outputs error duration-ms usage model]} result]
+              ;; Use process-command to emit completion event.
+              ;; Optional :usage / :model carry through to the event so per-LLM
+              ;; token counts are auditable from the event store.
               (cp/process-command
                 (assoc context :command
                        (cond-> {:command/id (random-uuid)
@@ -284,7 +286,9 @@
                                 :writes (normalize-output-keys (or outputs {}))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
-                         (seq exec-context) (assoc :inputs exec-context)))))
+                         (seq exec-context) (assoc :inputs exec-context)
+                         usage (assoc :usage usage)
+                         model (assoc :model model)))))
             (catch Exception e
               ;; Use process-command to emit failure event
               (cp/process-command
@@ -546,13 +550,13 @@
             provider (:dscloj-provider context)]
         (future
           (try
-            (let [result (if provider
-                           (executor/execute-llm-condition node blackboard provider
-                                                          :context {:event-store event-store})
-                           ;; No provider - fail with error
-                           {:status :failure
-                            :error "No dscloj-provider configured for LLM condition"})
-                  {:keys [status result error duration-ms]} result
+            (let [exec-result (if provider
+                               (executor/execute-llm-condition node blackboard provider
+                                                              :context {:event-store event-store})
+                               ;; No provider - fail with error
+                               {:status :failure
+                                :error "No dscloj-provider configured for LLM condition"})
+                  {:keys [status result error duration-ms usage model]} exec-result
                   ;; LLM condition: true = success, false = failure
                   final-status (if (= :success status)
                                  (if result :success :failure)
@@ -569,7 +573,9 @@
                                :writes {}}
                         duration-ms (assoc :duration-ms duration-ms)
                         error (assoc :error error)
-                        (seq exec-context) (assoc :inputs exec-context)))))
+                        (seq exec-context) (assoc :inputs exec-context)
+                        usage (assoc :usage usage)
+                        model (assoc :model model)))))
             (catch Exception e
               (cp/process-command
                (assoc context :command

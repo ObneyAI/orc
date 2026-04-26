@@ -7,6 +7,8 @@
      3. Build and execute workflows against `ctx`"
   (:require [ai.obney.orc.orc-dev.core :as orc-dev]
             [ai.obney.orc.orc-service.interface :as orc]
+            [ai.obney.orc.orc-service.core.executor :as executor]
+            [ai.obney.orc.doc-skills.interface :as doc-skills]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]))
 
@@ -14,11 +16,20 @@
 
 (declare stop!)
 
-(defn start! []
-  (when @service (stop!))
-  (reset! service (orc-dev/start))
-  (println "ORC started.")
-  :started)
+(defn start!
+  "Start the ORC dev system with sensible defaults for example workflows:
+   - doc-skills :call-tool-fn pre-installed on the context (so
+     repl-researcher :mcp-tools resolve in SCI without per-call wiring)
+   - DSCloj providers registered from env vars (OPENROUTER_API_KEY etc.)
+   Pass `:call-tool-fn` to override the default."
+  ([] (start! {}))
+  ([{:keys [call-tool-fn]
+     :or {call-tool-fn (doc-skills/call-tool-fn)}}]
+   (when @service (stop!))
+   (reset! service (orc-dev/start {:call-tool-fn call-tool-fn}))
+   (executor/setup-providers!)
+   (println "ORC started (doc-skills tools wired; DSCloj providers registered).")
+   :started))
 
 (defn stop! []
   (when-let [s @service]

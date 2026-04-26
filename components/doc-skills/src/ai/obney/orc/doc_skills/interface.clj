@@ -95,83 +95,103 @@
   [args-map keys]
   (mapv (fn [k] (or (get args-map k) (get args-map (clojure.core/name k)))) keys))
 
+(def ^:private tool-specs
+  "Per-tool required-arg specifications. Each entry maps a tool name to its
+   required keys (in arg order) so the dispatcher can produce precise
+   error messages when the LLM passes the wrong shape (missing keys,
+   typo'd keys like :path instead of :out-path, etc.)."
+  {"pdf/page-count"            [:path]
+   "pdf/page-text"             [:path :n]
+   "pdf/document-text"         [:path]
+   "pdf/page-image"            [:path :n :out-path]
+   "pdf/page-image-data-uri"   [:path :n]
+   "pdf/search-text"           [:path :n :query]
+   "pdf/redact-rects"          [:path :out-path :rect-specs]
+   "pdf/page-bounds"           [:path :n]
+   "xlsx/write-workbook"       [:out-path :sheets-spec]
+   "xlsx/list-sheets"          [:path]
+   "xlsx/read-sheet"           [:path :sheet-name]
+   "xlsx/read-sheet-as-maps"   [:path :sheet-name]
+   "docx/write-docx"           [:out-path :elements]
+   "docx/markdown->elements"   [:md]
+   "docx/write-markdown-as-docx" [:out-path :md]})
+
+(defn- require-args!
+  "Validate that `args` (a map) contains every key in `required`. Throws
+   ex-info with a precise 'expected … got …' message when keys are
+   missing — no silent slip-through. The thrown error reaches SCI as the
+   tool-call's exception, which the executor records on the iteration
+   for the next LLM prompt."
+  [tool-name required args]
+  (when-not (map? args)
+    (throw (ex-info (str tool-name " expects a single map argument with keys "
+                         (pr-str required) ", got " (pr-str args))
+                    {:type :doc-skills/bad-arg-shape
+                     :tool tool-name
+                     :expected required
+                     :got args})))
+  (let [missing (vec (remove #(contains? args %) required))]
+    (when (seq missing)
+      (throw (ex-info (str tool-name " missing required keys " (pr-str missing)
+                           ". Expected " (pr-str required)
+                           "; got keys " (pr-str (vec (keys args))))
+                      {:type :doc-skills/missing-keys
+                       :tool tool-name
+                       :expected required
+                       :missing missing
+                       :got-keys (vec (keys args))})))))
+
 (defn call-tool-fn
   "Build a (fn [tool-name args-map] -> result) suitable for orc's
    repl-researcher :call-tool-fn. Tool names follow MCP convention with the
-   skill namespace as prefix:
+   skill namespace as prefix; each tool's required arg keys are validated
+   strictly — wrong/missing keys throw an ex-info with a precise message
+   (NO silent defaulting / coercion).
 
-     \"pdf/page-count\"          {:path \"…\"}                  -> int
-     \"pdf/page-text\"           {:path \"…\" :n 0}             -> string
-     \"pdf/page-image\"          {:path :n :out-path :dpi?}     -> path
-     \"pdf/page-image-data-uri\" {:path :n :dpi?}               -> data uri
-     \"pdf/search-text\"         {:path :n :query}              -> [{:rect :match}]
-     \"pdf/redact-rects\"        {:path :out-path :rect-specs}  -> path
-     \"pdf/page-bounds\"         {:path :n}                     -> {:width :height}
+   Required-arg shapes:
+     \"pdf/page-count\"            {:path \"…\"}                    -> int
+     \"pdf/page-text\"             {:path \"…\" :n 0}               -> string
+     \"pdf/document-text\"         {:path \"…\"}                    -> string
+     \"pdf/page-image\"            {:path :n :out-path [:dpi]}      -> path
+     \"pdf/page-image-data-uri\"   {:path :n [:dpi]}                -> data uri
+     \"pdf/search-text\"           {:path :n :query}                -> [{:rect :match}]
+     \"pdf/redact-rects\"          {:path :out-path :rect-specs}    -> path
+     \"pdf/page-bounds\"           {:path :n}                       -> {:width :height}
+     \"xlsx/write-workbook\"       {:out-path :sheets-spec}         -> path
+     \"xlsx/list-sheets\"          {:path}                          -> [string]
+     \"xlsx/read-sheet\"           {:path :sheet-name}              -> [[…]]
+     \"xlsx/read-sheet-as-maps\"   {:path :sheet-name}              -> [{…}]
+     \"docx/write-docx\"           {:out-path :elements}            -> path
+     \"docx/markdown->elements\"   {:md}                            -> elements
+     \"docx/write-markdown-as-docx\" {:out-path :md}                -> path
 
-     \"xlsx/write-workbook\"     {:out-path :sheets-spec}       -> path
-     \"xlsx/list-sheets\"        {:path}                        -> [string]
-     \"xlsx/read-sheet\"         {:path :sheet-name}            -> [[…]]
-     \"xlsx/read-sheet-as-maps\" {:path :sheet-name}            -> [{…}]
-
-     \"docx/write-docx\"             {:out-path :elements}      -> path
-     \"docx/markdown->elements\"     {:md}                      -> elements
-     \"docx/write-markdown-as-docx\" {:out-path :md}            -> path
-
-   Unknown names return {:error \"Unknown tool: …\"}."
+   Unknown tool names return {:error \"Unknown tool: …\"}."
   [& {:keys [allow-deny] :or {allow-deny :allow}}]
   (fn dispatch [tool-name args]
     (let [args (if (map? args) args (or args {}))]
+      (when (contains? tool-specs tool-name)
+        (require-args! tool-name (get tool-specs tool-name) args))
       (case tool-name
         ;; PDF
-        "pdf/page-count"
-        (pdf/page-count (:path args))
-
-        "pdf/page-text"
-        (pdf/page-text (:path args) (:n args))
-
-        "pdf/document-text"
-        (pdf/document-text (:path args))
-
-        "pdf/page-image"
-        (pdf/page-image (:path args) (:n args) (:out-path args)
-                        :dpi (or (:dpi args) 200))
-
-        "pdf/page-image-data-uri"
-        (pdf/page-image-data-uri (:path args) (:n args)
-                                 :dpi (or (:dpi args) 200))
-
-        "pdf/search-text"
-        (pdf/search-text (:path args) (:n args) (:query args))
-
-        "pdf/redact-rects"
-        (pdf/redact-rects (:path args) (:out-path args) (:rect-specs args))
-
-        "pdf/page-bounds"
-        (pdf/page-bounds (:path args) (:n args))
-
+        "pdf/page-count"          (pdf/page-count (:path args))
+        "pdf/page-text"           (pdf/page-text (:path args) (:n args))
+        "pdf/document-text"       (pdf/document-text (:path args))
+        "pdf/page-image"          (pdf/page-image (:path args) (:n args) (:out-path args)
+                                                  :dpi (or (:dpi args) 200))
+        "pdf/page-image-data-uri" (pdf/page-image-data-uri (:path args) (:n args)
+                                                           :dpi (or (:dpi args) 200))
+        "pdf/search-text"         (pdf/search-text (:path args) (:n args) (:query args))
+        "pdf/redact-rects"        (pdf/redact-rects (:path args) (:out-path args) (:rect-specs args))
+        "pdf/page-bounds"         (pdf/page-bounds (:path args) (:n args))
         ;; XLSX
-        "xlsx/write-workbook"
-        (xlsx/write-workbook (:out-path args) (:sheets-spec args))
-
-        "xlsx/list-sheets"
-        (xlsx/list-sheets (:path args))
-
-        "xlsx/read-sheet"
-        (xlsx/read-sheet (:path args) (:sheet-name args))
-
-        "xlsx/read-sheet-as-maps"
-        (xlsx/read-sheet-as-maps (:path args) (:sheet-name args))
-
+        "xlsx/write-workbook"     (xlsx/write-workbook (:out-path args) (:sheets-spec args))
+        "xlsx/list-sheets"        (xlsx/list-sheets (:path args))
+        "xlsx/read-sheet"         (xlsx/read-sheet (:path args) (:sheet-name args))
+        "xlsx/read-sheet-as-maps" (xlsx/read-sheet-as-maps (:path args) (:sheet-name args))
         ;; DOCX
-        "docx/write-docx"
-        (docx/write-docx (:out-path args) (:elements args))
-
-        "docx/markdown->elements"
-        (docx/markdown->elements (:md args))
-
-        "docx/write-markdown-as-docx"
-        (docx/write-markdown-as-docx (:out-path args) (:md args))
-
+        "docx/write-docx"             (docx/write-docx (:out-path args) (:elements args))
+        "docx/markdown->elements"     (docx/markdown->elements (:md args))
+        "docx/write-markdown-as-docx" (docx/write-markdown-as-docx (:out-path args) (:md args))
         {:error (str "Unknown tool: " tool-name)}))))
 
 (def all-tool-names

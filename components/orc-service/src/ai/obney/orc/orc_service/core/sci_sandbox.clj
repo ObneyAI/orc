@@ -6,13 +6,15 @@
    - MCP tools injected as callable functions
    - Stdout capture for iteration feedback
    - FINAL_ANSWER detection for convergence
+   - Pre-execution validation: parse-check + free-symbol whitelist scan
 
    Note: This namespace has NO dependency on mcp-sheet-builder.
    MCP tool invocation is injected via :call-tool-fn parameter."
   (:require [sci.core :as sci]
             [clojure.string :as str]
+            [clojure.walk :as walk]
             [com.brunobonacci.mulog :as u])
-  (:import [java.io StringWriter]))
+  (:import [java.io StringWriter PushbackReader StringReader]))
 
 ;; ============================================================================
 ;; Safe Function Whitelist
@@ -228,6 +230,252 @@
       :bindings all-bindings})))
 
 ;; ============================================================================
+;; Pre-Execution Validation
+;; ============================================================================
+
+(defn validate-syntax
+  "Try to read every top-level form in `code-string` using SCI's reader.
+   Returns nil on success, or {:type :syntax :message … :line … :column …}
+   on failure. Surfaced to the executor BEFORE eval so the LLM sees a clear
+   syntax-error diagnostic on the next iteration prompt instead of an opaque
+    'Output repeated' from the convergence detector."
+  [code-string]
+  (let [rdr (sci/reader (str code-string))]
+    (try
+      (loop []
+        (let [form (sci/parse-next (sci/init {}) rdr)]
+          (when-not (= ::sci/eof form)
+            (recur))))
+      nil
+      (catch Exception e
+        (let [msg (.getMessage e)
+              data (ex-data e)]
+          (cond-> {:type :syntax :message msg}
+            (:line data)   (assoc :line (:line data))
+            (:column data) (assoc :column (:column data))))))))
+
+(defn- safe-bound-symbols
+  "Build the union set of symbol names a SCI sandbox built with the given
+   options would resolve. Includes:
+     - safe-clojure-core (whitelisted clojure.core fns)
+     - SCI built-ins: special forms + macros (let, fn, if, when, do, …)
+     - MCP flat tool names + namespaced tool names (linear/list_issues)
+     - Browser tool names
+     - Caller-supplied :extra-bindings keys
+   Used by `unbound-symbols` for pre-execution scanning."
+  [{:keys [call-tool-fn mcp-tools browser-tools extra-bindings]}]
+  (let [;; SCI special forms + clojure.core macros that are always available
+        sci-builtins
+        '#{let fn fn* defn defn- def let* loop recur if when when-not when-let
+           if-let if-not cond condp case do doseq dotimes for ->> -> as-> some-> some->>
+           and or not throw try catch finally
+           binding letfn delay deref future future-call promise
+           future-cancel future-cancelled? future-done?
+           ;; collection/seq macros
+           lazy-seq cons cycle iterate
+           ;; reader macros / quoting
+           quote unquote
+           ;; commonly-used clojure.core macros from safe-core
+           comment when-some if-some
+           with-redefs with-out-str with-in-str with-bindings
+           assert ignore
+           ;; printing already in safe-clojure-core but include as macros too
+           print println prn pr pr-str print-str println-str}
+        flat-tools (when (and call-tool-fn mcp-tools)
+                     (set
+                       (for [t mcp-tools
+                             :when (not (str/includes? t "/"))]
+                         (symbol t))))
+        namespaced-tools (when (and call-tool-fn mcp-tools)
+                           (set
+                             (for [t mcp-tools
+                                   :when (str/includes? t "/")]
+                               (symbol t))))
+        browser-syms (when (seq browser-tools)
+                       (set (map symbol browser-tools)))
+        extra-syms (when (map? extra-bindings)
+                     (set (filter symbol? (keys extra-bindings))))]
+    (into #{}
+          cat
+          [safe-clojure-core
+           sci-builtins
+           '#{FINAL_ANSWER realize-all}
+           flat-tools
+           namespaced-tools
+           browser-syms
+           extra-syms])))
+
+(defn- collect-free-symbols
+  "Walk a parsed Clojure form and collect every (free) symbol reference.
+   Locals introduced by let/fn/loop/etc. are tracked and excluded. This is
+   intentionally a best-effort scan: we want to flag genuine sandbox-escape
+   attempts (System/currentTimeMillis, slurp, eval) without false-positives
+   on let-bound names."
+  [form]
+  (let [free (volatile! #{})
+        walk-form
+        (fn walk-form [bound f]
+          (cond
+            ;; Symbol — flag if not bound and not a Java class (uppercase)
+            (symbol? f)
+            (let [n (name f)
+                  ns (namespace f)]
+              ;; Skip:
+              ;; - Locally bound symbols
+              ;; - Bare keywords (already a different type)
+              ;; - Constructor / static-method dot forms (Class.) handled separately below
+              (when-not (contains? bound f)
+                (vswap! free conj f)))
+
+            ;; Vectors / sets / maps — recurse into all values
+            (vector? f) (doseq [x f] (walk-form bound x))
+            (set? f)    (doseq [x f] (walk-form bound x))
+            (map? f)    (doseq [[k v] f] (walk-form bound k) (walk-form bound v))
+
+            ;; Lists / cons cells — handle binding forms specially
+            (sequential? f)
+            (let [[head & tail] f]
+              (cond
+                (or (= head 'let) (= head 'let*) (= head 'when-let)
+                    (= head 'when-some) (= head 'if-let) (= head 'if-some)
+                    (= head 'loop) (= head 'binding) (= head 'with-redefs)
+                    (= head 'doseq) (= head 'dotimes) (= head 'for))
+                (let [[binding-vec & body] tail
+                      ;; Binding vec like [a 1 b 2] — collect even-index symbols
+                      new-bound (into bound
+                                      (->> binding-vec
+                                           (partition 2)
+                                           (map first)
+                                           (filter symbol?)))]
+                  ;; Walk binding values (odd-index) with OLD bound set
+                  (doseq [[_ v] (partition 2 binding-vec)] (walk-form bound v))
+                  ;; Walk body with new bound set
+                  (doseq [b body] (walk-form new-bound b)))
+
+                (or (= head 'fn) (= head 'fn*) (= head 'defn) (= head 'defn-) (= head 'defmacro))
+                ;; Skip the name (if any) and the arg vector(s); collect args as bound.
+                (let [forms (if (symbol? (first tail)) (rest tail) tail)
+                      ;; Each form may be a single-arity (args body+) or multi-arity ((args body+)…)
+                      arity-forms (if (vector? (first forms))
+                                    [forms]
+                                    forms)]
+                  (doseq [arity arity-forms]
+                    (when (sequential? arity)
+                      (let [[args & body] arity
+                            arg-syms (->> args (filter symbol?) (remove #{'& '_}) set)
+                            inner-bound (into bound arg-syms)]
+                        (doseq [b body] (walk-form inner-bound b))))))
+
+                (= head 'quote)
+                ;; Don't walk inside quoted forms
+                nil
+
+                :else
+                (do (walk-form bound head)
+                    (doseq [arg tail] (walk-form bound arg)))))
+
+            :else nil))]
+    (walk-form #{} form)
+    @free))
+
+(defn- java-interop?
+  "Symbols like Class. or Class/method or .method are Java interop, not free
+   refs we'd want to flag against the SCI bindings whitelist. We surface
+   them separately — they're equally not allowed in the sandbox but want a
+   different message ('Java interop is disallowed' vs 'symbol not in
+   sandbox').
+
+   Defensive against edge cases (empty/nil ns, special symbols like `/`)."
+  [sym]
+  (when (symbol? sym)
+    (let [n (name sym)
+          ns (namespace sym)]
+      (or (and ns (pos? (count ns))
+               (Character/isUpperCase ^char (.charAt ^String ns 0)))   ;; ns name starts uppercase → Class/method
+          (and (pos? (count n)) (.endsWith ^String n "."))             ;; constructor: Class.
+          (and (pos? (count n)) (.startsWith ^String n "."))))))         ;; method: .method
+
+(def ^:private dangerous-bare-symbols
+  "Bare (non-namespaced) symbols that we explicitly flag as sandbox escapes.
+   These are the well-known I/O / eval / process / FS shells the LLM tends
+   to reach for. Anything else that's truly unbound will be caught by SCI
+   itself at eval time — we surface it via the iteration error path."
+  '#{slurp spit eval load load-string load-file load-reader require
+     in-ns ns create-ns alias remove-ns find-ns
+     read read-string read-line
+     exec sh runtime
+     intern resolve var var-get var-set
+     System Runtime Process ProcessBuilder Thread})
+
+(defn- safe-namespace?
+  "A namespaced symbol like `clojure.string/join` or `pdf/page-count` is
+   considered safe IF either:
+     - the namespace is a known SCI built-in (clojure.*, sci.*)
+     - the symbol matches one of the caller-provided MCP tools / extra
+       bindings (passed in `bound`)
+   This is the permissive rule that prevents false-positives on common
+   helpers like clojure.string/join while still catching slurp / eval."
+  [sym bound]
+  (let [ns (namespace sym)]
+    (or
+      (contains? bound sym)
+      (and ns
+           (or (str/starts-with? ns "clojure.")
+               (str/starts-with? ns "sci.")
+               ;; Caller may have passed namespaced tool symbols in `bound`
+               (contains? bound (symbol ns nil))
+               (contains? (set (map namespace bound)) ns))))))
+
+(defn unbound-symbols
+  "Scan code for OBVIOUSLY unsafe symbol references.
+
+   Returns {:unbound #{…} :java-interop #{…}}. An empty result means no
+   known sandbox-escape patterns were found.
+
+   This is intentionally CONSERVATIVE on false-positives:
+   - Bare symbols are flagged ONLY if they appear in `dangerous-bare-symbols`
+     (slurp, eval, require, …). Other unbound bare symbols (like a typo'd
+     local) will fail at SCI eval time with their own error — we don't
+     reject them pre-emptively.
+   - Java interop forms (System/foo, Class., .method) are ALWAYS flagged
+     because they unambiguously reach into the JVM beyond SCI's whitelist.
+   - Namespaced symbols pass if their namespace is `clojure.*` / `sci.*`
+     (SCI built-ins) OR matches an MCP tool prefix / extra-binding.
+
+   The executor uses this to produce LLM-actionable feedback for the cases
+   we KNOW are sandbox escapes, while leaving SCI itself to handle ordinary
+   resolution errors with its own diagnostic."
+  [code-string sandbox-opts]
+  (let [bound (safe-bound-symbols sandbox-opts)
+        rdr (sci/reader (str code-string))
+        forms (loop [acc []]
+                (let [form (try
+                             (sci/parse-next (sci/init {}) rdr)
+                             (catch Exception _ ::sci/eof))]
+                  (if (= ::sci/eof form) acc (recur (conj acc form)))))
+        all-free (apply clojure.set/union (map collect-free-symbols forms))
+        {:keys [interop bare]} (group-by #(if (java-interop? %) :interop :bare) all-free)
+        bare-syms (->> bare
+                       (remove #(or (nil? (namespace %))
+                                    (safe-namespace? % bound))))
+        ;; For bare (non-namespaced) symbols: only flag the dangerous ones.
+        flagged-bare (->> bare-syms
+                          (filter #(contains? dangerous-bare-symbols %))
+                          set)
+        ;; Also catch bare references to dangerous symbols where the symbol
+        ;; itself is namespaced (e.g. user/slurp). We only flag the well-
+        ;; known names listed above.
+        flagged-dangerous (->> all-free
+                               (filter #(or (contains? dangerous-bare-symbols (symbol (name %)))
+                                            (and (namespace %)
+                                                 (contains? dangerous-bare-symbols (symbol (namespace %))))))
+                               set)
+        unbound (clojure.set/union flagged-bare flagged-dangerous)]
+    (cond-> {}
+      (seq unbound) (assoc :unbound unbound)
+      (seq interop) (assoc :java-interop (set interop)))))
+
+;; ============================================================================
 ;; Code Execution
 ;; ============================================================================
 
@@ -317,14 +565,40 @@
 ;; Convergence Detection
 ;; ============================================================================
 
+(defn- iter-output-fingerprint
+  "Build the comparable string for a single iteration result. Errors are
+   included so 'two iterations crashed identically' counts as repetition."
+  [result]
+  (str (:stdout result) (:result result) (:error result)))
+
 (defn repeated-output?
-  "Check if the current output matches previous outputs (indicating convergence)."
+  "Check if the current iteration's output matches previous iterations
+   (indicating convergence — either healthy stability or a stuck loop)."
   [history current-result]
-  (let [current-str (str (:stdout current-result) (:result current-result))
+  (let [current-str (iter-output-fingerprint current-result)
         recent-outputs (->> history
                             (take-last 2)
-                            (map #(str (:stdout %) (:result %))))]
+                            (map iter-output-fingerprint))]
     (some #(= % current-str) recent-outputs)))
+
+(defn repeat-kind
+  "Classify the kind of repetition between the current iteration and the
+   recent history. Returns one of:
+     - :error   — same error string as a recent iteration (LLM is stuck on
+                  the same crash; next prompt should call this out plainly)
+     - :output  — same successful output as a recent iteration (stable
+                  result, also stuck — but not crashing)
+     - nil      — no repetition detected
+   Used by the executor to produce a sharper failure diagnostic than
+   the generic 'Output repeated - possible infinite loop'."
+  [history current-result]
+  (let [recent (->> history (take-last 2))
+        current-str (iter-output-fingerprint current-result)
+        match (first (filter #(= (iter-output-fingerprint %) current-str) recent))]
+    (cond
+      (nil? match) nil
+      (or (:error match) (:error current-result)) :error
+      :else :output)))
 
 ;; ============================================================================
 ;; High-Level Execution

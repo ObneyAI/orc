@@ -234,3 +234,310 @@
                        {})]
           ;; Legacy mode never sets :rlm in the result
           (is (nil? (:rlm result))))))))
+
+;; =============================================================================
+;; Nested-map schema flattening (DSCloj bug repro + fix)
+;; =============================================================================
+
+(deftest predict-with-map-schema-flattens-and-reassembles-test
+  (testing "(predict {:schema [:map …]}) — top-level fields are flattened to
+            separate DSCloj outputs, then reassembled into a structured map for
+            the SCI caller. Without this fix, DSCloj receives a single nested
+            spec and returns mangled data (:total as a map instead of a double)."
+    (let [calls (atom 0)
+          ;; SCI code calls (predict {:schema [:map …]}) and asserts the result
+          ;; is a real map with concrete values pulled by key.
+          code "(let [r (predict {:name \"extract\"
+                                   :instructions \"extract\"
+                                   :inputs {:text \"INVOICE Acme Total $100\"}
+                                   :schema [:map
+                                            [:vendor-name :string]
+                                            [:total :double]]})]
+                  (final! {:answer (str (:vendor-name r) \" total=\" (:total r))}))"]
+      (with-redefs [dscloj/predict
+                    (fn [_p module _inputs _opts]
+                      (let [n (swap! calls inc)]
+                        (if (= 1 n)
+                          ;; First call: code generation — return the SCI code
+                          {:outputs {:code code}
+                           :usage {:prompt-tokens 5 :completion-tokens 5 :total-tokens 10}}
+                          ;; Second call: the (predict {…}) inside SCI.
+                          (do
+                            ;; Assert the executor passed FLATTENED outputs to DSCloj.
+                            (let [out-names (set (mapv :name (:outputs module)))]
+                              (is (= #{:vendor-name :total} out-names)
+                                  "make-rlm-predict-fn must flatten top-level :map fields into separate DSCloj outputs"))
+                            ;; Return what DSCloj would return after flattening:
+                            ;; flat fields, each cleanly typed.
+                            {:outputs {:vendor-name "Acme" :total 100.0}
+                             :usage {:prompt-tokens 7 :completion-tokens 3 :total-tokens 10}}))))]
+        (let [result (executor/execute-repl-researcher
+                       (rlm-node)
+                       (bb "ctx" "q")
+                       :test
+                       {})]
+          (is (= :success (:status result)))
+          (is (= "Acme total=100.0" (-> result :outputs :answer))
+              "predict should reassemble flat DSCloj outputs back into a structured map keyed by :vendor-name and :total"))))))
+
+(deftest predict-with-scalar-schema-still-works-test
+  (testing "Non-map schemas (the existing predict-fn-callable-test case) are
+            untouched by the flatten-then-reassemble fix — single output, no
+            field decomposition, identical wire shape to before."
+    (let [calls (atom 0)
+          code "(let [r (predict {:name \"classify\"
+                                   :instructions \"Classify input\"
+                                   :inputs {:line \"hello\"}
+                                   :schema :string})]
+                  (final! {:answer r}))"]
+      (with-redefs [dscloj/predict
+                    (fn [_p module _inputs _opts]
+                      (let [n (swap! calls inc)]
+                        (if (= 1 n)
+                          {:outputs {:code code}
+                           :usage {:prompt-tokens 5 :completion-tokens 5 :total-tokens 10}}
+                          (do
+                            ;; Scalar schema: still a single output named :result
+                            (let [out-names (mapv :name (:outputs module))]
+                              (is (= [:result] out-names)
+                                  "Non-map schema should remain a single :result output"))
+                            {:outputs {:result "classified"}
+                             :usage {:prompt-tokens 7 :completion-tokens 3 :total-tokens 10}}))))]
+        (let [result (executor/execute-repl-researcher
+                       (rlm-node)
+                       (bb "ctx" "q")
+                       :test
+                       {})]
+          (is (= :success (:status result)))
+          (is (= "classified" (-> result :outputs :answer))
+              "Scalar predict still returns the bare value (not wrapped)"))))))
+
+;; =============================================================================
+;; Pre-execution validation in the RLM iteration loop
+;; =============================================================================
+
+(deftest pre-execution-syntax-error-surfaces-in-history-test
+  (testing "When the LLM emits unbalanced parens, the iteration loop reports a
+            structured 'SYNTAX ERROR' rejection BEFORE running SCI eval. The
+            iteration history records it so the next iteration prompt can
+            adapt."
+    (let [calls (atom 0)]
+      (with-redefs [dscloj/predict
+                    (fn [_p _module _i _o]
+                      (let [n (swap! calls inc)]
+                        (cond
+                          ;; First call: emit unbalanced code
+                          (= 1 n)
+                          {:outputs {:code "(let [x 1 y 2] (+ x y"}
+                           :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}}
+                          ;; Second call: emit valid final!
+                          :else
+                          {:outputs {:code "(final! {:answer \"recovered\"})"}
+                           :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})))]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 4 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})
+              first-iter (first (:iterations result))]
+          (is (= :success (:status result))
+              "Loop should recover after the syntax-error iteration")
+          (is (string? (:error first-iter))
+              "Iteration 1 should record an error string")
+          (is (re-find #"SYNTAX ERROR" (:error first-iter))
+              "Pre-execution rejection should be tagged 'SYNTAX ERROR' for LLM clarity")
+          (is (= "recovered" (-> result :outputs :answer))))))))
+
+(deftest pre-execution-sandbox-escape-rejected-test
+  (testing "Code referencing System/* or other off-sandbox symbols is rejected
+            BEFORE eval, with a 'SANDBOX ESCAPE' message naming the offending
+            symbols."
+    (let [calls (atom 0)]
+      (with-redefs [dscloj/predict
+                    (fn [_p _module _i _o]
+                      (let [n (swap! calls inc)]
+                        (cond
+                          (= 1 n)
+                          {:outputs {:code "(let [t (System/currentTimeMillis)] (println t))"}
+                           :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}}
+                          :else
+                          {:outputs {:code "(final! {:answer \"recovered\"})"}
+                           :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})))]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 4 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})
+              first-iter (first (:iterations result))]
+          (is (= :success (:status result)))
+          (is (re-find #"SANDBOX ESCAPE" (:error first-iter)))
+          (is (re-find #"System/currentTimeMillis" (:error first-iter))
+              "The specific offending symbol should appear in the error message")
+          (is (re-find #"Java interop \(disallowed\)" (:error first-iter))
+              "Java-interop refs should be flagged with their own subheading")
+          (is (= "recovered" (-> result :outputs :answer))))))))
+
+(deftest pre-execution-recognizes-host-bindings-test
+  (testing "Code that uses predict / final! / context / inputs (RLM extra-bindings)
+            is NOT rejected — those symbols are bound by the executor."
+    (with-redefs [dscloj/predict
+                  (fn [_p _module _i _o]
+                    {:outputs {:code "(final! {:answer (str \"q=\" question)})"}
+                     :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})]
+      (let [node {:type :repl-researcher :name "test"
+                  :instruction "do" :reads [:question] :writes [:answer]
+                  :mcp-tools [] :max-iterations 2 :model "test-model"
+                  :rlm {:enabled? true :max-predict-calls 10}}
+            bb {:question {:key :question :schema :string :value "hi" :version 1}
+                :answer   {:key :answer   :schema :string :value nil :version 0}}
+            result (executor/execute-repl-researcher node bb :test {})]
+        (is (= :success (:status result)))
+        ;; If pre-validation incorrectly rejected `question` or `final!`,
+        ;; we'd see a SANDBOX ESCAPE error in the only iteration.
+        (let [first-iter (first (:iterations result))]
+          (is (nil? (:error first-iter))
+              "Bound symbols (question, final!) should pass pre-validation"))
+        (is (= "q=hi" (-> result :outputs :answer)))))))
+
+;; =============================================================================
+;; Convergence-detector classification (error-repeat vs output-repeat)
+;; =============================================================================
+
+(deftest convergence-error-repeat-distinguished-test
+  (testing "When two iterations crash identically, the failure message
+            surfaces the underlying error (not the generic 'Output repeated')"
+    (let [calls (atom 0)
+          ;; Both iterations emit the same code that causes the same SCI error
+          ;; (calling slurp — flagged by pre-validation). The convergence
+          ;; detector should classify this as :error and surface a message
+          ;; mentioning the actual error.
+          bad-code "(slurp \"/tmp/x\")"]
+      (with-redefs [dscloj/predict
+                    (fn [_p _module _i _o]
+                      (swap! calls inc)
+                      {:outputs {:code bad-code}
+                       :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 4 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})]
+          (is (= :failure (:status result)))
+          (is (= :error (-> result :rlm :repeat-kind))
+              "Convergence detector should classify identical errors as :error kind")
+          (is (re-find #"SAME ERROR" (:error result))
+              "Failure message should explicitly say SAME ERROR (not generic 'Output repeated')")
+          (is (re-find #"SANDBOX ESCAPE|slurp" (:error result))
+              "Failure message should include the underlying rejection reason"))))))
+
+(deftest convergence-output-repeat-distinguished-test
+  (testing "When two iterations produce the same successful output without
+            calling (final!), the convergence message says SAME OUTPUT
+            (not SAME ERROR), pointing the LLM at the missing final! call"
+    (let [calls (atom 0)
+          ;; Both iterations succeed but neither calls (final! …) — they just
+          ;; produce a stable expression value
+          stable-code "(println \"hello\") 42"]
+      (with-redefs [dscloj/predict
+                    (fn [_p _module _i _o]
+                      (swap! calls inc)
+                      {:outputs {:code stable-code}
+                       :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 4 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})]
+          (is (= :failure (:status result)))
+          (is (= :output (-> result :rlm :repeat-kind))
+              "Convergence detector should classify identical successful output as :output kind")
+          (is (re-find #"SAME OUTPUT" (:error result)))
+          (is (re-find #"final!" (:error result))
+              "Message should remind the LLM to wrap its result in (final! …)"))))))
+
+;; =============================================================================
+;; SCI validation/discovery helpers (check-shape, describe, ns-explore)
+;; =============================================================================
+
+(deftest check-shape-helper-test
+  (testing "(check-shape …) validates without coercing — returns {:ok? true} or
+            {:ok? false :errors […]}, never silently converts"
+    (let [code "(let [r (check-shape [:map [:total :double]] {:total 100.0})]
+                  (final! {:answer (str (:ok? r))}))"]
+      (with-redefs [dscloj/predict
+                    (fn [_p _module _i _o]
+                      {:outputs {:code code}
+                       :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 2 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})]
+          (is (= :success (:status result)))
+          (is (= "true" (-> result :outputs :answer)))))))
+
+  (testing "(check-shape …) flags shape mismatches with structured errors"
+    (let [code "(let [r (check-shape [:map [:total :double]] {:total \"not-a-number\"})]
+                  (final! {:answer (str (:ok? r) \" errors:\" (count (:errors r)))}))"]
+      (with-redefs [dscloj/predict
+                    (fn [_p _module _i _o]
+                      {:outputs {:code code}
+                       :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 2 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})]
+          (is (= :success (:status result)))
+          (is (re-find #"false errors:" (-> result :outputs :answer))))))))
+
+(deftest describe-helper-test
+  (testing "(describe …) returns inspection metadata without mutating the value"
+    (let [code "(let [d1 (describe \"hello\")
+                      d2 (describe {:a 1 :b 2})
+                      d3 (describe [1 2 3])]
+                  (final! {:answer (str (:type d1) \"|\" (:type d2) \"|\" (:type d3))}))"]
+      (with-redefs [dscloj/predict
+                    (fn [_p _module _i _o]
+                      {:outputs {:code code}
+                       :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools [] :max-iterations 2 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})]
+          (is (= :success (:status result)))
+          (is (= ":string|:map|:vector" (-> result :outputs :answer))))))))
+
+(deftest ns-explore-helper-test
+  (testing "(ns-explore \"…\") lists tools available under a namespace prefix"
+    (let [code "(final! {:answer (clojure.string/join \",\" (ns-explore \"pdf\"))})"]
+      (with-redefs [dscloj/predict
+                    (fn [_p _module _i _o]
+                      {:outputs {:code code}
+                       :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}})]
+        (let [node {:type :repl-researcher :name "test"
+                    :instruction "do" :reads [:q] :writes [:answer]
+                    :mcp-tools ["pdf/page-count" "pdf/page-text" "xlsx/write-workbook"]
+                    :max-iterations 2 :model "test-model"
+                    :rlm {:enabled? true :max-predict-calls 10}}
+              bb {:q      {:key :q :schema :string :value "?" :version 1}
+                  :answer {:key :answer :schema :string :value nil :version 0}}
+              result (executor/execute-repl-researcher node bb :test {})]
+          (is (= :success (:status result)))
+          (is (= "page-count,page-text" (-> result :outputs :answer))
+              "ns-explore should return only tools in the requested namespace, sorted"))))))
