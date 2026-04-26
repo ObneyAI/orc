@@ -21,25 +21,25 @@ The two tasks where we have full 4-stack data with high-confidence baselines:
 
 ### invoice_processing — 2 PDFs, 5 + 6 line items per invoice, $34,804.30 total
 
-| Stack | n_ok / n | Median cost | Output (when ok) | Verdict |
-|---|---|---|---|---|
-| predict-rlm | 3 / 3 | $0.075 | 2 inv, [5,6] LI, $34,804 — exact | reference |
-| orc Style A | 3 / 3 | $0.006 (12.5× cheaper) | 2 inv, [5,6 or 5,7] LI, $34,804 — pipeline occasionally splits the discount line | parity, with one-off line-item variance |
-| orc Style B | 3 / 3 | $0.022 (3.4× cheaper) | 2 inv, [5,6] LI, $34,804 — identical to predict | **parity, full reliability** |
-| **orc Legacy** | **3 / 7** (43%) | $0.000 (executor token-format bug) | When ok: 2 inv, [5,6] LI, $34,804 — identical to predict. When not: ERR or placeholder strings | parity *when it works*, but reliability collapses |
+| Stack | n_ok / n | Median cost | Tokens (med) | Output (when ok) | Verdict |
+|---|---|---|---|---|---|
+| predict-rlm | 3 / 3 | $0.075 | 53,973 | 2 inv, [5,6] LI, $34,804 — exact | reference |
+| orc Style A | 3 / 3 | $0.006 (12.5× cheaper) | 4,422 (12× fewer) | 2 inv, [5,6 or 5,7] LI, $34,804 — pipeline occasionally splits the discount line | parity, with one-off line-item variance |
+| orc Style B | 3 / 3 | $0.022 (3.4× cheaper) | 10,462 (5× fewer) | 2 inv, [5,6] LI, $34,804 — identical to predict | **parity, full reliability** |
+| **orc Legacy** | **2 / 5** (40%) post-fix | $0.024 (3× cheaper) | ~12,500 (4× fewer) | When ok: 2 inv, [5,6] LI, $34,804 — identical to predict. When not: ERR with various syntax / sandbox failures | parity *when it works*, but reliability ceiling |
 
-**Reading**: invoice_processing is structurally tractable for all four architectures. Cost-quality ranks Legacy < Style A < Style B < predict-rlm (left = cheaper). Reliability ranks Legacy ≪ everyone else (43% vs 100%).
+**Reading**: invoice_processing is structurally tractable for all four architectures. Cost-quality ranks Legacy ≈ Style A < Style B < predict-rlm (left = cheaper). Reliability ranks Legacy ≪ everyone else (40% vs 100%). Hill-climb attempts moved invoice legacy reliability negligibly (43% → 40%); the ceiling appears to be a real architectural property of single-model-no-sub-call agents on extraction tasks.
 
 ### document_redaction — 1 PDF, 6 pages, 9-category PII
 
-| Stack | n_ok / n | Median cost | Median redactions | Coverage | Verdict |
-|---|---|---|---|---|---|
-| predict-rlm | 3 / 3 | $0.114 | 83 (range 69–97) | 9 categories, all 6 pages | reference |
-| orc Style A | 3 / 3 | $0.019 (6× cheaper) | 69 (range 65–75) | 6–9 categories | parity on count, mild category drift (Title Case) |
-| orc Style B | 5 / 6 (83%) | $0.033 | 68 / 73 / 0 | 9–10 categories when ok; 1/6 still shortcuts to 0 | mostly parity, occasional shortcut |
-| **orc Legacy** | **2 / 6** (33%) | $0.000 | 23, 26 (3× LESS than predict) | covers only 4 of 6 pages | partial coverage when ok; high failure rate |
+| Stack | n_ok / n | Median cost | Tokens (med) | Median redactions | Coverage | Verdict |
+|---|---|---|---|---|---|---|
+| predict-rlm | 3 / 3 | $0.114 | 96,702 | 83 (range 69–97) | 9 categories, all 6 pages | reference |
+| orc Style A | 3 / 3 | $0.019 (6× cheaper) | 11,838 (8× fewer) | 69 (range 65–75) | 6–9 categories | parity on count, mild category drift (Title Case) |
+| orc Style B | 5 / 6 (83%) | $0.033 | 17,800 (5× fewer) | 68 / 73 / 0 | 9–10 categories when ok; 1/6 still shortcuts to 0 | mostly parity, occasional shortcut |
+| **orc Legacy** | **2 / 3** (67%) post-fix | $0.029 (4× cheaper) | ~12,000 (8× fewer) | 23 (3× LESS than predict) | covers only 4 of 6 pages | partial coverage when ok; **prompt-iteration improved reliability 33% → 67%** |
 
-**Reading**: legacy mode finds *real* PII when it works, but its single model can't span the depth of a multi-page document. Coverage drops to ⅓ vs the RLM-mode stacks; reliability drops to ⅓.
+**Reading**: legacy mode finds *real* PII when it works, but its single model can't span the depth of a multi-page document. Coverage drops to ⅓ vs the RLM-mode stacks. Reliability moved meaningfully on redaction (33% → 67% with explicit "cover all pages" + nested-`#()` ban + reliable-iteration-plan in the prompt), suggesting the redaction-failure modes were more prompt-amenable than invoice's.
 
 ## What Legacy mode showed us
 
@@ -51,7 +51,7 @@ The Legacy stack is the empirical foil that makes the RLM-mode results meaningfu
    - `(ns sandbox (:require [clojure.string :as str]))` — SCI rejects `require`
    - `Double/parseDouble`, `System/getProperty`, `(.method obj …)` — Java interop blocks
 2. **Depth ceiling on multi-page work.** Document_redaction legacy covered 4 of 6 pages, finding 23–26 PII items vs predict-rlm's 69–97 across 6 pages. The single-model context can only attend to so much before it commits an answer.
-3. **Cost meter is broken in legacy mode** (orc bug, separate followup). `executor.clj :: execute-legacy-repl-researcher` reads `(:prompt_tokens usage 0)` (snake_case) from the dscloj/predict response, but modern dscloj normalizes to kebab-case; the snake-case lookup hits the default `0`, so `total-usage` accumulates to 0 and our bench cost computes to $0.00. Tokens were spent — they just don't surface in the trace. The unit test (`repl_researcher_test.clj :: usage-tracking-test`) passes because it mocks dscloj/predict to return snake-case explicitly.
+3. ~~Cost meter is broken in legacy mode~~ **FIXED** in this round. The legacy executor was reading `:prompt_tokens` (snake_case) from the dscloj/predict response, but modern dscloj normalizes to kebab. Now uses the existing `normalize-usage` helper — costs and tokens land correctly in the trace and bench reports.
 
 ## What this means for the architecture conversation
 
@@ -92,15 +92,16 @@ The Hybrid path (Style A pipeline with an RLM `(fallback …)` branch on quality
 
 1. ~~Fix orc bench input keys~~ ✅ done
 2. ~~Fix walker double-count in compare.py~~ ✅ done (`_result_scope`)
-3. **Fix legacy executor token-format bug** (`executor.clj :: execute-legacy-repl-researcher` reading `:prompt_tokens` instead of `:prompt-tokens`) — silent cost-undercount; trivial fix.
-4. **orc should error on missing reads** (silent nil-substitution caught the bench wrapper bug only via output inspection — production users would too).
-5. ~~Persist `:iterations` to node-completion event~~ ✅ done
-6. **Fix predict-rlm wrapper for bare-Pydantic returns** (contract_comparison output still missing).
-7. **Hybrid `(fallback A B)` workflow** for invoice_processing as the next experiment — now empirically motivated by Legacy data.
-8. **LLM-as-judge for prose tasks** (document_analysis report quality, contract_comparison diff completeness).
-9. **Reasoning-token-aware cost computation** (10× cost undercount makes budget tracking unsafe).
-10. **Style A + RLM-fallback hybrid on a "weird vendor" input** (deliberate Style-A breakage to demonstrate the fallback firing).
-11. **Style C synthesizer pilot** (RLM-as-workflow-author, per Part 7 + Cameron's framing).
+3. ~~Fix legacy executor token-format bug~~ ✅ done (uses `normalize-usage`)
+4. ~~Persist `:iterations` to node-completion event~~ ✅ done
+5. ~~Add per-run token columns to compare.py~~ ✅ done (`root[N] in/out  sub[N] in/out`)
+6. **orc should error on missing reads** (silent nil-substitution caught the bench wrapper bug only via output inspection — production users would too).
+7. **Fix predict-rlm wrapper for bare-Pydantic returns** (contract_comparison output still missing).
+8. **Hybrid `(fallback A B)` workflow** for invoice_processing as the next experiment — now empirically motivated by Legacy data (Style A's 100% reliability + Legacy's 40% reliability shows the value of structural fallback).
+9. **LLM-as-judge for prose tasks** (document_analysis report quality, contract_comparison diff completeness).
+10. **Reasoning-token-aware cost computation** (10× cost undercount makes budget tracking unsafe — the local price table doesn't account for gpt-5 reasoning tokens).
+11. **Style A + RLM-fallback hybrid on a "weird vendor" input** (deliberate Style-A breakage to demonstrate the fallback firing).
+12. **Style C synthesizer pilot** (RLM-as-workflow-author, per Part 7 + Cameron's framing).
 
 ## What this proved about the comparison framework
 
