@@ -14,7 +14,13 @@
             ;; Runtime for synchronous execution
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             ;; DSL for workflow building
-            [ai.obney.orc.orc-service.core.dsl :as dsl]))
+            [ai.obney.orc.orc-service.core.dsl :as dsl]
+            ;; Executor helpers exposed for downstream LLM callers
+            [ai.obney.orc.orc-service.core.executor :as executor]
+            ;; Versioning commands (publish/revert) are issued through grain's
+            ;; command processor — exposed below as small wrappers.
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.time.interface :as time]))
 
 ;; =============================================================================
 ;; Read Models
@@ -39,6 +45,12 @@
 
 ;; Tick functions
 (def get-tick rm/get-tick)
+(def get-ticks-for-sheet rm/get-ticks-for-sheet)
+(def get-current-tick rm/get-current-tick)
+
+;; Trace functions
+(def get-trace rm/get-trace)
+(def get-traces-for-sheet rm/get-traces-for-sheet)
 
 ;; Version functions
 (def get-versions-for-sheet rm/get-versions-for-sheet)
@@ -136,6 +148,74 @@
 ;; =============================================================================
 ;; GEPA Integration (Native Clojure - no Python required)
 ;; =============================================================================
+
+;; =============================================================================
+;; Versioning Commands
+;; =============================================================================
+
+(defn publish-version!
+  "Snapshot the current draft state of a Sheet as a new immutable
+   published version. Returns the command result map. On success the
+   first event in `:command-result/events` carries `:version-number`
+   and `:snapshot-id`. On failure returns a cognitect anomaly map."
+  [ctx sheet-id & {:keys [description]}]
+  (cp/process-command
+    (assoc ctx :command
+           (cond-> {:command/name :sheet/publish-version
+                    :command/id (random-uuid)
+                    :command/timestamp (time/now)
+                    :sheet-id sheet-id}
+             description (assoc :description description)))))
+
+(defn revert-to-version!
+  "Discard the current draft state and restore the Sheet from a
+   previously-published version. The dirty draft (if any) is stashed
+   first so it can be restored. Returns the command result map or a
+   cognitect anomaly map."
+  [ctx sheet-id version-number]
+  (cp/process-command
+    (assoc ctx :command
+           {:command/name :sheet/revert-to-version
+            :command/id (random-uuid)
+            :command/timestamp (time/now)
+            :sheet-id sheet-id
+            :version-number version-number})))
+
+(defn restore-stash!
+  "Restore a stashed draft after a revert. Returns the command result
+   map or a cognitect anomaly map."
+  [ctx sheet-id]
+  (cp/process-command
+    (assoc ctx :command
+           {:command/name :sheet/restore-stash
+            :command/id (random-uuid)
+            :command/timestamp (time/now)
+            :sheet-id sheet-id})))
+
+;; =============================================================================
+;; LLM Provider Helpers
+;; =============================================================================
+
+(def setup-providers!
+  "Register DSCloj providers from environment variables (e.g.
+   OPENROUTER_API_KEY). Call once at application startup."
+  executor/setup-providers!)
+
+(def list-available-providers
+  "List all registered DSCloj providers."
+  executor/list-available-providers)
+
+(def get-provider-with-model
+  "Resolve a provider keyword + model override into a provider keyword
+   that actually applies the model. litellm-clj's router ignores
+   :model in request options for registered providers; this helper
+   dynamically registers a model-specific provider keyword on demand
+   and returns it. Pass nil for `model-override` to get the original
+   provider back unchanged.
+
+   Use this in any code that calls dscloj/predict directly with an
+   override — it's the same shim every executor path uses."
+  executor/get-provider-with-model)
 
 ;; GEPA prompt optimization is available via the native Clojure implementation:
 ;;
