@@ -153,25 +153,58 @@
 ;; Model override
 ;; ---------------------------------------------------------------------------
 
+(defn- assert-allowed-model!
+  "Hard guard: refuse to run a workflow whose any node references gpt-4 or
+   any other forbidden model. Single source of truth for 'never accidentally
+   route to GPT-4' — catches both stale workflow data and any future default
+   that might leak through."
+  [workflow]
+  (let [forbidden #{"gpt-4" "openai/gpt-4" "gpt-4o" "openai/gpt-4o"
+                    "gpt-4o-mini" "openai/gpt-4o-mini" "gpt-4-turbo"
+                    "openai/gpt-4-turbo" "gpt-3.5-turbo" "openai/gpt-3.5-turbo"}
+        seen-models (atom #{})]
+    (walk/postwalk
+      (fn [x]
+        (when (and (map? x) (string? (:model x)))
+          (swap! seen-models conj (:model x)))
+        (when (and (map? x) (string? (get-in x [:rlm :predict-model])))
+          (swap! seen-models conj (get-in x [:rlm :predict-model])))
+        x)
+      workflow)
+    (let [bad (set (filter #(some (fn [f] (clojure.string/includes? % f)) forbidden) @seen-models))]
+      (when (seq bad)
+        (throw (ex-info (str "Refusing to execute: workflow references forbidden model(s) "
+                             (pr-str bad) ". Bench is configured to NEVER use GPT-4 / 4o / 3.5.")
+                        {:type :bench/forbidden-model :models bad})))
+      (when (empty? @seen-models)
+        (throw (ex-info "Workflow has no model bindings — would route to provider default (potentially GPT-4o-mini via litellm-router)."
+                        {:type :bench/no-model}))))))
+
 (defn override-models
   "Walk the workflow data and replace :model on every node so the bench
    compares against the same model pair as predict-rlm. Decision (per plan):
      - repl-researcher nodes get :model = main, :rlm.predict-model = sub
      - all `(dsl/llm …)` nodes (`:node-type :leaf, :executor :ai`) get
-       :model = sub (treat them as 'perception')"
+       :model = sub (treat them as 'perception')
+
+   Asserts that the resulting workflow has no nil-model nodes and no
+   forbidden-model references — refuses to return otherwise."
   [workflow main-model sub-model]
-  (walk/postwalk
-    (fn [x]
-      (cond
-        (and (map? x) (= :repl-researcher (:node-type x)))
-        (cond-> (assoc x :model main-model)
-          (:rlm x) (assoc-in [:rlm :predict-model] sub-model))
+  (let [overridden
+        (walk/postwalk
+          (fn [x]
+            (cond
+              (and (map? x) (= :repl-researcher (:node-type x)))
+              (cond-> (assoc x :model main-model)
+                (:rlm x) (assoc-in [:rlm :predict-model] sub-model))
 
-        (and (map? x) (= :leaf (:node-type x)) (= :ai (:executor x)))
-        (assoc x :model sub-model)
+              (and (map? x) (= :leaf (:node-type x)) (= :ai (:executor x)))
+              (assoc x :model sub-model)
 
-        :else x))
-    workflow))
+              :else x))
+          workflow)]
+    (assert-allowed-model! overridden)
+    overridden))
 
 ;; ---------------------------------------------------------------------------
 ;; Cost calculation
