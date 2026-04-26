@@ -130,14 +130,23 @@
          (sort-by #(.getName ^java.io.File %))
          (mapv #(.getAbsolutePath ^java.io.File %)))))
 
+(defn- task-ns
+  "Resolve the namespace symbol holding the workflow for a given style."
+  [task style]
+  (let [{:keys [pipeline-ns agentic-ns dir]} (tasks task)]
+    (case style
+      :a       pipeline-ns
+      :b       agentic-ns
+      :legacy  (symbol (str "ai.obney.orc.examples." (str/replace dir "_" "-") ".legacy")))))
+
 (defn- load-workflow [task style]
-  (let [{:keys [pipeline-ns agentic-ns]} (tasks task)
-        ns-sym (case style :a pipeline-ns :b agentic-ns)
+  (let [ns-sym (task-ns task style)
         _ (require ns-sym)
         workflow-var (ns-resolve ns-sym 'workflow)]
     (when-not workflow-var
-      (throw (ex-info (str "No `workflow` var in " ns-sym)
-                      {:task task :style style})))
+      (throw (ex-info (str "No `workflow` var in " ns-sym
+                           " (does this task have a " (name style) " implementation?)")
+                      {:task task :style style :ns ns-sym})))
     @workflow-var))
 
 ;; ---------------------------------------------------------------------------
@@ -216,7 +225,15 @@
             su (some-> rlm-evt :rlm :subcall-usage)
             pcc (or (get-in rlm-evt [:rlm :predict-call-count]) 0)]
         {:root (assoc (sum-tokens (when ru [ru])) :calls (if ru 1 0))
-         :sub  (assoc (sum-tokens (when su [su])) :calls pcc)}))))
+         :sub  (assoc (sum-tokens (when su [su])) :calls pcc)})
+
+      :legacy
+      ;; Legacy mode: single repl-researcher node, no :rlm telemetry.
+      ;; All tokens are root (one model thinking iteratively); sub is
+      ;; structurally always 0 (no predict / predict-all available).
+      (let [usages (keep :usage node-events)]
+        {:root (assoc (sum-tokens usages) :calls (count usages))
+         :sub  {:input 0 :output 0 :calls 0}}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Output artifact capture
@@ -451,8 +468,8 @@
   (when-not (contains? tasks task)
     (throw (ex-info (str "Unknown task " task " — must be one of " (keys tasks))
                     {:task task})))
-  (when-not (#{:a :b} style)
-    (throw (ex-info (str "Style must be :a or :b, got " style) {:style style})))
+  (when-not (#{:a :b :legacy} style)
+    (throw (ex-info (str "Style must be :a, :b, or :legacy, got " style) {:style style})))
   (when-not (#{:predict-rlm :orc} prompt-source)
     (throw (ex-info (str ":prompt-source must be :predict-rlm or :orc, got " prompt-source)
                     {:prompt-source prompt-source})))

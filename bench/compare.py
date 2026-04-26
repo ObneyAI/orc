@@ -283,7 +283,7 @@ def _report_task(task: str, only_recent: bool = True,
 
     suffix = f" — orc runs since {since}" if since else ""
     print(f"\n## {task}{suffix}\n")
-    for stack in ("predict-rlm", "orc-style-a", "orc-style-b"):
+    for stack in ("predict-rlm", "orc-style-legacy", "orc-style-a", "orc-style-b"):
         rs = sorted(by_stack.get(stack, []), key=lambda r: r.get("run_id", ""))
         if only_recent and rs and not (since and stack.startswith("orc")):
             # Recent-3 truncation only applies when no since-cutoff is in
