@@ -335,7 +335,7 @@
             (let [result (if provider
                            (executor/execute-repl-researcher node blackboard provider context)
                            {:status :failure :error "No DSCloj provider configured"})
-                  {:keys [status outputs error duration-ms usage model rlm]} result]
+                  {:keys [status outputs error duration-ms usage model rlm iterations]} result]
               (cp/process-command
                 (assoc context :command
                        (cond-> {:command/id (random-uuid)
@@ -351,7 +351,8 @@
                          (seq exec-context) (assoc :inputs exec-context)
                          usage (assoc :usage usage)
                          model (assoc :model model)
-                         rlm   (assoc :rlm rlm)))))
+                         rlm   (assoc :rlm rlm)
+                         (seq iterations) (assoc :iterations iterations)))))
             (catch Exception e
               (cp/process-command
                 (assoc context :command

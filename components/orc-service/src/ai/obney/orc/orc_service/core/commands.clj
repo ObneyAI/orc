@@ -1012,7 +1012,7 @@
    atomically with the completion event to avoid race conditions.
    Optional execution metadata (:usage :model :rlm) is passed through to
    the node-execution-completed event for trace assembly."
-  [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage model rlm]} :command
+  [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage model rlm iterations]} :command
     :as ctx}]
   (let [completion-event (->event
                            {:type :sheet/node-execution-completed
@@ -1029,7 +1029,8 @@
                                     (seq inputs) (assoc :inputs inputs)
                                     usage (assoc :usage usage)
                                     model (assoc :model model)
-                                    rlm   (assoc :rlm rlm))})
+                                    rlm   (assoc :rlm rlm)
+                                    (seq iterations) (assoc :iterations iterations))})
         ;; For tick-scoped executions with successful writes, emit bb writes atomically
         tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
         bb-write-events (when (and tick-scoped? (= :success status) (seq writes))

@@ -499,7 +499,8 @@
     ;; Optional execution metadata (carried through to node trace events)
     [:usage {:optional true} :map]                       ;; {:prompt-tokens N :completion-tokens N :total-tokens N}
     [:model {:optional true} :string]                    ;; Model id actually used
-    [:rlm {:optional true} :map]]                        ;; RLM-mode telemetry (root-usage, subcall-usage, predict-call-count, ...)
+    [:rlm {:optional true} :map]                         ;; RLM-mode telemetry (root-usage, subcall-usage, predict-call-count, ...)
+    [:iterations {:optional true} [:vector :map]]]       ;; repl-researcher per-iteration history: [{:code :result :stdout :error?}, ...]
 
    :sheet/fail-node-execution
    [:map
@@ -871,7 +872,8 @@
     ;; Optional execution metadata (mirrors complete-node-execution command)
     [:usage {:optional true} :map]
     [:model {:optional true} :string]
-    [:rlm {:optional true} :map]]
+    [:rlm {:optional true} :map]
+    [:iterations {:optional true} [:vector :map]]]      ;; repl-researcher per-iteration history
 
    :sheet/tree-tick-completed
    [:map
