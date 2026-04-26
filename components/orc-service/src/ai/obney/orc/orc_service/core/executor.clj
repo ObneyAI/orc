@@ -907,9 +907,18 @@
       (when (> cnt (:max-predict-calls rlm-cfg))
         (throw (ex-info (str "predict call budget exceeded: " (:max-predict-calls rlm-cfg))
                         {:type :rlm/budget :limit (:max-predict-calls rlm-cfg) :count cnt})))
-      (let [serialized-inputs (reduce-kv
+      ;; data:image/ inputs must be marked :type :image so DSCloj sends them
+      ;; as multimodal vision content rather than stringifying the base64
+      ;; blob into the prompt template (which NPE'd deep in DSCloj on the
+      ;; 600 KB+ payload).
+      (let [image-input? (fn [v]
+                           (and (string? v)
+                                (clojure.string/starts-with? v "data:image/")))
+            serialized-inputs (reduce-kv
                                 (fn [m k v]
-                                  (assoc m k (serialize-for-llm v)))
+                                  (assoc m k (if (image-input? v)
+                                               v
+                                               (serialize-for-llm v))))
                                 {} inputs)
             input-size (count (pr-str serialized-inputs))]
         (when (> input-size (:max-predict-input-chars rlm-cfg))
@@ -932,10 +941,11 @@
                                               (or instructions
                                                   (str "Output for " (or name "predict"))))))
                                    flat-outputs)
-              module {:inputs (mapv (fn [[k _]]
-                                      {:name k
-                                       :spec :string
-                                       :description (str "Input " (clojure.core/name k))})
+              module {:inputs (mapv (fn [[k v]]
+                                      (cond-> {:name k
+                                               :spec :string
+                                               :description (str "Input " (clojure.core/name k))}
+                                        (image-input? v) (assoc :type :image)))
                                     inputs)
                       :outputs dscloj-outputs
                       :instructions (or instructions
