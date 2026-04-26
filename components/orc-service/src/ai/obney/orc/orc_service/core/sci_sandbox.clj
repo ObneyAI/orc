@@ -155,13 +155,18 @@
    - MCP tools as callable functions (via :call-tool-fn)
    - Browser tools as direct functions (via :browser-tools)
    - Custom bindings for print functions (capture stdout)
+   - Host-provided extra bindings (via :extra-bindings)
 
    Options:
    - :call-tool-fn - Function (tool-name args-map) -> result for MCP calls
    - :mcp-tools - Vector of MCP tool names to inject
    - :browser-tools - Vector of browser tool names to inject (e.g., [\"open\" \"snapshot\" \"click\"])
-   - :stdout-writer - StringWriter to capture stdout (optional)"
-  [{:keys [call-tool-fn mcp-tools browser-tools stdout-writer]}]
+   - :stdout-writer - StringWriter to capture stdout (optional)
+   - :extra-bindings - Map of {symbol value} merged into the user namespace and
+                       global SCI bindings. Generic mechanism; the sandbox does
+                       not interpret these. Used by callers to inject things
+                       like `inputs`, `context`, or RLM `predict`/`final!` fns."
+  [{:keys [call-tool-fn mcp-tools browser-tools stdout-writer extra-bindings]}]
   (let [{:keys [flat namespaces]} (build-tool-bindings call-tool-fn mcp-tools)
 
         ;; Browser tool bindings (shell-based, no session management)
@@ -208,14 +213,17 @@
                           (let [realized (realize-all value)]
                             (str "FINAL_ANSWER: " (pr-str realized))))
 
-        ;; Merge all bindings: MCP tools + browser tools + print overrides + helpers
+        extra (or extra-bindings {})
+
+        ;; Merge all bindings: MCP tools + browser tools + print overrides + helpers + extras
         all-bindings (merge flat browser-bindings print-bindings
                             {'FINAL_ANSWER final-answer-fn
-                             'realize-all realize-all})]
+                             'realize-all realize-all}
+                            extra)]
 
     (sci/init
      {:namespaces (merge {'clojure.core safe-core-final
-                          'user (merge flat browser-bindings)}
+                          'user (merge flat browser-bindings extra)}
                          namespaces)  ;; e.g., {'linear {'list_issues <fn>}}
       :bindings all-bindings})))
 

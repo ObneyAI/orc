@@ -208,3 +208,55 @@
                       [(get a \"source\") (get b \"source\")])")]
       (is (nil? (:error result)))
       (is (= ["exa/search" "tavily/search"] (mapv :tool @calls))))))
+
+;; =============================================================================
+;; Extra Bindings (host-provided, generic)
+;; =============================================================================
+
+(deftest extra-bindings-test
+  (testing "scalar extra binding is reachable as a value in SCI"
+    (let [ctx (sandbox/build-sci-context
+                {:call-tool-fn nil
+                 :mcp-tools []
+                 :extra-bindings {'question "what is 2+2?"
+                                  'answer 4}})
+          result (sandbox/execute-code ctx "[question answer]")]
+      (is (nil? (:error result)))
+      (is (= ["what is 2+2?" 4] (:raw-result result)))))
+
+  (testing "function extra binding is callable from SCI"
+    (let [calls (atom [])
+          predict-fn (fn [m]
+                       (swap! calls conj m)
+                       {:label "ok" :input m})
+          ctx (sandbox/build-sci-context
+                {:call-tool-fn nil
+                 :mcp-tools []
+                 :extra-bindings {'predict predict-fn}})
+          result (sandbox/execute-code ctx
+                   "(predict {:name \"classify\" :inputs {:line \"hello\"}})")]
+      (is (nil? (:error result)))
+      (is (= 1 (count @calls)))
+      (is (= "classify" (:name (first @calls))))
+      (is (= {:label "ok" :input {:name "classify"
+                                  :inputs {:line "hello"}}}
+             (:raw-result result)))))
+
+  (testing "extra bindings coexist with MCP tools"
+    (let [ctx (sandbox/build-sci-context
+                {:call-tool-fn (fn [_ _] {"result" "tool-value"})
+                 :mcp-tools ["lookup"]
+                 :extra-bindings {'helper (fn [x] (* x 2))}})
+          result (sandbox/execute-code ctx
+                   "[(helper 21) (get (lookup {:k 1}) \"result\")]")]
+      (is (nil? (:error result)))
+      (is (= [42 "tool-value"] (:raw-result result)))))
+
+  (testing "extra bindings can shadow built-in helpers if needed"
+    (let [ctx (sandbox/build-sci-context
+                {:call-tool-fn nil
+                 :mcp-tools []
+                 :extra-bindings {'realize-all (fn [_] :overridden)}})
+          result (sandbox/execute-code ctx "(realize-all {:x 1})")]
+      (is (nil? (:error result)))
+      (is (= :overridden (:raw-result result))))))

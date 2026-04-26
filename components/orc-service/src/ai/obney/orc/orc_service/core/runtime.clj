@@ -54,7 +54,9 @@
                        :max-concurrency (:max-concurrency snapshot-node)
                        ;; Repl-researcher fields
                        :mcp-tools (or (:mcp-tools snapshot-node) [])
+                       :browser-tools (or (:browser-tools snapshot-node) [])
                        :max-iterations (:max-iterations snapshot-node)
+                       :rlm (:rlm snapshot-node)
                        ;; Ontology context injection
                        :context (:context snapshot-node)}
           ;; Recursively parse children

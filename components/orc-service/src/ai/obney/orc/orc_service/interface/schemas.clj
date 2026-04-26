@@ -81,6 +81,25 @@
    [:value {:optional true} :any]
    [:on-fail {:optional true} on-fail-behavior]])
 
+(def rlm-config
+  "Optional RLM-mode configuration for repl-researcher nodes.
+
+   When :enabled? is true the executor will:
+   - Bind blackboard reads into SCI as `inputs` and direct symbols
+   - Resolve :context-key (or auto-detect) and bind it as `context` (full value
+     in the sandbox; metadata-only in the root prompt)
+   - Expose host-backed `predict`, `predict-all`, and `final!` to SCI code
+   - Track root vs sub-LM usage separately and prefer captured `final!`
+     values over legacy `FINAL_ANSWER` extraction"
+  [:map
+   [:enabled? {:optional true} :boolean]
+   [:context-key {:optional true} :keyword]
+   [:predict-model {:optional true} :string]
+   [:max-predict-calls {:optional true} :int]
+   [:max-predict-concurrency {:optional true} :int]
+   [:max-predict-input-chars {:optional true} :int]
+   [:history-preview-chars {:optional true} :int]])
+
 ;; =============================================================================
 ;; Domain Schemas (for use in query results)
 ;; =============================================================================
@@ -132,7 +151,9 @@
     [:max-concurrency {:optional true} :int]       ;; Max parallel iterations (nil = sequential)
     ;; Repl-researcher-only fields
     [:mcp-tools {:optional true} [:vector :string]] ;; Available MCP tool names for research
+    [:browser-tools {:optional true} [:vector :string]] ;; Available agent-browser tool names
     [:max-iterations {:optional true} :int]         ;; Max research iterations (default 10)
+    [:rlm {:optional true} :map]                    ;; Optional RLM mode config (see set-repl-researcher-config)
     ;; Delegate-only fields
     [:target-sheet-id {:optional true} :uuid]       ;; Sheet to delegate execution to
     [:delegate-timeout-ms {:optional true} :int]    ;; Timeout for delegated execution
@@ -372,8 +393,10 @@
     [:reads [:vector :keyword]]                         ;; Blackboard keys (metadata only shown to LLM)
     [:writes [:vector :keyword]]                        ;; Output keys (final-answer, iterations, etc.)
     [:mcp-tools [:vector :string]]                      ;; Available MCP tool names
+    [:browser-tools {:optional true} [:vector :string]] ;; Available agent-browser tool names
     [:model {:optional true} :string]                   ;; OpenRouter model ID
-    [:max-iterations {:optional true} :int]]            ;; Default 10
+    [:max-iterations {:optional true} :int]             ;; Default 10
+    [:rlm {:optional true} rlm-config]]                 ;; Optional RLM-mode config
 
    :sheet/set-delegate-config
    [:map
@@ -472,7 +495,11 @@
     [:status [:enum :success :failure]]
     [:writes [:map-of :keyword :any]]
     [:duration-ms {:optional true} :int]
-    [:inputs {:optional true} [:map-of :keyword :any]]]
+    [:inputs {:optional true} [:map-of :keyword :any]]
+    ;; Optional execution metadata (carried through to node trace events)
+    [:usage {:optional true} :map]                       ;; {:prompt-tokens N :completion-tokens N :total-tokens N}
+    [:model {:optional true} :string]                    ;; Model id actually used
+    [:rlm {:optional true} :map]]                        ;; RLM-mode telemetry (root-usage, subcall-usage, predict-call-count, ...)
 
    :sheet/fail-node-execution
    [:map
@@ -730,14 +757,18 @@
     [:reads [:vector :keyword]]
     [:writes [:vector :keyword]]
     [:mcp-tools [:vector :string]]
+    [:browser-tools {:optional true} [:vector :string]]
     [:model {:optional true} :string]
     [:max-iterations {:optional true} :int]
+    [:rlm {:optional true} rlm-config]
     [:previous-instruction {:optional true} :string]
     [:previous-reads {:optional true} [:vector :keyword]]
     [:previous-writes {:optional true} [:vector :keyword]]
     [:previous-mcp-tools {:optional true} [:vector :string]]
+    [:previous-browser-tools {:optional true} [:vector :string]]
     [:previous-model {:optional true} :string]
-    [:previous-max-iterations {:optional true} :int]]
+    [:previous-max-iterations {:optional true} :int]
+    [:previous-rlm {:optional true} rlm-config]]
 
    :sheet/delegate-config-set
    [:map
@@ -836,7 +867,11 @@
     [:status [:enum :success :failure :running]]
     [:writes {:optional true} [:map-of :keyword :any]]
     [:duration-ms {:optional true} :int]
-    [:inputs {:optional true} [:map-of :keyword :any]]]
+    [:inputs {:optional true} [:map-of :keyword :any]]
+    ;; Optional execution metadata (mirrors complete-node-execution command)
+    [:usage {:optional true} :map]
+    [:model {:optional true} :string]
+    [:rlm {:optional true} :map]]
 
    :sheet/tree-tick-completed
    [:map

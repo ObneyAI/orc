@@ -507,3 +507,76 @@
             "Should contain blackboard")
         (is (clojure.string/includes? dsl-code "(sequence")
             "Should contain sequence")))))
+
+;; =============================================================================
+;; Repl-Researcher (RLM mode + browser-tools) Round-Trip
+;; =============================================================================
+
+(deftest repl-researcher-rlm-roundtrip-test
+  (testing ":rlm and :browser-tools survive build -> export -> rebuild round-trip"
+    (h/with-test-context [ctx]
+      (let [rlm-config {:enabled? true
+                        :context-key :context
+                        :predict-model "openai/gpt-5-mini"
+                        :max-predict-calls 100
+                        :max-predict-concurrency 8
+                        :max-predict-input-chars 100000
+                        :history-preview-chars 4000}
+            original-def (dsl/workflow "rlm-research"
+                           (dsl/blackboard {:context :string
+                                            :question :string
+                                            :answer :string})
+                           (dsl/repl-researcher "analyze"
+                             :model "google/gemini-2.5-flash"
+                             :instruction "Answer the question using the context."
+                             :reads [:context :question]
+                             :writes [:answer]
+                             :mcp-tools ["lookup"]
+                             :browser-tools ["open" "snapshot"]
+                             :max-iterations 15
+                             :rlm rlm-config))
+            sheet-id-1 (dsl/build-workflow! ctx original-def)
+
+            exported (dsl/export-sheet ctx sheet-id-1)
+            dsl-code (dsl/export-to-dsl exported)
+
+            regenerated-def (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+                              (eval (read-string dsl-code)))
+            sheet-id-2 (dsl/build-workflow! ctx regenerated-def)
+
+            export-1 (dsl/export-sheet ctx sheet-id-1)
+            export-2 (dsl/export-sheet ctx sheet-id-2)]
+
+        (is (= sheet-id-1 sheet-id-2)
+            "Deterministic sheet-id from name")
+        (is (= (normalize-export export-1)
+               (normalize-export export-2))
+            ":rlm and :browser-tools should survive round-trip")
+        ;; Spot-check the actual fields are present on the rebuilt node.
+        ;; The repl-researcher is the root, so :nodes is the node itself.
+        (let [node (:nodes export-2)]
+          (is (= rlm-config (:rlm node)))
+          (is (= ["open" "snapshot"] (:browser-tools node)))
+          (is (= ["lookup"] (:mcp-tools node))))))))
+
+(deftest repl-researcher-rlm-shorthand-roundtrip-test
+  (testing ":rlm true shorthand expands to {:enabled? true} and survives round-trip"
+    (h/with-test-context [ctx]
+      (let [original-def (dsl/workflow "rlm-shorthand"
+                           (dsl/blackboard {:input :string :output :string})
+                           (dsl/repl-researcher "analyze"
+                             :instruction "do it"
+                             :reads [:input]
+                             :writes [:output]
+                             :rlm true))
+            sheet-id-1 (dsl/build-workflow! ctx original-def)
+            exported  (dsl/export-sheet ctx sheet-id-1)
+            dsl-code  (dsl/export-to-dsl exported)
+            regen     (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+                        (eval (read-string dsl-code)))
+            sheet-id-2 (dsl/build-workflow! ctx regen)
+            export-2  (dsl/export-sheet ctx sheet-id-2)
+            node      (:nodes export-2)]
+        (is (= sheet-id-1 sheet-id-2))
+        (is (= {:enabled? true} (:rlm node))
+            ":rlm true shorthand should normalize to {:enabled? true}")))))

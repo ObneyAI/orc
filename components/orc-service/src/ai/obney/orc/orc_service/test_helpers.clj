@@ -354,7 +354,7 @@
 
 (defn make-set-repl-researcher-config-command
   "Create a set-repl-researcher-config command."
-  [sheet-id node-id instruction reads writes mcp-tools & {:keys [model max-iterations browser-tools]}]
+  [sheet-id node-id instruction reads writes mcp-tools & {:keys [model max-iterations browser-tools rlm]}]
   (cond-> {:command/name :sheet/set-repl-researcher-config
            :command/id (random-uuid)
            :command/timestamp (time/now)
@@ -366,7 +366,8 @@
            :mcp-tools (vec (or mcp-tools []))}
     model (assoc :model model)
     max-iterations (assoc :max-iterations max-iterations)
-    browser-tools (assoc :browser-tools (vec browser-tools))))
+    browser-tools (assoc :browser-tools (vec browser-tools))
+    rlm (assoc :rlm rlm)))
 
 (defn make-set-delegate-config-command
   "Create a set-delegate-config command.

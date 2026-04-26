@@ -383,7 +383,8 @@
       (assoc-in [(:node-id event) :mcp-tools] (:mcp-tools event))
       (assoc-in [(:node-id event) :browser-tools] (:browser-tools event))
       (assoc-in [(:node-id event) :model] (:model event))
-      (assoc-in [(:node-id event) :max-iterations] (:max-iterations event))))
+      (assoc-in [(:node-id event) :max-iterations] (:max-iterations event))
+      (assoc-in [(:node-id event) :rlm] (:rlm event))))
 
 (defmethod nodes* :sheet/delegate-config-set
   [state event]

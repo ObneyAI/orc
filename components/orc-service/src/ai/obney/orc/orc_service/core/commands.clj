@@ -583,7 +583,7 @@
 (defcommand :sheet set-repl-researcher-config
   {:authorized? authenticated?}
   "Set configuration for a repl-researcher node."
-  [{{:keys [sheet-id node-id instruction reads writes mcp-tools browser-tools model max-iterations]} :command
+  [{{:keys [sheet-id node-id instruction reads writes mcp-tools browser-tools model max-iterations rlm]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
         blackboard (rm/get-blackboard-by-key ctx sheet-id)
@@ -622,13 +622,15 @@
                   browser-tools (assoc :browser-tools (vec browser-tools))
                   model (assoc :model model)
                   max-iterations (assoc :max-iterations max-iterations)
+                  rlm (assoc :rlm rlm)
                   (:instruction node) (assoc :previous-instruction (:instruction node))
                   (seq (:reads node)) (assoc :previous-reads (:reads node))
                   (seq (:writes node)) (assoc :previous-writes (:writes node))
                   (seq (:mcp-tools node)) (assoc :previous-mcp-tools (:mcp-tools node))
                   (seq (:browser-tools node)) (assoc :previous-browser-tools (:browser-tools node))
                   (:model node) (assoc :previous-model (:model node))
-                  (:max-iterations node) (assoc :previous-max-iterations (:max-iterations node)))})]})))
+                  (:max-iterations node) (assoc :previous-max-iterations (:max-iterations node))
+                  (:rlm node) (assoc :previous-rlm (:rlm node)))})]})))
 
 (defcommand :sheet set-delegate-config
   {:authorized? authenticated?}
@@ -1007,8 +1009,10 @@
   {:authorized? authenticated?}
   "Complete a node execution (internal command from todo processor).
    For tick-scoped executions, also emits execution-value-written events
-   atomically with the completion event to avoid race conditions."
-  [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs]} :command
+   atomically with the completion event to avoid race conditions.
+   Optional execution metadata (:usage :model :rlm) is passed through to
+   the node-execution-completed event for trace assembly."
+  [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage model rlm]} :command
     :as ctx}]
   (let [completion-event (->event
                            {:type :sheet/node-execution-completed
@@ -1022,7 +1026,10 @@
                                     (seq writes) (assoc :writes writes)
                                     duration-ms (assoc :duration-ms duration-ms)
                                     error (assoc :error error)
-                                    (seq inputs) (assoc :inputs inputs))})
+                                    (seq inputs) (assoc :inputs inputs)
+                                    usage (assoc :usage usage)
+                                    model (assoc :model model)
+                                    rlm   (assoc :rlm rlm))})
         ;; For tick-scoped executions with successful writes, emit bb writes atomically
         tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
         bb-write-events (when (and tick-scoped? (= :success status) (seq writes))

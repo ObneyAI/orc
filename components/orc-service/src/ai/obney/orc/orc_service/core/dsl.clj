@@ -209,7 +209,7 @@
    1. LLM generates Clojure code that calls available tools
    2. Code executes in SCI sandbox with tools injected
    3. Stdout and results feed back to LLM
-   4. Loop continues until FINAL_ANSWER or max iterations
+   4. Loop continues until FINAL_ANSWER (or `final!` in RLM mode) or max iterations
 
    Options:
      :model - OpenRouter model ID (e.g., \"google/gemini-2.5-flash\")
@@ -219,20 +219,31 @@
      :mcp-tools - Vector of MCP tool names (require :call-tool-fn in context)
      :browser-tools - Vector of agent-browser tool names (e.g., [\"open\" \"snapshot\" \"click\"])
      :max-iterations - Max research iterations (default 10)
+     :rlm - Optional RLM-mode config. true is shorthand for defaults; otherwise a map:
+              {:enabled? true
+               :context-key :context           ;; blackboard key bound as full SCI value
+               :predict-model \"openai/gpt-5-mini\"
+               :max-predict-calls 100
+               :max-predict-concurrency 8
+               :max-predict-input-chars 100000
+               :history-preview-chars 4000}
+            When enabled, the SCI sandbox gets host-backed `predict`, `predict-all`,
+            and `final!`; the root LM sees metadata/previews only for context-key data.
 
    Browser tools are shell-based (no session management) and include:
      open, snapshot, click, fill, type, press, scroll, wait,
      get-text, get-url, get-title, back, forward, screenshot"
-  [name & {:keys [model instruction reads writes mcp-tools browser-tools max-iterations]}]
-  {:node-type :repl-researcher
-   :name name
-   :model model
-   :instruction instruction
-   :reads (vec (or reads []))
-   :writes (vec (or writes []))
-   :mcp-tools (vec (or mcp-tools []))
-   :browser-tools (vec (or browser-tools []))
-   :max-iterations (or max-iterations 10)})
+  [name & {:keys [model instruction reads writes mcp-tools browser-tools max-iterations rlm]}]
+  (cond-> {:node-type :repl-researcher
+           :name name
+           :model model
+           :instruction instruction
+           :reads (vec (or reads []))
+           :writes (vec (or writes []))
+           :mcp-tools (vec (or mcp-tools []))
+           :browser-tools (vec (or browser-tools []))
+           :max-iterations (or max-iterations 10)}
+    rlm (assoc :rlm (if (true? rlm) {:enabled? true} rlm))))
 
 (defn delegate
   "Define a delegate node for subworkflow execution.
@@ -469,7 +480,8 @@
             (:instruction node) (:reads node) (:writes node) (:mcp-tools node)
             :model (:model node)
             :max-iterations (:max-iterations node)
-            :browser-tools (:browser-tools node))))
+            :browser-tools (:browser-tools node)
+            :rlm (:rlm node))))
 
       :delegate
       (do
@@ -688,8 +700,10 @@
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (seq (:mcp-tools node)) (assoc :mcp-tools (:mcp-tools node))
+                   (seq (:browser-tools node)) (assoc :browser-tools (:browser-tools node))
                    (:model node) (assoc :model (:model node))
-                   (:max-iterations node) (assoc :max-iterations (:max-iterations node))))
+                   (:max-iterations node) (assoc :max-iterations (:max-iterations node))
+                   (:rlm node) (assoc :rlm (:rlm node))))
           ;; Delegate-specific
           (= :delegate (:type node))
           (merge (cond-> {}
@@ -783,7 +797,9 @@
             (:instruction node) (vec (:reads node)) (vec (:writes node))
             (vec (:mcp-tools node))
             :model (:model node)
-            :max-iterations (:max-iterations node))))
+            :max-iterations (:max-iterations node)
+            :browser-tools (:browser-tools node)
+            :rlm (:rlm node))))
 
       :delegate
       (when (:target-sheet-id node)
@@ -1005,7 +1021,9 @@
                 :reads (:reads node)
                 :writes (:writes node)
                 :mcp-tools (:mcp-tools node)
-                :max-iterations (:max-iterations node)})]
+                :browser-tools (:browser-tools node)
+                :max-iterations (:max-iterations node)
+                :rlm (:rlm node)})]
     (if (empty? opts)
       (list (dsl-sym 'repl-researcher) (:name node))
       (apply list (dsl-sym 'repl-researcher) (:name node) opts))))

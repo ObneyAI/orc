@@ -744,6 +744,406 @@
                         "- Do NOT use require, eval, slurp, or any I/O functions\n\n"
                         "Your task: " (:instruction node))}))
 
+(declare execute-legacy-repl-researcher)
+
+;; ----- RLM mode helpers ------------------------------------------------------
+
+(def ^:private rlm-defaults
+  "Defaults applied when :rlm config is enabled but a field is unspecified.
+   :predict-model nil means 'fall back to the node's :model'."
+  {:enabled? false
+   :predict-model nil
+   :max-predict-calls 100
+   :max-predict-concurrency 8
+   :max-predict-input-chars 100000
+   :history-preview-chars 4000})
+
+(defn- normalize-rlm-config
+  "Return a fully-defaulted RLM config when enabled, else nil.
+   Accepts true (shorthand), nil, or a map. Disabled or nil -> nil."
+  [rlm]
+  (cond
+    (nil? rlm) nil
+    (true? rlm) (assoc rlm-defaults :enabled? true)
+    (map? rlm) (let [normalized (merge rlm-defaults rlm)]
+                 (when (:enabled? normalized) normalized))
+    :else nil))
+
+(defn- infer-context-key
+  "Pick the explicit :context-key; otherwise default to :context if it is in :reads."
+  [rlm-cfg reads]
+  (or (:context-key rlm-cfg)
+      (when (some #{:context} reads) :context)))
+
+(defn- value-preview
+  "Compact preview describing a blackboard value WITHOUT including the raw value.
+   Used to render large context fields in the root LM prompt while keeping the
+   full value reachable in SCI as a symbolic variable."
+  [v max-preview-chars]
+  (let [trim (fn [s] (subs s 0 (min (count s) max-preview-chars)))]
+    (cond
+      (nil? v)
+      {:type :nil}
+
+      (string? v)
+      {:type :string :size (count v) :hash (hash v) :preview (trim v)}
+
+      (map? v)
+      (let [s (pr-str v)]
+        {:type :map :keys (vec (keys v)) :size (count s) :hash (hash v) :preview (trim s)})
+
+      (vector? v)
+      (let [s (pr-str v)]
+        {:type :vector :count (count v) :size (count s) :hash (hash v) :preview (trim s)})
+
+      (coll? v)
+      (let [s (pr-str v)]
+        {:type :coll :count (count v) :size (count s) :hash (hash v) :preview (trim s)})
+
+      :else
+      (let [s (pr-str v)]
+        {:type :scalar :size (count s) :hash (hash v) :preview s}))))
+
+(defn- build-rlm-blackboard-metadata
+  "Like build-blackboard-metadata, but also renders previews for the context-key
+   so the root LM knows roughly what's in the symbolic context variable."
+  [node blackboard rlm-cfg context-key]
+  (let [reads (:reads node)
+        writes (:writes node)
+        max-preview (or (:max-context-preview-chars rlm-cfg) 600)]
+    (str "Available variables (full values bound in SCI as direct symbols and via `inputs`):\n"
+         (str/join "\n"
+                   (for [key-name reads
+                         :let [entry (get blackboard key-name)
+                               schema (:schema entry)
+                               desc (malli-schema->description schema)
+                               custom-desc (extract-schema-description schema)
+                               preview (value-preview (:value entry) max-preview)
+                               role (cond
+                                      (= key-name context-key) " [context — large; metadata only here]"
+                                      :else "")]]
+                     (str "- " key-name ": " desc
+                          (when custom-desc (str " - " custom-desc))
+                          role
+                          "\n  meta: " (pr-str preview))))
+         "\n\nOutput variables (call (final! {...}) to commit values):\n"
+         (str/join "\n"
+                   (for [key-name writes
+                         :let [entry (get blackboard key-name)
+                               schema (:schema entry)
+                               desc (malli-schema->description schema)]]
+                     (str "- " key-name ": " desc))))))
+
+(defn- compress-history
+  "Compress iteration history into a bounded summary for the next root prompt."
+  [history max-chars]
+  (when (seq history)
+    (let [bullets (->> history
+                       (map-indexed
+                        (fn [i {:keys [code stdout result error]}]
+                          (let [trim (fn [s n]
+                                       (let [s (or s "")]
+                                         (subs s 0 (min (count s) n))))]
+                            (str "### Iteration " (inc i) "\n"
+                                 "Code:\n" (trim code 400) "\n"
+                                 (when (seq stdout) (str "Output:\n" (trim stdout 600) "\n"))
+                                 "Result: " (trim result 300)
+                                 (when error (str "\nError: " error))))))
+                       (str/join "\n\n"))]
+      (if (> (count bullets) max-chars)
+        (str (subs bullets 0 max-chars) "\n…[truncated]")
+        bullets))))
+
+(defn- accumulate-usage!
+  "Add a litellm/dscloj usage map (snake_case) into a kebab-case totals atom."
+  [totals-atom usage]
+  (when usage
+    (swap! totals-atom
+           (fn [u]
+             {:prompt-tokens     (+ (:prompt-tokens u 0)     (:prompt_tokens usage 0))
+              :completion-tokens (+ (:completion-tokens u 0) (:completion_tokens usage 0))
+              :total-tokens      (+ (:total-tokens u 0)      (:total_tokens usage 0))}))))
+
+(defn- make-rlm-predict-fn
+  "Build the host-backed (predict {:name :instructions :inputs :schema :model?})
+   that SCI code calls. Counts calls, accumulates subcall usage, throws on
+   budget/input-size violations."
+  [{:keys [provider rlm-cfg subcall-usage call-count default-model]}]
+  (fn predict-fn [args]
+    (let [{:keys [name instructions inputs schema model]
+           :or {inputs {} schema :string}} args
+          cnt (swap! call-count inc)]
+      (when (> cnt (:max-predict-calls rlm-cfg))
+        (throw (ex-info (str "predict call budget exceeded: " (:max-predict-calls rlm-cfg))
+                        {:type :rlm/budget :limit (:max-predict-calls rlm-cfg) :count cnt})))
+      (let [serialized-inputs (reduce-kv
+                                (fn [m k v]
+                                  (assoc m k (serialize-for-llm v)))
+                                {} inputs)
+            input-size (count (pr-str serialized-inputs))]
+        (when (> input-size (:max-predict-input-chars rlm-cfg))
+          (throw (ex-info (str "predict input exceeds max-predict-input-chars: " input-size)
+                          {:type :rlm/input-too-large
+                           :size input-size
+                           :limit (:max-predict-input-chars rlm-cfg)})))
+        (let [module {:inputs (mapv (fn [[k _]]
+                                      {:name k
+                                       :spec :string
+                                       :description (str "Input " (clojure.core/name k))})
+                                    inputs)
+                      :outputs [{:name :result
+                                 :spec schema
+                                 :description (or instructions
+                                                  (str "Output for " (or name "predict")))}]
+                      :instructions (or instructions
+                                        (str "Compute " (or name "predict")))}
+              eff-model (or model (:predict-model rlm-cfg) default-model)
+              eff-provider (get-provider-with-model provider eff-model)
+              dscloj-opts (cond-> {:validate? false}
+                            eff-model (assoc :model eff-model))
+              response (dscloj/predict eff-provider module serialized-inputs dscloj-opts)]
+          (accumulate-usage! subcall-usage (:usage response))
+          (get-in response [:outputs :result]))))))
+
+(defn- make-rlm-predict-all-fn
+  "Build (predict-all {:items :as :inputs :instructions :schema :max-concurrency :model?})
+   that fans out predict over a collection in bounded parallel batches,
+   preserving result order. Each item is counted against :max-predict-calls."
+  [{:keys [predict-fn rlm-cfg]}]
+  (fn predict-all-fn [args]
+    (let [{:keys [name items as inputs instructions schema model max-concurrency]
+           :or {inputs {} schema :string as :item}} args
+          conc (or max-concurrency (:max-predict-concurrency rlm-cfg))]
+      (->> items
+           (partition-all conc)
+           (mapcat (fn [batch]
+                     (let [futs (mapv (fn [item]
+                                        (future
+                                          (predict-fn
+                                            {:name name
+                                             :instructions instructions
+                                             :schema schema
+                                             :model model
+                                             :inputs (assoc inputs as item)})))
+                                      batch)]
+                       (mapv deref futs))))
+           vec))))
+
+(defn- make-rlm-final-fn
+  "Build (final! value) that captures the value into captured-atom and returns
+   a FINAL_ANSWER string for legacy stdout-detection compatibility."
+  [captured-atom]
+  (fn final-fn [value]
+    (reset! captured-atom {:captured? true :value value})
+    (str "FINAL_ANSWER: " (pr-str value))))
+
+(defn- safe-symbol
+  "Convert a keyword key to a SCI symbol if it's a legal Clojure identifier."
+  [k]
+  (let [s (clojure.core/name k)]
+    (when (re-matches #"[a-zA-Z_][a-zA-Z0-9_*?!\-]*" s)
+      (symbol s))))
+
+(defn- build-rlm-extra-bindings
+  "Build the SCI :extra-bindings map for RLM mode.
+   Includes: inputs, context (resolved value), direct symbols for each read,
+   predict, predict-all, final!"
+  [{:keys [reads blackboard context-key predict-fn predict-all-fn final-fn]}]
+  (let [read-vals (reduce (fn [m k]
+                            (if-let [entry (get blackboard k)]
+                              (assoc m k (:value entry))
+                              m))
+                          {}
+                          reads)
+        direct-bindings (reduce (fn [m k]
+                                  (if-let [sym (safe-symbol k)]
+                                    (assoc m sym (get read-vals k))
+                                    m))
+                                {}
+                                reads)
+        ctx-binding (when context-key
+                      {'context (get read-vals context-key)})]
+    (merge
+      {'inputs read-vals
+       'predict predict-fn
+       'predict-all predict-all-fn
+       'final! final-fn}
+      direct-bindings
+      ctx-binding)))
+
+(defn- execute-rlm-researcher
+  "Execute a repl-researcher node in RLM mode (per /Users/justinobney/Downloads/orc-rlm-mode.md).
+   The root LM sees metadata/previews only; full values live as symbolic SCI
+   variables. SCI code can call host-backed `predict`, `predict-all`, `final!`."
+  [node blackboard provider context rlm-cfg & {:keys [options] :or {options {}}}]
+  (let [start-time (System/currentTimeMillis)
+        max-iterations (or (:max-iterations node) 10)
+        mcp-tools (or (:mcp-tools node) [])
+        browser-tools (or (:browser-tools node) [])
+        call-tool-fn (:call-tool-fn context)
+        context-key (infer-context-key rlm-cfg (:reads node))
+
+        root-usage (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})
+        subcall-usage (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})
+        predict-call-count (atom 0)
+        captured (atom {:captured? false :value nil})
+
+        predict-fn (make-rlm-predict-fn
+                     {:provider provider
+                      :rlm-cfg rlm-cfg
+                      :subcall-usage subcall-usage
+                      :call-count predict-call-count
+                      :default-model (:model node)})
+        predict-all-fn (make-rlm-predict-all-fn
+                         {:predict-fn predict-fn
+                          :rlm-cfg rlm-cfg})
+        final-fn (make-rlm-final-fn captured)
+
+        extra-bindings (build-rlm-extra-bindings
+                         {:reads (:reads node)
+                          :blackboard blackboard
+                          :context-key context-key
+                          :predict-fn predict-fn
+                          :predict-all-fn predict-all-fn
+                          :final-fn final-fn})
+
+        sci-ctx (sci-sandbox/build-sci-context
+                  {:call-tool-fn call-tool-fn
+                   :mcp-tools mcp-tools
+                   :browser-tools browser-tools
+                   :extra-bindings extra-bindings})
+
+        bb-metadata (build-rlm-blackboard-metadata node blackboard rlm-cfg context-key)
+
+        write-keys (:writes node)
+        spread-final-to-writes
+        (fn [value]
+          (cond
+            (and (map? value) (seq write-keys))
+            (let [extracted (reduce (fn [acc k]
+                                      (let [kw (if (keyword? k) k (keyword k))
+                                            str-k (clojure.core/name kw)
+                                            v (or (get value kw) (get value str-k))]
+                                        (if (some? v) (assoc acc kw v) acc)))
+                                    {}
+                                    write-keys)]
+              (if (seq extracted)
+                extracted
+                {(first write-keys) value}))
+            :else
+            {(first write-keys) value}))]
+    (try
+      (loop [iteration 0
+             history []]
+        (cond
+          (>= iteration max-iterations)
+          {:status :failure
+           :error "Max iterations reached without final! / FINAL_ANSWER"
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) start-time)
+           :usage @root-usage
+           :rlm {:enabled? true
+                 :context-key context-key
+                 :root-usage @root-usage
+                 :subcall-usage @subcall-usage
+                 :predict-call-count @predict-call-count
+                 :model (:model node)}}
+
+          :else
+          (let [history-text (or (compress-history history (:history-preview-chars rlm-cfg))
+                                 "None")
+                module (build-code-generation-module
+                         (assoc node :instruction (:instruction node))
+                         bb-metadata history mcp-tools browser-tools)
+                all-tools (concat mcp-tools browser-tools)
+                inputs {:task (:instruction node)
+                        :context bb-metadata
+                        :history history-text
+                        :tools (str/join ", " all-tools)}
+                dscloj-options (cond-> (assoc options :validate? false)
+                                 (:model node) (assoc :model (:model node)))
+                llm-result (dscloj/predict provider module inputs dscloj-options)
+                code (let [raw (or (:code llm-result) (get-in llm-result [:outputs :code]))]
+                       (if (string? raw)
+                         (-> raw
+                             (str/replace #"^```(?:clojure|clj|edn)?\s*\n?" "")
+                             (str/replace #"\n?```\s*$" "")
+                             str/trim)
+                         raw))
+                _ (accumulate-usage! root-usage (:usage llm-result))]
+
+            (cond
+              (str/blank? code)
+              {:status :failure
+               :error "LLM did not generate code"
+               :iterations history
+               :duration-ms (- (System/currentTimeMillis) start-time)
+               :usage @root-usage
+               :rlm {:enabled? true
+                     :context-key context-key
+                     :root-usage @root-usage
+                     :subcall-usage @subcall-usage
+                     :predict-call-count @predict-call-count
+                     :model (:model node)}}
+
+              :else
+              (let [exec-result (sci-sandbox/execute-code sci-ctx code)
+                    new-history (conj history
+                                      {:code code
+                                       :result (:result exec-result)
+                                       :stdout (:stdout exec-result)
+                                       :error (:error exec-result)})
+                    cap @captured
+                    raw-result (when (string? (:raw-result exec-result))
+                                 (:raw-result exec-result))
+                    final-from-stdout (or (when raw-result
+                                            (sci-sandbox/extract-final-answer raw-result))
+                                          (sci-sandbox/extract-final-answer (:stdout exec-result)))
+                    final-value (cond
+                                  (:captured? cap) (:value cap)
+                                  final-from-stdout final-from-stdout)
+                    rlm-meta {:enabled? true
+                              :context-key context-key
+                              :root-usage @root-usage
+                              :subcall-usage @subcall-usage
+                              :predict-call-count @predict-call-count
+                              :model (:model node)
+                              :final-source (cond
+                                              (:captured? cap) :final!
+                                              final-from-stdout :final-answer
+                                              :else nil)}]
+                (cond
+                  final-value
+                  {:status :success
+                   :outputs (spread-final-to-writes final-value)
+                   :final-answer final-value
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage @root-usage
+                   :rlm rlm-meta}
+
+                  (sci-sandbox/repeated-output? history exec-result)
+                  {:status :failure
+                   :error "Output repeated - possible infinite loop"
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage @root-usage
+                   :rlm rlm-meta}
+
+                  :else
+                  (recur (inc iteration) new-history)))))))
+      (catch Exception e
+        {:status :failure
+         :error (.getMessage e)
+         :duration-ms (- (System/currentTimeMillis) start-time)
+         :usage @root-usage
+         :rlm {:enabled? true
+               :context-key context-key
+               :root-usage @root-usage
+               :subcall-usage @subcall-usage
+               :predict-call-count @predict-call-count
+               :model (:model node)}}))))
+
 (defn execute-repl-researcher
   "Execute a repl-researcher node using iterative LLM+SCI code execution.
 
@@ -751,7 +1151,12 @@
    1. LLM generates Clojure code to call MCP tools
    2. Code executes in a safe SCI sandbox
    3. Results feed back to LLM for next iteration
-   4. Converges when FINAL_ANSWER is detected
+   4. Converges when FINAL_ANSWER (or `final!` in RLM mode) is detected
+
+   When the node has :rlm config (with :enabled? true), dispatches to the
+   RLM-mode path: large context lives as symbolic SCI variables, the root LM
+   sees metadata/previews only, and SCI code gets host-backed predict /
+   predict-all / final! callables.
 
    Args:
      node - The repl-researcher node map with :instruction, :reads, :writes, :mcp-tools
@@ -767,7 +1172,19 @@
       :final-answer string?
       :error string?
       :duration-ms int
-      :usage {:prompt-tokens N :completion-tokens N :total-tokens N}}"
+      :usage {:prompt-tokens N :completion-tokens N :total-tokens N}
+      :rlm {...}}                ;; Present in RLM mode"
+  [node blackboard provider context & {:keys [options] :or {options {}}}]
+  (if-let [rlm-cfg (normalize-rlm-config (:rlm node))]
+    ;; RLM mode: large context as symbolic SCI vars, host-backed predict/final!
+    (execute-rlm-researcher node blackboard provider context rlm-cfg :options options)
+    ;; Legacy mode (untouched)
+    (execute-legacy-repl-researcher node blackboard provider context :options options)))
+
+(defn- execute-legacy-repl-researcher
+  "Legacy repl-researcher loop: blackboard values are template-substituted into
+   the root prompt; convergence is detected via FINAL_ANSWER text in stdout
+   or result. Preserved for nodes without :rlm config."
   [node blackboard provider context & {:keys [options] :or {options {}}}]
   (let [start-time (System/currentTimeMillis)
         max-iterations (or (:max-iterations node) 10)
