@@ -1,0 +1,8 @@
+;; USD per 1M tokens. Numbers cross-checked against
+;; .venv/lib/.../litellm/model_prices_and_context_window_backup.json so orc
+;; cost numbers stay byte-comparable with predict-rlm cost numbers.
+{"openrouter/openai/gpt-5"      {:input  1.25  :output 10.00}
+ "openrouter/openai/gpt-5-mini" {:input  0.25  :output  2.00}
+ "openai/gpt-5"                 {:input  1.25  :output 10.00}
+ "openai/gpt-5-mini"            {:input  0.25  :output  2.00}
+ "google/gemini-2.5-flash"      {:input  0.30  :output  2.50}}

@@ -1,0 +1,16 @@
+;; Verbatim copies of the user-facing prompts from
+;; predict-rlm/examples/<task>/run.py. The bench passes these to orc as
+;; :query / :criteria so both stacks face the *same question*, not orc's
+;; abbreviated paraphrase. This is the single source of truth for the
+;; comparison's prompt axis — change here, both stacks pick it up.
+;;
+;; Tasks with no extra prompt (invoice_processing, contract_comparison)
+;; are absent from this map.
+{:image_analysis
+ {:query "What letters appear in each image, and how many times does each letter appear? Always include: logo text, header address/phone/fax, header email, header website URL, \"Page N\" footers, etc.\n\nFor each image:\n1. Extract the visible text multiple times (at least 2-3 extractions per image)\n2. Compare the extractions - if they differ, extract again until you get consistent results\n3. Only after you have consistent text extraction, count the letters programmatically (case insensitive)\n\nUse prompts like \"Return ONLY the exact text visible, nothing else.\"\nDo all counting and comparison in Python, not via predict().\n\nTreat uppercase and lowercase as the same letter (case-insensitive).\nOutput the letter statistics in alphabetical order (A-Z)."}
+
+ :document_analysis
+ {:criteria "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist."}
+
+ :document_redaction
+ {:criteria "Redact all personally identifiable information (PII), including:\n\n1. **Names** — Full names of individuals (not company or organization names)\n2. **Contact info** — Phone numbers, email addresses, fax numbers\n3. **Addresses** — Street addresses, P.O. boxes (not city/state/country)\n4. **Government IDs** — Social security numbers, tax IDs, passport numbers\n5. **Financial info** — Bank account numbers, credit card numbers, routing numbers\n6. **Signatures** — Handwritten signatures (redact the bounding area)\n\nAdded to this, redact any dates found in the document, in any format."}}
