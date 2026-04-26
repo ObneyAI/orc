@@ -468,6 +468,8 @@ The chain is what makes the paper actually useful — and what would make any ne
 
 The orc `examples/` directory **mirrors predict-rlm's example set 1:1** — same 5 tasks (image_analysis, document_analysis, invoice_processing, contract_comparison, document_redaction), same input PDFs, same output schemas (Malli ports of Pydantic models). This is deliberate — orc's example set exists as a head-to-head benchmark against predict-rlm. And it ships **two implementations of each**: Style A (explicit pipeline) and Style B (RLM-faithful). That's the architectural thesis in code form.
 
+> **Heads up — this section is the analytical prediction.** Part 8 contains the empirical results from actually running both stacks against the same prompts. Several claims below (especially "structural analog" framings around Style B and the "every iteration writes events" tracing claim) need the nuance Part 8 adds. The architecture analysis still holds; the lived behavior has more rough edges than the architecture implies.
+
 ### Substrate inversion — the central move
 
 predict-rlm and orc solve the same problem with inverted assumptions about the substrate:
@@ -768,6 +770,8 @@ Three orc-only signals worth highlighting:
 
 3. **The role marker `[context — large; metadata only here]`.** Tells the LM directly which variable is "the big one it's supposed to interrogate via predict()." dspy implicitly relies on the LM noticing that one variable's `total_length` is much larger than others.
 
+> **Empirical caveat (added retroactively).** These are real *design* improvements over dspy/predict-rlm's previews, but in the head-to-head bench (Part 8) we didn't observe Style B prompts taking advantage of them. No model output we inspected referenced `:hash` for identity tracking or `(ns-explore …)` for tool discovery — the model treated the metadata as ambient context rather than something to query. Realizing the value of the structured-EDN preview likely requires explicit prompt scaffolding ("if hash matches a prior iteration's, skip extraction") that current Style B signature-strategies don't include.
+
 #### History truncation — still head-only
 
 Variable previews use head + tail (matching dspy/predict-rlm), but **iteration history** in `compress-history` is still per-section head-only — code (400 chars), stdout (600), result (300). dspy's head+tail history would catch "the answer is in the middle of a long stdout" cases that orc misses.
@@ -874,3 +878,137 @@ orc's stack lets you **use the RLM where it's actually best** (discovering struc
 - Next step: design the `synthesize-workflow` API and the trajectory→DSL extract prompt
 - Pick one example (probably `invoice_processing`) to run as a synthesis spike
 - Compare: cost of synthesized BT × N runs vs Style B × N runs at break-even N
+
+---
+
+## Part 8 — What we measured (head-to-head bench)
+
+Parts 1–7 reason from source. Part 8 reports on the first time both stacks were actually run side-by-side against identical inputs and prompts. The results validate parts of the architectural analysis, contradict others, and surface failure modes the source-only reading missed.
+
+### The bench framework
+
+Built in this exercise; reusable for future re-runs:
+
+```
+predict-rlm/bench/
+├── run_predict.py         # CLI: any of 5 examples × N runs → unified run.json
+├── runs/<task>/<run_id>/
+│   ├── run.json           # cost, calls, tokens, duration, sha256s, structured, trace_path
+│   ├── trace.json         # predict-rlm RunTrace (per-iteration code/reasoning/output)
+│   └── outputs/           # File artifacts the run produced
+└── .env                   # OPENROUTER_API_KEY
+
+orc/bench/
+├── run_orc.clj            # clj -X entry: `run` (sequential) and `run-parallel` (semaphore-bounded)
+├── price_table.edn        # USD per Mtok — orc tracks tokens, not dollars; convert at the bench boundary
+├── predict_rlm_prompts.edn # Verbatim DEFAULT_QUERY/CRITERIA copied from predict-rlm/run.py
+├── compare.py             # Per-task structural extractors; --since cutoff for filtering
+├── runs/<task>/<run_id>/
+│   ├── run.json           # SAME schema as predict-rlm side
+│   ├── trace.edn          # Raw event stream tagged by tick-id
+│   └── outputs/
+└── REPORT.md              # The narrative report for the v1 run
+```
+
+The single load-bearing decision: **both stacks emit `run.json` files with the same top-level keys** (`stack`, `task`, `inputs`, `cost`, `calls`, `tokens`, `outputs`, `structured`, `trace_path`, `error`). `compare.py` doesn't care which stack produced which file. That schema parity is what made the comparison tractable — and what's missing from the predict-rlm repo by default (predict-rlm's own `run.py` files only print to stdout, no persistent record).
+
+### Methodology
+
+- **Models:** `openai/gpt-5` (root) + `openai/gpt-5-mini` (sub) on both stacks, routed via OpenRouter.
+- **Prompts:** verbatim DEFAULT_QUERY / CRITERIA from each `predict-rlm/examples/<task>/run.py`. The first round used orc's own (abbreviated) defaults from `examples/<task>/run.clj` — that's not a head-to-head, it's an apples-to-apple-juice comparison. Bench v2 unifies on predict-rlm's prompts.
+- **N=3** per (task × stack), max-iterations 15. The first attempt at N=5 with the example default of 30 max-iterations produced one 19-minute pathological-loop run on image_analysis and was abandoned for budget reasons. N=3 + 15 max-iter is enough to capture variance + budget-safe.
+- **Cost computed locally** from `tokens × price-table` (LiteLLM-aligned per-Mtok rates), NOT from OpenRouter's billing surface. This turned out to undercount by ~10× for `gpt-5` — see "Cost reality check" below.
+
+### Headline matrix
+
+5 tasks × 3 stacks × N=3, after the round-2 fixes (input-key bug, image skill, etc.):
+
+| Task | predict-rlm (cost / quality) | orc Style A (cost / quality) | orc Style B (cost / quality) |
+|---|---|---|---|
+| **image_analysis** | $0.05–$0.25; 2/3 produced full A–Z counts (T:155, total 1343) matching reference | $0.013; 2/3 produced counts but for **header text only** (T:11, total ~80) | $0.011; 0/3 produced counts (rigid signature) |
+| **invoice_processing** | $0.075; 4 invoices, correct totals ($4086+$30717+$34804), 5–6 line items each | $0.006; 5 over-split records (treats pages as invoices), same totals | $0.022; 2 records (correct grouping), same totals |
+| **document_redaction** | $0.114; 70–200 redactions, 9 categories | $0.020; **261–301 redactions** (over-flagging), 7–9 cats | $0.06–$0.14; 0/3 redactions (model shortcuts) |
+| **contract_comparison** | $0.413; 49–135 sub-calls (real diff work, output lost to a wrapper bug) | $0.013; 4–15 detailed diffs with significance reasoning | $0.041; 0–17 diffs varying quality |
+| **document_analysis** | $0.402; 137–215 key dates, 108–556 entities, 25–33 KB report | $0.024; 6–8 dates, 12–15 entities, **0.4 KB report** | (3/3 ERR — credit exhaustion mid-bench) |
+
+Cost ratios where both did real work: orc Style A is **5×–32× cheaper than predict-rlm**, but on the heaviest task (document_analysis) is also **60× shallower** in output. The cheap-vs-deep tradeoff is real and architectural; it isn't a bug.
+
+### The "cost lies" finding (round 1 vs round 2)
+
+Round 1 of the bench appeared to show orc was 100× cheaper than predict-rlm and reported `:status :success` everywhere. That was wrong. The actual cause was a **bench wrapper bug**: orc pipelines read `:documents` / `:invoices` / `:contracts`, but the bench was sending `:document-paths` / `:invoice-paths` / `:contract-paths`. Orc treated the missing keys as nil, fed nil to LLM nodes, the model said "no documents provided," and the workflow still reported success.
+
+Two findings from this:
+
+1. **Cost-only metrics are dangerous when one stack might shortcut.** Without the per-task structural extractors in `compare.py` (letter counts, invoice records, redaction items), "orc is 100× cheaper" would have been the report. The structural extractors caught both qualitatively different failure modes — the round-1 no-op bug AND the round-2 insufficient-depth observation.
+2. **Silent nil-substitution on missing reads is a real orc footgun**, independent of our wrapper bug. A pipeline whose `:reads [:documents]` doesn't find `:documents` on the blackboard should fail at workflow build (validate against blackboard schema) or at execute time (non-Optional read returns nil), not silently succeed with empty inputs.
+
+### Style B failure modes (three distinct ones)
+
+Style B's "RLM-faithful" framing in Part 5 doesn't capture how it actually breaks. We observed three different shortcut patterns:
+
+1. **Rigid signature beats user query** (image_analysis). The agentic.clj signature-strategy prescribes a 4-step plan: load URIs → predict-all → synthesize → final!. The user query asked for "extract 2-3 times for self-consistency, count letters programmatically." Model honored the signature's structure over the query's rigor — produced descriptions, never letter counts. predict-rlm's signature.py docstring is "answer the query" with no prescribed structure; orc's is more controlling.
+2. **`final!` with empty data on iteration 1** (document_redaction). Same model + same fixed inputs that worked on invoice_processing. Model just gives up — calls `(final! {:redacted-documents {:total-redactions 0 :targets []}})` immediately. Hypothesis: the prompts in the orc examples were tuned for `gpt-5.4-mini` (the original `:model` field) and `gpt-5` interprets the metadata-only blackboard preview as "no real data" or otherwise shortcuts. Worth retesting with `gpt-5-mini` as root.
+3. **SCI arg-key error, give-up after one failed iteration** (contract_comparison). Model wrote `(pdf/page-count {:file path})` instead of `{:path path}`. The doc-skills `require-args!` correctly threw a precise error. Model didn't retry with corrected key; instead emitted a meta-report explaining the failure. The "convergence detector" treated two iterations as "stuck" too aggressively.
+
+These aren't all the same bug. (1) is a prompt-shape issue, (2) is a model-behavior issue with `gpt-5`, (3) is a feedback-loop issue. Each is independently fixable.
+
+### Style A's depth ceiling
+
+orc Style A pipelines are dramatically cheaper and (when the inputs are wired correctly) actually do the work. The trade is depth: the pipeline shape caps how much the LLM is asked to reason about.
+
+document_analysis Style A is the clearest example. The pipeline is `survey → summarize-each (one LLM call per doc) → synthesize (one LLM call to combine)`. Two LLM calls total per run, regardless of input size. predict-rlm's RLM does **60–124 sub-LLM calls** on the same 136-page input — fanning out per-page extraction, building running notes, verifying against the criteria. The output reflects the difference: 25–33 KB structured report vs 0.4 KB summary.
+
+This isn't a Style A bug. It's the predictable consequence of fixed-shape pipelines vs unbounded RLM iteration. **The right architecture for document_analysis-class tasks is probably neither pure Style A nor pure Style B** — it's Style A with an RLM-as-fallback when the pipeline produces insufficient output (Part 7's synthesizer concept gets stronger here, AND a `(fallback A B)` shape is now empirically motivated).
+
+### What this session fixed in orc
+
+Three real improvements landed while building the bench:
+
+1. **Image-input handling** for SCI sandbox. Added `image/load-data-uri` and `image/file-info` to `doc-skills` (`components/doc-skills/src/.../core/image.clj`); wired through `interface.clj` (`sci-bindings`, `tool-specs`, `call-tool-fn` dispatch, `all-tool-names`); added `instructions/image.md`. Until this landed, `image_analysis` Style B couldn't load PNG files at all (the agentic.clj instructions told the model to use `java.nio.file.Files/readAllBytes`, which the SCI sandbox correctly blocked as Java interop). Every future agentic task that wants vision sub-calls now works.
+2. **DSCloj `:type :image` auto-detection** in `executor.clj :: make-rlm-predict-fn`. When predict inputs contain a `data:image/...` URI string, the input field is now marked `:type :image` so DSCloj sends it as multimodal vision content instead of stringifying it into the prompt template (which crashed deep in DSCloj on the 600 KB base64 blob). This is what made image_analysis Style B work end-to-end.
+3. **`:iterations` persistence to events.** Until this fix, the executor built a per-iteration history (`{:code :result :stdout}` per iteration) but only attached it to the in-memory result — the persisted `:sheet/node-execution-completed` event lost it. Trace.edn for Style B runs had no record of what code the model wrote. Now `:iterations` rides the event payload (touched `commands.clj`, `todo_processors.clj`, `interface/schemas.clj`) and `compare.py` / human review can post-hoc inspect the actual LLM-generated Clojure. **This closes the parity gap with predict-rlm's `RunTrace.steps[].code`** that Part 5's "fully interpretable trajectories" claim implied existed but didn't.
+
+### Cost reality check
+
+Local cost computation undercounted by ~10×.
+
+```
+This session's reported total (price-table × tokens):  ~$6.40
+This session's actual OpenRouter charge:                $61.44
+```
+
+The price table (`bench/price_table.edn`) uses LiteLLM's per-Mtok rates for input/output. For `gpt-5` those rates are accurate for non-reasoning models, but **reasoning tokens are billed separately** and aren't in the standard input/output buckets. predict-rlm's wrapper has the same blind spot (also reads `lm.history[].cost` which LiteLLM populates from the same rate table).
+
+Two ways to fix:
+
+1. **Look up cost from OpenRouter's response per-call** (the API returns a `usage.cost` field that includes reasoning). LiteLLM has this for some routes; need to verify and prefer it over local computation.
+2. **Add reasoning-effort-aware lookup** to the price table. `gpt-5` reasoning_effort: `low/medium/high` have different effective rates that we can approximate.
+
+The 10× undercount doesn't change the *relative* comparison much — both stacks ran on the same model with the same reasoning settings — but it makes individual cost figures unreliable and the budget-vs-spend gap dangerous (we thought we'd spent $6 of our $20 budget; we'd actually spent $61).
+
+### Wall-clock and the parallel bench
+
+Sequential sweep wall-clock for orc was ~35 min (10 invocations × ~3.5 min average, including JVM startup × 10). The new `run-parallel` entry point uses one long-lived JVM and a semaphore-bounded thread pool over concurrent ticks. Validated end-to-end: 2 image_analysis Style B runs in 232 s wall-clock vs ~440 s sequential.
+
+Estimated full N=5 sweep at `:max-parallel 4`: **10–15 min wall-clock**, ~$1–2 in budget. Sequential at N=5 would have been ~60 min and we wouldn't have done it.
+
+### What this leaves open
+
+| # | Followup | Why |
+|---|---|---|
+| 1 | Fail orc workflows on missing non-Optional reads | Caught the bench wrapper bug only by output inspection; production users would too |
+| 2 | Fix predict-rlm wrapper for bare-Pydantic returns | contract_comparison's predict-rlm output is unrecoverable — re-run blocked until this lands |
+| 3 | Investigate Style B `final!`-empty shortcut on document_redaction | Same workflow shape works on invoice_processing; isolate the prompt vs model interaction |
+| 4 | Tighten Style B convergence detector | One failed iteration → "give up" is too aggressive on contract_comparison's arg-key bug |
+| 5 | Reasoning-token-aware cost computation | 10× cost undercount makes budget tracking unsafe |
+| 6 | LLM-as-judge for prose tasks | Structural metrics tell us "did work happen"; can't tell us "is the answer good" on document_analysis report or contract_comparison diffs |
+| 7 | Style A + RLM-fallback hybrid (the `(fallback A B)` shape) | Now empirically motivated — Style A is verified to do real cheap work but be shallow; explicit fallback to Style B on insufficient-quality is the obvious next architecture |
+| 8 | RLM-as-synthesizer (Part 7) | Still the strategically interesting move; the bench is now the substrate to measure whether a synthesized BT amortizes over N runs |
+
+### What this proved about the comparison framework itself
+
+The bench framework is more valuable than this single bench's results. Three lessons baked in for future re-runs:
+
+- **Cost-only is dangerous.** Always pair with structural output extractors per task. The schema parity (`run.json` shape) is what made structural comparison trivial.
+- **Process metrics, structural outputs, and quality judgment are three separate layers.** This bench did 1 and 2. Layer 3 (LLM-as-judge) still pending.
+- **Re-runnable matters.** Every fix in this session prompted a re-run. With `run-parallel` + the in-place price table + the cutoff filter in `compare.py --since`, regenerating analysis from disk is a one-liner. The test isn't "did orc beat predict-rlm in April 2026" — it's "give me the comparison after we change X" on demand.
