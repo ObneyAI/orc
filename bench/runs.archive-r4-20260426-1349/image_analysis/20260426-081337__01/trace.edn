@@ -1,0 +1,159 @@
+[{:tick-id #uuid "f3c38b12-694c-401d-8421-3f87e3d57572",
+  :execution-snapshot
+  {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+   :sheet-name "image-analysis-agentic",
+   :nodes-by-id
+   {#uuid "1bf98972-63b9-5304-a92f-70b163873cbf"
+    {:retry nil,
+     :writes [:answer],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 10,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools [],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "1bf98972-63b9-5304-a92f-70b163873cbf",
+     :parent-id nil,
+     :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "Analyze multiple images and answer the query about them.\n\n1. Load each path in `image-paths` as a base64 data URI. Use stock Java:\n\n   (defn load-uri [path]\n     (let [bytes (java.nio.file.Files/readAllBytes (.toPath (java.io.File. path)))\n           ext (let [n (clojure.string/lower-case path)]\n                 (cond (.endsWith n \".png\")  \"image/png\"\n                       (.endsWith n \".jpg\")  \"image/jpeg\"\n                       (.endsWith n \".jpeg\") \"image/jpeg\"\n                       (.endsWith n \".webp\") \"image/webp\"\n                       :else \"image/png\"))\n           b64 (.encodeToString (java.util.Base64/getEncoder) bytes)]\n       (str \"data:\" ext \";base64,\" b64)))\n\n2. Use (predict-all …) over the data URIs to extract a per-image observation\n   in parallel. Provide the query as a constant input:\n\n   (let [uris (mapv load-uri image-paths)\n         findings (predict-all\n                    {:name        \"observe-image\"\n                     :items       uris\n                     :as          :image\n                     :inputs      {:query query}\n                     :instructions \"Return a concise grounded observation of\n                                     this image relevant to the query.\"\n                     :schema      [:string]\n                     :max-concurrency 4})]\n     ...)\n\n3. Synthesize the per-image findings into a single answer that addresses the\n   query across all images. You can compose locally OR call (predict …) once\n   to do the synthesis with an LLM.\n\n4. End with (final! {:answer answer-string}).\n",
+     :success-policy nil,
+     :reads [:image-paths :query],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :image-paths,
+      :max-predict-calls 50,
+      :max-predict-concurrency 4,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 4000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "1bf98972-63b9-5304-a92f-70b163873cbf",
+   :blackboard-entries
+   {:image-paths
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :image-paths,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :image-uris
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :image-uris,
+     :schema [:vector {:field-type :image} :string],
+     :value nil,
+     :version 0},
+    :image-uri
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :image-uri,
+     :schema [:string {:field-type :image}],
+     :value nil,
+     :version 0},
+    :query
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :query,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :per-image-finding
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :per-image-finding,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :per-image-findings
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :per-image-findings,
+     :schema [:vector :string],
+     :value nil,
+     :version 0},
+    :answer
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :answer,
+     :schema :string,
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "f3c38b12-694c-401d-8421-3f87e3d57572"]
+    [:sheet #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T08:13:37.402386-05:00",
+  :inputs
+  {:image-paths
+   ["/Users/justinobney/dev/orc/examples/image_analysis/sample/input/Screenshot 2026-04-02 at 12.16.21 PM.png"],
+   :query
+   "What is shown in these images? Provide a concise factual description."},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+  :options {:timeout-ms 300000, :store-trace? true},
+  :event/id #uuid "019dc9ec-917a-70e4-9992-5319c725db57"}
+ {:tick-id #uuid "f3c38b12-694c-401d-8421-3f87e3d57572",
+  :event/tags
+  #{[:tick #uuid "f3c38b12-694c-401d-8421-3f87e3d57572"]
+    [:sheet #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8"]
+    [:node #uuid "1bf98972-63b9-5304-a92f-70b163873cbf"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T08:13:42.254345-05:00",
+  :inputs {},
+  :node-id #uuid "1bf98972-63b9-5304-a92f-70b163873cbf",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+  :event/id #uuid "019dc9ec-a46e-70d7-bb40-eb7c6337666b"}
+ {:tick-id #uuid "f3c38b12-694c-401d-8421-3f87e3d57572",
+  :duration-ms 22822,
+  :event/tags
+  #{[:tick #uuid "f3c38b12-694c-401d-8421-3f87e3d57572"]
+    [:sheet #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8"]
+    [:node #uuid "1bf98972-63b9-5304-a92f-70b163873cbf"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T08:14:05.337516-05:00",
+  :usage
+  {:prompt-tokens 4754, :completion-tokens 1221, :total-tokens 5975},
+  :status :failure,
+  :node-id #uuid "1bf98972-63b9-5304-a92f-70b163873cbf",
+  :event/type :sheet/node-execution-completed,
+  :error "LLM did not generate code",
+  :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+  :event/id #uuid "019dc9ec-fe99-70c5-9767-9a6a27732f76",
+  :rlm
+  {:enabled? true,
+   :context-key :image-paths,
+   :root-usage
+   {:prompt-tokens 4754, :completion-tokens 1221, :total-tokens 5975},
+   :subcall-usage
+   {:prompt-tokens 0, :completion-tokens 0, :total-tokens 0},
+   :predict-call-count 0,
+   :model "openai/gpt-5"}}
+ {:tick-id #uuid "f3c38b12-694c-401d-8421-3f87e3d57572",
+  :iteration 1,
+  :root-status :failure,
+  :event/tags
+  #{[:tick #uuid "f3c38b12-694c-401d-8421-3f87e3d57572"]
+    [:sheet #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T08:14:05.364863-05:00",
+  :outputs
+  {:image-paths
+   ["/Users/justinobney/dev/orc/examples/image_analysis/sample/input/Screenshot 2026-04-02 at 12.16.21 PM.png"],
+   :image-uris nil,
+   :image-uri nil,
+   :query
+   "What is shown in these images? Provide a concise factual description.",
+   :per-image-finding nil,
+   :per-image-findings nil,
+   :answer nil},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+  :event/id #uuid "019dc9ec-feb4-706b-a269-716304bc6fed"}]

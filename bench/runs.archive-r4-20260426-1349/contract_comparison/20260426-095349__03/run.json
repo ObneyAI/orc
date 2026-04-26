@@ -1,0 +1,70 @@
+{
+  "run_idx" : 3,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "361657a8-e659-4c5d-9771-789e71fe519e",
+    "sheet_id" : "0a900186-b6cb-5fbc-a632-7de400289bc0",
+    "status" : "success",
+    "event_count" : 11
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-095349__03",
+  "duration_seconds" : 17.271,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 413,
+      "output" : 1170
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.00244325,
+    "total" : 0.00244325,
+    "per_page" : 5.429444444444445E-5
+  },
+  "structured" : {
+    "contracts" : null,
+    "doc-summaries" : [ ],
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "# Contract Comparison Report — No Documents Provided\n\nStatus: Unable to perform a substantive comparison — no contract texts or summaries were provided.\n\nWhat I received:\n- The doc-summaries input array is empty, so there are no documents or summaries to compare.\n\nWhat this means:\n- I cannot identify section-level differences, key differences, or assess legal significance without at least two contract texts or structured summaries.\n- I will not fabricate sections, clauses, or differences.\n\nHow you can proceed (recommended):\n1. Provide the contract texts or structured summaries.\n   - Preferred: full contract texts (as plain text or PDF-extracted text) for each document to compare.\n   - Acceptable alternative: detailed summaries per document with section headings and the text for each section.\n2. If supplying full texts, indicate formatting or sections to use (e.g., use clause headings present in the documents).\n3. If you want a focused comparison, specify which sections matter most (examples: Payment, Term & Termination, Liability, IP, Confidentiality, Governing Law).\n4. Optionally provide metadata per document: document name, version/date, author/party, and which is Document A vs Document B.\n\nSuggested JSON schema for doc-summaries (example you can send):\n[\n  {\n    \"name\": \"Agreement A\",\n    \"version\": \"v1.2 / 2025-10-01\",\n    \"text\": \"Full contract text here or per-section map\",\n    \"sections\": {\n      \"Parties\": \"Text...\",\n      \"Term and Termination\": \"Text...\",\n      \"Payment\": \"Text...\",\n      ...\n    }\n  },\n  {\n    \"name\": \"Agreement B\",\n    \"version\": \"v2.0 / 2026-01-15\",\n    \"text\": \"Full contract text here or per-section map\",\n    \"sections\": {\n      \"Parties\": \"Text...\",\n      \"Term and Termination\": \"Text...\",\n      \"Payment\": \"Text...\",\n      ...\n    }\n  }\n]\n\nWhat I'll produce once you provide documents:\n- A markdown comparison report summarizing differences and their likely legal/business impact.\n- A per-section diffs array describing document A vs B text, a short difference summary and a significance label (major/minor/identical).\n- A concise list of key differences with impact analysis.\n- An executive summary highlighting the most important divergences and suggested actions.\n\nIf you want, paste both full contract texts or upload the structured summaries now and I will run the comparison.",
+      "section-diffs" : [ ],
+      "key-differences" : [ ],
+      "summary" : "No documents were provided, so no comparison could be performed. Please supply the contract texts or structured summaries (ideally with section headings) for each document and indicate which documents to compare; I will then produce the full comparison report, per-section diffs, key differences with impact analysis, and an executive summary."
+    },
+    "contract-paths" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ]
+  },
+  "git_sha" : "c3c5be5"
+}

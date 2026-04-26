@@ -242,7 +242,7 @@
     events))
 
 (defreadmodel :gepa gepa-state
-  {:events gepa-event-types :version 1}
+  {:events gepa-event-types :version 1 :l1-ttl-ms 0}
   [state event] (gepa-state state [event]))
 
 ;; =============================================================================
@@ -298,7 +298,7 @@
     events))
 
 (defreadmodel :gepa population
-  {:events population-event-types :version 1}
+  {:events population-event-types :version 1 :l1-ttl-ms 0}
   [state event] (population state [event]))
 
 ;; =============================================================================
@@ -357,7 +357,7 @@
     events))
 
 (defreadmodel :gepa pareto-frontier
-  {:events pareto-frontier-event-types :version 1}
+  {:events pareto-frontier-event-types :version 1 :l1-ttl-ms 0}
   [state event] (pareto-frontier state [event]))
 
 ;; =============================================================================
@@ -418,7 +418,7 @@
     events))
 
 (defreadmodel :gepa optimization-state
-  {:events optimization-state-event-types :version 1}
+  {:events optimization-state-event-types :version 1 :l1-ttl-ms 0}
   [state event] (optimization-state state [event]))
 
 ;; =============================================================================
@@ -442,7 +442,7 @@
     events))
 
 (defreadmodel :gepa datasets
-  {:events datasets-event-types :version 1}
+  {:events datasets-event-types :version 1 :l1-ttl-ms 0}
   [state event] (datasets state [event]))
 
 ;; =============================================================================
@@ -474,7 +474,7 @@
     state))
 
 (defreadmodel :gepa optimization-list
-  {:events optimization-list-event-types :version 1}
+  {:events optimization-list-event-types :version 1 :l1-ttl-ms 0}
   [state event] (optimization-list-reducer state event))
 
 ;; =============================================================================

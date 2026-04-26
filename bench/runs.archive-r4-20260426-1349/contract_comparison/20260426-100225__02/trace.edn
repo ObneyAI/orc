@@ -1,0 +1,378 @@
+[{:tick-id #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a",
+  :execution-snapshot
+  {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+   :sheet-name "contract-comparison-agentic",
+   :nodes-by-id
+   {#uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"
+    {:retry nil,
+     :writes [:result],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 12,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :success,
+     :id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+     :parent-id nil,
+     :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\nCompare PDF contracts and produce a structured ComparisonResult.\n\nYou receive:\n  contracts — vector of PDF paths (full value bound; root prompt sees only metadata)\n\nStrategy:\n\n1. Survey each contract:\n\n   (let [docs (mapv (fn [p] {:path p :pages (pdf/page-count p) :text (pdf/document-text p)})\n                    contracts)]\n     ...)\n\n2. Use predict-all to summarize each contract's section structure in parallel:\n\n   (let [summaries (predict-all\n                     {:name        \"summarize-contract\"\n                      :items       docs\n                      :as          :doc\n                      :inputs      {}\n                      :instructions \"List section headings and key terms.\"\n                      :schema      [:map [:sections [:vector :map]]]\n                      :max-concurrency 4})]\n     ...)\n\n3. Use predict to produce the comparison:\n\n   (let [result (predict\n                  {:name \"compare\"\n                   :inputs {:summaries summaries :docs docs}\n                   :instructions \"Produce a structured ComparisonResult.\"\n                   :schema [:map\n                            [:report :string]\n                            [:section-diffs [:vector :map]]\n                            [:key-differences [:vector :map]]\n                            [:summary :string]]})]\n     (final! {:result result}))\n\nStay grounded — do not invent sections or terms.",
+     :success-policy nil,
+     :reads [:contracts],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :contracts,
+      :max-predict-calls 50,
+      :max-predict-concurrency 4,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 6000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+   :blackboard-entries
+   {:contracts
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :contracts,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summaries,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :doc
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summary,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :result,
+     :schema
+     [:map
+      [:report
+       {:description "Full comparison report in markdown format"}
+       :string]
+      [:section-diffs
+       {:description "Per-section comparison"}
+       [:vector
+        [:map
+         [:section-name
+          {:description "Name or title of the section being compared"}
+          :string]
+         [:document-a-text
+          {:description "Key text or summary from Document A"}
+          :string]
+         [:document-b-text
+          {:description "Key text or summary from Document B"}
+          :string]
+         [:difference-summary
+          {:description "Summary of what changed"}
+          :string]
+         [:significance
+          {:description "How significant the difference is"}
+          [:enum "major" "minor" "identical"]]]]]
+      [:key-differences
+       {:description "High-level key differences"}
+       [:vector
+        [:map
+         [:area
+          {:description
+           "Area of the contract affected (e.g. pricing, liability)"}
+          :string]
+         [:description
+          {:description "Description of the difference"}
+          :string]
+         [:impact
+          {:description "Potential impact or implication"}
+          :string]]]]
+      [:summary {:description "Executive summary"} :string]],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:02:25.954841-05:00",
+  :inputs
+  {:contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca50-2fa2-70c8-a1c7-eb82a7cf3f1f"}
+ {:tick-id #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a",
+  :event/tags
+  #{[:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:02:26.182002-05:00",
+  :inputs {},
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca50-3085-706a-bae7-398028b50d62"}
+ {:tick-id #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a",
+  :key :result,
+  :value
+  {:report
+   "Unable to perform a content/section-level comparison. Both input documents failed text and page extraction due to malformed extraction results: the pdf/page-count and pdf/document-text components report missing required key [:path] and instead provided keys [:file]. Because document text and page counts are unavailable, there are no sections to compare and no reliable differences to compute.\n\nWhat failed:\n- /sandbox/input/doc1.pdf: page-count extraction error and document-text extraction error (missing required [:path] key).\n- /sandbox/input/doc2.pdf: same errors as above.\n\nRecommended next steps:\n1. Re-run extraction ensuring the extraction tool returns the expected keys (particularly [:path]) for pdf/page-count and pdf/document-text. The consumer expects a [:path] field for these components.\n2. If extraction cannot be fixed, provide the documents' plain text or structured sections directly (e.g., JSON with section titles and content) so a comparison can be performed.\n3. After supplying valid extracted text or sections, re-run this comparison to produce section diffs and key-level differences.\n\nIf you want, I can:\n- attempt a comparison if you upload the raw text for each document, or\n- validate and normalize extraction outputs you paste here to the expected schema.",
+   :section-diffs
+   [{:doc_index 0,
+     :path "/sandbox/input/doc1.pdf",
+     :status "error",
+     :errors
+     [{:component "pages",
+       :message
+       "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+      {:component "text",
+       :message
+       "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}],
+     :sections nil}
+    {:doc_index 1,
+     :path "/sandbox/input/doc2.pdf",
+     :status "error",
+     :errors
+     [{:component "pages",
+       :message
+       "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+      {:component "text",
+       :message
+       "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}],
+     :sections nil}],
+   :key-differences
+   [{:doc_index 0,
+     :path "/sandbox/input/doc1.pdf",
+     :field "pages",
+     :expected_keys ["path"],
+     :found_keys ["file"],
+     :issue "missing required key [:path]; wrong key [:file] provided"}
+    {:doc_index 0,
+     :path "/sandbox/input/doc1.pdf",
+     :field "text",
+     :expected_keys ["path"],
+     :found_keys ["file"],
+     :issue "missing required key [:path]; wrong key [:file] provided"}
+    {:doc_index 1,
+     :path "/sandbox/input/doc2.pdf",
+     :field "pages",
+     :expected_keys ["path"],
+     :found_keys ["file"],
+     :issue "missing required key [:path]; wrong key [:file] provided"}
+    {:doc_index 1,
+     :path "/sandbox/input/doc2.pdf",
+     :field "text",
+     :expected_keys ["path"],
+     :found_keys ["file"],
+     :issue
+     "missing required key [:path]; wrong key [:file] provided"}],
+   :summary
+   "Comparison aborted: both documents lack extracted pages/text due to missing required [:path] key (extraction returned [:file]). Provide properly extracted text or fix extraction output and re-run for a meaningful comparison."},
+  :event/tags
+  #{[:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:03:07.260360-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca50-d0fc-708a-9d30-2627e869099f"}
+ {:tick-id #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a",
+  :writes
+  {:result
+   {:report
+    "Unable to perform a content/section-level comparison. Both input documents failed text and page extraction due to malformed extraction results: the pdf/page-count and pdf/document-text components report missing required key [:path] and instead provided keys [:file]. Because document text and page counts are unavailable, there are no sections to compare and no reliable differences to compute.\n\nWhat failed:\n- /sandbox/input/doc1.pdf: page-count extraction error and document-text extraction error (missing required [:path] key).\n- /sandbox/input/doc2.pdf: same errors as above.\n\nRecommended next steps:\n1. Re-run extraction ensuring the extraction tool returns the expected keys (particularly [:path]) for pdf/page-count and pdf/document-text. The consumer expects a [:path] field for these components.\n2. If extraction cannot be fixed, provide the documents' plain text or structured sections directly (e.g., JSON with section titles and content) so a comparison can be performed.\n3. After supplying valid extracted text or sections, re-run this comparison to produce section diffs and key-level differences.\n\nIf you want, I can:\n- attempt a comparison if you upload the raw text for each document, or\n- validate and normalize extraction outputs you paste here to the expected schema.",
+    :section-diffs
+    [{:doc_index 0,
+      :path "/sandbox/input/doc1.pdf",
+      :status "error",
+      :errors
+      [{:component "pages",
+        :message
+        "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+       {:component "text",
+        :message
+        "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}],
+      :sections nil}
+     {:doc_index 1,
+      :path "/sandbox/input/doc2.pdf",
+      :status "error",
+      :errors
+      [{:component "pages",
+        :message
+        "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+       {:component "text",
+        :message
+        "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}],
+      :sections nil}],
+    :key-differences
+    [{:doc_index 0,
+      :path "/sandbox/input/doc1.pdf",
+      :field "pages",
+      :expected_keys ["path"],
+      :found_keys ["file"],
+      :issue
+      "missing required key [:path]; wrong key [:file] provided"}
+     {:doc_index 0,
+      :path "/sandbox/input/doc1.pdf",
+      :field "text",
+      :expected_keys ["path"],
+      :found_keys ["file"],
+      :issue
+      "missing required key [:path]; wrong key [:file] provided"}
+     {:doc_index 1,
+      :path "/sandbox/input/doc2.pdf",
+      :field "pages",
+      :expected_keys ["path"],
+      :found_keys ["file"],
+      :issue
+      "missing required key [:path]; wrong key [:file] provided"}
+     {:doc_index 1,
+      :path "/sandbox/input/doc2.pdf",
+      :field "text",
+      :expected_keys ["path"],
+      :found_keys ["file"],
+      :issue
+      "missing required key [:path]; wrong key [:file] provided"}],
+    :summary
+    "Comparison aborted: both documents lack extracted pages/text due to missing required [:path] key (extraction returned [:file]). Provide properly extracted text or fix extraction output and re-run for a meaningful comparison."}},
+  :duration-ms 40804,
+  :event/tags
+  #{[:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:03:07.255305-05:00",
+  :usage
+  {:prompt-tokens 3209, :completion-tokens 268, :total-tokens 3477},
+  :status :success,
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca50-d0f7-70a4-b53d-e4a9df3785f7",
+  :rlm
+  {:enabled? true,
+   :context-key :contracts,
+   :root-usage
+   {:prompt-tokens 3209, :completion-tokens 268, :total-tokens 3477},
+   :subcall-usage
+   {:prompt-tokens 703, :completion-tokens 2704, :total-tokens 3407},
+   :predict-call-count 3,
+   :model "openai/gpt-5",
+   :final-source :final-answer}}
+ {:tick-id #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "d3cb9cfe-15cb-42c6-8a25-843c2093750a"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:03:07.290632-05:00",
+  :outputs
+  {:contracts nil,
+   :doc-summaries nil,
+   :doc nil,
+   :doc-summary nil,
+   :result
+   {:report
+    "Unable to perform a content/section-level comparison. Both input documents failed text and page extraction due to malformed extraction results: the pdf/page-count and pdf/document-text components report missing required key [:path] and instead provided keys [:file]. Because document text and page counts are unavailable, there are no sections to compare and no reliable differences to compute.\n\nWhat failed:\n- /sandbox/input/doc1.pdf: page-count extraction error and document-text extraction error (missing required [:path] key).\n- /sandbox/input/doc2.pdf: same errors as above.\n\nRecommended next steps:\n1. Re-run extraction ensuring the extraction tool returns the expected keys (particularly [:path]) for pdf/page-count and pdf/document-text. The consumer expects a [:path] field for these components.\n2. If extraction cannot be fixed, provide the documents' plain text or structured sections directly (e.g., JSON with section titles and content) so a comparison can be performed.\n3. After supplying valid extracted text or sections, re-run this comparison to produce section diffs and key-level differences.\n\nIf you want, I can:\n- attempt a comparison if you upload the raw text for each document, or\n- validate and normalize extraction outputs you paste here to the expected schema.",
+    :section-diffs
+    [{:doc_index 0,
+      :path "/sandbox/input/doc1.pdf",
+      :status "error",
+      :errors
+      [{:component "pages",
+        :message
+        "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+       {:component "text",
+        :message
+        "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}],
+      :sections nil}
+     {:doc_index 1,
+      :path "/sandbox/input/doc2.pdf",
+      :status "error",
+      :errors
+      [{:component "pages",
+        :message
+        "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+       {:component "text",
+        :message
+        "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}],
+      :sections nil}],
+    :key-differences
+    [{:doc_index 0,
+      :path "/sandbox/input/doc1.pdf",
+      :field "pages",
+      :expected_keys ["path"],
+      :found_keys ["file"],
+      :issue
+      "missing required key [:path]; wrong key [:file] provided"}
+     {:doc_index 0,
+      :path "/sandbox/input/doc1.pdf",
+      :field "text",
+      :expected_keys ["path"],
+      :found_keys ["file"],
+      :issue
+      "missing required key [:path]; wrong key [:file] provided"}
+     {:doc_index 1,
+      :path "/sandbox/input/doc2.pdf",
+      :field "pages",
+      :expected_keys ["path"],
+      :found_keys ["file"],
+      :issue
+      "missing required key [:path]; wrong key [:file] provided"}
+     {:doc_index 1,
+      :path "/sandbox/input/doc2.pdf",
+      :field "text",
+      :expected_keys ["path"],
+      :found_keys ["file"],
+      :issue
+      "missing required key [:path]; wrong key [:file] provided"}],
+    :summary
+    "Comparison aborted: both documents lack extracted pages/text due to missing required [:path] key (extraction returned [:file]). Provide properly extracted text or fix extraction output and re-run for a meaningful comparison."},
+   :contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca50-d11a-7070-8e40-f62dd4690833"}]

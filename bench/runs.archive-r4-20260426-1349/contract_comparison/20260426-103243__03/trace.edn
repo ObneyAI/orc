@@ -1,0 +1,291 @@
+[{:tick-id #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c",
+  :execution-snapshot
+  {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+   :sheet-name "contract-comparison-agentic",
+   :nodes-by-id
+   {#uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"
+    {:retry nil,
+     :writes [:result],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 12,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :success,
+     :id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+     :parent-id nil,
+     :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\nCompare PDF contracts and produce a structured ComparisonResult.\n\nYou receive:\n  contracts — vector of PDF paths (full value bound; root prompt sees only metadata)\n\nStrategy:\n\n1. Survey each contract:\n\n   (let [docs (mapv (fn [p] {:path p :pages (pdf/page-count p) :text (pdf/document-text p)})\n                    contracts)]\n     ...)\n\n2. Use predict-all to summarize each contract's section structure in parallel:\n\n   (let [summaries (predict-all\n                     {:name        \"summarize-contract\"\n                      :items       docs\n                      :as          :doc\n                      :inputs      {}\n                      :instructions \"List section headings and key terms.\"\n                      :schema      [:map [:sections [:vector :map]]]\n                      :max-concurrency 4})]\n     ...)\n\n3. Use predict to produce the comparison:\n\n   (let [result (predict\n                  {:name \"compare\"\n                   :inputs {:summaries summaries :docs docs}\n                   :instructions \"Produce a structured ComparisonResult.\"\n                   :schema [:map\n                            [:report :string]\n                            [:section-diffs [:vector :map]]\n                            [:key-differences [:vector :map]]\n                            [:summary :string]]})]\n     (final! {:result result}))\n\nStay grounded — do not invent sections or terms.",
+     :success-policy nil,
+     :reads [:contracts],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :contracts,
+      :max-predict-calls 50,
+      :max-predict-concurrency 4,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 6000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+   :blackboard-entries
+   {:contracts
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :contracts,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summaries,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :doc
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summary,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :result,
+     :schema
+     [:map
+      [:report
+       {:description "Full comparison report in markdown format"}
+       :string]
+      [:section-diffs
+       {:description "Per-section comparison"}
+       [:vector
+        [:map
+         [:section-name
+          {:description "Name or title of the section being compared"}
+          :string]
+         [:document-a-text
+          {:description "Key text or summary from Document A"}
+          :string]
+         [:document-b-text
+          {:description "Key text or summary from Document B"}
+          :string]
+         [:difference-summary
+          {:description "Summary of what changed"}
+          :string]
+         [:significance
+          {:description "How significant the difference is"}
+          [:enum "major" "minor" "identical"]]]]]
+      [:key-differences
+       {:description "High-level key differences"}
+       [:vector
+        [:map
+         [:area
+          {:description
+           "Area of the contract affected (e.g. pricing, liability)"}
+          :string]
+         [:description
+          {:description "Description of the difference"}
+          :string]
+         [:impact
+          {:description "Potential impact or implication"}
+          :string]]]]
+      [:summary {:description "Executive summary"} :string]],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:32:43.473015-05:00",
+  :inputs
+  {:contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :options {:timeout-ms 300000, :store-trace? true},
+  :event/id #uuid "019dca6b-eb50-70ab-9f41-d741f841b0ca"}
+ {:tick-id #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c",
+  :event/tags
+  #{[:tick #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c"]
+    [:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:32:43.733840-05:00",
+  :inputs {},
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca6b-ec55-7082-b4f2-a8cdd1592731"}
+ {:tick-id #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c",
+  :key :result,
+  :value
+  {:report
+   "Comparison could not be performed. Both input documents failed processing: attempts to extract page counts and document text returned errors indicating that the PDF-processing routines expected a key named \"path\" but received a key named \"file\". No sections or text were extracted from either document, so no section-level or content comparisons are possible. Suggested next steps: (1) provide valid PDF inputs or ensure the ingestion pipeline supplies the expected \"path\" key for each file, (2) re-run the extraction to produce page counts and document text, and (3) once text is available, re-run this comparison. If you want, I can also attempt a comparison if you paste the documents' text here.",
+   :section-diffs [],
+   :key-differences
+   [{:doc_index 0,
+     :path "/sandbox/input/doc1.pdf",
+     :comparable false,
+     :issues
+     [{:field "pages",
+       :error
+       "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+      {:field "text",
+       :error
+       "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}]}
+    {:doc_index 1,
+     :path "/sandbox/input/doc2.pdf",
+     :comparable false,
+     :issues
+     [{:field "pages",
+       :error
+       "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+      {:field "text",
+       :error
+       "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}]}],
+   :summary
+   "Both documents failed PDF/text extraction due to missing/incorrect key usage (processor expected \"path\" but received \"file\"). No content could be compared. Provide valid inputs or correct the ingestion keys and re-run for a full comparison."},
+  :event/tags
+  #{[:tick #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:33:21.441291-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca6c-7fa1-70a6-b9a3-95fc3a8c9be1"}
+ {:tick-id #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c",
+  :writes
+  {:result
+   {:report
+    "Comparison could not be performed. Both input documents failed processing: attempts to extract page counts and document text returned errors indicating that the PDF-processing routines expected a key named \"path\" but received a key named \"file\". No sections or text were extracted from either document, so no section-level or content comparisons are possible. Suggested next steps: (1) provide valid PDF inputs or ensure the ingestion pipeline supplies the expected \"path\" key for each file, (2) re-run the extraction to produce page counts and document text, and (3) once text is available, re-run this comparison. If you want, I can also attempt a comparison if you paste the documents' text here.",
+    :section-diffs [],
+    :key-differences
+    [{:doc_index 0,
+      :path "/sandbox/input/doc1.pdf",
+      :comparable false,
+      :issues
+      [{:field "pages",
+        :error
+        "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+       {:field "text",
+        :error
+        "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}]}
+     {:doc_index 1,
+      :path "/sandbox/input/doc2.pdf",
+      :comparable false,
+      :issues
+      [{:field "pages",
+        :error
+        "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+       {:field "text",
+        :error
+        "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}]}],
+    :summary
+    "Both documents failed PDF/text extraction due to missing/incorrect key usage (processor expected \"path\" but received \"file\"). No content could be compared. Provide valid inputs or correct the ingestion keys and re-run for a full comparison."}},
+  :duration-ms 37439,
+  :event/tags
+  #{[:tick #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c"]
+    [:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:33:21.425635-05:00",
+  :usage
+  {:prompt-tokens 3209, :completion-tokens 250, :total-tokens 3459},
+  :status :success,
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca6c-7f91-701e-87c5-aa0263df6841",
+  :rlm
+  {:enabled? true,
+   :context-key :contracts,
+   :root-usage
+   {:prompt-tokens 3209, :completion-tokens 250, :total-tokens 3459},
+   :subcall-usage
+   {:prompt-tokens 703, :completion-tokens 2565, :total-tokens 3268},
+   :predict-call-count 3,
+   :model "openai/gpt-5",
+   :final-source :final-answer}}
+ {:tick-id #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "a35050c1-7b48-4c21-8e7f-349eca3a654c"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:33:21.634946-05:00",
+  :outputs
+  {:contracts nil,
+   :doc-summaries nil,
+   :doc nil,
+   :doc-summary nil,
+   :result
+   {:report
+    "Comparison could not be performed. Both input documents failed processing: attempts to extract page counts and document text returned errors indicating that the PDF-processing routines expected a key named \"path\" but received a key named \"file\". No sections or text were extracted from either document, so no section-level or content comparisons are possible. Suggested next steps: (1) provide valid PDF inputs or ensure the ingestion pipeline supplies the expected \"path\" key for each file, (2) re-run the extraction to produce page counts and document text, and (3) once text is available, re-run this comparison. If you want, I can also attempt a comparison if you paste the documents' text here.",
+    :section-diffs [],
+    :key-differences
+    [{:doc_index 0,
+      :path "/sandbox/input/doc1.pdf",
+      :comparable false,
+      :issues
+      [{:field "pages",
+        :error
+        "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+       {:field "text",
+        :error
+        "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}]}
+     {:doc_index 1,
+      :path "/sandbox/input/doc2.pdf",
+      :comparable false,
+      :issues
+      [{:field "pages",
+        :error
+        "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"}
+       {:field "text",
+        :error
+        "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"}]}],
+    :summary
+    "Both documents failed PDF/text extraction due to missing/incorrect key usage (processor expected \"path\" but received \"file\"). No content could be compared. Provide valid inputs or correct the ingestion keys and re-run for a full comparison."},
+   :contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca6c-8062-7070-b602-63e559e299e3"}]

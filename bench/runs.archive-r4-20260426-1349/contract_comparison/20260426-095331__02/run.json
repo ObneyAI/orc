@@ -1,0 +1,70 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "33453b08-569c-4285-905b-2a1ff95929ed",
+    "sheet_id" : "0a900186-b6cb-5fbc-a632-7de400289bc0",
+    "status" : "success",
+    "event_count" : 11
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-095331__02",
+  "duration_seconds" : 18.039,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 413,
+      "output" : 1226
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.0025552500000000002,
+    "total" : 0.0025552500000000002,
+    "per_page" : 5.6783333333333336E-5
+  },
+  "structured" : {
+    "contracts" : null,
+    "doc-summaries" : [ ],
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "# Contract Comparison Report — No Documents Provided\n\nStatus: No documents or summaries were supplied, so no substantive comparison could be performed.\n\nWhat I received\n- The input \"doc-summaries\" was an empty list. There are no contract texts, section lists, or summaries to compare.\n\nWhat this means\n- I cannot identify, compare, or summarize differences between contracts without at least two contract texts or structured summaries. I will not fabricate sections, clauses, or terms.\n\nHow I can help once you provide data\n1. Provide full contract texts\n   - Upload the two (or more) contract documents (plain text or PDF). Preferably include the full contract text for each document.\n2. Or provide structured summaries\n   - Supply a JSON array of document summaries with a structure like:\n     [\n       {\n         \"document-name\": \"Contract A\",\n         \"sections\": [\n           {\"section-name\": \"Term\", \"text\": \"...\"},\n           {\"section-name\": \"Termination\", \"text\": \"...\"},\n           ...\n         ]\n       },\n       {\n         \"document-name\": \"Contract B\",\n         \"sections\": [\n           {\"section-name\": \"Term\", \"text\": \"...\"},\n           {\"section-name\": \"Termination\", \"text\": \"...\"},\n           ...\n         ]\n       }\n     ]\n   - Ensure section names align across documents where you want direct comparison (e.g., both documents include \"Term\", \"Termination\", \"Confidentiality\").\n3. Or provide targeted excerpts\n   - If you only want a few clauses compared, paste those clause texts with clear labels (Document A — Clause X; Document B — Clause X).\n\nSuggested comparison scope and options I can produce after you provide documents\n- Per-section side-by-side differences and significance (major/minor/identical)\n- High-level key differences with impact analysis\n- Executive summary highlighting the most material risks or changes\n- Change-tracking guidance and suggested negotiation language\n\nConfidentiality note\n- Do not paste highly sensitive personal data unless you are comfortable doing so. If necessary, redact sensitive details before sharing.\n\nNext steps (recommended)\n1. Reply with the two contract texts or structured summaries (see formats above).\n2. Optionally indicate priorities (e.g., focus on indemnity, liability cap, IP assignment, termination).\n3. I will produce:\n   - A markdown comparison report\n   - Per-section diffs with significance labels\n   - A list of key differences with impact analysis\n   - An executive summary\n\nIf you want, paste the first contract now and label it \"Document A\", then paste \"Document B\". If you prefer, upload structured summaries in the JSON format above.",
+      "section-diffs" : [ ],
+      "key-differences" : [ ],
+      "summary" : "No comparison possible: no contract texts or summaries were provided. Please supply the two contract documents (or structured section summaries) and optionally indicate which clauses are highest priority; I will then produce the full comparison report, per-section diffs, key differences with impact, and an executive summary."
+    },
+    "contract-paths" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ]
+  },
+  "git_sha" : "c3c5be5"
+}

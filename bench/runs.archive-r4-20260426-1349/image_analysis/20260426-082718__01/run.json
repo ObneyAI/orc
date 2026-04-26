@@ -1,0 +1,59 @@
+{
+  "run_idx" : 1,
+  "max_iterations" : 30,
+  "orc" : {
+    "tick_id" : "56cfe955-d169-405b-b186-4e1fb41526ad",
+    "sheet_id" : "58b86e22-f362-56c3-86be-4f4310bb95f8",
+    "status" : "success",
+    "event_count" : 5
+  },
+  "task" : "image_analysis",
+  "run_id" : "20260426-082718__01",
+  "duration_seconds" : 40.335,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/image_analysis/sample/input/Screenshot 2026-04-02 at 12.16.21 PM.png",
+    "name" : "Screenshot 2026-04-02 at 12.16.21 PM.png",
+    "size_bytes" : 510990,
+    "sha256" : "5b34c413f1b34eab6f396012718d8838299502caf6d05681939f9cd781389f82",
+    "page_count" : null
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : null,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 18543,
+      "output" : 1037
+    },
+    "sub" : {
+      "input" : 4149,
+      "output" : 230
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.03354875,
+    "sub_lm" : 0.0014972499999999999,
+    "total" : 0.035046,
+    "per_page" : null
+  },
+  "structured" : {
+    "image-paths" : [ "/Users/justinobney/dev/orc/examples/image_analysis/sample/input/Screenshot 2026-04-02 at 12.16.21 PM.png" ],
+    "image-uris" : null,
+    "image-uri" : null,
+    "query" : "What is shown in these images? Provide a concise factual description.",
+    "per-image-finding" : null,
+    "per-image-findings" : null,
+    "answer" : "A scanned page of a contract from the Ontario Power Authority titled \"FEED‑IN TARIFF MICROFIT CONTRACT Version 2.0 Part 1 – Contract Details,\" showing the OPA logo, introductory paragraphs about the microFIT program, and the beginning of Section A \"CONTRACT AND SUPPLIER INFORMATION\" with fields for reference number and supplier name."
+  },
+  "git_sha" : "c3c5be5"
+}

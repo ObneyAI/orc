@@ -1,0 +1,97 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "b6a8599d-6301-4849-b152-b5ce0cd9e860",
+    "sheet_id" : "7bf421da-8817-57bb-bd64-0582788faa1f",
+    "status" : "success",
+    "event_count" : 5
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-103208__02",
+  "duration_seconds" : 34.899,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 6571,
+      "output" : 648
+    },
+    "sub" : {
+      "input" : 719,
+      "output" : 2159
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 3
+  },
+  "cost" : {
+    "root_lm" : 0.014693749999999998,
+    "sub_lm" : 0.00449775,
+    "total" : 0.0191915,
+    "per_page" : 4.2647777777777776E-4
+  },
+  "structured" : {
+    "contracts" : null,
+    "doc-summaries" : null,
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "Both input documents could not be processed for content extraction. The pipeline returned schema errors for both page-count and document-text extraction: the extractor expected a key named \"path\" but received \"pdf-file-path\". Because no page counts or extracted text are available for either document, I cannot perform any meaningful section-level or content-level comparison. \n\nNext steps you can take to allow comparison:\n- Re-run extraction with the expected schema (include a \"path\" key pointing to the PDF file), or\n- Provide the plain text contents for each document directly, or\n- Provide a corrected extractor output that includes pages.count and text.content (or equivalent) so sections can be identified.\n\nIf you provide corrected extracted text or raw document text, I will produce:\n- a list of section-level diffs,\n- a key-differences summary (topics, headings, numeric/figure changes),\n- and an overall comparison summary.",
+      "section-diffs" : [ ],
+      "key-differences" : [ {
+        "doc_path" : "/sandbox/input/doc1.pdf",
+        "status" : "extraction_error",
+        "error_source" : "pages extraction",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+        "remediation" : "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide page count via the expected key."
+      }, {
+        "doc_path" : "/sandbox/input/doc1.pdf",
+        "status" : "extraction_error",
+        "error_source" : "text extraction",
+        "error_message" : "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+        "remediation" : "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide document text via the expected key."
+      }, {
+        "doc_path" : "/sandbox/input/doc2.pdf",
+        "status" : "extraction_error",
+        "error_source" : "pages extraction",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+        "remediation" : "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide page count via the expected key."
+      }, {
+        "doc_path" : "/sandbox/input/doc2.pdf",
+        "status" : "extraction_error",
+        "error_source" : "text extraction",
+        "error_message" : "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+        "remediation" : "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide document text via the expected key."
+      }, {
+        "comparison_status" : "not_performed",
+        "reason" : "No extracted pages or text available for either document; comparison aborted."
+      } ],
+      "summary" : "Comparison could not be performed because both documents failed extraction (missing expected 'path' key). Provide corrected extractor outputs or raw document text to continue."
+    },
+    "contract-paths" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ]
+  },
+  "git_sha" : "c3c5be5"
+}

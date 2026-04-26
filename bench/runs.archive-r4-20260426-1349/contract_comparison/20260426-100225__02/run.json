@@ -1,0 +1,122 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "d3cb9cfe-15cb-42c6-8a25-843c2093750a",
+    "sheet_id" : "7bf421da-8817-57bb-bd64-0582788faa1f",
+    "status" : "success",
+    "event_count" : 5
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-100225__02",
+  "duration_seconds" : 41.593,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 3209,
+      "output" : 268
+    },
+    "sub" : {
+      "input" : 703,
+      "output" : 2704
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 3
+  },
+  "cost" : {
+    "root_lm" : 0.00669125,
+    "sub_lm" : 0.005583749999999999,
+    "total" : 0.012275,
+    "per_page" : 2.7277777777777776E-4
+  },
+  "structured" : {
+    "contracts" : null,
+    "doc-summaries" : null,
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "Unable to perform a content/section-level comparison. Both input documents failed text and page extraction due to malformed extraction results: the pdf/page-count and pdf/document-text components report missing required key [:path] and instead provided keys [:file]. Because document text and page counts are unavailable, there are no sections to compare and no reliable differences to compute.\n\nWhat failed:\n- /sandbox/input/doc1.pdf: page-count extraction error and document-text extraction error (missing required [:path] key).\n- /sandbox/input/doc2.pdf: same errors as above.\n\nRecommended next steps:\n1. Re-run extraction ensuring the extraction tool returns the expected keys (particularly [:path]) for pdf/page-count and pdf/document-text. The consumer expects a [:path] field for these components.\n2. If extraction cannot be fixed, provide the documents' plain text or structured sections directly (e.g., JSON with section titles and content) so a comparison can be performed.\n3. After supplying valid extracted text or sections, re-run this comparison to produce section diffs and key-level differences.\n\nIf you want, I can:\n- attempt a comparison if you upload the raw text for each document, or\n- validate and normalize extraction outputs you paste here to the expected schema.",
+      "section-diffs" : [ {
+        "doc_index" : 0,
+        "path" : "/sandbox/input/doc1.pdf",
+        "status" : "error",
+        "errors" : [ {
+          "component" : "pages",
+          "message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"
+        }, {
+          "component" : "text",
+          "message" : "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"
+        } ],
+        "sections" : null
+      }, {
+        "doc_index" : 1,
+        "path" : "/sandbox/input/doc2.pdf",
+        "status" : "error",
+        "errors" : [ {
+          "component" : "pages",
+          "message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"
+        }, {
+          "component" : "text",
+          "message" : "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"
+        } ],
+        "sections" : null
+      } ],
+      "key-differences" : [ {
+        "doc_index" : 0,
+        "path" : "/sandbox/input/doc1.pdf",
+        "field" : "pages",
+        "expected_keys" : [ "path" ],
+        "found_keys" : [ "file" ],
+        "issue" : "missing required key [:path]; wrong key [:file] provided"
+      }, {
+        "doc_index" : 0,
+        "path" : "/sandbox/input/doc1.pdf",
+        "field" : "text",
+        "expected_keys" : [ "path" ],
+        "found_keys" : [ "file" ],
+        "issue" : "missing required key [:path]; wrong key [:file] provided"
+      }, {
+        "doc_index" : 1,
+        "path" : "/sandbox/input/doc2.pdf",
+        "field" : "pages",
+        "expected_keys" : [ "path" ],
+        "found_keys" : [ "file" ],
+        "issue" : "missing required key [:path]; wrong key [:file] provided"
+      }, {
+        "doc_index" : 1,
+        "path" : "/sandbox/input/doc2.pdf",
+        "field" : "text",
+        "expected_keys" : [ "path" ],
+        "found_keys" : [ "file" ],
+        "issue" : "missing required key [:path]; wrong key [:file] provided"
+      } ],
+      "summary" : "Comparison aborted: both documents lack extracted pages/text due to missing required [:path] key (extraction returned [:file]). Provide properly extracted text or fix extraction output and re-run for a meaningful comparison."
+    },
+    "contract-paths" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ]
+  },
+  "git_sha" : "c3c5be5"
+}

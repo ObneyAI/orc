@@ -1,0 +1,59 @@
+{
+  "run_idx" : 1,
+  "max_iterations" : 30,
+  "orc" : {
+    "tick_id" : "418c45cf-4616-45af-bb98-4acb0feeee40",
+    "sheet_id" : "58b86e22-f362-56c3-86be-4f4310bb95f8",
+    "status" : "failure",
+    "event_count" : 4
+  },
+  "task" : "image_analysis",
+  "run_id" : "20260426-082335__01",
+  "duration_seconds" : 19.417,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/image_analysis/sample/input/Screenshot 2026-04-02 at 12.16.21 PM.png",
+    "name" : "Screenshot 2026-04-02 at 12.16.21 PM.png",
+    "size_bytes" : 510990,
+    "sha256" : "5b34c413f1b34eab6f396012718d8838299502caf6d05681939f9cd781389f82",
+    "page_count" : null
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : null,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : "Iteration converged on the SAME ERROR twice without making progress. The underlying error was:\n\nclojure.lang.ExceptionInfo: predict input exceeds max-predict-input-chars: 681433 {:type :rlm/input-too-large, :size 681433, :limit 200000}\n\nRead it carefully and try a different approach (check the symbol/argument shape, or simplify the code).",
+  "tokens" : {
+    "root" : {
+      "input" : 8941,
+      "output" : 535
+    },
+    "sub" : {
+      "input" : 0,
+      "output" : 0
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 2
+  },
+  "cost" : {
+    "root_lm" : 0.01652625,
+    "sub_lm" : 0.0,
+    "total" : 0.01652625,
+    "per_page" : null
+  },
+  "structured" : {
+    "image-paths" : [ "/Users/justinobney/dev/orc/examples/image_analysis/sample/input/Screenshot 2026-04-02 at 12.16.21 PM.png" ],
+    "image-uris" : null,
+    "image-uri" : null,
+    "query" : "What is shown in these images? Provide a concise factual description.",
+    "per-image-finding" : null,
+    "per-image-findings" : null,
+    "answer" : null
+  },
+  "git_sha" : "c3c5be5"
+}

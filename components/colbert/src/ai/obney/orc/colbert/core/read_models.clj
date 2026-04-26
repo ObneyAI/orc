@@ -122,7 +122,7 @@
   (reduce apply-index-event {:indexes {}} events))
 
 (defreadmodel :colbert indexes
-  {:events index-event-types :version 1}
+  {:events index-event-types :version 1 :l1-ttl-ms 0}
   [state event] (apply-index-event state event))
 
 ;; =============================================================================
@@ -173,7 +173,7 @@
   (reduce apply-training-event {:trainings {}} events))
 
 (defreadmodel :colbert trainings
-  {:events training-event-types :version 1}
+  {:events training-event-types :version 1 :l1-ttl-ms 0}
   [state event] (apply-training-event state event))
 
 ;; =============================================================================
@@ -191,7 +191,7 @@
            :searched-at (str (:event/timestamp event))}))
 
 (defreadmodel :colbert search-history
-  {:events search-event-types :version 1}
+  {:events search-event-types :version 1 :l1-ttl-ms 0}
   [state event] (apply-search-event state event))
 
 ;; =============================================================================

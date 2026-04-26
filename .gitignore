@@ -1,5 +1,6 @@
 .cpcache/
 .nrepl-port
+.nrepl-logs/
 classes/
 storage/
 target/

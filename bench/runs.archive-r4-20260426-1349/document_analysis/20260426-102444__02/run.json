@@ -1,0 +1,71 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+    "sheet_id" : "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+    "status" : "success",
+    "event_count" : 19
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "document_analysis",
+  "run_id" : "20260426-102444__02",
+  "duration_seconds" : 19.721,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf",
+    "name" : "YYJ-2025-Parking-Management-RFP.pdf",
+    "size_bytes" : 5379910,
+    "sha256" : "250b794c61200e280d01d6c64f1c24a4f018e96537929fe5d68f969159d44d75",
+    "page_count" : 136
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 136,
+  "outputs" : [ {
+    "path" : "outputs/document_analysis-report.docx",
+    "original-path" : "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/document_analysis-report.docx",
+    "size_bytes" : 3654,
+    "sha256" : "c821f153305f490e1415432fcbca2fe52e9e28080ba8348e5e77f63bdea76594"
+  } ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 664,
+      "output" : 1332
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.00283,
+    "total" : 0.00283,
+    "per_page" : 2.0808823529411766E-5
+  },
+  "structured" : {
+    "document-meta" : [ ],
+    "criteria" : "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist.",
+    "doc-summary" : null,
+    "document-paths" : [ "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf" ],
+    "document" : null,
+    "documents" : null,
+    "docx-report" : "run-orc/file",
+    "analysis" : {
+      "report" : "# Briefing Report — Documents Received: None\n\nExecutive Summary\nThis briefing is based on the provided document summaries. No document summaries were supplied, so there is no substantive material to analyze. Consequently, there are no facts, decisions, deadlines, stakeholders, or financial terms to extract from source documents. This report therefore (a) records the absence of input materials, (b) states what would have been produced if documents were available, and (c) lists recommended next steps and the specific information required to produce a full briefing.\n\nKey Dates and Timeline\nNo dates were identified because no documents were supplied. If source documents are provided, the Key Dates section would list all deadlines, effective dates, meeting times, expiration dates, milestones, and any other chronological obligations in chronological order, with a short note if any timeline appears unusually tight.\n\nKey Entities and Stakeholders\nNo people, organizations, or roles were identified because no documents were supplied. A complete briefing would include, for each named entity:\n- name,\n- role or relationship to the matter,\n- relevance or decision authority,\n- contact information if available.\n\nFinancial Information\nNo financial information (fees, budgets, pricing, payment terms, or obligations) was available. If financial details were present, they would be summarized and, where multiple items exist, presented in a concise table: item | amount | due date | payer | payee | notes.\n\nRecommendations and Next Steps\nTo produce the requested comprehensive briefing, please provide the original documents or summaries. Specifically deliver any of the following that apply:\n1. Contracts, agreements, or MOU documents.\n2. Meeting minutes or agendas.\n3. Email threads that record decisions or deadlines.\n4. Budget spreadsheets, invoices, or payment schedules.\n5. A short list of known stakeholders and their contact details.\n\nChecklist of required metadata to include with documents (this accelerates accurate extraction):\n- Document title and date.\n- Authors and recipients (or distribution list).\n- Any explicit deadlines or effective dates, with timezones where relevant.\n- Monetary figures and currency.\n- Named parties and their roles.\n- Priority items or required actions.\n\nRisk Note\nBecause no source material was provided, risks cannot be assessed. The principal operational risk at this stage is proceeding without authoritative documents: decisions made on incomplete information may be invalid, create missed deadlines, or cause financial exposure.\n\nIf you supply the documents or summaries, I will:\n- extract all key facts, dates, stakeholders, and financial terms;\n- produce a chronological timeline and flag tight deadlines;\n- provide a stakeholder table with roles and contacts;\n- produce a concise financial summary table;\n- call out ambiguities, required clarifications, and recommended actions.",
+      "key-dates" : [ ],
+      "key-entities" : [ ]
+    },
+    "doc-summaries" : [ ]
+  },
+  "git_sha" : "c3c5be5"
+}

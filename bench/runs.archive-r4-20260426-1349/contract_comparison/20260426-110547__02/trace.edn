@@ -1,0 +1,568 @@
+[{:tick-id #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5",
+  :execution-snapshot
+  {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+   :sheet-name "contract-comparison-agentic",
+   :nodes-by-id
+   {#uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"
+    {:retry nil,
+     :writes [:result],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 12,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :success,
+     :id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+     :parent-id nil,
+     :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\nCompare PDF contracts and produce a structured ComparisonResult.\n\nYou receive:\n  contracts — vector of PDF paths (full value bound; root prompt sees only metadata)\n\nStrategy:\n\n1. Survey each contract:\n\n   (let [docs (mapv (fn [p] {:path p :pages (pdf/page-count p) :text (pdf/document-text p)})\n                    contracts)]\n     ...)\n\n2. Use predict-all to summarize each contract's section structure in parallel:\n\n   (let [summaries (predict-all\n                     {:name        \"summarize-contract\"\n                      :items       docs\n                      :as          :doc\n                      :inputs      {}\n                      :instructions \"List section headings and key terms.\"\n                      :schema      [:map [:sections [:vector :map]]]\n                      :max-concurrency 4})]\n     ...)\n\n3. Use predict to produce the comparison:\n\n   (let [result (predict\n                  {:name \"compare\"\n                   :inputs {:summaries summaries :docs docs}\n                   :instructions \"Produce a structured ComparisonResult.\"\n                   :schema [:map\n                            [:report :string]\n                            [:section-diffs [:vector :map]]\n                            [:key-differences [:vector :map]]\n                            [:summary :string]]})]\n     (final! {:result result}))\n\nStay grounded — do not invent sections or terms.",
+     :success-policy nil,
+     :reads [:contracts],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :contracts,
+      :max-predict-calls 50,
+      :max-predict-concurrency 4,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 6000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+   :blackboard-entries
+   {:contracts
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :contracts,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summaries,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :doc
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summary,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :result,
+     :schema
+     [:map
+      [:report
+       {:description "Full comparison report in markdown format"}
+       :string]
+      [:section-diffs
+       {:description "Per-section comparison"}
+       [:vector
+        [:map
+         [:section-name
+          {:description "Name or title of the section being compared"}
+          :string]
+         [:document-a-text
+          {:description "Key text or summary from Document A"}
+          :string]
+         [:document-b-text
+          {:description "Key text or summary from Document B"}
+          :string]
+         [:difference-summary
+          {:description "Summary of what changed"}
+          :string]
+         [:significance
+          {:description "How significant the difference is"}
+          [:enum "major" "minor" "identical"]]]]]
+      [:key-differences
+       {:description "High-level key differences"}
+       [:vector
+        [:map
+         [:area
+          {:description
+           "Area of the contract affected (e.g. pricing, liability)"}
+          :string]
+         [:description
+          {:description "Description of the difference"}
+          :string]
+         [:impact
+          {:description "Potential impact or implication"}
+          :string]]]]
+      [:summary {:description "Executive summary"} :string]],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:05:47.994201-05:00",
+  :inputs
+  {:contracts
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca8a-335a-70aa-97e0-67b75d632c1e"}
+ {:tick-id #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5",
+  :event/tags
+  #{[:tick #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5"]
+    [:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:05:48.230306-05:00",
+  :inputs {},
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca8a-3446-7053-ac76-4fb76c340f7a"}
+ {:tick-id #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5",
+  :key :result,
+  :value
+  {:report
+   "Comparison Report: microFIT Contract Version 2.0 (file: microFIT-Contract-Version-2-0.pdf) vs Version 3.1.1 (file: microFIT-Contract-Version-3-1-1.pdf)\n\nExecutive summary\n- Version 3.1.1 is an update that (1) introduces a formal \"Prescribed Form\" requirement for multiple supplier communications and contract formalities, (2) removes or substantially reduces the Domestic Content obligations (Appendix C and related references), and (3) clarifies/expands certain information disclosure uses (e.g., public health & safety / emergency planning). There are also several minor editorial and definitional changes (new definitions and a Website reference).\n- The most material changes for suppliers are: removal of explicit domestic content tables/verification requirements and the new requirement to use the Prescribed Form for notices, amendments, contact updates and termination notices.\n\nImplications (high level)\n- Domestic content: Version 3.1.1 omits the Domestic Content Requirements (the Domestic Content Grids and related obligations/verification language). If your compliance, procurement, or record-keeping depended on the domestic-content tables in v2.0, those obligations appear removed (or moved elsewhere) in v3.1.1 — this reduces supplier obligations tied to domestic content but also removes OPA's explicit mechanism for calculating/confirming Domestic Content Level in the Contract text.\n- Formality/Administration: Requiring the \"Prescribed Form\" for notice, amendments, contact changes and termination increases formality and could limit informal communications being treated as valid. Suppliers should ensure they can access and use the OPA \"Prescribed Form\" and Website for submissions/notifications.\n- Information sharing: Version 3.1.1 expands/discusses disclosure to other government ministries for public health & safety and emergency planning; suppliers should expect potentially broader information sharing for those purposes.\n- No substantive changes found to pricing/indexing mechanism (Appendix B formula retained), to core guarantees (LDC failure to pay), assignment rules, dispute resolution or the core structure of the contract beyond those administrative and domestic-content changes.\n\nScope / methodology\n- Compared the two supplied contract texts section-by-section and noted additions, removals and edits that change obligations or clarify administrative procedures. Focused on differences likely to affect supplier compliance, administrative burden, and commercial/legal rights.\n\nKey actionable items for a supplier reviewing v3.1.1\n- Confirm whether domestic content obligations still apply via other program rules (microFIT Rules, OPA website) or whether they have been removed entirely — do not rely solely on the contract text if you have outstanding compliance expectations.\n- Obtain and review the \"Prescribed Form\" as published on the OPA Website and incorporate it into internal notification & change-control processes.\n- Update privacy/data-sharing expectations and confirm what information the OPA may disclose for public health & safety / emergency planning.\n- Ensure administrative staff can access the OPA Website referenced and store copies of any Prescribed Form submissions and confirmations.",
+   :section-diffs
+   [{:section "Document title / Version",
+     :change_type "modified",
+     :details
+     "Document version changed from 'Version 2.0' to 'Version 3.1.1'. (Cosmetic/version update across header and Part 2 headings.)"}
+    {:section
+     "Part 2, Section 4.4.4 (Necessary Rights and Compliance)",
+     :change_type "modified",
+     :details
+     "Reference requiring solar PV Facilities to meet Domestic Content Level was removed. In v2.0 clause 4.4.4 required Domestic Content Level >= Minimum Required Domestic Content Level; v3.1.1 omits that clause and instead lists Renewable Energy Approval in the same area."}
+    {:section
+     "Part 5.1.2 (Facility Characteristics / Notification of contact changes)",
+     :change_type "modified",
+     :details
+     "v2.0: 'notify OPA promptly of any change to the information contained in Part 1, Section A(11)'. v3.1.1: now requires notifying 'in the Prescribed Form'."}
+    {:section "Part 7.2 (Notices / Change of Contact Information)",
+     :change_type "modified",
+     :details
+     "v2.0 allowed change by 'written notice to the other'. v3.1.1 requires change by 'written notice in the Prescribed Form'."}
+    {:section "Part 8.1 (Termination - On Notice)",
+     :change_type "modified",
+     :details
+     "v2.0: termination by '30 days’ prior written notice to OPA'. v3.1.1: termination must be '30 days’ prior written notice in the Prescribed Form to OPA'."}
+    {:section "Part 9 (Amendment)",
+     :change_type "modified",
+     :details
+     "v2.0 required amendments to be 'reduced to writing' and agreed by both parties. v3.1.1 requires amendments to be 'reduced to writing in the Prescribed Form' and agreed by both parties."}
+    {:section
+     "Part 6.5 (Collection of Information / Disclosure of Information)",
+     :change_type "modified",
+     :details
+     "v2.0 text listed examples of information that may be obtained/disclosed and explicitly included 'information to establish compliance with Minimum Required Domestic Content Level'. v3.1.1 removes the explicit domestic content reference in that clause and adds a sentence explicitly allowing disclosure to other ministries/agencies for 'promoting public health and safety' and 'allowing emergency services personnel' for planning and response."}
+    {:section "Appendix A - Definitions (added)",
+     :change_type "added",
+     :details
+     "New definitions added in v3.1.1: 'Prescribed Form' and 'Website' (OPA microFIT website URL)."}
+    {:section "Appendix A - Definitions (removed/modified)",
+     :change_type "modified/removed",
+     :details
+     "Definitions and text referring to 'Domestic Content Level' (and related defined phrasing) are absent or reduced in v3.1.1 compared to v2.0 (see Appendix C changes)."}
+    {:section "Appendix B (Calculation of Indexed Contract Price)",
+     :change_type "unchanged (minor formatting)",
+     :details
+     "Indexing formula and approach preserved; only formatting and minor editorial differences visible."}
+    {:section
+     "Appendix C (Solar PV Schedule & Domestic Content Requirements)",
+     :change_type "removed/modified",
+     :details
+     "v2.0 Appendix C includes a detailed 'Domestic Content Requirements' section with multiple Domestic Content Grids (three tables) allocating Qualifying Percentages and explicit verification/certification steps. In v3.1.1, the Domestic Content Grids and requirement language are no longer present; Appendix C instead contains a narrower Additional Defined Terms update (notably a broadened 'Existing Building' definition with OPA discretion)."}
+    {:section "Appendix D-1, D-2 and Appendix E",
+     :change_type "unchanged (substantive)",
+     :details
+     "Directly Connected, Indirectly Connected, and LDC Supplier Schedules remain substantively the same between v2.0 and v3.1.1 (no material change to the battery/back-up configuration rules or LDC schedule text beyond prior edits)."}],
+   :key-differences
+   [{:id "K1",
+     :title "Domestic Content Requirements removed",
+     :severity "high",
+     :description
+     "Version 2.0 contains detailed Domestic Content Requirements (Appendix C) with three Domestic Content Grids and verification/record provisions. Version 3.1.1 omits these grids and related contractual obligations. References to Domestic Content Level in contract representations/covenants are removed.",
+     :implication
+     "Suppliers previously required to meet and document Minimum Required Domestic Content Level under the contract wording may no longer have that explicit contractual obligation. Confirm whether domestic content obligations were moved to external program rules or rescinded.",
+     :locations_in_v2
+     ["Appendix C (Domestic Content Requirements and Tables 1-3)"
+      "Appendix A definitions: 'Domestic Content Level'"
+      "Part 4.4.4 (representation that solar PV has Domestic Content Level >= Minimum Required Domestic Content Level)"
+      "Part 6.5 (reference to information to establish compliance with Minimum Required Domestic Content Level)"],
+     :locations_in_v3
+     ["Appendix C (now contains only Additional Defined Terms; Domestic Content tables are absent)"
+      "Appendix A (no Domestic Content Level definition present; domestic-content-related clauses removed)"]}
+    {:id "K2",
+     :title "Introduction of 'Prescribed Form' requirement",
+     :severity "medium",
+     :description
+     "Version 3.1.1 adds a new defined term 'Prescribed Form' (Appendix A) and requires use of the Prescribed Form for: change-of-contact notifications (Part 5.1.2), change of contact information (Part 7.2), termination notices (Part 8.1), and contract amendments (Part 9). Several clauses that previously required 'written notice' are updated to require the 'Prescribed Form'.",
+     :implication
+     "Communications previously acceptable as 'written notice' may need to be submitted on the OPA's specified form; suppliers should obtain and follow the Prescribed Form to ensure validity.",
+     :locations_in_v2 ["Part 5.1.2" "Part 7.2" "Part 8.1" "Part 9"],
+     :locations_in_v3
+     ["Part 5.1.2 (now: notify in the Prescribed Form)"
+      "Part 7.2 (now: change by written notice in the Prescribed Form)"
+      "Part 8.1 (now: 30 days’ prior written notice in the Prescribed Form)"
+      "Part 9 (now: amendment reduced to writing in the Prescribed Form)"
+      "Appendix A (definition: Prescribed Form)"]}
+    {:id "K3",
+     :title "Expanded information disclosure purposes",
+     :severity "low-medium",
+     :description
+     "Version 3.1.1 expands/discusses the purposes for which the OPA may disclose certain supplier/facility information to other ministries/agencies, explicitly including promoting public health & safety and allowing emergency services personnel to plan/ respond.",
+     :implication
+     "Suppliers should expect a somewhat broader set of legitimate disclosures by OPA for public safety/emergency planning. Privacy expectations and disclosures should be reviewed accordingly.",
+     :locations_in_v2
+     ["Part 6.5 (Collection/Disclosure of Information) — focused on program integrity, municipal planning"],
+     :locations_in_v3
+     ["Part 6.5 (expanded to include public health & safety / emergency services disclosure language)"]}
+    {:id "K4",
+     :title "Definition and Website references added",
+     :severity "low",
+     :description
+     "v3.1.1 adds 'Prescribed Form' and 'Website' definitions in Appendix A and includes the microFIT website URL.",
+     :implication
+     "Suppliers must consult the OPA website for the latest Prescribed Form and other resources referenced by the Contract.",
+     :locations_in_v3
+     ["Appendix A: 'Prescribed Form' and 'Website' definitions; Website URL appended in Appendix A."]}
+    {:id "K5",
+     :title "Minor editorial and structural changes retained",
+     :severity "low",
+     :description
+     "Indexing (Appendix B), LDC guarantee, assignment, dispute resolution, metering and connection provisions remain substantively unchanged (aside from editorial/formatting differences).",
+     :implication
+     "Core commercial and pricing mechanics are retained; focus attention on administrative and domestic-content changes.",
+     :locations_in_both
+     ["Appendix B (Indexed Contract Price)"
+      "Part 2 Sections for Pricing, Payment, LDC Guarantee, Dispute Resolution"
+      "Appendix D and Appendix E schedules"]}],
+   :summary
+   "- Version change: 2.0 → 3.1.1.\n- Major contractual differences:\n  - Domestic content obligations and the Domestic Content Grids (Appendix C) present in v2.0 are removed in v3.1.1 — material (high importance) for suppliers subject to domestic-content compliance.\n  - v3.1.1 introduces and requires use of a \"Prescribed Form\" (defined in Appendix A) for notices, amendments, contact updates and termination notices — administrative (medium importance).\n  - v3.1.1 broadens stated disclosure purposes to include public health & safety and emergency-planning uses — privacy/data-sharing (low-medium importance).\n- Core pricing/indexing, LDC payment guarantee, metering and connection-related obligations remain unchanged.\n- Recommended next steps:\n  1. Confirm whether domestic content obligations are enforced elsewhere (microFIT Rules or OPA policy) or removed; obtain written clarification if required.\n  2. Obtain the OPA 'Prescribed Form' from the OPA Website and update internal processes to use it for all Notices/Amendments/Contact changes/Terminations.\n  3. Update privacy / disclosure expectations and record-retention to reflect expanded disclosure uses.\n  4. If you rely on domestic content credits or need to demonstrate compliance, preserve copies of v2.0 and any related documentation until clarification is obtained."},
+  :event/tags
+  #{[:tick #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:08:08.434651-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca8c-57f2-704e-8fd7-9fb90313c926"}
+ {:tick-id #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5",
+  :writes
+  {:result
+   {:report
+    "Comparison Report: microFIT Contract Version 2.0 (file: microFIT-Contract-Version-2-0.pdf) vs Version 3.1.1 (file: microFIT-Contract-Version-3-1-1.pdf)\n\nExecutive summary\n- Version 3.1.1 is an update that (1) introduces a formal \"Prescribed Form\" requirement for multiple supplier communications and contract formalities, (2) removes or substantially reduces the Domestic Content obligations (Appendix C and related references), and (3) clarifies/expands certain information disclosure uses (e.g., public health & safety / emergency planning). There are also several minor editorial and definitional changes (new definitions and a Website reference).\n- The most material changes for suppliers are: removal of explicit domestic content tables/verification requirements and the new requirement to use the Prescribed Form for notices, amendments, contact updates and termination notices.\n\nImplications (high level)\n- Domestic content: Version 3.1.1 omits the Domestic Content Requirements (the Domestic Content Grids and related obligations/verification language). If your compliance, procurement, or record-keeping depended on the domestic-content tables in v2.0, those obligations appear removed (or moved elsewhere) in v3.1.1 — this reduces supplier obligations tied to domestic content but also removes OPA's explicit mechanism for calculating/confirming Domestic Content Level in the Contract text.\n- Formality/Administration: Requiring the \"Prescribed Form\" for notice, amendments, contact changes and termination increases formality and could limit informal communications being treated as valid. Suppliers should ensure they can access and use the OPA \"Prescribed Form\" and Website for submissions/notifications.\n- Information sharing: Version 3.1.1 expands/discusses disclosure to other government ministries for public health & safety and emergency planning; suppliers should expect potentially broader information sharing for those purposes.\n- No substantive changes found to pricing/indexing mechanism (Appendix B formula retained), to core guarantees (LDC failure to pay), assignment rules, dispute resolution or the core structure of the contract beyond those administrative and domestic-content changes.\n\nScope / methodology\n- Compared the two supplied contract texts section-by-section and noted additions, removals and edits that change obligations or clarify administrative procedures. Focused on differences likely to affect supplier compliance, administrative burden, and commercial/legal rights.\n\nKey actionable items for a supplier reviewing v3.1.1\n- Confirm whether domestic content obligations still apply via other program rules (microFIT Rules, OPA website) or whether they have been removed entirely — do not rely solely on the contract text if you have outstanding compliance expectations.\n- Obtain and review the \"Prescribed Form\" as published on the OPA Website and incorporate it into internal notification & change-control processes.\n- Update privacy/data-sharing expectations and confirm what information the OPA may disclose for public health & safety / emergency planning.\n- Ensure administrative staff can access the OPA Website referenced and store copies of any Prescribed Form submissions and confirmations.",
+    :section-diffs
+    [{:section "Document title / Version",
+      :change_type "modified",
+      :details
+      "Document version changed from 'Version 2.0' to 'Version 3.1.1'. (Cosmetic/version update across header and Part 2 headings.)"}
+     {:section
+      "Part 2, Section 4.4.4 (Necessary Rights and Compliance)",
+      :change_type "modified",
+      :details
+      "Reference requiring solar PV Facilities to meet Domestic Content Level was removed. In v2.0 clause 4.4.4 required Domestic Content Level >= Minimum Required Domestic Content Level; v3.1.1 omits that clause and instead lists Renewable Energy Approval in the same area."}
+     {:section
+      "Part 5.1.2 (Facility Characteristics / Notification of contact changes)",
+      :change_type "modified",
+      :details
+      "v2.0: 'notify OPA promptly of any change to the information contained in Part 1, Section A(11)'. v3.1.1: now requires notifying 'in the Prescribed Form'."}
+     {:section "Part 7.2 (Notices / Change of Contact Information)",
+      :change_type "modified",
+      :details
+      "v2.0 allowed change by 'written notice to the other'. v3.1.1 requires change by 'written notice in the Prescribed Form'."}
+     {:section "Part 8.1 (Termination - On Notice)",
+      :change_type "modified",
+      :details
+      "v2.0: termination by '30 days’ prior written notice to OPA'. v3.1.1: termination must be '30 days’ prior written notice in the Prescribed Form to OPA'."}
+     {:section "Part 9 (Amendment)",
+      :change_type "modified",
+      :details
+      "v2.0 required amendments to be 'reduced to writing' and agreed by both parties. v3.1.1 requires amendments to be 'reduced to writing in the Prescribed Form' and agreed by both parties."}
+     {:section
+      "Part 6.5 (Collection of Information / Disclosure of Information)",
+      :change_type "modified",
+      :details
+      "v2.0 text listed examples of information that may be obtained/disclosed and explicitly included 'information to establish compliance with Minimum Required Domestic Content Level'. v3.1.1 removes the explicit domestic content reference in that clause and adds a sentence explicitly allowing disclosure to other ministries/agencies for 'promoting public health and safety' and 'allowing emergency services personnel' for planning and response."}
+     {:section "Appendix A - Definitions (added)",
+      :change_type "added",
+      :details
+      "New definitions added in v3.1.1: 'Prescribed Form' and 'Website' (OPA microFIT website URL)."}
+     {:section "Appendix A - Definitions (removed/modified)",
+      :change_type "modified/removed",
+      :details
+      "Definitions and text referring to 'Domestic Content Level' (and related defined phrasing) are absent or reduced in v3.1.1 compared to v2.0 (see Appendix C changes)."}
+     {:section "Appendix B (Calculation of Indexed Contract Price)",
+      :change_type "unchanged (minor formatting)",
+      :details
+      "Indexing formula and approach preserved; only formatting and minor editorial differences visible."}
+     {:section
+      "Appendix C (Solar PV Schedule & Domestic Content Requirements)",
+      :change_type "removed/modified",
+      :details
+      "v2.0 Appendix C includes a detailed 'Domestic Content Requirements' section with multiple Domestic Content Grids (three tables) allocating Qualifying Percentages and explicit verification/certification steps. In v3.1.1, the Domestic Content Grids and requirement language are no longer present; Appendix C instead contains a narrower Additional Defined Terms update (notably a broadened 'Existing Building' definition with OPA discretion)."}
+     {:section "Appendix D-1, D-2 and Appendix E",
+      :change_type "unchanged (substantive)",
+      :details
+      "Directly Connected, Indirectly Connected, and LDC Supplier Schedules remain substantively the same between v2.0 and v3.1.1 (no material change to the battery/back-up configuration rules or LDC schedule text beyond prior edits)."}],
+    :key-differences
+    [{:id "K1",
+      :title "Domestic Content Requirements removed",
+      :severity "high",
+      :description
+      "Version 2.0 contains detailed Domestic Content Requirements (Appendix C) with three Domestic Content Grids and verification/record provisions. Version 3.1.1 omits these grids and related contractual obligations. References to Domestic Content Level in contract representations/covenants are removed.",
+      :implication
+      "Suppliers previously required to meet and document Minimum Required Domestic Content Level under the contract wording may no longer have that explicit contractual obligation. Confirm whether domestic content obligations were moved to external program rules or rescinded.",
+      :locations_in_v2
+      ["Appendix C (Domestic Content Requirements and Tables 1-3)"
+       "Appendix A definitions: 'Domestic Content Level'"
+       "Part 4.4.4 (representation that solar PV has Domestic Content Level >= Minimum Required Domestic Content Level)"
+       "Part 6.5 (reference to information to establish compliance with Minimum Required Domestic Content Level)"],
+      :locations_in_v3
+      ["Appendix C (now contains only Additional Defined Terms; Domestic Content tables are absent)"
+       "Appendix A (no Domestic Content Level definition present; domestic-content-related clauses removed)"]}
+     {:id "K2",
+      :title "Introduction of 'Prescribed Form' requirement",
+      :severity "medium",
+      :description
+      "Version 3.1.1 adds a new defined term 'Prescribed Form' (Appendix A) and requires use of the Prescribed Form for: change-of-contact notifications (Part 5.1.2), change of contact information (Part 7.2), termination notices (Part 8.1), and contract amendments (Part 9). Several clauses that previously required 'written notice' are updated to require the 'Prescribed Form'.",
+      :implication
+      "Communications previously acceptable as 'written notice' may need to be submitted on the OPA's specified form; suppliers should obtain and follow the Prescribed Form to ensure validity.",
+      :locations_in_v2 ["Part 5.1.2" "Part 7.2" "Part 8.1" "Part 9"],
+      :locations_in_v3
+      ["Part 5.1.2 (now: notify in the Prescribed Form)"
+       "Part 7.2 (now: change by written notice in the Prescribed Form)"
+       "Part 8.1 (now: 30 days’ prior written notice in the Prescribed Form)"
+       "Part 9 (now: amendment reduced to writing in the Prescribed Form)"
+       "Appendix A (definition: Prescribed Form)"]}
+     {:id "K3",
+      :title "Expanded information disclosure purposes",
+      :severity "low-medium",
+      :description
+      "Version 3.1.1 expands/discusses the purposes for which the OPA may disclose certain supplier/facility information to other ministries/agencies, explicitly including promoting public health & safety and allowing emergency services personnel to plan/ respond.",
+      :implication
+      "Suppliers should expect a somewhat broader set of legitimate disclosures by OPA for public safety/emergency planning. Privacy expectations and disclosures should be reviewed accordingly.",
+      :locations_in_v2
+      ["Part 6.5 (Collection/Disclosure of Information) — focused on program integrity, municipal planning"],
+      :locations_in_v3
+      ["Part 6.5 (expanded to include public health & safety / emergency services disclosure language)"]}
+     {:id "K4",
+      :title "Definition and Website references added",
+      :severity "low",
+      :description
+      "v3.1.1 adds 'Prescribed Form' and 'Website' definitions in Appendix A and includes the microFIT website URL.",
+      :implication
+      "Suppliers must consult the OPA website for the latest Prescribed Form and other resources referenced by the Contract.",
+      :locations_in_v3
+      ["Appendix A: 'Prescribed Form' and 'Website' definitions; Website URL appended in Appendix A."]}
+     {:id "K5",
+      :title "Minor editorial and structural changes retained",
+      :severity "low",
+      :description
+      "Indexing (Appendix B), LDC guarantee, assignment, dispute resolution, metering and connection provisions remain substantively unchanged (aside from editorial/formatting differences).",
+      :implication
+      "Core commercial and pricing mechanics are retained; focus attention on administrative and domestic-content changes.",
+      :locations_in_both
+      ["Appendix B (Indexed Contract Price)"
+       "Part 2 Sections for Pricing, Payment, LDC Guarantee, Dispute Resolution"
+       "Appendix D and Appendix E schedules"]}],
+    :summary
+    "- Version change: 2.0 → 3.1.1.\n- Major contractual differences:\n  - Domestic content obligations and the Domestic Content Grids (Appendix C) present in v2.0 are removed in v3.1.1 — material (high importance) for suppliers subject to domestic-content compliance.\n  - v3.1.1 introduces and requires use of a \"Prescribed Form\" (defined in Appendix A) for notices, amendments, contact updates and termination notices — administrative (medium importance).\n  - v3.1.1 broadens stated disclosure purposes to include public health & safety and emergency-planning uses — privacy/data-sharing (low-medium importance).\n- Core pricing/indexing, LDC payment guarantee, metering and connection-related obligations remain unchanged.\n- Recommended next steps:\n  1. Confirm whether domestic content obligations are enforced elsewhere (microFIT Rules or OPA policy) or removed; obtain written clarification if required.\n  2. Obtain the OPA 'Prescribed Form' from the OPA Website and update internal processes to use it for all Notices/Amendments/Contact changes/Terminations.\n  3. Update privacy / disclosure expectations and record-retention to reflect expanded disclosure uses.\n  4. If you rely on domestic content credits or need to demonstrate compliance, preserve copies of v2.0 and any related documentation until clarification is obtained."}},
+  :duration-ms 139937,
+  :event/tags
+  #{[:tick #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5"]
+    [:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:08:08.428553-05:00",
+  :usage
+  {:prompt-tokens 6698, :completion-tokens 511, :total-tokens 7209},
+  :status :success,
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca8c-57ec-7066-b927-af118129cd3d",
+  :rlm
+  {:enabled? true,
+   :context-key :contracts,
+   :root-usage
+   {:prompt-tokens 6698, :completion-tokens 511, :total-tokens 7209},
+   :subcall-usage
+   {:prompt-tokens 50220,
+    :completion-tokens 10628,
+    :total-tokens 60848},
+   :predict-call-count 3,
+   :model "openai/gpt-5",
+   :final-source :final!}}
+ {:tick-id #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "5d36fd49-3665-4326-b6b9-079ce7203cf5"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:08:08.488264-05:00",
+  :outputs
+  {:contracts
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"],
+   :doc-summaries nil,
+   :doc nil,
+   :doc-summary nil,
+   :result
+   {:report
+    "Comparison Report: microFIT Contract Version 2.0 (file: microFIT-Contract-Version-2-0.pdf) vs Version 3.1.1 (file: microFIT-Contract-Version-3-1-1.pdf)\n\nExecutive summary\n- Version 3.1.1 is an update that (1) introduces a formal \"Prescribed Form\" requirement for multiple supplier communications and contract formalities, (2) removes or substantially reduces the Domestic Content obligations (Appendix C and related references), and (3) clarifies/expands certain information disclosure uses (e.g., public health & safety / emergency planning). There are also several minor editorial and definitional changes (new definitions and a Website reference).\n- The most material changes for suppliers are: removal of explicit domestic content tables/verification requirements and the new requirement to use the Prescribed Form for notices, amendments, contact updates and termination notices.\n\nImplications (high level)\n- Domestic content: Version 3.1.1 omits the Domestic Content Requirements (the Domestic Content Grids and related obligations/verification language). If your compliance, procurement, or record-keeping depended on the domestic-content tables in v2.0, those obligations appear removed (or moved elsewhere) in v3.1.1 — this reduces supplier obligations tied to domestic content but also removes OPA's explicit mechanism for calculating/confirming Domestic Content Level in the Contract text.\n- Formality/Administration: Requiring the \"Prescribed Form\" for notice, amendments, contact changes and termination increases formality and could limit informal communications being treated as valid. Suppliers should ensure they can access and use the OPA \"Prescribed Form\" and Website for submissions/notifications.\n- Information sharing: Version 3.1.1 expands/discusses disclosure to other government ministries for public health & safety and emergency planning; suppliers should expect potentially broader information sharing for those purposes.\n- No substantive changes found to pricing/indexing mechanism (Appendix B formula retained), to core guarantees (LDC failure to pay), assignment rules, dispute resolution or the core structure of the contract beyond those administrative and domestic-content changes.\n\nScope / methodology\n- Compared the two supplied contract texts section-by-section and noted additions, removals and edits that change obligations or clarify administrative procedures. Focused on differences likely to affect supplier compliance, administrative burden, and commercial/legal rights.\n\nKey actionable items for a supplier reviewing v3.1.1\n- Confirm whether domestic content obligations still apply via other program rules (microFIT Rules, OPA website) or whether they have been removed entirely — do not rely solely on the contract text if you have outstanding compliance expectations.\n- Obtain and review the \"Prescribed Form\" as published on the OPA Website and incorporate it into internal notification & change-control processes.\n- Update privacy/data-sharing expectations and confirm what information the OPA may disclose for public health & safety / emergency planning.\n- Ensure administrative staff can access the OPA Website referenced and store copies of any Prescribed Form submissions and confirmations.",
+    :section-diffs
+    [{:section "Document title / Version",
+      :change_type "modified",
+      :details
+      "Document version changed from 'Version 2.0' to 'Version 3.1.1'. (Cosmetic/version update across header and Part 2 headings.)"}
+     {:section
+      "Part 2, Section 4.4.4 (Necessary Rights and Compliance)",
+      :change_type "modified",
+      :details
+      "Reference requiring solar PV Facilities to meet Domestic Content Level was removed. In v2.0 clause 4.4.4 required Domestic Content Level >= Minimum Required Domestic Content Level; v3.1.1 omits that clause and instead lists Renewable Energy Approval in the same area."}
+     {:section
+      "Part 5.1.2 (Facility Characteristics / Notification of contact changes)",
+      :change_type "modified",
+      :details
+      "v2.0: 'notify OPA promptly of any change to the information contained in Part 1, Section A(11)'. v3.1.1: now requires notifying 'in the Prescribed Form'."}
+     {:section "Part 7.2 (Notices / Change of Contact Information)",
+      :change_type "modified",
+      :details
+      "v2.0 allowed change by 'written notice to the other'. v3.1.1 requires change by 'written notice in the Prescribed Form'."}
+     {:section "Part 8.1 (Termination - On Notice)",
+      :change_type "modified",
+      :details
+      "v2.0: termination by '30 days’ prior written notice to OPA'. v3.1.1: termination must be '30 days’ prior written notice in the Prescribed Form to OPA'."}
+     {:section "Part 9 (Amendment)",
+      :change_type "modified",
+      :details
+      "v2.0 required amendments to be 'reduced to writing' and agreed by both parties. v3.1.1 requires amendments to be 'reduced to writing in the Prescribed Form' and agreed by both parties."}
+     {:section
+      "Part 6.5 (Collection of Information / Disclosure of Information)",
+      :change_type "modified",
+      :details
+      "v2.0 text listed examples of information that may be obtained/disclosed and explicitly included 'information to establish compliance with Minimum Required Domestic Content Level'. v3.1.1 removes the explicit domestic content reference in that clause and adds a sentence explicitly allowing disclosure to other ministries/agencies for 'promoting public health and safety' and 'allowing emergency services personnel' for planning and response."}
+     {:section "Appendix A - Definitions (added)",
+      :change_type "added",
+      :details
+      "New definitions added in v3.1.1: 'Prescribed Form' and 'Website' (OPA microFIT website URL)."}
+     {:section "Appendix A - Definitions (removed/modified)",
+      :change_type "modified/removed",
+      :details
+      "Definitions and text referring to 'Domestic Content Level' (and related defined phrasing) are absent or reduced in v3.1.1 compared to v2.0 (see Appendix C changes)."}
+     {:section "Appendix B (Calculation of Indexed Contract Price)",
+      :change_type "unchanged (minor formatting)",
+      :details
+      "Indexing formula and approach preserved; only formatting and minor editorial differences visible."}
+     {:section
+      "Appendix C (Solar PV Schedule & Domestic Content Requirements)",
+      :change_type "removed/modified",
+      :details
+      "v2.0 Appendix C includes a detailed 'Domestic Content Requirements' section with multiple Domestic Content Grids (three tables) allocating Qualifying Percentages and explicit verification/certification steps. In v3.1.1, the Domestic Content Grids and requirement language are no longer present; Appendix C instead contains a narrower Additional Defined Terms update (notably a broadened 'Existing Building' definition with OPA discretion)."}
+     {:section "Appendix D-1, D-2 and Appendix E",
+      :change_type "unchanged (substantive)",
+      :details
+      "Directly Connected, Indirectly Connected, and LDC Supplier Schedules remain substantively the same between v2.0 and v3.1.1 (no material change to the battery/back-up configuration rules or LDC schedule text beyond prior edits)."}],
+    :key-differences
+    [{:id "K1",
+      :title "Domestic Content Requirements removed",
+      :severity "high",
+      :description
+      "Version 2.0 contains detailed Domestic Content Requirements (Appendix C) with three Domestic Content Grids and verification/record provisions. Version 3.1.1 omits these grids and related contractual obligations. References to Domestic Content Level in contract representations/covenants are removed.",
+      :implication
+      "Suppliers previously required to meet and document Minimum Required Domestic Content Level under the contract wording may no longer have that explicit contractual obligation. Confirm whether domestic content obligations were moved to external program rules or rescinded.",
+      :locations_in_v2
+      ["Appendix C (Domestic Content Requirements and Tables 1-3)"
+       "Appendix A definitions: 'Domestic Content Level'"
+       "Part 4.4.4 (representation that solar PV has Domestic Content Level >= Minimum Required Domestic Content Level)"
+       "Part 6.5 (reference to information to establish compliance with Minimum Required Domestic Content Level)"],
+      :locations_in_v3
+      ["Appendix C (now contains only Additional Defined Terms; Domestic Content tables are absent)"
+       "Appendix A (no Domestic Content Level definition present; domestic-content-related clauses removed)"]}
+     {:id "K2",
+      :title "Introduction of 'Prescribed Form' requirement",
+      :severity "medium",
+      :description
+      "Version 3.1.1 adds a new defined term 'Prescribed Form' (Appendix A) and requires use of the Prescribed Form for: change-of-contact notifications (Part 5.1.2), change of contact information (Part 7.2), termination notices (Part 8.1), and contract amendments (Part 9). Several clauses that previously required 'written notice' are updated to require the 'Prescribed Form'.",
+      :implication
+      "Communications previously acceptable as 'written notice' may need to be submitted on the OPA's specified form; suppliers should obtain and follow the Prescribed Form to ensure validity.",
+      :locations_in_v2 ["Part 5.1.2" "Part 7.2" "Part 8.1" "Part 9"],
+      :locations_in_v3
+      ["Part 5.1.2 (now: notify in the Prescribed Form)"
+       "Part 7.2 (now: change by written notice in the Prescribed Form)"
+       "Part 8.1 (now: 30 days’ prior written notice in the Prescribed Form)"
+       "Part 9 (now: amendment reduced to writing in the Prescribed Form)"
+       "Appendix A (definition: Prescribed Form)"]}
+     {:id "K3",
+      :title "Expanded information disclosure purposes",
+      :severity "low-medium",
+      :description
+      "Version 3.1.1 expands/discusses the purposes for which the OPA may disclose certain supplier/facility information to other ministries/agencies, explicitly including promoting public health & safety and allowing emergency services personnel to plan/ respond.",
+      :implication
+      "Suppliers should expect a somewhat broader set of legitimate disclosures by OPA for public safety/emergency planning. Privacy expectations and disclosures should be reviewed accordingly.",
+      :locations_in_v2
+      ["Part 6.5 (Collection/Disclosure of Information) — focused on program integrity, municipal planning"],
+      :locations_in_v3
+      ["Part 6.5 (expanded to include public health & safety / emergency services disclosure language)"]}
+     {:id "K4",
+      :title "Definition and Website references added",
+      :severity "low",
+      :description
+      "v3.1.1 adds 'Prescribed Form' and 'Website' definitions in Appendix A and includes the microFIT website URL.",
+      :implication
+      "Suppliers must consult the OPA website for the latest Prescribed Form and other resources referenced by the Contract.",
+      :locations_in_v3
+      ["Appendix A: 'Prescribed Form' and 'Website' definitions; Website URL appended in Appendix A."]}
+     {:id "K5",
+      :title "Minor editorial and structural changes retained",
+      :severity "low",
+      :description
+      "Indexing (Appendix B), LDC guarantee, assignment, dispute resolution, metering and connection provisions remain substantively unchanged (aside from editorial/formatting differences).",
+      :implication
+      "Core commercial and pricing mechanics are retained; focus attention on administrative and domestic-content changes.",
+      :locations_in_both
+      ["Appendix B (Indexed Contract Price)"
+       "Part 2 Sections for Pricing, Payment, LDC Guarantee, Dispute Resolution"
+       "Appendix D and Appendix E schedules"]}],
+    :summary
+    "- Version change: 2.0 → 3.1.1.\n- Major contractual differences:\n  - Domestic content obligations and the Domestic Content Grids (Appendix C) present in v2.0 are removed in v3.1.1 — material (high importance) for suppliers subject to domestic-content compliance.\n  - v3.1.1 introduces and requires use of a \"Prescribed Form\" (defined in Appendix A) for notices, amendments, contact updates and termination notices — administrative (medium importance).\n  - v3.1.1 broadens stated disclosure purposes to include public health & safety and emergency-planning uses — privacy/data-sharing (low-medium importance).\n- Core pricing/indexing, LDC payment guarantee, metering and connection-related obligations remain unchanged.\n- Recommended next steps:\n  1. Confirm whether domestic content obligations are enforced elsewhere (microFIT Rules or OPA policy) or removed; obtain written clarification if required.\n  2. Obtain the OPA 'Prescribed Form' from the OPA Website and update internal processes to use it for all Notices/Amendments/Contact changes/Terminations.\n  3. Update privacy / disclosure expectations and record-retention to reflect expanded disclosure uses.\n  4. If you rely on domestic content credits or need to demonstrate compliance, preserve copies of v2.0 and any related documentation until clarification is obtained."}},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca8c-5828-7055-9046-f5ee17032f1e"}]

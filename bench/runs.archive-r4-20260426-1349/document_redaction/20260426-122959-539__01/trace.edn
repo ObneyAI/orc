@@ -1,0 +1,283 @@
+[{:tick-id #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18",
+  :execution-snapshot
+  {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+   :sheet-name "document-redaction-agentic",
+   :nodes-by-id
+   {#uuid "5a8e85d0-84f9-5403-ac94-06b988caec24"
+    {:retry nil,
+     :writes [:redacted-documents :result],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 20,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "5a8e85d0-84f9-5403-ac94-06b988caec24",
+     :parent-id nil,
+     :sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\n# Redaction skill (PDFBox via Clojure SCI)\n\nUse this in conjunction with the PDF skill to redact sensitive content from\nPDF documents. Direct port of predict-rlm's redaction skill, adapted to the\n`pdf/` Clojure API.\n\n## Text redaction\n\nFind rectangles for a literal text string on a page, then apply them:\n\n    (let [hits (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n          rects (mapv (fn [{:keys [rect]}]\n                        {:page 0 :rect rect :fill [0 0 0]})\n                      hits)]\n      (pdf/redact-rects \"/sandbox/input/doc.pdf\"\n                        \"/sandbox/output/redacted.pdf\"\n                        rects))\n\nIf `pdf/search-text` returns no hits, try a shorter substring or different\ncasing — text in PDFs may be split across lines or have extra whitespace.\n\n## Area redaction (signatures, logos, images)\n\nFor non-text elements, redact by bounding box. Coordinates are PDF points\n(72pt/inch), top-left origin:\n\n    (pdf/redact-rects \"/sandbox/input/doc.pdf\"\n                      \"/sandbox/output/redacted.pdf\"\n                      [{:page 0 :rect [400 50 580 110] :fill [0 0 0]}])\n\nTo estimate coordinates, render the page as an image and ask the sub-LM to\nidentify a bounding box:\n\n    (let [uri (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0)\n          {:keys [bbox]} (predict\n                          {:name \"find-signature-bbox\"\n                           :inputs {:page-image uri}\n                           :instructions \"Identify the bounding box of the signature.\n                                          Return [x0 y0 x1 y1] in PDF points.\"\n                           :schema [:map [:bbox [:vector :double]]]})]\n      (pdf/redact-rects \"/sandbox/input/doc.pdf\"\n                        \"/sandbox/output/redacted.pdf\"\n                        [{:page 0 :rect bbox :fill [0 0 0]}]))\n\n## Visual verification\n\nAfter redaction, re-render the page and ask a vision sub-LM if any PII\nremains visible:\n\n    (let [check-uri (pdf/page-image-data-uri \"/sandbox/output/redacted.pdf\" 0)\n          {:keys [remaining-pii]}\n          (predict\n            {:name \"verify-redaction\"\n             :inputs {:page-image check-uri}\n             :instructions \"List any PII still visible on this page.\"\n             :schema [:map [:remaining-pii [:vector :string]]]})]\n      (when (seq remaining-pii)\n        (println \"WARNING: still visible:\" remaining-pii)))\n\n## Important\n\n- `pdf/redact-rects` writes a NEW PDF — it does not mutate the input. Pass\n  distinct in/out paths.\n- Coordinates are in PDF points, top-left origin. Width = x1 - x0.\n- Save redacted PDFs under `/sandbox/output/redacted_documents/` so the\n  output sync collects them.\n- If you redact multiple pages, build one combined `rect-specs` vector and\n  call `pdf/redact-rects` once per source PDF.\n\n\nRedact sensitive content from PDFs based on the criteria.\n\n============================================================\nYOU ARE RUNNING IN A VALIDATED SCI SANDBOX\n============================================================\n\nYour code is parsed AND its symbols are checked BEFORE evaluation.\nIf you reach for forbidden symbols, the runtime REJECTS the iteration\nwith a precise error explaining what's wrong. Stay inside the rules and\nthe skeleton at the bottom — that gets you done in one iteration.\n\n============================================================\nAVAILABLE SCI BINDINGS\n============================================================\n\nDirect symbols bound for you:\n  documents — vector of PDF paths (full value, use directly)\n  criteria  — string describing what PII to redact\n  inputs    — map of {:documents […] :criteria …} (alternative access)\n\nPDF tools (call as namespaced functions, ALWAYS with a single map arg):\n  (pdf/page-count        {:path \"…\"})              -> int\n  (pdf/page-text         {:path \"…\" :n 0})         -> string\n  (pdf/search-text       {:path \"…\" :n 0 :query \"…\"})\n                                                     -> [{:rect [x0 y0 x1 y1] :match \"…\"}]\n  (pdf/redact-rects      {:path \"…\" :out-path \"…\" :rect-specs [{:page :rect :fill}]})\n                                                     -> out-path string\n\nRLM primitives:\n  (predict     {:name … :inputs {…} :instructions \"…\" :schema <malli>})\n  (predict-all {:name … :items [...] :as :item :inputs {…}\n                :instructions \"…\" :schema <malli> :max-concurrency 4})\n                — bounded parallel fan-out, returns vector of results\n                  preserving item order.\n  (final! {:writes-key value …}) — capture the final answer; call LAST.\n\n============================================================\nDO NOT (sandbox will REJECT these BEFORE eval — wasted iteration)\n============================================================\n\n  ❌ NO Java interop:        java.io.File., .getName, System/currentTimeMillis\n  ❌ NO unsafe fns:          slurp, spit, eval, require, load, sh, exec\n  ❌ NO randomness:          rand, rand-int\n\nIf you need a unique output path, use a FIXED PATH per input — e.g.\n  (str \"/tmp/redacted-\" (last (clojure.string/split path #\"/\")))\n\n============================================================\n⚠️ FINAL OUTPUT: YOU MUST CALL (final! {…}) — DO NOT print FINAL_ANSWER\n============================================================\n\nDO NOT call (final! {…}) with empty data and stop. The job is to actually\nidentify PII, search for its rectangles, redact, and report counts.\nThe convergence detector only re-runs you on errors, not on\n\"I gave up.\"\n\nThe ONLY way to commit your structured result is to call:\n\n    (final! {:redacted-documents [\"…path…\" \"…path…\"]\n             :result {:total-redactions N\n                      :page-summaries  [{:page :redaction-count :categories}]\n                      :targets         [{:page :text :category :reason}]}})\n\n============================================================\nGOAL — in ONE iteration, write code that does:\n============================================================\n\n  1. Survey: get page count + per-page text for each document\n  2. predict-all over the documents to identify {:page :text :category :reason}\n     entries — text MUST literally appear in the page text or\n     pdf/search-text won't find it\n  3. For each (path, targets) pair: pdf/search-text per target → build a\n     rect-specs vector → pdf/redact-rects to write the redacted PDF\n  4. Aggregate page summaries (per page: count + distinct categories)\n  5. (final! {:redacted-documents [...] :result {...}})\n\n============================================================\nSKELETON — copy this exactly. Adapt nothing except the schema names if\nyour :writes shape differs.\n============================================================\n\n(let [;; 1. Survey page text per doc\n      doc-survey\n      (mapv (fn [path]\n              (let [n (pdf/page-count {:path path})]\n                {:path path\n                 :pages n\n                 :page-texts (mapv (fn [i]\n                                     {:n i :text (pdf/page-text {:path path :n i})})\n                                   (range n))}))\n            documents)\n\n      ;; 2. Identify redaction targets — one predict per document, parallel\n      targets-per-doc\n      (predict-all\n        {:name        \"find-targets\"\n         :items       doc-survey\n         :as          :doc\n         :inputs      {:criteria criteria}\n         :instructions \"Identify ALL passages on this document matching the\n                         criteria. Return [{:page :text :category :reason}]\n                         where text LITERALLY appears in the page-texts\n                         (otherwise pdf/search-text can't find it for\n                         redaction). Stay grounded; do not invent.\"\n         :schema      [:vector [:map [:page :int]\n                                     [:text :string]\n                                     [:category :string]\n                                     [:reason :string]]]\n         :max-concurrency 4})\n\n      ;; 3. Apply redactions — search rects per target, then redact-rects per doc\n      per-doc\n      (mapv (fn [{:keys [path]} targets]\n              (let [rect-specs\n                    (vec (mapcat\n                           (fn [{:keys [page text]}]\n                             (let [hits (try (pdf/search-text\n                                                {:path path :n page :query text})\n                                              (catch Exception _ []))]\n                               (mapv (fn [{:keys [rect]}]\n                                       {:page page :rect rect :fill [0 0 0]})\n                                     hits)))\n                           targets))\n                    out-path (str \"/tmp/redacted-\"\n                                  (last (clojure.string/split path #\"/\")))\n                    written (if (seq rect-specs)\n                              (pdf/redact-rects {:path path :out-path out-path\n                                                 :rect-specs rect-specs})\n                              out-path)\n                    page-summaries\n                    (->> targets\n                         (group-by :page)\n                         (mapv (fn [[page ts]]\n                                 {:page page\n                                  :redaction-count (count ts)\n                                  :categories (vec (distinct (mapv :category ts)))})))]\n                {:path path\n                 :out-path written\n                 :targets targets\n                 :page-summaries page-summaries}))\n            doc-survey\n            targets-per-doc)\n\n      all-targets   (vec (mapcat :targets per-doc))\n      page-summaries (vec (mapcat :page-summaries per-doc))]\n\n  (final! {:redacted-documents (mapv :out-path per-doc)\n           :result {:total-redactions (count all-targets)\n                    :page-summaries page-summaries\n                    :targets all-targets}}))\n",
+     :success-policy nil,
+     :reads [:documents :criteria],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :documents,
+      :max-predict-calls 100,
+      :max-predict-concurrency 4,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 6000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "5a8e85d0-84f9-5403-ac94-06b988caec24",
+   :blackboard-entries
+   {:doc-redactions
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :doc-redactions,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :criteria
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :criteria,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :redacted-documents
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :redacted-documents,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :doc-targets
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :doc-targets,
+     :schema
+     [:vector
+      [:map
+       [:page {:description "0-indexed page number"} :int]
+       [:text
+        {:description
+         "Exact text to redact as it appears in the document"}
+        :string]
+       [:category
+        {:description
+         "Category, e.g. 'person_name', 'phone_number', 'address'"}
+        :string]
+       [:reason
+        {:description "Why this text should be redacted"}
+        :string]]],
+     :value nil,
+     :version 0},
+    :documents
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :documents,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :result,
+     :schema
+     [:map
+      [:total-redactions
+       {:description "Total number of redactions applied"}
+       :int]
+      [:page-summaries
+       {:description "Per-page summary"}
+       [:vector
+        [:map
+         [:page {:description "0-indexed page number"} :int]
+         [:redaction-count
+          {:description "Number of redactions applied on this page"}
+          :int]
+         [:categories
+          {:description "Distinct categories redacted on this page"}
+          [:vector :string]]]]]
+      [:targets
+       {:description "All redaction targets identified"}
+       [:vector
+        [:map
+         [:page {:description "0-indexed page number"} :int]
+         [:text
+          {:description
+           "Exact text to redact as it appears in the document"}
+          :string]
+         [:category
+          {:description
+           "Category, e.g. 'person_name', 'phone_number', 'address'"}
+          :string]
+         [:reason
+          {:description "Why this text should be redacted"}
+          :string]]]]],
+     :value nil,
+     :version 0},
+    :doc
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :doc,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :all-targets
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :all-targets,
+     :schema
+     [:vector
+      [:map
+       [:page {:description "0-indexed page number"} :int]
+       [:text
+        {:description
+         "Exact text to redact as it appears in the document"}
+        :string]
+       [:category
+        {:description
+         "Category, e.g. 'person_name', 'phone_number', 'address'"}
+        :string]
+       [:reason
+        {:description "Why this text should be redacted"}
+        :string]]],
+     :value nil,
+     :version 0},
+    :doc-survey
+    {:sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+     :key :doc-survey,
+     :schema [:vector :map],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18"]
+    [:sheet #uuid "1f4d204b-9172-50ff-a27d-9604c808d904"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:29:59.704912-05:00",
+  :inputs
+  {:documents
+   ["/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf"],
+   :criteria
+   "Redact all personally identifiable information (PII), including:\n\n1. **Names** — Full names of individuals (not company or organization names)\n2. **Contact info** — Phone numbers, email addresses, fax numbers\n3. **Addresses** — Street addresses, P.O. boxes (not city/state/country)\n4. **Government IDs** — Social security numbers, tax IDs, passport numbers\n5. **Financial info** — Bank account numbers, credit card numbers, routing numbers\n6. **Signatures** — Handwritten signatures (redact the bounding area)\n\nAdded to this, redact any dates found in the document, in any format."},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dcad7-4898-70cb-98f6-c689ad321ef1"}
+ {:tick-id #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18",
+  :event/tags
+  #{[:tick #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18"]
+    [:sheet #uuid "1f4d204b-9172-50ff-a27d-9604c808d904"]
+    [:node #uuid "5a8e85d0-84f9-5403-ac94-06b988caec24"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:30:04.550918-05:00",
+  :inputs {},
+  :node-id #uuid "5a8e85d0-84f9-5403-ac94-06b988caec24",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+  :event/id #uuid "019dcad7-5b86-702a-8255-a7237fd41cce"}
+ {:tick-id #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18",
+  :key :redacted-documents,
+  :value ["/tmp/redacted-PNFS-Employment-Agreement-2025.pdf"],
+  :event/tags
+  #{[:tick #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18"]
+    [:sheet #uuid "1f4d204b-9172-50ff-a27d-9604c808d904"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:32:28.220612-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+  :event/id #uuid "019dcad9-8cbc-7034-a413-2febae5634d4"}
+ {:tick-id #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18",
+  :key :result,
+  :value {:total-redactions 0, :page-summaries [], :targets []},
+  :event/tags
+  #{[:tick #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18"]
+    [:sheet #uuid "1f4d204b-9172-50ff-a27d-9604c808d904"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:32:28.220690-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+  :event/id #uuid "019dcad9-8cbc-7035-a412-c1d8b362001c"}
+ {:tick-id #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18",
+  :writes
+  {:redacted-documents
+   ["/tmp/redacted-PNFS-Employment-Agreement-2025.pdf"],
+   :result {:total-redactions 0, :page-summaries [], :targets []}},
+  :duration-ms 143394,
+  :event/tags
+  #{[:tick #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18"]
+    [:sheet #uuid "1f4d204b-9172-50ff-a27d-9604c808d904"]
+    [:node #uuid "5a8e85d0-84f9-5403-ac94-06b988caec24"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:32:28.215620-05:00",
+  :usage
+  {:prompt-tokens 4854, :completion-tokens 704, :total-tokens 5558},
+  :status :success,
+  :node-id #uuid "5a8e85d0-84f9-5403-ac94-06b988caec24",
+  :iterations
+  [{:code
+    "(let [;; 1. Survey page text per doc\n  doc-survey\n  (mapv (fn [path]\n          (let [n (pdf/page-count {:path path})]\n            {:path path\n             :pages n\n             :page-texts (mapv (fn [i]\n                                 {:n i :text (pdf/page-text {:path path :n i})})\n                               (range n))}))\n        documents)\n\n  ;; 2. Identify redaction targets — one predict per document, parallel\n  targets-per-doc\n  (predict-all\n   {:name        \"find-targets\"\n    :items       doc-survey\n    :as          :doc\n    :inputs      {:criteria criteria}\n    :instructions \"Identify ALL passages on this document matching the\n    criteria. Return [{:page :text :category :reason}]\n    where text LITERALLY appears in the page-texts\n    (otherwise pdf/search-text can't find it for\n    redaction). Stay grounded; do not invent.\"\n    :schema      [:vector [:map [:page :int]\n                             [:text :string]\n                             [:category :string]\n                             [:reason :string]]]\n    :max-concurrency 4})\n\n  ;; 3. Apply redactions — search rects per target, then redact-rects per doc\n  per-doc\n  (mapv (fn [{:keys [path]} targets]\n          (let [rect-specs\n                (vec (mapcat\n                       (fn [{:keys [page text]}]\n                         (let [hits (try (pdf/search-text\n                                          {:path path :n page :query text})\n                                      (catch Exception _ []))]\n                           (mapv (fn [{:keys [rect]}]\n                                   {:page page :rect rect :fill [0 0 0]})\n                                 hits)))\n                       targets))\n                out-path (str \"/tmp/redacted-\"\n                              (last (clojure.string/split path #\"/\")))\n                written (if (seq rect-specs)\n                          (pdf/redact-rects {:path path :out-path out-path\n                                             :rect-specs rect-specs})\n                          out-path)\n                page-summaries\n                (->> targets\n                     (group-by :page)\n                     (mapv (fn [[page ts]]\n                             {:page page\n                              :redaction-count (count ts)\n                              :categories (vec (distinct (mapv :category ts)))})))]\n            {:path path\n             :out-path written\n             :targets targets\n             :page-summaries page-summaries}))\n        doc-survey\n        targets-per-doc)\n\n  all-targets   (vec (mapcat :targets per-doc))\n  page-summaries (vec (mapcat :page-summaries per-doc))]\n\n  (final! {:redacted-documents (mapv :out-path per-doc)\n           :result {:total-redactions (count all-targets)\n                    :page-summaries page-summaries\n                    :targets all-targets}}))",
+    :result
+    "\"FINAL_ANSWER: {:redacted-documents [\\\"/tmp/redacted-PNFS-Employment-Agreement-2025.pdf\\\"], :result {:total-redactions 0, :page-summaries [], :targets []}}\"",
+    :stdout "",
+    :error nil}],
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+  :event/id #uuid "019dcad9-8cb7-7093-85fa-890db32704fb",
+  :rlm
+  {:enabled? true,
+   :context-key :documents,
+   :root-usage
+   {:prompt-tokens 4854, :completion-tokens 704, :total-tokens 5558},
+   :subcall-usage
+   {:prompt-tokens 2492, :completion-tokens 9344, :total-tokens 11836},
+   :predict-call-count 1,
+   :model "openai/gpt-5",
+   :final-source :final!}}
+ {:tick-id #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "c0a12ae5-4f29-4419-b4da-68fb5d527f18"]
+    [:sheet #uuid "1f4d204b-9172-50ff-a27d-9604c808d904"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:32:28.475432-05:00",
+  :outputs
+  {:doc-redactions nil,
+   :criteria
+   "Redact all personally identifiable information (PII), including:\n\n1. **Names** — Full names of individuals (not company or organization names)\n2. **Contact info** — Phone numbers, email addresses, fax numbers\n3. **Addresses** — Street addresses, P.O. boxes (not city/state/country)\n4. **Government IDs** — Social security numbers, tax IDs, passport numbers\n5. **Financial info** — Bank account numbers, credit card numbers, routing numbers\n6. **Signatures** — Handwritten signatures (redact the bounding area)\n\nAdded to this, redact any dates found in the document, in any format.",
+   :redacted-documents
+   ["/tmp/redacted-PNFS-Employment-Agreement-2025.pdf"],
+   :doc-targets nil,
+   :documents
+   ["/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf"],
+   :result {:total-redactions 0, :page-summaries [], :targets []},
+   :doc nil,
+   :all-targets nil,
+   :doc-survey nil},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "1f4d204b-9172-50ff-a27d-9604c808d904",
+  :event/id #uuid "019dcad9-8dbb-7019-98aa-0a7dd2a10fd2"}]

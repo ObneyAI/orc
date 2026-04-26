@@ -1,0 +1,217 @@
+[{:tick-id #uuid "dc84bcd4-9101-42c4-95e8-cd279c19be3b",
+  :execution-snapshot
+  {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+   :sheet-name "document-analysis-agentic",
+   :nodes-by-id
+   {#uuid "19396385-be87-56c6-a52b-b852a6b5fd16"
+    {:retry nil,
+     :writes [:analysis :docx-report],
+     :fn nil,
+     :last-error
+     "This request requires more credits, or fewer max_tokens. You requested up to 3349 tokens, but can only afford 2557. To increase, visit https://openrouter.ai/settings/keys and create a key with a higher weekly limit",
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 15,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :failure,
+     :id #uuid "19396385-be87-56c6-a52b-b852a6b5fd16",
+     :parent-id nil,
+     :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\n# DOCX skill (Apache POI XWPF via Clojure SCI)\n\nYou can write .docx documents via the `docx/` namespace using a small\nHiccup-like element vector.\n\n## Writing structured docs\n\n`docx/write-docx` takes an output path and a vector of element forms:\n\n    (docx/write-docx\n      \"/sandbox/output/report.docx\"\n      [[:h1 \"Document Analysis Report\"]\n       [:p  \"Generated 2025-04-25.\"]\n       [:h2 \"Key Dates\"]\n       [:bullets [\"Submission deadline: 2025-05-01 14:00 EST\"\n                  \"Effective date: 2025-06-01\"]]\n       [:h2 \"Key Entities\"]\n       [:table {:headers [\"Name\" \"Role\" \"Contact\"]\n                :rows    [[\"John Doe\"     \"Project lead\" \"john@example.com\"]\n                          [\"Acme Corp.\"   \"Vendor\"       \"\"]]}]\n       [:h2 \"Analysis\"]\n       [:p \"Body prose here…\"]])\n    ;; => \"/sandbox/output/report.docx\"\n\nSupported tags:\n- `[:h1 text]` … `[:h6 text]` — heading levels\n- `[:p text]` — paragraph\n- `[:bullets [item …]]` — bullet list\n- `[:table {:headers [...] :rows [[…] …]}]` — table\n- `[:br]` — empty paragraph (vertical spacing)\n\n## Markdown shortcut\n\nIf your output is already markdown (e.g., a report from an LLM step),\nconvert it to a docx in one shot:\n\n    (docx/write-markdown-as-docx\n      \"/sandbox/output/report.docx\"\n      \"# Title\\n\\nIntro paragraph.\\n\\n## Section\\n\\n- bullet 1\\n- bullet 2\")\n\nThe markdown parser supports `# h1`, `## h2`, `### h3`, blank-line-separated\nparagraphs, and `-` bullet lines. For richer formatting (bold, tables) use\nthe element-vector form directly.\n\n\nAnalyze documents and produce a structured DocumentAnalysis report.\n\nYou receive:\n  documents — vector of PDF paths (full value bound; root prompt sees only metadata)\n  criteria  — string describing what to extract and in what format\n\nStrategy (translated from predict-rlm's DSPy signature docstring):\n\n1. Survey the documents using `pdf/page-count` for each path. Print a brief\n   summary of file names and page counts.\n\n2. Gather information by extracting page text (or rendering page images for\n   vision-heavy material) and calling `predict-all` over the items in\n   bounded parallel:\n\n       (let [pages (for [doc documents\n                         n (range (pdf/page-count doc))]\n                     {:doc doc :n n})\n             findings (predict-all\n                        {:name        \"extract-page\"\n                         :items       (mapv (fn [p] (pdf/page-text (:doc p) (:n p))) pages)\n                         :as          :page-text\n                         :inputs      {:criteria criteria}\n                         :instructions \"Extract content relevant to the criteria.\"\n                         :schema      :string\n                         :max-concurrency 6})]\n         ...)\n\n3. Synthesize a markdown report and a structured analysis:\n\n       (let [analysis\n             (predict\n               {:name \"synthesize\"\n                :inputs {:findings findings :criteria criteria}\n                :instructions \"Produce a markdown report plus key-dates and key-entities.\"\n                :schema [:map\n                         [:report :string]\n                         [:key-dates [:vector [:map [:name :string] [:date :string]]]]\n                         [:key-entities [:vector [:map [:name :string]]]]]})]\n         ...)\n\n4. Render the markdown into a DOCX:\n\n       (let [docx-path (docx/write-markdown-as-docx\n                          \"/sandbox/output/report.docx\"\n                          (:report analysis))]\n         (final! {:analysis analysis :docx-report docx-path}))\n\nStay grounded — do NOT invent dates or entities not present in the source text.",
+     :success-policy nil,
+     :reads [:documents :criteria],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :documents,
+      :max-predict-calls 100,
+      :max-predict-concurrency 6,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 6000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "19396385-be87-56c6-a52b-b852a6b5fd16",
+   :blackboard-entries
+   {:documents
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :documents,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :criteria
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :criteria,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :document-meta
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :document-meta,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :document
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :document,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :doc-summary,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :doc-summaries,
+     :schema [:vector :string],
+     :value nil,
+     :version 0},
+    :analysis
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :analysis,
+     :schema
+     [:map
+      [:report
+       {:description
+        "Full analysis as a well-formatted markdown report"}
+       :string]
+      [:key-dates
+       {:description "Important dates found in the documents"}
+       [:vector
+        [:map
+         [:name
+          {:description "e.g. 'Submission Deadline', 'Effective Date'"}
+          :string]
+         [:date {:description "ISO format date (YYYY-MM-DD)"} :string]
+         [:time
+          {:optional true, :description "24-hour HH:MM, e.g. 14:00"}
+          [:maybe :string]]
+         [:timezone
+          {:optional true, :description "e.g. EST, PST, UTC"}
+          [:maybe :string]]]]]
+      [:key-entities
+       {:description "Key people, organizations, or roles mentioned"}
+       [:vector
+        [:map
+         [:name
+          {:description "Name of the person, organization, or role"}
+          :string]
+         [:role
+          {:optional true,
+           :description "Role or relationship to the document"}
+          [:maybe :string]]
+         [:contact
+          {:optional true, :description "Contact info if available"}
+          [:maybe :string]]]]]],
+     :value nil,
+     :version 0},
+    :docx-report
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :docx-report,
+     :schema [:string {:field-type :file}],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]
+    [:tick #uuid "dc84bcd4-9101-42c4-95e8-cd279c19be3b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:09:22.165365-05:00",
+  :inputs
+  {:documents
+   ["/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf"],
+   :criteria
+   "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist."},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca8d-77f5-70cd-b5f8-69254fe7fb2a"}
+ {:tick-id #uuid "dc84bcd4-9101-42c4-95e8-cd279c19be3b",
+  :event/tags
+  #{[:node #uuid "19396385-be87-56c6-a52b-b852a6b5fd16"]
+    [:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]
+    [:tick #uuid "dc84bcd4-9101-42c4-95e8-cd279c19be3b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:09:22.209071-05:00",
+  :inputs {},
+  :node-id #uuid "19396385-be87-56c6-a52b-b852a6b5fd16",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :event/id #uuid "019dca8d-7821-7029-b1a3-255638c2810d"}
+ {:tick-id #uuid "dc84bcd4-9101-42c4-95e8-cd279c19be3b",
+  :duration-ms 470,
+  :event/tags
+  #{[:node #uuid "19396385-be87-56c6-a52b-b852a6b5fd16"]
+    [:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]
+    [:tick #uuid "dc84bcd4-9101-42c4-95e8-cd279c19be3b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:09:22.930229-05:00",
+  :usage {:prompt-tokens 0, :completion-tokens 0, :total-tokens 0},
+  :status :failure,
+  :node-id #uuid "19396385-be87-56c6-a52b-b852a6b5fd16",
+  :event/type :sheet/node-execution-completed,
+  :error
+  "This request requires more credits, or fewer max_tokens. You requested up to 3349 tokens, but can only afford 2557. To increase, visit https://openrouter.ai/settings/keys and create a key with a higher weekly limit",
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :event/id #uuid "019dca8d-7af2-704d-b224-6d480fef00d9",
+  :rlm
+  {:enabled? true,
+   :context-key :documents,
+   :root-usage
+   {:prompt-tokens 0, :completion-tokens 0, :total-tokens 0},
+   :subcall-usage
+   {:prompt-tokens 0, :completion-tokens 0, :total-tokens 0},
+   :predict-call-count 0,
+   :model "openai/gpt-5"}}
+ {:tick-id #uuid "dc84bcd4-9101-42c4-95e8-cd279c19be3b",
+  :iteration 1,
+  :root-status :failure,
+  :event/tags
+  #{[:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]
+    [:tick #uuid "dc84bcd4-9101-42c4-95e8-cd279c19be3b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:09:22.969442-05:00",
+  :outputs
+  {:document-meta nil,
+   :criteria
+   "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist.",
+   :doc-summary nil,
+   :document nil,
+   :documents
+   ["/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf"],
+   :docx-report nil,
+   :analysis nil,
+   :doc-summaries nil},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :event/id #uuid "019dca8d-7b19-70c5-991d-25d47ab22db8"}]

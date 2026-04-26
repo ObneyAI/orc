@@ -1,0 +1,320 @@
+[{:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :execution-snapshot
+  {:sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+   :sheet-name "contract-comparison-pipeline",
+   :nodes-by-id
+   {#uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "main",
+     :children-ids
+     [#uuid "40bb82fc-0908-5204-96a0-59a9b02c5dad"
+      #uuid "14af9b4c-9a0d-5666-ad74-97fcf1f55e04"],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :sequence,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed",
+     :parent-id nil,
+     :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "40bb82fc-0908-5204-96a0-59a9b02c5dad"
+    {:retry nil,
+     :writes [:doc-summaries],
+     :fn "ai.obney.orc.examples.contract-comparison.pipeline/survey",
+     :last-error nil,
+     :check nil,
+     :name "survey",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "40bb82fc-0908-5204-96a0-59a9b02c5dad",
+     :parent-id #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed",
+     :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:contracts],
+     :model nil},
+    #uuid "14af9b4c-9a0d-5666-ad74-97fcf1f55e04"
+    {:retry nil,
+     :writes [:result],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "compare",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "14af9b4c-9a0d-5666-ad74-97fcf1f55e04",
+     :parent-id #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed",
+     :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+     :executor :ai,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "Compare these two (or more) contracts and produce a structured ComparisonResult.\n\nIdentify:\n1. report — a markdown comparison report\n2. section-diffs — per-section diffs with significance (major/minor/identical)\n3. key-differences — high-level differences with impact analysis\n4. summary — executive summary of the most important differences\n\nStay grounded in the contract texts — do not fabricate sections or terms.",
+     :success-policy nil,
+     :reads [:doc-summaries],
+     :model "openai/gpt-5-mini"}},
+   :root-node-id #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed",
+   :blackboard-entries
+   {:contracts
+    {:sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+     :key :contracts,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+     :key :doc-summaries,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :doc
+    {:sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+     :key :doc,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+     :key :doc-summary,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+     :key :result,
+     :schema
+     [:map
+      [:report
+       {:description "Full comparison report in markdown format"}
+       :string]
+      [:section-diffs
+       {:description "Per-section comparison"}
+       [:vector
+        [:map
+         [:section-name
+          {:description "Name or title of the section being compared"}
+          :string]
+         [:document-a-text
+          {:description "Key text or summary from Document A"}
+          :string]
+         [:document-b-text
+          {:description "Key text or summary from Document B"}
+          :string]
+         [:difference-summary
+          {:description "Summary of what changed"}
+          :string]
+         [:significance
+          {:description "How significant the difference is"}
+          [:enum "major" "minor" "identical"]]]]]
+      [:key-differences
+       {:description "High-level key differences"}
+       [:vector
+        [:map
+         [:area
+          {:description
+           "Area of the contract affected (e.g. pricing, liability)"}
+          :string]
+         [:description
+          {:description "Description of the difference"}
+          :string]
+         [:impact
+          {:description "Potential impact or implication"}
+          :string]]]]
+      [:summary {:description "Executive summary"} :string]],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:53:49.953251-05:00",
+  :inputs
+  {:contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca48-5001-707a-8e24-c0952dd9c01f"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]
+    [:node #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:53:50.007345-05:00",
+  :inputs {},
+  :node-id #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-5037-70ff-b822-033217ee680c"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:node #uuid "40bb82fc-0908-5204-96a0-59a9b02c5dad"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:53:50.262263-05:00",
+  :inputs {:contracts nil},
+  :node-id #uuid "40bb82fc-0908-5204-96a0-59a9b02c5dad",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-5136-7042-9af8-a06f0e3508e8"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :key :doc-summaries,
+  :value [],
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:53:50.534212-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-5246-7075-a717-b191d7acfcb9"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :writes {:doc-summaries []},
+  :duration-ms 0,
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:node #uuid "40bb82fc-0908-5204-96a0-59a9b02c5dad"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:53:50.533262-05:00",
+  :status :success,
+  :node-id #uuid "40bb82fc-0908-5204-96a0-59a9b02c5dad",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-5245-707b-86b6-f1cdfe96d0df"}
+ {:child-index 1,
+  :tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]
+    [:node #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:53:50.779607-05:00",
+  :node-id #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 2,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-533b-7029-b1fe-9ee10527a917"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :event/tags
+  #{[:node #uuid "14af9b4c-9a0d-5666-ad74-97fcf1f55e04"]
+    [:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:53:50.779661-05:00",
+  :inputs {:doc-summaries []},
+  :node-id #uuid "14af9b4c-9a0d-5666-ad74-97fcf1f55e04",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-533b-702a-a392-e17c1fade13a"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :key :result,
+  :value
+  {:report
+   "# Contract Comparison Report — No Documents Provided\n\nStatus: Unable to perform a substantive comparison — no contract texts or summaries were provided.\n\nWhat I received:\n- The doc-summaries input array is empty, so there are no documents or summaries to compare.\n\nWhat this means:\n- I cannot identify section-level differences, key differences, or assess legal significance without at least two contract texts or structured summaries.\n- I will not fabricate sections, clauses, or differences.\n\nHow you can proceed (recommended):\n1. Provide the contract texts or structured summaries.\n   - Preferred: full contract texts (as plain text or PDF-extracted text) for each document to compare.\n   - Acceptable alternative: detailed summaries per document with section headings and the text for each section.\n2. If supplying full texts, indicate formatting or sections to use (e.g., use clause headings present in the documents).\n3. If you want a focused comparison, specify which sections matter most (examples: Payment, Term & Termination, Liability, IP, Confidentiality, Governing Law).\n4. Optionally provide metadata per document: document name, version/date, author/party, and which is Document A vs Document B.\n\nSuggested JSON schema for doc-summaries (example you can send):\n[\n  {\n    \"name\": \"Agreement A\",\n    \"version\": \"v1.2 / 2025-10-01\",\n    \"text\": \"Full contract text here or per-section map\",\n    \"sections\": {\n      \"Parties\": \"Text...\",\n      \"Term and Termination\": \"Text...\",\n      \"Payment\": \"Text...\",\n      ...\n    }\n  },\n  {\n    \"name\": \"Agreement B\",\n    \"version\": \"v2.0 / 2026-01-15\",\n    \"text\": \"Full contract text here or per-section map\",\n    \"sections\": {\n      \"Parties\": \"Text...\",\n      \"Term and Termination\": \"Text...\",\n      \"Payment\": \"Text...\",\n      ...\n    }\n  }\n]\n\nWhat I'll produce once you provide documents:\n- A markdown comparison report summarizing differences and their likely legal/business impact.\n- A per-section diffs array describing document A vs B text, a short difference summary and a significance label (major/minor/identical).\n- A concise list of key differences with impact analysis.\n- An executive summary highlighting the most important divergences and suggested actions.\n\nIf you want, paste both full contract texts or upload the structured summaries now and I will run the comparison.",
+   :section-diffs [],
+   :key-differences [],
+   :summary
+   "No documents were provided, so no comparison could be performed. Please supply the contract texts or structured summaries (ideally with section headings) for each document and indicate which documents to compare; I will then produce the full comparison report, per-section diffs, key differences with impact analysis, and an executive summary."},
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:54:06.538130-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-90ca-70cb-9379-52b60d3150a2"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :writes
+  {:result
+   {:report
+    "# Contract Comparison Report — No Documents Provided\n\nStatus: Unable to perform a substantive comparison — no contract texts or summaries were provided.\n\nWhat I received:\n- The doc-summaries input array is empty, so there are no documents or summaries to compare.\n\nWhat this means:\n- I cannot identify section-level differences, key differences, or assess legal significance without at least two contract texts or structured summaries.\n- I will not fabricate sections, clauses, or differences.\n\nHow you can proceed (recommended):\n1. Provide the contract texts or structured summaries.\n   - Preferred: full contract texts (as plain text or PDF-extracted text) for each document to compare.\n   - Acceptable alternative: detailed summaries per document with section headings and the text for each section.\n2. If supplying full texts, indicate formatting or sections to use (e.g., use clause headings present in the documents).\n3. If you want a focused comparison, specify which sections matter most (examples: Payment, Term & Termination, Liability, IP, Confidentiality, Governing Law).\n4. Optionally provide metadata per document: document name, version/date, author/party, and which is Document A vs Document B.\n\nSuggested JSON schema for doc-summaries (example you can send):\n[\n  {\n    \"name\": \"Agreement A\",\n    \"version\": \"v1.2 / 2025-10-01\",\n    \"text\": \"Full contract text here or per-section map\",\n    \"sections\": {\n      \"Parties\": \"Text...\",\n      \"Term and Termination\": \"Text...\",\n      \"Payment\": \"Text...\",\n      ...\n    }\n  },\n  {\n    \"name\": \"Agreement B\",\n    \"version\": \"v2.0 / 2026-01-15\",\n    \"text\": \"Full contract text here or per-section map\",\n    \"sections\": {\n      \"Parties\": \"Text...\",\n      \"Term and Termination\": \"Text...\",\n      \"Payment\": \"Text...\",\n      ...\n    }\n  }\n]\n\nWhat I'll produce once you provide documents:\n- A markdown comparison report summarizing differences and their likely legal/business impact.\n- A per-section diffs array describing document A vs B text, a short difference summary and a significance label (major/minor/identical).\n- A concise list of key differences with impact analysis.\n- An executive summary highlighting the most important divergences and suggested actions.\n\nIf you want, paste both full contract texts or upload the structured summaries now and I will run the comparison.",
+    :section-diffs [],
+    :key-differences [],
+    :summary
+    "No documents were provided, so no comparison could be performed. Please supply the contract texts or structured summaries (ideally with section headings) for each document and indicate which documents to compare; I will then produce the full comparison report, per-section diffs, key differences with impact analysis, and an executive summary."}},
+  :duration-ms 15490,
+  :event/tags
+  #{[:node #uuid "14af9b4c-9a0d-5666-ad74-97fcf1f55e04"]
+    [:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:54:06.535402-05:00",
+  :usage
+  {:prompt-tokens 413, :completion-tokens 1170, :total-tokens 1583},
+  :status :success,
+  :node-id #uuid "14af9b4c-9a0d-5666-ad74-97fcf1f55e04",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-90c7-70ce-8e04-127d7b9180c9",
+  :model "openai/gpt-5-mini-2025-08-07"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]
+    [:node #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:54:06.713258-05:00",
+  :status :success,
+  :node-id #uuid "5966ed03-f45e-5076-b5d1-b922cb84c9ed",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-9179-7057-ad6e-b385257e74d7"}
+ {:tick-id #uuid "361657a8-e659-4c5d-9771-789e71fe519e",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:sheet #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0"]
+    [:tick #uuid "361657a8-e659-4c5d-9771-789e71fe519e"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:54:06.987453-05:00",
+  :outputs
+  {:contracts nil,
+   :doc-summaries [],
+   :doc nil,
+   :doc-summary nil,
+   :result
+   {:report
+    "# Contract Comparison Report — No Documents Provided\n\nStatus: Unable to perform a substantive comparison — no contract texts or summaries were provided.\n\nWhat I received:\n- The doc-summaries input array is empty, so there are no documents or summaries to compare.\n\nWhat this means:\n- I cannot identify section-level differences, key differences, or assess legal significance without at least two contract texts or structured summaries.\n- I will not fabricate sections, clauses, or differences.\n\nHow you can proceed (recommended):\n1. Provide the contract texts or structured summaries.\n   - Preferred: full contract texts (as plain text or PDF-extracted text) for each document to compare.\n   - Acceptable alternative: detailed summaries per document with section headings and the text for each section.\n2. If supplying full texts, indicate formatting or sections to use (e.g., use clause headings present in the documents).\n3. If you want a focused comparison, specify which sections matter most (examples: Payment, Term & Termination, Liability, IP, Confidentiality, Governing Law).\n4. Optionally provide metadata per document: document name, version/date, author/party, and which is Document A vs Document B.\n\nSuggested JSON schema for doc-summaries (example you can send):\n[\n  {\n    \"name\": \"Agreement A\",\n    \"version\": \"v1.2 / 2025-10-01\",\n    \"text\": \"Full contract text here or per-section map\",\n    \"sections\": {\n      \"Parties\": \"Text...\",\n      \"Term and Termination\": \"Text...\",\n      \"Payment\": \"Text...\",\n      ...\n    }\n  },\n  {\n    \"name\": \"Agreement B\",\n    \"version\": \"v2.0 / 2026-01-15\",\n    \"text\": \"Full contract text here or per-section map\",\n    \"sections\": {\n      \"Parties\": \"Text...\",\n      \"Term and Termination\": \"Text...\",\n      \"Payment\": \"Text...\",\n      ...\n    }\n  }\n]\n\nWhat I'll produce once you provide documents:\n- A markdown comparison report summarizing differences and their likely legal/business impact.\n- A per-section diffs array describing document A vs B text, a short difference summary and a significance label (major/minor/identical).\n- A concise list of key differences with impact analysis.\n- An executive summary highlighting the most important divergences and suggested actions.\n\nIf you want, paste both full contract texts or upload the structured summaries now and I will run the comparison.",
+    :section-diffs [],
+    :key-differences [],
+    :summary
+    "No documents were provided, so no comparison could be performed. Please supply the contract texts or structured summaries (ideally with section headings) for each document and indicate which documents to compare; I will then produce the full comparison report, per-section diffs, key differences with impact analysis, and an executive summary."},
+   :contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "0a900186-b6cb-5fbc-a632-7de400289bc0",
+  :event/id #uuid "019dca48-928b-70c5-9dbb-b2d6f2ea970f"}]

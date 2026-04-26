@@ -1,0 +1,594 @@
+[{:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :execution-snapshot
+  {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+   :sheet-name "invoice-processing-pipeline",
+   :nodes-by-id
+   {#uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "main",
+     :children-ids
+     [#uuid "305994f8-738d-5951-8a3e-9c7d453952c7"
+      #uuid "d8bff538-5749-5372-9510-dc766c435118"
+      #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2"
+      #uuid "f082cefd-1141-589e-95ec-12053b01af66"],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :sequence,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :parent-id nil,
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "305994f8-738d-5951-8a3e-9c7d453952c7"
+    {:retry nil,
+     :writes [:pages],
+     :fn
+     "ai.obney.orc.examples.invoice-processing.pipeline/explode-pages",
+     :last-error nil,
+     :check nil,
+     :name "explode-pages",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "305994f8-738d-5951-8a3e-9c7d453952c7",
+     :parent-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:invoices],
+     :model nil},
+    #uuid "d8bff538-5749-5372-9510-dc766c435118"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "extract-page",
+     :children-ids [#uuid "516e7420-f42d-57fc-a427-71475e67f502"],
+     :tools nil,
+     :item-key :page,
+     :source-key :pages,
+     :type :map-each,
+     :decorators [],
+     :output-key :page-extracts,
+     :status :success,
+     :id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+     :parent-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor nil,
+     :max-concurrency 8,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "516e7420-f42d-57fc-a427-71475e67f502"
+    {:retry nil,
+     :writes [:page-extract],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "extract-invoice-page",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "516e7420-f42d-57fc-a427-71475e67f502",
+     :parent-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor :ai,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "Extract invoice fields from this single PDF page.\n\nIf this page is the start of an invoice, populate vendor-name, invoice-number, date, due-date, subtotal, tax, total, and line-items.\nIf this page is a continuation, populate line-items only and copy the vendor-name + invoice-number you can identify from the page header.\n\nStay grounded — only extract what's actually visible in the text.",
+     :success-policy nil,
+     :reads [:page],
+     :model "openai/gpt-5-mini"},
+    #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2"
+    {:retry nil,
+     :writes [:result],
+     :fn
+     "ai.obney.orc.examples.invoice-processing.pipeline/merge-invoices",
+     :last-error nil,
+     :check nil,
+     :name "merge-invoices",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2",
+     :parent-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:page-extracts],
+     :model nil},
+    #uuid "f082cefd-1141-589e-95ec-12053b01af66"
+    {:retry nil,
+     :writes [:workbook],
+     :fn
+     "ai.obney.orc.examples.invoice-processing.pipeline/build-workbook",
+     :last-error nil,
+     :check nil,
+     :name "build-workbook",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "f082cefd-1141-589e-95ec-12053b01af66",
+     :parent-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:result],
+     :model nil}},
+   :root-node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+   :blackboard-entries
+   {:invoices
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :invoices,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :pages
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :pages,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :page
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :page,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :page-extract
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :page-extract,
+     :schema
+     [:map
+      [:vendor-name
+       {:description
+        "Vendor/supplier on THIS page (\"\" if continuation page)"}
+       :string]
+      [:invoice-number
+       {:description
+        "Invoice number on THIS page (\"\" if continuation)"}
+       :string]
+      [:date
+       {:description
+        "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+       :string]
+      [:due-date
+       {:description
+        "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+       :string]
+      [:subtotal
+       {:description "Subtotal on THIS page (0.0 if continuation)"}
+       :double]
+      [:tax
+       {:description "Tax on THIS page (0.0 if continuation)"}
+       :double]
+      [:total
+       {:description "Total on THIS page (0.0 if continuation)"}
+       :double]
+      [:line-items
+       {:description "Line items visible on THIS page"}
+       [:vector
+        [:map
+         [:description
+          {:description "Description of the item or service"}
+          :string]
+         [:quantity {:description "Quantity of items"} :double]
+         [:unit-price
+          {:description "Price per unit in dollars"}
+          :double]
+         [:amount
+          {:description "Total amount for this line item in dollars"}
+          :double]]]]],
+     :value nil,
+     :version 0},
+    :page-extracts
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :page-extracts,
+     :schema
+     [:vector
+      [:map
+       [:vendor-name
+        {:description
+         "Vendor/supplier on THIS page (\"\" if continuation page)"}
+        :string]
+       [:invoice-number
+        {:description
+         "Invoice number on THIS page (\"\" if continuation)"}
+        :string]
+       [:date
+        {:description
+         "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+        :string]
+       [:due-date
+        {:description
+         "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+        :string]
+       [:subtotal
+        {:description "Subtotal on THIS page (0.0 if continuation)"}
+        :double]
+       [:tax
+        {:description "Tax on THIS page (0.0 if continuation)"}
+        :double]
+       [:total
+        {:description "Total on THIS page (0.0 if continuation)"}
+        :double]
+       [:line-items
+        {:description "Line items visible on THIS page"}
+        [:vector
+         [:map
+          [:description
+           {:description "Description of the item or service"}
+           :string]
+          [:quantity {:description "Quantity of items"} :double]
+          [:unit-price
+           {:description "Price per unit in dollars"}
+           :double]
+          [:amount
+           {:description "Total amount for this line item in dollars"}
+           :double]]]]]],
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :result,
+     :schema
+     [:map
+      [:invoices
+       {:description "Extracted data from each invoice"}
+       [:vector
+        [:map
+         [:vendor-name
+          {:description "Name of the vendor/supplier"}
+          :string]
+         [:invoice-number
+          {:description "Invoice number or reference"}
+          :string]
+         [:date
+          {:description "Invoice date in ISO format (YYYY-MM-DD)"}
+          :string]
+         [:due-date
+          {:description "Payment due date in ISO format (YYYY-MM-DD)"}
+          :string]
+         [:subtotal
+          {:description "Subtotal before tax and discounts"}
+          :double]
+         [:tax {:description "Tax amount in dollars"} :double]
+         [:total {:description "Total amount due in dollars"} :double]
+         [:line-items
+          {:description "Individual line items from the invoice"}
+          [:vector
+           [:map
+            [:description
+             {:description "Description of the item or service"}
+             :string]
+            [:quantity {:description "Quantity of items"} :double]
+            [:unit-price
+             {:description "Price per unit in dollars"}
+             :double]
+            [:amount
+             {:description
+              "Total amount for this line item in dollars"}
+             :double]]]]]]]
+      [:total-amount
+       {:description "Combined total across all invoices in dollars"}
+       :double]
+      [:summary
+       {:description "Brief summary of the invoices processed"}
+       :string]],
+     :value nil,
+     :version 0},
+    :workbook
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :workbook,
+     :schema [:string {:field-type :file}],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:21.043830-05:00",
+  :inputs
+  {:invoice-paths
+   ["/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf"
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :options {:timeout-ms 300000, :store-trace? true},
+  :event/id #uuid "019dca62-6bf3-7049-8a7f-a9e64089e6df"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:21.194982-05:00",
+  :inputs {},
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-6c8a-70c7-ace3-ecff90c1916d"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:node #uuid "305994f8-738d-5951-8a3e-9c7d453952c7"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:21.450585-05:00",
+  :inputs {:invoices nil},
+  :node-id #uuid "305994f8-738d-5951-8a3e-9c7d453952c7",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-6d8a-7002-a8fc-369cdcbd1267"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :key :pages,
+  :value [],
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:21.708892-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-6e8c-709f-b125-c9ed349abd83"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :writes {:pages []},
+  :duration-ms 0,
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:node #uuid "305994f8-738d-5951-8a3e-9c7d453952c7"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:21.708571-05:00",
+  :status :success,
+  :node-id #uuid "305994f8-738d-5951-8a3e-9c7d453952c7",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-6e8c-709e-8dbb-ca9ffd75a89f"}
+ {:child-index 1,
+  :tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:21.972246-05:00",
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-6f94-70c5-a581-89e087fb9176"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:node #uuid "d8bff538-5749-5372-9510-dc766c435118"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:21.972382-05:00",
+  :inputs {},
+  :node-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-6f94-70c6-af77-c7f8edbd219f"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :key :page-extracts,
+  :value [],
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:22.221925-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-708d-701b-9227-b69fbae19caa"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:node #uuid "d8bff538-5749-5372-9510-dc766c435118"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:22.222121-05:00",
+  :status :success,
+  :node-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-708d-701c-a5c1-1b3b2cb90fa6"}
+ {:child-index 2,
+  :tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:22.483284-05:00",
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-7193-7019-9002-3e4ede455ba0"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:22.483356-05:00",
+  :inputs {:page-extracts []},
+  :node-id #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-7193-701a-99b9-7ecedc390644"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :key :result,
+  :value
+  {:invoices [],
+   :total-amount 0.0,
+   :summary "Processed 0 invoices across 0 pages."},
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:22.751995-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-729f-7063-972a-55062b053d97"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :writes
+  {:result
+   {:invoices [],
+    :total-amount 0.0,
+    :summary "Processed 0 invoices across 0 pages."}},
+  :duration-ms 0,
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:22.751081-05:00",
+  :status :success,
+  :node-id #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-729f-7062-b515-6e51b347c6a7"}
+ {:child-index 3,
+  :tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:23.000589-05:00",
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-7398-706f-95ab-db7c7deb65d2"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:node #uuid "f082cefd-1141-589e-95ec-12053b01af66"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:23.000693-05:00",
+  :inputs
+  {:result
+   {:invoices [],
+    :total-amount 0.0,
+    :summary "Processed 0 invoices across 0 pages."}},
+  :node-id #uuid "f082cefd-1141-589e-95ec-12053b01af66",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-7398-7070-b595-6f54d6387b84"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :key :workbook,
+  :value
+  "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/invoice-extraction-1777216943255.xlsx",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:23.282087-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-74b2-704e-bc9b-93060dfd4617"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :writes
+  {:workbook
+   "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/invoice-extraction-1777216943255.xlsx"},
+  :duration-ms 25,
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:node #uuid "f082cefd-1141-589e-95ec-12053b01af66"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:23.281289-05:00",
+  :status :success,
+  :node-id #uuid "f082cefd-1141-589e-95ec-12053b01af66",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-74b1-7005-94f9-e9971ef3d197"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:23.507493-05:00",
+  :status :success,
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-7593-7008-9c67-21d9c694a090"}
+ {:tick-id #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "fb056d4e-4c46-4684-8bed-0329a198ca78"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:22:23.760630-05:00",
+  :outputs
+  {:invoices nil,
+   :workbook
+   "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/invoice-extraction-1777216943255.xlsx",
+   :invoice-paths
+   ["/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf"
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf"],
+   :page nil,
+   :pages [],
+   :page-extracts [],
+   :result
+   {:invoices [],
+    :total-amount 0.0,
+    :summary "Processed 0 invoices across 0 pages."},
+   :page-extract nil},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca62-7690-70d7-94bf-9f7e02e03df9"}]

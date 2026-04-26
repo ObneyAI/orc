@@ -1,0 +1,159 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "6832e9f9-6138-4d49-b9c6-5b0901a893b8",
+    "sheet_id" : "0a900186-b6cb-5fbc-a632-7de400289bc0",
+    "status" : "success",
+    "event_count" : 11
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-104807__02",
+  "duration_seconds" : 39.658,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 10065,
+      "output" : 5124
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.01276425,
+    "total" : 0.01276425,
+    "per_page" : 2.8365E-4
+  },
+  "structured" : {
+    "contracts" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ],
+    "doc-summaries" : [ {
+      "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+      "pages" : 23,
+      "text" : "       \n \nFEED-IN TARIFF MICROFIT CONTRACT \nVersion 2.0 \nPart 1 – Contract Details \n \nThe Ontario Power Authority (“OPA”) is offering the microFIT Program pursuant to Ministerial \nDirection issued pur …<elided 19600 chars>… IONS, REQUESTS AND DECISIONS OF SUCH REPRESENTATIVE, \nPROVIDED SAME ARE IN WRITING SIGNED BY THE REPRESENTATIVE, AND SUCH \nACTS OF THE REPRESENTATIVE SHALL BE BINDING ON SUPPLIER AS TO ALL \nMATTERS PE"
+    }, {
+      "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+      "pages" : 22,
+      "text" : "     \n \n \nFEED-IN TARIFF MICROFIT CONTRACT \nVersion 3.1.1 \nPart 1 – Contract Details \n \nThe Ontario Power Authority (“OPA”) is offering the microFIT Program pursuant to Ministerial \nDirection issued p …<elided 19600 chars>…  DISCUSS THIS \nCONTRACT WITH SUCH REPRESENTATIVE AND MAY RELY ON THE \nINSTRUCTIONS, REQUESTS AND DECISIONS OF SUCH REPRESENTATIVE, \nPROVIDED SAME ARE IN WRITING SIGNED BY THE REPRESENTATIVE, AND SUCH "
+    } ],
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "# Contract Comparison Report — microFIT Contract Version 2.0 vs Version 3.1.1\n\nPrepared: Comparison of two provided contract texts (Version 2.0 — Document A; Version 3.1.1 — Document B)\n\n## Executive overview\nThe two contracts are substantially identical in structure, scope and most substantive provisions (term, pricing, environmental attributes, metering, access rights, etc.). Key differences are limited and localized to a few provisions that change the Program's information-collection/disclosure rules and remove explicit domestic content warranty/requirement references. There are also minor drafting changes that formalize notification procedures.\n\nSummary of the most material changes:\n- Removal of explicit references to a Minimum Required Domestic Content Level (60%) and the Supplier warranty regarding Domestic Content. (Material — reduces Supplier obligations tied to domestic content.)\n- Expanded description of permitted information disclosures (adds explicit authority to disclose Facility details to other government entities for public health, safety and emergency planning). (Material — broader data-sharing/privacy exposure.)\n- Formalization of notification procedure: Supplier must notify \"in the Prescribed Form\" for certain updates (operational impact — procedural).\n- Minor renumbering of subclauses where deletions occurred.\n\n## Section-by-section findings (high level)\n- Identical / functionally identical: Title and general recitals, Part 1 – Contract Details (majority of fields), Appendix lists, Part 2 Sections 1 (Term), 2 (Pricing and Payment), 3 (Environmental Attributes), most of Section 4 (Representations) and Section 5 (Covenants), Section 6 (General Conditions) are the same in substance.\n- Notable differences (see detailed section diffs below): Part 1.B(5)(iv) [Minimum Required Domestic Content Level], Part 2 Section 4 (Representations and Warranties — removal of domestic content warranty), Part 2 Section 5.1.2 (notification \"in the Prescribed Form\"), Part 2 Section 6.5 (Collection of Information / Disclosure), and related minor renumbering.\n\n## Practical implications and recommended actions\n- If you are a Supplier: the removal of the explicit domestic content warranty may relieve a prior obligation, but confirm whether other Program rules or external laws still impose domestic-content requirements. Also, the expanded disclosure language increases the scope of information that may be shared; consider updating privacy/internal consent processes and informing any representatives.\n- If you are OPA/LDC: the changes align the contract with broader data-sharing expectations (including emergency planning). Ensure internal processes for \"Prescribed Form\" notices and approvals are in place and that data-sharing safeguards comply with FIPPA and internal privacy policy.\n- For both parties: note clause renumbering and confirm references in ancillary documents (Connection Agreement, application forms, internal processes) remain consistent. Consider an appendix or redline cross-reference indicating where obligations were removed/added.\n\n## Recommended next steps\n1. Legal review to confirm whether the removal of domestic content language was intended to change eligibility/price entitlements or simply to update the agreement to reflect program-level rule changes.\n2. Privacy and compliance review to document the new scope of disclosures and the retention/handling of shared data.\n3. Operationalize the \"Prescribed Form\" and notify Suppliers of the required format for notices.\n4. Update any templates and ancillary agreements to reflect clause renumbering and changed wording.\n\nFor full per-section detail and an itemized list of key differences and their likely impacts, see the section diffs and key-differences below.",
+      "section-diffs" : [ {
+        "section-name" : "Document Title & Front Matter (Version)",
+        "document-a-text" : "FEED-IN TARIFF MICROFIT CONTRACT\\nVersion 2.0",
+        "document-b-text" : "FEED-IN TARIFF MICROFIT CONTRACT\\nVersion 3.1.1",
+        "difference-summary" : "Version identifier differs (2.0 vs 3.1.1). No substantive change to recitals or structure; mostly versioning/formatting change.",
+        "significance" : "minor"
+      }, {
+        "section-name" : "Part 1 – A. CONTRACT AND SUPPLIER INFORMATION",
+        "document-a-text" : "Part 1 – Contract Details with Supplier contact fields, Reference Number, Contract Price, Percentage Escalated, Base Date, Supplier contact and representative contact fields.",
+        "document-b-text" : "Part 1 – Contract Details with the same Supplier contact fields, Reference Number, Contract Price, Percentage Escalated, Base Date, Supplier contact and representative contact fields.",
+        "difference-summary" : "Content and fields are substantively the same. Minor formatting/line-break differences in the LDC generator account area/page numbering; no change in obligations or data items requested.",
+        "significance" : "identical"
+      }, {
+        "section-name" : "Part 1 – B. FACILITY CHARACTERISTICS",
+        "document-a-text" : "(5) If the Facility’s Renewable Fuel is solar photovoltaic (PV): (i) inverter rating ... (iii) The Facility is (check one): i. a Rooftop Facility. ii. not a Rooftop Facility. (iv) The “Minimum Required Domestic Content Level” is 60%.",
+        "document-b-text" : "(5) If the Facility’s Renewable Fuel is solar photovoltaic (PV): (i) inverter rating ... (iii) The Facility is (check one): i. a Rooftop Facility. ii. not a Rooftop Facility.",
+        "difference-summary" : "Document A includes an explicit statement of a Minimum Required Domestic Content Level at 60% under the solar PV item. Document B omits any such clause/line.",
+        "significance" : "major"
+      }, {
+        "section-name" : "Part 1 – C. DOCUMENTS INCLUDED; DEFINED TERMS",
+        "document-a-text" : "List of Appendices (Part 2, Appendix A, Appendix B, Appendix C, Appendix D-1, Appendix D-2, Appendix E).",
+        "document-b-text" : "Same list of Appendices (Part 2, Appendix A, Appendix B, Appendix C, Appendix D-1, Appendix D-2, Appendix E).",
+        "difference-summary" : "No substantive difference: same appendices are referenced.",
+        "significance" : "identical"
+      }, {
+        "section-name" : "Part 2 – 1. TERM",
+        "document-a-text" : "This Contract shall commence as of the Contract Commencement Date and end on the Contract End Date (the “Term”).",
+        "document-b-text" : "This Contract shall commence as of the Contract Commencement Date and end on the Contract End Date (the “Term”).",
+        "difference-summary" : "Identical wording.",
+        "significance" : "identical"
+      }, {
+        "section-name" : "Part 2 – 2. PRICING PROVISIONS AND PAYMENT",
+        "document-a-text" : "Indexed Contract Price rules and Payment mechanics including Settlement Period language and OPA's right to implement alternative settlement mechanics on 30 days' prior notice.",
+        "document-b-text" : "Same Indexed Contract Price rules and Payment mechanics and same notice for alternative settlement mechanics.",
+        "difference-summary" : "No substantive difference in pricing or payment mechanics.",
+        "significance" : "identical"
+      }, {
+        "section-name" : "Part 2 – 3. ENVIRONMENTAL ATTRIBUTES",
+        "document-a-text" : "Supplier transfers to OPA all rights to Environmental Attributes; Supplier to take actions to transfer/register as directed; cost reimbursement clause subject to OPA approval.",
+        "document-b-text" : "Same transfer, action and cost reimbursement obligations.",
+        "difference-summary" : "Substantively identical.",
+        "significance" : "identical"
+      }, {
+        "section-name" : "Part 2 – 4. REPRESENTATIONS AND WARRANTIES (selected subclauses)",
+        "document-a-text" : "4.4.4. If the Facility is a solar photovoltaic facility, it has a Domestic Content Level greater than or equal to the Minimum Required Domestic Content Level.\\n4.4.5. The Facility has obtained a Renewable Energy Approval, if applicable.\\n4.4.6. All statements, specifications, data, ... are complete, true and accurate ...",
+        "document-b-text" : "4.4.4. The Facility has obtained a Renewable Energy Approval, if applicable.\\n4.4.5. All statements, specifications, data, ... are complete, true and accurate ...",
+        "difference-summary" : "Document A contains a Supplier warranty about Domestic Content Level for solar PV facilities; Document B omits this warranty. Subsequent subclauses are renumbered in Document B to account for the deletion.",
+        "significance" : "major"
+      }, {
+        "section-name" : "Part 2 – 5. COVENANTS (selected subclauses)",
+        "document-a-text" : "5.1.2. Supplier shall notify OPA promptly of any change to the information contained in Part 1, Section A(11).",
+        "document-b-text" : "5.1.2. Supplier shall notify OPA promptly in the Prescribed Form of any change to the information contained in Part 1, Section A(11).",
+        "difference-summary" : "Document B requires that notices of changes to contact information be provided 'in the Prescribed Form' — a procedural/formal change establishing the required form for the notice. Substance (timeliness obligation) remains but with a formal requirement.",
+        "significance" : "minor"
+      }, {
+        "section-name" : "Part 2 – 6. GENERAL CONDITIONS (Collection of Information & Disclosure)",
+        "document-a-text" : "6.5. Collection of Information: OPA, LDC and Ontario ministries may need info such as property identification information, property zoning, GST number, information to establish compliance with Minimum Required Domestic Content Level, and information to establish that the Supplier is an Eligible Participant...\\nDisclosure of Information: OPA may disclose to LDC and the Ministry of Energy, and certain other Ontario government ministries ... including without limitation, Supplier’s name, facility location, microFIT Program eligibility characteristics, compliance with Minimum Required Domestic Content Level, Supplier’s electricity generation, pricing and payments. ... To facilitate municipal and land use planning, OPA and LDC may disclose details ... to the municipality or band council.",
+        "document-b-text" : "6.5. Collection of Information: OPA, LDC and Ontario ministries may need info such as property identification information, property zoning, GST number, and information to establish that the Supplier is an Eligible Participant (domestic content reference removed).\\nDisclosure of Information: OPA may disclose to LDC and the Ministry of Energy, and certain other Ontario ministries certain information ... including without limitation, Supplier’s name, facility location, microFIT Program eligibility characteristics, Supplier’s electricity generation, pricing and payments (domestic content reference removed).\\nAdditional language: 'The OPA may disclose certain information... to other government ministries, agencies, institutions or organizations, for purposes of promoting public health and safety and allowing emergency services personnel, as well as other public officials to plan and respond properly in the event of an emergency.'\\nConsent: Supplier consents to collection, use and disclosure/sharing per OPA's Privacy Policy (substantively same, but disclosure scope broadened).",
+        "difference-summary" : "Document B removes references to domestic content from the list of information that may be collected/disclosed. Document B adds explicit authorization to disclose Facility details to other government bodies for public health, safety and emergency planning. The consent/waiver language remains but the scope of potential recipients of data is broadened.",
+        "significance" : "major"
+      }, {
+        "section-name" : "Other sections and general drafting",
+        "document-a-text" : "Other provisions (metering, access rights, FIPPA notice, statement copies, supplier verification) with specific clause ordering as in Version 2.0.",
+        "document-b-text" : "Same provisions, near-identical, with minor reordering/renumbering where earlier clauses were removed.",
+        "difference-summary" : "Most general conditions and operational provisions are the same in wording and effect. Renumbering occurs due to removed clauses. No other substantive changes identified in provided text.",
+        "significance" : "identical"
+      } ],
+      "key-differences" : [ {
+        "area" : "Minimum Required Domestic Content Level (solar PV)",
+        "description" : "Version 2.0 explicitly states a Minimum Required Domestic Content Level (60%) for solar PV and includes a Supplier warranty in Representations & Warranties that the facility meets that Domestic Content Level. Version 3.1.1 removes the Minimum Required Domestic Content Level line item in Part 1.B(5)(iv) and the corresponding warranty in Part 2, Section 4.4.",
+        "impact" : "Major — removes an explicit Supplier compliance obligation tied to domestic content. This may change eligibility or post-contract compliance exposure for Suppliers who had to meet domestic content thresholds; conversely, it may relieve Suppliers from that contractual warranty. Parties should confirm whether other Program rules or external statutes/regulations still impose domestic content requirements despite this deletion."
+      }, {
+        "area" : "Collection and Disclosure of Information (privacy / data-sharing)",
+        "description" : "Version 3.1.1 broadens the description of information sharing: it omits domestic content as a specific item and adds explicit authorization to disclose Facility details to other government ministries/agencies/institutions for public health, safety and emergency-response planning. The overall consent/waiver language remains but the set of potential recipients is expanded.",
+        "impact" : "Major — increases the scope of permitted disclosures, potentially exposing Supplier data to more government recipients and for additional purposes (emergency planning/public safety). This may raise privacy/compliance concerns under FIPPA and requires internal privacy controls and Supplier notification/consent processes."
+      }, {
+        "area" : "Notification procedure for changes to supplier contact information",
+        "description" : "Version 3.1.1 adds the phrase 'in the Prescribed Form' to the obligation to notify OPA of changes to the information in Part 1, Section A(11).",
+        "impact" : "Minor — formalizes the required format of notices (procedural). Suppliers should confirm what constitutes the 'Prescribed Form' to avoid non-compliance with notice requirements."
+      }, {
+        "area" : "Clause renumbering and minor drafting changes",
+        "description" : "Removal of the domestic content clause in Document B causes renumbering of subsequent subclauses in Section 4 (Representations and Warranties) and elsewhere. Small formatting/line-break differences also appear.",
+        "impact" : "Minor — creates a potential for cross-reference errors in ancillary documents and internal processes. Parties should verify references in related documents and ensure consistent clause numbering."
+      } ],
+      "summary" : "The two contracts are largely the same; the principal differences are (1) deletion in Version 3.1.1 of the explicit Minimum Required Domestic Content Level (60%) and the related Supplier warranty, and (2) expanded disclosure language in Version 3.1.1 that expressly allows sharing Facility details with other government ministries/agencies for public health/safety and emergency response. A minor procedural change requires notifications 'in the Prescribed Form' in Version 3.1.1. The domestic content deletion and broader data sharing are the most material changes — they respectively affect Supplier compliance obligations and increase privacy/exposure risk. Parties should verify whether regulatory rules outside the contract retain the domestic content requirement and should update privacy, notice and operational procedures to reflect the broader disclosure and the 'Prescribed Form' requirement."
+    }
+  },
+  "git_sha" : "c3c5be5"
+}

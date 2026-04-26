@@ -1,0 +1,70 @@
+{
+  "run_idx" : 1,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "f8d2c881-24df-4385-9ac3-2803f5a53565",
+    "sheet_id" : "7bf421da-8817-57bb-bd64-0582788faa1f",
+    "status" : "success",
+    "event_count" : 5
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-103153__01",
+  "duration_seconds" : 14.84,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 3209,
+      "output" : 216
+    },
+    "sub" : {
+      "input" : 236,
+      "output" : 452
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.00617125,
+    "sub_lm" : 9.63E-4,
+    "total" : 0.00713425,
+    "per_page" : 1.5853888888888888E-4
+  },
+  "structured" : {
+    "contracts" : null,
+    "doc-summaries" : null,
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "No input summaries or documents were provided. Nothing to compare. To produce a ComparisonResult, please supply one or more input summaries and the corresponding documents (or two sets of texts to compare). Expected inputs:\n- summaries: list/collection of summary texts to evaluate or compare.\n- docs: list/collection of source documents corresponding to those summaries.\nOnce provided, I will produce:\n- a structured report describing differences,\n- section-level diffs,\n- key differences extracted and summarized,\n- a concise overall summary.",
+      "section-diffs" : [ ],
+      "key-differences" : [ ],
+      "summary" : "No data was given to compare. Provide summaries and/or documents and I will generate a detailed comparison."
+    },
+    "contract-paths" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ]
+  },
+  "git_sha" : "c3c5be5"
+}

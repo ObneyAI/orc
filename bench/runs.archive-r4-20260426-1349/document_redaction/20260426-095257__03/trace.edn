@@ -1,0 +1,473 @@
+[{:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :execution-snapshot
+  {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+   :sheet-name "document-redaction-pipeline",
+   :nodes-by-id
+   {#uuid "bc718448-dc89-5c99-9035-a29bcdf12198"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "main",
+     :children-ids
+     [#uuid "c784e93a-9b7e-5e33-9e53-5dc692d1bb36"
+      #uuid "2fa2f16d-bb35-5865-9d87-6720c069642b"
+      #uuid "73cedef1-8f57-5dc6-ae3c-6ed2721aabf4"],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :sequence,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+     :parent-id nil,
+     :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "c784e93a-9b7e-5e33-9e53-5dc692d1bb36"
+    {:retry nil,
+     :writes [:doc-survey],
+     :fn "ai.obney.orc.examples.document-redaction.pipeline/survey",
+     :last-error nil,
+     :check nil,
+     :name "survey",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "c784e93a-9b7e-5e33-9e53-5dc692d1bb36",
+     :parent-id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+     :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:documents],
+     :model nil},
+    #uuid "2fa2f16d-bb35-5865-9d87-6720c069642b"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "find-targets",
+     :children-ids [#uuid "7df9168f-4bf7-5ddc-bf8e-b453ea7ae5e6"],
+     :tools nil,
+     :item-key :doc,
+     :source-key :doc-survey,
+     :type :map-each,
+     :decorators [],
+     :output-key :all-targets,
+     :status :success,
+     :id #uuid "2fa2f16d-bb35-5865-9d87-6720c069642b",
+     :parent-id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+     :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :executor nil,
+     :max-concurrency 4,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "7df9168f-4bf7-5ddc-bf8e-b453ea7ae5e6"
+    {:retry nil,
+     :writes [:doc-targets],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "find-targets-for-doc",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "7df9168f-4bf7-5ddc-bf8e-b453ea7ae5e6",
+     :parent-id #uuid "2fa2f16d-bb35-5865-9d87-6720c069642b",
+     :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :executor :ai,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "Identify all text passages on the given document that match the redaction criteria. For EACH match return a redaction target {:page :text :category :reason}. Only return passages that LITERALLY appear in the page text — strings that don't match exactly cannot be located for redaction.",
+     :success-policy nil,
+     :reads [:doc :criteria],
+     :model "openai/gpt-5-mini"},
+    #uuid "73cedef1-8f57-5dc6-ae3c-6ed2721aabf4"
+    {:retry nil,
+     :writes [:doc-redactions :redacted-documents :result],
+     :fn
+     "ai.obney.orc.examples.document-redaction.pipeline/apply-redactions",
+     :last-error nil,
+     :check nil,
+     :name "apply-redactions",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "73cedef1-8f57-5dc6-ae3c-6ed2721aabf4",
+     :parent-id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+     :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:doc-survey :all-targets],
+     :model nil}},
+   :root-node-id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+   :blackboard-entries
+   {:doc-redactions
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :doc-redactions,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :criteria
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :criteria,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :redacted-documents
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :redacted-documents,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :doc-targets
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :doc-targets,
+     :schema
+     [:vector
+      [:map
+       [:page {:description "0-indexed page number"} :int]
+       [:text
+        {:description
+         "Exact text to redact as it appears in the document"}
+        :string]
+       [:category
+        {:description
+         "Category, e.g. 'person_name', 'phone_number', 'address'"}
+        :string]
+       [:reason
+        {:description "Why this text should be redacted"}
+        :string]]],
+     :value nil,
+     :version 0},
+    :documents
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :documents,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :result,
+     :schema
+     [:map
+      [:total-redactions
+       {:description "Total number of redactions applied"}
+       :int]
+      [:page-summaries
+       {:description "Per-page summary"}
+       [:vector
+        [:map
+         [:page {:description "0-indexed page number"} :int]
+         [:redaction-count
+          {:description "Number of redactions applied on this page"}
+          :int]
+         [:categories
+          {:description "Distinct categories redacted on this page"}
+          [:vector :string]]]]]
+      [:targets
+       {:description "All redaction targets identified"}
+       [:vector
+        [:map
+         [:page {:description "0-indexed page number"} :int]
+         [:text
+          {:description
+           "Exact text to redact as it appears in the document"}
+          :string]
+         [:category
+          {:description
+           "Category, e.g. 'person_name', 'phone_number', 'address'"}
+          :string]
+         [:reason
+          {:description "Why this text should be redacted"}
+          :string]]]]],
+     :value nil,
+     :version 0},
+    :doc
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :doc,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :all-targets
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :all-targets,
+     :schema
+     [:vector
+      [:map
+       [:page {:description "0-indexed page number"} :int]
+       [:text
+        {:description
+         "Exact text to redact as it appears in the document"}
+        :string]
+       [:category
+        {:description
+         "Category, e.g. 'person_name', 'phone_number', 'address'"}
+        :string]
+       [:reason
+        {:description "Why this text should be redacted"}
+        :string]]],
+     :value nil,
+     :version 0},
+    :doc-survey
+    {:sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+     :key :doc-survey,
+     :schema [:vector :map],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:57.635023-05:00",
+  :inputs
+  {:document-paths
+   ["/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf"],
+   :criteria
+   "Redact all personally identifiable information (PII), including:\n\n1. **Names** — Full names of individuals (not company or organization names)\n2. **Contact info** — Phone numbers, email addresses, fax numbers\n3. **Addresses** — Street addresses, P.O. boxes (not city/state/country)\n4. **Government IDs** — Social security numbers, tax IDs, passport numbers\n5. **Financial info** — Bank account numbers, credit card numbers, routing numbers\n6. **Signatures** — Handwritten signatures (redact the bounding area)\n\nAdded to this, redact any dates found in the document, in any format."},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca47-83a3-7099-b0ca-a410e6ebd5a8"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:node #uuid "bc718448-dc89-5c99-9035-a29bcdf12198"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:57.791232-05:00",
+  :inputs {},
+  :node-id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-843f-70ef-9a6d-ce002b74733f"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]
+    [:node #uuid "c784e93a-9b7e-5e33-9e53-5dc692d1bb36"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:58.041353-05:00",
+  :inputs {:documents nil},
+  :node-id #uuid "c784e93a-9b7e-5e33-9e53-5dc692d1bb36",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8539-70a0-9a43-7cbea20ef7db"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :key :doc-survey,
+  :value [],
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:58.310489-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8646-703f-a0aa-66a3a0371a32"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :writes {:doc-survey []},
+  :duration-ms 0,
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]
+    [:node #uuid "c784e93a-9b7e-5e33-9e53-5dc692d1bb36"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:58.308963-05:00",
+  :status :success,
+  :node-id #uuid "c784e93a-9b7e-5e33-9e53-5dc692d1bb36",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8644-703d-ba13-c7f1dde39b95"}
+ {:child-index 1,
+  :tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:node #uuid "bc718448-dc89-5c99-9035-a29bcdf12198"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:58.564945-05:00",
+  :node-id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 3,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8744-701f-9ebe-f7a56ab99ef7"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]
+    [:node #uuid "2fa2f16d-bb35-5865-9d87-6720c069642b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:58.565096-05:00",
+  :inputs {},
+  :node-id #uuid "2fa2f16d-bb35-5865-9d87-6720c069642b",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8745-70f4-99f1-704b90a70acc"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :key :all-targets,
+  :value [],
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:58.809260-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8837-703e-a6f1-16eaf66ca9bc"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]
+    [:node #uuid "2fa2f16d-bb35-5865-9d87-6720c069642b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:58.809432-05:00",
+  :status :success,
+  :node-id #uuid "2fa2f16d-bb35-5865-9d87-6720c069642b",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8839-701e-89d9-63f0b74c0fb0"}
+ {:child-index 2,
+  :tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:node #uuid "bc718448-dc89-5c99-9035-a29bcdf12198"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:59.069931-05:00",
+  :node-id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 3,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-893d-7016-9be1-f27516e06b3f"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]
+    [:node #uuid "73cedef1-8f57-5dc6-ae3c-6ed2721aabf4"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:59.070026-05:00",
+  :inputs {:doc-survey [], :all-targets []},
+  :node-id #uuid "73cedef1-8f57-5dc6-ae3c-6ed2721aabf4",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-893e-7044-99b5-7a36d176a604"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :key :doc-redactions,
+  :value [],
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:59.337365-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8a49-7044-82f6-796d1d2aa80e"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :key :redacted-documents,
+  :value [],
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:59.337485-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8a49-7045-8e34-dc8801974ad7"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :key :result,
+  :value {:total-redactions 0, :page-summaries [], :targets []},
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:59.337537-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8a49-7046-b174-7c717aab6f7e"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :writes
+  {:doc-redactions [],
+   :redacted-documents [],
+   :result {:total-redactions 0, :page-summaries [], :targets []}},
+  :duration-ms 0,
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]
+    [:node #uuid "73cedef1-8f57-5dc6-ae3c-6ed2721aabf4"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:59.336174-05:00",
+  :status :success,
+  :node-id #uuid "73cedef1-8f57-5dc6-ae3c-6ed2721aabf4",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8a48-7054-ad7d-f853e475af5c"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:node #uuid "bc718448-dc89-5c99-9035-a29bcdf12198"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:59.595861-05:00",
+  :status :success,
+  :node-id #uuid "bc718448-dc89-5c99-9035-a29bcdf12198",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8b4b-70dd-883a-68fd8425c917"}
+ {:tick-id #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:sheet #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b"]
+    [:tick #uuid "ebb53ff7-ccd8-4191-bd99-2c70e9dada22"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T09:52:59.852545-05:00",
+  :outputs
+  {:doc-redactions [],
+   :criteria
+   "Redact all personally identifiable information (PII), including:\n\n1. **Names** — Full names of individuals (not company or organization names)\n2. **Contact info** — Phone numbers, email addresses, fax numbers\n3. **Addresses** — Street addresses, P.O. boxes (not city/state/country)\n4. **Government IDs** — Social security numbers, tax IDs, passport numbers\n5. **Financial info** — Bank account numbers, credit card numbers, routing numbers\n6. **Signatures** — Handwritten signatures (redact the bounding area)\n\nAdded to this, redact any dates found in the document, in any format.",
+   :redacted-documents [],
+   :document-paths
+   ["/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf"],
+   :doc-targets nil,
+   :documents nil,
+   :result {:total-redactions 0, :page-summaries [], :targets []},
+   :doc nil,
+   :all-targets [],
+   :doc-survey []},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "8062b070-16fd-574c-b6bd-fbdeaa03e81b",
+  :event/id #uuid "019dca47-8c4c-70d9-b865-6329753f71bd"}]

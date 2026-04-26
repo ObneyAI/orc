@@ -1,0 +1,71 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "2c27be6a-9860-46fc-a6ad-e09d3436c850",
+    "sheet_id" : "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+    "status" : "success",
+    "event_count" : 19
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "document_analysis",
+  "run_id" : "20260426-095438__02",
+  "duration_seconds" : 22.789,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf",
+    "name" : "YYJ-2025-Parking-Management-RFP.pdf",
+    "size_bytes" : 5379910,
+    "sha256" : "250b794c61200e280d01d6c64f1c24a4f018e96537929fe5d68f969159d44d75",
+    "page_count" : 136
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 136,
+  "outputs" : [ {
+    "path" : "outputs/document_analysis-report.docx",
+    "original-path" : "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/document_analysis-report.docx",
+    "size_bytes" : 4402,
+    "sha256" : "481b5bec68773be38112b332b141c96eb140310213f1368b38386286745c29e7"
+  } ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 664,
+      "output" : 2197
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.004560000000000001,
+    "total" : 0.004560000000000001,
+    "per_page" : 3.3529411764705886E-5
+  },
+  "structured" : {
+    "document-meta" : [ ],
+    "criteria" : "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist.",
+    "doc-summary" : null,
+    "document-paths" : [ "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf" ],
+    "document" : null,
+    "documents" : null,
+    "docx-report" : "run-orc/file",
+    "analysis" : {
+      "report" : "# Briefing Report — Source Documents Not Provided\n\nExecutive Summary\n\nNo source documents or summaries were provided for analysis (the input array of document summaries is empty). Because there are no …<elided 4124 chars>… duced covering Executive Summary, an ordered Timeline of key dates, a roster of Entities and Stakeholders with roles and contacts, and a Financial Information table with obligations and payment terms.",
+      "key-dates" : [ ],
+      "key-entities" : [ ]
+    },
+    "doc-summaries" : [ ]
+  },
+  "git_sha" : "c3c5be5"
+}

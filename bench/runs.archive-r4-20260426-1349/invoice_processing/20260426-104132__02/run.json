@@ -1,0 +1,282 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+    "sheet_id" : "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+    "status" : "success",
+    "event_count" : 30
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "invoice_processing",
+  "run_id" : "20260426-104132__02",
+  "duration_seconds" : 28.787,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+    "name" : "acme-invoice-2025-0042.pdf",
+    "size_bytes" : 9312,
+    "sha256" : "df17c9d692793665ccf71f4f3ec7469bda7aa20f9ab7bb0666429aa68d4dd15d",
+    "page_count" : 1
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+    "name" : "globaltech-invoice-GT-10587.pdf",
+    "size_bytes" : 10064,
+    "sha256" : "90bd71a8a08d4da7153ee1aa19600899774d2c93bc3726d566a340c3d3d68f7d",
+    "page_count" : 1
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 2,
+  "outputs" : [ {
+    "path" : "outputs/invoice-extraction-1777218120560.xlsx",
+    "original-path" : "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/invoice-extraction-1777218120560.xlsx",
+    "size_bytes" : 5310,
+    "sha256" : "ec2ea237c50e52966cb40482207373e1c063b8c9796b8b3bacecdab60085aa3e"
+  } ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 1576,
+      "output" : 2658
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 2
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.005710000000000001,
+    "total" : 0.005710000000000001,
+    "per_page" : 0.0028550000000000003
+  },
+  "structured" : {
+    "invoices" : [ "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf", "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf" ],
+    "pages" : [ {
+      "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+      "n" : 0,
+      "text" : "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n"
+    }, {
+      "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+      "n" : 0,
+      "text" : "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n"
+    } ],
+    "page" : {
+      "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+      "n" : 0,
+      "text" : "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n"
+    },
+    "page-extract" : {
+      "date" : "2025-02-28",
+      "subtotal" : 31000.0,
+      "tax" : 2817.9,
+      "total" : 30717.9,
+      "due-date" : "2025-03-30",
+      "line-items" : [ {
+        "description" : "Software license - Enterprise (annual)",
+        "quantity" : 1.0,
+        "unit-price" : 12000.0,
+        "amount" : 12000.0
+      }, {
+        "description" : "Implementation consulting (40 hrs)",
+        "quantity" : 40.0,
+        "unit-price" : 175.0,
+        "amount" : 7000.0
+      }, {
+        "description" : "Data migration service",
+        "quantity" : 1.0,
+        "unit-price" : 3500.0,
+        "amount" : 3500.0
+      }, {
+        "description" : "User training sessions (8 hrs)",
+        "quantity" : 8.0,
+        "unit-price" : 200.0,
+        "amount" : 1600.0
+      }, {
+        "description" : "Priority support add-on (annual)",
+        "quantity" : 1.0,
+        "unit-price" : 2400.0,
+        "amount" : 2400.0
+      }, {
+        "description" : "Custom integration development",
+        "quantity" : 1.0,
+        "unit-price" : 4500.0,
+        "amount" : 4500.0
+      } ],
+      "vendor-name" : "GlobalTech Solutions Ltd.",
+      "invoice-number" : "GT-10587"
+    },
+    "page-extracts" : [ {
+      "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+      "n" : 0,
+      "text" : "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n",
+      "page-extract" : {
+        "date" : "2025-03-15",
+        "subtotal" : 3774.97,
+        "tax" : 311.43,
+        "total" : 4086.4,
+        "due-date" : "2025-04-14",
+        "line-items" : [ {
+          "description" : "Cloud hosting - Standard Plan (Mar 2025)",
+          "quantity" : 1.0,
+          "unit-price" : 2400.0,
+          "amount" : 2400.0
+        }, {
+          "description" : "Additional storage (500 GB)",
+          "quantity" : 2.0,
+          "unit-price" : 150.0,
+          "amount" : 300.0
+        }, {
+          "description" : "Premium support package",
+          "quantity" : 1.0,
+          "unit-price" : 800.0,
+          "amount" : 800.0
+        }, {
+          "description" : "API calls overage (50,000 calls)",
+          "quantity" : 1.0,
+          "unit-price" : 125.0,
+          "amount" : 125.0
+        }, {
+          "description" : "SSL certificate renewal",
+          "quantity" : 3.0,
+          "unit-price" : 49.99,
+          "amount" : 149.97
+        } ],
+        "vendor-name" : "Acme Corporation",
+        "invoice-number" : "INV-2025-0042"
+      }
+    }, {
+      "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+      "n" : 0,
+      "text" : "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n",
+      "page-extract" : {
+        "date" : "2025-02-28",
+        "subtotal" : 31000.0,
+        "tax" : 2817.9,
+        "total" : 30717.9,
+        "due-date" : "2025-03-30",
+        "line-items" : [ {
+          "description" : "Software license - Enterprise (annual)",
+          "quantity" : 1.0,
+          "unit-price" : 12000.0,
+          "amount" : 12000.0
+        }, {
+          "description" : "Implementation consulting (40 hrs)",
+          "quantity" : 40.0,
+          "unit-price" : 175.0,
+          "amount" : 7000.0
+        }, {
+          "description" : "Data migration service",
+          "quantity" : 1.0,
+          "unit-price" : 3500.0,
+          "amount" : 3500.0
+        }, {
+          "description" : "User training sessions (8 hrs)",
+          "quantity" : 8.0,
+          "unit-price" : 200.0,
+          "amount" : 1600.0
+        }, {
+          "description" : "Priority support add-on (annual)",
+          "quantity" : 1.0,
+          "unit-price" : 2400.0,
+          "amount" : 2400.0
+        }, {
+          "description" : "Custom integration development",
+          "quantity" : 1.0,
+          "unit-price" : 4500.0,
+          "amount" : 4500.0
+        } ],
+        "vendor-name" : "GlobalTech Solutions Ltd.",
+        "invoice-number" : "GT-10587"
+      }
+    } ],
+    "result" : {
+      "invoices" : [ {
+        "date" : "2025-03-15",
+        "subtotal" : 3774.97,
+        "tax" : 311.43,
+        "total" : 4086.4,
+        "due-date" : "2025-04-14",
+        "line-items" : [ {
+          "description" : "Cloud hosting - Standard Plan (Mar 2025)",
+          "quantity" : 1.0,
+          "unit-price" : 2400.0,
+          "amount" : 2400.0
+        }, {
+          "description" : "Additional storage (500 GB)",
+          "quantity" : 2.0,
+          "unit-price" : 150.0,
+          "amount" : 300.0
+        }, {
+          "description" : "Premium support package",
+          "quantity" : 1.0,
+          "unit-price" : 800.0,
+          "amount" : 800.0
+        }, {
+          "description" : "API calls overage (50,000 calls)",
+          "quantity" : 1.0,
+          "unit-price" : 125.0,
+          "amount" : 125.0
+        }, {
+          "description" : "SSL certificate renewal",
+          "quantity" : 3.0,
+          "unit-price" : 49.99,
+          "amount" : 149.97
+        } ],
+        "vendor-name" : "Acme Corporation",
+        "invoice-number" : "INV-2025-0042"
+      }, {
+        "date" : "2025-02-28",
+        "subtotal" : 31000.0,
+        "tax" : 2817.9,
+        "total" : 30717.9,
+        "due-date" : "2025-03-30",
+        "line-items" : [ {
+          "description" : "Software license - Enterprise (annual)",
+          "quantity" : 1.0,
+          "unit-price" : 12000.0,
+          "amount" : 12000.0
+        }, {
+          "description" : "Implementation consulting (40 hrs)",
+          "quantity" : 40.0,
+          "unit-price" : 175.0,
+          "amount" : 7000.0
+        }, {
+          "description" : "Data migration service",
+          "quantity" : 1.0,
+          "unit-price" : 3500.0,
+          "amount" : 3500.0
+        }, {
+          "description" : "User training sessions (8 hrs)",
+          "quantity" : 8.0,
+          "unit-price" : 200.0,
+          "amount" : 1600.0
+        }, {
+          "description" : "Priority support add-on (annual)",
+          "quantity" : 1.0,
+          "unit-price" : 2400.0,
+          "amount" : 2400.0
+        }, {
+          "description" : "Custom integration development",
+          "quantity" : 1.0,
+          "unit-price" : 4500.0,
+          "amount" : 4500.0
+        } ],
+        "vendor-name" : "GlobalTech Solutions Ltd.",
+        "invoice-number" : "GT-10587"
+      } ],
+      "total-amount" : 34804.3,
+      "summary" : "Processed 2 invoices across 2 pages."
+    },
+    "workbook" : "run-orc/file"
+  },
+  "git_sha" : "c3c5be5"
+}

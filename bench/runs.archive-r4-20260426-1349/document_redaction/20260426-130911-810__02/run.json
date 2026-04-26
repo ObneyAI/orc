@@ -1,0 +1,205 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 30,
+  "orc" : {
+    "tick_id" : "1f7003e2-da7b-4db9-abd4-08f53397564c",
+    "sheet_id" : "0e21e146-a596-5bc9-8cd8-929771dc7af4",
+    "status" : "success",
+    "event_count" : 6
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "document_redaction",
+  "run_id" : "20260426-130911-810__02",
+  "duration_seconds" : 35.462,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf",
+    "name" : "PNFS-Employment-Agreement-2025.pdf",
+    "size_bytes" : 39615,
+    "sha256" : "bbac3b4538b1984632a794c5248597213835d6d50d933e8c30eb4c70bfa658c2",
+    "page_count" : 6
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 6,
+  "outputs" : [ {
+    "path" : "outputs/redacted-PNFS.pdf",
+    "original-path" : "/tmp/redacted-PNFS.pdf",
+    "size_bytes" : 35624,
+    "sha256" : "7b6ad52a8725cfa8fdc22b6d472d5d64970abbebe5cec313dffce89ea283f304"
+  } ],
+  "stack" : "orc-style-legacy",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 0,
+      "output" : 0
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 0
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.0,
+    "total" : 0.0,
+    "per_page" : 0.0
+  },
+  "structured" : {
+    "doc-redactions" : null,
+    "criteria" : "Redact all personally identifiable information (PII), including:\n\n1. **Names** — Full names of individuals (not company or organization names)\n2. **Contact info** — Phone numbers, email addresses, fax numbers\n3. **Addresses** — Street addresses, P.O. boxes (not city/state/country)\n4. **Government IDs** — Social security numbers, tax IDs, passport numbers\n5. **Financial info** — Bank account numbers, credit card numbers, routing numbers\n6. **Signatures** — Handwritten signatures (redact the bounding area)\n\nAdded to this, redact any dates found in the document, in any format.",
+    "redacted-documents" : [ "run-orc/file" ],
+    "doc-targets" : null,
+    "documents" : [ "/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf" ],
+    "result" : {
+      "total-redactions" : 26,
+      "page-summaries" : [ {
+        "page" : 0,
+        "redaction-count" : 26,
+        "categories" : [ "Name", "Government ID", "Equipment", "Phone Number", "Phone Info", "Permit", "Access Card", "Bank Info", "Financial Info", "Personal Info", "Contact Info", "E-mail Info", "Dependent Info" ]
+      } ],
+      "targets" : [ {
+        "page" : 0,
+        "text" : "Margaret Elisabeth Thornbury-Watson",
+        "category" : "Name",
+        "reason" : "full name of individual"
+      }, {
+        "page" : 0,
+        "text" : "847-291-036",
+        "category" : "Government ID",
+        "reason" : "SIN matching criteria"
+      }, {
+        "page" : 0,
+        "text" : "Dell Latitude 7440, Asset Tag PNFS-LT-8847",
+        "category" : "Equipment",
+        "reason" : "Asset Tag number"
+      }, {
+        "page" : 0,
+        "text" : "4NQ9X83-J72M",
+        "category" : "Equipment",
+        "reason" : "Serial Number"
+      }, {
+        "page" : 0,
+        "text" : "Dell U2722D, Asset Tag PNFS-MN-4412",
+        "category" : "Equipment",
+        "reason" : "Asset Tag number"
+      }, {
+        "page" : 0,
+        "text" : "iPhone 15 Pro, (604) 812-0094 (corporate line)",
+        "category" : "Phone Number",
+        "reason" : "Corporate line phone number"
+      }, {
+        "page" : 0,
+        "text" : "353847291047823",
+        "category" : "Phone Info",
+        "reason" : "IMEI number"
+      }, {
+        "page" : 0,
+        "text" : "Parking Permit: P-2025-0312 (Level B2, Harbour View Tower)",
+        "category" : "Permit",
+        "reason" : "Parking Permit Information"
+      }, {
+        "page" : 0,
+        "text" : "Building Access Card: HVT-8847-MW",
+        "category" : "Access Card",
+        "reason" : "Building Access Card Information"
+      }, {
+        "page" : 0,
+        "text" : "RBC Visa Business",
+        "category" : "Bank Info",
+        "reason" : "Credit Card issuer"
+      }, {
+        "page" : 0,
+        "text" : "Card Number: 4519-8847-2291-0036",
+        "category" : "Financial Info",
+        "reason" : "Credit card number"
+      }, {
+        "page" : 0,
+        "text" : "Expiry: 03/2028",
+        "category" : "Financial Info",
+        "reason" : "Expiration date"
+      }, {
+        "page" : 0,
+        "text" : "Monthly Limit: $5,000 CAD",
+        "category" : "Financial Info",
+        "reason" : "Credit card limit"
+      }, {
+        "page" : 0,
+        "text" : "Approving Manager: James Harrington",
+        "category" : "Personal Info",
+        "reason" : "Name of Approving Manager"
+      }, {
+        "page" : 0,
+        "text" : "David Watson",
+        "category" : "Contact Info",
+        "reason" : "Name of Emergency Contact"
+      }, {
+        "page" : 0,
+        "text" : "(604) 773-5518",
+        "category" : "Contact Info",
+        "reason" : "Emergency Contact Number"
+      }, {
+        "page" : 0,
+        "text" : "david.j.watson@outlook.com",
+        "category" : "E-mail Info",
+        "reason" : "Email of Emergency Contact"
+      }, {
+        "page" : 0,
+        "text" : "Eleanor Thornbury",
+        "category" : "Contact Info",
+        "reason" : "Name of Emergency Contact"
+      }, {
+        "page" : 0,
+        "text" : "(250) 884-6617",
+        "category" : "Contact Info",
+        "reason" : "Emergency Contact Number"
+      }, {
+        "page" : 0,
+        "text" : "David James Watson",
+        "category" : "Dependent Info",
+        "reason" : "Name of Dependent"
+      }, {
+        "page" : 0,
+        "text" : "912-347-058",
+        "category" : "Government ID",
+        "reason" : "SIN of Dependent"
+      }, {
+        "page" : 0,
+        "text" : "Oliver Thornbury Watson",
+        "category" : "Dependent Info",
+        "reason" : "Name of Dependent"
+      }, {
+        "page" : 0,
+        "text" : "9201 947 223",
+        "category" : "Government ID",
+        "reason" : "Health Card Number of Dependent"
+      }, {
+        "page" : 0,
+        "text" : "David James Watson",
+        "category" : "Dependent Info",
+        "reason" : "Name of Dependent"
+      }, {
+        "page" : 0,
+        "text" : "9208 822 491",
+        "category" : "Government ID",
+        "reason" : "Health Card Number of Dependent"
+      }, {
+        "page" : 0,
+        "text" : "SIN: 847-291-036",
+        "category" : "Government ID",
+        "reason" : "SIN number"
+      } ]
+    },
+    "doc" : null,
+    "all-targets" : null,
+    "doc-survey" : null
+  },
+  "git_sha" : "173d390"
+}

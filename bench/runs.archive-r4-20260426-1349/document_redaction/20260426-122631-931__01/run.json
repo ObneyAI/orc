@@ -1,0 +1,435 @@
+{
+  "run_idx" : 1,
+  "max_iterations" : 30,
+  "orc" : {
+    "tick_id" : "a70232ed-c065-49c6-8dd1-1d291f1ecc76",
+    "sheet_id" : "1f4d204b-9172-50ff-a27d-9604c808d904",
+    "status" : "success",
+    "event_count" : 6
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "document_redaction",
+  "run_id" : "20260426-122631-931__01",
+  "duration_seconds" : 169.259,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf",
+    "name" : "PNFS-Employment-Agreement-2025.pdf",
+    "size_bytes" : 39615,
+    "sha256" : "bbac3b4538b1984632a794c5248597213835d6d50d933e8c30eb4c70bfa658c2",
+    "page_count" : 6
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 6,
+  "outputs" : [ {
+    "path" : "outputs/redacted-PNFS-Employment-Agreement-2025.pdf",
+    "original-path" : "/tmp/redacted-PNFS-Employment-Agreement-2025.pdf",
+    "size_bytes" : 36958,
+    "sha256" : "081c405d35865a2d531c8083c6f68816000b45f69b455fc1b59bf2c0dd63adec"
+  } ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 4854,
+      "output" : 706
+    },
+    "sub" : {
+      "input" : 2492,
+      "output" : 9488
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0131275,
+    "sub_lm" : 0.019599,
+    "total" : 0.0327265,
+    "per_page" : 0.0054544166666666664
+  },
+  "structured" : {
+    "doc-redactions" : null,
+    "criteria" : "Redact all personally identifiable information (PII), including:\n\n1. **Names** — Full names of individuals (not company or organization names)\n2. **Contact info** — Phone numbers, email addresses, fax numbers\n3. **Addresses** — Street addresses, P.O. boxes (not city/state/country)\n4. **Government IDs** — Social security numbers, tax IDs, passport numbers\n5. **Financial info** — Bank account numbers, credit card numbers, routing numbers\n6. **Signatures** — Handwritten signatures (redact the bounding area)\n\nAdded to this, redact any dates found in the document, in any format.",
+    "redacted-documents" : [ "run-orc/file" ],
+    "doc-targets" : null,
+    "documents" : [ "/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf" ],
+    "result" : {
+      "total-redactions" : 68,
+      "page-summaries" : [ {
+        "page" : 0,
+        "redaction-count" : 14,
+        "categories" : [ "Address", "Date", "Name", "Government ID", "Email", "Phone", "Name/Phone" ]
+      }, {
+        "page" : 1,
+        "redaction-count" : 12,
+        "categories" : [ "Name", "Government ID", "Address", "Financial Info", "Date" ]
+      }, {
+        "page" : 2,
+        "redaction-count" : 17,
+        "categories" : [ "Name", "Phone", "Email", "Government ID", "Date", "Address" ]
+      }, {
+        "page" : 3,
+        "redaction-count" : 5,
+        "categories" : [ "Email", "Phone", "Financial Info", "Name", "Date" ]
+      }, {
+        "page" : 4,
+        "redaction-count" : 12,
+        "categories" : [ "Name", "Phone", "Email", "Address", "Government ID", "Multiple (Name/Date/Government ID)", "Name/Date" ]
+      }, {
+        "page" : 5,
+        "redaction-count" : 8,
+        "categories" : [ "Address", "Government ID", "Name", "Date", "Name/Date" ]
+      } ],
+      "targets" : [ {
+        "page" : 0,
+        "text" : "1847 Harbour View Drive, Suite 400",
+        "category" : "Address",
+        "reason" : "Street address (street number and name) — PII to redact."
+      }, {
+        "page" : 0,
+        "text" : "Date: March 15, 2025",
+        "category" : "Date",
+        "reason" : "Document date — redact all dates."
+      }, {
+        "page" : 0,
+        "text" : "Employee Name: Margaret Elisabeth Thornbury-Watson",
+        "category" : "Name",
+        "reason" : "Full legal name of individual — PII to redact."
+      }, {
+        "page" : 0,
+        "text" : "Date of Birth: September 12, 1987",
+        "category" : "Date",
+        "reason" : "Date of birth — redact all dates."
+      }, {
+        "page" : 0,
+        "text" : "Social Insurance Number: 847-291-036",
+        "category" : "Government ID",
+        "reason" : "Social Insurance Number (SIN) — government ID to redact."
+      }, {
+        "page" : 0,
+        "text" : "Home Address: 2934 Cypress Crescent, North Vancouver, BC V7R 2T8",
+        "category" : "Address",
+        "reason" : "Home street address (street number and name) — PII to redact."
+      }, {
+        "page" : 0,
+        "text" : "Personal Email: m.thornbury.watson@gmail.com",
+        "category" : "Email",
+        "reason" : "Personal email address — contact info to redact."
+      }, {
+        "page" : 0,
+        "text" : "Mobile Phone: (604) 889-3247",
+        "category" : "Phone",
+        "reason" : "Mobile phone number — contact info to redact."
+      }, {
+        "page" : 0,
+        "text" : "Emergency Contact: David Watson, (604) 773-5518 (spouse)",
+        "category" : "Name/Phone",
+        "reason" : "Emergency contact full name and phone number — PII and contact info to redact."
+      }, {
+        "page" : 0,
+        "text" : "Start Date: April 1, 2025",
+        "category" : "Date",
+        "reason" : "Employment start date — redact all dates."
+      }, {
+        "page" : 0,
+        "text" : "Reporting To: James Harrington, VP Wealth Management",
+        "category" : "Name",
+        "reason" : "Full name of reporting manager — PII to redact."
+      }, {
+        "page" : 0,
+        "text" : "Name: Robert Chen, Chief Human Resources Officer",
+        "category" : "Name",
+        "reason" : "Full name of Employer representative — PII to redact."
+      }, {
+        "page" : 0,
+        "text" : "Name: Margaret Elisabeth Thornbury-Watson",
+        "category" : "Name",
+        "reason" : "Employee signature name (full name) — PII to redact."
+      }, {
+        "page" : 0,
+        "text" : "Date: March 15, 2025",
+        "category" : "Date",
+        "reason" : "Signature date — redact all dates."
+      }, {
+        "page" : 1,
+        "text" : "Full Legal Name: Margaret Elisabeth Thornbury-Watson",
+        "category" : "Name",
+        "reason" : "Full legal name of individual — PII to redact."
+      }, {
+        "page" : 1,
+        "text" : "Passport Number: QK894217 (Canada)",
+        "category" : "Government ID",
+        "reason" : "Passport number — government ID to redact."
+      }, {
+        "page" : 1,
+        "text" : "Driver's License: 7284913 (British Columbia)",
+        "category" : "Government ID",
+        "reason" : "Driver's license number — government ID to redact."
+      }, {
+        "page" : 1,
+        "text" : "Permanent Address:\n2934 Cypress Crescent\nNorth Vancouver, BC V7R 2T8\nCanada",
+        "category" : "Address",
+        "reason" : "Permanent street address block (street and number) — PII to redact."
+      }, {
+        "page" : 1,
+        "text" : "Transit Number: 04512",
+        "category" : "Financial Info",
+        "reason" : "Bank transit/routing number — financial info to redact."
+      }, {
+        "page" : 1,
+        "text" : "Institution Number: 003",
+        "category" : "Financial Info",
+        "reason" : "Bank institution number — financial info to redact."
+      }, {
+        "page" : 1,
+        "text" : "Account Number: 5127849",
+        "category" : "Financial Info",
+        "reason" : "Bank account number — financial info to redact."
+      }, {
+        "page" : 1,
+        "text" : "Account Holder: Margaret E. Thornbury-Watson",
+        "category" : "Name",
+        "reason" : "Account holder full name (PII) — redact."
+      }, {
+        "page" : 1,
+        "text" : "Pay Frequency: Semi-monthly (1st and 15th)",
+        "category" : "Date",
+        "reason" : "Contains day-based payment dates (1st and 15th) — redact per instruction to redact any dates."
+      }, {
+        "page" : 1,
+        "text" : "Beneficiary Date of Birth: June 3, 1985",
+        "category" : "Date",
+        "reason" : "Beneficiary date of birth — redact all dates."
+      }, {
+        "page" : 1,
+        "text" : "Beneficiary SIN: 912-347-058",
+        "category" : "Government ID",
+        "reason" : "Beneficiary Social Insurance Number (SIN) — government ID to redact."
+      }, {
+        "page" : 1,
+        "text" : "RRSP Account: RBC Direct Investing, Account #4891-7723-0056",
+        "category" : "Financial Info",
+        "reason" : "RRSP / investment account number — financial info to redact."
+      }, {
+        "page" : 2,
+        "text" : "Name: Dr. Patricia Holmgren",
+        "category" : "Name",
+        "reason" : "Professional reference full name — PII to redact."
+      }, {
+        "page" : 2,
+        "text" : "Phone: (416) 307-8842",
+        "category" : "Phone",
+        "reason" : "Reference phone number — contact info to redact."
+      }, {
+        "page" : 2,
+        "text" : "Email: patricia.holmgren@td.com",
+        "category" : "Email",
+        "reason" : "Reference email address — contact info to redact."
+      }, {
+        "page" : 2,
+        "text" : "Name: Alistair McKinnon",
+        "category" : "Name",
+        "reason" : "Professional reference full name — PII to redact."
+      }, {
+        "page" : 2,
+        "text" : "Phone: (604) 691-3200 ext. 4417",
+        "category" : "Phone",
+        "reason" : "Reference phone number (with extension) — contact info to redact."
+      }, {
+        "page" : 2,
+        "text" : "Email: amckinnon@kpmg.ca",
+        "category" : "Email",
+        "reason" : "Reference email address — contact info to redact."
+      }, {
+        "page" : 2,
+        "text" : "Name: Samantha Reeves-Park",
+        "category" : "Name",
+        "reason" : "Professional reference full name — PII to redact."
+      }, {
+        "page" : 2,
+        "text" : "Phone: (250) 412-9933",
+        "category" : "Phone",
+        "reason" : "Reference phone number — contact info to redact."
+      }, {
+        "page" : 2,
+        "text" : "Email: s.reeves.park@cascadiarenewable.ca",
+        "category" : "Email",
+        "reason" : "Reference email address — contact info to redact."
+      }, {
+        "page" : 2,
+        "text" : "Social Insurance Number (for credit check): 847-291-036",
+        "category" : "Government ID",
+        "reason" : "Social Insurance Number (SIN) provided for credit check — government ID to redact."
+      }, {
+        "page" : 2,
+        "text" : "Date of Birth (for identity verification): September 12, 1987",
+        "category" : "Date",
+        "reason" : "Date of birth used for identity verification — redact all dates."
+      }, {
+        "page" : 2,
+        "text" : "Address: 66 Wellington Street West, Toronto, ON M5K 1A2",
+        "category" : "Address",
+        "reason" : "Previous employer street address — street address to redact."
+      }, {
+        "page" : 2,
+        "text" : "Supervisor: Dr. Patricia Holmgren",
+        "category" : "Name",
+        "reason" : "Supervisor full name — PII to redact."
+      }, {
+        "page" : 2,
+        "text" : "Phone: (416) 307-8842",
+        "category" : "Phone",
+        "reason" : "Supervisor phone number — contact info to redact."
+      }, {
+        "page" : 2,
+        "text" : "Dates of Employment: January 2019 - November 2023",
+        "category" : "Date",
+        "reason" : "Employment date range — redact all dates."
+      }, {
+        "page" : 2,
+        "text" : "Authorization Signature: Margaret E. Thornbury-Watson",
+        "category" : "Name",
+        "reason" : "Authorization signature name (PII) — redact."
+      }, {
+        "page" : 2,
+        "text" : "Date: March 15, 2025",
+        "category" : "Date",
+        "reason" : "Authorization signature date — redact all dates."
+      }, {
+        "page" : 3,
+        "text" : "Corporate Email: m.thornbury-watson@pnfs.ca",
+        "category" : "Email",
+        "reason" : "Corporate email address — contact info to redact."
+      }, {
+        "page" : 3,
+        "text" : "Mobile Phone: iPhone 15 Pro, (604) 812-0094 (corporate line)",
+        "category" : "Phone",
+        "reason" : "Corporate mobile phone number — contact info to redact."
+      }, {
+        "page" : 3,
+        "text" : "Card Number: 4519-8847-2291-0036",
+        "category" : "Financial Info",
+        "reason" : "Corporate credit card number — financial info to redact."
+      }, {
+        "page" : 3,
+        "text" : "Cardholder Name: Margaret Thornbury-Watson",
+        "category" : "Name",
+        "reason" : "Cardholder full name — PII to redact."
+      }, {
+        "page" : 3,
+        "text" : "Expiry: 03/2028",
+        "category" : "Date",
+        "reason" : "Credit card expiry date — redact all dates."
+      }, {
+        "page" : 4,
+        "text" : "Name: David Watson",
+        "category" : "Name",
+        "reason" : "Emergency contact full name — PII to redact."
+      }, {
+        "page" : 4,
+        "text" : "Phone: (604) 773-5518",
+        "category" : "Phone",
+        "reason" : "Emergency contact phone number — contact info to redact."
+      }, {
+        "page" : 4,
+        "text" : "Email: david.j.watson@outlook.com",
+        "category" : "Email",
+        "reason" : "Emergency contact email address — contact info to redact."
+      }, {
+        "page" : 4,
+        "text" : "Address: 2934 Cypress Crescent, North Vancouver, BC V7R 2T8",
+        "category" : "Address",
+        "reason" : "Emergency contact street address (street and number) — PII to redact."
+      }, {
+        "page" : 4,
+        "text" : "Name: Eleanor Thornbury",
+        "category" : "Name",
+        "reason" : "Secondary emergency contact full name — PII to redact."
+      }, {
+        "page" : 4,
+        "text" : "Phone: (250) 884-6617",
+        "category" : "Phone",
+        "reason" : "Secondary emergency contact phone number — contact info to redact."
+      }, {
+        "page" : 4,
+        "text" : "Address: 445 Linden Avenue, Victoria, BC V8V 4G5",
+        "category" : "Address",
+        "reason" : "Secondary contact street address (street and number) — PII to redact."
+      }, {
+        "page" : 4,
+        "text" : "BC Health Card Number: 9847 291 036",
+        "category" : "Government ID",
+        "reason" : "BC Health Card number — government/health ID to redact."
+      }, {
+        "page" : 4,
+        "text" : "Dependant 1:\nName: David James Watson\nDate of Birth: June 3, 1985\nRelationship: Spouse\nSIN: 912-347-058\nBC Health Card: 9912 347 058",
+        "category" : "Multiple (Name/Date/Government ID)",
+        "reason" : "Dependant full name, date of birth, SIN and BC Health Card — PII and government IDs to redact."
+      }, {
+        "page" : 4,
+        "text" : "Dependant 2:\nName: Oliver Thornbury Watson\nDate of Birth: November 22, 2019\nRelationship: Child\nBC Health Card: 9201 947 223",
+        "category" : "Multiple (Name/Date/Government ID)",
+        "reason" : "Dependant full name, date of birth and BC Health Card — PII and government IDs to redact."
+      }, {
+        "page" : 4,
+        "text" : "Dependant 3:\nName: Clara Thornbury Watson\nDate of Birth: August 8, 2022\nRelationship: Child\nBC Health Card: 9208 822 491",
+        "category" : "Multiple (Name/Date/Government ID)",
+        "reason" : "Dependant full name, date of birth and BC Health Card — PII and government IDs to redact."
+      }, {
+        "page" : 4,
+        "text" : "Employee: Margaret Elisabeth Thornbury-Watson\nDate: March 15, 2025",
+        "category" : "Name/Date",
+        "reason" : "Employee name and signature date — full name (PII) and date to redact."
+      }, {
+        "page" : 5,
+        "text" : "Registered Address: 1847 Harbour View Drive, Suite 400, Vancouver, BC V6E 3S7",
+        "category" : "Address",
+        "reason" : "Registered street address (street and number) — PII to redact."
+      }, {
+        "page" : 5,
+        "text" : "Business Number: 712849301RC0001",
+        "category" : "Government ID",
+        "reason" : "Business Number / tax ID — government/business identifier to redact."
+      }, {
+        "page" : 5,
+        "text" : "Employee: Margaret Elisabeth Thornbury-Watson",
+        "category" : "Name",
+        "reason" : "Employee full name — PII to redact."
+      }, {
+        "page" : 5,
+        "text" : "SIN: 847-291-036",
+        "category" : "Government ID",
+        "reason" : "Social Insurance Number (SIN) — government ID to redact."
+      }, {
+        "page" : 5,
+        "text" : "Address: 2934 Cypress Crescent, North Vancouver, BC V7R 2T8",
+        "category" : "Address",
+        "reason" : "Employee street address (street and number) — PII to redact."
+      }, {
+        "page" : 5,
+        "text" : "EXECUTED as of March 15, 2025.",
+        "category" : "Date",
+        "reason" : "Execution date of agreement — redact all dates."
+      }, {
+        "page" : 5,
+        "text" : "Employer: Robert Chen, CHRO",
+        "category" : "Name",
+        "reason" : "Employer representative full name — PII to redact."
+      }, {
+        "page" : 5,
+        "text" : "Employee: Margaret Elisabeth Thornbury-Watson\nDate: March 15, 2025",
+        "category" : "Name/Date",
+        "reason" : "Employee name and signature date — full name (PII) and date to redact."
+      } ]
+    },
+    "doc" : null,
+    "all-targets" : null,
+    "doc-survey" : null
+  },
+  "git_sha" : "c3c5be5"
+}

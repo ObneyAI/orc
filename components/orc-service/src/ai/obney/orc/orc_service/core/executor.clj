@@ -458,7 +458,7 @@
 ;; AI Execution
 ;; =============================================================================
 
-(defn- get-provider-with-model
+(defn get-provider-with-model
   "Get or create a provider config with the specified model.
 
    litellm-clj's router ignores :model in request options when using a registered

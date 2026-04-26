@@ -1,0 +1,92 @@
+{
+  "run_idx" : 3,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "a35050c1-7b48-4c21-8e7f-349eca3a654c",
+    "sheet_id" : "7bf421da-8817-57bb-bd64-0582788faa1f",
+    "status" : "success",
+    "event_count" : 5
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-103243__03",
+  "duration_seconds" : 38.4,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 3209,
+      "output" : 250
+    },
+    "sub" : {
+      "input" : 703,
+      "output" : 2565
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 3
+  },
+  "cost" : {
+    "root_lm" : 0.00651125,
+    "sub_lm" : 0.00530575,
+    "total" : 0.011817,
+    "per_page" : 2.626E-4
+  },
+  "structured" : {
+    "contracts" : null,
+    "doc-summaries" : null,
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "Comparison could not be performed. Both input documents failed processing: attempts to extract page counts and document text returned errors indicating that the PDF-processing routines expected a key named \"path\" but received a key named \"file\". No sections or text were extracted from either document, so no section-level or content comparisons are possible. Suggested next steps: (1) provide valid PDF inputs or ensure the ingestion pipeline supplies the expected \"path\" key for each file, (2) re-run the extraction to produce page counts and document text, and (3) once text is available, re-run this comparison. If you want, I can also attempt a comparison if you paste the documents' text here.",
+      "section-diffs" : [ ],
+      "key-differences" : [ {
+        "doc_index" : 0,
+        "path" : "/sandbox/input/doc1.pdf",
+        "comparable" : false,
+        "issues" : [ {
+          "field" : "pages",
+          "error" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"
+        }, {
+          "field" : "text",
+          "error" : "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"
+        } ]
+      }, {
+        "doc_index" : 1,
+        "path" : "/sandbox/input/doc2.pdf",
+        "comparable" : false,
+        "issues" : [ {
+          "field" : "pages",
+          "error" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]"
+        }, {
+          "field" : "text",
+          "error" : "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]"
+        } ]
+      } ],
+      "summary" : "Both documents failed PDF/text extraction due to missing/incorrect key usage (processor expected \"path\" but received \"file\"). No content could be compared. Provide valid inputs or correct the ingestion keys and re-run for a full comparison."
+    },
+    "contract-paths" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ]
+  },
+  "git_sha" : "c3c5be5"
+}

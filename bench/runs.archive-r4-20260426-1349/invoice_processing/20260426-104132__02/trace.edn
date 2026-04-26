@@ -1,0 +1,1420 @@
+[{:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :execution-snapshot
+  {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+   :sheet-name "invoice-processing-pipeline",
+   :nodes-by-id
+   {#uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "main",
+     :children-ids
+     [#uuid "305994f8-738d-5951-8a3e-9c7d453952c7"
+      #uuid "d8bff538-5749-5372-9510-dc766c435118"
+      #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2"
+      #uuid "f082cefd-1141-589e-95ec-12053b01af66"],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :sequence,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :parent-id nil,
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "305994f8-738d-5951-8a3e-9c7d453952c7"
+    {:retry nil,
+     :writes [:pages],
+     :fn
+     "ai.obney.orc.examples.invoice-processing.pipeline/explode-pages",
+     :last-error nil,
+     :check nil,
+     :name "explode-pages",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "305994f8-738d-5951-8a3e-9c7d453952c7",
+     :parent-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:invoices],
+     :model nil},
+    #uuid "d8bff538-5749-5372-9510-dc766c435118"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "extract-page",
+     :children-ids [#uuid "516e7420-f42d-57fc-a427-71475e67f502"],
+     :tools nil,
+     :item-key :page,
+     :source-key :pages,
+     :type :map-each,
+     :decorators [],
+     :output-key :page-extracts,
+     :status :success,
+     :id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+     :parent-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor nil,
+     :max-concurrency 8,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "516e7420-f42d-57fc-a427-71475e67f502"
+    {:retry nil,
+     :writes [:page-extract],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "extract-invoice-page",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "516e7420-f42d-57fc-a427-71475e67f502",
+     :parent-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor :ai,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "Extract invoice fields from this single PDF page.\n\nIf this page is the start of an invoice, populate vendor-name, invoice-number, date, due-date, subtotal, tax, total, and line-items.\nIf this page is a continuation, populate line-items only and copy the vendor-name + invoice-number you can identify from the page header.\n\nStay grounded — only extract what's actually visible in the text.",
+     :success-policy nil,
+     :reads [:page],
+     :model "openai/gpt-5-mini"},
+    #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2"
+    {:retry nil,
+     :writes [:result],
+     :fn
+     "ai.obney.orc.examples.invoice-processing.pipeline/merge-invoices",
+     :last-error nil,
+     :check nil,
+     :name "merge-invoices",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2",
+     :parent-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:page-extracts],
+     :model nil},
+    #uuid "f082cefd-1141-589e-95ec-12053b01af66"
+    {:retry nil,
+     :writes [:workbook],
+     :fn
+     "ai.obney.orc.examples.invoice-processing.pipeline/build-workbook",
+     :last-error nil,
+     :check nil,
+     :name "build-workbook",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "f082cefd-1141-589e-95ec-12053b01af66",
+     :parent-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+     :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:result],
+     :model nil}},
+   :root-node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+   :blackboard-entries
+   {:invoices
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :invoices,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :pages
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :pages,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :page
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :page,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :page-extract
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :page-extract,
+     :schema
+     [:map
+      [:vendor-name
+       {:description
+        "Vendor/supplier on THIS page (\"\" if continuation page)"}
+       :string]
+      [:invoice-number
+       {:description
+        "Invoice number on THIS page (\"\" if continuation)"}
+       :string]
+      [:date
+       {:description
+        "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+       :string]
+      [:due-date
+       {:description
+        "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+       :string]
+      [:subtotal
+       {:description "Subtotal on THIS page (0.0 if continuation)"}
+       :double]
+      [:tax
+       {:description "Tax on THIS page (0.0 if continuation)"}
+       :double]
+      [:total
+       {:description "Total on THIS page (0.0 if continuation)"}
+       :double]
+      [:line-items
+       {:description "Line items visible on THIS page"}
+       [:vector
+        [:map
+         [:description
+          {:description "Description of the item or service"}
+          :string]
+         [:quantity {:description "Quantity of items"} :double]
+         [:unit-price
+          {:description "Price per unit in dollars"}
+          :double]
+         [:amount
+          {:description "Total amount for this line item in dollars"}
+          :double]]]]],
+     :value nil,
+     :version 0},
+    :page-extracts
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :page-extracts,
+     :schema
+     [:vector
+      [:map
+       [:vendor-name
+        {:description
+         "Vendor/supplier on THIS page (\"\" if continuation page)"}
+        :string]
+       [:invoice-number
+        {:description
+         "Invoice number on THIS page (\"\" if continuation)"}
+        :string]
+       [:date
+        {:description
+         "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+        :string]
+       [:due-date
+        {:description
+         "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+        :string]
+       [:subtotal
+        {:description "Subtotal on THIS page (0.0 if continuation)"}
+        :double]
+       [:tax
+        {:description "Tax on THIS page (0.0 if continuation)"}
+        :double]
+       [:total
+        {:description "Total on THIS page (0.0 if continuation)"}
+        :double]
+       [:line-items
+        {:description "Line items visible on THIS page"}
+        [:vector
+         [:map
+          [:description
+           {:description "Description of the item or service"}
+           :string]
+          [:quantity {:description "Quantity of items"} :double]
+          [:unit-price
+           {:description "Price per unit in dollars"}
+           :double]
+          [:amount
+           {:description "Total amount for this line item in dollars"}
+           :double]]]]]],
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :result,
+     :schema
+     [:map
+      [:invoices
+       {:description "Extracted data from each invoice"}
+       [:vector
+        [:map
+         [:vendor-name
+          {:description "Name of the vendor/supplier"}
+          :string]
+         [:invoice-number
+          {:description "Invoice number or reference"}
+          :string]
+         [:date
+          {:description "Invoice date in ISO format (YYYY-MM-DD)"}
+          :string]
+         [:due-date
+          {:description "Payment due date in ISO format (YYYY-MM-DD)"}
+          :string]
+         [:subtotal
+          {:description "Subtotal before tax and discounts"}
+          :double]
+         [:tax {:description "Tax amount in dollars"} :double]
+         [:total {:description "Total amount due in dollars"} :double]
+         [:line-items
+          {:description "Individual line items from the invoice"}
+          [:vector
+           [:map
+            [:description
+             {:description "Description of the item or service"}
+             :string]
+            [:quantity {:description "Quantity of items"} :double]
+            [:unit-price
+             {:description "Price per unit in dollars"}
+             :double]
+            [:amount
+             {:description
+              "Total amount for this line item in dollars"}
+             :double]]]]]]]
+      [:total-amount
+       {:description "Combined total across all invoices in dollars"}
+       :double]
+      [:summary
+       {:description "Brief summary of the invoices processed"}
+       :string]],
+     :value nil,
+     :version 0},
+    :workbook
+    {:sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+     :key :workbook,
+     :schema [:string {:field-type :file}],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:32.532410-05:00",
+  :inputs
+  {:invoices
+   ["/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf"
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca73-fdf4-70e6-847b-b1920465e435"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:32.609117-05:00",
+  :inputs {},
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca73-fe41-7067-b1f6-eeb19a5ec371"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "305994f8-738d-5951-8a3e-9c7d453952c7"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:32.865355-05:00",
+  :inputs
+  {:invoices
+   ["/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf"
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf"]},
+  :node-id #uuid "305994f8-738d-5951-8a3e-9c7d453952c7",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca73-ff41-702d-843d-bda93bbba5bd"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :key :pages,
+  :value
+  [{:path
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+    :n 0,
+    :text
+    "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n"}
+   {:path
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+    :n 0,
+    :text
+    "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n"}],
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.133083-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-004d-708e-8943-a6f236a75c74"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :writes
+  {:pages
+   [{:path
+     "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+     :n 0,
+     :text
+     "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n"}
+    {:path
+     "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+     :n 0,
+     :text
+     "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n"}]},
+  :duration-ms 14,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "305994f8-738d-5951-8a3e-9c7d453952c7"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.132375-05:00",
+  :status :success,
+  :node-id #uuid "305994f8-738d-5951-8a3e-9c7d453952c7",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-004c-705c-a05c-4eef2dedea14"}
+ {:child-index 1,
+  :tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.375419-05:00",
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-013f-7023-85c9-5734c88a5d03"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "d8bff538-5749-5372-9510-dc766c435118"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.375481-05:00",
+  :inputs {},
+  :node-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-013f-7024-96b6-eaeeaaf31c3a"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :item-index 0,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "d8bff538-5749-5372-9510-dc766c435118"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.633149-05:00",
+  :node-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+  :event/type :sheet/map-each-progress-updated,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-0241-7016-9927-e040195ebcdb",
+  :total-items 2}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :key :page,
+  :value
+  {:path
+   "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+   :n 0,
+   :text
+   "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n"},
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.633257-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-0241-7018-acda-4da912d2b586"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "516e7420-f42d-57fc-a427-71475e67f502"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.633299-05:00",
+  :inputs
+  {:page
+   {:path
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+    :n 0,
+    :text
+    "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n"},
+   :ai.obney.orc.orc-service.core.todo-processors/map-each-index 0,
+   :ai.obney.orc.orc-service.core.todo-processors/map-each-parent
+   #uuid "d8bff538-5749-5372-9510-dc766c435118"},
+  :node-id #uuid "516e7420-f42d-57fc-a427-71475e67f502",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-0241-7019-826f-789119ca69c7"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :key :page,
+  :value
+  {:path
+   "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+   :n 0,
+   :text
+   "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n"},
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.633339-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-0241-701a-9b43-6e7f1226bd4d"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "516e7420-f42d-57fc-a427-71475e67f502"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:33.633381-05:00",
+  :inputs
+  {:page
+   {:path
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+    :n 0,
+    :text
+    "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n"},
+   :ai.obney.orc.orc-service.core.todo-processors/map-each-index 1,
+   :ai.obney.orc.orc-service.core.todo-processors/map-each-parent
+   #uuid "d8bff538-5749-5372-9510-dc766c435118"},
+  :node-id #uuid "516e7420-f42d-57fc-a427-71475e67f502",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-0241-701c-9749-030088c0d3c6"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :key :page-extract,
+  :value
+  {:vendor-name "Acme Corporation",
+   :invoice-number "INV-2025-0042",
+   :date "2025-03-15",
+   :due-date "2025-04-14",
+   :subtotal 3774.97,
+   :tax 311.43,
+   :total 4086.4,
+   :line-items
+   [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+     :quantity 1.0,
+     :unit-price 2400.0,
+     :amount 2400.0}
+    {:description "Additional storage (500 GB)",
+     :quantity 2.0,
+     :unit-price 150.0,
+     :amount 300.0}
+    {:description "Premium support package",
+     :quantity 1.0,
+     :unit-price 800.0,
+     :amount 800.0}
+    {:description "API calls overage (50,000 calls)",
+     :quantity 1.0,
+     :unit-price 125.0,
+     :amount 125.0}
+    {:description "SSL certificate renewal",
+     :quantity 3.0,
+     :unit-price 49.99,
+     :amount 149.97}]},
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:45.031470-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-2ec7-7053-a574-55a64972b52f"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :writes
+  {:page-extract
+   {:vendor-name "Acme Corporation",
+    :invoice-number "INV-2025-0042",
+    :date "2025-03-15",
+    :due-date "2025-04-14",
+    :subtotal 3774.97,
+    :tax 311.43,
+    :total 4086.4,
+    :line-items
+    [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+      :quantity 1.0,
+      :unit-price 2400.0,
+      :amount 2400.0}
+     {:description "Additional storage (500 GB)",
+      :quantity 2.0,
+      :unit-price 150.0,
+      :amount 300.0}
+     {:description "Premium support package",
+      :quantity 1.0,
+      :unit-price 800.0,
+      :amount 800.0}
+     {:description "API calls overage (50,000 calls)",
+      :quantity 1.0,
+      :unit-price 125.0,
+      :amount 125.0}
+     {:description "SSL certificate renewal",
+      :quantity 3.0,
+      :unit-price 49.99,
+      :amount 149.97}]}},
+  :duration-ms 11138,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "516e7420-f42d-57fc-a427-71475e67f502"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:45.023053-05:00",
+  :usage
+  {:prompt-tokens 772, :completion-tokens 969, :total-tokens 1741},
+  :inputs
+  #:ai.obney.orc.orc-service.core.todo-processors{:map-each-index 0,
+                                                  :map-each-parent
+                                                  #uuid "d8bff538-5749-5372-9510-dc766c435118"},
+  :status :success,
+  :node-id #uuid "516e7420-f42d-57fc-a427-71475e67f502",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-2ebe-707e-919e-252d4004509f",
+  :model "openai/gpt-5-mini-2025-08-07"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :item-index 1,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "d8bff538-5749-5372-9510-dc766c435118"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:45.046018-05:00",
+  :node-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+  :event/type :sheet/map-each-progress-updated,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-2ed6-70f1-8997-86c375928cc1",
+  :total-items 2}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :key :page-extract,
+  :value
+  {:vendor-name "GlobalTech Solutions Ltd.",
+   :invoice-number "GT-10587",
+   :date "2025-02-28",
+   :due-date "2025-03-30",
+   :subtotal 31000.0,
+   :tax 2817.9,
+   :total 30717.9,
+   :line-items
+   [{:description "Software license - Enterprise (annual)",
+     :quantity 1.0,
+     :unit-price 12000.0,
+     :amount 12000.0}
+    {:description "Implementation consulting (40 hrs)",
+     :quantity 40.0,
+     :unit-price 175.0,
+     :amount 7000.0}
+    {:description "Data migration service",
+     :quantity 1.0,
+     :unit-price 3500.0,
+     :amount 3500.0}
+    {:description "User training sessions (8 hrs)",
+     :quantity 8.0,
+     :unit-price 200.0,
+     :amount 1600.0}
+    {:description "Priority support add-on (annual)",
+     :quantity 1.0,
+     :unit-price 2400.0,
+     :amount 2400.0}
+    {:description "Custom integration development",
+     :quantity 1.0,
+     :unit-price 4500.0,
+     :amount 4500.0}]},
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:59.333288-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-66a5-7010-ae1c-dade5659ad85"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :writes
+  {:page-extract
+   {:vendor-name "GlobalTech Solutions Ltd.",
+    :invoice-number "GT-10587",
+    :date "2025-02-28",
+    :due-date "2025-03-30",
+    :subtotal 31000.0,
+    :tax 2817.9,
+    :total 30717.9,
+    :line-items
+    [{:description "Software license - Enterprise (annual)",
+      :quantity 1.0,
+      :unit-price 12000.0,
+      :amount 12000.0}
+     {:description "Implementation consulting (40 hrs)",
+      :quantity 40.0,
+      :unit-price 175.0,
+      :amount 7000.0}
+     {:description "Data migration service",
+      :quantity 1.0,
+      :unit-price 3500.0,
+      :amount 3500.0}
+     {:description "User training sessions (8 hrs)",
+      :quantity 8.0,
+      :unit-price 200.0,
+      :amount 1600.0}
+     {:description "Priority support add-on (annual)",
+      :quantity 1.0,
+      :unit-price 2400.0,
+      :amount 2400.0}
+     {:description "Custom integration development",
+      :quantity 1.0,
+      :unit-price 4500.0,
+      :amount 4500.0}]}},
+  :duration-ms 25445,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "516e7420-f42d-57fc-a427-71475e67f502"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:59.331171-05:00",
+  :usage
+  {:prompt-tokens 804, :completion-tokens 1689, :total-tokens 2493},
+  :inputs
+  #:ai.obney.orc.orc-service.core.todo-processors{:map-each-index 1,
+                                                  :map-each-parent
+                                                  #uuid "d8bff538-5749-5372-9510-dc766c435118"},
+  :status :success,
+  :node-id #uuid "516e7420-f42d-57fc-a427-71475e67f502",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-66a3-70fe-90f1-b49a32a68ed8",
+  :model "openai/gpt-5-mini-2025-08-07"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :item-index 2,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "d8bff538-5749-5372-9510-dc766c435118"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:59.549637-05:00",
+  :node-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+  :event/type :sheet/map-each-progress-updated,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-677d-70d5-87e0-dd0fba9ddfb4",
+  :total-items 2}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :key :page-extracts,
+  :value
+  [{:path
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+    :n 0,
+    :text
+    "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n",
+    :page-extract
+    {:vendor-name "Acme Corporation",
+     :invoice-number "INV-2025-0042",
+     :date "2025-03-15",
+     :due-date "2025-04-14",
+     :subtotal 3774.97,
+     :tax 311.43,
+     :total 4086.4,
+     :line-items
+     [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+       :quantity 1.0,
+       :unit-price 2400.0,
+       :amount 2400.0}
+      {:description "Additional storage (500 GB)",
+       :quantity 2.0,
+       :unit-price 150.0,
+       :amount 300.0}
+      {:description "Premium support package",
+       :quantity 1.0,
+       :unit-price 800.0,
+       :amount 800.0}
+      {:description "API calls overage (50,000 calls)",
+       :quantity 1.0,
+       :unit-price 125.0,
+       :amount 125.0}
+      {:description "SSL certificate renewal",
+       :quantity 3.0,
+       :unit-price 49.99,
+       :amount 149.97}]}}
+   {:path
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+    :n 0,
+    :text
+    "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n",
+    :page-extract
+    {:vendor-name "GlobalTech Solutions Ltd.",
+     :invoice-number "GT-10587",
+     :date "2025-02-28",
+     :due-date "2025-03-30",
+     :subtotal 31000.0,
+     :tax 2817.9,
+     :total 30717.9,
+     :line-items
+     [{:description "Software license - Enterprise (annual)",
+       :quantity 1.0,
+       :unit-price 12000.0,
+       :amount 12000.0}
+      {:description "Implementation consulting (40 hrs)",
+       :quantity 40.0,
+       :unit-price 175.0,
+       :amount 7000.0}
+      {:description "Data migration service",
+       :quantity 1.0,
+       :unit-price 3500.0,
+       :amount 3500.0}
+      {:description "User training sessions (8 hrs)",
+       :quantity 8.0,
+       :unit-price 200.0,
+       :amount 1600.0}
+      {:description "Priority support add-on (annual)",
+       :quantity 1.0,
+       :unit-price 2400.0,
+       :amount 2400.0}
+      {:description "Custom integration development",
+       :quantity 1.0,
+       :unit-price 4500.0,
+       :amount 4500.0}]}}],
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:59.549693-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-677d-70d6-a2f9-e0e33cc395ed"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "d8bff538-5749-5372-9510-dc766c435118"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:59.549719-05:00",
+  :status :success,
+  :node-id #uuid "d8bff538-5749-5372-9510-dc766c435118",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-677d-70d7-8b3c-ac73f64cac3c"}
+ {:child-index 2,
+  :tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:59.809327-05:00",
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-6881-7022-82d7-b78a42c88789"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:41:59.809380-05:00",
+  :inputs
+  {:page-extracts
+   [{:path
+     "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+     :n 0,
+     :text
+     "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n",
+     :page-extract
+     {:date "2025-03-15",
+      :subtotal 3774.97,
+      :tax 311.43,
+      :total 4086.4,
+      :due-date "2025-04-14",
+      :line-items
+      [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Additional storage (500 GB)",
+        :quantity 2.0,
+        :unit-price 150.0,
+        :amount 300.0}
+       {:description "Premium support package",
+        :quantity 1.0,
+        :unit-price 800.0,
+        :amount 800.0}
+       {:description "API calls overage (50,000 calls)",
+        :quantity 1.0,
+        :unit-price 125.0,
+        :amount 125.0}
+       {:description "SSL certificate renewal",
+        :quantity 3.0,
+        :unit-price 49.99,
+        :amount 149.97}],
+      :vendor-name "Acme Corporation",
+      :invoice-number "INV-2025-0042"}}
+    {:path
+     "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+     :n 0,
+     :text
+     "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n",
+     :page-extract
+     {:date "2025-02-28",
+      :subtotal 31000.0,
+      :tax 2817.9,
+      :total 30717.9,
+      :due-date "2025-03-30",
+      :line-items
+      [{:description "Software license - Enterprise (annual)",
+        :quantity 1.0,
+        :unit-price 12000.0,
+        :amount 12000.0}
+       {:description "Implementation consulting (40 hrs)",
+        :quantity 40.0,
+        :unit-price 175.0,
+        :amount 7000.0}
+       {:description "Data migration service",
+        :quantity 1.0,
+        :unit-price 3500.0,
+        :amount 3500.0}
+       {:description "User training sessions (8 hrs)",
+        :quantity 8.0,
+        :unit-price 200.0,
+        :amount 1600.0}
+       {:description "Priority support add-on (annual)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Custom integration development",
+        :quantity 1.0,
+        :unit-price 4500.0,
+        :amount 4500.0}],
+      :vendor-name "GlobalTech Solutions Ltd.",
+      :invoice-number "GT-10587"}}]},
+  :node-id #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-6881-7023-887d-3ed659006702"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :key :result,
+  :value
+  {:invoices
+   [{:vendor-name "Acme Corporation",
+     :invoice-number "INV-2025-0042",
+     :date "2025-03-15",
+     :due-date "2025-04-14",
+     :subtotal 3774.97,
+     :tax 311.43,
+     :total 4086.4,
+     :line-items
+     [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+       :quantity 1.0,
+       :unit-price 2400.0,
+       :amount 2400.0}
+      {:description "Additional storage (500 GB)",
+       :quantity 2.0,
+       :unit-price 150.0,
+       :amount 300.0}
+      {:description "Premium support package",
+       :quantity 1.0,
+       :unit-price 800.0,
+       :amount 800.0}
+      {:description "API calls overage (50,000 calls)",
+       :quantity 1.0,
+       :unit-price 125.0,
+       :amount 125.0}
+      {:description "SSL certificate renewal",
+       :quantity 3.0,
+       :unit-price 49.99,
+       :amount 149.97}]}
+    {:vendor-name "GlobalTech Solutions Ltd.",
+     :invoice-number "GT-10587",
+     :date "2025-02-28",
+     :due-date "2025-03-30",
+     :subtotal 31000.0,
+     :tax 2817.9,
+     :total 30717.9,
+     :line-items
+     [{:description "Software license - Enterprise (annual)",
+       :quantity 1.0,
+       :unit-price 12000.0,
+       :amount 12000.0}
+      {:description "Implementation consulting (40 hrs)",
+       :quantity 40.0,
+       :unit-price 175.0,
+       :amount 7000.0}
+      {:description "Data migration service",
+       :quantity 1.0,
+       :unit-price 3500.0,
+       :amount 3500.0}
+      {:description "User training sessions (8 hrs)",
+       :quantity 8.0,
+       :unit-price 200.0,
+       :amount 1600.0}
+      {:description "Priority support add-on (annual)",
+       :quantity 1.0,
+       :unit-price 2400.0,
+       :amount 2400.0}
+      {:description "Custom integration development",
+       :quantity 1.0,
+       :unit-price 4500.0,
+       :amount 4500.0}]}],
+   :total-amount 34804.3,
+   :summary "Processed 2 invoices across 2 pages."},
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:42:00.059838-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-697b-7092-b951-3e0fc6a63284"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :writes
+  {:result
+   {:invoices
+    [{:vendor-name "Acme Corporation",
+      :invoice-number "INV-2025-0042",
+      :date "2025-03-15",
+      :due-date "2025-04-14",
+      :subtotal 3774.97,
+      :tax 311.43,
+      :total 4086.4,
+      :line-items
+      [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Additional storage (500 GB)",
+        :quantity 2.0,
+        :unit-price 150.0,
+        :amount 300.0}
+       {:description "Premium support package",
+        :quantity 1.0,
+        :unit-price 800.0,
+        :amount 800.0}
+       {:description "API calls overage (50,000 calls)",
+        :quantity 1.0,
+        :unit-price 125.0,
+        :amount 125.0}
+       {:description "SSL certificate renewal",
+        :quantity 3.0,
+        :unit-price 49.99,
+        :amount 149.97}]}
+     {:vendor-name "GlobalTech Solutions Ltd.",
+      :invoice-number "GT-10587",
+      :date "2025-02-28",
+      :due-date "2025-03-30",
+      :subtotal 31000.0,
+      :tax 2817.9,
+      :total 30717.9,
+      :line-items
+      [{:description "Software license - Enterprise (annual)",
+        :quantity 1.0,
+        :unit-price 12000.0,
+        :amount 12000.0}
+       {:description "Implementation consulting (40 hrs)",
+        :quantity 40.0,
+        :unit-price 175.0,
+        :amount 7000.0}
+       {:description "Data migration service",
+        :quantity 1.0,
+        :unit-price 3500.0,
+        :amount 3500.0}
+       {:description "User training sessions (8 hrs)",
+        :quantity 8.0,
+        :unit-price 200.0,
+        :amount 1600.0}
+       {:description "Priority support add-on (annual)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Custom integration development",
+        :quantity 1.0,
+        :unit-price 4500.0,
+        :amount 4500.0}]}],
+    :total-amount 34804.3,
+    :summary "Processed 2 invoices across 2 pages."}},
+  :duration-ms 0,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:42:00.058891-05:00",
+  :status :success,
+  :node-id #uuid "1d55a0f8-1de8-58b6-bebc-221b070154d2",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-697a-7028-8bfd-9332a8aaa28b"}
+ {:child-index 3,
+  :tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:42:00.304817-05:00",
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-6a70-701f-ab3d-4eb3afa83ddf"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "f082cefd-1141-589e-95ec-12053b01af66"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:42:00.304870-05:00",
+  :inputs
+  {:result
+   {:invoices
+    [{:date "2025-03-15",
+      :subtotal 3774.97,
+      :tax 311.43,
+      :total 4086.4,
+      :due-date "2025-04-14",
+      :line-items
+      [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Additional storage (500 GB)",
+        :quantity 2.0,
+        :unit-price 150.0,
+        :amount 300.0}
+       {:description "Premium support package",
+        :quantity 1.0,
+        :unit-price 800.0,
+        :amount 800.0}
+       {:description "API calls overage (50,000 calls)",
+        :quantity 1.0,
+        :unit-price 125.0,
+        :amount 125.0}
+       {:description "SSL certificate renewal",
+        :quantity 3.0,
+        :unit-price 49.99,
+        :amount 149.97}],
+      :vendor-name "Acme Corporation",
+      :invoice-number "INV-2025-0042"}
+     {:date "2025-02-28",
+      :subtotal 31000.0,
+      :tax 2817.9,
+      :total 30717.9,
+      :due-date "2025-03-30",
+      :line-items
+      [{:description "Software license - Enterprise (annual)",
+        :quantity 1.0,
+        :unit-price 12000.0,
+        :amount 12000.0}
+       {:description "Implementation consulting (40 hrs)",
+        :quantity 40.0,
+        :unit-price 175.0,
+        :amount 7000.0}
+       {:description "Data migration service",
+        :quantity 1.0,
+        :unit-price 3500.0,
+        :amount 3500.0}
+       {:description "User training sessions (8 hrs)",
+        :quantity 8.0,
+        :unit-price 200.0,
+        :amount 1600.0}
+       {:description "Priority support add-on (annual)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Custom integration development",
+        :quantity 1.0,
+        :unit-price 4500.0,
+        :amount 4500.0}],
+      :vendor-name "GlobalTech Solutions Ltd.",
+      :invoice-number "GT-10587"}],
+    :total-amount 34804.3,
+    :summary "Processed 2 invoices across 2 pages."}},
+  :node-id #uuid "f082cefd-1141-589e-95ec-12053b01af66",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-6a70-7020-b7bb-2599975e2fde"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :key :workbook,
+  :value
+  "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/invoice-extraction-1777218120560.xlsx",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:42:00.618963-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-6baa-70a8-941c-97790539e62e"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :writes
+  {:workbook
+   "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/invoice-extraction-1777218120560.xlsx"},
+  :duration-ms 57,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:node #uuid "f082cefd-1141-589e-95ec-12053b01af66"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:42:00.618256-05:00",
+  :status :success,
+  :node-id #uuid "f082cefd-1141-589e-95ec-12053b01af66",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-6baa-70a7-8e38-dd4d4f5973fa"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]
+    [:node #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:42:00.809720-05:00",
+  :status :success,
+  :node-id #uuid "21a60a33-9ec4-5f15-9485-ec1ce3fdb5a8",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-6c69-707f-84da-451d342acb46"}
+ {:tick-id #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "b262b08b-ab3b-4fbc-aecc-ec15e45cfa15"]
+    [:sheet #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:42:01.078372-05:00",
+  :outputs
+  {:invoices
+   ["/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf"
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf"],
+   :pages
+   [{:path
+     "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+     :n 0,
+     :text
+     "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n"}
+    {:path
+     "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+     :n 0,
+     :text
+     "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n"}],
+   :page
+   {:path
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+    :n 0,
+    :text
+    "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n"},
+   :page-extract
+   {:date "2025-02-28",
+    :subtotal 31000.0,
+    :tax 2817.9,
+    :total 30717.9,
+    :due-date "2025-03-30",
+    :line-items
+    [{:description "Software license - Enterprise (annual)",
+      :quantity 1.0,
+      :unit-price 12000.0,
+      :amount 12000.0}
+     {:description "Implementation consulting (40 hrs)",
+      :quantity 40.0,
+      :unit-price 175.0,
+      :amount 7000.0}
+     {:description "Data migration service",
+      :quantity 1.0,
+      :unit-price 3500.0,
+      :amount 3500.0}
+     {:description "User training sessions (8 hrs)",
+      :quantity 8.0,
+      :unit-price 200.0,
+      :amount 1600.0}
+     {:description "Priority support add-on (annual)",
+      :quantity 1.0,
+      :unit-price 2400.0,
+      :amount 2400.0}
+     {:description "Custom integration development",
+      :quantity 1.0,
+      :unit-price 4500.0,
+      :amount 4500.0}],
+    :vendor-name "GlobalTech Solutions Ltd.",
+    :invoice-number "GT-10587"},
+   :page-extracts
+   [{:path
+     "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+     :n 0,
+     :text
+     "INVOICE\nAcme Corporation\n123 Industrial Blvd, Suite 400\nAustin, TX 78701\nPhone: (512) 555-0100 | Email: billing@acmecorp.com\nInvoice #: INV-2025-0042\nDate: 2025-03-15\nDue Date: 2025-04-14\nPO #: PO-88712\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Sarah Johnson, Procurement\nDescription Qty Unit Price Amount\nCloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00\nAdditional storage (500 GB) 2 $150.00 $300.00\nPremium support package 1 $800.00 $800.00\nAPI calls overage (50,000 calls) 1 $125.00 $125.00\nSSL certificate renewal 3 $49.99 $149.97\nSubtotal: $3,774.97\nTax (8.25%): $311.43\nTotal Due: $4,086.40\nPayment Terms: Net 30\nBank: First National Bank | Account: 9876543210 | Routing: 021000021\nPlease include invoice number on all payments.\n",
+     :page-extract
+     {:date "2025-03-15",
+      :subtotal 3774.97,
+      :tax 311.43,
+      :total 4086.4,
+      :due-date "2025-04-14",
+      :line-items
+      [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Additional storage (500 GB)",
+        :quantity 2.0,
+        :unit-price 150.0,
+        :amount 300.0}
+       {:description "Premium support package",
+        :quantity 1.0,
+        :unit-price 800.0,
+        :amount 800.0}
+       {:description "API calls overage (50,000 calls)",
+        :quantity 1.0,
+        :unit-price 125.0,
+        :amount 125.0}
+       {:description "SSL certificate renewal",
+        :quantity 3.0,
+        :unit-price 49.99,
+        :amount 149.97}],
+      :vendor-name "Acme Corporation",
+      :invoice-number "INV-2025-0042"}}
+    {:path
+     "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+     :n 0,
+     :text
+     "INVOICE\nGlobalTech Solutions Ltd.\n789 Technology Park, Building C\nSeattle, WA 98101\nPhone: (206) 555-0234 | Email: accounts@globaltech.io\nInvoice #: GT-10587\nDate: 2025-02-28\nDue Date: 2025-03-30\nBill To:\nTechStart Inc.\n456 Innovation Drive\nSan Francisco, CA 94105\nAttn: Michael Chen, Engineering\nDescription Qty Unit Price Amount\nSoftware license - Enterprise (annual) 1 $12,000.00 $12,000.00\nImplementation consulting (40 hrs) 40 $175.00 $7,000.00\nData migration service 1 $3,500.00 $3,500.00\nUser training sessions (8 hrs) 8 $200.00 $1,600.00\nPriority support add-on (annual) 1 $2,400.00 $2,400.00\nCustom integration development 1 $4,500.00 $4,500.00\nSubtotal: $31,000.00\nDiscount (10%): -$3,100.00\nTax (10.1%): $2,817.90\nTotal Due: $30,717.90\nPayment Terms: Net 30 | Late fee: 1.5% per month\nWire Transfer: Chase Bank | Account: 1122334455 | Routing: 325070760\n",
+     :page-extract
+     {:date "2025-02-28",
+      :subtotal 31000.0,
+      :tax 2817.9,
+      :total 30717.9,
+      :due-date "2025-03-30",
+      :line-items
+      [{:description "Software license - Enterprise (annual)",
+        :quantity 1.0,
+        :unit-price 12000.0,
+        :amount 12000.0}
+       {:description "Implementation consulting (40 hrs)",
+        :quantity 40.0,
+        :unit-price 175.0,
+        :amount 7000.0}
+       {:description "Data migration service",
+        :quantity 1.0,
+        :unit-price 3500.0,
+        :amount 3500.0}
+       {:description "User training sessions (8 hrs)",
+        :quantity 8.0,
+        :unit-price 200.0,
+        :amount 1600.0}
+       {:description "Priority support add-on (annual)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Custom integration development",
+        :quantity 1.0,
+        :unit-price 4500.0,
+        :amount 4500.0}],
+      :vendor-name "GlobalTech Solutions Ltd.",
+      :invoice-number "GT-10587"}}],
+   :result
+   {:invoices
+    [{:date "2025-03-15",
+      :subtotal 3774.97,
+      :tax 311.43,
+      :total 4086.4,
+      :due-date "2025-04-14",
+      :line-items
+      [{:description "Cloud hosting - Standard Plan (Mar 2025)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Additional storage (500 GB)",
+        :quantity 2.0,
+        :unit-price 150.0,
+        :amount 300.0}
+       {:description "Premium support package",
+        :quantity 1.0,
+        :unit-price 800.0,
+        :amount 800.0}
+       {:description "API calls overage (50,000 calls)",
+        :quantity 1.0,
+        :unit-price 125.0,
+        :amount 125.0}
+       {:description "SSL certificate renewal",
+        :quantity 3.0,
+        :unit-price 49.99,
+        :amount 149.97}],
+      :vendor-name "Acme Corporation",
+      :invoice-number "INV-2025-0042"}
+     {:date "2025-02-28",
+      :subtotal 31000.0,
+      :tax 2817.9,
+      :total 30717.9,
+      :due-date "2025-03-30",
+      :line-items
+      [{:description "Software license - Enterprise (annual)",
+        :quantity 1.0,
+        :unit-price 12000.0,
+        :amount 12000.0}
+       {:description "Implementation consulting (40 hrs)",
+        :quantity 40.0,
+        :unit-price 175.0,
+        :amount 7000.0}
+       {:description "Data migration service",
+        :quantity 1.0,
+        :unit-price 3500.0,
+        :amount 3500.0}
+       {:description "User training sessions (8 hrs)",
+        :quantity 8.0,
+        :unit-price 200.0,
+        :amount 1600.0}
+       {:description "Priority support add-on (annual)",
+        :quantity 1.0,
+        :unit-price 2400.0,
+        :amount 2400.0}
+       {:description "Custom integration development",
+        :quantity 1.0,
+        :unit-price 4500.0,
+        :amount 4500.0}],
+      :vendor-name "GlobalTech Solutions Ltd.",
+      :invoice-number "GT-10587"}],
+    :total-amount 34804.3,
+    :summary "Processed 2 invoices across 2 pages."},
+   :workbook
+   "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/invoice-extraction-1777218120560.xlsx"},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "07bd7046-bfa8-5ee3-9773-1d0891e80fea",
+  :event/id #uuid "019dca74-6d76-70a9-ae8f-3db0906b17a0"}]

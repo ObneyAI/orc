@@ -1,0 +1,70 @@
+{
+  "run_idx" : 1,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "6c2e4f1b-dc06-46ca-93ea-e413d9845154",
+    "sheet_id" : "0a900186-b6cb-5fbc-a632-7de400289bc0",
+    "status" : "success",
+    "event_count" : 11
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-102251__01",
+  "duration_seconds" : 23.405,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 413,
+      "output" : 1161
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.00242525,
+    "total" : 0.00242525,
+    "per_page" : 5.389444444444444E-5
+  },
+  "structured" : {
+    "contracts" : null,
+    "doc-summaries" : [ ],
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "# Contract Comparison Report — No Documents Provided\n\nStatus: No contract texts were supplied. I cannot perform a line-by-line or section-by-section comparison without the source documents or summaries.\n\nWhat I attempted to do\n- I checked the input field `doc-summaries` and found it empty.\n- Because there is no content to analyze, I did not fabricate or assume any contractual language or differences.\n\nHow you can proceed (what to provide)\n1. Provide the two (or more) full contract texts, or\n2. Provide clearly-labeled extracts (e.g., \"Document A — Section 2.1: Term and Termination\") for each document, or\n3. Provide structured summaries keyed by section (JSON or plain text), with labels indicating which document each summary belongs to.\n\nMinimum useful inputs\n- Document A and Document B (preferably as plain text or PDF text extractions).\n- Or, at minimum, the following sections for both documents:\n  - Parties and definitions\n  - Scope of work / Services / Deliverables\n  - Term and termination (including notice requirements)\n  - Payment, fees, invoicing, and expenses\n  - Intellectual property ownership and licenses\n  - Confidentiality and data protection\n  - Limitation of liability and caps\n  - Indemnities\n  - Warranties and representations\n  - Assignment and subcontracting\n  - Governing law and dispute resolution\n  - Amendment process and signatures\n\nRecommended format for best results\n- Prefer plain text or structured JSON where each section is labeled.\n- If uploading PDFs, provide an extracted text copy (OCR if scanned).\n- If the contracts have different section numbering, include headings so I can align by heading rather than number.\n\nWhat I will produce once you supply documents\n- A full markdown comparison report highlighting key differences and risks.\n- A per-section diff array with:\n  - section-name\n  - document-a-text\n  - document-b-text\n  - difference-summary\n  - significance (major/minor/identical)\n- A short list of high-level key differences with impacts and recommended actions.\n- An executive summary with the most important items to negotiate or review.\n\nGuidance on significance classification (how I’ll decide)\n- Major: Material differences that affect obligations, risk allocation, liability, payment, IP, termination rights, or compliance.\n- Minor: Editorial differences, clarifications, thresholds, or timing issues that do not fundamentally reallocate risk.\n- Identical: Substantially the same language or meaning.\n\nNext step\n- Paste the two contract texts or upload the section summaries and I will run a detailed comparison.\n\nPrepared to proceed as soon as you provide the documents.",
+      "section-diffs" : [ ],
+      "key-differences" : [ ],
+      "summary" : "No contracts were provided to compare. Please supply the full texts or labeled section summaries for Document A and Document B (see the \"How you can proceed\" section above). Once I have the documents, I will produce a detailed markdown report, per-section diffs with significance (major/minor/identical), a list of key differences with impact analysis, and an executive summary."
+    },
+    "contract-paths" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ]
+  },
+  "git_sha" : "c3c5be5"
+}

@@ -48,14 +48,25 @@
     :sheet/repl-researcher-config-set
     :sheet/delegate-config-set
     :sheet/node-execution-started
-    :sheet/node-execution-completed})
+    :sheet/node-execution-completed
+    ;; Snapshot-replacing events: revert and stash-restore carry the
+    ;; full sheet snapshot in their event body. The nodes projection
+    ;; rebuilds its partition state from that snapshot — without these,
+    ;; revert events are silently ignored and reads return stale node
+    ;; config (e.g. the wrong :fn or :instruction).
+    :sheet/draft-reverted
+    :sheet/stash-restored})
 
 (def blackboard-events
   "Events that affect blackboard read model"
   #{:sheet/key-declared
     :sheet/key-schema-updated
     :sheet/key-value-set
-    :sheet/key-deleted})
+    :sheet/key-deleted
+    ;; See node-events: snapshot-replacing events rebuild blackboard
+    ;; schema state from the snapshot body.
+    :sheet/draft-reverted
+    :sheet/stash-restored})
 
 (def judge-events
   "Events that affect judge read model"
@@ -200,7 +211,7 @@
   (reduce sheets* initial-state events))
 
 (defreadmodel :sheet sheets
-  {:events sheet-events :version 1}
+  {:events sheet-events :version 1 :l1-ttl-ms 0}
   [state event] (sheets* state event))
 
 ;; =============================================================================
@@ -403,6 +414,73 @@
   [state event]
   (assoc-in state [(:node-id event) :status] :running))
 
+;; ---------------------------------------------------------------------------
+;; Snapshot replacement (revert / stash-restore)
+;; ---------------------------------------------------------------------------
+
+(defn- snapshot-tree->node-records
+  "Walk a snapshot node tree and emit a seq of [node-id node-record] pairs
+   with :parent-id and :children-ids resolved from the tree shape. The
+   shape mirrors what the live :sheet/node-* event handlers produce, so
+   replacing partition state with this map is indistinguishable from
+   replaying the original create/configure event sequence."
+  [snapshot-node sheet-id parent-id]
+  (when snapshot-node
+    (let [node-id (:id snapshot-node)
+          children (or (:children snapshot-node) [])
+          children-ids (mapv :id children)
+          base {:id node-id
+                :sheet-id sheet-id
+                :type (:type snapshot-node)
+                :name (:name snapshot-node)
+                :parent-id parent-id
+                :children-ids children-ids
+                :status :idle
+                :instruction (:instruction snapshot-node)
+                :reads (or (:reads snapshot-node) [])
+                :writes (or (:writes snapshot-node) [])
+                :decorators []
+                :executor (:executor snapshot-node)
+                :model (:model snapshot-node)
+                :fn (:fn snapshot-node)
+                :tools (:tools snapshot-node)
+                :retry (:retry snapshot-node)
+                :check (:check snapshot-node)
+                :on-fail (:on-fail snapshot-node)
+                :success-policy (:success-policy snapshot-node)
+                :failure-policy (:failure-policy snapshot-node)
+                :source-key (:source-key snapshot-node)
+                :item-key (:item-key snapshot-node)
+                :output-key (:output-key snapshot-node)
+                :max-concurrency (:max-concurrency snapshot-node)
+                :mcp-tools (or (:mcp-tools snapshot-node) [])
+                :browser-tools (or (:browser-tools snapshot-node) [])
+                :max-iterations (:max-iterations snapshot-node)
+                :rlm (:rlm snapshot-node)
+                :context (:context snapshot-node)
+                :target-sheet-id (:target-sheet-id snapshot-node)
+                :timeout-ms (:timeout-ms snapshot-node)
+                :inherit-ontology? (:inherit-ontology? snapshot-node)
+                :judges (or (:judges snapshot-node) [])
+                :last-error nil}]
+      (cons [node-id base]
+            (mapcat #(snapshot-tree->node-records % sheet-id node-id) children)))))
+
+(defn- nodes-state-from-snapshot
+  "Replace partition state with the nodes derived from the snapshot tree.
+   Returns the new {node-id -> node-record} map for this partition."
+  [_state event]
+  (let [sheet-id (:sheet-id event)
+        snapshot (:snapshot event)
+        root (:nodes snapshot)]
+    (into {} (snapshot-tree->node-records root sheet-id nil))))
+
+(defmethod nodes* :sheet/draft-reverted
+  [state event] (nodes-state-from-snapshot state event))
+
+(defmethod nodes* :sheet/stash-restored
+  [state event] (nodes-state-from-snapshot state event))
+
 (defmethod nodes* :sheet/node-execution-completed
   [state event]
   (-> state
@@ -417,7 +495,10 @@
   (reduce nodes* initial-state events))
 
 (defreadmodel :sheet nodes
-  {:events node-events :version 1}
+  ;; Version 2: handlers added for :sheet/draft-reverted and
+  ;; :sheet/stash-restored so revert no longer silently leaves stale
+  ;; node config in the projection. See snapshot-tree->node-records.
+  {:events node-events :version 2 :l1-ttl-ms 0}
   [state event] (nodes* state event))
 
 ;; =============================================================================
@@ -451,6 +532,29 @@
   [state event]
   (dissoc state (:key event)))
 
+;; Snapshot replacement (revert / stash-restore). Same rationale as the
+;; nodes* handlers — without these, revert events are silently ignored
+;; and reads return stale schema state.
+(defn- blackboard-state-from-snapshot
+  [_state event]
+  (let [sheet-id (:sheet-id event)
+        snapshot (:snapshot event)
+        schema (:blackboard-schema snapshot)]
+    (reduce-kv (fn [acc k s]
+                 (assoc acc k {:sheet-id sheet-id
+                               :key k
+                               :schema s
+                               :value nil
+                               :version 0}))
+               {}
+               (or schema {}))))
+
+(defmethod blackboard* :sheet/draft-reverted
+  [state event] (blackboard-state-from-snapshot state event))
+
+(defmethod blackboard* :sheet/stash-restored
+  [state event] (blackboard-state-from-snapshot state event))
+
 (defmethod blackboard* :default [state _] state)
 
 (defn blackboard
@@ -459,9 +563,11 @@
   (reduce blackboard* (or initial-state {}) events))
 
 (defreadmodel :sheet blackboard
-  {:events blackboard-events :version 2
+  ;; Version 3: revert / stash-restore handlers added.
+  {:events blackboard-events :version 3
    :partition-fn :sheet-id
-   :entity-id-fn :key}
+   :entity-id-fn :key
+   :l1-ttl-ms 0}
   [state event] (blackboard* state event))
 
 ;; =============================================================================
@@ -490,7 +596,8 @@
 (defreadmodel :sheet judges
   {:events judge-events :version 2
    :partition-fn :sheet-id
-   :entity-id-fn :judge-name}
+   :entity-id-fn :judge-name
+   :l1-ttl-ms 0}
   [state event] (judges* state event))
 
 ;; =============================================================================
@@ -544,7 +651,8 @@
 (defreadmodel :sheet ticks
   {:events tick-events :version 2
    :partition-fn :sheet-id
-   :entity-id-fn :tick-id}
+   :entity-id-fn :tick-id
+   :l1-ttl-ms 0}
   [state event] (ticks* state event))
 
 ;; =============================================================================
@@ -576,7 +684,7 @@
   (reduce versions* (or initial-state {}) events))
 
 (defreadmodel :sheet versions
-  {:events version-events :version 1}
+  {:events version-events :version 1 :l1-ttl-ms 0}
   [state event] (versions* state event))
 
 ;; =============================================================================
@@ -616,7 +724,7 @@
   (reduce stashes* (or initial-state {}) events))
 
 (defreadmodel :sheet stashes
-  {:events version-events :version 1}
+  {:events version-events :version 1 :l1-ttl-ms 0}
   [state event] (stashes* state event))
 
 ;; =============================================================================
@@ -816,7 +924,8 @@
 (defreadmodel :sheet traces
   {:events trace-events :version 2
    :partition-fn :sheet-id
-   :entity-id-fn :trace-id}
+   :entity-id-fn :trace-id
+   :l1-ttl-ms 0}
   [state event] (traces* state event))
 
 ;; =============================================================================
@@ -935,7 +1044,8 @@
 (defreadmodel :sheet tick-execution-contexts
   {:events tick-execution-context-events :version 2
    :partition-fn :sheet-id
-   :entity-id-fn :tick-id}
+   :entity-id-fn :tick-id
+   :l1-ttl-ms 0}
   [state event] (tick-execution-contexts* state event))
 
 (defn get-tick-execution-context
@@ -1077,7 +1187,8 @@
 (defreadmodel :sheet in-progress-executions
   {:events in-progress-execution-events :version 2
    :partition-fn :sheet-id
-   :entity-id-fn :tick-id}
+   :entity-id-fn :tick-id
+   :l1-ttl-ms 0}
   [state event] (in-progress-executions* state event))
 
 ;; =============================================================================
@@ -1151,7 +1262,7 @@
   (reduce tree-metadata* initial-state events))
 
 (defreadmodel :sheet tree-metadata
-  {:events tree-metadata-events :version 1}
+  {:events tree-metadata-events :version 1 :l1-ttl-ms 0}
   [state event] (tree-metadata* state event))
 
 (defn get-tree-metadata
@@ -1227,7 +1338,8 @@
 (defreadmodel :sheet rolling-metrics
   {:events rolling-metrics-events :version 2
    :partition-fn :sheet-id
-   :entity-id-fn (fn [event] [(:sheet-id event) (:node-id event)])}
+   :entity-id-fn (fn [event] [(:sheet-id event) (:node-id event)])
+   :l1-ttl-ms 0}
   [state event] (rolling-metrics* state event))
 
 (defn calculate-trend

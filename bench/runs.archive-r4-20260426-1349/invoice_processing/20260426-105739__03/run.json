@@ -1,0 +1,148 @@
+{
+  "run_idx" : 3,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "074d858a-d371-442b-a2cf-f3358f5f8468",
+    "sheet_id" : "86120399-c9fa-5eb7-8024-f8cad8e56867",
+    "status" : "success",
+    "event_count" : 6
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "invoice_processing",
+  "run_id" : "20260426-105739__03",
+  "duration_seconds" : 62.227,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf",
+    "name" : "acme-invoice-2025-0042.pdf",
+    "size_bytes" : 9312,
+    "sha256" : "df17c9d692793665ccf71f4f3ec7469bda7aa20f9ab7bb0666429aa68d4dd15d",
+    "page_count" : 1
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf",
+    "name" : "globaltech-invoice-GT-10587.pdf",
+    "size_bytes" : 10064,
+    "sha256" : "90bd71a8a08d4da7153ee1aa19600899774d2c93bc3726d566a340c3d3d68f7d",
+    "page_count" : 1
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 2,
+  "outputs" : [ {
+    "path" : "outputs/invoice-extraction.xlsx",
+    "original-path" : "/tmp/invoice-extraction.xlsx",
+    "size_bytes" : 5244,
+    "sha256" : "4c37ed18ba604a35ac5d056f81cc78535ce1ac65f4d408e4e90e5d989f717bcb"
+  } ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 10365,
+      "output" : 1746
+    },
+    "sub" : {
+      "input" : 1330,
+      "output" : 3249
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 2
+  },
+  "cost" : {
+    "root_lm" : 0.03041625,
+    "sub_lm" : 0.006830500000000001,
+    "total" : 0.03724675,
+    "per_page" : 0.018623375
+  },
+  "structured" : {
+    "invoices" : [ "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf", "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf" ],
+    "pages" : null,
+    "page" : null,
+    "page-extract" : null,
+    "page-extracts" : null,
+    "result" : {
+      "invoices" : [ {
+        "date" : "2025-03-15",
+        "subtotal" : 3774.97,
+        "tax" : 311.43,
+        "total" : 4086.4,
+        "due-date" : "2025-04-14",
+        "line-items" : [ {
+          "description" : "Cloud hosting - Standard Plan (Mar 2025)",
+          "quantity" : 1.0,
+          "unit-price" : 2400.0,
+          "amount" : 2400.0
+        }, {
+          "description" : "Additional storage (500 GB)",
+          "quantity" : 2.0,
+          "unit-price" : 150.0,
+          "amount" : 300.0
+        }, {
+          "description" : "Premium support package",
+          "quantity" : 1.0,
+          "unit-price" : 800.0,
+          "amount" : 800.0
+        }, {
+          "description" : "API calls overage (50,000 calls)",
+          "quantity" : 1.0,
+          "unit-price" : 125.0,
+          "amount" : 125.0
+        }, {
+          "description" : "SSL certificate renewal",
+          "quantity" : 3.0,
+          "unit-price" : 49.99,
+          "amount" : 149.97
+        } ],
+        "vendor-name" : "Acme Corporation",
+        "invoice-number" : "INV-2025-0042"
+      }, {
+        "date" : "2025-02-28",
+        "subtotal" : 31000.0,
+        "tax" : 2817.9,
+        "total" : 30717.9,
+        "due-date" : "2025-03-30",
+        "line-items" : [ {
+          "description" : "Software license - Enterprise (annual)",
+          "quantity" : 1.0,
+          "unit-price" : 12000.0,
+          "amount" : 12000.0
+        }, {
+          "description" : "Implementation consulting (40 hrs)",
+          "quantity" : 40.0,
+          "unit-price" : 175.0,
+          "amount" : 7000.0
+        }, {
+          "description" : "Data migration service",
+          "quantity" : 1.0,
+          "unit-price" : 3500.0,
+          "amount" : 3500.0
+        }, {
+          "description" : "User training sessions (8 hrs)",
+          "quantity" : 8.0,
+          "unit-price" : 200.0,
+          "amount" : 1600.0
+        }, {
+          "description" : "Priority support add-on (annual)",
+          "quantity" : 1.0,
+          "unit-price" : 2400.0,
+          "amount" : 2400.0
+        }, {
+          "description" : "Custom integration development",
+          "quantity" : 1.0,
+          "unit-price" : 4500.0,
+          "amount" : 4500.0
+        } ],
+        "vendor-name" : "GlobalTech Solutions Ltd.",
+        "invoice-number" : "GT-10587"
+      } ],
+      "total-amount" : 34804.3,
+      "summary" : "Processed 2 invoices."
+    },
+    "workbook" : "run-orc/file"
+  },
+  "git_sha" : "c3c5be5"
+}

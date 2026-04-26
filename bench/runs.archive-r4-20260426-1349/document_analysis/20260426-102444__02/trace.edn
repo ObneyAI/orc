@@ -1,0 +1,520 @@
+[{:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :execution-snapshot
+  {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+   :sheet-name "document-analysis-pipeline",
+   :nodes-by-id
+   {#uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "main",
+     :children-ids
+     [#uuid "41bd366d-0182-5c18-8489-d73ac720f620"
+      #uuid "e33b0858-67ca-5382-80b6-b6117ee24827"
+      #uuid "7df71477-ace0-553b-84de-4ab65a09b538"
+      #uuid "765ab69c-2335-57aa-be20-9d6f22eb2305"],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :sequence,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+     :parent-id nil,
+     :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "41bd366d-0182-5c18-8489-d73ac720f620"
+    {:retry nil,
+     :writes [:document-meta],
+     :fn "ai.obney.orc.examples.document-analysis.pipeline/survey",
+     :last-error nil,
+     :check nil,
+     :name "survey",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "41bd366d-0182-5c18-8489-d73ac720f620",
+     :parent-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+     :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:documents],
+     :model nil},
+    #uuid "e33b0858-67ca-5382-80b6-b6117ee24827"
+    {:retry nil,
+     :writes [],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "summarize-each",
+     :children-ids [#uuid "8cc865c0-2593-50e7-8c22-2241ec19f63c"],
+     :tools nil,
+     :item-key :document,
+     :source-key :document-meta,
+     :type :map-each,
+     :decorators [],
+     :output-key :doc-summaries,
+     :status :success,
+     :id #uuid "e33b0858-67ca-5382-80b6-b6117ee24827",
+     :parent-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+     :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :executor nil,
+     :max-concurrency 3,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [],
+     :model nil},
+    #uuid "8cc865c0-2593-50e7-8c22-2241ec19f63c"
+    {:retry nil,
+     :writes [:doc-summary],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "summarize-doc",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "8cc865c0-2593-50e7-8c22-2241ec19f63c",
+     :parent-id #uuid "e33b0858-67ca-5382-80b6-b6117ee24827",
+     :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :executor :ai,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "Summarize this document for an analyst. Be concise and grounded.\n\nPull out: any deadlines or key dates, named entities (people / orgs / roles), and the main subject matter.\n\nDo NOT invent details that aren't in the text.",
+     :success-policy nil,
+     :reads [:document :criteria],
+     :model "openai/gpt-5-mini"},
+    #uuid "7df71477-ace0-553b-84de-4ab65a09b538"
+    {:retry nil,
+     :writes [:analysis],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "synthesize",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "7df71477-ace0-553b-84de-4ab65a09b538",
+     :parent-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+     :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :executor :ai,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "Combine per-document summaries into a single structured analysis.\n\nProduce three outputs:\n1. report — a clean markdown report following the criteria.\n2. key-dates — a list of {:name :date [:time] [:timezone]}.\n3. key-entities — a list of {:name [:role] [:contact]}.\n\nStay grounded in the per-document summaries; do not fabricate.",
+     :success-policy nil,
+     :reads [:doc-summaries :criteria],
+     :model "openai/gpt-5-mini"},
+    #uuid "765ab69c-2335-57aa-be20-9d6f22eb2305"
+    {:retry nil,
+     :writes [:docx-report],
+     :fn
+     "ai.obney.orc.examples.document-analysis.pipeline/render-docx",
+     :last-error nil,
+     :check nil,
+     :name "render-docx",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :type :leaf,
+     :decorators [],
+     :output-key nil,
+     :status :success,
+     :id #uuid "765ab69c-2335-57aa-be20-9d6f22eb2305",
+     :parent-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+     :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :executor :code,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction nil,
+     :success-policy nil,
+     :reads [:analysis],
+     :model nil}},
+   :root-node-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+   :blackboard-entries
+   {:documents
+    {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :key :documents,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :criteria
+    {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :key :criteria,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :document-meta
+    {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :key :document-meta,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :document
+    {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :key :document,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :key :doc-summary,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :key :doc-summaries,
+     :schema [:vector :string],
+     :value nil,
+     :version 0},
+    :analysis
+    {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :key :analysis,
+     :schema
+     [:map
+      [:report
+       {:description
+        "Full analysis as a well-formatted markdown report"}
+       :string]
+      [:key-dates
+       {:description "Important dates found in the documents"}
+       [:vector
+        [:map
+         [:name
+          {:description "e.g. 'Submission Deadline', 'Effective Date'"}
+          :string]
+         [:date {:description "ISO format date (YYYY-MM-DD)"} :string]
+         [:time
+          {:optional true, :description "24-hour HH:MM, e.g. 14:00"}
+          [:maybe :string]]
+         [:timezone
+          {:optional true, :description "e.g. EST, PST, UTC"}
+          [:maybe :string]]]]]
+      [:key-entities
+       {:description "Key people, organizations, or roles mentioned"}
+       [:vector
+        [:map
+         [:name
+          {:description "Name of the person, organization, or role"}
+          :string]
+         [:role
+          {:optional true,
+           :description "Role or relationship to the document"}
+          [:maybe :string]]
+         [:contact
+          {:optional true, :description "Contact info if available"}
+          [:maybe :string]]]]]],
+     :value nil,
+     :version 0},
+    :docx-report
+    {:sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+     :key :docx-report,
+     :schema [:string {:field-type :file}],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:44.981442-05:00",
+  :inputs
+  {:document-paths
+   ["/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf"],
+   :criteria
+   "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist."},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :options {:timeout-ms 300000, :store-trace? true},
+  :event/id #uuid "019dca64-9e35-705b-9d3e-d91e9dbbc8f1"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:45.195012-05:00",
+  :inputs {},
+  :node-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-9f0a-702a-8f33-e455a8fe4310"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "41bd366d-0182-5c18-8489-d73ac720f620"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:45.453070-05:00",
+  :inputs {:documents nil},
+  :node-id #uuid "41bd366d-0182-5c18-8489-d73ac720f620",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a00c-7091-a407-689174f36e1f"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :key :document-meta,
+  :value [],
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:45.716264-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a114-7009-acdc-cb6cd46dd078"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :writes {:document-meta []},
+  :duration-ms 0,
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "41bd366d-0182-5c18-8489-d73ac720f620"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:45.715297-05:00",
+  :status :success,
+  :node-id #uuid "41bd366d-0182-5c18-8489-d73ac720f620",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a113-7006-99be-5674af55d5f0"}
+ {:child-index 1,
+  :tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:45.980357-05:00",
+  :node-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a21c-7089-a050-acb2e7c5b8ea"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "e33b0858-67ca-5382-80b6-b6117ee24827"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:45.980490-05:00",
+  :inputs {},
+  :node-id #uuid "e33b0858-67ca-5382-80b6-b6117ee24827",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a21c-708a-9d14-8d8712adf281"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :key :doc-summaries,
+  :value [],
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:46.237526-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a31d-7095-959d-1329a6e3b156"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "e33b0858-67ca-5382-80b6-b6117ee24827"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:46.237644-05:00",
+  :status :success,
+  :node-id #uuid "e33b0858-67ca-5382-80b6-b6117ee24827",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a31d-7096-b956-5fff1973fc34"}
+ {:child-index 2,
+  :tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:46.245572-05:00",
+  :node-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a325-7027-9d03-0305ac1eb2a9"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "7df71477-ace0-553b-84de-4ab65a09b538"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:24:46.245596-05:00",
+  :inputs
+  {:doc-summaries [],
+   :criteria
+   "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist."},
+  :node-id #uuid "7df71477-ace0-553b-84de-4ab65a09b538",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-a325-7028-8fa8-5ef59b257b47"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :key :analysis,
+  :value
+  {:report
+   "# Briefing Report — Documents Received: None\n\nExecutive Summary\nThis briefing is based on the provided document summaries. No document summaries were supplied, so there is no substantive material to analyze. Consequently, there are no facts, decisions, deadlines, stakeholders, or financial terms to extract from source documents. This report therefore (a) records the absence of input materials, (b) states what would have been produced if documents were available, and (c) lists recommended next steps and the specific information required to produce a full briefing.\n\nKey Dates and Timeline\nNo dates were identified because no documents were supplied. If source documents are provided, the Key Dates section would list all deadlines, effective dates, meeting times, expiration dates, milestones, and any other chronological obligations in chronological order, with a short note if any timeline appears unusually tight.\n\nKey Entities and Stakeholders\nNo people, organizations, or roles were identified because no documents were supplied. A complete briefing would include, for each named entity:\n- name,\n- role or relationship to the matter,\n- relevance or decision authority,\n- contact information if available.\n\nFinancial Information\nNo financial information (fees, budgets, pricing, payment terms, or obligations) was available. If financial details were present, they would be summarized and, where multiple items exist, presented in a concise table: item | amount | due date | payer | payee | notes.\n\nRecommendations and Next Steps\nTo produce the requested comprehensive briefing, please provide the original documents or summaries. Specifically deliver any of the following that apply:\n1. Contracts, agreements, or MOU documents.\n2. Meeting minutes or agendas.\n3. Email threads that record decisions or deadlines.\n4. Budget spreadsheets, invoices, or payment schedules.\n5. A short list of known stakeholders and their contact details.\n\nChecklist of required metadata to include with documents (this accelerates accurate extraction):\n- Document title and date.\n- Authors and recipients (or distribution list).\n- Any explicit deadlines or effective dates, with timezones where relevant.\n- Monetary figures and currency.\n- Named parties and their roles.\n- Priority items or required actions.\n\nRisk Note\nBecause no source material was provided, risks cannot be assessed. The principal operational risk at this stage is proceeding without authoritative documents: decisions made on incomplete information may be invalid, create missed deadlines, or cause financial exposure.\n\nIf you supply the documents or summaries, I will:\n- extract all key facts, dates, stakeholders, and financial terms;\n- produce a chronological timeline and flag tight deadlines;\n- provide a stakeholder table with roles and contacts;\n- produce a concise financial summary table;\n- call out ambiguities, required clarifications, and recommended actions.",
+   :key-dates [],
+   :key-entities []},
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:25:03.636497-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-e714-707d-ac6f-46acc5ced3c1"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :writes
+  {:analysis
+   {:report
+    "# Briefing Report — Documents Received: None\n\nExecutive Summary\nThis briefing is based on the provided document summaries. No document summaries were supplied, so there is no substantive material to analyze. Consequently, there are no facts, decisions, deadlines, stakeholders, or financial terms to extract from source documents. This report therefore (a) records the absence of input materials, (b) states what would have been produced if documents were available, and (c) lists recommended next steps and the specific information required to produce a full briefing.\n\nKey Dates and Timeline\nNo dates were identified because no documents were supplied. If source documents are provided, the Key Dates section would list all deadlines, effective dates, meeting times, expiration dates, milestones, and any other chronological obligations in chronological order, with a short note if any timeline appears unusually tight.\n\nKey Entities and Stakeholders\nNo people, organizations, or roles were identified because no documents were supplied. A complete briefing would include, for each named entity:\n- name,\n- role or relationship to the matter,\n- relevance or decision authority,\n- contact information if available.\n\nFinancial Information\nNo financial information (fees, budgets, pricing, payment terms, or obligations) was available. If financial details were present, they would be summarized and, where multiple items exist, presented in a concise table: item | amount | due date | payer | payee | notes.\n\nRecommendations and Next Steps\nTo produce the requested comprehensive briefing, please provide the original documents or summaries. Specifically deliver any of the following that apply:\n1. Contracts, agreements, or MOU documents.\n2. Meeting minutes or agendas.\n3. Email threads that record decisions or deadlines.\n4. Budget spreadsheets, invoices, or payment schedules.\n5. A short list of known stakeholders and their contact details.\n\nChecklist of required metadata to include with documents (this accelerates accurate extraction):\n- Document title and date.\n- Authors and recipients (or distribution list).\n- Any explicit deadlines or effective dates, with timezones where relevant.\n- Monetary figures and currency.\n- Named parties and their roles.\n- Priority items or required actions.\n\nRisk Note\nBecause no source material was provided, risks cannot be assessed. The principal operational risk at this stage is proceeding without authoritative documents: decisions made on incomplete information may be invalid, create missed deadlines, or cause financial exposure.\n\nIf you supply the documents or summaries, I will:\n- extract all key facts, dates, stakeholders, and financial terms;\n- produce a chronological timeline and flag tight deadlines;\n- provide a stakeholder table with roles and contacts;\n- produce a concise financial summary table;\n- call out ambiguities, required clarifications, and recommended actions.",
+    :key-dates [],
+    :key-entities []}},
+  :duration-ms 17133,
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "7df71477-ace0-553b-84de-4ab65a09b538"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:25:03.633807-05:00",
+  :usage
+  {:prompt-tokens 664, :completion-tokens 1332, :total-tokens 1996},
+  :status :success,
+  :node-id #uuid "7df71477-ace0-553b-84de-4ab65a09b538",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-e711-70c0-999d-500ad1110245",
+  :model "openai/gpt-5-mini-2025-08-07"}
+ {:child-index 3,
+  :tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:25:03.679446-05:00",
+  :node-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+  :event/type :sheet/sequence-progress-updated,
+  :total-children 4,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-e73f-70d5-b12f-d90d8ac83d0f"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "765ab69c-2335-57aa-be20-9d6f22eb2305"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:25:03.679491-05:00",
+  :inputs
+  {:analysis
+   {:report
+    "# Briefing Report — Documents Received: None\n\nExecutive Summary\nThis briefing is based on the provided document summaries. No document summaries were supplied, so there is no substantive material to analyze. Consequently, there are no facts, decisions, deadlines, stakeholders, or financial terms to extract from source documents. This report therefore (a) records the absence of input materials, (b) states what would have been produced if documents were available, and (c) lists recommended next steps and the specific information required to produce a full briefing.\n\nKey Dates and Timeline\nNo dates were identified because no documents were supplied. If source documents are provided, the Key Dates section would list all deadlines, effective dates, meeting times, expiration dates, milestones, and any other chronological obligations in chronological order, with a short note if any timeline appears unusually tight.\n\nKey Entities and Stakeholders\nNo people, organizations, or roles were identified because no documents were supplied. A complete briefing would include, for each named entity:\n- name,\n- role or relationship to the matter,\n- relevance or decision authority,\n- contact information if available.\n\nFinancial Information\nNo financial information (fees, budgets, pricing, payment terms, or obligations) was available. If financial details were present, they would be summarized and, where multiple items exist, presented in a concise table: item | amount | due date | payer | payee | notes.\n\nRecommendations and Next Steps\nTo produce the requested comprehensive briefing, please provide the original documents or summaries. Specifically deliver any of the following that apply:\n1. Contracts, agreements, or MOU documents.\n2. Meeting minutes or agendas.\n3. Email threads that record decisions or deadlines.\n4. Budget spreadsheets, invoices, or payment schedules.\n5. A short list of known stakeholders and their contact details.\n\nChecklist of required metadata to include with documents (this accelerates accurate extraction):\n- Document title and date.\n- Authors and recipients (or distribution list).\n- Any explicit deadlines or effective dates, with timezones where relevant.\n- Monetary figures and currency.\n- Named parties and their roles.\n- Priority items or required actions.\n\nRisk Note\nBecause no source material was provided, risks cannot be assessed. The principal operational risk at this stage is proceeding without authoritative documents: decisions made on incomplete information may be invalid, create missed deadlines, or cause financial exposure.\n\nIf you supply the documents or summaries, I will:\n- extract all key facts, dates, stakeholders, and financial terms;\n- produce a chronological timeline and flag tight deadlines;\n- provide a stakeholder table with roles and contacts;\n- produce a concise financial summary table;\n- call out ambiguities, required clarifications, and recommended actions.",
+    :key-dates [],
+    :key-entities []}},
+  :node-id #uuid "765ab69c-2335-57aa-be20-9d6f22eb2305",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-e73f-70d6-ab06-bc48f7018e63"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :key :docx-report,
+  :value
+  "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/document_analysis-report.docx",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:25:03.952728-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-e850-704e-8ee4-1d1a55d31744"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :writes
+  {:docx-report
+   "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/document_analysis-report.docx"},
+  :duration-ms 23,
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "765ab69c-2335-57aa-be20-9d6f22eb2305"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:25:03.951577-05:00",
+  :status :success,
+  :node-id #uuid "765ab69c-2335-57aa-be20-9d6f22eb2305",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-e84f-7066-81cc-d7c0ac55ac74"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:node #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:25:04.186333-05:00",
+  :status :success,
+  :node-id #uuid "211dadd9-7fc4-5a20-8658-3c0b3d87711d",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-e93a-7077-a59e-676dc5be5269"}
+ {:tick-id #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "1f737bac-cc10-4825-b1f7-c3f1fb6d4ddf"]
+    [:sheet #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:25:04.454877-05:00",
+  :outputs
+  {:document-meta [],
+   :criteria
+   "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist.",
+   :doc-summary nil,
+   :document-paths
+   ["/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf"],
+   :document nil,
+   :documents nil,
+   :docx-report
+   "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/document_analysis-report.docx",
+   :analysis
+   {:report
+    "# Briefing Report — Documents Received: None\n\nExecutive Summary\nThis briefing is based on the provided document summaries. No document summaries were supplied, so there is no substantive material to analyze. Consequently, there are no facts, decisions, deadlines, stakeholders, or financial terms to extract from source documents. This report therefore (a) records the absence of input materials, (b) states what would have been produced if documents were available, and (c) lists recommended next steps and the specific information required to produce a full briefing.\n\nKey Dates and Timeline\nNo dates were identified because no documents were supplied. If source documents are provided, the Key Dates section would list all deadlines, effective dates, meeting times, expiration dates, milestones, and any other chronological obligations in chronological order, with a short note if any timeline appears unusually tight.\n\nKey Entities and Stakeholders\nNo people, organizations, or roles were identified because no documents were supplied. A complete briefing would include, for each named entity:\n- name,\n- role or relationship to the matter,\n- relevance or decision authority,\n- contact information if available.\n\nFinancial Information\nNo financial information (fees, budgets, pricing, payment terms, or obligations) was available. If financial details were present, they would be summarized and, where multiple items exist, presented in a concise table: item | amount | due date | payer | payee | notes.\n\nRecommendations and Next Steps\nTo produce the requested comprehensive briefing, please provide the original documents or summaries. Specifically deliver any of the following that apply:\n1. Contracts, agreements, or MOU documents.\n2. Meeting minutes or agendas.\n3. Email threads that record decisions or deadlines.\n4. Budget spreadsheets, invoices, or payment schedules.\n5. A short list of known stakeholders and their contact details.\n\nChecklist of required metadata to include with documents (this accelerates accurate extraction):\n- Document title and date.\n- Authors and recipients (or distribution list).\n- Any explicit deadlines or effective dates, with timezones where relevant.\n- Monetary figures and currency.\n- Named parties and their roles.\n- Priority items or required actions.\n\nRisk Note\nBecause no source material was provided, risks cannot be assessed. The principal operational risk at this stage is proceeding without authoritative documents: decisions made on incomplete information may be invalid, create missed deadlines, or cause financial exposure.\n\nIf you supply the documents or summaries, I will:\n- extract all key facts, dates, stakeholders, and financial terms;\n- produce a chronological timeline and flag tight deadlines;\n- provide a stakeholder table with roles and contacts;\n- produce a concise financial summary table;\n- call out ambiguities, required clarifications, and recommended actions.",
+    :key-dates [],
+    :key-entities []},
+   :doc-summaries []},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+  :event/id #uuid "019dca64-ea46-7028-b9ea-bdc3c727811e"}]

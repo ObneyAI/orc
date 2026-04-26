@@ -468,7 +468,7 @@ The chain is what makes the paper actually useful — and what would make any ne
 
 The orc `examples/` directory **mirrors predict-rlm's example set 1:1** — same 5 tasks (image_analysis, document_analysis, invoice_processing, contract_comparison, document_redaction), same input PDFs, same output schemas (Malli ports of Pydantic models). This is deliberate — orc's example set exists as a head-to-head benchmark against predict-rlm. And it ships **two implementations of each**: Style A (explicit pipeline) and Style B (RLM-faithful). That's the architectural thesis in code form.
 
-> **Heads up — this section is the analytical prediction.** Part 8 contains the empirical results from actually running both stacks against the same prompts. Several claims below (especially "structural analog" framings around Style B and the "every iteration writes events" tracing claim) need the nuance Part 8 adds. The architecture analysis still holds; the lived behavior has more rough edges than the architecture implies.
+> **Heads up — this section is the analytical prediction.** Part 9 contains the empirical results from actually running both stacks against the same prompts. Several claims below (especially "structural analog" framings around Style B and the "every iteration writes events" tracing claim) need the nuance Part 9 adds. The architecture analysis still holds; the lived behavior has more rough edges than the architecture implies.
 
 ### Substrate inversion — the central move
 
@@ -770,7 +770,7 @@ Three orc-only signals worth highlighting:
 
 3. **The role marker `[context — large; metadata only here]`.** Tells the LM directly which variable is "the big one it's supposed to interrogate via predict()." dspy implicitly relies on the LM noticing that one variable's `total_length` is much larger than others.
 
-> **Empirical caveat (added retroactively).** These are real *design* improvements over dspy/predict-rlm's previews, but in the head-to-head bench (Part 8) we didn't observe Style B prompts taking advantage of them. No model output we inspected referenced `:hash` for identity tracking or `(ns-explore …)` for tool discovery — the model treated the metadata as ambient context rather than something to query. Realizing the value of the structured-EDN preview likely requires explicit prompt scaffolding ("if hash matches a prior iteration's, skip extraction") that current Style B signature-strategies don't include.
+> **Empirical caveat (added retroactively).** These are real *design* improvements over dspy/predict-rlm's previews, but in the head-to-head bench (Part 9) we didn't observe Style B prompts taking advantage of them. No model output we inspected referenced `:hash` for identity tracking or `(ns-explore …)` for tool discovery — the model treated the metadata as ambient context rather than something to query. Realizing the value of the structured-EDN preview likely requires explicit prompt scaffolding ("if hash matches a prior iteration's, skip extraction") that current Style B signature-strategies don't include.
 
 #### History truncation — still head-only
 
@@ -881,9 +881,225 @@ orc's stack lets you **use the RLM where it's actually best** (discovering struc
 
 ---
 
-## Part 8 — What we measured (head-to-head bench)
+_(merge resolution: Cameron's "Part 8 — RLM-as-Workflow-Driver" runs first as concept; the empirical bench results that originally landed as Part 8 are now **Part 9**.)_
+## Part 8 — RLM-as-Workflow-Driver: the BT DSL as the agent's primitive
 
-Parts 1–7 reason from source. Part 8 reports on the first time both stacks were actually run side-by-side against identical inputs and prompts. The results validate parts of the architectural analysis, contradict others, and surface failure modes the source-only reading missed.
+Part 7 stopped at synthesis: run Style B once, distill into a durable BT, hand off. The LLM is a one-shot author. The next move is stronger: **the LLM is the workflow's owner.** It takes a target Sheet, observes its behavior over many runs, emits successive complete BT forms, ticks against an eval set, scores against judges, and drives the Sheet toward an optimum — all through grain's existing command/event surface. The behavior tree is the artifact the agent edits, not a byproduct.
+
+### The redirect
+
+| Today's `:rlm` mode (repl-researcher node)            | Workflow-driver agent                                                                       |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| LLM emits Clojure each iteration                      | LLM emits **a complete BT DSL form** each iteration                                         |
+| SCI sandbox with `predict` / `predict-all` / `final!` | DSL grammar: `(workflow … (sequence …) (map-each …) (llm …) (code …))`                      |
+| Goal: produce **one answer** for one input            | Goal: produce **a Sheet** that produces good answers for many inputs                        |
+| Trajectory is per-tick                                | Trajectory spans many ticks across many candidate sheet versions                            |
+| `final!` = "this answer is done"                      | `publish!` = "this Sheet is the new published version"                                      |
+| Lives **inside** a workflow (one node)                | Lives **above** a workflow (drives a target Sheet)                                          |
+
+The two coexist. The driver agent uses today's `:rlm` repl-researcher (or `code`, or `llm`) as one of several node types when emitting the target workflow.
+
+### Whole-tree rewrites as the primitive
+
+The agent's per-turn output is **a complete `(workflow …)` DSL form**. No granular `set-instruction!` / `add-node!` / `wrap-in-fallback!` micro-API to design. The DSL itself is the agent's grammar — every turn the agent emits the whole intended Sheet shape, and the driver calls `build-workflow!` against the target Sheet ID.
+
+```clojure
+;; The agent's per-turn emission, on receiving a "synthesize" regression:
+(workflow "document-analysis-pipeline"
+  (blackboard {:documents [:vector :string] :criteria :string :analysis :map ...})
+  (sequence "main"
+    (code "survey" :fn "...pipeline/survey" :reads [:documents] :writes [:document-meta])
+    (map-each "summarize-each" :from :document-meta :as :document :into :doc-summaries :parallel 3
+      (llm "summarize-doc" :model "google/gemini-2.5-flash"
+        :instruction "..."  ;; refined instruction
+        :reads [:document :criteria] :writes [:summary]))
+    (fallback "synthesize-with-recovery"      ;; new structural change
+      (llm "synthesize" :judges ["grounding" "completeness"] ...)
+      (llm "synthesize-conservative" ...))    ;; fallback if primary's grounding fails
+    (code "render-docx" ...)))
+```
+
+This works because of three properties that already hold in orc:
+
+1. **DSL forms are pure data.** Every constructor in `dsl.clj` returns a plain map. No SCI eval needed. `clojure.edn/read-string` + Malli validation against `interface/schemas.clj` is the parser.
+2. **`build-workflow!` is idempotent.** Re-emitting an identical form is a no-op; the content-hash check at `dsl.clj:117–122` short-circuits unchanged trees. Only changed nodes generate commands.
+3. **Stable v5 UUID node IDs.** `node-id-for-name(sheet-id, node-name)` at `dsl.clj:108–111` — if the agent keeps the name `"synthesize"` across rewrites, the synthesize node keeps its identity. Judge attachments, GEPA optimizations, and per-node trace history all stay attached. Renaming is a destructive act the agent learns to avoid.
+
+The agent's loop:
+
+```
+turn:
+  1. OBSERVE — query read models for current Sheet + recent ticks
+  2. EVALUATE — score recent runs against the objective
+  3. EMIT — output a complete (workflow …) DSL form
+  4. APPLY — driver calls build-workflow! → idempotent diff → grain commands
+  5. RUN — tick the (draft) Sheet on the eval set
+  6. DECIDE — converged? regressed? publish? continue?
+```
+
+Every step goes through the event store. Nothing bypasses it.
+
+### The agent's primitive surface
+
+```
+;; Read ops
+(get-sheet ctx sheet-id)              ;; current draft + published tree
+(list-ticks ctx sheet-id {:limit n})  ;; recent runs with statuses
+(get-tick ctx tick-id)                ;; per-node events for one run
+(score-tick ctx tick-id judges)       ;; judge scores
+(pareto ctx sheet-id)                 ;; cost vs quality frontier
+
+;; Emit op (the only mutation)
+(submit-tree! ctx sheet-id workflow-form)
+;; → validate against Malli schemas
+;; → build-workflow! on draft pointer
+;; → diff against published, return {:added […] :modified […] :removed […]}
+
+;; Run ops
+(tick! ctx sheet-id inputs)             ;; → tick-id
+(run-eval-set! ctx sheet-id eval-set-id)
+
+;; Decide ops
+(publish! ctx sheet-id)                 ;; draft → published, gated by guards
+(revert! ctx sheet-id)                  ;; abandon draft
+```
+
+Every operation is an existing grain command/read-model query, or a thin wrapper composing existing ones. The "MCP for orc itself" — but realized in-process as Clojure functions, not over JSON-RPC.
+
+The system prompt — the load-bearing piece — is the analog of predict-rlm's `PREDICT_RLM_INSTRUCTIONS` at the workflow-engineering level. It teaches the LLM the DSL grammar, the `:reads` / `:writes` blackboard contract, the **stable-name invariant** ("renaming = losing history"), how to read trace events, when to use `code` vs `llm` vs `repl-researcher` vs `delegate`, what each judge type measures, when to delegate to GEPA for instruction-only refinement, and draft/publish semantics. This is where the leverage lives.
+
+### What this leans on (already in the repo)
+
+- DSL constructors as data builders — `dsl.clj:132–339`
+- Idempotent `build-workflow!` + content hash + stable v5 IDs — `dsl.clj:103–122, 566+`
+- Every mutation as a grain command — `commands.clj`
+- Event-sourced ticks — `runtime.clj:178+`, `todo_processors.clj`
+- Tag-based event reads — grain's `(es/read event-store {:tags #{[:sheet sheet-id]}})`
+- `mcp-sheet-builder` — closest precedent for "construct a Sheet from a data spec, persist it, run it"
+- GEPA — instruction-level optimizer the driver delegates to
+- Judges — `evaluation` component the driver scores with
+
+### What's missing
+
+1. **`workflow-driver` component.** Houses the loop, the read/emit/tick/publish ops, the system prompt, and the meta-event schema.
+2. **`submit-tree!` wrapper** over `build-workflow!` that validates against Malli schemas, runs the build on the draft pointer, and returns a structured diff.
+3. **Draft/published surface confirmation.** Cited as a grain feature; spike must verify the existing surface area or fill the gap.
+4. **Objective declaration schema** — target judge scores, cost budget, latency budget, eval-set ID. Per-session, not per-Sheet.
+5. **Eval-set primitive** — held-out (inputs, optional-expected) pairs, runnable as a batch.
+6. **Driver-level events** — `:driver/session-started`, `:driver/turn-began`, `:driver/observed-tick`, `:driver/emitted-tree`, `:driver/decided-to-publish`, `:driver/converged`, `:driver/surrendered`. Agent reasoning trajectory is event-sourced too.
+7. **Pre-publish guards** — refuse to promote a draft that regresses judge scores below threshold or fails smoke runs.
+8. **The playbook system prompt** — the curated "you are an orc engineer" instructions. Most of the leverage.
+9. **Convergence / budget criteria** — max turns, max cost, max wall-time, "no improvement in N turns" termination.
+10. **Optional `:driver` BT node type** — `(driver "tune-extraction" :target-sheet-id … :objective …)` so one workflow can delegate sub-workflow improvement to the agent.
+
+### Path forward
+
+Pick `examples/document_analysis` — it has both Style A and Style B, plus criteria material that can seed an eval set.
+
+| Milestone | Scope                                                                                             |
+| --------- | ------------------------------------------------------------------------------------------------- |
+| **1**     | Read-only ops (`get-sheet`, `list-ticks`, `get-tick`, `score-tick`, `pareto`). Validate with a "describe this Sheet's recent performance" agent. Cheapest test of read-model adequacy. |
+| **2**     | `submit-tree!` + `tick!` + objective declaration. End-to-end at tiny scale, DSL as primitive. The first moment the design is true or false: does the LLM emit parseable, schema-conformant DSL?   |
+| **3**     | Eval set + pre-publish guards + `revert!`. Driver runs end-to-end with safety against regression. |
+| **4**     | Wrap the driver as a `:driver` BT node. Synthesizer/optimizer pattern from Part 7 becomes a first-class composable.                                                                                            |
+
+### Tradeoffs vs. today's `:rlm` mode
+
+**Wins.** The artifact is a Sheet — durable, versionable, GEPA-optimizable per node, judge-instrumentable per node, multi-tenant-scoped, replayable. Not an ephemeral trajectory. Improvements compound: each driver session leaves the published Sheet better than it found it, and re-running is cheap. Fully aligned with grain — every mutation goes through the same commands a human would issue, indistinguishable in the event log. Stable handles for downstream (judges, GEPA, ontology, mcp-sheet-builder all key on node-name; the agent emits node names, so everything else just works). Trace fidelity: per-node usages, durations, judge scores — the agent reasons about real signal, not stdout chunks.
+
+**Costs.** New component (curated API surface, system prompt, iteration loop, eval-set machinery, guards). Pre-publish guards are expensive (running judges over an eval set is N × cost-per-run); careful budget design needed. The system prompt is load-bearing and will need iteration — itself eventually GEPA-optimized.
+
+### Open questions
+
+1. **Stable-name discipline.** What does the playbook say when the agent decides a node's *role* has changed? Hard rule: keep the name (history follows) or explicitly remove + add (taking the history loss). Make the consequence visible.
+2. **Diff visibility.** Beyond `{:added :modified :removed}`, should `submit-tree!` return a *semantic* diff ("instruction on synthesize changed from X to Y")? Probably worth it for next-turn reasoning.
+3. **Cross-Sheet reasoning.** Can a driver session observe events from *other* Sheets ("another extraction workflow already solved this")? Powerful but raises tenant-scope and safety questions. Defer.
+4. **Closed-loop vs human-gated.** Auto-publish vs propose-and-await-approval. Human-gated behind a feature flag for the spike, closed-loop once trusted.
+5. **Concurrency.** Multiple driver sessions on the same Sheet — race conditions on draft state. One session at a time per Sheet, enforced by a lease.
+
+### How this relates to Part 7
+
+Part 7 (synthesizer) is one-shot: run Style B, distill, hand off. Part 8 (driver) subsumes it: the driver IS a synthesizer that doesn't stop after one shot. Synthesis becomes turn 1 of a driver session. The hand-off becomes `publish!`. Re-synthesis on input drift becomes another turn, not a separate trigger.
+
+### Status — implemented through Milestone 4
+
+A working spike landed in `components/workflow-driver/`:
+
+- **M1 — Read-only observability.** `sheet-snapshot`, `sheet-as-dsl`, `recent-ticks`, `tick-snapshot`, `node-summary`, `pareto`, plus a `describe-sheet` composer and a `describe-via-llm!` agent. Live-validated: gemini-2.5-flash given only the read-model surface accurately described a Sheet's purpose (with citations to specific node names + blackboard keys) and honestly reported empty execution history.
+- **M2 — Whole-tree submission.** `submit-tree!` parses an LLM-emitted DSL string in a tiny SCI sandbox bound to the DSL constructors, validates the workflow name matches the target Sheet, calls the idempotent `build-workflow!`, and returns a structural diff. The `propose-tree-via-llm!` emit agent (with the playbook system prompt) was live-validated end-to-end — the model emitted parseable, schema-conformant DSL that tuned exactly the requested field while preserving stable node names.
+- **M3 — Eval set + pre-publish guards.** `run-eval-set!` ticks the Sheet over a held-out set; `publish!` gates promotion on pass-rate vs. threshold; `revert!` restores from a published version (with the dirty draft auto-stashed). Regression scenario validated with deterministic code-fns: build with `echo-fn` → publish v1 → mutate to `boom-fn` → publish refused (0/3 pass) → revert → eval passes again (3/3).
+- **M4 — Driver loop + composable BT node.** `run-driver-loop!` orchestrates observe → propose → submit → eval → decide across multiple turns with iteration-history feedback to the agent. `driver-node` is a code-node helper that lets any parent workflow embed a driver loop against another Sheet — the synthesizer/optimizer composition from Part 7 made first-class. Live-validated end-to-end: gemini-2.5-flash, given the objective "add a verify node after process," emitted DSL that added the new node with correct `:reads`/`:writes`, declared the new blackboard key, kept all existing nodes intact, and the loop published version 1 in a single turn for ~2.7k tokens.
+
+Coverage: 5 test files, **93 passes / 0 failures** across `observe_test`, `emit_test`, `publish_test`, `loop_test`, `bt_node_test`.
+
+### Issues surfaced by the spike (and fixed)
+
+- **Read-after-revert returned stale projections.** Initially looked like a cache TTL race, but with `:l1-ttl-ms 0` made explicit on every `defreadmodel` the symptom persisted. Root cause: `:sheet/draft-reverted` and `:sheet/stash-restored` carry the full sheet snapshot in their event body, but the `nodes` and `blackboard` projections had no `defmethod` handlers for those events — and the events weren't even in those projections' event sets. So the events were emitted, persisted, and visible to the event store, but every projection silently dropped them. Read-your-writes was being upheld at the event-store layer; projection coverage was the gap. **Fix:** added `:sheet/draft-reverted` + `:sheet/stash-restored` to `node-events` and `blackboard-events`, plus handlers (`snapshot-tree->node-records`, `blackboard-state-from-snapshot`) that replace partition state from the event's snapshot body. Projection versions bumped (nodes 1→2, blackboard 2→3) so any persisted L2 state rebuilds.
+- **`:l1-ttl-ms 0` is now explicit on every `defreadmodel` across orc-service, gepa, colbert, ontology** (31 total). Default was already 0 but unstated; making it explicit prevents drift if grain ever changes the default and signals intent at every read-model declaration.
+- **DSCloj model override silently dropped via `:openrouter` provider.** litellm-router ignores `:model` in request options when the provider is registered. orc-service's `get-provider-with-model` (now public) is the documented workaround — every direct DSCloj caller needs to use it.
+- **Polylith Warning 207** (`workflow-driver` is "unnecessary" in the orc project) will resolve once production code references it.
+
+### Plan verification — items 1–5 status
+
+**Item 1.** `examples/document_analysis` Style A pipeline used as the live target.
+
+**Item 2 + 3.** Driver session degrade-then-recover demonstrated end-to-end. Combined regression: synthesize `:instruction` set to `"Output a brief summary."` AND `:reads` stripped of `:criteria`. Driver detected the regression (eval avg-judge 0.85 < 0.88 threshold), turn 1 emitted a complete `(workflow …)` form repairing both `:instruction` and `:reads` on synthesize, eval recovered to 0.90, `commit-version!` published v1. Single turn, 3,369 tokens, ~30 s wall, gemini-2.5-flash. Verified at REPL.
+
+**Item 4.** Driver vs GEPA — see "Driver vs GEPA" below. Live head-to-head ran successfully on instruction-only regression after a setup gap was uncovered (`gepa.interface` does not transitively require `gepa.interface.schemas`, so callers must load schemas explicitly). The structural-task supremacy claim is settled by GEPA's API surface.
+
+**Item 5.** Meta-trace event-sourced. `run-driver-loop!` emits seven event types (`:driver/session-started`, `:driver/turn-began`, `:driver/proposal-emitted`, `:driver/submit-result`, `:driver/eval-completed`, `:driver/turn-decided`, `:driver/session-ended`), each tagged `[:driver/session <session-id>]`. A single `(replay-session ctx session-id)` query reconstructs the full optimization arc in chronological order. Event schemas live in `workflow-driver/interface/schemas.clj`; `replay-session` is on the public interface. Two regression tests in `events_test.clj` confirm the publish path and the surrender path both produce the expected event stream.
+
+### Driver vs GEPA (plan verification item 4)
+
+The plan claimed "driver should match GEPA on instruction-only tasks and exceed on structural tasks." Both runs were on identical degraded `document_analysis` sheets (`synthesize` instruction set to `"Output a brief summary."`).
+
+**Driver — instruction + structural recovery, single turn, live.** Degraded `synthesize` had a vague instruction *and* `:reads` missing `:criteria`. Driver session:
+
+| | |
+|---|---|
+| turns | 1 |
+| tokens | 3,369 (gemini-2.5-flash) |
+| wall time | ~30 s |
+| outcome | published v1 with `:instruction` + `:reads` both repaired |
+| diff | `{:modified [{:name "synthesize" :changed [:instruction :reads]}]}` |
+
+**GEPA — instruction-only recovery, live.** Same vague-instruction sheet, but `:reads` left intact (since GEPA can only mutate instructions). Metric: count of required markdown section headings in the report. Budget 6 metric calls.
+
+| | |
+|---|---|
+| metric calls used | 3 (short-circuited on perfect score) |
+| candidates evaluated | 3 |
+| best aggregate-score | 1.0 |
+| wall time | ~62 s |
+| outcome | best candidate's synthesize instruction is a fully-sectioned rewrite |
+
+**Structural supremacy by API construction.** `gepa/optimize!` issues `:gepa/start-optimization`, whose candidate has shape `:instructions [:map-of :string :string]` — predictor-name → instruction string. **There is no field for `:reads`, `:writes`, node structure, or add/remove of nodes.** Anything beyond instruction wording is out of scope by construction. Driver's whole-tree-rewrites primitive is a strict superset.
+
+**Takeaways.**
+
+- *Instruction-only*: both work. GEPA found a 1.0-scoring candidate in 3 metric calls (~62 s). Driver did the same kind of instruction tuning in a single turn (~30 s, 3.4k tokens) — but the driver was also fixing the `:reads` half of the regression in the same emit, which GEPA couldn't have addressed at all.
+- *Structural*: only the driver can do it.
+- *Where GEPA still wins*: searching the instruction space under budget on a known-good structure — exactly the role Part 7 calls out for graduation after the driver settles structure.
+
+**Setup gap surfaced.** `gepa.interface` doesn't transitively require `gepa.interface.schemas`, so any caller doing `(require '[ai.obney.orc.gepa.interface :as gepa])` and then `(gepa/optimize! …)` hits `:malli.core/invalid-schema` on the first command dispatch. The fix is to add the schemas namespace to `gepa.interface`'s `:require`.
+
+### Still open
+
+- **Judges aren't preserved in version snapshots.** `create-snapshot` captures `:sheet`, `:blackboard-schema`, and `:nodes` — but not `:judges`. Reverting therefore leaves whatever judges exist on the live draft instead of restoring the v1 set. The fix is to extend `create-snapshot` to include judges and add a `:sheet/draft-reverted` handler on the `judges*` projection. Not blocking the driver loop.
+- **GEPA schema auto-loading.** `gepa.interface` should transitively `(:require [ai.obney.orc.gepa.interface.schemas])` so callers don't have to. One-line fix; not done in this spike.
+
+### What's still ahead — beyond the spike
+
+- Driver-level events (`:driver/turn-began`, `:driver/emitted-tree`, `:driver/decided-to-publish`) so the agent's reasoning trajectory is itself event-sourced and queryable.
+- Eval-set as a first-class durable entity (currently passed as data per call).
+- Concurrency lease per Sheet so multiple driver sessions don't race on the draft.
+- GEPA integration: after a driver session converges, GEPA can refine per-node instructions on the published Sheet without restructuring.
+- Cross-Sheet observation (read events from other Sheets to import patterns).
+
+
+## Part 9 — What we measured (head-to-head bench)
+
+Parts 1–7 reason from source; Part 8 sketches the workflow-driver concept. Part 9 reports on the first time the existing four stacks (predict-rlm, orc Style A, orc Style B, orc Legacy) were actually run side-by-side against identical inputs and prompts. The results validate parts of the architectural analysis, contradict others, and surface failure modes the source-only reading missed.
 
 ### The bench framework
 

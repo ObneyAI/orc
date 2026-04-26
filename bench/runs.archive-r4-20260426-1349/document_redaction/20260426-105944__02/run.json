@@ -1,0 +1,62 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "f8d22043-2495-4677-9e84-4808cd9843ce",
+    "sheet_id" : "1f4d204b-9172-50ff-a27d-9604c808d904",
+    "status" : "failure",
+    "event_count" : 4
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "document_redaction",
+  "run_id" : "20260426-105944__02",
+  "duration_seconds" : 118.682,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf",
+    "name" : "PNFS-Employment-Agreement-2025.pdf",
+    "size_bytes" : 39615,
+    "sha256" : "bbac3b4538b1984632a794c5248597213835d6d50d933e8c30eb4c70bfa658c2",
+    "page_count" : 6
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 6,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : "Iteration converged on the SAME ERROR twice without making progress. The underlying error was:\n\nCould not resolve symbol: server/tool\n\nRead it carefully and try a different approach (check the symbol/argument shape, or simplify the code).",
+  "tokens" : {
+    "root" : {
+      "input" : 68600,
+      "output" : 5582
+    },
+    "sub" : {
+      "input" : 278,
+      "output" : 291
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.14157,
+    "sub_lm" : 6.515000000000001E-4,
+    "total" : 0.1422215,
+    "per_page" : 0.023703583333333333
+  },
+  "structured" : {
+    "doc-redactions" : null,
+    "criteria" : "Redact all personally identifiable information (PII), including:\n\n1. **Names** — Full names of individuals (not company or organization names)\n2. **Contact info** — Phone numbers, email addresses, fax numbers\n3. **Addresses** — Street addresses, P.O. boxes (not city/state/country)\n4. **Government IDs** — Social security numbers, tax IDs, passport numbers\n5. **Financial info** — Bank account numbers, credit card numbers, routing numbers\n6. **Signatures** — Handwritten signatures (redact the bounding area)\n\nAdded to this, redact any dates found in the document, in any format.",
+    "redacted-documents" : null,
+    "doc-targets" : null,
+    "documents" : [ "/Users/justinobney/dev/orc/examples/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf" ],
+    "result" : null,
+    "doc" : null,
+    "all-targets" : null,
+    "doc-survey" : null
+  },
+  "git_sha" : "c3c5be5"
+}

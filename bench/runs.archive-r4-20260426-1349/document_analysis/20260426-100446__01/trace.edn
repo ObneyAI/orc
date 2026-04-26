@@ -1,0 +1,260 @@
+[{:tick-id #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b",
+  :execution-snapshot
+  {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+   :sheet-name "document-analysis-agentic",
+   :nodes-by-id
+   {#uuid "19396385-be87-56c6-a52b-b852a6b5fd16"
+    {:retry nil,
+     :writes [:analysis :docx-report],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 15,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "19396385-be87-56c6-a52b-b852a6b5fd16",
+     :parent-id nil,
+     :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\n# DOCX skill (Apache POI XWPF via Clojure SCI)\n\nYou can write .docx documents via the `docx/` namespace using a small\nHiccup-like element vector.\n\n## Writing structured docs\n\n`docx/write-docx` takes an output path and a vector of element forms:\n\n    (docx/write-docx\n      \"/sandbox/output/report.docx\"\n      [[:h1 \"Document Analysis Report\"]\n       [:p  \"Generated 2025-04-25.\"]\n       [:h2 \"Key Dates\"]\n       [:bullets [\"Submission deadline: 2025-05-01 14:00 EST\"\n                  \"Effective date: 2025-06-01\"]]\n       [:h2 \"Key Entities\"]\n       [:table {:headers [\"Name\" \"Role\" \"Contact\"]\n                :rows    [[\"John Doe\"     \"Project lead\" \"john@example.com\"]\n                          [\"Acme Corp.\"   \"Vendor\"       \"\"]]}]\n       [:h2 \"Analysis\"]\n       [:p \"Body prose here…\"]])\n    ;; => \"/sandbox/output/report.docx\"\n\nSupported tags:\n- `[:h1 text]` … `[:h6 text]` — heading levels\n- `[:p text]` — paragraph\n- `[:bullets [item …]]` — bullet list\n- `[:table {:headers [...] :rows [[…] …]}]` — table\n- `[:br]` — empty paragraph (vertical spacing)\n\n## Markdown shortcut\n\nIf your output is already markdown (e.g., a report from an LLM step),\nconvert it to a docx in one shot:\n\n    (docx/write-markdown-as-docx\n      \"/sandbox/output/report.docx\"\n      \"# Title\\n\\nIntro paragraph.\\n\\n## Section\\n\\n- bullet 1\\n- bullet 2\")\n\nThe markdown parser supports `# h1`, `## h2`, `### h3`, blank-line-separated\nparagraphs, and `-` bullet lines. For richer formatting (bold, tables) use\nthe element-vector form directly.\n\n\nAnalyze documents and produce a structured DocumentAnalysis report.\n\nYou receive:\n  documents — vector of PDF paths (full value bound; root prompt sees only metadata)\n  criteria  — string describing what to extract and in what format\n\nStrategy (translated from predict-rlm's DSPy signature docstring):\n\n1. Survey the documents using `pdf/page-count` for each path. Print a brief\n   summary of file names and page counts.\n\n2. Gather information by extracting page text (or rendering page images for\n   vision-heavy material) and calling `predict-all` over the items in\n   bounded parallel:\n\n       (let [pages (for [doc documents\n                         n (range (pdf/page-count doc))]\n                     {:doc doc :n n})\n             findings (predict-all\n                        {:name        \"extract-page\"\n                         :items       (mapv (fn [p] (pdf/page-text (:doc p) (:n p))) pages)\n                         :as          :page-text\n                         :inputs      {:criteria criteria}\n                         :instructions \"Extract content relevant to the criteria.\"\n                         :schema      :string\n                         :max-concurrency 6})]\n         ...)\n\n3. Synthesize a markdown report and a structured analysis:\n\n       (let [analysis\n             (predict\n               {:name \"synthesize\"\n                :inputs {:findings findings :criteria criteria}\n                :instructions \"Produce a markdown report plus key-dates and key-entities.\"\n                :schema [:map\n                         [:report :string]\n                         [:key-dates [:vector [:map [:name :string] [:date :string]]]]\n                         [:key-entities [:vector [:map [:name :string]]]]]})]\n         ...)\n\n4. Render the markdown into a DOCX:\n\n       (let [docx-path (docx/write-markdown-as-docx\n                          \"/sandbox/output/report.docx\"\n                          (:report analysis))]\n         (final! {:analysis analysis :docx-report docx-path}))\n\nStay grounded — do NOT invent dates or entities not present in the source text.",
+     :success-policy nil,
+     :reads [:documents :criteria],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :documents,
+      :max-predict-calls 100,
+      :max-predict-concurrency 6,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 6000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "19396385-be87-56c6-a52b-b852a6b5fd16",
+   :blackboard-entries
+   {:documents
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :documents,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :criteria
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :criteria,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :document-meta
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :document-meta,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :document
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :document,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :doc-summary,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :doc-summaries,
+     :schema [:vector :string],
+     :value nil,
+     :version 0},
+    :analysis
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :analysis,
+     :schema
+     [:map
+      [:report
+       {:description
+        "Full analysis as a well-formatted markdown report"}
+       :string]
+      [:key-dates
+       {:description "Important dates found in the documents"}
+       [:vector
+        [:map
+         [:name
+          {:description "e.g. 'Submission Deadline', 'Effective Date'"}
+          :string]
+         [:date {:description "ISO format date (YYYY-MM-DD)"} :string]
+         [:time
+          {:optional true, :description "24-hour HH:MM, e.g. 14:00"}
+          [:maybe :string]]
+         [:timezone
+          {:optional true, :description "e.g. EST, PST, UTC"}
+          [:maybe :string]]]]]
+      [:key-entities
+       {:description "Key people, organizations, or roles mentioned"}
+       [:vector
+        [:map
+         [:name
+          {:description "Name of the person, organization, or role"}
+          :string]
+         [:role
+          {:optional true,
+           :description "Role or relationship to the document"}
+          [:maybe :string]]
+         [:contact
+          {:optional true, :description "Contact info if available"}
+          [:maybe :string]]]]]],
+     :value nil,
+     :version 0},
+    :docx-report
+    {:sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+     :key :docx-report,
+     :schema [:string {:field-type :file}],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b"]
+    [:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:04:46.488911-05:00",
+  :inputs
+  {:document-paths
+   ["/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf"],
+   :criteria
+   "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist."},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca52-5498-70ac-947b-287b6b8a6667"}
+ {:tick-id #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b",
+  :event/tags
+  #{[:tick #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b"]
+    [:node #uuid "19396385-be87-56c6-a52b-b852a6b5fd16"]
+    [:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:04:51.345635-05:00",
+  :inputs {},
+  :node-id #uuid "19396385-be87-56c6-a52b-b852a6b5fd16",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :event/id #uuid "019dca52-6791-70dc-a629-7b89e6c9b03f"}
+ {:tick-id #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b",
+  :key :analysis,
+  :value
+  {:report
+   "Executive Summary\n\nNo source documents or findings were provided for analysis. Because the input findings array is empty, there are no facts, decisions, or actions to summarize from document content. This briefing therefore documents the absence of extractable material, explains what would be produced if documents were available, and outlines recommended next steps and a template of the information that will be delivered once documents are provided.\n\nKey Points\n- No documents were supplied; no substantive content could be extracted.\n- The expected deliverables (dates, entities, financials) are therefore unavailable.\n- Recommended next steps and a template of the expected outputs are provided below to speed follow-up analysis.\n\nKey Dates and Timeline\n\nNo dates, deadlines, milestones, meeting times, effective dates, or expirations were found because no documents were available. If documents are provided, the output will include a chronological timeline of all significant dates, with explicit flags for unusually tight timelines and any required action dates.\n\nKey Entities and Stakeholders\n\nNo people, organizations, or roles were identified in the absence of source material. When documents are provided, this section will list each entity, their role or relationship to the matter, and any available contact information (email, phone, address). Example entry format that will be used:\n\n- Name — Role/relationship — Relevance/summary — Contact (if present)\n\nFinancial Information\n\nNo monetary values, fees, budgets, pricing, payment terms, or financial obligations were extracted because no documents were supplied. If financial details are present in future documents, they will be summarized and presented in a concise table showing amount, currency, party responsible, due date, and any conditionality.\n\nRecommendations and Next Steps\n\n1. Provide source materials: upload or paste the documents or findings you want analyzed (contracts, emails, memos, agendas, invoices, statements of work, etc.).\n2. Specify priorities: indicate if you want focus on dates, obligations, risks, financial exposure, or entity relationships.\n3. If there are particular questions you need answered (e.g., termination windows, payment schedules, liability caps), list them to allow targeted extraction.\n4. Upon receipt, the next deliverable will include:\n   - A one-paragraph executive summary of the document(s).\n   - A chronological key-dates timeline with visual flags for critical deadlines.\n   - A roster of key entities and their roles, including available contact information.\n   - A financial table summarizing obligations, amounts, and payment terms.\n   - A concise risk/issue summary and recommended actions.\n\nIf you’d like, provide a single document now and I will produce the full briefing in the format above.",
+   :key-dates [],
+   :key-entities []},
+  :event/tags
+  #{[:tick #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b"]
+    [:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:05:23.401603-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :event/id #uuid "019dca52-e4c9-70f5-9821-9739e9b823c5"}
+ {:tick-id #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b",
+  :key :docx-report,
+  :value
+  {:error
+   "docx/write-markdown-as-docx missing required keys [:out-path :md]. Expected [:out-path :md]; got keys [\"/sandbox/output/report.docx\"]"},
+  :event/tags
+  #{[:tick #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b"]
+    [:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:05:23.401679-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :event/id #uuid "019dca52-e4c9-70f6-8e06-28da376a53a3"}
+ {:tick-id #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b",
+  :writes
+  {:analysis
+   {:report
+    "Executive Summary\n\nNo source documents or findings were provided for analysis. Because the input findings array is empty, there are no facts, decisions, or actions to summarize from document content. This briefing therefore documents the absence of extractable material, explains what would be produced if documents were available, and outlines recommended next steps and a template of the information that will be delivered once documents are provided.\n\nKey Points\n- No documents were supplied; no substantive content could be extracted.\n- The expected deliverables (dates, entities, financials) are therefore unavailable.\n- Recommended next steps and a template of the expected outputs are provided below to speed follow-up analysis.\n\nKey Dates and Timeline\n\nNo dates, deadlines, milestones, meeting times, effective dates, or expirations were found because no documents were available. If documents are provided, the output will include a chronological timeline of all significant dates, with explicit flags for unusually tight timelines and any required action dates.\n\nKey Entities and Stakeholders\n\nNo people, organizations, or roles were identified in the absence of source material. When documents are provided, this section will list each entity, their role or relationship to the matter, and any available contact information (email, phone, address). Example entry format that will be used:\n\n- Name — Role/relationship — Relevance/summary — Contact (if present)\n\nFinancial Information\n\nNo monetary values, fees, budgets, pricing, payment terms, or financial obligations were extracted because no documents were supplied. If financial details are present in future documents, they will be summarized and presented in a concise table showing amount, currency, party responsible, due date, and any conditionality.\n\nRecommendations and Next Steps\n\n1. Provide source materials: upload or paste the documents or findings you want analyzed (contracts, emails, memos, agendas, invoices, statements of work, etc.).\n2. Specify priorities: indicate if you want focus on dates, obligations, risks, financial exposure, or entity relationships.\n3. If there are particular questions you need answered (e.g., termination windows, payment schedules, liability caps), list them to allow targeted extraction.\n4. Upon receipt, the next deliverable will include:\n   - A one-paragraph executive summary of the document(s).\n   - A chronological key-dates timeline with visual flags for critical deadlines.\n   - A roster of key entities and their roles, including available contact information.\n   - A financial table summarizing obligations, amounts, and payment terms.\n   - A concise risk/issue summary and recommended actions.\n\nIf you’d like, provide a single document now and I will produce the full briefing in the format above.",
+    :key-dates [],
+    :key-entities []},
+   :docx-report
+   {:error
+    "docx/write-markdown-as-docx missing required keys [:out-path :md]. Expected [:out-path :md]; got keys [\"/sandbox/output/report.docx\"]"}},
+  :duration-ms 31784,
+  :event/tags
+  #{[:tick #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b"]
+    [:node #uuid "19396385-be87-56c6-a52b-b852a6b5fd16"]
+    [:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:05:23.386145-05:00",
+  :usage
+  {:prompt-tokens 5130, :completion-tokens 396, :total-tokens 5526},
+  :status :success,
+  :node-id #uuid "19396385-be87-56c6-a52b-b852a6b5fd16",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :event/id #uuid "019dca52-e4ba-70d8-988f-92c35ef7a876",
+  :rlm
+  {:enabled? true,
+   :context-key :documents,
+   :root-usage
+   {:prompt-tokens 5130, :completion-tokens 396, :total-tokens 5526},
+   :subcall-usage
+   {:prompt-tokens 509, :completion-tokens 1015, :total-tokens 1524},
+   :predict-call-count 1,
+   :model "openai/gpt-5",
+   :final-source :final!}}
+ {:tick-id #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b"]
+    [:sheet #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:05:23.585029-05:00",
+  :outputs
+  {:document-meta nil,
+   :criteria
+   "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist.",
+   :doc-summary nil,
+   :document-paths
+   ["/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf"],
+   :document nil,
+   :documents nil,
+   :docx-report
+   {:error
+    "docx/write-markdown-as-docx missing required keys [:out-path :md]. Expected [:out-path :md]; got keys [\"/sandbox/output/report.docx\"]"},
+   :analysis
+   {:report
+    "Executive Summary\n\nNo source documents or findings were provided for analysis. Because the input findings array is empty, there are no facts, decisions, or actions to summarize from document content. This briefing therefore documents the absence of extractable material, explains what would be produced if documents were available, and outlines recommended next steps and a template of the information that will be delivered once documents are provided.\n\nKey Points\n- No documents were supplied; no substantive content could be extracted.\n- The expected deliverables (dates, entities, financials) are therefore unavailable.\n- Recommended next steps and a template of the expected outputs are provided below to speed follow-up analysis.\n\nKey Dates and Timeline\n\nNo dates, deadlines, milestones, meeting times, effective dates, or expirations were found because no documents were available. If documents are provided, the output will include a chronological timeline of all significant dates, with explicit flags for unusually tight timelines and any required action dates.\n\nKey Entities and Stakeholders\n\nNo people, organizations, or roles were identified in the absence of source material. When documents are provided, this section will list each entity, their role or relationship to the matter, and any available contact information (email, phone, address). Example entry format that will be used:\n\n- Name — Role/relationship — Relevance/summary — Contact (if present)\n\nFinancial Information\n\nNo monetary values, fees, budgets, pricing, payment terms, or financial obligations were extracted because no documents were supplied. If financial details are present in future documents, they will be summarized and presented in a concise table showing amount, currency, party responsible, due date, and any conditionality.\n\nRecommendations and Next Steps\n\n1. Provide source materials: upload or paste the documents or findings you want analyzed (contracts, emails, memos, agendas, invoices, statements of work, etc.).\n2. Specify priorities: indicate if you want focus on dates, obligations, risks, financial exposure, or entity relationships.\n3. If there are particular questions you need answered (e.g., termination windows, payment schedules, liability caps), list them to allow targeted extraction.\n4. Upon receipt, the next deliverable will include:\n   - A one-paragraph executive summary of the document(s).\n   - A chronological key-dates timeline with visual flags for critical deadlines.\n   - A roster of key entities and their roles, including available contact information.\n   - A financial table summarizing obligations, amounts, and payment terms.\n   - A concise risk/issue summary and recommended actions.\n\nIf you’d like, provide a single document now and I will produce the full briefing in the format above.",
+    :key-dates [],
+    :key-entities []},
+   :doc-summaries nil},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+  :event/id #uuid "019dca52-e581-70c9-bac5-c34d3131122b"}]

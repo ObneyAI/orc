@@ -1,0 +1,240 @@
+[{:tick-id #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b",
+  :execution-snapshot
+  {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+   :sheet-name "contract-comparison-agentic",
+   :nodes-by-id
+   {#uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"
+    {:retry nil,
+     :writes [:result],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 12,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+     :parent-id nil,
+     :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\nCompare PDF contracts and produce a structured ComparisonResult.\n\nYou receive:\n  contracts — vector of PDF paths (full value bound; root prompt sees only metadata)\n\nStrategy:\n\n1. Survey each contract:\n\n   (let [docs (mapv (fn [p] {:path p :pages (pdf/page-count p) :text (pdf/document-text p)})\n                    contracts)]\n     ...)\n\n2. Use predict-all to summarize each contract's section structure in parallel:\n\n   (let [summaries (predict-all\n                     {:name        \"summarize-contract\"\n                      :items       docs\n                      :as          :doc\n                      :inputs      {}\n                      :instructions \"List section headings and key terms.\"\n                      :schema      [:map [:sections [:vector :map]]]\n                      :max-concurrency 4})]\n     ...)\n\n3. Use predict to produce the comparison:\n\n   (let [result (predict\n                  {:name \"compare\"\n                   :inputs {:summaries summaries :docs docs}\n                   :instructions \"Produce a structured ComparisonResult.\"\n                   :schema [:map\n                            [:report :string]\n                            [:section-diffs [:vector :map]]\n                            [:key-differences [:vector :map]]\n                            [:summary :string]]})]\n     (final! {:result result}))\n\nStay grounded — do not invent sections or terms.",
+     :success-policy nil,
+     :reads [:contracts],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :contracts,
+      :max-predict-calls 50,
+      :max-predict-concurrency 4,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 6000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+   :blackboard-entries
+   {:contracts
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :contracts,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summaries,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :doc
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summary,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :result,
+     :schema
+     [:map
+      [:report
+       {:description "Full comparison report in markdown format"}
+       :string]
+      [:section-diffs
+       {:description "Per-section comparison"}
+       [:vector
+        [:map
+         [:section-name
+          {:description "Name or title of the section being compared"}
+          :string]
+         [:document-a-text
+          {:description "Key text or summary from Document A"}
+          :string]
+         [:document-b-text
+          {:description "Key text or summary from Document B"}
+          :string]
+         [:difference-summary
+          {:description "Summary of what changed"}
+          :string]
+         [:significance
+          {:description "How significant the difference is"}
+          [:enum "major" "minor" "identical"]]]]]
+      [:key-differences
+       {:description "High-level key differences"}
+       [:vector
+        [:map
+         [:area
+          {:description
+           "Area of the contract affected (e.g. pricing, liability)"}
+          :string]
+         [:description
+          {:description "Description of the difference"}
+          :string]
+         [:impact
+          {:description "Potential impact or implication"}
+          :string]]]]
+      [:summary {:description "Executive summary"} :string]],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:01:45.459333-05:00",
+  :inputs
+  {:contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca4f-9173-7073-b708-9d6123ad6b4d"}
+ {:tick-id #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b",
+  :event/tags
+  #{[:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:01:50.411302-05:00",
+  :inputs {},
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca4f-a4cb-70d1-9faa-385973898276"}
+ {:tick-id #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b",
+  :key :result,
+  :value
+  {:report
+   "Comparison could not be performed because neither input document has extracted text or page information available.\n\nErrors returned for both files:\n- /sandbox/input/contract1.pdf\n  - pages error: pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]\n  - text error: pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]\n- /sandbox/input/contract2.pdf\n  - pages error: pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]\n  - text error: pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]\n\nBecause the parser/extraction step failed, there is no section structure or document text to compare. No section-level diffs or key-level differences could be generated.\n\nRecommended next steps to allow a full comparison:\n1. Re-run the PDF text extraction step or re-upload the files ensuring the extraction tool receives a valid file path (the error indicates the extractor expected a key named ",
+   path " but received ",
+   file
+   ").\n2. If automatic extraction is unavailable, provide the plain text of each document (copy/paste) or a machine-readable format (TXT, DOCX) so I can parse and compare sections and clauses.\n3. If OCR is required (scanned PDFs), run OCR first (Tesseract, Adobe OCR, or equivalent), then supply the extracted text.\n4. Once text is available I will produce:\n   - section-diffs: per-section comparison with changes (added/removed/modified clauses)\n   - key-differences: extracted metadata and clause-level key-value differences (dates, parties, amounts, termination terms, liability caps, etc.)\n   - a concise human-readable report summarizing material changes and risk areas\n\nIf you want, re-upload the documents or paste their text here and I will run the comparison.",
+   :section-diffs [],
+   :key-differences [],
+   :summary
+   "Comparison aborted — both PDFs lack extracted text/pages (parser errors). Provide valid extracted text or correct file-path input so I can compare sections and key terms."},
+  :event/tags
+  #{[:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:02:25.349316-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca50-2d45-70d8-a61d-5358faa2b112"}
+ {:tick-id #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b",
+  :writes
+  {:result
+   {:report
+    "Comparison could not be performed because neither input document has extracted text or page information available.\n\nErrors returned for both files:\n- /sandbox/input/contract1.pdf\n  - pages error: pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]\n  - text error: pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]\n- /sandbox/input/contract2.pdf\n  - pages error: pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]\n  - text error: pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]\n\nBecause the parser/extraction step failed, there is no section structure or document text to compare. No section-level diffs or key-level differences could be generated.\n\nRecommended next steps to allow a full comparison:\n1. Re-run the PDF text extraction step or re-upload the files ensuring the extraction tool receives a valid file path (the error indicates the extractor expected a key named ",
+    path " but received ",
+    file
+    ").\n2. If automatic extraction is unavailable, provide the plain text of each document (copy/paste) or a machine-readable format (TXT, DOCX) so I can parse and compare sections and clauses.\n3. If OCR is required (scanned PDFs), run OCR first (Tesseract, Adobe OCR, or equivalent), then supply the extracted text.\n4. Once text is available I will produce:\n   - section-diffs: per-section comparison with changes (added/removed/modified clauses)\n   - key-differences: extracted metadata and clause-level key-value differences (dates, parties, amounts, termination terms, liability caps, etc.)\n   - a concise human-readable report summarizing material changes and risk areas\n\nIf you want, re-upload the documents or paste their text here and I will run the comparison.",
+    :section-diffs [],
+    :key-differences [],
+    :summary
+    "Comparison aborted — both PDFs lack extracted text/pages (parser errors). Provide valid extracted text or correct file-path input so I can compare sections and key terms."}},
+  :duration-ms 34675,
+  :event/tags
+  #{[:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:02:25.344542-05:00",
+  :usage
+  {:prompt-tokens 3209, :completion-tokens 282, :total-tokens 3491},
+  :status :success,
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca50-2d40-7082-84df-8590250dd0ea",
+  :rlm
+  {:enabled? true,
+   :context-key :contracts,
+   :root-usage
+   {:prompt-tokens 3209, :completion-tokens 282, :total-tokens 3491},
+   :subcall-usage
+   {:prompt-tokens 707, :completion-tokens 1902, :total-tokens 2609},
+   :predict-call-count 3,
+   :model "openai/gpt-5",
+   :final-source :final-answer}}
+ {:tick-id #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]
+    [:tick #uuid "6996e2d9-dceb-4856-95d5-94914546ac6b"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:02:25.410645-05:00",
+  :outputs
+  {:contracts nil,
+   :doc-summaries nil,
+   :doc nil,
+   :doc-summary nil,
+   :result
+   {:report
+    "Comparison could not be performed because neither input document has extracted text or page information available.\n\nErrors returned for both files:\n- /sandbox/input/contract1.pdf\n  - pages error: pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]\n  - text error: pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]\n- /sandbox/input/contract2.pdf\n  - pages error: pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:file]\n  - text error: pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:file]\n\nBecause the parser/extraction step failed, there is no section structure or document text to compare. No section-level diffs or key-level differences could be generated.\n\nRecommended next steps to allow a full comparison:\n1. Re-run the PDF text extraction step or re-upload the files ensuring the extraction tool receives a valid file path (the error indicates the extractor expected a key named ",
+    path " but received ",
+    file
+    ").\n2. If automatic extraction is unavailable, provide the plain text of each document (copy/paste) or a machine-readable format (TXT, DOCX) so I can parse and compare sections and clauses.\n3. If OCR is required (scanned PDFs), run OCR first (Tesseract, Adobe OCR, or equivalent), then supply the extracted text.\n4. Once text is available I will produce:\n   - section-diffs: per-section comparison with changes (added/removed/modified clauses)\n   - key-differences: extracted metadata and clause-level key-value differences (dates, parties, amounts, termination terms, liability caps, etc.)\n   - a concise human-readable report summarizing material changes and risk areas\n\nIf you want, re-upload the documents or paste their text here and I will run the comparison.",
+    :section-diffs [],
+    :key-differences [],
+    :summary
+    "Comparison aborted — both PDFs lack extracted text/pages (parser errors). Provide valid extracted text or correct file-path input so I can compare sections and key terms."},
+   :contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca50-2d82-709f-8ea5-bb25a6e337be"}]

@@ -1,0 +1,5 @@
+{:paths ["src" "resources"]
+ :deps {orc/orc-service {:local/root "../orc-service"}
+        orc/evaluation {:local/root "../evaluation"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

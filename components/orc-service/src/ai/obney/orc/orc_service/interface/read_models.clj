@@ -78,6 +78,30 @@
   [ctx tick-id]
   (core/get-tick ctx tick-id))
 
+(defn get-ticks-for-sheet
+  "Get all ticks for a sheet. Returns a vector of tick maps with
+   :id, :sheet-id, :status (:running/:completed/:cancelled), :iteration,
+   :started-at, :completed-at, :root-status."
+  [ctx sheet-id]
+  (core/get-ticks-for-sheet ctx sheet-id))
+
+(defn get-current-tick
+  "Get the current running tick for a sheet, if any."
+  [ctx sheet-id]
+  (core/get-current-tick ctx sheet-id))
+
+(defn get-trace
+  "Get a single execution trace by trace-id.
+   The trace contains :node-traces (vector of per-node trace records),
+   :input-snapshot, :output-snapshot, :status, :started-at, :completed-at."
+  [ctx trace-id]
+  (core/get-trace ctx trace-id))
+
+(defn get-traces-for-sheet
+  "Get all execution traces for a sheet."
+  [ctx sheet-id]
+  (core/get-traces-for-sheet ctx sheet-id))
+
 ;; =============================================================================
 ;; Version Read Model Functions
 ;; =============================================================================

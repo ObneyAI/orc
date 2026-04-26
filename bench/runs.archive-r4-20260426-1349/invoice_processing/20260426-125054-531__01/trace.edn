@@ -1,0 +1,397 @@
+[{:tick-id #uuid "600536b1-de54-41a8-855e-8edf142ea81f",
+  :execution-snapshot
+  {:sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+   :sheet-name "invoice-processing-legacy",
+   :nodes-by-id
+   {#uuid "b1288661-6acb-50bd-98c0-1c55a5e8fccd"
+    {:retry nil,
+     :writes [:result :workbook],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 15,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "b1288661-6acb-50bd-98c0-1c55a5e8fccd",
+     :parent-id nil,
+     :sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\n# XLSX skill (Apache POI XSSF via Clojure SCI)\n\nYou can build and read .xlsx workbooks via the `xlsx/` namespace.\n\n## Writing a workbook\n\n`xlsx/write-workbook` takes an output path and a sheets-spec — a vector of\nsheet maps. Each sheet has an optional :columns spec (which becomes the\nheader row with auto-sized columns) and a vector of row vectors:\n\n    (xlsx/write-workbook\n      \"/sandbox/output/report.xlsx\"\n      [{:name    \"Summary\"\n        :columns [{:header \"Vendor\"      :width 24}\n                  {:header \"Invoice #\"   :width 14}\n                  {:header \"Date\"        :width 12}\n                  {:header \"Total\"       :width 12}]\n        :rows    [[\"Acme Inc.\"     \"INV-1001\" \"2025-04-01\" 1234.56]\n                  [\"Globaltech Co\" \"GT-10587\" \"2025-04-12\"  987.65]]}\n       {:name    \"Acme Inc.\"\n        :columns [{:header \"Description\" :width 40}\n                  {:header \"Quantity\"    :width 10}\n                  {:header \"Unit Price\"  :width 12}\n                  {:header \"Amount\"      :width 12}]\n        :rows    [[\"Widget A\" 10 12.34 123.40]\n                  [\"Service B\"  5 50.00 250.00]]}])\n    ;; => \"/sandbox/output/report.xlsx\"\n\nCells accept strings, numbers, booleans, or nil (blank). Auto-sizing is on\nby default; turn off per sheet with `:auto-size? false`.\n\n## Reading a workbook\n\n    (xlsx/list-sheets \"/sandbox/input/data.xlsx\")\n    ;; => [\"Summary\" \"Acme Inc.\" \"Globaltech Co\"]\n\n    (xlsx/read-sheet \"/sandbox/input/data.xlsx\" \"Summary\")\n    ;; => [[\"Vendor\" \"Invoice #\" \"Date\" \"Total\"]\n    ;;     [\"Acme Inc.\" \"INV-1001\" \"2025-04-01\" 1234.56]\n    ;;     ...]\n\nIf row 0 is a header row, get a vector of maps instead:\n\n    (xlsx/read-sheet-as-maps \"/sandbox/input/data.xlsx\" \"Summary\")\n    ;; => [{:Vendor \"Acme Inc.\" :Invoice\\# \"INV-1001\" ...}\n    ;;     ...]\n\n## Patterns\n\n- Build the per-entity sheets first, then a Summary sheet referencing them\n  by name.\n- Keep numeric columns numeric (not strings) so totals/sorts work in Excel.\n- For nested data extracted by a sub-LM, flatten before writing — POI cells\n  hold scalars, not maps.\n\n\nExtract structured invoice data and write an Excel workbook.\n\n============================================================\nYOU ARE RUNNING IN A VALIDATED SCI SANDBOX (no RLM mode)\n============================================================\n\nYour code is parsed and symbol-checked BEFORE eval. No host-backed\npredict/predict-all/final! exist in this mode — you read PDFs through\npdf/* tools, do extraction in YOUR OWN context across iterations, and\nsubmit via FINAL_ANSWER text marker (NOT (final! …)).\n\n============================================================\nINPUT\n============================================================\n\nInvoice PDF paths:\n  {invoices}\n\n============================================================\nAVAILABLE TOOLS (single-map arg)\n============================================================\n\n  (pdf/page-count       {:path \"…\"})              -> int\n  (pdf/page-text        {:path \"…\" :n 0})         -> string\n  (pdf/document-text    {:path \"…\"})              -> full-doc string\n  (xlsx/write-workbook  {:out-path \"…\" :sheets-spec […]})\n                                                    -> path\n                              ⚠ keys MUST be :out-path and :sheets-spec\n\n============================================================\nDO NOT (sandbox rejects these BEFORE eval)\n============================================================\n\n  ❌ NO Java interop:    System/currentTimeMillis, Math/abs, Class.,\n                          .method\n  ❌ NO unsafe fns:      slurp, spit, eval, require, load, sh, exec\n  ❌ NO predict / predict-all / final!  (those are RLM-mode only)\n\n============================================================\nSUBMIT FORMAT — emit FINAL_ANSWER, do NOT call (final! …)\n============================================================\n\nWhen done, your LAST println MUST be:\n\n    (println (str \"FINAL_ANSWER: \" (pr-str\n      {:result   {:invoices [...] :total-amount 0.0 :summary \"…\"}\n       :workbook \"/tmp/invoice-extraction.xlsx\"})))\n\nThe runtime detects FINAL_ANSWER, parses the EDN map, and spreads\nit across the node's :writes keys (:result and :workbook).\n\n============================================================\nGOAL\n============================================================\n\nIn ONE iteration if possible:\n  1. read each invoice with pdf/document-text\n  2. extract a {:vendor-name :invoice-number :date :due-date\n                :subtotal :tax :total :line-items …} per invoice\n  3. write a workbook (Summary sheet + per-invoice sheets) via\n     xlsx/write-workbook\n  4. print FINAL_ANSWER: with :result and :workbook\n\n============================================================\nSKELETON — copy and adapt\n============================================================\n\n(let [paths {invoices}   ;; substituted from blackboard\n\n      extract-invoice\n      (fn [path]\n        (let [text (pdf/document-text {:path path})]\n          ;; You parse `text` here in your own context. The text is\n          ;; structured invoice data — vendor name in header,\n          ;; line items in a table, totals at bottom.\n          ;; Build the map by hand or with regex/string parsing.\n          {:vendor-name    \"<extract from text>\"\n           :invoice-number \"<extract from text>\"\n           :date           \"<extract>\"\n           :due-date       \"<extract>\"\n           :subtotal       0.0\n           :tax            0.0\n           :total          0.0\n           :line-items     [{:description \"…\" :quantity 1.0\n                             :unit-price 0.0 :amount 0.0}]}))\n\n      invoices (mapv extract-invoice paths)\n\n      total (reduce + 0.0 (keep :total invoices))\n\n      out-path \"/tmp/invoice-extraction.xlsx\"\n\n      sheets-spec (into [{:name \"Summary\"\n                          :columns [{:header \"Vendor\" :width 24}\n                                    {:header \"Invoice #\" :width 14}\n                                    {:header \"Date\" :width 12}\n                                    {:header \"Total\" :width 12}]\n                          :rows (mapv (fn [m]\n                                        [(:vendor-name m) (:invoice-number m)\n                                         (:date m) (or (:total m) 0.0)])\n                                      invoices)}]\n                        (mapv (fn [m]\n                                {:name (str (:vendor-name m) \" \" (:invoice-number m))\n                                 :columns [{:header \"Description\" :width 40}\n                                           {:header \"Qty\" :width 8}\n                                           {:header \"Unit Price\" :width 12}\n                                           {:header \"Amount\" :width 12}]\n                                 :rows (mapv (fn [li]\n                                               [(:description li) (:quantity li)\n                                                (:unit-price li) (:amount li)])\n                                             (:line-items m))})\n                              invoices))\n\n      written (xlsx/write-workbook {:out-path out-path :sheets-spec sheets-spec})]\n\n  (println (str \"FINAL_ANSWER: \"\n                (pr-str\n                  {:result   {:invoices invoices\n                              :total-amount total\n                              :summary (str \"Processed \" (count invoices) \" invoices.\")}\n                   :workbook written}))))\n",
+     :success-policy nil,
+     :reads [:invoices],
+     :model "openai/gpt-5",
+     :rlm nil}},
+   :root-node-id #uuid "b1288661-6acb-50bd-98c0-1c55a5e8fccd",
+   :blackboard-entries
+   {:invoices
+    {:sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+     :key :invoices,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :pages
+    {:sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+     :key :pages,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :page
+    {:sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+     :key :page,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :page-extract
+    {:sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+     :key :page-extract,
+     :schema
+     [:map
+      [:vendor-name
+       {:description
+        "Vendor/supplier on THIS page (\"\" if continuation page)"}
+       :string]
+      [:invoice-number
+       {:description
+        "Invoice number on THIS page (\"\" if continuation)"}
+       :string]
+      [:date
+       {:description
+        "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+       :string]
+      [:due-date
+       {:description
+        "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+       :string]
+      [:subtotal
+       {:description "Subtotal on THIS page (0.0 if continuation)"}
+       :double]
+      [:tax
+       {:description "Tax on THIS page (0.0 if continuation)"}
+       :double]
+      [:total
+       {:description "Total on THIS page (0.0 if continuation)"}
+       :double]
+      [:line-items
+       {:description "Line items visible on THIS page"}
+       [:vector
+        [:map
+         [:description
+          {:description "Description of the item or service"}
+          :string]
+         [:quantity {:description "Quantity of items"} :double]
+         [:unit-price
+          {:description "Price per unit in dollars"}
+          :double]
+         [:amount
+          {:description "Total amount for this line item in dollars"}
+          :double]]]]],
+     :value nil,
+     :version 0},
+    :page-extracts
+    {:sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+     :key :page-extracts,
+     :schema
+     [:vector
+      [:map
+       [:vendor-name
+        {:description
+         "Vendor/supplier on THIS page (\"\" if continuation page)"}
+        :string]
+       [:invoice-number
+        {:description
+         "Invoice number on THIS page (\"\" if continuation)"}
+        :string]
+       [:date
+        {:description
+         "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+        :string]
+       [:due-date
+        {:description
+         "ISO YYYY-MM-DD on THIS page (\"\" if continuation)"}
+        :string]
+       [:subtotal
+        {:description "Subtotal on THIS page (0.0 if continuation)"}
+        :double]
+       [:tax
+        {:description "Tax on THIS page (0.0 if continuation)"}
+        :double]
+       [:total
+        {:description "Total on THIS page (0.0 if continuation)"}
+        :double]
+       [:line-items
+        {:description "Line items visible on THIS page"}
+        [:vector
+         [:map
+          [:description
+           {:description "Description of the item or service"}
+           :string]
+          [:quantity {:description "Quantity of items"} :double]
+          [:unit-price
+           {:description "Price per unit in dollars"}
+           :double]
+          [:amount
+           {:description "Total amount for this line item in dollars"}
+           :double]]]]]],
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+     :key :result,
+     :schema
+     [:map
+      [:invoices
+       {:description "Extracted data from each invoice"}
+       [:vector
+        [:map
+         [:vendor-name
+          {:description "Name of the vendor/supplier"}
+          :string]
+         [:invoice-number
+          {:description "Invoice number or reference"}
+          :string]
+         [:date
+          {:description "Invoice date in ISO format (YYYY-MM-DD)"}
+          :string]
+         [:due-date
+          {:description "Payment due date in ISO format (YYYY-MM-DD)"}
+          :string]
+         [:subtotal
+          {:description "Subtotal before tax and discounts"}
+          :double]
+         [:tax {:description "Tax amount in dollars"} :double]
+         [:total {:description "Total amount due in dollars"} :double]
+         [:line-items
+          {:description "Individual line items from the invoice"}
+          [:vector
+           [:map
+            [:description
+             {:description "Description of the item or service"}
+             :string]
+            [:quantity {:description "Quantity of items"} :double]
+            [:unit-price
+             {:description "Price per unit in dollars"}
+             :double]
+            [:amount
+             {:description
+              "Total amount for this line item in dollars"}
+             :double]]]]]]]
+      [:total-amount
+       {:description "Combined total across all invoices in dollars"}
+       :double]
+      [:summary
+       {:description "Brief summary of the invoices processed"}
+       :string]],
+     :value nil,
+     :version 0},
+    :workbook
+    {:sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+     :key :workbook,
+     :schema [:string {:field-type :file}],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "600536b1-de54-41a8-855e-8edf142ea81f"]
+    [:sheet #uuid "9862dccb-4385-5e3c-8530-7deb876a598c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:50:54.696363-05:00",
+  :inputs
+  {:invoices
+   ["/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf"
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dcaea-6ee8-705e-946a-0d9c1a26f328"}
+ {:tick-id #uuid "600536b1-de54-41a8-855e-8edf142ea81f",
+  :event/tags
+  #{[:tick #uuid "600536b1-de54-41a8-855e-8edf142ea81f"]
+    [:sheet #uuid "9862dccb-4385-5e3c-8530-7deb876a598c"]
+    [:node #uuid "b1288661-6acb-50bd-98c0-1c55a5e8fccd"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:50:59.562293-05:00",
+  :inputs {},
+  :node-id #uuid "b1288661-6acb-50bd-98c0-1c55a5e8fccd",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+  :event/id #uuid "019dcaea-81ea-70e6-bbe4-dfc225992b0f"}
+ {:tick-id #uuid "600536b1-de54-41a8-855e-8edf142ea81f",
+  :key :result,
+  :value
+  {:invoices
+   [{:vendor-name "<extract from text>",
+     :invoice-number "<extract from text>",
+     :date "<extract>",
+     :due-date "<extract>",
+     :subtotal 0.0,
+     :tax 0.0,
+     :total 0.0,
+     :line-items
+     [{:description "…", :quantity 1.0, :unit-price 0.0, :amount 0.0}]}
+    {:vendor-name "<extract from text>",
+     :invoice-number "<extract from text>",
+     :date "<extract>",
+     :due-date "<extract>",
+     :subtotal 0.0,
+     :tax 0.0,
+     :total 0.0,
+     :line-items
+     [{:description "…",
+       :quantity 1.0,
+       :unit-price 0.0,
+       :amount 0.0}]}],
+   :total-amount 0.0,
+   :summary "Processed 2 invoices."},
+  :event/tags
+  #{[:tick #uuid "600536b1-de54-41a8-855e-8edf142ea81f"]
+    [:sheet #uuid "9862dccb-4385-5e3c-8530-7deb876a598c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:51:18.292052-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+  :event/id #uuid "019dcaea-cb14-7029-85f0-70efc44b114f"}
+ {:tick-id #uuid "600536b1-de54-41a8-855e-8edf142ea81f",
+  :key :workbook,
+  :value
+  {:error
+   "The workbook already contains a sheet named '<extract from text> <extract from text>'"},
+  :event/tags
+  #{[:tick #uuid "600536b1-de54-41a8-855e-8edf142ea81f"]
+    [:sheet #uuid "9862dccb-4385-5e3c-8530-7deb876a598c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:51:18.292087-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+  :event/id #uuid "019dcaea-cb14-702a-a4ff-17129106e10b"}
+ {:tick-id #uuid "600536b1-de54-41a8-855e-8edf142ea81f",
+  :writes
+  {:result
+   {:invoices
+    [{:vendor-name "<extract from text>",
+      :invoice-number "<extract from text>",
+      :date "<extract>",
+      :due-date "<extract>",
+      :subtotal 0.0,
+      :tax 0.0,
+      :total 0.0,
+      :line-items
+      [{:description "…",
+        :quantity 1.0,
+        :unit-price 0.0,
+        :amount 0.0}]}
+     {:vendor-name "<extract from text>",
+      :invoice-number "<extract from text>",
+      :date "<extract>",
+      :due-date "<extract>",
+      :subtotal 0.0,
+      :tax 0.0,
+      :total 0.0,
+      :line-items
+      [{:description "…",
+        :quantity 1.0,
+        :unit-price 0.0,
+        :amount 0.0}]}],
+    :total-amount 0.0,
+    :summary "Processed 2 invoices."},
+   :workbook
+   {:error
+    "The workbook already contains a sheet named '<extract from text> <extract from text>'"}},
+  :duration-ms 18452,
+  :event/tags
+  #{[:tick #uuid "600536b1-de54-41a8-855e-8edf142ea81f"]
+    [:sheet #uuid "9862dccb-4385-5e3c-8530-7deb876a598c"]
+    [:node #uuid "b1288661-6acb-50bd-98c0-1c55a5e8fccd"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:51:18.285405-05:00",
+  :usage {:prompt-tokens 0, :completion-tokens 0, :total-tokens 0},
+  :status :success,
+  :node-id #uuid "b1288661-6acb-50bd-98c0-1c55a5e8fccd",
+  :iterations
+  [{:code
+    "(let [paths [\"/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf\",\"/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf\"]\n\n      extract-invoice\n      (fn [path]\n        (let [text (pdf/document-text {:path path})]\n          ;; You parse `text` here in your own context. The text is\n          ;; structured invoice data — vendor name in header,\n          ;; line items in a table, totals at bottom.\n          ;; Build the map by hand or with regex/string parsing.\n          {:vendor-name    \"<extract from text>\"\n           :invoice-number \"<extract from text>\"\n           :date           \"<extract>\"\n           :due-date       \"<extract>\"\n           :subtotal       0.0\n           :tax            0.0\n           :total          0.0\n           :line-items     [{:description \"…\" :quantity 1.0\n                             :unit-price 0.0 :amount 0.0}]}))\n\n      invoices (mapv extract-invoice paths)\n\n      total (reduce + 0.0 (keep :total invoices))\n\n      out-path \"/tmp/invoice-extraction.xlsx\"\n\n      sheets-spec (into [{:name \"Summary\"\n                          :columns [{:header \"Vendor\" :width 24}\n                                    {:header \"Invoice #\" :width 14}\n                                    {:header \"Date\" :width 12}\n                                    {:header \"Total\" :width 12}]\n                          :rows (mapv (fn [m]\n                                        [(:vendor-name m) (:invoice-number m)\n                                         (:date m) (or (:total m) 0.0)])\n                                      invoices)}]\n                        (mapv (fn [m]\n                                {:name (str (:vendor-name m) \" \" (:invoice-number m))\n                                 :columns [{:header \"Description\" :width 40}\n                                           {:header \"Qty\" :width 8}\n                                           {:header \"Unit Price\" :width 12}\n                                           {:header \"Amount\" :width 12}]\n                                 :rows (mapv (fn [li]\n                                               [(:description li) (:quantity li)\n                                                (:unit-price li) (:amount li)])\n                                             (:line-items m))})\n                              invoices))\n\n      written (xlsx/write-workbook {:out-path out-path :sheets-spec sheets-spec})]\n\n  (println (str \"FINAL_ANSWER: \"\n                (pr-str\n                  {:result   {:invoices invoices\n                              :total-amount total\n                              :summary (str \"Processed \" (count invoices) \" invoices.\")}\n                   :workbook written}))))",
+    :result "nil",
+    :stdout
+    "FINAL_ANSWER: {:result {:invoices [{:vendor-name \"<extract from text>\", :invoice-number \"<extract from text>\", :date \"<extract>\", :due-date \"<extract>\", :subtotal 0.0, :tax 0.0, :total 0.0, :line-items [{:description \"…\", :quantity 1.0, :unit-price 0.0, :amount 0.0}]} {:vendor-name \"<extract from text>\", :invoice-number \"<extract from text>\", :date \"<extract>\", :due-date \"<extract>\", :subtotal 0.0, :tax 0.0, :total 0.0, :line-items [{:description \"…\", :quantity 1.0, :unit-price 0.0, :amount 0.0}]}], :total-amount 0.0, :summary \"Processed 2 invoices.\"}, :workbook {:error \"The workbook already contains a sheet named '<extract from text> <extract from text>'\"}}\n",
+    :error nil}],
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+  :event/id #uuid "019dcaea-cb0d-70d0-b172-d0c8d1d39731"}
+ {:tick-id #uuid "600536b1-de54-41a8-855e-8edf142ea81f",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "600536b1-de54-41a8-855e-8edf142ea81f"]
+    [:sheet #uuid "9862dccb-4385-5e3c-8530-7deb876a598c"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T12:51:18.393538-05:00",
+  :outputs
+  {:invoices
+   ["/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/acme-invoice-2025-0042.pdf"
+    "/Users/justinobney/dev/orc/examples/invoice_processing/sample/input/globaltech-invoice-GT-10587.pdf"],
+   :pages nil,
+   :page nil,
+   :page-extract nil,
+   :page-extracts nil,
+   :result
+   {:invoices
+    [{:date "<extract>",
+      :subtotal 0.0,
+      :tax 0.0,
+      :total 0.0,
+      :due-date "<extract>",
+      :line-items
+      [{:description "…",
+        :quantity 1.0,
+        :unit-price 0.0,
+        :amount 0.0}],
+      :vendor-name "<extract from text>",
+      :invoice-number "<extract from text>"}
+     {:date "<extract>",
+      :subtotal 0.0,
+      :tax 0.0,
+      :total 0.0,
+      :due-date "<extract>",
+      :line-items
+      [{:description "…",
+        :quantity 1.0,
+        :unit-price 0.0,
+        :amount 0.0}],
+      :vendor-name "<extract from text>",
+      :invoice-number "<extract from text>"}],
+    :total-amount 0.0,
+    :summary "Processed 2 invoices."},
+   :workbook
+   {:error
+    "The workbook already contains a sheet named '<extract from text> <extract from text>'"}},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "9862dccb-4385-5e3c-8530-7deb876a598c",
+  :event/id #uuid "019dcaea-cb79-70fd-97e9-67d09886444b"}]

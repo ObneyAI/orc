@@ -9,7 +9,16 @@ PORT="${1:-7888}"
 
 cd "$(dirname "$0")/.."
 
+LOG_DIR="./.nrepl-logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/nrepl-$PORT.log"
+
 echo "Starting nREPL on port $PORT with :dev and :test aliases..."
+echo "Logging to: $LOG_FILE"
+
+# Tee output to both terminal and log file so the user sees it live
+# while Claude can tail the log file. exec keeps signals (Ctrl+C) clean.
+exec > >(tee "$LOG_FILE") 2>&1
 
 clojure \
   -J--add-opens=java.base/java.nio=ALL-UNNAMED \

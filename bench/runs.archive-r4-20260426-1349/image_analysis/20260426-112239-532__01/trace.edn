@@ -1,0 +1,159 @@
+[{:tick-id #uuid "4a168eb4-18c1-402d-88f2-8933577cfb13",
+  :execution-snapshot
+  {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+   :sheet-name "image-analysis-agentic",
+   :nodes-by-id
+   {#uuid "1bf98972-63b9-5304-a92f-70b163873cbf"
+    {:retry nil,
+     :writes [:answer],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 10,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools ["image/load-data-uri" "image/file-info"],
+     :output-key nil,
+     :status :idle,
+     :id #uuid "1bf98972-63b9-5304-a92f-70b163873cbf",
+     :parent-id nil,
+     :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# Image skill (file → base64 data URI)\n\nFor tasks that pass image files (PNG/JPG/WEBP/GIF/BMP) by local path, use\nthe `image/` namespace to load them as `data:` URIs you can pass to a\nsub-LM as a vision input. The SCI sandbox does not allow direct Java\ninterop, so this is the only path that works.\n\n## Loading\n\n    (image/load-data-uri \"/path/to/photo.png\")\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n`load-data-uri` recognizes png, jpg/jpeg, webp, gif, bmp. Anything else\nbecomes `application/octet-stream` (still loadable, but no vision model\nwill accept it).\n\n## Inspecting first\n\nIf you want to check what's available without loading the bytes:\n\n    (image/file-info \"/path/to/photo.png\")\n    ;; => {:path \"/abs/path\" :name \"photo.png\" :size-bytes 510990 :mime \"image/png\"}\n\n## Pattern: parallel per-image extraction\n\nWhen the workflow gives you a vector of image paths, fan out with\n`predict-all`:\n\n    (let [uris    (mapv image/load-data-uri image-paths)\n          observations\n          (predict-all\n            {:name \"observe-image\"\n             :items uris\n             :as :image\n             :inputs {:query query}\n             :instructions \"Return a concise grounded observation of THIS\n                            image relevant to the query.\"\n             :schema :string\n             :max-concurrency 4})]\n      …)\n\nThen synthesize the per-image observations locally or with one\n`(predict {…})` call.\n\n\nAnalyze multiple images and answer the query about them.\n\n============================================================\nYOU ARE RUNNING IN A VALIDATED SCI SANDBOX\n============================================================\n\nYour code is parsed AND its symbols are checked BEFORE evaluation.\nIf you reach for forbidden symbols, the runtime REJECTS the iteration\nwith a precise error explaining what's wrong. Stay inside the rules\nand the skeleton at the bottom — that gets you done in one iteration.\n\n============================================================\nAVAILABLE SCI BINDINGS\n============================================================\n\nDirect symbols bound for you:\n  image-paths  — the vector of image file paths (full value, use directly)\n  query        — the user's question about the images (string)\n  inputs       — map of {:image-paths […] :query …} (alternative access)\n\nTools (call as namespaced functions, ALWAYS with a single map arg):\n  (image/load-data-uri {:path \"…\"})  -> \"data:image/png;base64,…\"\n  (image/file-info     {:path \"…\"})  -> {:path :name :size-bytes :mime}\n\nRLM primitives:\n  (predict     {:name … :inputs {…} :instructions \"…\"\n                :schema <malli-schema>})\n                — single sub-LM call.\n  (predict-all {:name … :items [...] :as :item :inputs {…}\n                :instructions \"…\" :schema <malli-schema>\n                :max-concurrency 4})\n                — bounded parallel fan-out, returns a vector of results\n                  preserving item order.\n  (final! {:writes-key value …})\n                — capture the final answer; use this LAST.\n\n============================================================\nDO NOT (sandbox will REJECT these BEFORE eval — wasted iteration)\n============================================================\n\n  ❌ NO Java interop:        java.nio.file.Files/readAllBytes,\n                              java.util.Base64/getEncoder,\n                              .method, Class. (constructor)\n  ❌ NO unsafe fns:          slurp, spit, eval, require, load,\n                              load-string, load-file, sh, exec\n\nIf you need to read an image file's bytes, use `image/load-data-uri`.\nThe SCI sandbox blocks every direct Java interop path.\n\n============================================================\n⚠️ FINAL OUTPUT: YOU MUST CALL (final! {…})\n============================================================\n\nThe ONLY way to commit your structured result is to call:\n\n    (final! {:answer \"…the answer string…\"})\n\nReturning a value as the last expression of your code does NOT commit\nthe answer. Only `(final! …)` writes into the workflow's blackboard.\n\n============================================================\nGOAL\n============================================================\n\nIn ONE iteration, write code that:\n  1. converts each path in `image-paths` to a data URI via\n     `image/load-data-uri`\n  2. calls `(predict-all …)` over the URIs to get one observation per image\n     (use :as :image so each item is bound under `:image` in the per-call\n     inputs)\n  3. synthesizes the per-image observations into a single coherent answer\n     to `query` (compose locally, or one `(predict {…})` call)\n  4. ends with (final! {:answer answer-string})\n\n============================================================\nSKELETON — copy this exactly, adapting the synthesis if you wish.\n============================================================\n\n(let [uris (mapv (fn [p] (image/load-data-uri {:path p})) image-paths)\n\n      observations\n      (predict-all\n        {:name        \"observe-image\"\n         :items       uris\n         :as          :image\n         :inputs      {:query query}\n         :instructions \"Return a concise grounded observation of THIS image\n                         relevant to the query. Stay strictly grounded —\n                         only describe what is actually visible.\"\n         :schema      :string\n         :max-concurrency 4})\n\n      answer\n      (if (= 1 (count observations))\n        (first observations)\n        (:answer\n          (predict\n            {:name         \"synthesize\"\n             :inputs       {:query query\n                            :observations (vec observations)}\n             :instructions \"Combine per-image observations into a single\n                             coherent answer to the query. If observations\n                             agree, present the agreed-upon facts. If they\n                             disagree, surface that explicitly. Do not\n                             invent facts not present in the observations.\"\n             :schema       [:map [:answer :string]]})))]\n\n  (final! {:answer answer}))\n",
+     :success-policy nil,
+     :reads [:image-paths :query],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :image-paths,
+      :max-predict-calls 50,
+      :max-predict-concurrency 4,
+      :max-predict-input-chars 5000000,
+      :history-preview-chars 4000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "1bf98972-63b9-5304-a92f-70b163873cbf",
+   :blackboard-entries
+   {:image-paths
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :image-paths,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :image-uris
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :image-uris,
+     :schema [:vector {:field-type :image} :string],
+     :value nil,
+     :version 0},
+    :image-uri
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :image-uri,
+     :schema [:string {:field-type :image}],
+     :value nil,
+     :version 0},
+    :query
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :query,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :per-image-finding
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :per-image-finding,
+     :schema :string,
+     :value nil,
+     :version 0},
+    :per-image-findings
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :per-image-findings,
+     :schema [:vector :string],
+     :value nil,
+     :version 0},
+    :answer
+    {:sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+     :key :answer,
+     :schema :string,
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:sheet #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8"]
+    [:tick #uuid "4a168eb4-18c1-402d-88f2-8933577cfb13"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:22:39.607094-05:00",
+  :inputs
+  {:image-paths
+   ["/Users/justinobney/dev/orc/examples/image_analysis/sample/input/Screenshot 2026-04-02 at 12.16.21 PM.png"],
+   :query
+   "What letters appear in each image, and how many times does each letter appear? Always include: logo text, header address/phone/fax, header email, header website URL, \"Page N\" footers, etc.\n\nFor each image:\n1. Extract the visible text multiple times (at least 2-3 extractions per image)\n2. Compare the extractions - if they differ, extract again until you get consistent results\n3. Only after you have consistent text extraction, count the letters programmatically (case insensitive)\n\nUse prompts like \"Return ONLY the exact text visible, nothing else.\"\nDo all counting and comparison in Python, not via predict().\n\nTreat uppercase and lowercase as the same letter (case-insensitive).\nOutput the letter statistics in alphabetical order (A-Z)."},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+  :options {:timeout-ms 600000, :store-trace? true},
+  :event/id #uuid "019dca99-a2f7-70bf-a215-1ceaa58b6b27"}
+ {:tick-id #uuid "4a168eb4-18c1-402d-88f2-8933577cfb13",
+  :event/tags
+  #{[:sheet #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8"]
+    [:node #uuid "1bf98972-63b9-5304-a92f-70b163873cbf"]
+    [:tick #uuid "4a168eb4-18c1-402d-88f2-8933577cfb13"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:22:44.568776-05:00",
+  :inputs {},
+  :node-id #uuid "1bf98972-63b9-5304-a92f-70b163873cbf",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+  :event/id #uuid "019dca99-b658-70fb-9231-de7e8dbb8377"}
+ {:tick-id #uuid "4a168eb4-18c1-402d-88f2-8933577cfb13",
+  :duration-ms 552,
+  :event/tags
+  #{[:sheet #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8"]
+    [:node #uuid "1bf98972-63b9-5304-a92f-70b163873cbf"]
+    [:tick #uuid "4a168eb4-18c1-402d-88f2-8933577cfb13"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:22:45.380742-05:00",
+  :usage {:prompt-tokens 0, :completion-tokens 0, :total-tokens 0},
+  :status :failure,
+  :node-id #uuid "1bf98972-63b9-5304-a92f-70b163873cbf",
+  :event/type :sheet/node-execution-completed,
+  :error
+  "Insufficient credits. Add more using https://openrouter.ai/settings/credits",
+  :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+  :event/id #uuid "019dca99-b984-70c6-8e38-5b0a2f258d3c",
+  :rlm
+  {:enabled? true,
+   :context-key :image-paths,
+   :root-usage
+   {:prompt-tokens 0, :completion-tokens 0, :total-tokens 0},
+   :subcall-usage
+   {:prompt-tokens 0, :completion-tokens 0, :total-tokens 0},
+   :predict-call-count 0,
+   :model "openai/gpt-5"}}
+ {:tick-id #uuid "4a168eb4-18c1-402d-88f2-8933577cfb13",
+  :iteration 1,
+  :root-status :failure,
+  :event/tags
+  #{[:sheet #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8"]
+    [:tick #uuid "4a168eb4-18c1-402d-88f2-8933577cfb13"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T11:22:45.586851-05:00",
+  :outputs
+  {:image-paths
+   ["/Users/justinobney/dev/orc/examples/image_analysis/sample/input/Screenshot 2026-04-02 at 12.16.21 PM.png"],
+   :image-uris nil,
+   :image-uri nil,
+   :query
+   "What letters appear in each image, and how many times does each letter appear? Always include: logo text, header address/phone/fax, header email, header website URL, \"Page N\" footers, etc.\n\nFor each image:\n1. Extract the visible text multiple times (at least 2-3 extractions per image)\n2. Compare the extractions - if they differ, extract again until you get consistent results\n3. Only after you have consistent text extraction, count the letters programmatically (case insensitive)\n\nUse prompts like \"Return ONLY the exact text visible, nothing else.\"\nDo all counting and comparison in Python, not via predict().\n\nTreat uppercase and lowercase as the same letter (case-insensitive).\nOutput the letter statistics in alphabetical order (A-Z).",
+   :per-image-finding nil,
+   :per-image-findings nil,
+   :answer nil},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "58b86e22-f362-56c3-86be-4f4310bb95f8",
+  :event/id #uuid "019dca99-ba52-706c-99cb-b2dac833f219"}]

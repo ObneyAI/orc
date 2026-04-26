@@ -1,0 +1,140 @@
+{
+  "run_idx" : 3,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "92d3a225-6f74-4342-a4eb-9f14346989e2",
+    "sheet_id" : "7bf421da-8817-57bb-bd64-0582788faa1f",
+    "status" : "success",
+    "event_count" : 5
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-100307__03",
+  "duration_seconds" : 91.19,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 3209,
+      "output" : 282
+    },
+    "sub" : {
+      "input" : 2459,
+      "output" : 7498
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 11
+  },
+  "cost" : {
+    "root_lm" : 0.0068312500000000005,
+    "sub_lm" : 0.015610750000000001,
+    "total" : 0.022442000000000004,
+    "per_page" : 4.987111111111112E-4
+  },
+  "structured" : {
+    "contracts" : null,
+    "doc-summaries" : null,
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "Comparison could not be completed because the provided document extractions failed for all input files. Each docs entry contains extraction errors indicating missing required keys for the pdf/page-count and pdf/document-text operations (the system expected a :path key but received [:document]). Summaries contain no section content (all summaries have sections: null), so there is no parsed section data to compare even if documents were available.\n\nWhat failed (summary):\n- Number of docs received: 11\n- Every doc shows errors: \"pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]\" and \"pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]\".\n- Summaries: 10 entries, all with sections: null (no section data to compare).\n\nImpact:\n- No text or page-count data was extracted, so no section-level diffs or content comparisons could be produced.\n- Key-level differences are reported below as error records for each document.\n\nRecommended next steps:\n1. Re-submit documents ensuring the extraction pipeline receives the expected input format:\n   - Provide each PDF with a valid :path field (or ensure the system calling pdf/page-count and pdf/document-text supplies the expected key names).\n   - Confirm the ingestion step uses the correct parameter names (it appears :document was supplied where :path was required).\n2. If you intended to provide raw text instead of PDFs, supply the document text in the expected field names or indicate the correct input type.\n3. Re-run the extraction. Once successful, re-submit summaries (or let the system generate summaries) so section-level comparisons can be performed.\n4. If you want, paste one example document object (showing the structure you are sending) and one corresponding summary; I can validate the format and point out the exact mismatch.\n\nI can re-run the comparison after you fix the extraction/format issues. Below are the per-document error records captured from the current input.",
+      "section-diffs" : [ ],
+      "key-differences" : [ {
+        "index" : 0,
+        "path" : ":",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 1,
+        "path" : "c",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 2,
+        "path" : "o",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 3,
+        "path" : "n",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 4,
+        "path" : "t",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 5,
+        "path" : "r",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 6,
+        "path" : "a",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 7,
+        "path" : "c",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 8,
+        "path" : "t",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      }, {
+        "index" : 9,
+        "path" : "s",
+        "status" : "error",
+        "error_message" : "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:document]; pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:document]",
+        "expected_key" : ":path",
+        "found_keys" : [ "document" ]
+      } ],
+      "summary" : "Document extraction failed for all inputs due to incorrect/missing :path keys; no section comparisons could be produced. Fix input format and re-submit to run the comparison."
+    },
+    "contract-paths" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ]
+  },
+  "git_sha" : "c3c5be5"
+}

@@ -1,0 +1,68 @@
+{
+  "run_idx" : 1,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "7978f7a3-72a5-47e7-a9b7-fa51a8373c9b",
+    "sheet_id" : "3a7d6084-dae4-5205-82b2-c4c6450437fd",
+    "status" : "success",
+    "event_count" : 6
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "document_analysis",
+  "run_id" : "20260426-100446__01",
+  "duration_seconds" : 37.334,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf",
+    "name" : "YYJ-2025-Parking-Management-RFP.pdf",
+    "size_bytes" : 5379910,
+    "sha256" : "250b794c61200e280d01d6c64f1c24a4f018e96537929fe5d68f969159d44d75",
+    "page_count" : 136
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 136,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 5130,
+      "output" : 396
+    },
+    "sub" : {
+      "input" : 509,
+      "output" : 1015
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0103725,
+    "sub_lm" : 0.0021572500000000003,
+    "total" : 0.01252975,
+    "per_page" : 9.213051470588235E-5
+  },
+  "structured" : {
+    "document-meta" : null,
+    "criteria" : "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist.",
+    "doc-summary" : null,
+    "document-paths" : [ "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf" ],
+    "document" : null,
+    "documents" : null,
+    "docx-report" : {
+      "error" : "docx/write-markdown-as-docx missing required keys [:out-path :md]. Expected [:out-path :md]; got keys [\"/sandbox/output/report.docx\"]"
+    },
+    "analysis" : {
+      "report" : "Executive Summary\n\nNo source documents or findings were provided for analysis. Because the input findings array is empty, there are no facts, decisions, or actions to summarize from document content. This briefing therefore documents the absence of extractable material, explains what would be produced if documents were available, and outlines recommended next steps and a template of the information that will be delivered once documents are provided.\n\nKey Points\n- No documents were supplied; no substantive content could be extracted.\n- The expected deliverables (dates, entities, financials) are therefore unavailable.\n- Recommended next steps and a template of the expected outputs are provided below to speed follow-up analysis.\n\nKey Dates and Timeline\n\nNo dates, deadlines, milestones, meeting times, effective dates, or expirations were found because no documents were available. If documents are provided, the output will include a chronological timeline of all significant dates, with explicit flags for unusually tight timelines and any required action dates.\n\nKey Entities and Stakeholders\n\nNo people, organizations, or roles were identified in the absence of source material. When documents are provided, this section will list each entity, their role or relationship to the matter, and any available contact information (email, phone, address). Example entry format that will be used:\n\n- Name — Role/relationship — Relevance/summary — Contact (if present)\n\nFinancial Information\n\nNo monetary values, fees, budgets, pricing, payment terms, or financial obligations were extracted because no documents were supplied. If financial details are present in future documents, they will be summarized and presented in a concise table showing amount, currency, party responsible, due date, and any conditionality.\n\nRecommendations and Next Steps\n\n1. Provide source materials: upload or paste the documents or findings you want analyzed (contracts, emails, memos, agendas, invoices, statements of work, etc.).\n2. Specify priorities: indicate if you want focus on dates, obligations, risks, financial exposure, or entity relationships.\n3. If there are particular questions you need answered (e.g., termination windows, payment schedules, liability caps), list them to allow targeted extraction.\n4. Upon receipt, the next deliverable will include:\n   - A one-paragraph executive summary of the document(s).\n   - A chronological key-dates timeline with visual flags for critical deadlines.\n   - A roster of key entities and their roles, including available contact information.\n   - A financial table summarizing obligations, amounts, and payment terms.\n   - A concise risk/issue summary and recommended actions.\n\nIf you’d like, provide a single document now and I will produce the full briefing in the format above.",
+      "key-dates" : [ ],
+      "key-entities" : [ ]
+    },
+    "doc-summaries" : null
+  },
+  "git_sha" : "c3c5be5"
+}

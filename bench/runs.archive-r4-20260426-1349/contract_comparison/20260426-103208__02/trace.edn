@@ -1,0 +1,324 @@
+[{:tick-id #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860",
+  :execution-snapshot
+  {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+   :sheet-name "contract-comparison-agentic",
+   :nodes-by-id
+   {#uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"
+    {:retry nil,
+     :writes [:result],
+     :fn nil,
+     :last-error nil,
+     :check nil,
+     :name "orchestrate",
+     :children-ids [],
+     :tools nil,
+     :item-key nil,
+     :source-key nil,
+     :max-iterations 12,
+     :type :repl-researcher,
+     :browser-tools [],
+     :decorators [],
+     :mcp-tools
+     ["pdf/page-count"
+      "pdf/page-text"
+      "pdf/document-text"
+      "pdf/page-image"
+      "pdf/page-image-data-uri"
+      "pdf/search-text"
+      "pdf/redact-rects"
+      "pdf/page-bounds"
+      "xlsx/write-workbook"
+      "xlsx/list-sheets"
+      "xlsx/read-sheet"
+      "xlsx/read-sheet-as-maps"
+      "docx/write-docx"
+      "docx/markdown->elements"
+      "docx/write-markdown-as-docx"
+      "image/load-data-uri"
+      "image/file-info"],
+     :output-key nil,
+     :status :success,
+     :id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+     :parent-id nil,
+     :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :executor nil,
+     :max-concurrency nil,
+     :failure-policy nil,
+     :instruction
+     "# PDF skill (Apache PDFBox via Clojure SCI)\n\nYou can read, render, and inspect PDF files via the `pdf/` namespace. PDFs\nare passed by file path. Page numbers are 0-indexed.\n\n## Inspecting a document\n\n    (pdf/page-count \"/sandbox/input/doc.pdf\")\n    ;; => 12\n\n    (pdf/page-text \"/sandbox/input/doc.pdf\" 0)\n    ;; => \"First page text…\"\n\n    (pdf/document-text \"/sandbox/input/doc.pdf\")\n    ;; => \"Full document text…\"\n\n## Rendering a page as an image (for vision models)\n\nRender and write to a file:\n\n    (pdf/page-image \"/sandbox/input/doc.pdf\" 0\n                    \"/sandbox/output/page-0.png\"\n                    :dpi 200)\n    ;; => \"/sandbox/output/page-0.png\"\n\nOr get a base64 data URI directly (good for inline `(predict {…})` calls\nwith image inputs):\n\n    (pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" 0 :dpi 200)\n    ;; => \"data:image/png;base64,iVBORw0KGgo…\"\n\n## Coordinate-aware text search (for redaction)\n\n`pdf/search-text` returns rectangles for matches:\n\n    (pdf/search-text \"/sandbox/input/doc.pdf\" 0 \"John Doe\")\n    ;; => [{:rect [120.4 633.1 187.2 645.3] :match \"John Doe\"} ...]\n\nCoordinates are in PDF points (72pt/inch), top-left origin.\n\nIf `search-text` returns no hits, try a shorter substring or different\ncasing. PDF text may be split across lines or have extra whitespace.\n\n## Page geometry\n\n    (pdf/page-bounds \"/sandbox/input/doc.pdf\" 0)\n    ;; => {:width 612.0 :height 792.0}\n\n## Pattern: parallel page extraction\n\nWhen extracting structured data from many pages, render each page once and\nfan out with `predict-all`:\n\n    (let [pages (vec (range (pdf/page-count \"/sandbox/input/doc.pdf\")))\n          uris  (mapv #(pdf/page-image-data-uri \"/sandbox/input/doc.pdf\" %) pages)\n          results (predict-all\n                    {:name \"extract-page\"\n                     :items uris\n                     :as :image\n                     :inputs {}\n                     :instructions \"Extract … from this page image.\"\n                     :schema [:map [:fields [:vector :string]]]\n                     :max-concurrency 8})]\n      ;; results is a vector aligned with pages\n      …)\n\n\nCompare PDF contracts and produce a structured ComparisonResult.\n\nYou receive:\n  contracts — vector of PDF paths (full value bound; root prompt sees only metadata)\n\nStrategy:\n\n1. Survey each contract:\n\n   (let [docs (mapv (fn [p] {:path p :pages (pdf/page-count p) :text (pdf/document-text p)})\n                    contracts)]\n     ...)\n\n2. Use predict-all to summarize each contract's section structure in parallel:\n\n   (let [summaries (predict-all\n                     {:name        \"summarize-contract\"\n                      :items       docs\n                      :as          :doc\n                      :inputs      {}\n                      :instructions \"List section headings and key terms.\"\n                      :schema      [:map [:sections [:vector :map]]]\n                      :max-concurrency 4})]\n     ...)\n\n3. Use predict to produce the comparison:\n\n   (let [result (predict\n                  {:name \"compare\"\n                   :inputs {:summaries summaries :docs docs}\n                   :instructions \"Produce a structured ComparisonResult.\"\n                   :schema [:map\n                            [:report :string]\n                            [:section-diffs [:vector :map]]\n                            [:key-differences [:vector :map]]\n                            [:summary :string]]})]\n     (final! {:result result}))\n\nStay grounded — do not invent sections or terms.",
+     :success-policy nil,
+     :reads [:contracts],
+     :model "openai/gpt-5",
+     :rlm
+     {:enabled? true,
+      :context-key :contracts,
+      :max-predict-calls 50,
+      :max-predict-concurrency 4,
+      :max-predict-input-chars 200000,
+      :history-preview-chars 6000,
+      :predict-model "openai/gpt-5-mini"}}},
+   :root-node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+   :blackboard-entries
+   {:contracts
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :contracts,
+     :schema [:vector {:field-type :file} :string],
+     :value nil,
+     :version 0},
+    :doc-summaries
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summaries,
+     :schema [:vector :map],
+     :value nil,
+     :version 0},
+    :doc
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :doc-summary
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :doc-summary,
+     :schema :map,
+     :value nil,
+     :version 0},
+    :result
+    {:sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+     :key :result,
+     :schema
+     [:map
+      [:report
+       {:description "Full comparison report in markdown format"}
+       :string]
+      [:section-diffs
+       {:description "Per-section comparison"}
+       [:vector
+        [:map
+         [:section-name
+          {:description "Name or title of the section being compared"}
+          :string]
+         [:document-a-text
+          {:description "Key text or summary from Document A"}
+          :string]
+         [:document-b-text
+          {:description "Key text or summary from Document B"}
+          :string]
+         [:difference-summary
+          {:description "Summary of what changed"}
+          :string]
+         [:significance
+          {:description "How significant the difference is"}
+          [:enum "major" "minor" "identical"]]]]]
+      [:key-differences
+       {:description "High-level key differences"}
+       [:vector
+        [:map
+         [:area
+          {:description
+           "Area of the contract affected (e.g. pricing, liability)"}
+          :string]
+         [:description
+          {:description "Description of the difference"}
+          :string]
+         [:impact
+          {:description "Potential impact or implication"}
+          :string]]]]
+      [:summary {:description "Executive summary"} :string]],
+     :value nil,
+     :version 0}},
+   :version-number nil},
+  :event/tags
+  #{[:tick #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:32:08.354414-05:00",
+  :inputs
+  {:contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :options {:timeout-ms 300000, :store-trace? true},
+  :event/id #uuid "019dca6b-6222-70df-8f6c-234829771bd2"}
+ {:tick-id #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860",
+  :event/tags
+  #{[:tick #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860"]
+    [:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:32:08.401711-05:00",
+  :inputs {},
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-started,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca6b-6251-7061-87f2-bea703041e58"}
+ {:tick-id #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860",
+  :key :result,
+  :value
+  {:report
+   "Both input documents could not be processed for content extraction. The pipeline returned schema errors for both page-count and document-text extraction: the extractor expected a key named \"path\" but received \"pdf-file-path\". Because no page counts or extracted text are available for either document, I cannot perform any meaningful section-level or content-level comparison. \n\nNext steps you can take to allow comparison:\n- Re-run extraction with the expected schema (include a \"path\" key pointing to the PDF file), or\n- Provide the plain text contents for each document directly, or\n- Provide a corrected extractor output that includes pages.count and text.content (or equivalent) so sections can be identified.\n\nIf you provide corrected extracted text or raw document text, I will produce:\n- a list of section-level diffs,\n- a key-differences summary (topics, headings, numeric/figure changes),\n- and an overall comparison summary.",
+   :section-diffs [],
+   :key-differences
+   [{:doc_path "/sandbox/input/doc1.pdf",
+     :status "extraction_error",
+     :error_source "pages extraction",
+     :error_message
+     "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+     :remediation
+     "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide page count via the expected key."}
+    {:doc_path "/sandbox/input/doc1.pdf",
+     :status "extraction_error",
+     :error_source "text extraction",
+     :error_message
+     "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+     :remediation
+     "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide document text via the expected key."}
+    {:doc_path "/sandbox/input/doc2.pdf",
+     :status "extraction_error",
+     :error_source "pages extraction",
+     :error_message
+     "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+     :remediation
+     "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide page count via the expected key."}
+    {:doc_path "/sandbox/input/doc2.pdf",
+     :status "extraction_error",
+     :error_source "text extraction",
+     :error_message
+     "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+     :remediation
+     "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide document text via the expected key."}
+    {:comparison_status "not_performed",
+     :reason
+     "No extracted pages or text available for either document; comparison aborted."}],
+   :summary
+   "Comparison could not be performed because both documents failed extraction (missing expected 'path' key). Provide corrected extractor outputs or raw document text to continue."},
+  :event/tags
+  #{[:tick #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:32:42.804481-05:00",
+  :event/type :sheet/execution-value-written,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca6b-e8b4-70f0-b301-7c733503335c"}
+ {:tick-id #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860",
+  :writes
+  {:result
+   {:report
+    "Both input documents could not be processed for content extraction. The pipeline returned schema errors for both page-count and document-text extraction: the extractor expected a key named \"path\" but received \"pdf-file-path\". Because no page counts or extracted text are available for either document, I cannot perform any meaningful section-level or content-level comparison. \n\nNext steps you can take to allow comparison:\n- Re-run extraction with the expected schema (include a \"path\" key pointing to the PDF file), or\n- Provide the plain text contents for each document directly, or\n- Provide a corrected extractor output that includes pages.count and text.content (or equivalent) so sections can be identified.\n\nIf you provide corrected extracted text or raw document text, I will produce:\n- a list of section-level diffs,\n- a key-differences summary (topics, headings, numeric/figure changes),\n- and an overall comparison summary.",
+    :section-diffs [],
+    :key-differences
+    [{:doc_path "/sandbox/input/doc1.pdf",
+      :status "extraction_error",
+      :error_source "pages extraction",
+      :error_message
+      "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+      :remediation
+      "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide page count via the expected key."}
+     {:doc_path "/sandbox/input/doc1.pdf",
+      :status "extraction_error",
+      :error_source "text extraction",
+      :error_message
+      "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+      :remediation
+      "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide document text via the expected key."}
+     {:doc_path "/sandbox/input/doc2.pdf",
+      :status "extraction_error",
+      :error_source "pages extraction",
+      :error_message
+      "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+      :remediation
+      "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide page count via the expected key."}
+     {:doc_path "/sandbox/input/doc2.pdf",
+      :status "extraction_error",
+      :error_source "text extraction",
+      :error_message
+      "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+      :remediation
+      "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide document text via the expected key."}
+     {:comparison_status "not_performed",
+      :reason
+      "No extracted pages or text available for either document; comparison aborted."}],
+    :summary
+    "Comparison could not be performed because both documents failed extraction (missing expected 'path' key). Provide corrected extractor outputs or raw document text to continue."}},
+  :duration-ms 34135,
+  :event/tags
+  #{[:tick #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860"]
+    [:node #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:32:42.798167-05:00",
+  :usage
+  {:prompt-tokens 6571, :completion-tokens 648, :total-tokens 7219},
+  :status :success,
+  :node-id #uuid "38c92e1b-b9fb-596f-8bcc-4f381b4fd70e",
+  :event/type :sheet/node-execution-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca6b-e8ae-7001-a1d8-9cfa169acb46",
+  :rlm
+  {:enabled? true,
+   :context-key :contracts,
+   :root-usage
+   {:prompt-tokens 6571, :completion-tokens 648, :total-tokens 7219},
+   :subcall-usage
+   {:prompt-tokens 719, :completion-tokens 2159, :total-tokens 2878},
+   :predict-call-count 3,
+   :model "openai/gpt-5",
+   :final-source :final!}}
+ {:tick-id #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860",
+  :iteration 1,
+  :root-status :success,
+  :event/tags
+  #{[:tick #uuid "b6a8599d-6301-4849-b152-b5ce0cd9e860"]
+    [:sheet #uuid "7bf421da-8817-57bb-bd64-0582788faa1f"]},
+  :event/timestamp
+  #time/offset-date-time "2026-04-26T10:32:42.968686-05:00",
+  :outputs
+  {:contracts nil,
+   :doc-summaries nil,
+   :doc nil,
+   :doc-summary nil,
+   :result
+   {:report
+    "Both input documents could not be processed for content extraction. The pipeline returned schema errors for both page-count and document-text extraction: the extractor expected a key named \"path\" but received \"pdf-file-path\". Because no page counts or extracted text are available for either document, I cannot perform any meaningful section-level or content-level comparison. \n\nNext steps you can take to allow comparison:\n- Re-run extraction with the expected schema (include a \"path\" key pointing to the PDF file), or\n- Provide the plain text contents for each document directly, or\n- Provide a corrected extractor output that includes pages.count and text.content (or equivalent) so sections can be identified.\n\nIf you provide corrected extracted text or raw document text, I will produce:\n- a list of section-level diffs,\n- a key-differences summary (topics, headings, numeric/figure changes),\n- and an overall comparison summary.",
+    :section-diffs [],
+    :key-differences
+    [{:doc_path "/sandbox/input/doc1.pdf",
+      :status "extraction_error",
+      :error_source "pages extraction",
+      :error_message
+      "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+      :remediation
+      "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide page count via the expected key."}
+     {:doc_path "/sandbox/input/doc1.pdf",
+      :status "extraction_error",
+      :error_source "text extraction",
+      :error_message
+      "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+      :remediation
+      "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide document text via the expected key."}
+     {:doc_path "/sandbox/input/doc2.pdf",
+      :status "extraction_error",
+      :error_source "pages extraction",
+      :error_message
+      "pdf/page-count missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+      :remediation
+      "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide page count via the expected key."}
+     {:doc_path "/sandbox/input/doc2.pdf",
+      :status "extraction_error",
+      :error_source "text extraction",
+      :error_message
+      "pdf/document-text missing required keys [:path]. Expected [:path]; got keys [:pdf-file-path]",
+      :remediation
+      "Ensure extractor output includes a top-level 'path' field with the PDF path, or provide document text via the expected key."}
+     {:comparison_status "not_performed",
+      :reason
+      "No extracted pages or text available for either document; comparison aborted."}],
+    :summary
+    "Comparison could not be performed because both documents failed extraction (missing expected 'path' key). Provide corrected extractor outputs or raw document text to continue."},
+   :contract-paths
+   ["/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf"
+    "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf"]},
+  :event/type :sheet/tree-tick-completed,
+  :sheet-id #uuid "7bf421da-8817-57bb-bd64-0582788faa1f",
+  :event/id #uuid "019dca6b-e958-7094-bc86-e20346ab13b3"}]

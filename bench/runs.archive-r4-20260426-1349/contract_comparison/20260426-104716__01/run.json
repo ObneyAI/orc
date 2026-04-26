@@ -1,0 +1,93 @@
+{
+  "run_idx" : 1,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "5815cb3d-0e2d-410d-8bd8-373b80de5639",
+    "sheet_id" : "0a900186-b6cb-5fbc-a632-7de400289bc0",
+    "status" : "success",
+    "event_count" : 11
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-104716__01",
+  "duration_seconds" : 49.316,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 10065,
+      "output" : 5729
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 1
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.013974249999999999,
+    "total" : 0.013974249999999999,
+    "per_page" : 3.105388888888889E-4
+  },
+  "structured" : {
+    "contracts" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ],
+    "doc-summaries" : [ {
+      "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+      "pages" : 23,
+      "text" : "       \n \nFEED-IN TARIFF MICROFIT CONTRACT \nVersion 2.0 \nPart 1 – Contract Details \n \nThe Ontario Power Authority (“OPA”) is offering the microFIT Program pursuant to Ministerial \nDirection issued pur …<elided 19600 chars>… IONS, REQUESTS AND DECISIONS OF SUCH REPRESENTATIVE, \nPROVIDED SAME ARE IN WRITING SIGNED BY THE REPRESENTATIVE, AND SUCH \nACTS OF THE REPRESENTATIVE SHALL BE BINDING ON SUPPLIER AS TO ALL \nMATTERS PE"
+    }, {
+      "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+      "pages" : 22,
+      "text" : "     \n \n \nFEED-IN TARIFF MICROFIT CONTRACT \nVersion 3.1.1 \nPart 1 – Contract Details \n \nThe Ontario Power Authority (“OPA”) is offering the microFIT Program pursuant to Ministerial \nDirection issued p …<elided 19600 chars>…  DISCUSS THIS \nCONTRACT WITH SUCH REPRESENTATIVE AND MAY RELY ON THE \nINSTRUCTIONS, REQUESTS AND DECISIONS OF SUCH REPRESENTATIVE, \nPROVIDED SAME ARE IN WRITING SIGNED BY THE REPRESENTATIVE, AND SUCH "
+    } ],
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "# Comparison Report: microFIT Contract Version 2.0 vs Version 3.1.1\n\nDate: 2026-04-26\n\n## Overview\nThis report compares the two provided microFIT contract texts:\n- Document A: FEED-IN TARIFF MICROFIT  …<elided 4823 chars>… uences. The added \"Prescribed Form\" requirement is operational. The expanded disclosure for emergency services increases privacy exposure and should be reviewed by privacy and compliance stakeholders.",
+      "section-diffs" : "[\n  {\n    \"section-name\": \"Document Header / Version\",\n    \"document-a-text\": \"FEED-IN TARIFF MICROFIT CONTRACT \\\\nVersion 2.0\",\n    \"document-b-text\": \"FEED-IN TARIFF MICROFIT CONTRACT \\\\nVersion 3.1 …<elided 8865 chars>… sts or decisions in order to terminate, amend or assign ...\\\",\n    \"difference-summary\": \"These clauses appear substantively identical in the provided extracts.\",\n    \"significance\": \"identical\"\n  }\n]",
+      "key-differences" : [ {
+        "area" : "Domestic Content Requirement (solar PV)",
+        "description" : "Version 2.0 explicitly specified a 'Minimum Required Domestic Content Level' (60%) in Part 1 B(5)(iv) and included a supplier representation (4.4.4) that solar PV facilities meet that domestic content level. Version 3.1.1 omits these references.",
+        "impact" : "Major — removes a material supplier obligation and a basis for OPA to collect/verify domestic content compliance under the contract. Affects eligibility/compliance enforcement and any supplier assurances tied to domestic content."
+      }, {
+        "area" : "Collection & Disclosure of Information / Privacy",
+        "description" : "Version 3.1.1 removes references to collecting/disclosing information about compliance with Minimum Required Domestic Content Level and adds explicit permission for OPA to disclose facility details to other government ministries/agencies/institutions for public health, safety and emergency planning purposes.",
+        "impact" : "Major — broadens permissible disclosure recipients and purposes, increasing privacy and data-sharing exposure. Requires privacy review and potential updates to notices, consents and governance."
+      }, {
+        "area" : "Notification Format (Operational requirement)",
+        "description" : "Covenant 5.1.2 in v3.1.1 requires notification of changes 'in the Prescribed Form', whereas v2.0 only required prompt notification without specifying form.",
+        "impact" : "Minor — procedural/operational. Requires use/adoption of a prescribed form; changes processes for supplier communications and record-keeping."
+      }, {
+        "area" : "Editorial and numbering changes",
+        "description" : "Small renumbering and editorial adjustments (e.g., shifting of clause numbers in 4.4 due to removal of domestic content clause). Header shows version change to 3.1.1.",
+        "impact" : "Minor — largely stylistic but can affect cross-references; confirm cross-references remain accurate."
+      } ],
+      "summary" : "The principal change from Version 2.0 to Version 3.1.1 is the removal of the Minimum Required Domestic Content Level and all contract references obligating the Supplier to warrant or support verification of such domestic content. This is a material change affecting supplier obligations, program eligibility enforcement, and any downstream use of domestic content as a selection or compliance criterion. Additionally, v3.1.1 introduces a requirement that certain notifications be made \"in the Prescribed Form\" (operational change) and expands permitted data disclosures to include other government bodies for public health, safety and emergency planning (privacy and data-sharing impact). Counsel and program administrators should confirm whether these changes reflect intended policy updates, and privacy/compliance teams should review the expanded disclosure language."
+    }
+  },
+  "git_sha" : "c3c5be5"
+}

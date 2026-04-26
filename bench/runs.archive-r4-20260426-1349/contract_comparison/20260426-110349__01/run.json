@@ -1,0 +1,145 @@
+{
+  "run_idx" : 1,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "0a70c29b-8000-4bea-b633-e6f3065a165a",
+    "sheet_id" : "7bf421da-8817-57bb-bd64-0582788faa1f",
+    "status" : "success",
+    "event_count" : 5
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "contract_comparison",
+  "run_id" : "20260426-110349__01",
+  "duration_seconds" : 117.405,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf",
+    "name" : "microFIT-Contract-Version-2-0.pdf",
+    "size_bytes" : 215980,
+    "sha256" : "ebec0898e0fe4b55e12cc9e08b5151951c25b39f086de99e5450e8d0d4c05957",
+    "page_count" : 23
+  }, {
+    "path" : "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf",
+    "name" : "microFIT-Contract-Version-3-1-1.pdf",
+    "size_bytes" : 350971,
+    "sha256" : "a16d90526b764f0ccda768559e68cbb5fb0dc5f0255bd18567d2c372408477b4",
+    "page_count" : 22
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 45,
+  "outputs" : [ ],
+  "stack" : "orc-style-b",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 3290,
+      "output" : 253
+    },
+    "sub" : {
+      "input" : 50220,
+      "output" : 10687
+    }
+  },
+  "calls" : {
+    "root" : 1,
+    "sub" : 3
+  },
+  "cost" : {
+    "root_lm" : 0.0066425,
+    "sub_lm" : 0.033929,
+    "total" : 0.0405715,
+    "per_page" : 9.01588888888889E-4
+  },
+  "structured" : {
+    "contracts" : [ "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-2-0.pdf", "/Users/justinobney/dev/orc/examples/contract_comparison/sample/input/microFIT-Contract-Version-3-1-1.pdf" ],
+    "doc-summaries" : null,
+    "doc" : null,
+    "doc-summary" : null,
+    "result" : {
+      "report" : "The two documents are versions of the microFIT Contract (Version 2.0 vs Version 3.1.1). Overall the structure and most contractual provisions remain the same, but Version 3.1.1 introduces several procedural/administrative changes and removes the detailed Domestic Content requirements that were present in Version 2.0. Key changes (summarized here and detailed in the JSON outputs) are:\n\n- Removal of the Domestic Content Requirements and the Domestic Content Grids (Appendix C) and removal of the clause in the representations/warranties requiring compliance with the Minimum Required Domestic Content Level.\n- Introduction of a “Prescribed Form” concept (new defined term) and multiple procedural changes requiring actions, notices or forms to be made “in the Prescribed Form” (e.g., notification of changes in A(11), change of contact information, termination on notice, amendment).\n- Addition of a “Website” definition and expanded discretion for OPA (e.g., Project Eligibility exception subject to OPA consent; OPA discretion in deeming Existing Building).\n- Modifications to the Collection/Disclosure of Information language (adds explicit public health / emergency planning disclosure language and removes explicit reference to disclosure regarding Domestic Content compliance).\n- Minor renumbering/relabelling of clauses in Section 4.4 due to removal of the Domestic Content clause.\n- Clarifying edits in a number of notice/amendment/termination provisions (inserting Prescribed Form), and small expansions on OPA’s discretion and purposes for sharing information.\n\nEffect and recommendations:\n- The removal of Domestic Content provisions is a substantive policy change: suppliers reliant on those rules should be made aware (impact on eligibility or pricing conditions if their application depended on those rules).\n- The Prescribed Form requirement centralizes and standardizes how Suppliers must provide certain notices/requests. Parties should confirm where to find the Prescribed Form (the new “Website” definition points to the OPA website) and update internal procedures to comply.\n- The changes to disclosure (public health/emergency planning) broaden where facility/location information may be shared; Suppliers should review and, if necessary, seek clarification on what will be published/shared and the timing.\n- The addition of OPA discretion for consenting to otherwise excluded contracted facilities may permit exceptions; Suppliers should note this and consider seeking written confirmations where relevant.\n\nDetailed per-section diffs and concise key differences follow.",
+      "section-diffs" : [ {
+        "section" : "Appendix C – Solar Photovoltaic Schedule: Domestic Content Requirements and Grids",
+        "v2" : "Contains detailed 'DOMESTIC CONTENT REQUIREMENTS' with rules (Sections 1.1–1.7) and three Domestic Content Grids (Tables 1–3) allocating Qualifying Percentages totaling 100% for crystalline silicon, thin-film, and concentrated PV technologies.",
+        "v3" : "Appendix C contains only ADDITIONAL DEFINED TERMS (Existing Building; Rooftop Facility) and does not include the Domestic Content Requirements section or any Domestic Content Grids. The domestic-content allocation tables are removed."
+      }, {
+        "section" : "Part 2, Section 4.4 (Necessary Rights and Compliance) / Representations and Warranties",
+        "v2" : "4.4.4 If the Facility is a solar photovoltaic facility, it has a Domestic Content Level greater than or equal to the Minimum Required Domestic Content Level. (followed by 4.4.5 Renewable Energy Approval, 4.4.6 Application statements)",
+        "v3" : "The Domestic Content representation is removed. 4.4.4 now states 'The Facility has obtained a Renewable Energy Approval, if applicable.' (Application statements follow as renumbered)."
+      }, {
+        "section" : "Appendix A – Definitions: Prescribed Form, Website, and Existing Building/Rooftop Facility",
+        "v2" : "No defined term 'Prescribed Form' nor 'Website'. 'Existing Building' and 'Rooftop Facility' definitions appear in Appendix C (detailed domestic-content regime).",
+        "v3" : "New definitions added: 'Prescribed Form' (latest version of corresponding form appearing on the Website) and 'Website' (OPA microFIT website URL). 'Existing Building' definition expanded to allow OPA written confirmation to deem a building an Existing Building for Rooftop Facility purposes; Rooftop Facility definition retains and references Existing Building."
+      }, {
+        "section" : "Part 5.1.2 / Covenants – Notification of changes to Part 1, Section A(11)",
+        "v2" : "5.1.2 Supplier shall notify OPA promptly of any change to the information contained in Part 1, Section A(11).",
+        "v3" : "5.1.2 Supplier shall notify OPA promptly in the Prescribed Form of any change to the information contained in Part 1, Section A(11)."
+      }, {
+        "section" : "Part 7.2 Change of Contact Information",
+        "v2" : "7.2 Either Party may, by written notice to the other, change its contact information for notices and communication.",
+        "v3" : "7.2 Either Party may, by written notice in the Prescribed Form to the other, change its contact information for notices and communication."
+      }, {
+        "section" : "Part 8.1 Termination (On Notice)",
+        "v2" : "8.1 Supplier may terminate this Contract on 30 days’ prior written notice to OPA.",
+        "v3" : "8.1 Supplier may terminate this Contract on 30 days’ prior written notice in the Prescribed Form to OPA."
+      }, {
+        "section" : "Part 9 Amendment",
+        "v2" : "No amendment shall be enforceable unless reduced to writing and each Party has evidenced agreement with such amendment or modification.",
+        "v3" : "No amendment shall be enforceable unless reduced to writing in the Prescribed Form and each Party has evidenced agreement with such amendment or modification."
+      }, {
+        "section" : "Part 6.5 Collection of Information / Disclosure of Information",
+        "v2" : "Explains OPA, LDC and ministries may collect / disclose information (explicitly includes property identification, zoning, GST number, info to establish compliance with Minimum Required Domestic Content Level). Disclosure list explicitly includes 'compliance with Minimum Required Domestic Content Level'.",
+        "v3" : "Similar disclosure and sharing language, but the explicit reference to 'compliance with Minimum Required Domestic Content Level' is removed. Adds language allowing OPA to disclose certain information to other government ministries/agencies for promoting public health and safety and for emergency services planning and response."
+      }, {
+        "section" : "Appendix A – Project Eligibility Requirements (clause (c))",
+        "v2" : "(c) not be an OPA contracted facility that has reached commercial operation or have been an OPA contracted facility that had previously achieved commercial operation;",
+        "v3" : "(c) unless otherwise consented to by the OPA in writing in its sole and absolute discretion, not be an OPA contracted facility that has reached commercial operation or have been an OPA contracted facility that had previously achieved commercial operation;"
+      }, {
+        "section" : "Appendix C – 'Existing Building' (definition change)",
+        "v2" : "'Existing Building' means a building that was in existence and completely constructed on the date that the Application was first submitted.",
+        "v3" : "'Existing Building' means a building that (a) was in existence and completely constructed on the date that the Applicant first submitted its Application, or (b) in respect of which the OPA has, in its sole and absolute discretion, issued a written confirmation that the building will be deemed an Existing Building for the purposes of the definition of Rooftop Facility."
+      } ],
+      "key-differences" : [ {
+        "id" : "KD-1",
+        "title" : "Removal of Domestic Content Requirements (Appendix C and related representation)",
+        "importance" : "High",
+        "description" : "Version 3.1.1 removes the Domestic Content Requirements section and all Domestic Content Grids from Appendix C and deletes the representation in Part 2 (4.4) that a solar PV Facility meets the Minimum Required Domestic Content Level.",
+        "impact" : "Substantive policy change. Suppliers that relied on domestic-content rules for eligibility, compliance obligations, or pricing expectations must be notified and may need to revise compliance evidence and claims. Any application/certification processes tied to domestic content are affected."
+      }, {
+        "id" : "KD-2",
+        "title" : "Introduction of 'Prescribed Form' and requirement to use it",
+        "importance" : "High",
+        "description" : "Version 3.1.1 adds a new defined term 'Prescribed Form' (and 'Website' where forms appear). Several procedures that previously required 'written notice' or 'copies' now explicitly require use of the 'Prescribed Form' (e.g., notification of changes to A(11), change of contact information, termination on notice, amendment).",
+        "impact" : "Operational/procedural: Suppliers must use the OPA's current prescribed forms (on the Website) for those actions. Failure to use the Prescribed Form could affect the validity of notices and requests—parties should confirm where to access forms and update internal processes."
+      }, {
+        "id" : "KD-3",
+        "title" : "Broadened disclosure for public health / emergency planning and removal of domestic content disclosure",
+        "importance" : "Medium",
+        "description" : "Version 3.1.1 expands permitted disclosure to other government ministries/agencies for public health, safety and emergency response planning, and removes explicit reference to sharing compliance information about Minimum Required Domestic Content Level.",
+        "impact" : "Privacy and reputational considerations: facility location and characteristics may be shared more broadly (e.g., for emergency planning). Suppliers should review privacy implications and any public disclosure they may wish to limit or prepare for."
+      }, {
+        "id" : "KD-4",
+        "title" : "OPA discretionary consent for otherwise excluded FIT-contracted facilities",
+        "importance" : "Medium",
+        "description" : "Project Eligibility clause (c) is amended so that a previously contracted facility that reached commercial operation may be allowed only if OPA consents in writing in its sole and absolute discretion.",
+        "impact" : "Suppliers seeking exceptions may request OPA consent; this provides OPA an express veto/exception authority. Parties should seek written confirmation from OPA when relying on exceptions."
+      }, {
+        "id" : "KD-5",
+        "title" : "Adjusted definitions: Existing Building and Website",
+        "importance" : "Medium",
+        "description" : "The definition of 'Existing Building' now allows OPA discretion to deem buildings as Existing Buildings; a 'Website' definition (OPA microFIT site) is added to point to where forms or versions will appear.",
+        "impact" : "OPA may grant exceptions for rooftop qualification. Suppliers should monitor the Website for current Prescribed Forms and any OPA confirmations regarding Existing Building status."
+      }, {
+        "id" : "KD-6",
+        "title" : "Procedural standardization and minor renumbering",
+        "importance" : "Low",
+        "description" : "Several clauses were reworded to require Prescribed Form and some representation numbers changed due to removed clause(s). The Indexed Price calculation and most substantive payment/settlement provisions remain unchanged.",
+        "impact" : "Mainly administrative. Parties should check reference numbers if cross-referencing the contract and ensure forms used match the Prescribed Form requirement."
+      } ],
+      "summary" : "Version 3.1.1 keeps the substantive commercial framework intact (pricing, term, payments, environmental attribute assignment, access, assignment, dispute resolution, OPA guarantee) but removes the Domestic Content regime and centralizes several procedural actions around a new 'Prescribed Form' available on the OPA Website. It also expands OPA discretion in limited eligibility and Rooftop Facility determinations, and broadens permitted disclosures for public health and emergency planning. Key recommended actions: notify affected suppliers about the domestic-content removal, locate and adopt the 'Prescribed Form' procedures on the OPA Website, and review privacy/disclosure impacts."
+    }
+  },
+  "git_sha" : "c3c5be5"
+}

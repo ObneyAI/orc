@@ -1,0 +1,165 @@
+{
+  "run_idx" : 2,
+  "max_iterations" : 15,
+  "orc" : {
+    "tick_id" : "9eda32ef-651b-4b8a-b145-d61ba2c43b31",
+    "sheet_id" : "049a1879-3d59-5bb4-bf80-3f36d166a22c",
+    "status" : "success",
+    "event_count" : 25
+  },
+  "prompt_source" : "predict-rlm",
+  "task" : "document_analysis",
+  "run_id" : "20260426-105137__02",
+  "duration_seconds" : 71.824,
+  "models" : {
+    "root" : "openai/gpt-5",
+    "sub" : "openai/gpt-5-mini"
+  },
+  "inputs" : [ {
+    "path" : "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf",
+    "name" : "YYJ-2025-Parking-Management-RFP.pdf",
+    "size_bytes" : 5379910,
+    "sha256" : "250b794c61200e280d01d6c64f1c24a4f018e96537929fe5d68f969159d44d75",
+    "page_count" : 136
+  } ],
+  "trace_path" : "trace.edn",
+  "total_pages" : 136,
+  "outputs" : [ {
+    "path" : "outputs/document_analysis-report.docx",
+    "original-path" : "/var/folders/7c/mk5m1c5n3b958yp5nhckc1dm0000gn/T/document_analysis-report.docx",
+    "size_bytes" : 6669,
+    "sha256" : "903f8f129bf0fe021ca9bded127ae14ec5b77aa3081638c33c06295e33b39f2b"
+  } ],
+  "stack" : "orc-style-a",
+  "error" : null,
+  "tokens" : {
+    "root" : {
+      "input" : 0,
+      "output" : 0
+    },
+    "sub" : {
+      "input" : 9581,
+      "output" : 7548
+    }
+  },
+  "calls" : {
+    "root" : 0,
+    "sub" : 2
+  },
+  "cost" : {
+    "root_lm" : 0.0,
+    "sub_lm" : 0.01749125,
+    "total" : 0.01749125,
+    "per_page" : 1.2861213235294117E-4
+  },
+  "structured" : {
+    "document-meta" : [ {
+      "path" : "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf",
+      "pages" : 136,
+      "text" : " \n \n \nRequest for Proposal \n \nSubject: Parking Management Services \n \nVictoria International Airport \n \n \nDate of Issue: Thursday, February 13th, 2025 \n \nResponse due by: Monday, March 31th, 2025 \n 2: …<elided 15600 chars>… . \n \n \n \n VICTORIA AIRPORT AUTHORITY - REQUEST FOR PROPOSALS \n 2025 PARKING MANAGEMENT SERVICES \n  \n  \nPage | 7 \n \nB. TRAINING \nEmployees will be trained in operational requirements, customer service,"
+    } ],
+    "criteria" : "Analyze the document(s) and produce a comprehensive briefing report\nstructured as follows.\n\n    ---\n\n    **Formatting guidelines:**\n\nThe report should be professional, easy to read, and visually elegant.\nMix prose, tables, bullets, and numbered items to draw the topology of\nthe information and help the reader quickly parse the report. Do not\ninclude page references — present information directly. Use bold\nsparingly. Favor prose over bullets; use bullets very sparingly.\n\n    ---\n\n    **Report sections:**\n\n    1.  **Executive Summary**\n    What is this document about? Who are the key parties involved?\n    What are the most important facts, decisions, or actions described?\n\n2.  **Key Dates and Timeline**\n    All significant dates mentioned in the document: deadlines,\n    effective dates, milestones, meetings, expiration dates. Present\n    in chronological order. Flag any unusually tight timelines.\n\n3.  **Key Entities and Stakeholders**\n    People, organizations, and roles mentioned in the document.\n    For each, note their role and relevance. Include contact\n    information where available.\n\n4.  **Financial Information**\n    Any monetary amounts, fees, budgets, pricing structures,\n    payment terms, or financial obligations mentioned. Summarize\n    in a table if multiple items exist.",
+    "doc-summary" : "Executive Summary\nThis document is a Request for Proposals (RFP) issued by the Victoria Airport Authority (VAA) for Parking Management Services at Victoria International Airport (YYJ). The Authority s …<elided 6631 chars>…  prepare financial submission per Schedule Five, develop curb management and Indigenous engagement proposals, and plan for required local presence and pre-start documentation (on-site manager resume).",
+    "document" : {
+      "path" : "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf",
+      "pages" : 136,
+      "text" : " \n \n \nRequest for Proposal \n \nSubject: Parking Management Services \n \nVictoria International Airport \n \n \nDate of Issue: Thursday, February 13th, 2025 \n \nResponse due by: Monday, March 31th, 2025 \n 2: …<elided 15600 chars>… . \n \n \n \n VICTORIA AIRPORT AUTHORITY - REQUEST FOR PROPOSALS \n 2025 PARKING MANAGEMENT SERVICES \n  \n  \nPage | 7 \n \nB. TRAINING \nEmployees will be trained in operational requirements, customer service,"
+    },
+    "documents" : [ "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf" ],
+    "docx-report" : "run-orc/file",
+    "analysis" : {
+      "report" : "# Victoria Airport Authority — RFP: 2025 Parking Management Services  \nBriefing report based on the provided RFP summary\n\n---\n\n## 1. Executive Summary\n\nThis document is a Request for Proposals (RFP) i …<elided 10204 chars>… hiring, and training.  \n6. Review Appendices (equipment list, snow/ice map, sample reports, draft contract) to identify capital, operational or compliance gaps and cost impacts.\n\n---\n\nEnd of briefing.",
+      "key-dates" : [ {
+        "name" : "RFP Date of Issue",
+        "date" : "2025-02-13",
+        "time" : null,
+        "timezone" : null
+      }, {
+        "name" : "Proposal Submission Deadline",
+        "date" : "2025-03-31",
+        "time" : "14:00",
+        "timezone" : "Pacific Standard Time"
+      }, {
+        "name" : "Contract Commencement (start date)",
+        "date" : "2025-06-01",
+        "time" : null,
+        "timezone" : null
+      }, {
+        "name" : "On-site Manager Resume Deadline (must be provided before contract start)",
+        "date" : "Before 2025-06-01",
+        "time" : null,
+        "timezone" : null
+      }, {
+        "name" : "Contract Expiry (end of initial 5-year term)",
+        "date" : "2030-05-31",
+        "time" : null,
+        "timezone" : null
+      }, {
+        "name" : "Optional Renewal Term (one 2-year term, dates not specified)",
+        "date" : "Option for one renewal term of two years (dates TBD)",
+        "time" : null,
+        "timezone" : null
+      } ],
+      "key-entities" : [ {
+        "name" : "Victoria Airport Authority (VAA)",
+        "role" : "Issuer of the RFP; contracting authority; operator/developer of Victoria International Airport",
+        "contact" : null
+      }, {
+        "name" : "Victoria International Airport (YYJ)",
+        "role" : "Site of services; airport operated by VAA",
+        "contact" : null
+      }, {
+        "name" : "Proponent / Operator",
+        "role" : "Respondent to RFP; if selected, will operate/manage parking facilities under Contract",
+        "contact" : null
+      }, {
+        "name" : "Authority’s Authorized Representative",
+        "role" : "Designated VAA contact/representative for RFP and Contract administration",
+        "contact" : null
+      }, {
+        "name" : "W̱SÁNEĆ peoples",
+        "role" : "Traditional territory holders acknowledged by VAA; stakeholder for partnership opportunities",
+        "contact" : null
+      }, {
+        "name" : "Tseycum First Nation",
+        "role" : "Named First Nation for partnership engagement",
+        "contact" : null
+      }, {
+        "name" : "Tsartlip First Nation",
+        "role" : "Named First Nation for partnership engagement",
+        "contact" : null
+      }, {
+        "name" : "Tsawout First Nation",
+        "role" : "Named First Nation for partnership engagement",
+        "contact" : null
+      }, {
+        "name" : "Pauquachin First Nation",
+        "role" : "Named First Nation for partnership engagement",
+        "contact" : null
+      }, {
+        "name" : "On-site Manager",
+        "role" : "Required on-site manager for parking operation; resume must be provided prior to contract start",
+        "contact" : null
+      }, {
+        "name" : "Lot Attendant(s)",
+        "role" : "Booth cashiers and lot patrollers — duties include cashiering, patrols, trash pickup, customer assistance, enforcement",
+        "contact" : null
+      }, {
+        "name" : "Curb Management Officer",
+        "role" : "Manage shared-use curbs on terminal frontage and commercial lane in short-term lot",
+        "contact" : null
+      }, {
+        "name" : "Parking Operations Employees",
+        "role" : "General staff for parking operations (must meet eligibility, language, uniform and compensation requirements)",
+        "contact" : null
+      } ]
+    },
+    "doc-summaries" : [ {
+      "path" : "/Users/justinobney/dev/orc/examples/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf",
+      "pages" : 136,
+      "text" : " \n \n \nRequest for Proposal \n \nSubject: Parking Management Services \n \nVictoria International Airport \n \n \nDate of Issue: Thursday, February 13th, 2025 \n \nResponse due by: Monday, March 31th, 2025 \n 2: …<elided 15600 chars>… . \n \n \n \n VICTORIA AIRPORT AUTHORITY - REQUEST FOR PROPOSALS \n 2025 PARKING MANAGEMENT SERVICES \n  \n  \nPage | 7 \n \nB. TRAINING \nEmployees will be trained in operational requirements, customer service,",
+      "doc-summary" : "Executive Summary\nThis document is a Request for Proposals (RFP) issued by the Victoria Airport Authority (VAA) for Parking Management Services at Victoria International Airport (YYJ). The Authority s …<elided 6631 chars>…  prepare financial submission per Schedule Five, develop curb management and Indigenous engagement proposals, and plan for required local presence and pre-start documentation (on-site manager resume)."
+    } ]
+  },
+  "git_sha" : "c3c5be5"
+}
