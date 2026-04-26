@@ -1447,13 +1447,17 @@
                              str/trim)
                          raw))
 
-                ;; Update usage tracking
-                _ (when-let [usage (:usage llm-result)]
+                ;; Update usage tracking. normalize-usage accepts either
+                ;; snake_case (raw litellm / unit-test mocks) or kebab-case
+                ;; (modern dscloj/predict with :with-metadata? true) — without
+                ;; this normalization, the kebab response was reading 0 from
+                ;; the snake-case keys and silent-undercounting cost in traces.
+                _ (when-let [u (normalize-usage (:usage llm-result))]
                     (swap! total-usage
-                           (fn [u]
-                             {:prompt-tokens (+ (:prompt-tokens u 0) (:prompt_tokens usage 0))
-                              :completion-tokens (+ (:completion-tokens u 0) (:completion_tokens usage 0))
-                              :total-tokens (+ (:total-tokens u 0) (:total_tokens usage 0))})))]
+                           (fn [acc]
+                             {:prompt-tokens     (+ (:prompt-tokens acc 0)     (:prompt-tokens u))
+                              :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
+                              :total-tokens      (+ (:total-tokens acc 0)      (:total-tokens u))})))]
 
             (cond
               ;; No code generated
