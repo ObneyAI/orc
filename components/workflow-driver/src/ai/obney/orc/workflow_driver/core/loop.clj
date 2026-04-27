@@ -61,13 +61,18 @@
      :eval-set       vector of {:name :inputs} items
 
    Options:
-     :max-turns       budget (default 5)
-     :min-pass-rate   publish threshold (default 1.0)
-     :model           DSCloj model id (default \"google/gemini-2.5-flash\")
-     :provider        DSCloj provider (default :openrouter)
-     :tick-timeout-ms per-eval-tick timeout (default 60000)
-     :description     description tag attached to the published version
-     :on-turn         optional (fn [turn-event]) callback for tracing
+     :max-turns            budget (default 5)
+     :min-pass-rate        publish threshold (default 1.0)
+     :model                DSCloj model id (default \"google/gemini-2.5-flash\")
+     :provider             DSCloj provider (default :openrouter)
+     :tick-timeout-ms      per-eval-tick timeout (default 60000)
+     :description          description tag attached to the published version
+     :on-turn              optional (fn [turn-event]) callback for tracing
+     :seed-prior-attempts  vector of attempt maps from earlier runs to seed
+                           the propose prompt. Each item: {:turn :status
+                           :reason} (same shape the loop builds internally).
+                           Lets a caller carry rejection history across
+                           process boundaries. Default [].
 
    Returns:
      {:status :published | :surrendered | :error
@@ -78,18 +83,23 @@
                :submit {:status … :diff …}
                :eval <report-or-nil>
                :decision :publish | :continue | :surrender} …]
+      :prior-attempts [<attempt> …]   ;; final accumulated history (seed +
+                                      ;; this run's attempts), for the
+                                      ;; caller to persist
       :usage {:prompt-tokens … :completion-tokens … :total-tokens …}}"
   [ctx {:keys [sheet-id objective eval-set
                max-turns min-pass-rate
                judges min-judge-score
                model provider tick-timeout-ms
-               description on-turn]
+               description on-turn
+               seed-prior-attempts]
         :or {max-turns 5
              min-pass-rate 1.0
              judges []
              model "google/gemini-2.5-flash"
              provider :openrouter
-             tick-timeout-ms 60000}}]
+             tick-timeout-ms 60000
+             seed-prior-attempts []}}]
   (when-not (orc/get-sheet ctx sheet-id)
     (throw (ex-info "Sheet not found" {:sheet-id sheet-id})))
   (let [session-id (random-uuid)
@@ -113,7 +123,7 @@
             (events/session-ended! ctx session-id sheet-id result)
             (assoc result :session-id session-id))]
       (loop [turn 1
-             prior-attempts []
+             prior-attempts (vec seed-prior-attempts)
              turns []
              usage {}]
         (if (> turn max-turns)
@@ -124,6 +134,7 @@
                :reason :max-turns-reached
                :final-eval final-report
                :turns turns
+               :prior-attempts prior-attempts
                :usage usage}))
           (do
             (events/turn-began! ctx session-id sheet-id turn (count prior-attempts))
@@ -174,11 +185,13 @@
                        :snapshot-id (:snapshot-id pub)
                        :final-eval eval-report
                        :turns (conj turns turn-event)
+                       :prior-attempts prior-attempts
                        :usage new-usage})
                     (end-session
                       {:status :error
                        :error (:error pub)
                        :turns (conj turns turn-event)
+                       :prior-attempts prior-attempts
                        :usage new-usage})))
 
                 :surrender
@@ -187,6 +200,7 @@
                    :reason :max-turns-without-publishable-draft
                    :final-eval eval-report
                    :turns (conj turns turn-event)
+                   :prior-attempts prior-attempts
                    :usage new-usage})
 
             :continue

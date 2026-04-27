@@ -504,12 +504,48 @@
         x))
     workflow))
 
+(def ^:private driver-cache-dir
+  (io/file "bench" ".driver-cache"))
+
+(def ^:private driver-cache-cap
+  "Hard cap on cached prior-attempts per task — keeps prompt growth bounded
+   when many bench runs accumulate against the same degradation."
+  12)
+
+(defn- driver-cache-file [task]
+  (io/file driver-cache-dir (str (name task) ".edn")))
+
+(defn- load-driver-cache
+  "Returns the cached prior-attempts vector for `task`, or [] if no cache."
+  [task]
+  (let [f (driver-cache-file task)]
+    (if (.exists f)
+      (try (read-string (slurp f))
+           (catch Throwable t
+             (println "WARN: could not read driver cache for" task "—" (.getMessage t))
+             []))
+      [])))
+
+(defn- save-driver-cache!
+  "Append `new-attempts` to the cache for `task`, trim to last
+   `driver-cache-cap`, write back."
+  [task new-attempts]
+  (when (seq new-attempts)
+    (.mkdirs driver-cache-dir)
+    (let [existing (load-driver-cache task)
+          combined (vec (take-last driver-cache-cap
+                                   (into existing new-attempts)))]
+      (spit (driver-cache-file task) (pr-str combined)))))
+
 (defn- run-driver-once
   "Driver-recovery bench cell:
      1. Build pristine Style A pipeline.
      2. Apply per-task degradation to a chosen node.
-     3. Run driver/run-driver-loop! with eval-set + judges + objective.
+     3. Run driver/run-driver-loop! with eval-set + judges + objective +
+        seeded prior-attempts loaded from bench/.driver-cache/<task>.edn
+        (cumulative cross-run learning).
      4. Capture turns / final-eval / version-number / total cost into run.json.
+     5. Persist any new attempts back to the cache for the next run.
 
    Stack tag: orc-driver-recovery."
   [{:keys [ctx task main-model sub-model max-iterations sweep-dir run-idx
@@ -530,8 +566,9 @@
         pristine (override-models (load-workflow task :a) main-model sub-model)
         degraded (apply-degradation pristine deg)
         sheet-id (dsl/build-workflow! ctx degraded)
-        _ (println (format "[%s style=driver run=%d] starting — degraded node \"%s\""
-                           (name task) run-idx (:node-name deg)))
+        seed-attempts (load-driver-cache task)
+        _ (println (format "[%s style=driver run=%d] starting — degraded node \"%s\" (seeded with %d prior attempts)"
+                           (name task) run-idx (:node-name deg) (count seed-attempts)))
         start-ms (System/currentTimeMillis)
         result (try
                  (driver/run-driver-loop! ctx
@@ -539,11 +576,12 @@
                     :objective (:objective deg)
                     :eval-set (:eval-set deg)
                     :judges (:judges deg)
-                    :max-turns 3
+                    :max-turns 6
                     :min-pass-rate 1.0
                     :min-judge-score 0.7
                     :model main-model
                     :tick-timeout-ms timeout-ms
+                    :seed-prior-attempts seed-attempts
                     :description (str "bench/driver-recovery " (name task) " run " run-idx)})
                  (catch Throwable t
                    (println "DRIVER FAULT:" (.getMessage t))
@@ -551,6 +589,11 @@
                    {:status :error
                     :error (str (.getMessage t)
                                 (when-let [d (ex-data t)] (str " | " (pr-str d))))}))
+        ;; Persist only the NEW attempts (the loop returns seed + new
+        ;; combined; we want the post-seed tail).
+        new-attempts (when (vector? (:prior-attempts result))
+                       (vec (drop (count seed-attempts) (:prior-attempts result))))
+        _ (save-driver-cache! task new-attempts)
         duration-ms (- (System/currentTimeMillis) start-ms)
         usage (or (:usage result) {})
         ;; Driver usage is single-bucket (no root/sub split — every turn's
@@ -573,6 +616,8 @@
                     :version-number (:version-number result)
                     :reason (:reason result)
                     :n-turns n-turns
+                    :seed-attempts-count (count seed-attempts)
+                    :new-attempts-count (count new-attempts)
                     :final-eval (select-keys (:final-eval result)
                                              [:pass-rate :avg-judge-score
                                               :pass-count :fail-count :total])
