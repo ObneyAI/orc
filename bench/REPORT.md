@@ -135,6 +135,67 @@ First post-top-up sweep: all 3 runs ERR'd at HTTP 402 instantly (max_tokens 65,5
 3. **Re-run document_redaction + document_analysis driver cells** once max_tokens is fixed and credits are available; both have `:eval-set` defined and ready in `bench/degradations.edn`.
 4. **Investigate why pass-rate decoupled from judge-score** in invoice_processing — the eval-set has `:judges [:grounding :completeness]` and the workflow output is empty; how is the workflow returning `:status :success` with empty outputs? (Likely silent-nil-on-missing-reads, same root cause as round-5 followup #7.)
 
+## Round 7 — Driver with cumulative memory + larger turn budget
+
+**Date:** 2026-04-26 (evening, post-budget-top-up #2)
+**Hypothesis:** the round-6 surrenders were a budget problem — 3 turns wasn't enough, and runs starting from a blank slate were wastefully repeating the same 3 dead-end prompt rewrites. Fix: bump max-turns 3→6 and seed each run's `prior-attempts` from a per-task on-disk cache so later runs see earlier runs' rejection summaries.
+
+**Code:** `:seed-prior-attempts` option added to `workflow-driver/run-driver-loop!`; bench wrapper persists each run's new attempts to `bench/.driver-cache/<task>.edn` (capped at 12). Cache is wiped at sweep start so cumulative learning happens within the sweep, not bleeding from prior experiments.
+
+**Scope:** invoice_processing × 3 + document_redaction × 3. (document_analysis still blocked on the driver's 65,536-max_tokens incompatibility with weekly-budget keys.)
+
+### Invoice — clean, conclusive, hypothesis rejected
+
+| Metric | Round 6 (3 turns, no memory) | Round 7 (6 turns + cumulative memory) |
+|---|---|---|
+| n_ok / n | 0/3 | 0/3 |
+| Cost (med) | $0.20 | $0.42 (2.1× more) |
+| Cost (run 1 → 2 → 3) | $0.20 / $0.20 / $0.21 | $0.39 / $0.42 / $0.48 |
+| Tokens (med) | 30,257 | ~75k |
+| Duration (med) | 361s | 967s (2.7× longer) |
+| Decision pattern | continue × 2, surrender | continue × 5, surrender |
+| **Final avg-judge-score** | **0.0** | **0.0** |
+| Seed → new prior attempts | 0 → 3 | 0→5, 5→5, 10→5 (cache: 0 → 5 → 10 → cap) |
+
+**Translation: doubling turns and giving the driver 10 prior rejection summaries to read did not move the judge score off zero.** The driver kept proposing instruction-strengthening rewrites; the judges kept correctly flagging the output as wrong.
+
+### Redaction — no useful data (network)
+
+3/3 ERR'd, but this time on `java.net.ConnectException` (not credit cap). Run 1 reached 597s (several turns) before a network blip dropped its next request; runs 2-3 instant-failed in the same window. Likely transient OpenRouter reachability issue; not retried this round.
+
+### What this proves
+
+The architectural claim from round 6 is now empirically supported, not just inferred:
+
+> "When avg-judge-score = 0, the driver should bias next-turn proposals toward _structural_ changes (add a sub-call, restructure reads/produces) rather than further instruction tuning. Currently it just tightens prose N times and gives up."
+
+Round 7 ran the experiment that should refute this if false (more turns + memory of all prior attempts) and got the same 0.0 score. So:
+
+- **The driver's prompt rewrites are not the bottleneck.** With 5 turns of feedback in the prompt, it's still proposing variations of "tighten the JSON schema instruction." The LLM has 5 examples of "this kind of fix didn't work" and still proposes the same kind of fix.
+- **Cross-run memory works as designed but doesn't help.** Cache size growing 0→5→10 confirms the wiring; surrender outcome growing identical confirms the hypothesis was wrong.
+- **The cost trajectory is brutal.** Run 1 = $0.39, run 3 = $0.48. By run N you'd be paying for 12 prior attempts × ~1k tokens each per turn × 6 turns = a ~50% prompt-size markup. There's no asymptote — the cache cap (12) hides this slightly but the trend line is steep.
+
+### Architectural takeaway (post-round-7)
+
+The driver as currently designed is a **prompt-tuning loop dressed up as a structural-repair agent**. It can:
+
+- Reword instructions (does this every turn).
+- Restructure reads/produces (capability exists in the workflow-form output, but the propose-tree LLM almost never exercises it under "this output isn't being consumed downstream" feedback).
+- Add/remove nodes (same — capability exists, almost never used in practice).
+
+The remedy is not "more turns" or "more memory." Both have been disproven. Real options:
+
+1. **Decide-step feedback shaping** — when `avg-judge-score = 0` despite `pass-rate = 1.0`, inject an explicit "your prior fixes were prompt-only and the gap is structural; consider adding a sub-call or fixing :reads/:produces" hint into the next turn's prompt. Cheap to try; tests whether the LLM *can* reason structurally with the right pointer, vs whether it *won't*.
+2. **Reference workflows in the propose prompt** — give the LLM 1-2 sibling working pipelines as exemplars. Tests "blind vs unable."
+3. **Constrain max-turns hard at 3 again** and treat driver-recovery as a "see if a single shot fixes it" tool, not a "let it iterate" tool. Round-6 surrendered for $0.20; round-7 surrendered for $0.42. If both fail, prefer the cheaper one.
+
+### Followups specific to round 7
+
+1. **Implement decide-step feedback shaping** (option 1 above) — smallest change, most direct test of the structural-reasoning hypothesis.
+2. **Reset `:max-turns` default in the bench back to 3** — round-7 evidence shows 6 isn't worth 2× the spend.
+3. **Re-run document_redaction seeded sweep** when network is reliable — the round-7 invoice finding is conclusive but a 2-task confirmation would be cleaner.
+4. **Cap or remove the prior-attempts cache** — if the conclusion holds that memory doesn't help, this scaffolding is dead weight; keep the option for future experiments but don't use it by default.
+
 ## Followups (priority-ordered, post-round-5)
 
 1. ~~Fix orc bench input keys~~ ✅ done
