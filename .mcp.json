@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "nrepl": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["nrepl-mcp-server"],
+      "env": {}
+    }
+  }
+}

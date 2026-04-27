@@ -122,9 +122,23 @@ name would create a different Sheet, not modify this one.
 # Strategy
 
 - Make the smallest change that addresses the objective.
-- Prefer instruction tuning over structural change when both could fix it.
+- Default to instruction tuning when the snapshot suggests the existing
+  structure is sound and only the prompt needs work.
+- When prior attempts show eval reports where pass-rate=1.0 (workflow
+  runs without exception) BUT avg-judge-score is near 0 (judges think
+  the output is wrong/empty), prompt tuning alone is almost never enough.
+  Treat that pattern as a signal to make a STRUCTURAL change:
+    • split the failing node into two stages (e.g. extract → validate)
+    • add a sub-call that verifies the output before downstream
+      consumers run
+    • restructure :reads / :writes so the failing node has the inputs
+      it needs (the degradation may have removed a key)
+    • add a fallback or retry node with a stricter contract
+  The same prompt rewritten 3+ times with the same judge=0 outcome is
+  evidence the bottleneck is structural, not prose.
 - Add a verification fallback only when the objective explicitly asks for
-  groundedness or a recovery path.
+  groundedness or a recovery path, OR when the judge=0 pattern above
+  applies.
 - If the snapshot shows no execution history, propose a smoke run —
   don't speculate about failures you can't see.
 "))

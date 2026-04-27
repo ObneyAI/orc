@@ -196,6 +196,98 @@ The remedy is not "more turns" or "more memory." Both have been disproven. Real 
 3. **Re-run document_redaction seeded sweep** when network is reliable — the round-7 invoice finding is conclusive but a 2-task confirmation would be cleaner.
 4. **Cap or remove the prior-attempts cache** — if the conclusion holds that memory doesn't help, this scaffolding is dead weight; keep the option for future experiments but don't use it by default.
 
+## Round 8 — silent GPT-4 calls discovered (and stopped)
+
+**Date:** 2026-04-26 (late evening)
+**Trigger:** OpenRouter activity dashboard showed GPT-4 calls during the in-flight v2 sweep, despite our `assert-allowed-model!` workflow guard.
+**Outcome:** ~$1+ in actual GPT-4 spend across rounds 5–7 attributed to a previously-undetected bug in the evaluation judges. Sweep cancelled mid-flight; root cause fixed; defense-in-depth added.
+
+### Bug chain
+
+1. **`litellm/router.clj setup-openrouter!`** defaults `:model "openai/gpt-4"` when called with no model arg.
+2. **`dscloj/quick-setup! → litellm-router/quick-setup!`** detects `OPENROUTER_API_KEY` and calls `(setup-openrouter!)` with no model. The `:openrouter` config is registered with `:model "openai/gpt-4"`.
+3. **`evaluation/core/judges.clj`** had a dead `:model` arg — destructured into a let-binding (defaulting to `*judge-model*` = `"google/gemini-2.5-flash"`) and **never passed to `dscloj/predict`**. So judge calls used the `:openrouter` config's registered default = GPT-4.
+4. The bench's `assert-allowed-model!` walks workflow-node `:model` keys but never saw the judge code path (judges use a dynamic var, not a workflow `:model`).
+
+Every eval-set tick across rounds 5–7 quietly hit GPT-4 multiple times. Conservatively: ~500–1500 GPT-4 calls cumulative. The "reasoning token undercount" line in the round-5 cost note was partially this.
+
+### Fixes shipped
+
+| Layer | Fix |
+|---|---|
+| Root cause | `evaluation/core/judges.clj` now resolves an effective provider via the same `get-provider-with-model` pattern the executor uses, so `*judge-model*` is actually honored. |
+| Defense in depth (bench) | `bench/run_orc.clj` `override-runtime-defaults!` re-registers `:openrouter` with `model "google/gemini-2.5-flash"` after `dev/start!`, so even unfixed callers can't accidentally hit GPT-4. |
+| Fail-fast guard | `bench/run_orc.clj` `assert-runtime-config-clean!` sweeps registered litellm configs + `*judge-model*` at startup, refuses to proceed if any reference a forbidden model. |
+| External | User added GPT-4 to OpenRouter key-level block list — strongest possible guard, blocks the call upstream regardless of code bugs. |
+
+## Round 9 — same fixes + first structural changes from the driver
+
+**Date:** 2026-04-27 (early morning)
+**Setup:** v2 sweep with all round-8 fixes in place + the round-7 cumulative-memory infrastructure + the playbook fix telling the LLM to "consider structural changes when judges score 0 despite pass-rate=1.0" + clearer rejection text + live `:on-turn` logging in the bench wrapper.
+**Scope:** invoice_processing × 3, max-turns 6, cumulative cache.
+
+### Per-turn telemetry (the new live logging)
+
+Every turn the bench now prints one line: `submit=:status Δ+added/-removed/~modified pass-rate=X judge=Y → decision`.
+
+| Run | Turn | Δ+ | Δ- | Δ~ | pass-rate | judge | decision |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | 0 | 0 | 1 | 1.0 | 0.0 | continue |
+| 1 | 2 | 0 | 0 | 0 | parse-error | – | continue |
+| 1 | 3 | 0 | 0 | 1 | 1.0 | **0.05** | continue |
+| 1 | 4 | 0 | 0 | 1 | 1.0 | 0.0 | continue |
+| 1 | 5 | 0 | 0 | 1 | 1.0 | 0.0 | continue |
+| 1 | 6 | 0 | 0 | 1 | 1.0 | 0.0 | surrender |
+| 2 | 1 | 0 | 0 | 1 | 1.0 | **0.15** | continue |
+| 2 | 2 | **+2** | 0 | 1 | 1.0 | 0.0 | continue |
+| 2 | 3 | 0 | 0 | 1 | 1.0 | 0.05 | continue |
+| 2 | 4 | 0 | 0 | 1 | 1.0 | 0.0 | continue |
+| 2 | 5 | 0 | 0 | 1 | 1.0 | 0.0 | continue |
+| 2 | 6 | 0 | 0 | 1 | 1.0 | 0.025 | surrender |
+| 3 | 1 | 0 | 0 | 1 | 1.0 | 0.0 | continue |
+| 3 | 2 | 0 | 0 | 1 | 1.0 | 0.05 | continue |
+| 3 | 3 | 0 | 0 | 1 | 1.0 | 0.0 | continue |
+| 3 | 4 | 0 | 0 | 1 | 1.0 | **0.20** | continue |
+| 3 | 5 | 0 | 0 | 1 | 1.0 | 0.0 | continue |
+| 3 | 6 | 0 | 0 | 1 | 1.0 | 0.0 | surrender |
+
+**Cost / duration:** $0.40 / 1153s, $0.48 / 1562s, $0.49 / 1331s. Total $1.37, ~14 min wall-clock per run, 3/3 surrendered.
+
+### What changed vs round 7
+
+| Metric | Round 6 | Round 7 | Round 9 |
+|---|---|---|---|
+| Total turns | 9 | 18 | 18 |
+| Structural-change attempts (Δ+ or Δ- > 0) | 0 | 0 | **1** |
+| Turns with judge > 0 | 0 | 0 | **6** |
+| Best judge score | 0.0 | 0.0 | **0.20** |
+| Parse errors | 0 | 0 | 1 |
+| n_ok / n | 0/3 | 0/3 | 0/3 |
+| Cost / run (med) | $0.20 | $0.42 | $0.48 |
+
+The fix moved real metrics: the playbook bias was the bottleneck on structural reasoning, and the misleading "1/1 passed" rejection text was hiding the judge signal from the LLM. Once both were addressed, the LLM:
+- Tried a structural change once (run 2 turn 2, +2 nodes).
+- Started producing measurably better single-node prompts (judge inched from 0 → 0.05 → 0.15 → 0.20 across the 18 turns).
+- Once attempted a parse-error overshoot — evidence of trying something more ambitious.
+
+### What still didn't work
+
+The structural attempt at run 2 turn 2 scored **identically** to safe prompt-tweaks (0.0). The LLM correctly inferred "this strategy didn't help" and **never attempted another structural change** in the remaining 4 turns of run 2 or any of run 3's 6 turns. With the cumulative cache seeding 10 prior attempts into run 3, the structural attempt's 0.0 score is permanently visible — and the LLM treats it as a learned anti-pattern.
+
+This is the next bottleneck: the judge feedback is a scalar. A structural change that adds a relevant node but mis-wires `:reads`/`:writes` scores identically to a no-op prompt-tweak. The LLM has no signal that "you got closer" or "the structure was right but the wiring is off." Without resolution-per-aspect feedback, the model can't distinguish "structural fixes don't help" from "this specific structural fix had a bug."
+
+### Architectural takeaway (post-round-9)
+
+The driver IS capable of structural reasoning — the playbook was the bias source, not the model. But unlocking that capability without **per-aspect judge feedback** is a partial fix. Each structural attempt is an expensive blind shot ($0.05–$0.10 of LLM tokens to construct one); a single 0.0 result discourages the next 4–10 attempts.
+
+The Obsidian RDD note's section about Portal-style structured-value navigation is the right next architectural move: judges should hand back a *structured artifact* the propose-tree LLM can drill into ("the new node 'validate-shape' executed but produced an empty `:validated` key — your downstream consumer expected `:validation-report`"), not just a scalar 0–1 score.
+
+### Followups specific to round 9
+
+1. **Per-aspect judge feedback** — judges currently return `{:score :feedback}`. Promote `:feedback` to a structured map of `{:aspect-key :pass? :note}` and surface in the rejection text. Then a structural attempt that fixed one aspect but broke another scores the same overall but the LLM sees the differential.
+2. **"You haven't tried structural change yet" hint** — when N consecutive attempts have all been Δ+0 with judge < threshold, inject "your last N attempts were all single-node prompt rewrites; you have not yet tried adding a sub-call or restructuring reads/writes." A turn-N strategy nudge, not a global playbook line.
+3. **Variance reduction on judges** — run 3 turn 4 scored 0.2 then turn 5 scored 0.0 with no structural change. Either the judges are non-deterministic (likely temperature > 0) or the actual node output is. Worth a 3-shot consistency check.
+
 ## Followups (priority-ordered, post-round-5)
 
 1. ~~Fix orc bench input keys~~ ✅ done

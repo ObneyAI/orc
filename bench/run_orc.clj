@@ -38,7 +38,8 @@
             [ai.obney.orc.doc-skills.core.pdf :as pdf]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.grain.time.interface :as time])
+            [ai.obney.grain.time.interface :as time]
+            [litellm.router :as litellm-router])
   (:import (java.security MessageDigest)
            (java.time LocalDateTime)
            (java.time.format DateTimeFormatter)))
@@ -160,16 +161,21 @@
 ;; Model override
 ;; ---------------------------------------------------------------------------
 
+(def ^:private forbidden-models
+  #{"gpt-4" "openai/gpt-4" "gpt-4o" "openai/gpt-4o"
+    "gpt-4o-mini" "openai/gpt-4o-mini" "gpt-4-turbo"
+    "openai/gpt-4-turbo" "gpt-3.5-turbo" "openai/gpt-3.5-turbo"})
+
+(defn- forbidden? [s]
+  (and (string? s) (some #(clojure.string/includes? s %) forbidden-models)))
+
 (defn- assert-allowed-model!
   "Hard guard: refuse to run a workflow whose any node references gpt-4 or
    any other forbidden model. Single source of truth for 'never accidentally
    route to GPT-4' — catches both stale workflow data and any future default
    that might leak through."
   [workflow]
-  (let [forbidden #{"gpt-4" "openai/gpt-4" "gpt-4o" "openai/gpt-4o"
-                    "gpt-4o-mini" "openai/gpt-4o-mini" "gpt-4-turbo"
-                    "openai/gpt-4-turbo" "gpt-3.5-turbo" "openai/gpt-3.5-turbo"}
-        seen-models (atom #{})]
+  (let [seen-models (atom #{})]
     (walk/postwalk
       (fn [x]
         (when (and (map? x) (string? (:model x)))
@@ -178,7 +184,7 @@
           (swap! seen-models conj (get-in x [:rlm :predict-model])))
         x)
       workflow)
-    (let [bad (set (filter #(some (fn [f] (clojure.string/includes? % f)) forbidden) @seen-models))]
+    (let [bad (set (filter forbidden? @seen-models))]
       (when (seq bad)
         (throw (ex-info (str "Refusing to execute: workflow references forbidden model(s) "
                              (pr-str bad) ". Bench is configured to NEVER use GPT-4 / 4o / 3.5.")
@@ -186,6 +192,46 @@
       (when (empty? @seen-models)
         (throw (ex-info "Workflow has no model bindings — would route to provider default (potentially GPT-4o-mini via litellm-router)."
                         {:type :bench/no-model}))))))
+
+(defn- assert-runtime-config-clean!
+  "Defense in depth — sweep the litellm-router configs the JVM has actually
+   registered, plus the evaluation/judges dynamic *judge-model*, and refuse
+   to proceed if any references a forbidden model. Catches the failure mode
+   where dscloj/litellm-router defaults route silently to GPT-4 even though
+   no workflow node names it (this exact thing happened — judges.clj had a
+   dead :model arg, fell back to the registered :openrouter config which
+   defaults to \"openai/gpt-4\")."
+  []
+  (let [config-names (try (litellm-router/list-configs) (catch Throwable _ ()))
+        bad-configs (into {}
+                          (keep (fn [name]
+                                  (let [cfg (litellm-router/get-config name)]
+                                    (when (forbidden? (:model cfg))
+                                      [name (:model cfg)]))))
+                          config-names)
+        judge-model (try @(resolve 'ai.obney.orc.evaluation.core.judges/*judge-model*)
+                         (catch Throwable _ nil))]
+    (when (seq bad-configs)
+      (throw (ex-info (str "Refusing to proceed: registered litellm configs reference forbidden model(s): "
+                           (pr-str bad-configs)
+                           ". Override these BEFORE running any LLM call.")
+                      {:type :bench/forbidden-runtime-config :configs bad-configs})))
+    (when (forbidden? judge-model)
+      (throw (ex-info (str "Refusing to proceed: evaluation/judges *judge-model* is " (pr-str judge-model))
+                      {:type :bench/forbidden-judge-model :judge-model judge-model})))))
+
+(defn- override-runtime-defaults!
+  "After dev/start! runs (which calls dscloj/quick-setup!), the
+   :openrouter config is registered with model \"openai/gpt-4\" by default
+   — that's the litellm-clj setup-openrouter! built-in. Anything that
+   calls dscloj/predict with the bare :openrouter provider (notably the
+   evaluation judges) will silently use gpt-4. Re-register with a safe
+   default so even legacy / unfixed code paths can't accidentally hit
+   gpt-4 from the bench."
+  []
+  (litellm-router/setup-openrouter!
+    :config-name :openrouter
+    :model "google/gemini-2.5-flash"))
 
 (defn override-models
   "Walk the workflow data and replace :model on every node so the bench
@@ -570,6 +616,27 @@
         _ (println (format "[%s style=driver run=%d] starting — degraded node \"%s\" (seeded with %d prior attempts)"
                            (name task) run-idx (:node-name deg) (count seed-attempts)))
         start-ms (System/currentTimeMillis)
+        on-turn (fn [{:keys [turn proposal submit eval decision]}]
+                  ;; Live per-turn breadcrumb so a bench operator can
+                  ;; tell the JVM is making progress without grepping
+                  ;; trace.edn after the fact. Without this the loop is
+                  ;; silent for 5–25 min per run.
+                  (let [tokens (get-in proposal [:usage :total-tokens] 0)
+                        sub-status (:status submit)
+                        pr (some-> eval :pass-rate)
+                        ajs (some-> eval :avg-judge-score)
+                        diff (:diff submit)
+                        added (count (:added diff))
+                        removed (count (:removed diff))
+                        modified (count (:modified diff))]
+                    (println (format "    [%s run=%d turn=%d] submit=%s Δ+%d/-%d/~%d  pass-rate=%s judge=%s  tokens=%d → %s"
+                                     (name task) run-idx turn
+                                     (str sub-status)
+                                     added removed modified
+                                     (str pr) (str ajs)
+                                     tokens
+                                     (str decision)))
+                    (flush)))
         result (try
                  (driver/run-driver-loop! ctx
                    {:sheet-id sheet-id
@@ -582,6 +649,7 @@
                     :model main-model
                     :tick-timeout-ms timeout-ms
                     :seed-prior-attempts seed-attempts
+                    :on-turn on-turn
                     :description (str "bench/driver-recovery " (name task) " run " run-idx)})
                  (catch Throwable t
                    (println "DRIVER FAULT:" (.getMessage t))
@@ -609,8 +677,45 @@
                  (vec (es/read (:event-store ctx)
                                {:tenant-id (:tenant-id ctx)
                                 :tags #{[:driver/session session-id]}})))
+        ;; Drop a marker the moment we reach the artifact-write block so
+        ;; we can tell crashes that hit BEFORE artifacts vs DURING. The
+        ;; previous v2 run died silently with an empty run-dir; this
+        ;; isolates whether the bug is upstream (driver loop returned
+        ;; nothing usable) or downstream (one of the spits below choked).
+        _ (spit (io/file run-dir "_post-loop-marker.txt")
+                (str "session-id=" session-id "\n"
+                     "n-turns=" n-turns "\n"
+                     "result-status=" (:status result) "\n"
+                     "events-count=" (count events) "\n"
+                     "turns-vec-class=" (str (class turns)) "\n"))
         trace-file (io/file run-dir "trace.edn")
-        _ (spit trace-file (with-out-str (clojure.pprint/pprint events)))
+        _ (try (spit trace-file (with-out-str (clojure.pprint/pprint events)))
+               (catch Throwable t
+                 (spit trace-file (str "TRACE-WRITE-FAILED: " (.getMessage t)))))
+        ;; Persist the full per-turn proposals — the event store strips
+        ;; :workflow-form bodies (events.clj keeps only :workflow-form-length
+        ;; for size reasons), but the in-memory result map carries the
+        ;; complete forms. Spit them so post-hoc analysis can read the
+        ;; actual evolving Clojure source. Use prn-str (not pprint) on
+        ;; per-turn maps to dodge any pretty-printer quirks on large
+        ;; nested forms.
+        proposals-file (io/file run-dir "proposals.edn")
+        _ (try
+            (let [data (mapv (fn [{:keys [turn proposal decision] :as turn-event}]
+                               {:turn turn
+                                :decision decision
+                                :reasoning (:reasoning proposal)
+                                :workflow-form (:workflow-form proposal)
+                                :submit-status (get-in turn-event [:submit :status])
+                                :submit-diff (get-in turn-event [:submit :diff])
+                                :eval (select-keys (:eval turn-event)
+                                                   [:pass-rate :avg-judge-score
+                                                    :pass-count :fail-count :total])})
+                             turns)]
+              (spit proposals-file (prn-str data)))
+            (catch Throwable t
+              (spit proposals-file (str "PROPOSALS-WRITE-FAILED: " (.getMessage t)
+                                        "\n" (with-out-str (.printStackTrace t))))))
         ;; Summarize the final eval for the structured field
         structured {:driver-status (:status result)
                     :version-number (:version-number result)
@@ -689,6 +794,8 @@
   (println (format "Bench: task=%s style=%s runs=%d model=%s sub=%s prompt-source=%s"
                    (name task) (name style) runs model sub-lm-model (name prompt-source)))
   (dev/start!)
+  (override-runtime-defaults!)
+  (assert-runtime-config-clean!)
   (try
     (let [sweep-dir (io/file repo-root "bench" "runs" (name task))
           _ (.mkdirs sweep-dir)
@@ -785,6 +892,8 @@
                      model sub-lm-model (name prompt-source) max-iterations
                      (int (/ timeout-ms 1000))))
     (dev/start!)
+    (override-runtime-defaults!)
+    (assert-runtime-config-clean!)
     (try
       (let [ctx (dev/ctx)
             ;; Pre-build sheets serially — dsl/build-workflow! writes to LMDB

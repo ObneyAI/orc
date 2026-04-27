@@ -44,9 +44,26 @@
     (str (name (:status submit-result)))))
 
 (defn- summarize-eval-failure
+  "Plain-text rejection summary handed back to the next turn's
+   propose prompt. Surface BOTH pass-rate and avg-judge-score —
+   if pass-rate is fine but judge-score is near zero the LLM needs
+   to see that the workflow is running successfully but producing
+   wrong output, not that it's almost passing."
   [eval-report]
-  (str "eval-failed: " (:pass-count eval-report) "/" (:total eval-report)
-       " passed (need pass-rate ≥ threshold)"))
+  (let [pr   (:pass-rate eval-report)
+        ajs  (:avg-judge-score eval-report)
+        pc   (:pass-count eval-report)
+        tot  (:total eval-report)
+        tag  (cond
+               (and (some? ajs) (= pr 1.0) (< ajs 0.3))
+               " — workflow ran but judges scored output ~0 (likely structural issue, not prose)"
+               (and (some? ajs) (< ajs 0.7))
+               (str " — judges below threshold (avg " (format "%.2f" (double ajs)) "/0.7)")
+               :else
+               " — pass-rate below threshold")]
+    (str "eval-failed: " pc "/" tot " passed"
+         (when (some? ajs) (str ", avg-judge-score " (format "%.2f" (double ajs))))
+         tag)))
 
 (defn run-driver-loop!
   "Run the workflow-driver agent against a target Sheet for at most

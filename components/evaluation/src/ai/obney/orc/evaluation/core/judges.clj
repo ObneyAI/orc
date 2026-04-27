@@ -15,7 +15,8 @@
             [ai.obney.orc.evaluation.core.rubrics :as rubrics]
             [cheshire.core :as json]
             [clojure.string :as str]
-            [dscloj.core :as dscloj]))
+            [dscloj.core :as dscloj]
+            [litellm.router :as litellm-router]))
 
 ;; =============================================================================
 ;; Configuration
@@ -189,8 +190,22 @@
   (let [module (build-judge-module prompt output-fields)
         ;; DSCloj needs inputs as a keyword map
         inputs {:evaluation_request "Please evaluate according to the rubric above."}
-        ;; Make the LLM call
-        result (dscloj/predict provider module inputs
+        ;; litellm-clj's router IGNORES :model in request options when using a
+        ;; registered provider keyword (see executor/get-provider-with-model
+        ;; comment). Resolve a model-specific provider keyword the same way
+        ;; the orc executor does, so the configured *judge-model* (default
+        ;; google/gemini-2.5-flash) is actually honored. Without this, judge
+        ;; calls fall back to whatever model the bare :openrouter config was
+        ;; registered with — which is "openai/gpt-4" by default in
+        ;; litellm/router setup-openrouter!.
+        effective-provider (if model
+                             (let [name (keyword (str (clojure.core/name provider) "/" model))]
+                               (when-not (litellm-router/get-config name)
+                                 (when-let [base (litellm-router/get-config provider)]
+                                   (litellm-router/register! name (assoc base :model model))))
+                               name)
+                             provider)
+        result (dscloj/predict effective-provider module inputs
                                {:with-metadata? false
                                 :validate? false})]
     ;; Result is already a map of keyword -> value

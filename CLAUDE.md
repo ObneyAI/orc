@@ -31,9 +31,37 @@ Built on **Grain v2** (event sourcing + CQRS):
 ## Development Setup
 
 ```bash
-# Start nREPL
+# Start nREPL — keep this running for the whole session
 clj -M:dev -m nrepl.cmdline --port 7888
 ```
+
+### RDD workflow (preferred for orc development)
+
+orc is built around an embedded REPL — `(dev/start!)` returns a fully-warm
+system map (in-memory event store, LMDB cache, todo processors,
+doc-skills tools, DSCloj providers). Connect to nREPL once and do all
+exploratory / debugging work interactively rather than restarting the JVM
+per change.
+
+- Connect via the `/nrepl-connect` skill (uses the `nrepl` MCP server
+  declared in `.mcp.json`). Tries port 7888, falls back to `.nrepl-port`.
+- Then in your session: `(require '[dev]) (def sys (dev/start!)) (def ctx (dev/ctx))`
+- Single-shot driver experiments without restarting:
+  ```clojure
+  (require '[bench.run-orc :as bench]
+           '[ai.obney.orc.workflow-driver.interface :as driver])
+  (def deg (get @bench/degradations-cache :invoice_processing))
+  ;; build sheet, run one driver loop, inspect result by handle
+  ```
+- `(tap> v)` ships any value to Portal/Reveal/CIDER inspector — drill
+  into eval reports, proposal forms, event traces without re-running.
+- Edit a function (e.g. `summarize-eval-failure` in workflow-driver),
+  eval the buffer, run ONE more turn against the same sheet-id. No JVM
+  restart, caches stay warm.
+
+The `clj -X:bench run-orc/run` batch entry point still exists — use it
+for clean reproducible sweeps that produce numbers for REPORT.md. Use
+RDD for everything upstream of that.
 
 ## Running Tests
 
