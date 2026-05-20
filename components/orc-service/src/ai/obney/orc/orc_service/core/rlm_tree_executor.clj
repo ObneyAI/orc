@@ -206,12 +206,13 @@
           opts (apply hash-map args)]
       (concat (:reads opts) (:writes opts)))
 
-    ;; Code node: (sheet/code :reads [...] :writes [...] :fn ...)
+    ;; Code node: (sheet/code :reads [...] :writes [...] :fn ...) — :fn may
+    ;; appear in any position (rlm_dsl's :chunk-document / :aggregate emit it
+    ;; last; PR02's emit-tree! :code translation emits it first). Just parse
+    ;; all keyword pairs uniformly; an inline fn or qualified-symbol string
+    ;; both fit into hash-map as a regular value.
     (and (seq? tree) (= 'sheet/code (first tree)))
-    (let [args (rest tree)
-          ;; Filter out :fn and its value since it's not a keyword arg pair like others
-          keyword-pairs (take-while #(not= :fn %) args)
-          opts (apply hash-map keyword-pairs)]
+    (let [opts (apply hash-map (rest tree))]
       (concat (:reads opts) (:writes opts)))
 
     ;; Map-each node: (sheet/map-each :from :x :as :y :into :z child)
@@ -235,6 +236,38 @@
 
     ;; Otherwise: no keys
     :else []))
+
+(defn- extract-key-schemas
+  "Walk the canonical tree and collect {write-key → Malli-schema} from
+   :llm nodes that declared :output-schemas.
+
+   This drives U11: when a write key's schema is structured (vector/map/etc.),
+   the child sheet's declare-key uses it. build-module then passes it to
+   dscloj, which detects complex-spec? → asks the LLM for JSON → parses the
+   response back into Clojure data. Without this, the LLM's structured
+   output arrives at downstream :code nodes as raw JSON text.
+
+   Returns a map {key schema}. Last-write-wins on key conflicts.
+
+   Returns {} when no :output-schemas declarations exist anywhere in the tree."
+  [tree]
+  (cond
+    ;; LLM node with :output-schemas → collect each {key schema}
+    (and (seq? tree) (= 'sheet/llm (first tree)))
+    (let [opts (apply hash-map (rest tree))]
+      (or (:output-schemas opts) {}))
+
+    ;; Sequence-like (sheet/sequence, sheet/parallel) → recurse into children
+    (and (seq? tree)
+         (#{'sheet/sequence 'sheet/parallel} (first tree)))
+    (apply merge (map extract-key-schemas (rest tree)))
+
+    ;; Map-each → recurse into the (last) child arg
+    (and (seq? tree) (= 'sheet/map-each (first tree)))
+    (extract-key-schemas (last tree))
+
+    ;; Code/final/etc. → no schemas to collect here
+    :else {}))
 
 ;; =============================================================================
 ;; Tree Compilation
@@ -341,13 +374,21 @@
         {:node-id map-each-id
          :ephemeral-fn-keys (:ephemeral-fn-keys child-result)}))
 
-    ;; Code node: (sheet/code :reads [...] :writes [...] :fn <function>)
-    ;; For inline functions, register in ephemeral registry and pass lookup key
+    ;; Code node: (sheet/code :reads [...] :writes [...] :fn <function-or-string>)
+    ;; Two cases for :fn:
+    ;;   (a) An inline Clojure function (from :chunk-document / :aggregate
+    ;;       transformers in rlm_dsl.clj) — register in the ephemeral registry
+    ;;       so it survives serialization across the child sheet boundary.
+    ;;   (b) A fully-qualified symbol string (from the model's emit-tree! :code
+    ;;       nodes, PR02) — pass through directly; the executor's resolve-fn
+    ;;       will load the namespace and look up the symbol at run time.
     (and (seq? tree) (= 'sheet/code (first tree)))
     (let [opts (parse-keyword-args (rest tree))
           f (:fn opts)
-          ;; Register inline function in ephemeral registry
-          fn-key (register-ephemeral-fn! f)
+          string-fn? (string? f)
+          ;; Inline-fn → ephemeral registry; symbol-string → use directly
+          fn-value (if string-fn? f (register-ephemeral-fn! f))
+          ephemeral-keys (if string-fn? [] [fn-value])
           ;; Create leaf node
           leaf-result (run-command! context
                         (make-create-node-command sheet-id :leaf :parent-id parent-id :index index))
@@ -363,7 +404,7 @@
          :node-id leaf-id
          :reads reads
          :writes writes})
-      ;; Set executor to :code with the ephemeral fn key
+      ;; Set executor to :code with the fn reference (qualified symbol or ephemeral key)
       (run-command! context
         {:command/name :sheet/set-node-executor
          :command/id (random-uuid)
@@ -371,9 +412,9 @@
          :sheet-id sheet-id
          :node-id leaf-id
          :executor :code
-         :fn fn-key})
+         :fn fn-value})
       {:node-id leaf-id
-       :ephemeral-fn-keys [fn-key]})
+       :ephemeral-fn-keys ephemeral-keys})
 
     ;; Final node: (final! {:keys [...]})
     ;; This is a marker for output keys - we don't need to create a node
@@ -400,6 +441,10 @@
    - options: Map with:
      - :sandbox-vars - Variables from Phase 1 to write to blackboard
      - :blackboard - Additional blackboard inputs
+     - :blackboard-schemas - Optional {key schema} map preserving parent
+       schemas (e.g. [:string {:field-type :image}]) so vision/audio inputs
+       route correctly through the child sheet's leaf nodes. When absent for
+       a given key, falls back to inferring schema from value type.
      - :timeout-ms - Execution timeout (default 60000)
 
    Returns:
@@ -407,8 +452,9 @@
     :outputs {...}
     :usage {...}
     :duration-ms N}"
-  [tree context {:keys [sandbox-vars blackboard timeout-ms]
-                 :or {timeout-ms 60000}}]
+  [tree context {:keys [sandbox-vars blackboard blackboard-schemas timeout-ms]
+                 :or {timeout-ms 60000
+                      blackboard-schemas {}}}]
   (println "[DEBUG Tree] execute-tree starting")
   (println "[DEBUG Tree] sandbox-vars keys:" (keys sandbox-vars))
   (println "[DEBUG Tree] blackboard keys:" (keys blackboard))
@@ -443,26 +489,38 @@
                 (run-command! context
                   (make-declare-key-command sheet-id k schema))))
 
-          ;; Declare blackboard keys from inputs
+          ;; Declare blackboard keys from inputs.
+          ;; If the caller supplied :blackboard-schemas, prefer that schema
+          ;; (preserves :field-type :image etc.); else infer from value type.
           _ (println "[DEBUG Tree] Declaring blackboard keys...")
           _ (doseq [[k v] blackboard]
-              (let [schema (cond
-                             (string? v) :string
-                             (number? v) :number
-                             (boolean? v) :boolean
-                             (map? v) [:map-of :any :any]
-                             (vector? v) [:vector :any]
-                             (sequential? v) [:vector :any]
-                             :else :any)]
+              (let [schema (or (get blackboard-schemas k)
+                               (cond
+                                 (string? v) :string
+                                 (number? v) :number
+                                 (boolean? v) :boolean
+                                 (map? v) [:map-of :any :any]
+                                 (vector? v) [:vector :any]
+                                 (sequential? v) [:vector :any]
+                                 :else :any))]
                 (run-command! context
                   (make-declare-key-command sheet-id k schema))))
 
-          ;; Declare any additional keys from tree that aren't already declared
+          ;; U11: collect any :output-schemas declared on :llm nodes
+          ;; in the tree. When the model declares the structure of an
+          ;; :llm write (e.g. :targets [:vector [:map-of :any :any]]),
+          ;; we use that schema when declaring the blackboard key so
+          ;; dscloj's complex-spec? path triggers JSON-parsing of the
+          ;; LLM response. Without this, structured LLM outputs arrive
+          ;; at downstream :code nodes as raw JSON text.
+          tree-schemas (extract-key-schemas tree)
+          ;; Declare any additional keys from tree that aren't already declared.
+          ;; Use the model-declared schema if available; else fall back to :any.
           declared-keys (set (concat (keys sandbox-vars) (keys blackboard)))
           _ (doseq [k tree-keys
                     :when (not (contains? declared-keys k))]
               (run-command! context
-                (make-declare-key-command sheet-id k :any)))
+                (make-declare-key-command sheet-id k (or (get tree-schemas k) :any))))
 
           ;; Compile the actual tree structure into ORC nodes
           ;; Returns {:node-id N :ephemeral-fn-keys [...]}

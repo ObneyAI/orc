@@ -20,6 +20,7 @@
             [clojure.set]
             [dscloj.core :as dscloj]
             [litellm.router :as litellm-router]
+            [malli.core :as m]
             [ai.obney.orc.orc-service.core.sci-sandbox :as base-sandbox]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [com.brunobonacci.mulog :as u])
@@ -51,12 +52,28 @@
    :keys (vec (keys m))
    :size (count m)})
 
+;; Forward declaration so preview-vector can call preview-value recursively
+;; for large or collection elements.
+(declare preview-value)
+
 (defn- preview-vector
-  "Preview a vector showing length and sample."
+  "Preview a vector showing length and a small sample.
+
+   Primitive scalars in the sample (numbers, keywords, booleans, short
+   strings) are passed through unchanged so the preview reads naturally
+   for small data. LARGE strings and collections are recursively previewed
+   so that, e.g., vectors of data-URI image renders don't inline their
+   full content into the prompt (which would blow up the prompt size by
+   hundreds of KB)."
   [v max-sample]
   {:type :vector
    :length (count v)
-   :sample (vec (take max-sample v))})
+   :sample (vec (map (fn [item]
+                       (cond
+                         (and (string? item) (> (count item) 200)) (preview-value item)
+                         (coll? item) (preview-value item)
+                         :else item))
+                     (take max-sample v)))})
 
 (defn preview-value
   "Create a preview of a value for LLM context (token space).
@@ -112,6 +129,18 @@
       model-provider-name)
     provider))
 
+(defn- schema-field-type
+  "Extract :field-type from a Malli schema's properties map, if present.
+   Mirrors the same helper in executor.clj's build-field — kept inline here
+   to avoid a cross-file dependency for a few LOC.
+
+   Returns the field-type keyword (e.g. :image) or nil."
+  [schema]
+  (when (and schema (vector? schema))
+    (try
+      (:field-type (m/properties schema))
+      (catch Exception _ nil))))
+
 (defn execute-llm-primitive
   "Execute an LLM primitive from the RLM sandbox.
 
@@ -124,7 +153,13 @@
 
    Sub-LLM calls receive FULL values from :reads. The generated code is responsible
    for managing chunk sizes appropriately. Previews are only used for the code-generating
-   LLM to understand variable shapes - actual data processing uses full values."
+   LLM to understand variable shapes - actual data processing uses full values.
+
+   For inputs whose blackboard schema carries :field-type :image (or any other
+   field-type), the dscloj module's input field is given :type so that
+   dscloj's build-message-content routes the value as a multimodal content
+   block rather than as inline text. This is the Phase-1 mirror of
+   executor.clj's build-field behavior for Phase-2 leaf nodes."
   [name opts context]
   (let [{:keys [instruction writes model reads]} opts
         {:keys [provider blackboard sandbox-vars usage-tracker]} context
@@ -138,11 +173,16 @@
                              acc)))
                        {}
                        (or reads []))
-        ;; Build DSCloj module
-        module {:inputs (mapv (fn [[k v]]
-                                {:name k
-                                 :spec :any
-                                 :description (str "Input: " (clojure.core/name k))})
+        ;; Build DSCloj module — propagate :field-type from the blackboard
+        ;; schema for each read key so vision/audio/etc. inputs get routed
+        ;; as proper multimodal content blocks, not as inline text.
+        module {:inputs (mapv (fn [[k _v]]
+                                (let [schema (get-in blackboard [k :schema])
+                                      ft (schema-field-type schema)]
+                                  (cond-> {:name k
+                                           :spec :any
+                                           :description (str "Input: " (clojure.core/name k))}
+                                    ft (assoc :type ft))))
                               inputs)
                 :outputs (mapv (fn [k]
                                  {:name k
@@ -308,7 +348,20 @@
                            name namespace
                            re-find re-matches re-seq
                            subs format
-                           type class let if cond when do fn def]
+                           type class]
+                           ;; DO NOT include special forms / core macros like
+                           ;; let, if, cond, when, do, fn, def here. SCI handles
+                           ;; those NATIVELY. Selecting them from
+                           ;; (ns-publics 'clojure.core) overrides SCI's native
+                           ;; handling with clojure.core's macro implementations
+                           ;; whose macroexpansion emits references to JVM
+                           ;; internals (e.g. clojure.lang.PersistentArrayMap/
+                           ;; createAsIfByAssoc for {:keys [...]} destructuring)
+                           ;; that SCI can't resolve. The result: any inline
+                           ;; (fn [{:keys [...]}] ...) form the model writes
+                           ;; would fail with "Could not resolve symbol".
+                           ;; (the base sci-sandbox.clj never had this bug
+                           ;; because its safe-clojure-core stops at `class`.)
         core-publics (ns-publics 'clojure.core)
         safe-core (select-keys core-publics safe-clojure-core)
 

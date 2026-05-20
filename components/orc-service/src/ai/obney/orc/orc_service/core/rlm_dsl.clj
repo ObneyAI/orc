@@ -130,6 +130,29 @@
       (let [opts (first args)]
         (list 'final! opts))
 
+      :code
+      (let [{:keys [reads writes] :as opts} (first args)
+            fn-ref (:fn opts)]
+        ;; :fn accepts either:
+        ;;   (a) a non-empty string — qualified-symbol reference like "ns/sym"
+        ;;       resolved via ns-resolve at execution time
+        ;;   (b) an inline function value — e.g. (fn [{:keys [inputs]}] ...)
+        ;;       written by the model in its Phase-1 sandbox code; registered
+        ;;       in the ephemeral fn registry and invoked at tree-execution time
+        ;;
+        ;; The inline-fn path lets the model design its own pure-Clojure
+        ;; transforms inside the tree without needing the framework to ship
+        ;; pre-built fns for every transform. The tree-executor's
+        ;; compile-tree-node handles both cases.
+        (when-not (or (and (string? fn-ref) (seq fn-ref))
+                      (fn? fn-ref))
+          (throw (ex-info ":code node missing required :fn (qualified-symbol string or inline function)"
+                          {:node-type :code :tree tree :opts opts})))
+        (list 'sheet/code
+              :fn fn-ref
+              :reads reads
+              :writes writes))
+
       ;; Default: unknown node type
       (throw (ex-info (str "Unknown node type: " node-type)
                       {:node-type node-type :tree tree})))))

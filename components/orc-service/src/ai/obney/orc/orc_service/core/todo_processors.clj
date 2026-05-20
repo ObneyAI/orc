@@ -13,7 +13,8 @@
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [clojure.walk]))
 
 ;; =============================================================================
 ;; Output Key Normalization
@@ -454,28 +455,75 @@
             (let [result (if provider
                            (executor/execute-repl-researcher node blackboard provider context)
                            {:status :failure :error "No DSCloj provider configured"})
-                  {:keys [status outputs error duration-ms generated-tree-raw usage]} result
+                  {:keys [status outputs error duration-ms generated-tree-raw usage iterations]} result
                   ;; Track usage for this tick (RLM mode aggregates all LLM calls)
                   _ (when usage (add-usage! tick-id usage))
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
                   ;; The raw S-expr DSL is pure data and can be serialized to event store
                   effective-status (if (= :tree-generated status) :tree-generated status)
-                  ;; Include generated-tree-raw in outputs when present (for Phase 2 auto-execution observability)
+                  ;; Sanitize the raw tree before putting it on the blackboard: any
+                  ;; inline (fn ...) values on :code nodes are SCI fn objects that
+                  ;; Fressian cannot serialize. Without sanitization, the read-model
+                  ;; can't be projected and the tick stays pending forever.
+                  sanitized-tree-raw (when generated-tree-raw
+                                       (clojure.walk/postwalk
+                                         (fn [node]
+                                           (if (and (map-entry? node)
+                                                    (= :fn (key node))
+                                                    (fn? (val node)))
+                                             [:fn "<inline-fn>"]
+                                             node))
+                                         generated-tree-raw))
+                  ;; Include sanitized generated-tree-raw in outputs when present
+                  ;; (for Phase 2 auto-execution observability)
                   effective-outputs (cond-> (or outputs {})
-                                      generated-tree-raw (assoc :generated-tree-raw generated-tree-raw))]
+                                      sanitized-tree-raw (assoc :generated-tree-raw sanitized-tree-raw))]
               ;; Emit :rlm/tree-generated event when tree is generated
               ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
+              ;;
+              ;; IMPORTANT: the raw tree may contain inline SCI function values
+              ;; on :code nodes when the model wrote `[:code {:fn (fn [...] ...)}]`
+              ;; in its Phase-1 sandbox code. SCI fn objects are not Fressian-
+              ;; serializable; if we store them verbatim in the event, the
+              ;; read-model can't be projected on the next tick step and the
+              ;; tick stays pending forever. Walk the tree and replace any fn
+              ;; value at a :fn key with a placeholder string before storing.
               (when (some? generated-tree-raw)
+                (let [sanitized-tree (clojure.walk/postwalk
+                                       (fn [node]
+                                         (if (and (map-entry? node)
+                                                  (= :fn (key node))
+                                                  (fn? (val node)))
+                                           [:fn "<inline-fn>"]
+                                           node))
+                                       generated-tree-raw)]
+                  (es/append event-store
+                             {:tenant-id (:tenant-id context)
+                              :events [(->event
+                                        {:type :rlm/tree-generated
+                                         :tags #{[:sheet sheet-id]
+                                                 [:tick tick-id]}
+                                         :body (cond-> {:tree-id (random-uuid)
+                                                        :execution-id tick-id
+                                                        :raw-dsl sanitized-tree
+                                                        :generated-at (str (java.time.Instant/now))}
+                                                 (seq iterations) (assoc :iterations (vec iterations)))})]})))
+              ;; Emit :rlm/researcher-iterations event whenever the researcher
+              ;; ran at least one Phase 1 iteration — even when no tree was
+              ;; ultimately emitted (e.g. small-input direct execution). This
+              ;; gives downstream observers a uniform capture surface for
+              ;; iteration history regardless of execution mode.
+              (when (seq iterations)
                 (es/append event-store
                            {:tenant-id (:tenant-id context)
                             :events [(->event
-                                      {:type :rlm/tree-generated
+                                      {:type :rlm/researcher-iterations
                                        :tags #{[:sheet sheet-id]
                                                [:tick tick-id]}
-                                       :body {:tree-id (random-uuid)
-                                              :execution-id tick-id
-                                              :raw-dsl generated-tree-raw
-                                              :generated-at (str (java.time.Instant/now))}})]}))
+                                       :body {:execution-id tick-id
+                                              :iterations (vec iterations)
+                                              :iteration-count (count iterations)
+                                              :emitted-at (str (java.time.Instant/now))}})]}))
               (cp/process-command
                 (assoc context :command
                        (cond-> {:command/id (random-uuid)
