@@ -12,6 +12,13 @@
    - (final! {:key value}) - Capture result with writes validation
    - (get-input :key) - Load input value into variable space
 
+   R-2 — in recursive RLM mode (:rlm {:recursive? true}), additional drill-down
+   primitives are exposed for inspecting prior tree executions:
+   - (tree-detail), (tree-detail tick-id)
+   - (tree-trajectory), (tree-trajectory tick-id)
+   - (tree-failures)
+   - (node-output node-id), (node-input-profile node-id)
+
    Key principle: Separates variable space (sandbox memory) from token space
    (what the LLM sees). Large data stays in variable space; only sliced data
    goes to sub-LLM calls."
@@ -21,8 +28,10 @@
             [dscloj.core :as dscloj]
             [litellm.router :as litellm-router]
             [malli.core :as m]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.orc-service.core.sci-sandbox :as base-sandbox]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
+            [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
 
@@ -274,9 +283,13 @@
    - :mcp-tools - Optional vector of MCP tool names
    - :browser-tools - Optional vector of browser tool names
    - :sandbox-vars - Optional existing sandbox-vars atom (for persistence across iterations)
-   - :usage-tracker - Optional atom for aggregating sub-LLM token usage"
+   - :usage-tracker - Optional atom for aggregating sub-LLM token usage
+   - :recursive? - When true, enables R-2 drill-down primitives (tree-detail, etc.)
+   - :event-store - Required when :recursive? true. Used by drill-down primitives.
+   - :tenant-id - Optional; passed through to the event-store read"
   [{:keys [provider blackboard declared-writes parent-trace-id
-           call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker]}]
+           call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
+           recursive? event-store tenant-id]}]
   (let [;; Atom to capture final! output
         final-output (atom nil)
 
@@ -322,7 +335,19 @@
                          (swap! sandbox-vars assoc k v)
                          v))
 
-        ;; Build safe clojure.core namespace (same as base sandbox)
+        ;; Build safe clojure.core namespace (same as base sandbox).
+        ;;
+        ;; CRITICAL: DO NOT include special forms / core macros like
+        ;; let, if, cond, when, do, fn, def here. SCI handles those NATIVELY.
+        ;; Selecting them from (ns-publics 'clojure.core) overrides SCI's
+        ;; native handling with clojure.core's macro implementations whose
+        ;; macroexpansion emits references to JVM internals
+        ;; (e.g. clojure.lang.PersistentArrayMap/createAsIfByAssoc for
+        ;; {:keys [...]} destructuring) that SCI can't resolve. The result:
+        ;; any inline (fn [{:keys [...]}] ...) or (let [...] ...) form the
+        ;; model writes would fail with "Could not resolve symbol" or class
+        ;; cast errors. (The base sci-sandbox.clj never had this bug because
+        ;; its safe-clojure-core list stops at `class`.)
         safe-clojure-core '[+ - * / mod quot rem
                            = not= < > <= >= compare
                            str pr-str prn-str println print
@@ -349,19 +374,6 @@
                            re-find re-matches re-seq
                            subs format
                            type class]
-                           ;; DO NOT include special forms / core macros like
-                           ;; let, if, cond, when, do, fn, def here. SCI handles
-                           ;; those NATIVELY. Selecting them from
-                           ;; (ns-publics 'clojure.core) overrides SCI's native
-                           ;; handling with clojure.core's macro implementations
-                           ;; whose macroexpansion emits references to JVM
-                           ;; internals (e.g. clojure.lang.PersistentArrayMap/
-                           ;; createAsIfByAssoc for {:keys [...]} destructuring)
-                           ;; that SCI can't resolve. The result: any inline
-                           ;; (fn [{:keys [...]}] ...) form the model writes
-                           ;; would fail with "Could not resolve symbol".
-                           ;; (the base sci-sandbox.clj never had this bug
-                           ;; because its safe-clojure-core stops at `class`.)
         core-publics (ns-publics 'clojure.core)
         safe-core (select-keys core-publics safe-clojure-core)
 
@@ -516,21 +528,85 @@
                           ;; Return the canonical form
                           canonical))
 
+        ;; ---------------------------------------------------------------
+        ;; R-2: Drill-down primitives, exposed ONLY when :recursive? true.
+        ;;
+        ;; These let the model pull detailed tree-execution information on
+        ;; demand when the lightweight :tree-results summary isn't enough.
+        ;; Each closure reads from the event store using [:tick tick-id] tag
+        ;; filtering and delegates to the pure query fns in rlm-drill-down.
+        ;;
+        ;; Tick-id resolution:
+        ;;   - No-arg form: use the MOST RECENT entry in :tree-results.
+        ;;   - 1-arg form (tick-id): look up that entry; nil if not found.
+        ;;
+        ;; The "matching entry" carries both the :tick-id and the :tree-raw
+        ;; needed by `tree-detail-from-events`.
+        find-tree-result (fn [tick-id]
+                           (let [entries (or (:tree-results @sandbox-vars) [])]
+                             (if tick-id
+                               (first (filter #(= tick-id (:tick-id %)) entries))
+                               (last entries))))
+        read-tick-events (fn [tick-id]
+                           (when tick-id
+                             (into [] (es/read event-store
+                                        (cond-> {:tags #{[:tick tick-id]}}
+                                          tenant-id (assoc :tenant-id tenant-id))))))
+        tree-detail-fn (fn
+                         ([] (when-let [entry (find-tree-result nil)]
+                               (drill/tree-detail-from-events
+                                (read-tick-events (:tick-id entry))
+                                (:tree-raw entry))))
+                         ([tick-id]
+                          (when-let [entry (find-tree-result tick-id)]
+                            (drill/tree-detail-from-events
+                             (read-tick-events (:tick-id entry))
+                             (:tree-raw entry)))))
+        tree-trajectory-fn (fn
+                             ([] (when-let [entry (find-tree-result nil)]
+                                   (drill/tree-trajectory-from-events
+                                    (read-tick-events (:tick-id entry)))))
+                             ([tick-id]
+                              (when-let [entry (find-tree-result tick-id)]
+                                (drill/tree-trajectory-from-events
+                                 (read-tick-events (:tick-id entry))))))
+        tree-failures-fn (fn []
+                           (when-let [entry (find-tree-result nil)]
+                             (drill/tree-failures-from-events
+                              (read-tick-events (:tick-id entry)))))
+        node-output-fn (fn [node-id]
+                         (when-let [entry (find-tree-result nil)]
+                           (drill/node-output-from-events
+                            (read-tick-events (:tick-id entry))
+                            node-id)))
+        node-input-profile-fn (fn [node-id]
+                                (when-let [entry (find-tree-result nil)]
+                                  (drill/node-input-profile-from-events
+                                   (read-tick-events (:tick-id entry))
+                                   node-id)))
+        drill-bindings (when recursive?
+                         {'tree-detail tree-detail-fn
+                          'tree-trajectory tree-trajectory-fn
+                          'tree-failures tree-failures-fn
+                          'node-output node-output-fn
+                          'node-input-profile node-input-profile-fn})
+
         ;; RLM bindings - these are the key primitives
-        rlm-bindings {'llm llm-fn
-                      'final! final!-fn
-                      'get-input get-input-fn
-                      'store! store!-fn
-                      'get-var get-var-fn
-                      'list-vars list-vars-fn
-                      'inputs inputs-preview
-                      'sequence sequence-fn
-                      'parallel parallel-fn
-                      'map-each map-each-fn
-                      'fallback fallback-fn
-                      'condition condition-fn
-                      'code code-fn
-                      'emit-tree! emit-tree!-fn}
+        rlm-bindings (merge {'llm llm-fn
+                             'final! final!-fn
+                             'get-input get-input-fn
+                             'store! store!-fn
+                             'get-var get-var-fn
+                             'list-vars list-vars-fn
+                             'inputs inputs-preview
+                             'sequence sequence-fn
+                             'parallel parallel-fn
+                             'map-each map-each-fn
+                             'fallback fallback-fn
+                             'condition condition-fn
+                             'code code-fn
+                             'emit-tree! emit-tree!-fn}
+                            drill-bindings)
 
         ;; Combine all bindings
         all-bindings (merge rlm-bindings)

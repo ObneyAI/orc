@@ -13,3 +13,10 @@ __pycache__/
 *.pyc
 .DS_Store
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Benchmark / live-verify run output — regenerated every run, never committed.
+development/bench/generalization-results/
+
+# Large binary test fixtures. Keep these local; share via external storage if needed.
+development/resources/

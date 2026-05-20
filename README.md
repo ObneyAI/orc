@@ -189,6 +189,7 @@ ORC is a library — consumers provide:
 |-------|-------------|
 | [ORC Service Guide](docs/ORC-SERVICE-GUIDE.md) | Core execution engine and DSL reference |
 | [DSL Tutorial](docs/dsl-tutorial.md) | Step-by-step workflow building tutorial |
+| [**RLM Guide**](docs/RLM-GUIDE.md) | Research Language Model — two-phase execution, recursive `emit-tree!`, drill-down primitives, and the Phase 2 tree DSL |
 | [Architecture](docs/ARCHITECTURE.md) | System architecture and design decisions |
 | [GEPA Guide](docs/GEPA-GUIDE.md) | Prompt optimization with GEPA |
 | [Evaluation](docs/EVALUATION-COMPONENT.md) | LLM-as-judge evaluation framework |
@@ -197,6 +198,13 @@ ORC is a library — consumers provide:
 | [MCP Sheet Builder](docs/MCP-SHEET-BUILDER-GUIDE.md) | Dynamic workflow generation |
 | [Event Store Patterns](docs/EVENT-STORE-PATTERNS.md) | Grain event sourcing patterns |
 | [Pattern Compendium](docs/pattern-compendium.md) | Complete pattern reference |
+
+### Benchmarks
+
+| Document | Description |
+|---|---|
+| [Bench README](development/bench/README.md) | How to run the 5-task generalization benchmark suite |
+| [Bench RESULTS](development/bench/RESULTS.md) | Headline report — RLM designs 4 distinct tree patterns + 1 "no-tree" decision across structurally different tasks; zero hallucinations across 37+ spot-checks |
 
 ## License
 

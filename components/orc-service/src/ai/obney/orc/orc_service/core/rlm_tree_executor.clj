@@ -377,11 +377,11 @@
     ;; Code node: (sheet/code :reads [...] :writes [...] :fn <function-or-string>)
     ;; Two cases for :fn:
     ;;   (a) An inline Clojure function (from :chunk-document / :aggregate
-    ;;       transformers in rlm_dsl.clj) — register in the ephemeral registry
+    ;;       transformers in rlm_dsl.clj, OR a model-authored inline fn in
+    ;;       an emit-tree! :code node) — register in the ephemeral registry
     ;;       so it survives serialization across the child sheet boundary.
-    ;;   (b) A fully-qualified symbol string (from the model's emit-tree! :code
-    ;;       nodes, PR02) — pass through directly; the executor's resolve-fn
-    ;;       will load the namespace and look up the symbol at run time.
+    ;;   (b) A fully-qualified symbol string (rare; ns-resolve at execution
+    ;;       time) — pass through directly; ephemeral registry untouched.
     (and (seq? tree) (= 'sheet/code (first tree)))
     (let [opts (parse-keyword-args (rest tree))
           f (:fn opts)

@@ -6,11 +6,9 @@
 
 ## Status (post-execution)
 
-**Initial draft complete:** `development/bench/predict-rlm-comparison/reports/01_image_analysis.md` was authored against the post-instruction-cleanup run (`image-analysis_2026-05-20_103659.edn`).
+**Final report committed:** `development/bench/predict-rlm-comparison/reports/01_image_analysis.md` was authored against the dream-scenario run (`image-analysis_2026-05-20_150618.edn`) with apples-to-apples models (gpt-5.4 main + gpt-5.1-chat sub). 22-of-24 letter exact match against predict-rlm; ORC 2.8× cheaper / 2.2× faster.
 
-**Pending refresh:** the report's metrics and findings sections must be re-authored after **PR06b** completes (which re-runs image_analysis with the Phase-1 vision routing fix from PR-Pre03 and the emit-tree! default policy from PR-Prompt). The current report's token-cost numbers are off by ~3 orders of magnitude due to the vision routing bug, and the model behavior may change substantially under the new prompt policy.
-
-Tracking: this ticket is **superseded by PR06b** for the next iteration. The current report contents are preserved as the "before" baseline in PR06b's eventual updated report.
+Deep-dive companion: `development/bench/predict-rlm-comparison/reports/01_image_analysis_deep_dive.md` — captures the development journey (instruction port-cleaning, framework bug discoveries U1-U10, dream-scenario emergence). Stays in worktree, NOT shipped upstream.
 
 ## What to build
 

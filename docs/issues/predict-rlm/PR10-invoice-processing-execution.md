@@ -8,13 +8,12 @@
 
 The goal instruction must follow the **"verbatim goal, not verbatim methodology"** principle locked during PR07:
 
-- **Keep verbatim** from `references/predict-rlm/invoice_processing/signature.py.txt`: end-goal statement, output schema (`InvoiceExtractionResult` shape), quality requirements.
-- **Strip** language-specific tool nouns (`pathlib`, `asyncio.gather`, `dspy.Image`, `predict()`, `openpyxl`, `pymupdf`) and "step 1/2/3/4" procedural framing.
-- **Add** explicit thoroughness emphasis and an **adversarial-completeness clause**: "After extracting invoice details, adversarially verify completeness — re-examine each invoice for any line items, totals, or vendor details your extraction may have missed. If any were missed, add them before producing the final output."
+- **Keep verbatim** from `references/predict-rlm/invoice_processing/signature.py.txt`: end-goal statement, output schema, quality requirements.
+- **Strip** language-specific tool nouns and "step 1/2/3/4" procedural framing.
+- **Add** explicit thoroughness emphasis and an **adversarial-completeness clause**.
 - **Do not add** tree-shape hints, methodology dictation, or answer hints.
 - **Document the cleanup** in the comparison report's "Fidelity caveats" section (PR11).
 
-Also expects PR-Pre03 (Phase-1 vision routing fix) and PR-Prompt (emit-tree! default policy) to have landed before execution begins — both are critical for vision benchmarks.
 
 ## What to build
 

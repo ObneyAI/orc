@@ -24,6 +24,7 @@
             [cheshire.core :as json]
             [malli.core :as m]
             [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.observability :as obs]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
@@ -69,6 +70,88 @@
      :remaining-ms remaining
      :source source
      :exhausted? (<= remaining-raw 0)}))
+
+;; =============================================================================
+;; R-1: compute-tree-result-summary — pure deep module
+;; =============================================================================
+
+(defn compute-tree-result-summary
+  "Build the lightweight :tree-results summary entry for a Phase 2 tree execution.
+
+   Inputs:
+     {:phase2-result <result from tree-executor/execute-tree>
+      :tick-events   <vec of events tagged with [:tick child-tick-id]>
+      :tree-raw      <S-expr the model wrote — from sandbox-vars :generated-tree-raw>
+      :writes        [<node :writes declared keys>]}
+
+   Returns a map shaped per the R-1 PRD (factual fields only — no prose,
+   no severity, no retry hints, no full trajectory).
+
+   Conditional fields:
+     - :failure-indices + :failure-reasons appear only when :status is :partial
+       or :failure (derived from D-008's :partial-summary in the map-each's
+       :sheet/node-execution-completed event).
+     - :phase2-elapsed-ms + :budget-remaining-ms + :nodes-completed-before-cancel
+       appear only when :status is :timeout (from D-003's response shape)."
+  [{:keys [phase2-result tick-events tree-raw writes]}]
+  (let [node-completions (filter #(= :sheet/node-execution-completed (:event/type %))
+                                 tick-events)
+        ;; D-008 partial-summary lives on the map-each's own completion event.
+        ;; There can be zero or more such events; surface them all.
+        partial-summaries (keep :partial-summary node-completions)
+        ;; Leaf counts — exclude any node that carries :partial-summary, which
+        ;; is the D-008 marker that distinguishes map-each parent completions
+        ;; from leaf completions. Map-each can emit :partial OR :failure on its
+        ;; own completion event (depending on how many children failed), so
+        ;; status-filtering alone double-counts the parent into the leaf total.
+        leaf-completions (remove :partial-summary
+                                 (filter #(contains? #{:success :failure} (:status %))
+                                         node-completions))
+        succeeded (count (filter #(= :success (:status %)) leaf-completions))
+        failed (count (filter #(= :failure (:status %)) leaf-completions))
+        total (count leaf-completions)
+        writes-set (set writes)
+        outputs-keys (vec (filter writes-set (keys (:outputs phase2-result))))
+        status (:status phase2-result)
+        ;; Combine failure-indices + failure-reasons across all partial-summary
+        ;; events (typically only one map-each per tree, but support multiple).
+        all-failure-indices (vec (mapcat :failure-indices partial-summaries))
+        all-failure-reasons (apply merge {} (map :failure-reasons partial-summaries))]
+    (cond-> {:tick-id (:trace-id phase2-result)
+             :tree-raw tree-raw
+             :status status
+             :elapsed-ms (:duration-ms phase2-result)
+             :outputs-keys outputs-keys
+             :nodes-succeeded succeeded
+             :nodes-failed failed
+             :nodes-total total
+             :usage (:usage phase2-result)}
+      (and (contains? #{:partial :failure} status) (seq partial-summaries))
+      (assoc :failure-indices all-failure-indices
+             :failure-reasons all-failure-reasons)
+
+      (= :timeout status)
+      (assoc :phase2-elapsed-ms (:phase2-elapsed-ms phase2-result)
+             :budget-remaining-ms (:budget-remaining-ms phase2-result)
+             :nodes-completed-before-cancel (count leaf-completions)))))
+
+(defn merge-tree-result-into-sandbox
+  "Return new sandbox-vars after a Phase 2 tree execution.
+
+   - Merges Phase 2's :writes-declared output keys into sandbox-vars (NOT input
+     blackboard keys, even though they appear in phase2-result :outputs).
+   - Appends the summary entry to :tree-results (existing vector preserved;
+     nil → []).
+   - Dissoc's :generated-tree and :generated-tree-raw so the dispatch doesn't
+     re-fire on the same tree on the next iteration."
+  [sandbox-vars phase2-result writes summary]
+  (let [writes-set (set writes)
+        outputs-to-merge (select-keys (:outputs phase2-result) writes-set)
+        prior-results (get sandbox-vars :tree-results [])]
+    (-> sandbox-vars
+        (dissoc :generated-tree :generated-tree-raw)
+        (merge outputs-to-merge)
+        (assoc :tree-results (conj prior-results summary)))))
 
 ;; =============================================================================
 ;; Levenshtein Distance and Variable Suggestions
@@ -862,34 +945,28 @@
                                desc (malli-schema->description schema)]]
                      (str "- " key-name ": " desc))))))
 
-(defn- truncate-code
-  "Truncate code if it's too long, preserving the start and end."
-  [code max-len]
-  (if (> (count code) max-len)
-    (let [half (quot (- max-len 20) 2)]
-      (str (subs code 0 half) "\n... [truncated] ...\n" (subs code (- (count code) half))))
-    code))
-
 (defn- build-iteration-history
   "Format iteration history for LLM context.
 
-   Includes code executed, result, errors, and variables created in each iteration.
-   Long code is truncated for conciseness."
+   The model sees its own prior code, results, stdout, errors, and the
+   variables each iteration created — VERBATIM. Truncating any of this
+   second-guesses the model and hides what it actually did, degrading
+   its ability to reason across iterations (and, in recursive mode,
+   to see the full trees it has already emitted)."
   [history]
   (when (seq history)
     (str "\n\n## Previous Iterations\n"
          (str/join "\n\n"
                    (map-indexed
                     (fn [idx {:keys [code result stdout error vars-created]}]
-                      (let [truncated-code (truncate-code code 500)]
-                        (str "### Iteration " (inc idx) "\n"
-                             "Code:\n```clojure\n" truncated-code "\n```\n"
-                             (when (seq stdout) (str "Output:\n" stdout "\n"))
-                             (if error
-                               (str "Error: " error)
-                               (str "Result: " result))
-                             (when (seq vars-created)
-                               (str "\nVariables created: " (str/join ", " (map str vars-created)))))))
+                      (str "### Iteration " (inc idx) "\n"
+                           "Code:\n```clojure\n" code "\n```\n"
+                           (when (seq stdout) (str "Output:\n" stdout "\n"))
+                           (if error
+                             (str "Error: " error)
+                             (str "Result: " result))
+                           (when (seq vars-created)
+                             (str "\nVariables created: " (str/join ", " (map str vars-created))))))
                     history)))))
 
 (defn- build-code-generation-module
@@ -1309,6 +1386,7 @@
                       "- Use this when you need to design a processing pipeline\n"
                       "- Available node types:\n"
                       "  - :sequence - Execute children in order\n"
+                      "  - :parallel - Execute children concurrently (independent work only)\n"
                       "  - :llm - Execute a sub-LLM call with {:instruction :reads :writes}\n"
                       "      Optional :output-schemas {<write-key> <Malli-schema>} declares the shape of each\n"
                       "      :writes value. When you set this and the schema is structured (e.g. [:vector [:map-of :any :any]],\n"
@@ -1381,8 +1459,66 @@
                       "The pattern is always: break into bounded sub-problems → sub-LLM (or :code) per piece → aggregate → optionally validate.\n\n"
                       ;; Include ontology examples if available
                       (or (build-ontology-examples-section node) "")
+                      ;; R-1: Descriptive recursive-mode section when :recursive? is true.
+                      ;; Factual framing only — no urgency language.
+                      (if (get-in node [:rlm :recursive?])
+                        (str "## Recursive emit-tree! (this mode)\n\n"
+                             "When you call `(emit-tree! ...)`, the tree executes and then "
+                             "control returns to you for another iteration. The tree's "
+                             "outputs are merged into your variables (use `(get-var :summary)` "
+                             "etc.), and a summary entry is appended to `:tree-results`. The loop "
+                             "ends only when you call `(final! {...})` or you exceed "
+                             ":max-iterations.\n\n"
+                             "### Reading `:tree-results`\n"
+                             "Each entry has `:status` — one of:\n"
+                             "  - `:success` — the tree completed and all sub-nodes succeeded\n"
+                             "  - `:partial` — some sub-nodes failed; outputs reflect the successful subset\n"
+                             "  - `:failure` — the tree did not produce useful outputs\n"
+                             "  - `:timeout` — the tree was cancelled before completion (budget exhausted)\n\n"
+                             "Other fields per entry: `:elapsed-ms`, `:outputs-keys` (what was merged), "
+                             "`:nodes-succeeded`, `:nodes-failed`, `:nodes-total`. On `:partial` or "
+                             "`:failure` you also get `:failure-indices` + `:failure-reasons` "
+                             "(verbatim error strings).\n\n"
+                             "### Interpretation depends on your task\n"
+                             "For some tasks `:partial` is acceptable (e.g., document summarization "
+                             "with 22 of 24 chunks succeeded is usually fine). For others it requires "
+                             "follow-up (e.g., obligations extraction where missing chunks could miss "
+                             "obligations). You decide based on your task and the outputs you got.\n\n"
+                             "### After a tree completes\n"
+                             "You can:\n"
+                             "  - Call `(emit-tree! ...)` again to run another tree\n"
+                             "  - Run `(llm ...)` or `(code ...)` inline for follow-up work\n"
+                             "  - Call `(final! {...})` to terminate and return your answer\n\n"
+                             "### Drill-down primitives — use only when the summary is insufficient\n"
+                             "If `:tree-results` summary fields don't give you enough to decide your next step, "
+                             "you can read the full event-store record of the most-recent (or a specific) tree:\n"
+                             "  - `(tree-detail)` / `(tree-detail tick-id)` — full structured record: per-node "
+                             "`:status`, `:duration-ms`, `:writes`, `:usage`, `:input-profile`, and any `:partial-summary`\n"
+                             "  - `(tree-trajectory)` / `(tree-trajectory tick-id)` — chronological per-event "
+                             "log of what happened inside the tree\n"
+                             "  - `(tree-failures)` — failure entries with errors + per-failure input profiles "
+                             "(joins direct leaf failures with map-each `:partial-summary` failure indices)\n"
+                             "  - `(node-output node-id)` — writes map of a specific completed node\n"
+                             "  - `(node-input-profile node-id)` — input profile (chunk shape, etc.) of a specific node\n\n"
+                             "These return potentially large data — prefer the `:tree-results` summary first and only "
+                             "drill down when you genuinely need the extra detail to make a decision.\n\n")
+                        "")
                       "## Output Contract\n"
                       "You MUST call (final! {...}) with keys: " (pr-str (:writes node)) "\n\n"
+                      "## CRITICAL OUTPUT FORMAT\n"
+                      "Your response MUST start with `[[ ## code ## ]]` on its own line, followed by RAW Clojure code (NO markdown code fences, NO ```clojure or ``` tags), and end with `[[ ## completed ## ]]`.\n\n"
+                      "Correct format:\n"
+                      "```\n"
+                      "[[ ## code ## ]]\n"
+                      "(emit-tree! [:sequence ...])\n"
+                      "[[ ## completed ## ]]\n"
+                      "```\n\n"
+                      "WRONG (do NOT use markdown fences around your code):\n"
+                      "```\n"
+                      "```clojure\n"
+                      "(emit-tree! [:sequence ...])\n"
+                      "```\n"
+                      "```\n\n"
                       "## Example: Simple Analysis (small data)\n"
                       "```clojure\n"
                       "(let [data (get-input :document)\n"
@@ -1454,17 +1590,25 @@
         sandbox-vars (atom {})
 
         ;; Track when each variable was created (iteration number)
-        var-creation-times (atom {})]
+        var-creation-times (atom {})
+
+        ;; R-1: Cumulative timing metrics for the recursive mode response
+        ;; observability fields. Updated only when :recursive? is true.
+        cumulative-tree-ms (atom 0)
+        recursive-mode? (boolean (get-in node [:rlm :recursive?]))]
 
     (try
       (loop [iteration 0
              history []]
         (if (>= iteration max-iterations)
-          {:status :failure
-           :error "Max iterations reached without final!"
-           :iterations history
-           :duration-ms (- (System/currentTimeMillis) start-time)
-           :usage @total-usage}
+          (let [total-elapsed (- (System/currentTimeMillis) start-time)]
+            {:status :failure
+             :error "Max iterations reached without final!"
+             :iterations history
+             :duration-ms total-elapsed
+             :usage @total-usage
+             :cumulative-tree-ms @cumulative-tree-ms
+             :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))})
 
           ;; Generate code using LLM
           (let [module (build-rlm-code-generation-module node inputs-preview history
@@ -1562,7 +1706,10 @@
                              :call-tool-fn call-tool-fn
                              :mcp-tools mcp-tools
                              :browser-tools browser-tools
-                             :sandbox-vars sandbox-vars})
+                             :sandbox-vars sandbox-vars
+                             :recursive? recursive-mode?
+                             :event-store (:event-store context)
+                             :tenant-id (:tenant-id context)})
                     exec-result (rlm-sandbox/execute-rlm-code rlm-ctx code)
                     ;; Track new variables created in this iteration
                     vars-after (set (keys @sandbox-vars))
@@ -1616,12 +1763,15 @@
 
                   ;; final! was called - return the validated output
                   final-output
-                  {:status :success
-                   :outputs final-output
-                   :final-answer final-output
-                   :iterations new-history
-                   :duration-ms (- (System/currentTimeMillis) start-time)
-                   :usage @total-usage}
+                  (let [total-elapsed (- (System/currentTimeMillis) start-time)]
+                    {:status :success
+                     :outputs final-output
+                     :final-answer final-output
+                     :iterations new-history
+                     :duration-ms total-elapsed
+                     :usage @total-usage
+                     :cumulative-tree-ms @cumulative-tree-ms
+                     :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))})
 
                   ;; emit-tree! was called - trigger Phase 2 execution automatically
                   ;; Phase 1 generated the tree, now execute it via child ORC tick
@@ -1731,42 +1881,74 @@
                             (println "  error:" (:error phase2-result))
                             (println "  outputs keys:" (keys (:outputs phase2-result)))
                             (println "  duration-ms:" (:duration-ms phase2-result)))]
-                    ;; Merge Phase 1 + Phase 2 results
-                    (let [p1-usage @total-usage
-                          p2-usage (:usage phase2-result)
-                          ;; Preserve :by-node from Phase 2 (the per-node breakdown
-                          ;; of sub-LLM calls inside the generated tree).
-                          p2-by-node (:by-node p2-usage)
-                          combined-usage (cond-> {:prompt-tokens (+ (:prompt-tokens p1-usage 0)
-                                                                    (:prompt-tokens p2-usage 0))
-                                                  :completion-tokens (+ (:completion-tokens p1-usage 0)
-                                                                        (:completion-tokens p2-usage 0))
-                                                  :total-tokens (+ (:total-tokens p1-usage 0)
-                                                                   (:total-tokens p2-usage 0))}
-                                           (seq p2-by-node) (assoc :by-node p2-by-node))]
-                      {:status (:status phase2-result)
-                       :outputs (:outputs phase2-result)
-                       :generated-tree-raw generated-tree-raw
-                       :iterations new-history
-                       :duration-ms (+ phase1-duration (or (:duration-ms phase2-result) 0))
-                       :usage combined-usage
-                       :breakdown {:phase1 p1-usage :phase2 p2-usage}
-                       :phase2-duration-ms (:duration-ms phase2-result)
-                       :phase2-error (:error phase2-result)
-                       ;; D-003: surface elapsed timings on the happy path so callers
-                       ;; can debug whether budget is being spent on Phase 1 or Phase 2.
-                       :phase1-elapsed-ms phase1-duration
-                       :phase2-elapsed-ms (cond
-                                            (number? (:duration-ms phase2-result))
-                                            (:duration-ms phase2-result)
-                                            ;; On timeout, execute-tree returns no duration —
-                                            ;; we can derive it from the remaining budget that
-                                            ;; we passed (it's what actually got consumed).
-                                            (= :timeout (:status phase2-result))
-                                            (:remaining-ms budget)
-                                            :else nil)
-                       :phase2-tick-id (:trace-id phase2-result)
-                       :budget budget}))))
+                    ;; R-1: When :recursive? true, DON'T return Phase 2's result —
+                    ;; instead merge outputs into sandbox-vars, append a summary entry
+                    ;; to :tree-results, clear :generated-tree, and recur to give the
+                    ;; model another iteration to reason about the tree's outcome.
+                    (if recursive-mode?
+                      (let [child-tick-id (:trace-id phase2-result)
+                            tenant-id (:tenant-id context)
+                            event-store (:event-store context)
+                            tick-events (when (and event-store child-tick-id)
+                                          (into [] (es/read event-store
+                                                     (cond-> {:tags #{[:tick child-tick-id]}}
+                                                       tenant-id (assoc :tenant-id tenant-id)))))
+                            ;; Augment phase2-result with R-1 fields so the summary
+                            ;; can surface timeout-specific data when present.
+                            phase2-result+budget
+                            (cond-> phase2-result
+                              (= :timeout (:status phase2-result))
+                              (assoc :phase2-elapsed-ms (or (:duration-ms phase2-result)
+                                                            (:remaining-ms budget))
+                                     :budget-remaining-ms 0))
+                            summary (compute-tree-result-summary
+                                      {:phase2-result phase2-result+budget
+                                       :tick-events tick-events
+                                       :tree-raw generated-tree-raw
+                                       :writes declared-writes})
+                            _ (swap! sandbox-vars merge-tree-result-into-sandbox
+                                     phase2-result+budget declared-writes summary)
+                            _ (swap! cumulative-tree-ms + (or (:duration-ms phase2-result) 0))
+                            _ (dbg "\n[DEBUG RLM] Recursive recur — :tree-results entries:"
+                                   (count (:tree-results @sandbox-vars))
+                                   "summary status:" (:status summary))]
+                        (recur (inc iteration) new-history))
+                      ;; Non-recursive (current behavior, preserved) — merge results and return.
+                      (let [p1-usage @total-usage
+                            p2-usage (:usage phase2-result)
+                            ;; Preserve :by-node from Phase 2 (the per-node breakdown
+                            ;; of sub-LLM calls inside the generated tree).
+                            p2-by-node (:by-node p2-usage)
+                            combined-usage (cond-> {:prompt-tokens (+ (:prompt-tokens p1-usage 0)
+                                                                     (:prompt-tokens p2-usage 0))
+                                                    :completion-tokens (+ (:completion-tokens p1-usage 0)
+                                                                          (:completion-tokens p2-usage 0))
+                                                    :total-tokens (+ (:total-tokens p1-usage 0)
+                                                                     (:total-tokens p2-usage 0))}
+                                             (seq p2-by-node) (assoc :by-node p2-by-node))]
+                        {:status (:status phase2-result)
+                         :outputs (:outputs phase2-result)
+                         :generated-tree-raw generated-tree-raw
+                         :iterations new-history
+                         :duration-ms (+ phase1-duration (or (:duration-ms phase2-result) 0))
+                         :usage combined-usage
+                         :breakdown {:phase1 p1-usage :phase2 p2-usage}
+                         :phase2-duration-ms (:duration-ms phase2-result)
+                         :phase2-error (:error phase2-result)
+                         ;; D-003: surface elapsed timings on the happy path so callers
+                         ;; can debug whether budget is being spent on Phase 1 or Phase 2.
+                         :phase1-elapsed-ms phase1-duration
+                         :phase2-elapsed-ms (cond
+                                              (number? (:duration-ms phase2-result))
+                                              (:duration-ms phase2-result)
+                                              ;; On timeout, execute-tree returns no duration —
+                                              ;; we can derive it from the remaining budget that
+                                              ;; we passed (it's what actually got consumed).
+                                              (= :timeout (:status phase2-result))
+                                              (:remaining-ms budget)
+                                              :else nil)
+                         :phase2-tick-id (:trace-id phase2-result)
+                         :budget budget})))))
 
                   ;; Check for FINAL_ANSWER pattern (fallback)
                   (or (sci-sandbox/contains-final-answer? (:result exec-result))

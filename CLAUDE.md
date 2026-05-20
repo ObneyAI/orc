@@ -95,6 +95,22 @@ clj -M:dev -e '(require (quote [risk-analysis :as t])) (require (quote [runner])
 clj -M:dev -e '(require (quote [all :as bench])) (bench/start!) (bench/run-all!) (bench/summary!) (bench/stop!)'
 ```
 
+## RLM Mode (repl-researcher node)
+
+The `:repl-researcher` node type provides a two-phase execution pattern. See [`docs/RLM-GUIDE.md`](docs/RLM-GUIDE.md) for the comprehensive guide — including the recursive-mode opt-in, sandbox primitives, drill-down primitives (`tree-detail`, `tree-trajectory`, `tree-failures`, `node-output`, `node-input-profile`), the Phase 2 tree DSL (including `:code` for model-authored transforms), observability events, partial-result handling, budget controls, and how to compose `:repl-researcher` as a node inside a larger behavior tree.
+
+**Two modes**, controlled by the `:rlm` config on the node:
+
+```clojure
+;; Terminal mode (default) — model designs ONE tree, Phase 2 runs, result returns
+{:rlm true}                          ; or {:rlm {:debug? true}}
+
+;; Recursive mode (opt-in) — emit-tree! returns to Phase 1; model can inspect and continue
+{:rlm {:recursive? true}}            ; or {:rlm {:recursive? true :debug? true}}
+```
+
+In recursive mode, after Phase 2 completes (any status), the tree's outputs are merged into sandbox-vars, a lightweight summary entry is appended to `:tree-results`, and control returns to the Phase 1 loop. The model can run follow-up `(llm ...)` / `(code ...)`, drill into prior trees via `(tree-detail)` / `(tree-failures)` / etc. when the summary isn't enough, emit another tree, or call `(final! ...)` to terminate. Existing callers using `:rlm true` are unaffected — terminal behavior is preserved.
+
 ## Skills
 
 ### ORC Domain

@@ -166,6 +166,34 @@
       ;; Should have two children
       (is (= 2 (count (rest result)))))))
 
+(deftest code-node-with-inline-fn-transforms-to-sheet-code
+  (testing ":code with an inline (fn ...) value preserves the fn and key shape"
+    (let [my-fn (fn [{:keys [inputs]}] {:n (count (:chunks inputs))})
+          result (rlm-dsl/rlm-dsl->orc-dsl
+                   [:code {:reads [:chunks] :writes [:n] :fn my-fn}])]
+      (is (list? result))
+      (is (= 'sheet/code (first result)))
+      (let [opts (apply hash-map (rest result))]
+        (is (= [:chunks] (:reads opts)))
+        (is (= [:n] (:writes opts)))
+        (is (fn? (:fn opts)))
+        (is (identical? my-fn (:fn opts))
+            ":fn is passed through by identity, not wrapped or replaced")))))
+
+(deftest code-node-with-qualified-symbol-string-transforms-through
+  (testing ":code with a qualified-symbol string :fn is passed through unchanged"
+    (let [result (rlm-dsl/rlm-dsl->orc-dsl
+                   [:code {:reads [:x] :writes [:y] :fn "my.ns/transform"}])]
+      (is (= 'sheet/code (first result)))
+      (let [opts (apply hash-map (rest result))]
+        (is (= "my.ns/transform" (:fn opts)))))))
+
+(deftest code-node-without-fn-throws
+  (testing ":code without :fn raises a clear error"
+    (is (thrown-with-msg? Exception #":code node missing required :fn"
+                          (rlm-dsl/rlm-dsl->orc-dsl
+                            [:code {:reads [:x] :writes [:y]}])))))
+
 ;; =============================================================================
 ;; PR02: :code node — references a pre-built Clojure function by qualified symbol
 ;; =============================================================================

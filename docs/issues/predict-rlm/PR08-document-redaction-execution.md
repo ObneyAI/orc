@@ -4,19 +4,22 @@
 
 `docs/prd/predict-rlm-benchmark-ports.md`
 
+## Status
+
+**Completed.** Document redaction port produced 92 redactions (vs predict-rlm's 89), 28.9s (vs 87s), 100% strict-PII recall vs 89% (predict-rlm missed transit number / business number / 3 date ranges / 4 recurrences). See `development/bench/predict-rlm-comparison/reports/02_document_redaction.md`.
+
 ## Port-cleanup principle (locked during PR07; applies to this issue)
 
 The goal instruction must follow the **"verbatim goal, not verbatim methodology"** principle locked during PR07:
 
 - **Keep verbatim** from `references/predict-rlm/document_redaction/signature.py.txt`: end-goal statement, output schema, quality requirements.
 - **Strip** language-specific tool nouns (`pathlib`, `asyncio.gather`, `dspy.Image`, `predict()`, `pymupdf`) and "step 1/2/3/4" procedural framing.
-- **Add** explicit thoroughness emphasis and an **adversarial-completeness clause**: "After identifying targets, adversarially verify completeness by re-examining each page's text for any PII categories you may have missed. If any were missed, add them before applying redactions."
+- **Add** explicit thoroughness emphasis and an **adversarial-completeness clause**.
 - **Do not add** tree-shape hints, methodology dictation, or answer hints.
 - **Document the cleanup** in the comparison report's "Fidelity caveats" section (PR09).
 
-Also expects PR-Pre03 (Phase-1 vision routing fix) and PR-Prompt (emit-tree! default policy) to have landed before execution begins — those fix the same class of issue PR06/PR07 surfaced.
-
 The redaction-criteria input (PII category policy string) stays verbatim — that's task input, not framework instruction.
+
 
 ## What to build
 
