@@ -34,7 +34,10 @@
 
 (def config
   {:model "google/gemini-3-flash-preview"
-   :timeout-ms 600000
+   ;; 20 minutes default. predict-rlm's larger benchmarks (document_analysis,
+   ;; contract_comparison) take 4-6 minutes on their infrastructure; OpenRouter
+   ;; latency + our smaller per-page parallelism need more headroom.
+   :timeout-ms 1200000
    :documents-dir "development/bench/documents"
    :results-dir "development/bench/predict-rlm-comparison/results"})
 
