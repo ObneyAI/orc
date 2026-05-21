@@ -96,8 +96,33 @@ After running a benchmark:
 1. **Check `:status :success`** — the runner prints this at the end. Anything else is a real failure to investigate.
 2. **For image_analysis**: open the result EDN's `:outputs :answer` field. Compare letter counts against `references/predict-rlm/image_analysis/sample/output/output.md`. Expect ≥18-of-26 letters to match exactly (model run-to-run variance accounts for the rest).
 3. **For document_redaction**: check `:outputs :total-redactions` is in the 80-95 range and `:outputs :targets-applied` is a vector of real PII items (names, SINs, addresses, dates).
+4. **For invoice_processing**: open `results/invoice_extraction.xlsx` side-by-side with `references/predict-rlm/invoice_processing/sample/output/invoice_extraction.xlsx`. Should have same 3-sheet structure, same column layout, equivalent line-item rows.
+5. **For document_analysis**: check `:outputs :key-dates` has ~12-20 dates in ISO format; `:outputs :key-entities` has ~10-15 named people/orgs/roles. Compare to predict-rlm's published table in `references/predict-rlm/document_analysis/sample/output/report.md`.
+6. **For contract_comparison**: check `:outputs :summary` mentions the Domestic Content removal (the headline change in microFIT v2.0 → v3.1.1). `:outputs :key-differences` should be 3-5 items with `:area`, `:description`, `:impact` fields. Compare to predict-rlm's published `references/predict-rlm/contract_comparison/sample/output/comparison-report.md`.
 
 If your numbers fall well outside these ranges (e.g. 0 redactions, status `:failure`), that's a **bug**, not run-to-run variance. The framework has been verified to reliably produce results in these ranges; investigate root cause rather than re-running.
+
+## Each task file is a worked example
+
+The 5 task files under `tasks/` are deliberately structured to be standalone learning examples of how to compose an ORC RLM benchmark with the framework's full feature set. Read any one of them top-to-bottom:
+
+| File | Demonstrates |
+|---|---|
+| [`tasks/image_analysis.clj`](../../bench/predict_rlm_comparison/tasks/image_analysis.clj) | Vision input via `[:string {:field-type :image}]` schema; single-output `:answer` writes; minimal task shape |
+| [`tasks/document_redaction.clj`](../../bench/predict_rlm_comparison/tasks/document_redaction.clj) | Multi-page text + image inputs; `:available-code-nodes` advertised via instruction; deterministic `:code` reference; constraint-based composition guidance |
+| [`tasks/invoice_processing.clj`](../../bench/predict_rlm_comparison/tasks/invoice_processing.clj) | Multi-document parallel vision extraction; `:output-schemas` for structured Invoice maps; pre-built `:code` for xlsx generation; combined `:invoices :total-amount :summary :workbook-path` writes |
+| [`tasks/contract_comparison.clj`](../../bench/predict_rlm_comparison/tasks/contract_comparison.clj) | Cross-document comparison; structured `ComparisonResult` schema; `:section-diffs` with `:significance` enum; deterministic-code final synthesis pattern |
+| [`tasks/document_analysis.clj`](../../bench/predict_rlm_comparison/tasks/document_analysis.clj) | Large-document text extraction; nested `:key-dates` + `:key-entities` schemas; adversarial-completeness verification clause |
+
+Each file's top-of-file docstring shows:
+- What predict-rlm task it ports (verbatim instruction sourcing)
+- Fidelity caveats specific to that task
+- The exact REPL incantation to run it
+- The standalone shell script path
+
+The `:task` map at the bottom of each file is the complete shape: name, slug, model + sub-model, instruction, input-schemas, output-schemas, input-loader, writes, evaluation-criteria, and `:predict-rlm-reported` metadata. **Copy any of these as a template for building your own ORC RLM benchmark.**
+
+For broader framework reference, see [`docs/RLM-GUIDE.md`](../../../docs/RLM-GUIDE.md) — covers the full `repl-researcher` node config, `:rlm` mode options, Phase-2 tree DSL primitives, observability events, and recursive-mode opt-in.
 
 ## Methodology + fidelity caveats
 

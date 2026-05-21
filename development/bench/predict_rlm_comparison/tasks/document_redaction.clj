@@ -18,7 +18,23 @@
    Fidelity caveat: predict-rlm uses pymupdf's PDF-native page.apply_redactions()
    to modify the underlying PDF object. We do text-mode substring redaction on
    extracted page text. Same RLM decision-making (vision identify + structured
-   apply); different output medium. Documented in the comparison report."
+   apply); different output medium. Documented in the comparison report.
+
+   This file is also a complete worked example of how to compose an ORC
+   RLM benchmark — see the :task map at the bottom for the full shape
+   (name, slug, model + sub-model, instruction, input/output schemas,
+   input-loader, writes, evaluation-criteria, predict-rlm-reported
+   metadata).
+
+   Run from REPL:
+     (require '[predict-rlm-comparison.tasks.document-redaction :as t])
+     (require '[predict-rlm-comparison.runner :as r])
+     (r/start!)
+     (r/run! t/task)
+     (r/stop!)
+
+   Or via the standalone script:
+     ./development/bench/predict-rlm-comparison/scripts/run_document_redaction.sh"
   (:require [ai.obney.orc.predict-rlm-pdf.interface :as pdf]
             [ai.obney.orc.predict-rlm-redaction-tools.interface :as redact]))
 
