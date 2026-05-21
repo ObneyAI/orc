@@ -399,3 +399,87 @@
             (is (some? image-input) "module :inputs should include :image entry")
             (is (= :image (:type image-input))
                 "image-typed blackboard schema must propagate :type :image to the dscloj module input")))))))
+
+;; =============================================================================
+;; U8: Inline-fn sanitization for Fressian-safe event storage
+;; =============================================================================
+;;
+;; When the model writes `[:code {:fn (fn [...] ...)}]` in its Phase-1 sandbox
+;; code, the inline SCI function object propagates into events the framework
+;; tries to store via the event-store (Fressian-serialized). Fressian can't
+;; serialize fn objects → the read-model fails to project the event → the
+;; tick stays pending forever. The fix: walk the tree before storing and
+;; replace inline-fn values with the placeholder string "<inline-fn>".
+;; The actual fn lives in the ephemeral-fn-registry for Phase-2 execution;
+;; only the EVENT representation needs sanitization.
+
+(deftest sanitize-tree-replaces-inline-fn-values-with-placeholder
+  (testing "U8: walking a tree with inline-fn :code values replaces each
+            fn-valued :fn entry with the string \"<inline-fn>\". Other
+            values (including qualified-symbol-string :fn refs) are
+            untouched. The result is Fressian-serializable."
+    (let [inline-fn (fn [{:keys [inputs]}] {:doubled (* 2 (:n inputs))})
+          tree-with-fn [:sequence
+                        [:code {:fn inline-fn
+                                :reads [:n]
+                                :writes [:doubled]}]
+                        [:code {:fn "my.ns/named-fn"
+                                :reads [:a]
+                                :writes [:b]}]
+                        [:final {:keys [:doubled :b]}]]
+          sanitized (tree-executor/sanitize-tree-for-events tree-with-fn)]
+      (let [code-nodes (filter #(and (vector? %) (= :code (first %))) sanitized)
+            first-fn-val (-> code-nodes first second :fn)
+            second-fn-val (-> code-nodes second second :fn)]
+        (is (= "<inline-fn>" first-fn-val)
+            "Inline fn must be replaced with placeholder string")
+        (is (= "my.ns/named-fn" second-fn-val)
+            "Qualified-symbol-string :fn must be untouched")
+        ;; Top-level structure preserved
+        (is (= :sequence (first sanitized))
+            "Top-level :sequence preserved")
+        ;; No fn objects ANYWHERE in the result
+        (is (not (some fn? (tree-seq coll? seq sanitized)))
+            "No function objects should remain anywhere in the sanitized tree")))))
+
+;; =============================================================================
+;; U11: :llm output schemas drive structured-output parsing
+;; =============================================================================
+;;
+;; When the model emits a tree with an :llm node declaring :output-schemas,
+;; those schemas propagate to the child sheet's blackboard key declarations.
+;; Downstream, build-module looks up the blackboard schema, and dscloj's
+;; existing complex-spec? path triggers JSON-parsing of the LLM response.
+;; This closes the LLM-output → :code consumer gap that document_redaction
+;; surfaced (the LLM produced JSON-text but downstream :code expected
+;; parsed Clojure data).
+
+(deftest llm-node-preserves-output-schemas
+  (testing ":llm node with :output-schemas → canonical form preserves the schemas map"
+    (let [result (rlm-dsl/rlm-dsl->orc-dsl
+                   [:llm {:instruction "Extract targets"
+                          :reads [:page_text]
+                          :writes [:targets]
+                          :output-schemas {:targets [:vector [:map-of :any :any]]}}])
+          opts (apply hash-map (rest result))]
+      (is (= 'sheet/llm (first result)))
+      (is (= [:targets] (:writes opts)))
+      (is (= {:targets [:vector [:map-of :any :any]]}
+             (:output-schemas opts))
+          ":output-schemas must round-trip through the DSL translator"))))
+
+(deftest extract-key-schemas-collects-from-llm-nodes
+  (testing "extract-key-schemas walks a tree and collects {write-key → schema} from :llm :output-schemas"
+    (let [tree '(sheet/sequence
+                  (sheet/llm :instruction "Pass 1"
+                             :reads [:page_text]
+                             :writes [:targets]
+                             :output-schemas {:targets [:vector [:map-of :any :any]]})
+                  (sheet/llm :instruction "Pass 2 with no schemas declared"
+                             :reads [:targets]
+                             :writes [:summary]))
+          schemas (#'ai.obney.orc.orc-service.core.rlm-tree-executor/extract-key-schemas tree)]
+      (is (= [:vector [:map-of :any :any]] (get schemas :targets))
+          "schema for :targets collected from first :llm node")
+      (is (nil? (get schemas :summary))
+          "no schema collected when :output-schemas wasn't declared"))))
