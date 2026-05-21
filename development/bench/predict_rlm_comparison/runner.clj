@@ -39,7 +39,7 @@
    ;; latency + our smaller per-page parallelism need more headroom.
    :timeout-ms 1200000
    :documents-dir "development/bench/documents"
-   :results-dir "development/bench/predict-rlm-comparison/results"})
+   :results-dir "development/bench/predict_rlm_comparison/results"})
 
 ;; =============================================================================
 ;; Single-task-lock

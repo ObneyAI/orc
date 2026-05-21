@@ -57,7 +57,7 @@
 
 (defn run-all!
   "Run all 5 (or a subset of) task definitions sequentially. Each task writes
-   its own result EDN under `development/bench/predict-rlm-comparison/results/`.
+   its own result EDN under `development/bench/predict_rlm_comparison/results/`.
 
    Returns a vector of result maps, one per task. Each result has the runner's
    standard shape: `:status :outputs :duration-ms :usage :node-trace :iterations`
@@ -77,4 +77,4 @@
    compared against predict-rlm's published metadata where available.
    Delegates to `runner/generate-summary!`."
   []
-  (runner/generate-summary! "development/bench/predict-rlm-comparison/results"))
+  (runner/generate-summary! "development/bench/predict_rlm_comparison/results"))

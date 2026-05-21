@@ -25,8 +25,8 @@
 
 (defn -main [& _args]
   (common/run-benchmark! task/task)
-  (let [out-path "development/bench/predict-rlm-comparison/results/invoice_extraction.xlsx"
-        ref-path "development/bench/predict-rlm-comparison/references/predict-rlm/invoice_processing/sample/output/invoice_extraction.xlsx"]
+  (let [out-path "development/bench/predict_rlm_comparison/results/invoice_extraction.xlsx"
+        ref-path "development/bench/predict_rlm_comparison/references/predict-rlm/invoice_processing/sample/output/invoice_extraction.xlsx"]
     (when (.exists (io/file out-path))
       (println)
       (println (str "Output workbook:                 " out-path))

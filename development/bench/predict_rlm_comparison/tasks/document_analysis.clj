@@ -5,7 +5,7 @@
    markdown report, key dates, and key entities.
 
    Source task: predict-rlm/examples/document_analysis/signature.py
-   Reference data: development/bench/predict-rlm-comparison/references/
+   Reference data: development/bench/predict_rlm_comparison/references/
                     predict-rlm/document_analysis/sample/
 
    Note: ORC has its own development/bench/document_analysis.clj that
@@ -34,7 +34,7 @@
   (:require [ai.obney.orc.predict-rlm-pdf.interface :as pdf]))
 
 (def ^:private pdf-path
-  "development/bench/predict-rlm-comparison/references/predict-rlm/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf")
+  "development/bench/predict_rlm_comparison/references/predict-rlm/document_analysis/sample/input/YYJ-2025-Parking-Management-RFP.pdf")
 
 (def criteria
   "Verbatim from predict-rlm's run.py CRITERIA constant — defines what

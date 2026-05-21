@@ -71,7 +71,7 @@
                           (/ (:duration-ms r 0) 1000.0)
                           (or (get-in r [:usage :total-tokens]) "n/a"))))
         (println)
-        (runner/generate-summary! "development/bench/predict-rlm-comparison/results")
+        (runner/generate-summary! "development/bench/predict_rlm_comparison/results")
         (runner/stop!)
         (when any-failed?
           (binding [*out* *err*]

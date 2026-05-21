@@ -6,7 +6,7 @@
    summary.
 
    Source task: predict-rlm/examples/contract_comparison/signature.py
-   Reference data: development/bench/predict-rlm-comparison/references/
+   Reference data: development/bench/predict_rlm_comparison/references/
                     predict-rlm/contract_comparison/sample/
 
    Models: gpt-5.4 main + gpt-5.1-chat sub for apples-to-apples.
@@ -29,7 +29,7 @@
   (:require [ai.obney.orc.predict-rlm-pdf.interface :as pdf]))
 
 (def ^:private references-dir
-  "development/bench/predict-rlm-comparison/references/predict-rlm/contract_comparison/sample/input")
+  "development/bench/predict_rlm_comparison/references/predict-rlm/contract_comparison/sample/input")
 
 (def ^:private contract-a-path
   (str references-dir "/microFIT-Contract-Version-2-0.pdf"))

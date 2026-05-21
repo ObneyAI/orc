@@ -30,7 +30,7 @@
   (:require [ai.obney.orc.predict-rlm-image-tools.interface :as img-tools]))
 
 (def ^:private image-path
-  "development/bench/predict-rlm-comparison/references/predict-rlm/image_analysis/sample/input/screenshot.png")
+  "development/bench/predict_rlm_comparison/references/predict-rlm/image_analysis/sample/input/screenshot.png")
 
 (def ^:private default-query
   ;; Verbatim from predict-rlm examples/image_analysis/run.py DEFAULT_QUERY.

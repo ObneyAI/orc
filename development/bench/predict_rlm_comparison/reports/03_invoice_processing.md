@@ -265,7 +265,7 @@ clj -M:dev:test -e '
 - **Models:** `openai/gpt-5.4` main + `openai/gpt-5.1-chat` sub
 - **Inputs:** 2 invoice PDFs from predict-rlm's `sample/input/`, pre-rendered at 200 DPI
 - **System:** in-memory event store, OpenRouter via litellm router, LMDB cache map-size 512MB
-- **Output:** `development/bench/predict-rlm-comparison/results/invoice_extraction.xlsx`
+- **Output:** `development/bench/predict_rlm_comparison/results/invoice_extraction.xlsx`
 
 Open the produced workbook in Excel / LibreOffice / Numbers and compare to `references/predict-rlm/invoice_processing/sample/output/invoice_extraction.xlsx`.
 

@@ -51,7 +51,7 @@
       (println "========================================")
       (runner/stop!)
       (println)
-      (println "Run complete. Look under development/bench/predict-rlm-comparison/results/")
+      (println "Run complete. Look under development/bench/predict_rlm_comparison/results/")
       (println "for the freshly-written EDN files.")
       (when-not (= :success status)
         (System/exit 1)))

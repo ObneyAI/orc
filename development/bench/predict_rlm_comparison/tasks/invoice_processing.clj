@@ -6,7 +6,7 @@
    .xlsx output.
 
    Source task: predict-rlm/examples/invoice_processing/signature.py
-   Reference data: development/bench/predict-rlm-comparison/references/
+   Reference data: development/bench/predict_rlm_comparison/references/
                     predict-rlm/invoice_processing/sample/
 
    Models: gpt-5.4 main + gpt-5.1-chat sub for apples-to-apples (matching
@@ -31,7 +31,7 @@
             [clojure.java.io :as io]))
 
 (def ^:private references-dir
-  "development/bench/predict-rlm-comparison/references/predict-rlm/invoice_processing/sample/input")
+  "development/bench/predict_rlm_comparison/references/predict-rlm/invoice_processing/sample/input")
 
 (def ^:private acme-pdf-path
   (str references-dir "/acme-invoice-2025-0042.pdf"))
@@ -43,7 +43,7 @@
   ;; Each run writes a fresh workbook here. The path is computed at
   ;; task-load time so the model sees a real absolute path in its inputs.
   (.getAbsolutePath
-    (io/file "development/bench/predict-rlm-comparison/results/invoice_extraction.xlsx")))
+    (io/file "development/bench/predict_rlm_comparison/results/invoice_extraction.xlsx")))
 
 (def instruction
   "Goal-only instruction, port-cleaned from predict-rlm's signature.py docstring.

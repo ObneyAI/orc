@@ -4,19 +4,29 @@ Apples-to-apples comparison of ORC's RLM (Repl Researcher with `emit-tree!`) aga
 
 ## What's compared
 
+All 5 of predict-rlm's example benchmarks ported apples-to-apples (same models, same verbatim instructions, same source documents).
+
 | Benchmark | Source task | Clean report | Reference EDN |
 |---|---|---|---|
 | `image_analysis` | [predict-rlm/examples/image_analysis](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples/image_analysis) | [`reports/01_image_analysis.md`](reports/01_image_analysis.md) | [`results/image-analysis_2026-05-20_150618.edn`](results/image-analysis_2026-05-20_150618.edn) |
 | `document_redaction` | [predict-rlm/examples/document_redaction](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples/document_redaction) | [`reports/02_document_redaction.md`](reports/02_document_redaction.md) | [`results/document-redaction_2026-05-20_165215.edn`](results/document-redaction_2026-05-20_165215.edn) |
+| `invoice_processing` | [predict-rlm/examples/invoice_processing](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples/invoice_processing) | [`reports/03_invoice_processing.md`](reports/03_invoice_processing.md) | [`results/invoice-processing_2026-05-21_145054.edn`](results/invoice-processing_2026-05-21_145054.edn) |
+| `document_analysis` | [predict-rlm/examples/document_analysis](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples/document_analysis) | [`reports/04_document_analysis.md`](reports/04_document_analysis.md) | [`results/document-analysis-predict-rlm_2026-05-21_162203.edn`](results/document-analysis-predict-rlm_2026-05-21_162203.edn) |
+| `contract_comparison` | [predict-rlm/examples/contract_comparison](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples/contract_comparison) | [`reports/05_contract_comparison.md`](reports/05_contract_comparison.md) | [`results/contract-comparison-predict-rlm_2026-05-21_164244.edn`](results/contract-comparison-predict-rlm_2026-05-21_164244.edn) |
+
+**Cross-benchmark synthesis report:** [`reports/00_index.md`](reports/00_index.md) — the aggregate story across all 5.
 
 ## Headline results (from committed reference EDNs)
 
-| Benchmark | ORC outcome | predict-rlm (verbatim from their `sample/output/output.md`) |
+| Benchmark | ORC | predict-rlm (verbatim from their `sample/output/output.md`) |
 |---|---|---|
-| image_analysis | 9,560 tokens / 26.9s / 22-of-24 letters match predict-rlm EXACTLY | 26,547 tokens / ~60s / $0.08 |
-| document_redaction | 92 redactions / 28.9s / 52,120 tokens / **100% strict-PII recall** (84/84) | 89 redactions / 87s (1m 27s) / 65,847 tokens / $0.18 / **89% strict-PII recall** (75/84) |
+| image_analysis | **9,560 tokens / 26.9s** / 22-of-24 letters match predict-rlm EXACTLY | 26,547 tokens / ~60s / $0.08 |
+| document_redaction | **92 redactions / 28.9s / 52,120 tokens** / **100% strict-PII recall** (84/84) | 89 redactions / 87s (1m 27s) / 65,847 tokens / $0.18 / **89% strict-PII recall** (75/84) |
+| invoice_processing | **16,573 tokens / 28.1s** / 2 invoices extracted, $34,804.30 total, 11/12 line items match reference xlsx | predict-rlm's output.md doesn't publish token/cost stats for this benchmark |
+| document_analysis | 614,439 tokens / 3.7 min / **19 dates** (vs predict-rlm's 12) + **13 entities** (vs their 4) — model designed an additional adversarial verification stage | 194,072 tokens / ~4 min / $0.52 / 12 dates / 4 entities |
+| contract_comparison | **94,258 tokens / 50s** / same headline change identified (Domestic Content removed) + 2 additional material findings | 173,057 tokens / ~5.5 min / $0.71 |
 
-ORC ~2.8× cheaper on tokens for image_analysis; ~1.26× cheaper for document_redaction; ~2-4× faster on wall clock. Higher strict-recall on document_redaction (caught the transit number, Business Number, and date-range PII predict-rlm missed).
+**3 of 5 benchmarks: ORC was BOTH faster AND cheaper** than predict-rlm at equivalent extraction quality (image_analysis, document_redaction, contract_comparison). In document_analysis ORC traded higher token cost for more thorough extraction (19 vs 12 dates). invoice_processing matched the published structural reference exactly. See [`reports/00_index.md`](reports/00_index.md) for the cross-benchmark analysis.
 
 ## Prerequisites
 
@@ -138,13 +148,18 @@ For broader framework reference, see [`docs/RLM-GUIDE.md`](../../../docs/RLM-GUI
 
 For full methodology, fidelity caveats, and the per-benchmark deep analysis, read the clean reports:
 
+- [`reports/00_index.md`](reports/00_index.md) — cross-benchmark synthesis (start here)
 - [`reports/01_image_analysis.md`](reports/01_image_analysis.md)
 - [`reports/02_document_redaction.md`](reports/02_document_redaction.md)
+- [`reports/03_invoice_processing.md`](reports/03_invoice_processing.md)
+- [`reports/04_document_analysis.md`](reports/04_document_analysis.md)
+- [`reports/05_contract_comparison.md`](reports/05_contract_comparison.md)
 
-Key choices documented in those reports:
-- All predict-rlm numbers sourced from their committed `sample/output/output.md` (authoritative reference; their README has different numbers from a separate run)
+Key choices documented across those reports:
+- All predict-rlm numbers sourced from their committed `sample/output/output.md` and `sample/output/report.md` files (authoritative reference; their READMEs may have different numbers from separate runs)
 - Instruction port-cleaning: verbatim goal + adversarial-completeness clause; methodology-specific Python tool nouns stripped per the "verbatim goal, not verbatim methodology" principle
 - document_redaction uses text-mode substring replacement (predict-rlm uses pymupdf's PDF-native `apply_redactions()`). The RLM decision-making is what's compared, not PDF-rewriting mechanics.
+- document_analysis + contract_comparison use text extraction (PDFBox); predict-rlm uses vision. For text-heavy documents both pipelines see the same content; framework support for vision-mode `:field-type :image` propagation through `:map-each` is a future upgrade.
 
 ## References
 

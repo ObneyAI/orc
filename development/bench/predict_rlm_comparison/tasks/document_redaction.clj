@@ -39,7 +39,7 @@
             [ai.obney.orc.predict-rlm-redaction-tools.interface :as redact]))
 
 (def ^:private pdf-path
-  "development/bench/predict-rlm-comparison/references/predict-rlm/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf")
+  "development/bench/predict_rlm_comparison/references/predict-rlm/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf")
 
 (def ^:private criteria
   ;; Verbatim from predict-rlm examples/document_redaction/run.py CRITERIA.
