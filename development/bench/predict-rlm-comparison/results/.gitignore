@@ -1,14 +1,18 @@
-# Headline EDN files for the predict-rlm comparison benchmarks.
-# Only the 2 dream-scenario runs cited in reports/01_image_analysis.md
-# and reports/02_document_redaction.md are committed. All other fresh
-# runs (timestamped) land here as untracked work.
+# Headline files for the predict-rlm comparison benchmarks.
+# Only the headline runs cited in the clean reports are committed.
+# All other fresh runs (timestamped) land here as untracked work.
 
 # Ignore everything by default
 *
 
-# Then re-include the 4 headline files and this .gitignore itself
+# Then re-include the headline files and this .gitignore itself
 !.gitignore
 !image-analysis_2026-05-20_150618.edn
 !image-analysis_2026-05-20_150618.trace.edn
 !document-redaction_2026-05-20_165215.edn
 !document-redaction_2026-05-20_165215.trace.edn
+# PR10 headline output: the actual workbook the model produced (referenced
+# from reports/03_invoice_processing.md). Kept as a reference for
+# side-by-side comparison with predict-rlm's published invoice_extraction.xlsx
+# under references/predict-rlm/invoice_processing/sample/output/.
+!invoice_extraction.xlsx
