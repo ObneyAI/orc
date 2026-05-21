@@ -82,20 +82,35 @@ Added to this, redact any dates found in the document, in any format.")
    that re-reads the source with the first pass's targets in hand catches
    them.
 
-   IMPORTANT TREE-COMPOSITION NOTE: when you use :map-each to produce per-page
-   structured outputs (each LLM call returns a map like {:targets [...]}),
-   flatten the results into a single targets vector using an inline :code node
-   with your own (fn [{:keys [inputs]}] ...) — NOT :aggregate. :aggregate
-   packages the map-each output as-is, which leaves you with a vector of
-   {:targets [...]} maps rather than a flat vector of target maps; downstream
-   apply-redactions then receives the wrong shape and applies 0 redactions.
-   Example flatten:
-       [:code {:fn (fn [{:keys [inputs]}]
-                     {:pass1-targets (vec (mapcat :targets (:pass1-results inputs)))})
-               :reads [:pass1-results] :writes [:pass1-targets]}]
-   Use behavior-tree primitives (sequence, llm, map-each, code) rather than
-   coordinating multiple sub-calls inline as imperative Clojure code: the
-   tree is the durable, observable record of the work that was done.")
+   COMPOSITION CONSIDERATIONS — read carefully:
+
+   - Each redaction target must reference the page it came from via the
+     :page field (0-indexed). Downstream code uses :page to locate the
+     target's :text in the correct source-page string; a wrong :page
+     means the target is searched in the wrong page and cannot be
+     applied.
+
+   - If your design iterates a per-page collection, each per-iteration
+     sub-call sees one page in isolation. The sub-call cannot infer its
+     own position in the source collection from the page content alone.
+     If you need positional context inside the iteration (which you do
+     for the :page field), you must thread that context into each
+     iteration explicitly.
+
+   - When sub-calls return structured collections (e.g. vectors of
+     target maps), aggregating those collections back into a single
+     flat collection requires a transformation step. Generic aggregation
+     primitives may package the per-iteration outputs as-is rather than
+     unwrap+concatenate them; if your downstream consumer expects a flat
+     vector, an explicit transform is the cleanest path. Pure-Clojure
+     transform nodes are appropriate here — they are deterministic,
+     cheaper than additional LLM calls, and produce results you can
+     reason about directly.
+
+   - Behavior-tree primitives (sequence, parallel, map-each, llm, code,
+     final) are the durable, observable record of the work. Prefer
+     emitting a tree over coordinating multiple sub-calls inline as
+     imperative Clojure code in Phase 1.")
 
 (defn- load-inputs []
   (let [page-texts (pdf/extract-pages-as-text pdf-path)
