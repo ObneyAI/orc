@@ -115,6 +115,77 @@ The model:
 3. Optionally calls `(emit-tree! [...])` to design a behavior tree for ORC to execute.
 4. Terminal mode: when the model calls `emit-tree!`, Phase 2 runs and the result returns to the caller — the loop ends immediately.
 
+## Configuration reference
+
+All options accepted by the `repl-researcher` node and the `:rlm` config map.
+
+### Top-level options on `repl-researcher`
+
+| Option | Type | Default | Purpose |
+|---|---|---|---|
+| `:model` | string | required | LLM identifier for the Phase-1 researcher (e.g. `"openai/gpt-5.4"`, `"google/gemini-2.5-flash"`). Also the default for Phase-2 `:llm` sub-calls when `:sub-model` is not set. |
+| `:sub-model` | string | nil (uses `:model`) | LLM identifier injected into every Phase-2 `:llm` node that does NOT specify its own `:model`. Lets Phase-1 use a high-capability main LM while Phase-2 sub-calls go through a cheaper/faster sub LM. See [Main LM + Sub-LM](#main-lm--sub-lm-sub-model) below. |
+| `:instruction` | string | required | The model's task. Verbatim goal-only is preferred; the framework adds the methodology framing. |
+| `:reads` | vector of keywords | `[]` | Blackboard keys to load into Phase-1 sandbox + Phase-2 child sheet. |
+| `:writes` | vector of keywords | `[]` | Blackboard keys the model must populate via `(final! ...)` or via the emit-tree! tree's `:final` node. |
+| `:max-iterations` | int | 5 | Max Phase-1 iterations. If the model neither calls `(final! ...)` nor calls `(emit-tree! ...)` within this many iterations, the run returns `{:status :failure :error "Max iterations reached without final!"}`. |
+| `:timeout-ms` | int | 900000 (15 min) | Hard wall-clock budget for Phase 2. Precedence: node's `:timeout-ms` > parent tick's `:timeout-ms` > hardcoded 15-minute default. When Phase 2 budget is exhausted mid-flight the child tick is cancelled. |
+| `:rlm` | map or `true` | `false` | Enables RLM mode. `true` is equivalent to `{}`. See "`:rlm` config map" below. |
+
+### `:rlm` config map options
+
+| Option | Type | Default | Purpose |
+|---|---|---|---|
+| `:recursive?` | bool | `false` | Non-terminal `emit-tree!` — after each Phase-2 tree completes, control returns to Phase 1 for inspection / follow-up / `(final! ...)`. See [Recursive mode](#recursive-mode-rlm-recursive-true). |
+| `:debug?` | bool | `false` | Verbose `[DEBUG RLM]` / `[DEBUG Tree]` stderr logging useful during development. Default off for production. |
+| `:available-code-nodes` | string | nil | Markdown catalog of pre-built `:code` fns the model can reference via `[:code {:fn "ns/sym"}]`. Surfaced as an extra DSCloj module input field. See [Pre-built code-node catalog](#pre-built-code-node-catalog-available-code-nodes). |
+| `:sub-model` | string | nil | Alternative location for `:sub-model` — `(:sub-model (:rlm node))` takes precedence over `(:sub-model node)`. Either works. |
+
+### Per-`:llm`-node options inside `emit-tree!` trees
+
+The `:llm` tree-DSL node accepts these options that are NOT part of the top-level `repl-researcher` config:
+
+| Option | Type | Default | Purpose |
+|---|---|---|---|
+| `:instruction` | string | required | The sub-LLM's prompt. |
+| `:reads` | vector of keywords | `[]` | Blackboard keys passed as inputs. |
+| `:writes` | vector of keywords | `[]` | Blackboard keys this `:llm` produces. |
+| `:model` | string | inherits from `:sub-model` then `:model` | Per-node model override. Useful when one specific node needs a vision-capable model while other nodes go through the cheaper sub-LM. Example: `[:llm {:model "openai/gpt-4o" :reads [:image] :writes [:caption] ...}]`. Per-node `:model` takes precedence over `:sub-model` injection. |
+| `:output-schemas` | map | `nil` | Per-write Malli schemas. When the schema is structured (vector / map / etc.) the framework asks the LLM for JSON and parses the response back into Clojure data for downstream `:code` consumers. See [Structured LLM outputs](#structured-llm-outputs-output-schemas). |
+| `:retry` | map | `{:max-attempts 3 :backoff-ms [1000 2000 4000]}` | Per-node retry policy. Default is 3 attempts with 1s/2s/4s exponential-ish backoff. Override per node like `[:llm {:retry {:max-attempts 5 :backoff-ms [500 1000 2000 4000 8000]} ...}]`. |
+
+### `:reads` / `:writes` validation
+
+- **`:reads`**: the framework declares each read key on the child sheet's blackboard. If a read key isn't already declared at the parent level OR populated as an input to `tick-tree`, the value is nil at execution time (the framework does not error). A nil read often manifests as the `:llm` or `:code` body crashing on `nil` arithmetic — verify your reads are seeded.
+- **`:writes`**: the framework declares each write key on the child sheet and validates that the executor's result populates those keys. For `:llm` nodes, the model is told "you must produce all `:writes` keys"; missing writes leave the key nil. For `:code` nodes, see U7 reconciliation (single-write scalar auto-wraps; multi-write must return a map containing the declared keys, or fails clearly).
+
+### Tree-DSL → canonical translation
+
+When you write `[:sequence [:llm {...}] [:final {...}]]`, the `rlm-dsl/rlm-dsl->orc-dsl` translator produces a canonical S-expression with `sheet/` prefixes:
+
+```clojure
+;; You write (DSL form):
+[:sequence
+ [:llm {:instruction "summarize" :reads [:doc] :writes [:summary]}]
+ [:final {:keys [:summary]}]]
+
+;; Framework executes (canonical form):
+(sheet/sequence
+  (sheet/llm :instruction "summarize"
+             :reads [:doc]
+             :writes [:summary]
+             :retry {:max-attempts 3 :backoff-ms [1000 2000 4000]})
+  (final! {:keys [:summary]}))
+```
+
+Notable transformations:
+- Vector → list with `sheet/<name>` head
+- Map options → flat keyword-value pairs
+- Default `:retry` config added to every `:llm`
+- `:chunk-document` / `:aggregate` expand into `sheet/code` with inline helper fns
+
+When debugging an `emit-tree!` run, examine `:generated-tree-raw` (S-expr DSL — what the model wrote) AND `:generated-tree` (canonical — what the framework executes) on the run result.
+
 ## Main LM + Sub-LM (`:sub-model`)
 
 By default, both the Phase-1 researcher and any Phase-2 `:llm` sub-calls use the node's `:model`. For benchmark or cost-optimization workflows you can split them: run a higher-capability **main LM** in Phase 1 (which writes Clojure code and designs trees) and a cheaper/faster **sub-LM** for the per-leaf Phase-2 `:llm` calls.
