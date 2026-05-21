@@ -10,7 +10,23 @@
    Our addition: the runner pre-encodes the image and loads it into the
    blackboard under :image with schema [:string {:field-type :image}] so
    dscloj routes it as an OpenAI-style image_url content block on the
-   sub-LLM call (no model-side base64-encoding required)."
+   sub-LLM call (no model-side base64-encoding required).
+
+   This file is also a complete worked example of how to compose an ORC
+   RLM benchmark — see the :task map at the bottom for the full shape
+   (name, slug, model + sub-model, instruction, input/output schemas,
+   input-loader, writes, evaluation-criteria, predict-rlm-reported
+   metadata).
+
+   Run from REPL:
+     (require '[predict-rlm-comparison.tasks.image-analysis :as t])
+     (require '[predict-rlm-comparison.runner :as r])
+     (r/start!)
+     (r/run! t/task)
+     (r/stop!)
+
+   Or via the standalone script:
+     ./development/bench/predict-rlm-comparison/scripts/run_image_analysis.sh"
   (:require [ai.obney.orc.predict-rlm-image-tools.interface :as img-tools]))
 
 (def ^:private image-path

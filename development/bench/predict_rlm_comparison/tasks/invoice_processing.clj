@@ -12,12 +12,20 @@
    Models: gpt-5.4 main + gpt-5.1-chat sub for apples-to-apples (matching
    predict-rlm's published setup).
 
+   This file is also a complete worked example of how to compose an ORC RLM
+   benchmark — see the :task map at the bottom for the full shape (task name,
+   model + sub-model, instruction, input/output schemas, input-loader,
+   writes, evaluation-criteria, predict-rlm-reported metadata).
+
    Run from REPL:
-     (require '[invoice-processing :as t])
+     (require '[predict-rlm-comparison.tasks.invoice-processing :as t])
      (require '[predict-rlm-comparison.runner :as r])
      (r/start!)
      (r/run! t/task)
-     (r/stop!)"
+     (r/stop!)
+
+   Or via the standalone script:
+     ./development/bench/predict-rlm-comparison/scripts/run_invoice_processing.sh"
   (:require [ai.obney.orc.predict-rlm-pdf.interface :as pdf]
             [ai.obney.orc.predict-rlm-invoice-tools.interface :as invoice-tools]
             [clojure.java.io :as io]))
