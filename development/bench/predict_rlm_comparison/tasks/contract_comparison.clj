@@ -70,9 +70,10 @@
 
    COMPOSITION CONSIDERATIONS — read carefully:
 
-   - The blackboard provides two image vectors: :contract-a-pages and
-     :contract-b-pages, each marked :field-type :image. Process them
-     such that you can correlate sections across documents.
+   - The blackboard provides two text vectors: :contract-a-pages and
+     :contract-b-pages, each a vector of plain text strings (one per
+     PDF page). Process them such that you can correlate sections
+     across documents.
 
    - If your design iterates pages within a document, each per-iteration
      sub-call sees one page in isolation. The sub-call cannot infer its
@@ -90,10 +91,12 @@
      Clojure code.")
 
 (defn- load-inputs []
-  ;; DPI 100 keeps per-page data URIs small. predict-rlm's run reports
-  ;; "45 pages compared in ~5.5 minutes" — that's two ~23-page documents.
-  {:contract-a-pages (vec (pdf/render-pages-as-data-uris contract-a-path {:dpi 100}))
-   :contract-b-pages (vec (pdf/render-pages-as-data-uris contract-b-path {:dpi 100}))})
+  ;; Text-mode extraction (PDFBox) — same approach as document_analysis.
+  ;; predict-rlm's run uses vision (45 pages, ~5.5min, 173K tokens).
+  ;; Our path: extract text per page so the model can :map-each / read
+  ;; pages without triggering vision routing limitations.
+  {:contract-a-pages (vec (pdf/extract-pages-as-text contract-a-path))
+   :contract-b-pages (vec (pdf/extract-pages-as-text contract-b-path))})
 
 (def task
   {:name "Contract Comparison (predict-rlm port)"
@@ -102,8 +105,8 @@
    :model "openai/gpt-5.4"
    :sub-model "openai/gpt-5.1-chat"
    :instruction instruction
-   :input-schemas {:contract-a-pages [:vector {:field-type :image} :string]
-                   :contract-b-pages [:vector {:field-type :image} :string]}
+   :input-schemas {:contract-a-pages [:vector :string]
+                   :contract-b-pages [:vector :string]}
    :output-schemas {:report :string
                     :section-diffs [:vector [:map-of :any :any]]
                     :key-differences [:vector [:map-of :any :any]]
