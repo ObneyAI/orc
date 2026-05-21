@@ -8,13 +8,13 @@
    - Update blackboard with node outputs"
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.executor :as executor]
+            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
-            [clojure.string :as str]
-            [clojure.walk]))
+            [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Output Key Normalization
@@ -461,58 +461,38 @@
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
                   ;; The raw S-expr DSL is pure data and can be serialized to event store
                   effective-status (if (= :tree-generated status) :tree-generated status)
-                  ;; Sanitize the raw tree before putting it on the blackboard: any
-                  ;; inline (fn ...) values on :code nodes are SCI fn objects that
+                  ;; U8: Sanitize the raw tree before putting it on the blackboard.
+                  ;; Inline (fn ...) values on :code nodes are SCI fn objects that
                   ;; Fressian cannot serialize. Without sanitization, the read-model
-                  ;; can't be projected and the tick stays pending forever.
+                  ;; can't project the resulting events and the tick stays pending
+                  ;; forever. The actual function continues to live in the
+                  ;; ephemeral-fn-registry for Phase-2 execution; only the event
+                  ;; representation needs sanitization.
                   sanitized-tree-raw (when generated-tree-raw
-                                       (clojure.walk/postwalk
-                                         (fn [node]
-                                           (if (and (map-entry? node)
-                                                    (= :fn (key node))
-                                                    (fn? (val node)))
-                                             [:fn "<inline-fn>"]
-                                             node))
-                                         generated-tree-raw))
+                                       (tree-executor/sanitize-tree-for-events generated-tree-raw))
                   ;; Include sanitized generated-tree-raw in outputs when present
                   ;; (for Phase 2 auto-execution observability)
                   effective-outputs (cond-> (or outputs {})
                                       sanitized-tree-raw (assoc :generated-tree-raw sanitized-tree-raw))]
               ;; Emit :rlm/tree-generated event when tree is generated
               ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
-              ;;
-              ;; IMPORTANT: the raw tree may contain inline SCI function values
-              ;; on :code nodes when the model wrote `[:code {:fn (fn [...] ...)}]`
-              ;; in its Phase-1 sandbox code. SCI fn objects are not Fressian-
-              ;; serializable; if we store them verbatim in the event, the
-              ;; read-model can't be projected on the next tick step and the
-              ;; tick stays pending forever. Walk the tree and replace any fn
-              ;; value at a :fn key with a placeholder string before storing.
               (when (some? generated-tree-raw)
-                (let [sanitized-tree (clojure.walk/postwalk
-                                       (fn [node]
-                                         (if (and (map-entry? node)
-                                                  (= :fn (key node))
-                                                  (fn? (val node)))
-                                           [:fn "<inline-fn>"]
-                                           node))
-                                       generated-tree-raw)]
-                  (es/append event-store
-                             {:tenant-id (:tenant-id context)
-                              :events [(->event
-                                        {:type :rlm/tree-generated
-                                         :tags #{[:sheet sheet-id]
-                                                 [:tick tick-id]}
-                                         :body (cond-> {:tree-id (random-uuid)
-                                                        :execution-id tick-id
-                                                        :raw-dsl sanitized-tree
-                                                        :generated-at (str (java.time.Instant/now))}
-                                                 (seq iterations) (assoc :iterations (vec iterations)))})]})))
-              ;; Emit :rlm/researcher-iterations event whenever the researcher
-              ;; ran at least one Phase 1 iteration — even when no tree was
-              ;; ultimately emitted (e.g. small-input direct execution). This
-              ;; gives downstream observers a uniform capture surface for
-              ;; iteration history regardless of execution mode.
+                (es/append event-store
+                           {:tenant-id (:tenant-id context)
+                            :events [(->event
+                                      {:type :rlm/tree-generated
+                                       :tags #{[:sheet sheet-id]
+                                               [:tick tick-id]}
+                                       :body {:tree-id (random-uuid)
+                                              :execution-id tick-id
+                                              :raw-dsl sanitized-tree-raw
+                                              :generated-at (str (java.time.Instant/now))}})]}))
+              ;; U10: Emit :rlm/researcher-iterations event whenever the
+              ;; researcher ran at least one Phase 1 iteration — even when
+              ;; no tree was ultimately emitted (e.g. small-input direct
+              ;; execution). This gives downstream observers a uniform
+              ;; capture surface for iteration history regardless of
+              ;; execution mode.
               (when (seq iterations)
                 (es/append event-store
                            {:tenant-id (:tenant-id context)

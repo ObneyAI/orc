@@ -23,8 +23,8 @@
                               orc/mcp-sheet-builder {:local/root "components/mcp-sheet-builder"}
                               orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
-                              orc/grain-test-utils    {:local/root "components/grain-test-utils"}
-                              orc/predict-rlm-pdf     {:local/root "components/predict-rlm-pdf"}
+                              orc/grain-test-utils  {:local/root "components/grain-test-utils"}
+                              orc/predict-rlm-pdf   {:local/root "components/predict-rlm-pdf"}
                               orc/predict-rlm-image-tools {:local/root "components/predict-rlm-image-tools"}
                               orc/predict-rlm-redaction-tools {:local/root "components/predict-rlm-redaction-tools"}}}
 

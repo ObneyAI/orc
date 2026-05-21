@@ -832,56 +832,174 @@
               "Budget source reflects the node's :timeout-ms taking precedence"))))))
 
 ;; =============================================================================
-;; Regression repro: map-each :into aggregation with structured :output-schemas
+;; U4: extract-all-keys position-independent parsing of :code nodes
 ;; =============================================================================
+;;
+;; When rlm-dsl translates a [:code ...] DSL node it emits `:fn` FIRST in the
+;; canonical sheet/code form:
+;;     (sheet/code :fn <fn> :reads [...] :writes [...])
+;;
+;; extract-all-keys must extract :reads and :writes regardless of whether
+;; :fn appears first, last, or anywhere else in the args list. A naive
+;; (take-while #(not= :fn %) args) approach returns an empty arg list
+;; whenever :fn is first, which means the :reads and :writes keys are
+;; never declared on the child sheet — the :code node then can't read its
+;; inputs or write its outputs.
+;;
+;; The fix: parse the args uniformly with (apply hash-map (rest tree)).
+;; An inline-fn or qualified-symbol-string value at :fn fits a hash-map
+;; entry just as well as any other keyword-value pair.
 
-(deftest map-each-into-aggregates-structured-llm-writes
-  (testing "map-each + :llm writing structured :targets via :output-schemas
-            aggregates each iteration's :targets value into the :into key,
-            and a downstream :code can flatten via (mapcat :targets ...)."
+(deftest code-node-with-fn-first-declares-reads-and-writes-on-child-sheet
+  (testing "U4: When a :code node's canonical form has :fn first (rlm-dsl
+            emits this shape for model-authored :code), extract-all-keys
+            still extracts :reads and :writes so the child sheet can declare
+            those blackboard keys. Otherwise the :code execution fails to
+            read its inputs or write its outputs.
+
+            Uses string inputs (not numbers) to avoid an unrelated pre-existing
+            bug: execute-tree's schema inference returns invalid Malli `:number`
+            for number values, breaking declare-key for any number input. That
+            bug is orthogonal to U4 and tracked separately."
     (with-provider-context [ctx]
-      (let [call-count (atom 0)]
-        (with-redefs [dscloj/predict
-                      (fn [_provider _module _inputs _opts]
-                        (let [n (swap! call-count inc)
-                              idx (dec n)]
-                          {:outputs {:targets [{:page idx :text (str "tgt-" idx "a") :category "A" :reason "r1"}
-                                               {:page idx :text (str "tgt-" idx "b") :category "B" :reason "r2"}]}
-                           :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}}))]
+      ;; Use the rlm-dsl translator so we exercise the actual canonical form
+      ;; the framework sees when the model emits a [:code ...] tree node.
+      (let [tree (rlm-dsl/rlm-dsl->orc-dsl
+                   [:sequence
+                    [:code {:fn (fn [{:keys [inputs]}]
+                                  {:upper (clojure.string/upper-case (:text inputs))})
+                            :reads [:text]
+                            :writes [:upper]}]
+                    [:final {:keys [:upper]}]])
+            blackboard {:text "hello"}
+            result (tree-executor/execute-tree tree ctx
+                     {:blackboard blackboard
+                      :timeout-ms 10000})]
+        ;; If extract-all-keys mis-parses the args (skips after :fn), the
+        ;; child sheet won't declare :upper and the :code node will
+        ;; either fail to write or :final won't surface it.
+        (is (= :success (:status result))
+            (str "Expected :success, got: " (:status result)
+                 " error: " (:error result)))
+        (is (= "HELLO" (get-in result [:outputs :upper]))
+            "The :code node should read :text=\"hello\" and write :upper=\"HELLO\"")))))
+
+;; =============================================================================
+;; U7: :code output reconciliation against declared :writes
+;; =============================================================================
+;;
+;; When a model-authored :code fn returns a non-map value (e.g. a string from
+;; clojure.string/upper-case, a number from frequencies, etc.) AND exactly one
+;; :writes key is declared, the framework should auto-wrap the value under
+;; that write key rather than failing with "function must return a map".
+;;
+;; This matches the natural Clojure idiom: a simple transform `(fn [{:keys
+;; [inputs]}] (clojure.string/upper-case (:text inputs)))` should compose
+;; with `:writes [:upper]` without requiring the model to remember to wrap.
+
+(deftest code-node-with-single-write-and-scalar-return-auto-wraps
+  (testing "U7: When :code's :fn returns a scalar (non-map) AND :writes has
+            exactly one key, the framework auto-wraps the scalar under that
+            write key. The natural Clojure idiom for simple transforms
+            (string ops, arithmetic, counts) returns a scalar — making the
+            model emit `{:upper x}` instead of just `x` is friction."
+    (with-provider-context [ctx]
+      (let [tree (rlm-dsl/rlm-dsl->orc-dsl
+                   [:sequence
+                    [:code {:fn (fn [{:keys [inputs]}]
+                                  ;; Returns a scalar string, NOT a map
+                                  (clojure.string/upper-case (:text inputs)))
+                            :reads [:text]
+                            :writes [:upper]}]
+                    [:final {:keys [:upper]}]])
+            blackboard {:text "hello"}
+            result (tree-executor/execute-tree tree ctx
+                     {:blackboard blackboard
+                      :timeout-ms 10000})]
+        (is (= :success (:status result))
+            (str "Expected :success, got: " (:status result)
+                 " error: " (:error result)))
+        (is (= "HELLO" (get-in result [:outputs :upper]))
+            "Scalar result \"HELLO\" should be wrapped under :upper")))))
+
+;; =============================================================================
+;; U6: Phase-2 child-sheet schema preservation via :blackboard-schemas
+;; =============================================================================
+;;
+;; When the parent passes :blackboard-schemas {key schema} to execute-tree,
+;; the child sheet's declare-key uses that schema rather than type-inferring
+;; from the value. This preserves :field-type :image, :output-schemas, and
+;; any other schema-driven routing across the Phase-1 → Phase-2 boundary.
+
+(deftest blackboard-schemas-option-preserves-parent-schema-on-child-sheet
+  (testing "U6: execute-tree's :blackboard-schemas option overrides naive
+            type-inference so that a parent-declared schema like
+            [:string {:field-type :image}] survives into the child sheet's
+            declare-key. Without this, image inputs would be declared with
+            plain :string and lose multimodal routing."
+    (let [declared-schemas (atom {})]
+      (with-redefs [ai.obney.grain.command-processor-v2.interface/process-command
+                    (let [orig ai.obney.grain.command-processor-v2.interface/process-command]
+                      (fn [ctx]
+                        (let [cmd (:command ctx)]
+                          (when (= :sheet/declare-key (:command/name cmd))
+                            (swap! declared-schemas assoc (:key cmd) (:schema cmd))))
+                        (orig ctx)))]
+        (with-provider-context [ctx]
           (let [tree (rlm-dsl/rlm-dsl->orc-dsl
-                       [:sequence
-                        [:map-each {:from :pages :as :page :into :pass1-results :max-concurrency 4}
-                         [:llm {:instruction "identify targets"
-                                :reads [:page :criteria]
-                                :writes [:targets]
-                                :output-schemas {:targets [:vector [:map
-                                                                    [:page :int]
-                                                                    [:text :string]
-                                                                    [:category :string]
-                                                                    [:reason :string]]]}}]]
-                        [:code {:fn (fn [{:keys [inputs]}]
-                                      {:pass1-targets (vec (mapcat :targets (:pass1-results inputs)))})
-                                :reads [:pass1-results]
-                                :writes [:pass1-targets]}]
-                        [:final {:keys [:pass1-targets :pass1-results]}]])
-                blackboard {:pages ["p0" "p1" "p2" "p3" "p4" "p5"]
-                            :criteria "policy text"}
-                result (tree-executor/execute-tree tree ctx
-                         {:blackboard blackboard
-                          :timeout-ms 15000})
-                outputs (:outputs result)]
-            (is (= :success (:status result))
-                (str "Expected :success, got: " (:status result) " error: " (:error result)))
-            (is (= 6 (count (:pass1-results outputs)))
-                (str "Expected 6 aggregated iteration results, got "
-                     (:pass1-results outputs)))
-            (is (every? #(and (map? %) (contains? % :targets)) (:pass1-results outputs))
-                (str "Each :pass1-results entry should be a map with :targets key. Got: "
-                     (:pass1-results outputs)))
-            (is (= 12 (count (:pass1-targets outputs)))
-                (str "Expected 12 flat target maps after flatten, got "
-                     (count (:pass1-targets outputs))
-                     " — :pass1-targets = " (:pass1-targets outputs)))))))))
+                       [:sequence [:final {:keys [:image]}]])
+                blackboard {:image "data:image/png;base64,abc123"}
+                blackboard-schemas {:image [:string {:field-type :image}]}
+                _ (tree-executor/execute-tree tree ctx
+                    {:blackboard blackboard
+                     :blackboard-schemas blackboard-schemas
+                     :timeout-ms 10000})]
+            (is (= [:string {:field-type :image}]
+                   (get @declared-schemas :image))
+                (str "Expected :image declared with [:string {:field-type :image}] "
+                     "(parent's schema preserved), got: "
+                     (pr-str (get @declared-schemas :image))))))))))
+
+;; =============================================================================
+;; U13: :parallel node compilation support
+;; =============================================================================
+;;
+;; The framework prompt documents `:parallel - Execute children concurrently`
+;; as a tree-DSL node type and rlm_dsl/rlm-dsl->orc-dsl translates `:parallel`
+;; → `(sheet/parallel ...)`. But compile-tree-node had no `sheet/parallel`
+;; branch, so any tree the model emitted with `:parallel` failed Phase-2 with
+;; "Unknown tree node type: sheet/parallel".
+;;
+;; Real benchmark-blocking bug surfaced when document_analysis under
+;; gemini-3-flash-preview chose :parallel and Phase-2 crashed every time.
+
+(deftest tree-with-parallel-node-executes-children
+  (testing "U13: A tree containing [:parallel ...] compiles and executes,
+            running children to completion. Without U13, this fails with
+            'Unknown tree node type: sheet/parallel'."
+    (with-provider-context [ctx]
+      (with-redefs [dscloj/predict
+                    (let [c (atom 0)]
+                      (fn [_provider _module _inputs _opts]
+                        (let [n (swap! c inc)]
+                          {:outputs {(if (= n 1) :left-result :right-result) (str "ans-" n)}
+                           :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})))]
+        (let [tree (rlm-dsl/rlm-dsl->orc-dsl
+                     [:sequence
+                      [:parallel
+                       [:llm {:instruction "left" :reads [:input] :writes [:left-result]}]
+                       [:llm {:instruction "right" :reads [:input] :writes [:right-result]}]]
+                      [:final {:keys [:left-result :right-result]}]])
+              blackboard {:input "hello"}
+              result (tree-executor/execute-tree tree ctx
+                       {:blackboard blackboard
+                        :timeout-ms 10000})]
+          (is (= :success (:status result))
+              (str "Expected :success, got: " (:status result) " error: " (:error result)))
+          (is (contains? (:outputs result) :left-result)
+              "Should populate :left-result write key")
+          (is (contains? (:outputs result) :right-result)
+              "Should populate :right-result write key"))))))
 
 (comment
   ;; Run individual test

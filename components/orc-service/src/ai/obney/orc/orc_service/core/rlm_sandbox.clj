@@ -68,7 +68,7 @@
 (defn- preview-vector
   "Preview a vector showing length and a small sample.
 
-   Primitive scalars in the sample (numbers, keywords, booleans, short
+   U12: Primitive scalars in the sample (numbers, keywords, booleans, short
    strings) are passed through unchanged so the preview reads naturally
    for small data. LARGE strings and collections are recursively previewed
    so that, e.g., vectors of data-URI image renders don't inline their
@@ -164,8 +164,8 @@
    for managing chunk sizes appropriately. Previews are only used for the code-generating
    LLM to understand variable shapes - actual data processing uses full values.
 
-   For inputs whose blackboard schema carries :field-type :image (or any other
-   field-type), the dscloj module's input field is given :type so that
+   U5: For inputs whose blackboard schema carries :field-type :image (or any
+   other field-type), the dscloj module's input field is given :type so that
    dscloj's build-message-content routes the value as a multimodal content
    block rather than as inline text. This is the Phase-1 mirror of
    executor.clj's build-field behavior for Phase-2 leaf nodes."
@@ -182,7 +182,7 @@
                              acc)))
                        {}
                        (or reads []))
-        ;; Build DSCloj module — propagate :field-type from the blackboard
+        ;; Build DSCloj module — U5: propagate :field-type from the blackboard
         ;; schema for each read key so vision/audio/etc. inputs get routed
         ;; as proper multimodal content blocks, not as inline text.
         module {:inputs (mapv (fn [[k _v]]

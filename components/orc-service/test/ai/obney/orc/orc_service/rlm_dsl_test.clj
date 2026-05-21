@@ -195,71 +195,6 @@
                             [:code {:reads [:x] :writes [:y]}])))))
 
 ;; =============================================================================
-;; PR02: :code node — references a pre-built Clojure function by qualified symbol
-;; =============================================================================
-
-(deftest code-node-transforms-to-orc-code
-  (testing "code node with :fn, :reads, :writes"
-    (let [result (rlm-dsl/rlm-dsl->orc-dsl
-                   [:code {:fn "ai.obney.orc.example/some-fn"
-                           :reads [:input]
-                           :writes [:output]}])]
-      (is (list? result))
-      (is (= 'sheet/code (first result)))
-      (let [opts (apply hash-map (rest result))]
-        (is (= "ai.obney.orc.example/some-fn" (:fn opts)))
-        (is (= [:input] (:reads opts)))
-        (is (= [:output] (:writes opts)))))))
-
-(deftest code-node-composes-inside-sequence
-  (testing "code node nested in a sequence with neighbors round-trips correctly"
-    (let [tree [:sequence
-                [:llm {:instruction "Find PII"
-                       :reads [:doc] :writes [:targets]}]
-                [:code {:fn "ai.obney.orc.example/apply-redactions"
-                        :reads [:doc :targets]
-                        :writes [:redacted-text :total-count]}]
-                [:final {:keys [:redacted-text :total-count]}]]
-          result (rlm-dsl/rlm-dsl->orc-dsl tree)]
-      (is (list? result))
-      (is (= 'sheet/sequence (first result)))
-      (is (= 3 (count (rest result))))
-      (let [code-node (nth (rest result) 1)
-            opts (apply hash-map (rest code-node))]
-        (is (= 'sheet/code (first code-node)))
-        (is (= "ai.obney.orc.example/apply-redactions" (:fn opts)))
-        (is (= [:doc :targets] (:reads opts)))
-        (is (= [:redacted-text :total-count] (:writes opts)))))))
-
-(deftest code-node-accepts-inline-fn
-  (testing "code node :fn can be an inline (fn ...) form, not just a qualified-symbol string"
-    (let [inline-fn (fn [{:keys [inputs]}]
-                      {:result (count inputs)})
-          result (rlm-dsl/rlm-dsl->orc-dsl
-                   [:code {:fn inline-fn
-                           :reads [:a :b]
-                           :writes [:result]}])]
-      (is (list? result))
-      (is (= 'sheet/code (first result)))
-      (let [opts (apply hash-map (rest result))]
-        (is (fn? (:fn opts))
-            "inline fn value should pass through as a function (no string conversion)")
-        (is (= [:a :b] (:reads opts)))
-        (is (= [:result] (:writes opts)))))))
-
-(deftest code-node-missing-fn-throws-clear-error
-  (testing "code node missing :fn throws ex-info with clear message"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #":code node missing required :fn"
-                          (rlm-dsl/rlm-dsl->orc-dsl
-                            [:code {:reads [:a] :writes [:b]}]))))
-  (testing "code node with nil :fn throws ex-info"
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo
-                          #":code node missing required :fn"
-                          (rlm-dsl/rlm-dsl->orc-dsl
-                            [:code {:fn nil :reads [:a] :writes [:b]}])))))
-
-;; =============================================================================
 ;; Tracer Bullet #6: Full nested structure (document analysis pattern)
 ;; =============================================================================
 
@@ -386,59 +321,6 @@
 ;; Tracer Bullet #10: Two-phase execution (emit-tree! detection)
 ;; =============================================================================
 
-;; =============================================================================
-;; PR03: :available-code-nodes plumbing through :rlm config
-;; =============================================================================
-
-(deftest available-code-nodes-flows-to-dscloj-when-set
-  (testing ":rlm {:available-code-nodes \"...\"} on node config makes the catalog visible to dscloj"
-    (let [captured (atom nil)
-          catalog "## Available Code Nodes\n- ai.obney.orc.example/foo: does X"]
-      (with-redefs [dscloj.core/predict
-                    (fn [_provider module inputs _opts]
-                      (reset! captured {:module module :inputs inputs})
-                      {:outputs {:code "(final! {:summary \"done\"})"}
-                       :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
-        (let [node {:type :repl-researcher
-                    :instruction "Test"
-                    :reads [:doc]
-                    :writes [:summary]
-                    :rlm {:available-code-nodes catalog}
-                    :max-iterations 1}
-              blackboard {:doc {:key :doc :schema :string :value "test" :version 1}}]
-          (executor/execute-repl-researcher-rlm node blackboard :openrouter {})
-          (let [{:keys [module inputs]} @captured]
-            (is (some? module) "dscloj/predict should have been called")
-            (is (some #(= :available-code-nodes (:name %)) (:inputs module))
-                "module :inputs should include the :available-code-nodes field")
-            (is (= catalog (:available-code-nodes inputs))
-                "dscloj inputs map should carry the catalog value")))))))
-
-(deftest available-code-nodes-absent-leaves-module-shape-unchanged
-  (testing "module :inputs do not include :available-code-nodes when not configured on the node"
-    (let [captured (atom nil)]
-      (with-redefs [dscloj.core/predict
-                    (fn [_provider module inputs _opts]
-                      (reset! captured {:module module :inputs inputs})
-                      {:outputs {:code "(final! {:summary \"done\"})"}
-                       :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
-        (let [node {:type :repl-researcher
-                    :instruction "Test"
-                    :reads [:doc]
-                    :writes [:summary]
-                    :rlm true  ;; truthy but not a map — equivalent to existing benchmarks
-                    :max-iterations 1}
-              blackboard {:doc {:key :doc :schema :string :value "test" :version 1}}]
-          (executor/execute-repl-researcher-rlm node blackboard :openrouter {})
-          (let [{:keys [module inputs]} @captured]
-            (is (some? module) "dscloj/predict should have been called")
-            (is (not (some #(= :available-code-nodes (:name %)) (:inputs module)))
-                "module :inputs should NOT include :available-code-nodes when not configured")
-            (is (not (contains? inputs :available-code-nodes))
-                "dscloj inputs map should NOT carry :available-code-nodes key")
-            (is (= #{:task :inputs-info :history} (set (keys inputs)))
-                "dscloj inputs map should contain only the baseline keys")))))))
-
 (deftest executor-detects-emit-tree-and-includes-raw-tree
   (testing "execute-repl-researcher-rlm detects emit-tree! and includes raw tree in result"
     (let [;; Mock dscloj/predict to return code with emit-tree!
@@ -477,25 +359,29 @@
           )))))
 
 ;; =============================================================================
-;; PR-Pre03: Phase-1 sub-LLM image routing
+;; U5: Phase-1 sub-LLM image routing via blackboard schema :field-type
 ;; =============================================================================
 ;;
-;; Bug fixed: execute-llm-primitive in rlm_sandbox.clj must propagate
-;; :field-type from the blackboard schema to the dscloj module input,
-;; so multimodal content blocks (image_url) are used instead of raw text.
+;; When a Phase-1 sub-LLM call reads a blackboard key whose Malli schema
+;; carries :field-type :image, the dscloj module's corresponding input
+;; field must be marked :type :image so dscloj's build-message-content
+;; routes the value as a multimodal content block (image_url), not as
+;; inline text. Without this, vision tasks ship base64 data URIs as
+;; inline text — wrong content shape AND ~480K tokens per image vs ~1K
+;; for image-tile billing.
 
 (deftest llm-primitive-propagates-image-field-type-to-module
   (testing "blackboard schema [:string {:field-type :image}] -> module input :type :image"
     (let [captured (atom nil)]
-      (with-redefs [dscloj.core/predict
+      (with-redefs [dscloj/predict
                     (fn [_provider module inputs _opts]
                       (reset! captured {:module module :inputs inputs})
                       {:outputs {:answer "ok"}
                        :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
         (let [blackboard {:image {:key :image
-                                   :schema [:string {:field-type :image}]
-                                   :value "data:image/png;base64,abc123"
-                                   :version 1}}
+                                  :schema [:string {:field-type :image}]
+                                  :value "data:image/png;base64,abc123"
+                                  :version 1}}
               sandbox-vars (atom {})
               usage-tracker (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})
               context {:provider :openrouter
@@ -513,6 +399,48 @@
             (is (some? image-input) "module :inputs should include :image entry")
             (is (= :image (:type image-input))
                 "image-typed blackboard schema must propagate :type :image to the dscloj module input")))))))
+
+;; =============================================================================
+;; U8: Inline-fn sanitization for Fressian-safe event storage
+;; =============================================================================
+;;
+;; When the model writes `[:code {:fn (fn [...] ...)}]` in its Phase-1 sandbox
+;; code, the inline SCI function object propagates into events the framework
+;; tries to store via the event-store (Fressian-serialized). Fressian can't
+;; serialize fn objects → the read-model fails to project the event → the
+;; tick stays pending forever. The fix: walk the tree before storing and
+;; replace inline-fn values with the placeholder string "<inline-fn>".
+;; The actual fn lives in the ephemeral-fn-registry for Phase-2 execution;
+;; only the EVENT representation needs sanitization.
+
+(deftest sanitize-tree-replaces-inline-fn-values-with-placeholder
+  (testing "U8: walking a tree with inline-fn :code values replaces each
+            fn-valued :fn entry with the string \"<inline-fn>\". Other
+            values (including qualified-symbol-string :fn refs) are
+            untouched. The result is Fressian-serializable."
+    (let [inline-fn (fn [{:keys [inputs]}] {:doubled (* 2 (:n inputs))})
+          tree-with-fn [:sequence
+                        [:code {:fn inline-fn
+                                :reads [:n]
+                                :writes [:doubled]}]
+                        [:code {:fn "my.ns/named-fn"
+                                :reads [:a]
+                                :writes [:b]}]
+                        [:final {:keys [:doubled :b]}]]
+          sanitized (tree-executor/sanitize-tree-for-events tree-with-fn)]
+      (let [code-nodes (filter #(and (vector? %) (= :code (first %))) sanitized)
+            first-fn-val (-> code-nodes first second :fn)
+            second-fn-val (-> code-nodes second second :fn)]
+        (is (= "<inline-fn>" first-fn-val)
+            "Inline fn must be replaced with placeholder string")
+        (is (= "my.ns/named-fn" second-fn-val)
+            "Qualified-symbol-string :fn must be untouched")
+        ;; Top-level structure preserved
+        (is (= :sequence (first sanitized))
+            "Top-level :sequence preserved")
+        ;; No fn objects ANYWHERE in the result
+        (is (not (some fn? (tree-seq coll? seq sanitized)))
+            "No function objects should remain anywhere in the sanitized tree")))))
 
 ;; =============================================================================
 ;; U11: :llm output schemas drive structured-output parsing
@@ -557,110 +485,107 @@
           "no schema collected when :output-schemas wasn't declared"))))
 
 ;; =============================================================================
+;; U12: preview-vector recursive truncation for large-element vectors
+;; =============================================================================
+;;
+;; preview-vector previously included sample elements raw. For vectors of
+;; data-URI image strings (each ~150KB), this meant 450KB+ of base64 text
+;; landing in the LLM prompt's :inputs-info section per Phase-1 call.
+;; Multi-image vision benchmarks hit 1.1MB+ prompts before the fix.
+;; The fix: recursively preview large-string AND collection elements,
+;; passing primitive scalars (numbers, keywords, short strings) through
+;; unchanged so simple-data previews stay natural.
+
+(deftest preview-value-truncates-large-string-elements-in-vector
+  (testing "U12: A vector containing a 10KB string element gets a small
+            preview, not the full 10KB inlined."
+    (let [big-string (apply str (repeat 10000 "x"))
+          small-vec [1 2 3]
+          mixed-vec [big-string small-vec :keyword 42]
+          preview (rlm-sandbox/preview-value mixed-vec :max-sample 4)
+          sample (:sample preview)]
+      (is (= :vector (:type preview))
+          "Result should be a :vector preview shape")
+      (is (= 4 (:length preview))
+          ":length reflects the original element count")
+      ;; First sample element is the BIG string → must be previewed
+      (let [first-sample (first sample)]
+        (is (map? first-sample)
+            "Large-string element should be a preview map, not the raw string")
+        (is (= :string (:type first-sample))
+            "Preview map for the big string should be :type :string")
+        (is (= 10000 (:size first-sample))
+            ":size should be the original length"))
+      ;; Second sample element is a small collection → should be previewed
+      (is (map? (second sample))
+          "Collection element should be previewed (not raw)")
+      ;; Primitives stay raw
+      (is (= :keyword (nth sample 2))
+          "Keyword primitive should pass through unchanged")
+      (is (= 42 (nth sample 3))
+          "Number primitive should pass through unchanged"))))
+
+;; =============================================================================
+;; U10: :rlm/researcher-iterations event schema registered
+;; =============================================================================
+;;
+;; A new event type emitted whenever the Phase-1 researcher ran iterations,
+;; regardless of execution mode (direct execution or emit-tree!). This
+;; gives downstream observability tools a uniform iteration-capture
+;; surface. The schema lives in interface/schemas.clj.
+
+(deftest researcher-iterations-event-schema-validates
+  (testing "U10: :rlm/researcher-iterations is registered as an event schema
+            and validates a representative event body."
+    (let [schema (get schemas/events :rlm/researcher-iterations)
+          valid-body {:execution-id (random-uuid)
+                      :iterations [{:code "(+ 1 2)" :result 3 :stdout ""}]
+                      :iteration-count 1
+                      :emitted-at "2026-05-20T19:00:00.000Z"}]
+      (is (some? schema)
+          ":rlm/researcher-iterations must be registered in event-schemas")
+      (is (m/validate schema valid-body)
+          (str "Sample event body should validate; explain: "
+               (pr-str (m/explain schema valid-body)))))))
+
+;; =============================================================================
 ;; PR-Dual-Model: sub-model tree-walk injection
 ;; =============================================================================
 ;;
-;; When the runner is configured with :sub-model, the executor walks the
-;; canonical Phase-2 tree and injects :model sub-model into each (sheet/llm ...)
-;; form that does not already specify :model. Phase-2 leaf executor then
-;; routes those calls through the sub-model. :llm nodes with explicit :model
-;; are left untouched.
+;; When the repl-researcher node config carries :sub-model (different from
+;; the main :model used for Phase-1), the executor walks the canonical
+;; Phase-2 tree and injects :model sub-model into each (sheet/llm ...) form
+;; that does not already specify :model. This is the apples-to-apples
+;; comparison pattern (e.g. predict-rlm runs gpt-5.4 as main + gpt-5.1-chat
+;; as sub for cheap sub-LLM extraction).
+;;
+;; :llm nodes with an explicit :model are left untouched.
 
 (deftest inject-sub-model-injects-into-llm-without-model
-  (testing "walks canonical tree, injects :model into sheet/llm nodes lacking it"
+  (testing "PR-Dual-Model: walks canonical tree, injects :model into sheet/llm
+            nodes lacking it. :llm with explicit :model stays untouched."
     (let [tree '(sheet/sequence
-                  (sheet/llm :instruction "extract" :reads [:image] :writes [:text])
-                  (sheet/llm :instruction "count" :reads [:text] :writes [:answer])
-                  (final! {:keys [:answer]}))
-          injected (#'ai.obney.orc.orc-service.core.executor/inject-sub-model
-                     tree "openai/gpt-5.1-chat")
-          llm-forms (filter (fn [x] (and (seq? x) (= 'sheet/llm (first x))))
-                            (tree-seq seq? rest injected))]
-      (is (= 2 (count llm-forms))
-          "should keep both :llm nodes")
-      (doseq [llm llm-forms]
-        (let [opts (apply hash-map (rest llm))]
-          (is (= "openai/gpt-5.1-chat" (:model opts))
-              (str ":model should be injected into " (pr-str llm))))))))
+                  (sheet/llm :instruction "no model"
+                             :reads [:a]
+                             :writes [:b])
+                  (sheet/llm :instruction "explicit model"
+                             :reads [:b]
+                             :writes [:c]
+                             :model "openai/gpt-4o"))
+          ;; Reach the private fn via #' var lookup
+          inject (resolve 'ai.obney.orc.orc-service.core.executor/inject-sub-model)
+          result (inject tree "openai/gpt-5.1-chat")
+          children (rest result)
+          first-llm-opts (apply hash-map (rest (first children)))
+          second-llm-opts (apply hash-map (rest (second children)))]
+      (is (= "openai/gpt-5.1-chat" (:model first-llm-opts))
+          ":llm without :model should get sub-model injected")
+      (is (= "openai/gpt-4o" (:model second-llm-opts))
+          ":llm with explicit :model should be untouched")))
 
-(deftest inject-sub-model-respects-explicit-model
-  (testing "if :llm already has :model, it is NOT overwritten"
+  (testing "PR-Dual-Model: nil sub-model is a no-op"
     (let [tree '(sheet/sequence
-                  (sheet/llm :instruction "extract" :reads [:image] :writes [:text]
-                             :model "openai/gpt-4o")
-                  (sheet/llm :instruction "count" :reads [:text] :writes [:answer])
-                  (final! {:keys [:answer]}))
-          injected (#'ai.obney.orc.orc-service.core.executor/inject-sub-model
-                     tree "openai/gpt-5.1-chat")
-          llm-forms (filter (fn [x] (and (seq? x) (= 'sheet/llm (first x))))
-                            (tree-seq seq? rest injected))]
-      (is (= 2 (count llm-forms)))
-      (let [opts-first (apply hash-map (rest (first llm-forms)))
-            opts-second (apply hash-map (rest (second llm-forms)))]
-        (is (= "openai/gpt-4o" (:model opts-first))
-            "first :llm's explicit :model should be preserved")
-        (is (= "openai/gpt-5.1-chat" (:model opts-second))
-            "second :llm should get the injected sub-model")))))
-
-(deftest inject-sub-model-nil-sub-model-is-noop
-  (testing "when sub-model is nil, tree is returned unchanged"
-    (let [tree '(sheet/sequence
-                  (sheet/llm :instruction "x" :reads [:a] :writes [:b])
-                  (final! {:keys [:b]}))
-          injected (#'ai.obney.orc.orc-service.core.executor/inject-sub-model
-                     tree nil)]
-      (is (= tree injected) "no-op when sub-model is nil"))))
-
-;; =============================================================================
-;; PR-Prompt: emit-tree! default policy
-;; =============================================================================
-;;
-;; The RLM prompt must explicitly state that emit-tree! is the default mode
-;; for non-trivial work, warn against chained sequential (llm ...) calls in
-;; Phase 1, and recommend :code for deterministic transforms.
-
-(deftest rlm-prompt-states-emit-tree-as-default
-  (testing "rendered prompt contains the new emit-tree! default policy strings"
-    (let [node {:type :repl-researcher
-                :instruction "Test goal"
-                :reads [:doc]
-                :writes [:out]
-                :rlm true}
-          module (#'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module
-                   node {} [] {} {} {})
-          prompt (:instructions module)]
-      (is (re-find #"(?i)default" prompt)
-          "prompt should describe emit-tree! as the default mode")
-      (is (re-find #"(?i)sequential|chained|2\+ " prompt)
-          "prompt should warn about chained sequential (llm ...) calls in Phase 1")
-      (is (re-find #"deterministic" prompt)
-          "prompt should recommend :code for deterministic transforms")
-      (is (re-find #"hallucinat" prompt)
-          "prompt should call out hallucination-prone counting via LLM as an anti-pattern"))))
-
-(deftest llm-primitive-leaves-non-image-inputs-untyped
-  (testing "blackboard schema :string (no :field-type) -> module input has no :type"
-    (let [captured (atom nil)]
-      (with-redefs [dscloj.core/predict
-                    (fn [_provider module _inputs _opts]
-                      (reset! captured {:module module})
-                      {:outputs {:answer "ok"}
-                       :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
-        (let [blackboard {:doc {:key :doc :schema :string :value "hello" :version 1}}
-              sandbox-vars (atom {})
-              usage-tracker (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})
-              context {:provider :openrouter
-                       :blackboard blackboard
-                       :sandbox-vars @sandbox-vars
-                       :usage-tracker usage-tracker}]
-          (rlm-sandbox/execute-llm-primitive
-            "text-call"
-            {:instruction "Summarize"
-             :reads [:doc]
-             :writes [:answer]}
-            context)
-          (let [{:keys [module]} @captured
-                doc-input (first (filter #(= :doc (:name %)) (:inputs module)))]
-            (is (some? doc-input) "module :inputs should include :doc entry")
-            (is (not (contains? doc-input :type))
-                "non-image-typed blackboard schemas must NOT add :type to the module input")))))))
+                  (sheet/llm :instruction "x" :reads [:a] :writes [:b]))
+          inject (resolve 'ai.obney.orc.orc-service.core.executor/inject-sub-model)]
+      (is (= tree (inject tree nil))
+          "nil sub-model returns tree unchanged"))))

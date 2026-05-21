@@ -1127,10 +1127,11 @@
                                     [:feedback :string]]]]
     [:evaluated-at :string]]
 
-   ;; Phase 1 researcher iteration capture. Emitted by the repl-researcher
-   ;; processor whenever the researcher ran at least one iteration —
-   ;; including direct-execution (no emit-tree!) runs. Lets observability
-   ;; tools query iteration history uniformly across execution modes.
+   ;; U10: Phase 1 researcher iteration capture. Emitted by the
+   ;; repl-researcher processor whenever the researcher ran at least
+   ;; one iteration — including direct-execution (no emit-tree!) runs.
+   ;; Lets observability tools query iteration history uniformly
+   ;; across execution modes.
    :rlm/researcher-iterations
    [:map
     [:execution-id :uuid]

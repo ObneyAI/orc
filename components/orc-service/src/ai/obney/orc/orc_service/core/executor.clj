@@ -570,7 +570,7 @@
           (:reads node)))
 
 ;; =============================================================================
-;; Phase-2 sub-model injection (PR-Dual-Model)
+;; PR-Dual-Model: sub-model tree-walk injection
 ;; =============================================================================
 
 (defn- inject-sub-model
@@ -580,7 +580,9 @@
    No-op when sub-model is nil (single-model setup).
 
    Used by the Phase-2 dispatch in execute-repl-researcher-rlm to route
-   sub-LLM calls through a different model than the Phase-1 researcher.
+   sub-LLM calls through a different model than the Phase-1 researcher
+   (e.g. main-LM gpt-5.4 for tree-design + sub-LM gpt-5.1-chat for the
+   actual leaf executions, matching predict-rlm's apples-to-apples setup).
 
    :llm forms with an explicit :model are left untouched."
   [tree sub-model]
@@ -671,38 +673,37 @@
               result (f (assoc context :inputs inputs :execution-context context))
               duration-ms (- (System/currentTimeMillis) start-time)
               writes (:writes node)
-              ;; Reconcile the function's return value with the declared :writes.
+              ;; U7: Reconcile the function's return value with the declared :writes.
               ;;
-              ;; Three accepted shapes:
-              ;;   1. A map containing the declared write keys → use as-is
-              ;;      (extra keys ignored).
+              ;; Accepted shapes:
+              ;;   1. A map containing at least one declared write key → keep
+              ;;      declared keys only (extra keys ignored).
               ;;   2. A map containing NONE of the declared write keys, with
-              ;;      exactly one :write → wrap entire result under that key.
+              ;;      exactly one :write → wrap entire map under that key.
               ;;      (Useful when fns like `assoc-in` return a transformed
               ;;      map and the model declares a single :writes target.)
               ;;   3. A non-map non-nil scalar with exactly one :write
-              ;;      → wrap under that key (lets `clojure.core/str` etc.
-              ;;      work as deterministic transforms).
+              ;;      → wrap under that key (lets simple transforms like
+              ;;      `clojure.string/upper-case` or `frequencies` compose
+              ;;      naturally without forcing the model to remember to wrap).
               ;;
               ;; Failure cases:
-              ;;   - Non-map result with multiple :writes → ambiguous, fail clearly.
-              ;;   - Map result missing all declared :writes when multiple :writes
-              ;;     declared → ambiguous (which key gets the result?), fail clearly.
               ;;   - nil result → fail clearly.
+              ;;   - Non-map result with multiple :writes → ambiguous, fail clearly.
+              ;;   - Map result with NONE of declared writes AND multiple :writes
+              ;;     declared → ambiguous (which key gets the result?), fail clearly.
               writes-set (set writes)
               result-keys (when (map? result) (set (keys result)))
-              has-some-write? (and result-keys (seq (clojure.set/intersection writes-set result-keys)))
+              has-some-write? (and result-keys
+                                   (seq (clojure.set/intersection writes-set result-keys)))
               outputs (cond
-                        ;; nil → fail
                         (nil? result) nil
-                        ;; Map containing at least one declared write key → keep declared keys
+                        ;; Map with at least one declared write → keep declared keys
                         has-some-write? (select-keys result writes)
-                        ;; Single-write + non-map → wrap
+                        ;; Single-write + non-map scalar → wrap
                         (and (= 1 (count writes)) (not (map? result)))
                         {(first writes) result}
-                        ;; Single-write + map (no matching keys) → wrap the whole map
-                        ;; This handles fns like `assoc-in` that return a transformed
-                        ;; map; we put the whole transformation under the declared write.
+                        ;; Single-write + map (no matching keys) → wrap whole map
                         (and (= 1 (count writes)) (map? result))
                         {(first writes) result}
                         :else nil)]
@@ -1291,7 +1292,7 @@
    - Call store!/get-var to manage computed variables
    - Access 'inputs' map for metadata previews of available data
 
-   When (:rlm node) is a map containing :available-code-nodes (string), that
+   U9: When (:rlm node) is a map containing :available-code-nodes (string), that
    catalog is surfaced as an extra dscloj input field so the model can use
    the listed functions inside emit-tree! :code nodes."
   [node inputs-preview history blackboard sandbox-vars-map var-creation-times]
@@ -1429,34 +1430,17 @@
                       "- Event-trace coverage that direct Phase-1 chaining does not produce\n\n"
                       "### Use :code nodes for deterministic transforms\n\n"
                       "For deterministic work — counting, regex matching, deduplication, string\n"
-                      "replacement, file I/O, aggregation, format conversion — prefer a :code node\n"
-                      "over a sub-LLM call. Counting characters/items via (llm ...) is\n"
-                      "hallucination-prone; a pure-Clojure function is definitively correct.\n\n"
-                      "Two ways to provide the function to a :code node:\n"
-                      "  1. Reference a pre-built fn by qualified symbol — :fn \"ns/sym\"\n"
-                      "     (see :available-code-nodes for fns available in this task, if any)\n"
-                      "  2. Write the fn inline — :fn (fn [{:keys [inputs]}] {...write-key value...})\n"
-                      "     The inline fn receives :inputs (a map from your :reads keys to their values)\n"
-                      "     and must return either a map with the declared :writes keys or a single value\n"
-                      "     (auto-wrapped under a single declared write). Use this when no pre-built fn\n"
-                      "     fits — DON'T fall back to an LLM call for counting/regex/aggregation just\n"
-                      "     because no pre-built fn was advertised. You can write the Clojure yourself.\n\n"
-                      "Example inline-fn :code for letter counting:\n"
-                      "    [:code {:fn (fn [{:keys [inputs]}]\n"
-                      "                  (let [text (-> inputs vals first)\n"
-                      "                        letters (re-seq #\"[a-zA-Z]\" (str text))\n"
-                      "                        freqs (frequencies (map clojure.string/upper-case letters))]\n"
-                      "                    {:letter-counts (into (sorted-map) freqs)}))\n"
-                      "            :reads [:reconciled-text]\n"
-                      "            :writes [:letter-counts]}]\n\n"
+                      "replacement, aggregation, format conversion — prefer a :code node over a\n"
+                      "sub-LLM call. Counting characters/items via (llm ...) is hallucination-\n"
+                      "prone; a pure-Clojure function is definitively correct.\n\n"
                       "### Common emit-tree! patterns\n\n"
+                      "For any large data that exceeds token limits, use emit-tree! to design a processing pipeline:\n"
                       "- **Documents**: :chunk-document to split text, then :map-each + :llm per chunk, then :aggregate.\n"
                       "- **Graphs/Ontology**: Traverse by neighborhood or sample subgraphs, then :map-each + :llm.\n"
                       "- **Collections**: Partition into batches, then :map-each + :llm per batch.\n"
-                      "- **Multi-stage analysis**: :sequence of :llm nodes where each reads previous outputs.\n"
-                      "- **Vision over multiple images**: :map-each over an image vector with :llm reading individual image keys.\n"
-                      "- **Quality validation**: a final :llm node that re-reads source AND prior synthesis to verify claims (adversarial-clearance pattern).\n\n"
-                      "The pattern is always: break into bounded sub-problems → sub-LLM (or :code) per piece → aggregate → optionally validate.\n\n"
+                      "- **Vision over multiple images**: :map-each over an image vector with :llm reading individual image keys.\n\n"
+                      "The pattern is always: break into bounded sub-problems → sub-LLM per piece → :code or :aggregate.\n"
+                      "Previews adapt to data type: text samples for documents, T-box/A-box summaries for graphs.\n\n"
                       ;; Include ontology examples if available
                       (or (build-ontology-examples-section node) "")
                       ;; R-1: Descriptive recursive-mode section when :recursive? is true.
@@ -1550,9 +1534,13 @@
                       "- Clean separation of concerns\n"
                       "- Integrates with ORC behavior tree engine\n\n"
                       "## Your Task\n"
+                      (:instruction node)
+                      ;; U9: When :available-code-nodes is configured on the
+                      ;; repl-researcher, surface the catalog cross-reference
+                      ;; at the end of the prompt so the model knows to read
+                      ;; it before designing emit-tree! :code nodes.
                       (when available-code-nodes
-                        "\n\nA catalog of pre-built code-node functions is provided in the :available-code-nodes input above. Use them via [:code {:fn \"...\"}] in your emit-tree! tree when their semantics match what you need. Their input/output shapes are documented there.\n\n")
-                      (:instruction node))}))
+                        "\n\nA catalog of pre-built code-node functions is provided in the :available-code-nodes input above. Use them via [:code {:fn \"...\"}] in your emit-tree! tree when their semantics match what you need. Their input/output shapes are documented there.\n\n"))}))
 
 (defn execute-repl-researcher-rlm
   "Execute a repl-researcher node in RLM mode.
@@ -1613,12 +1601,9 @@
           ;; Generate code using LLM
           (let [module (build-rlm-code-generation-module node inputs-preview history
                                                           blackboard @sandbox-vars @var-creation-times)
-                available-code-nodes (get rlm-config :available-code-nodes)
-                inputs (cond-> {:task (:instruction node)
-                                :inputs-info (pr-str inputs-preview)
-                                :history (or (build-iteration-history history) "None")}
-                         available-code-nodes
-                         (assoc :available-code-nodes available-code-nodes))
+                inputs {:task (:instruction node)
+                        :inputs-info (pr-str inputs-preview)
+                        :history (or (build-iteration-history history) "None")}
                 ;; Note: Don't pass :model in dscloj-options - effective-provider already has it
                 ;; Passing :model causes response parsing issues in dscloj
                 ;; Disable function calling - OpenRouter/Gemini don't reliably return tool_calls
@@ -1776,10 +1761,8 @@
                   ;; emit-tree! was called - trigger Phase 2 execution automatically
                   ;; Phase 1 generated the tree, now execute it via child ORC tick
                   (contains? @sandbox-vars :generated-tree)
-                  (let [generated-tree (:generated-tree @sandbox-vars)
-                        generated-tree-raw (:generated-tree-raw @sandbox-vars)
-                        ;; PR-Dual-Model: when :sub-model is configured on the
-                        ;; :rlm map (or directly on the node), walk the tree
+                  (let [;; PR-Dual-Model: when (:sub-model rlm-config) or
+                        ;; (:sub-model node) is set, walk the canonical tree
                         ;; and inject :model sub-model into each (sheet/llm ...)
                         ;; form that lacks an explicit :model. The Phase-2 leaf
                         ;; executor's get-provider-with-model then routes those
@@ -1787,15 +1770,18 @@
                         ;; nil sub-model is a no-op.
                         sub-model (or (get rlm-config :sub-model)
                                       (:sub-model node))
-                        generated-tree (inject-sub-model generated-tree sub-model)
+                        generated-tree (inject-sub-model
+                                         (:generated-tree @sandbox-vars)
+                                         sub-model)
+                        generated-tree-raw (:generated-tree-raw @sandbox-vars)
                         ;; Debug: Print the generated tree
                         _ (when debug?
-                            (println "\n[DEBUG RLM] Phase 2 triggered - emit-tree! was called")
                             (when sub-model
-                              (println "[DEBUG RLM] sub-model injected for Phase-2 :llm nodes:" sub-model))
+                              (println "\n[DEBUG RLM] Sub-model injected into :llm nodes lacking :model:" sub-model))
+                            (println "\n[DEBUG RLM] Phase 2 triggered - emit-tree! was called")
                             (println "[DEBUG RLM] Generated tree (raw S-expr):")
                             (clojure.pprint/pprint generated-tree-raw)
-                            (println "\n[DEBUG RLM] Generated tree (canonical ORC DSL, post-injection):")
+                            (println "\n[DEBUG RLM] Generated tree (canonical ORC DSL):")
                             (clojure.pprint/pprint generated-tree))
                         ;; D-003: resolve Phase 2 budget from node :timeout-ms,
                         ;; parent tick :timeout-ms (passed via context), or hardcoded fallback.
@@ -1834,12 +1820,12 @@
                                                                (assoc acc k (:value entry)))
                                                              {}
                                                              blackboard)
-                                               ;; PR-Pre03 follow-on: preserve parent blackboard
-                                               ;; schemas so the child sheet's leaf nodes can see
-                                               ;; :field-type :image (and other field-types) —
-                                               ;; otherwise rlm_tree_executor falls back to
-                                               ;; type-inference from value, which loses image
-                                               ;; routing.
+                                               ;; U6: preserve parent blackboard schemas
+                                               ;; (e.g. [:string {:field-type :image}]) so
+                                               ;; the child sheet's leaves see proper
+                                               ;; routing. Without this the child falls back
+                                               ;; to type-inference from value, which loses
+                                               ;; image routing.
                                                :blackboard-schemas (reduce-kv
                                                                      (fn [acc k entry]
                                                                        (if-let [s (:schema entry)]
