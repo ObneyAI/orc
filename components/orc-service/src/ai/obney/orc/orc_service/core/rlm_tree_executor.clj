@@ -334,6 +334,26 @@
       {:node-id seq-id
        :ephemeral-fn-keys all-fn-keys})
 
+    ;; U13: Parallel node: (sheet/parallel child1 child2 ...)
+    ;; Same compile structure as :sequence — create a :parallel node and
+    ;; compile children under it. The runtime executes the children
+    ;; concurrently (independent work only). The framework prompt documents
+    ;; :parallel as a supported tree DSL node type; without this branch the
+    ;; model's emit-tree! produced trees that failed with "Unknown tree
+    ;; node type: sheet/parallel".
+    (and (seq? tree) (= 'sheet/parallel (first tree)))
+    (let [par-result (run-command! context
+                       (make-create-node-command sheet-id :parallel :parent-id parent-id :index index))
+          par-id (-> par-result :command-result/events first :node-id)
+          children (rest tree)
+          child-results (vec (map-indexed
+                               (fn [idx child-tree]
+                                 (compile-tree-node context sheet-id child-tree par-id :index idx))
+                               children))
+          all-fn-keys (vec (mapcat :ephemeral-fn-keys child-results))]
+      {:node-id par-id
+       :ephemeral-fn-keys all-fn-keys})
+
     ;; LLM node: (sheet/llm :instruction "..." :reads [...] :writes [...] :retry {...})
     (and (seq? tree) (= 'sheet/llm (first tree)))
     (let [opts (parse-keyword-args (rest tree))

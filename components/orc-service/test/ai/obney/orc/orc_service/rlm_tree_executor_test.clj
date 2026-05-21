@@ -960,6 +960,47 @@
                      "(parent's schema preserved), got: "
                      (pr-str (get @declared-schemas :image))))))))))
 
+;; =============================================================================
+;; U13: :parallel node compilation support
+;; =============================================================================
+;;
+;; The framework prompt documents `:parallel - Execute children concurrently`
+;; as a tree-DSL node type and rlm_dsl/rlm-dsl->orc-dsl translates `:parallel`
+;; → `(sheet/parallel ...)`. But compile-tree-node had no `sheet/parallel`
+;; branch, so any tree the model emitted with `:parallel` failed Phase-2 with
+;; "Unknown tree node type: sheet/parallel".
+;;
+;; Real benchmark-blocking bug surfaced when document_analysis under
+;; gemini-3-flash-preview chose :parallel and Phase-2 crashed every time.
+
+(deftest tree-with-parallel-node-executes-children
+  (testing "U13: A tree containing [:parallel ...] compiles and executes,
+            running children to completion. Without U13, this fails with
+            'Unknown tree node type: sheet/parallel'."
+    (with-provider-context [ctx]
+      (with-redefs [dscloj/predict
+                    (let [c (atom 0)]
+                      (fn [_provider _module _inputs _opts]
+                        (let [n (swap! c inc)]
+                          {:outputs {(if (= n 1) :left-result :right-result) (str "ans-" n)}
+                           :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})))]
+        (let [tree (rlm-dsl/rlm-dsl->orc-dsl
+                     [:sequence
+                      [:parallel
+                       [:llm {:instruction "left" :reads [:input] :writes [:left-result]}]
+                       [:llm {:instruction "right" :reads [:input] :writes [:right-result]}]]
+                      [:final {:keys [:left-result :right-result]}]])
+              blackboard {:input "hello"}
+              result (tree-executor/execute-tree tree ctx
+                       {:blackboard blackboard
+                        :timeout-ms 10000})]
+          (is (= :success (:status result))
+              (str "Expected :success, got: " (:status result) " error: " (:error result)))
+          (is (contains? (:outputs result) :left-result)
+              "Should populate :left-result write key")
+          (is (contains? (:outputs result) :right-result)
+              "Should populate :right-result write key"))))))
+
 (comment
   ;; Run individual test
   (clojure.test/run-tests 'ai.obney.orc.orc-service.rlm-tree-executor-test))
