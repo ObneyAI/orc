@@ -27,3 +27,6 @@
 # PR contract_comparison headline (referenced from reports/05_contract_comparison.md)
 !contract-comparison-predict-rlm_2026-05-21_164244.edn
 !contract-comparison-predict-rlm_2026-05-21_164244.trace.edn
+# PR invoice_processing headline (referenced from reports/03_invoice_processing.md)
+!invoice-processing_2026-05-21_145054.edn
+!invoice-processing_2026-05-21_145054.trace.edn
