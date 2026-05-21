@@ -16,3 +16,8 @@
 # side-by-side comparison with predict-rlm's published invoice_extraction.xlsx
 # under references/predict-rlm/invoice_processing/sample/output/.
 !invoice_extraction.xlsx
+# PR08/PR09 headline output: human-readable artifacts derived from the
+# document-redaction headline EDN. Lets reviewers inspect the redacted
+# document without re-running the benchmark.
+!document_redaction_artifacts/
+!document_redaction_artifacts/**
