@@ -80,10 +80,22 @@ Added to this, redact any dates found in the document, in any format.")
    page for any PII you may have missed. Single-pass identification on a
    dense PII-rich document reliably misses some targets — the second pass
    that re-reads the source with the first pass's targets in hand catches
-   them. Use behavior-tree primitives (sequence, llm, map-each, aggregate,
-   code) rather than coordinating multiple sub-calls inline as imperative
-   Clojure code: the tree is the durable, observable record of the work
-   that was done.")
+   them.
+
+   IMPORTANT TREE-COMPOSITION NOTE: when you use :map-each to produce per-page
+   structured outputs (each LLM call returns a map like {:targets [...]}),
+   flatten the results into a single targets vector using an inline :code node
+   with your own (fn [{:keys [inputs]}] ...) — NOT :aggregate. :aggregate
+   packages the map-each output as-is, which leaves you with a vector of
+   {:targets [...]} maps rather than a flat vector of target maps; downstream
+   apply-redactions then receives the wrong shape and applies 0 redactions.
+   Example flatten:
+       [:code {:fn (fn [{:keys [inputs]}]
+                     {:pass1-targets (vec (mapcat :targets (:pass1-results inputs)))})
+               :reads [:pass1-results] :writes [:pass1-targets]}]
+   Use behavior-tree primitives (sequence, llm, map-each, code) rather than
+   coordinating multiple sub-calls inline as imperative Clojure code: the
+   tree is the durable, observable record of the work that was done.")
 
 (defn- load-inputs []
   (let [page-texts (pdf/extract-pages-as-text pdf-path)

@@ -831,6 +831,58 @@
           (is (= :node (get-in result [:budget :source]))
               "Budget source reflects the node's :timeout-ms taking precedence"))))))
 
+;; =============================================================================
+;; Regression repro: map-each :into aggregation with structured :output-schemas
+;; =============================================================================
+
+(deftest map-each-into-aggregates-structured-llm-writes
+  (testing "map-each + :llm writing structured :targets via :output-schemas
+            aggregates each iteration's :targets value into the :into key,
+            and a downstream :code can flatten via (mapcat :targets ...)."
+    (with-provider-context [ctx]
+      (let [call-count (atom 0)]
+        (with-redefs [dscloj/predict
+                      (fn [_provider _module _inputs _opts]
+                        (let [n (swap! call-count inc)
+                              idx (dec n)]
+                          {:outputs {:targets [{:page idx :text (str "tgt-" idx "a") :category "A" :reason "r1"}
+                                               {:page idx :text (str "tgt-" idx "b") :category "B" :reason "r2"}]}
+                           :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}}))]
+          (let [tree (rlm-dsl/rlm-dsl->orc-dsl
+                       [:sequence
+                        [:map-each {:from :pages :as :page :into :pass1-results :max-concurrency 4}
+                         [:llm {:instruction "identify targets"
+                                :reads [:page :criteria]
+                                :writes [:targets]
+                                :output-schemas {:targets [:vector [:map
+                                                                    [:page :int]
+                                                                    [:text :string]
+                                                                    [:category :string]
+                                                                    [:reason :string]]]}}]]
+                        [:code {:fn (fn [{:keys [inputs]}]
+                                      {:pass1-targets (vec (mapcat :targets (:pass1-results inputs)))})
+                                :reads [:pass1-results]
+                                :writes [:pass1-targets]}]
+                        [:final {:keys [:pass1-targets :pass1-results]}]])
+                blackboard {:pages ["p0" "p1" "p2" "p3" "p4" "p5"]
+                            :criteria "policy text"}
+                result (tree-executor/execute-tree tree ctx
+                         {:blackboard blackboard
+                          :timeout-ms 15000})
+                outputs (:outputs result)]
+            (is (= :success (:status result))
+                (str "Expected :success, got: " (:status result) " error: " (:error result)))
+            (is (= 6 (count (:pass1-results outputs)))
+                (str "Expected 6 aggregated iteration results, got "
+                     (:pass1-results outputs)))
+            (is (every? #(and (map? %) (contains? % :targets)) (:pass1-results outputs))
+                (str "Each :pass1-results entry should be a map with :targets key. Got: "
+                     (:pass1-results outputs)))
+            (is (= 12 (count (:pass1-targets outputs)))
+                (str "Expected 12 flat target maps after flatten, got "
+                     (count (:pass1-targets outputs))
+                     " — :pass1-targets = " (:pass1-targets outputs)))))))))
+
 (comment
   ;; Run individual test
   (clojure.test/run-tests 'ai.obney.orc.orc-service.rlm-tree-executor-test))
