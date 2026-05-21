@@ -23,13 +23,15 @@
                               orc/mcp-sheet-builder {:local/root "components/mcp-sheet-builder"}
                               orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
-                              orc/grain-test-utils  {:local/root "components/grain-test-utils"}}}
+                              orc/grain-test-utils  {:local/root "components/grain-test-utils"}
+                              orc/predict-rlm-pdf   {:local/root "components/predict-rlm-pdf"}}}
 
            :test {:extra-paths ["components/orc-service/test"
                                 "components/gepa/test"
                                 "components/colbert/test"
                                 "components/ontology/test"
-                                "components/mcp-sheet-builder/test"]}
+                                "components/mcp-sheet-builder/test"
+                                "components/predict-rlm-pdf/test"]}
 
            :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]
                   :extra-deps {polylith/clj-poly {:mvn/version "0.2.22"}}
