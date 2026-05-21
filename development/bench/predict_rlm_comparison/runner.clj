@@ -445,12 +445,23 @@
         tasks))
 
 (defn generate-summary!
-  "Generate a markdown summary table from saved EDN results in the given directory."
+  "Generate a markdown summary table from saved EDN results in the given directory.
+
+   Reads `.edn` files only (not the larger `.trace.edn` mulog event dumps),
+   parses with a permissive tagged-literal reader so unknown tags
+   (mulog/flake, etc.) don't break the read."
   [results-dir]
-  (let [dir (io/file results-dir)
+  (let [;; Permissive reader: accept any unknown tag and stash it as a
+        ;; tagged-literal so reading doesn't blow up on mulog/flake etc.
+        reader-opts {:default (fn [tag value] (tagged-literal tag value))}
+        dir (io/file results-dir)
         files (when (.exists dir)
-                (filter #(.endsWith (.getName %) ".edn") (.listFiles dir)))
-        results (map #(edn/read-string (slurp %)) files)
+                (->> (.listFiles dir)
+                     (filter #(.endsWith (.getName %) ".edn"))
+                     ;; Skip the .trace.edn files — they're mulog dumps,
+                     ;; not result records, and would dominate the summary.
+                     (remove #(.endsWith (.getName %) ".trace.edn"))))
+        results (map #(edn/read-string reader-opts (slurp %)) files)
         by-task (group-by :task results)
         latest (into {} (map (fn [[k vs]] [k (last (sort-by :timestamp vs))]) by-task))]
     (println "\n# predict-rlm Comparison Results\n")
