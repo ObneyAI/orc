@@ -26,38 +26,57 @@ ORC ~2.8× cheaper on tokens for image_analysis; ~1.26× cheaper for document_re
 
 ## How to run
 
-From the repo root:
+### Quick start — one script per benchmark
 
 ```bash
 export OPENROUTER_API_KEY="sk-or-v1-..."
 
-# image_analysis
+# From the repo root:
+./development/bench/predict-rlm-comparison/scripts/run_image_analysis.sh
+./development/bench/predict-rlm-comparison/scripts/run_document_redaction.sh
+./development/bench/predict-rlm-comparison/scripts/run_invoice_processing.sh
+./development/bench/predict-rlm-comparison/scripts/run_contract_comparison.sh
+./development/bench/predict-rlm-comparison/scripts/run_document_analysis.sh
+
+# Or run all 5 in sequence (fastest-first):
+./development/bench/predict-rlm-comparison/scripts/run_all.sh
+```
+
+Each script:
+- Verifies `OPENROUTER_API_KEY` is set and `clj` is on PATH
+- Boots the runner, runs the benchmark, prints status/duration/tokens
+- Writes the result EDN under `results/<benchmark>_<timestamp>.edn` + `.trace.edn`
+- Exits non-zero on failure (so it composes cleanly with CI / shell pipelines)
+
+### Manual REPL invocation (equivalent)
+
+If you prefer to drive from the REPL or want to inspect intermediate state:
+
+```bash
 clj -M:dev:test -e '
 (require (quote [predict-rlm-comparison.tasks.image-analysis :as t]))
 (require (quote [predict-rlm-comparison.runner :as r]))
-(r/start!)
-(r/run! t/task)
-(r/stop!)'
-
-# document_redaction
-clj -M:dev:test -e '
-(require (quote [predict-rlm-comparison.tasks.document-redaction :as t]))
-(require (quote [predict-rlm-comparison.runner :as r]))
-(r/start!)
-(r/run! t/task)
-(r/stop!)'
+(r/start!) (r/run! t/task) (r/stop!)'
 ```
 
-Both tasks declare `:model "openai/gpt-5.4"` + `:sub-model "openai/gpt-5.1-chat"`. The framework's PR-Dual-Model machinery walks the emit-tree! tree and injects the sub-model into every `:llm` node that doesn't specify its own model, so all Phase-2 sub-LLM calls hit gpt-5.1-chat while Phase-1 (tree design) runs through gpt-5.4.
+Substitute the task namespace for any of the other 4: `predict-rlm-comparison.tasks.document-redaction`, `...invoice-processing`, `...contract-comparison`, `...document-analysis`.
+
+### Models
+
+All 5 tasks declare `:model "openai/gpt-5.4"` + `:sub-model "openai/gpt-5.1-chat"`. The framework's PR-Dual-Model machinery walks the emit-tree! tree and injects the sub-model into every `:llm` node that doesn't specify its own model, so Phase-2 sub-LLM calls hit gpt-5.1-chat while Phase-1 (tree design) runs through gpt-5.4. This matches predict-rlm's published config.
 
 ## Expected runtime + cost
 
 | Benchmark | Wall clock | Cost (rough) |
 |---|---|---|
 | image_analysis | 25-35s | ~$0.05 |
-| document_redaction | 60-90s | ~$0.10-0.15 |
+| document_redaction | 30-60s | ~$0.10-0.15 |
+| invoice_processing | 25-40s | ~$0.05-0.10 |
+| contract_comparison | 50-90s | ~$0.15-0.25 |
+| document_analysis | 3-5 min | ~$1.00-1.50 (most expensive — 136-page RFP) |
+| **All 5 (`run_all.sh`)** | **6-10 min total** | **~$1.30-2.10 total** |
 
-These vary with model latency and how quickly the model converges on a workable tree. Both should complete in under 2 minutes.
+These vary with model latency and how quickly the model converges on a workable tree.
 
 ## Where outputs go
 
