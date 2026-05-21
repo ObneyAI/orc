@@ -207,11 +207,15 @@
       (concat (:reads opts) (:writes opts)))
 
     ;; Code node: (sheet/code :reads [...] :writes [...] :fn ...)
+    ;;
+    ;; U4: :fn may appear in any position in the canonical args list:
+    ;;   - rlm-dsl's :chunk-document / :aggregate translations emit :fn LAST
+    ;;   - rlm-dsl's :code translation (post R-2) emits :fn FIRST
+    ;; Parse all keyword-value pairs uniformly via (apply hash-map ...).
+    ;; The :fn value (inline fn OR qualified-symbol string) fits a hash-map
+    ;; entry just as well as any other value.
     (and (seq? tree) (= 'sheet/code (first tree)))
-    (let [args (rest tree)
-          ;; Filter out :fn and its value since it's not a keyword arg pair like others
-          keyword-pairs (take-while #(not= :fn %) args)
-          opts (apply hash-map keyword-pairs)]
+    (let [opts (apply hash-map (rest tree))]
       (concat (:reads opts) (:writes opts)))
 
     ;; Map-each node: (sheet/map-each :from :x :as :y :into :z child)
@@ -414,9 +418,18 @@
    {:status :success/:failure/:timeout
     :outputs {...}
     :usage {...}
-    :duration-ms N}"
-  [tree context {:keys [sandbox-vars blackboard timeout-ms]
-                 :or {timeout-ms 60000}}]
+    :duration-ms N}
+
+   U6 options:
+     :blackboard-schemas - Optional {key schema} map preserving parent
+                           schemas (e.g. [:string {:field-type :image}])
+                           so vision/audio inputs route correctly through
+                           the child sheet's leaf nodes. When absent for a
+                           given key, falls back to inferring schema from
+                           value type."
+  [tree context {:keys [sandbox-vars blackboard blackboard-schemas timeout-ms]
+                 :or {timeout-ms 60000
+                      blackboard-schemas {}}}]
   (println "[DEBUG Tree] execute-tree starting")
   (println "[DEBUG Tree] sandbox-vars keys:" (keys sandbox-vars))
   (println "[DEBUG Tree] blackboard keys:" (keys blackboard))
@@ -451,17 +464,21 @@
                 (run-command! context
                   (make-declare-key-command sheet-id k schema))))
 
-          ;; Declare blackboard keys from inputs
+          ;; Declare blackboard keys from inputs.
+          ;; U6: If the caller supplied :blackboard-schemas, prefer that
+          ;; schema (preserves :field-type :image etc.); else infer from
+          ;; value type.
           _ (println "[DEBUG Tree] Declaring blackboard keys...")
           _ (doseq [[k v] blackboard]
-              (let [schema (cond
-                             (string? v) :string
-                             (number? v) :number
-                             (boolean? v) :boolean
-                             (map? v) [:map-of :any :any]
-                             (vector? v) [:vector :any]
-                             (sequential? v) [:vector :any]
-                             :else :any)]
+              (let [schema (or (get blackboard-schemas k)
+                               (cond
+                                 (string? v) :string
+                                 (number? v) :number
+                                 (boolean? v) :boolean
+                                 (map? v) [:map-of :any :any]
+                                 (vector? v) [:vector :any]
+                                 (sequential? v) [:vector :any]
+                                 :else :any))]
                 (run-command! context
                   (make-declare-key-command sheet-id k schema))))
 

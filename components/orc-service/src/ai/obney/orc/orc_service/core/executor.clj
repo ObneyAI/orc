@@ -641,14 +641,54 @@
                              (:reads node))
               ;; Call the function with context
               result (f (assoc context :inputs inputs :execution-context context))
-              duration-ms (- (System/currentTimeMillis) start-time)]
-          ;; Result should be a map of key -> value
-          (if (map? result)
+              duration-ms (- (System/currentTimeMillis) start-time)
+              writes (:writes node)
+              ;; U7: Reconcile the function's return value with the declared :writes.
+              ;;
+              ;; Accepted shapes:
+              ;;   1. A map containing at least one declared write key → keep
+              ;;      declared keys only (extra keys ignored).
+              ;;   2. A map containing NONE of the declared write keys, with
+              ;;      exactly one :write → wrap entire map under that key.
+              ;;      (Useful when fns like `assoc-in` return a transformed
+              ;;      map and the model declares a single :writes target.)
+              ;;   3. A non-map non-nil scalar with exactly one :write
+              ;;      → wrap under that key (lets simple transforms like
+              ;;      `clojure.string/upper-case` or `frequencies` compose
+              ;;      naturally without forcing the model to remember to wrap).
+              ;;
+              ;; Failure cases:
+              ;;   - nil result → fail clearly.
+              ;;   - Non-map result with multiple :writes → ambiguous, fail clearly.
+              ;;   - Map result with NONE of declared writes AND multiple :writes
+              ;;     declared → ambiguous (which key gets the result?), fail clearly.
+              writes-set (set writes)
+              result-keys (when (map? result) (set (keys result)))
+              has-some-write? (and result-keys
+                                   (seq (clojure.set/intersection writes-set result-keys)))
+              outputs (cond
+                        (nil? result) nil
+                        ;; Map with at least one declared write → keep declared keys
+                        has-some-write? (select-keys result writes)
+                        ;; Single-write + non-map scalar → wrap
+                        (and (= 1 (count writes)) (not (map? result)))
+                        {(first writes) result}
+                        ;; Single-write + map (no matching keys) → wrap whole map
+                        (and (= 1 (count writes)) (map? result))
+                        {(first writes) result}
+                        :else nil)]
+          (if (map? outputs)
             {:status :success
-             :outputs result
+             :outputs outputs
              :duration-ms duration-ms}
             {:status :failure
-             :error (str "Code executor function must return a map, got: " (type result))
+             :error (str "Code executor result could not be reconciled with declared :writes "
+                         (pr-str writes)
+                         ". Function returned: "
+                         (cond
+                           (nil? result) "nil"
+                           (map? result) (str "map with keys " (pr-str (keys result)))
+                           :else (str (type result))))
              :duration-ms duration-ms}))
         (catch Exception e
           {:status :failure
@@ -1682,6 +1722,19 @@
                                                                (assoc acc k (:value entry)))
                                                              {}
                                                              blackboard)
+                                               ;; U6: preserve parent blackboard schemas
+                                               ;; (e.g. [:string {:field-type :image}]) so
+                                               ;; the child sheet's leaves see proper
+                                               ;; routing. Without this the child falls back
+                                               ;; to type-inference from value, which loses
+                                               ;; image routing.
+                                               :blackboard-schemas (reduce-kv
+                                                                     (fn [acc k entry]
+                                                                       (if-let [s (:schema entry)]
+                                                                         (assoc acc k s)
+                                                                         acc))
+                                                                     {}
+                                                                     blackboard)
                                                :timeout-ms (:remaining-ms budget)})
                                             (catch Exception e
                                               (println "[DEBUG RLM] Phase 2 execution ERROR:" (.getMessage e))

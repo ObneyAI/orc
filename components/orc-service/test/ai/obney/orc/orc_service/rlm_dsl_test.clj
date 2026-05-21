@@ -357,3 +357,45 @@
           (is (= :sequence (first (:generated-tree-raw result))) "Should start with :sequence")
           ;; Full Phase 2 integration tested in rlm-mode-test/rlm-emit-tree-generates-tree-result-test
           )))))
+
+;; =============================================================================
+;; U5: Phase-1 sub-LLM image routing via blackboard schema :field-type
+;; =============================================================================
+;;
+;; When a Phase-1 sub-LLM call reads a blackboard key whose Malli schema
+;; carries :field-type :image, the dscloj module's corresponding input
+;; field must be marked :type :image so dscloj's build-message-content
+;; routes the value as a multimodal content block (image_url), not as
+;; inline text. Without this, vision tasks ship base64 data URIs as
+;; inline text — wrong content shape AND ~480K tokens per image vs ~1K
+;; for image-tile billing.
+
+(deftest llm-primitive-propagates-image-field-type-to-module
+  (testing "blackboard schema [:string {:field-type :image}] -> module input :type :image"
+    (let [captured (atom nil)]
+      (with-redefs [dscloj/predict
+                    (fn [_provider module inputs _opts]
+                      (reset! captured {:module module :inputs inputs})
+                      {:outputs {:answer "ok"}
+                       :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})]
+        (let [blackboard {:image {:key :image
+                                  :schema [:string {:field-type :image}]
+                                  :value "data:image/png;base64,abc123"
+                                  :version 1}}
+              sandbox-vars (atom {})
+              usage-tracker (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})
+              context {:provider :openrouter
+                       :blackboard blackboard
+                       :sandbox-vars @sandbox-vars
+                       :usage-tracker usage-tracker}]
+          (rlm-sandbox/execute-llm-primitive
+            "vision-call"
+            {:instruction "What is in this image?"
+             :reads [:image]
+             :writes [:answer]}
+            context)
+          (let [{:keys [module]} @captured
+                image-input (first (filter #(= :image (:name %)) (:inputs module)))]
+            (is (some? image-input) "module :inputs should include :image entry")
+            (is (= :image (:type image-input))
+                "image-typed blackboard schema must propagate :type :image to the dscloj module input")))))))
