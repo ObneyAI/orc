@@ -24,14 +24,16 @@
                               orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
                               orc/grain-test-utils  {:local/root "components/grain-test-utils"}
-                              orc/predict-rlm-pdf   {:local/root "components/predict-rlm-pdf"}}}
+                              orc/predict-rlm-pdf   {:local/root "components/predict-rlm-pdf"}
+                              orc/predict-rlm-image-tools {:local/root "components/predict-rlm-image-tools"}}}
 
            :test {:extra-paths ["components/orc-service/test"
                                 "components/gepa/test"
                                 "components/colbert/test"
                                 "components/ontology/test"
                                 "components/mcp-sheet-builder/test"
-                                "components/predict-rlm-pdf/test"]}
+                                "components/predict-rlm-pdf/test"
+                                "components/predict-rlm-image-tools/test"]}
 
            :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]
                   :extra-deps {polylith/clj-poly {:mvn/version "0.2.22"}}
