@@ -455,7 +455,7 @@
             (let [result (if provider
                            (executor/execute-repl-researcher node blackboard provider context)
                            {:status :failure :error "No DSCloj provider configured"})
-                  {:keys [status outputs error duration-ms generated-tree-raw usage]} result
+                  {:keys [status outputs error duration-ms generated-tree-raw usage iterations]} result
                   ;; Track usage for this tick (RLM mode aggregates all LLM calls)
                   _ (when usage (add-usage! tick-id usage))
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
@@ -487,6 +487,23 @@
                                               :execution-id tick-id
                                               :raw-dsl sanitized-tree-raw
                                               :generated-at (str (java.time.Instant/now))}})]}))
+              ;; U10: Emit :rlm/researcher-iterations event whenever the
+              ;; researcher ran at least one Phase 1 iteration — even when
+              ;; no tree was ultimately emitted (e.g. small-input direct
+              ;; execution). This gives downstream observers a uniform
+              ;; capture surface for iteration history regardless of
+              ;; execution mode.
+              (when (seq iterations)
+                (es/append event-store
+                           {:tenant-id (:tenant-id context)
+                            :events [(->event
+                                      {:type :rlm/researcher-iterations
+                                       :tags #{[:sheet sheet-id]
+                                               [:tick tick-id]}
+                                       :body {:execution-id tick-id
+                                              :iterations (vec iterations)
+                                              :iteration-count (count iterations)
+                                              :emitted-at (str (java.time.Instant/now))}})]}))
               (cp/process-command
                 (assoc context :command
                        (cond-> {:command/id (random-uuid)

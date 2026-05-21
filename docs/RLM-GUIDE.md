@@ -115,6 +115,26 @@ The model:
 3. Optionally calls `(emit-tree! [...])` to design a behavior tree for ORC to execute.
 4. Terminal mode: when the model calls `emit-tree!`, Phase 2 runs and the result returns to the caller — the loop ends immediately.
 
+## Main LM + Sub-LM (`:sub-model`)
+
+By default, both the Phase-1 researcher and any Phase-2 `:llm` sub-calls use the node's `:model`. For benchmark or cost-optimization workflows you can split them: run a higher-capability **main LM** in Phase 1 (which writes Clojure code and designs trees) and a cheaper/faster **sub-LM** for the per-leaf Phase-2 `:llm` calls.
+
+```clojure
+(orc/repl-researcher "researcher"
+  :model     "openai/gpt-5.4"        ; Phase-1 main LM (tree design)
+  :sub-model "openai/gpt-5.1-chat"   ; Phase-2 sub-LM injected into :llm nodes
+  :instruction "Identify PII targets in the provided document pages..."
+  :reads  [:page-texts :criteria]
+  :writes [:total-redactions :targets-applied]
+  :rlm true)
+```
+
+The framework walks the canonical emit-tree! tree and injects `:model :sub-model` into every `(sheet/llm ...)` form that does **not** already specify a `:model`. `:llm` nodes the model wrote with an explicit `:model "..."` are left untouched, so the model can still pin a specific model for a specific node (e.g. a vision-specific model for image reads).
+
+Set on the `repl-researcher` node, or alternatively under the `:rlm` map as `:rlm {:sub-model "..."}`. When unset, all calls use `:model`.
+
+This matches the predict-rlm bench's "apples-to-apples" pattern (gpt-5.4 main + gpt-5.1-chat sub). See [`development/bench/predict-rlm-comparison/`](../development/bench/predict-rlm-comparison/) for runnable examples.
+
 ## Recursive mode (`:rlm {:recursive? true}`)
 
 When the `:recursive?` flag is set, `emit-tree!` is no longer terminal:
@@ -237,7 +257,7 @@ When the model calls `(emit-tree! [...])`, the literal S-expression it writes is
 | `:parallel` | `[:parallel child1 child2 ...]` | Run children concurrently (must be independent) |
 | `:fallback` | `[:fallback child1 child2 ...]` | Run children in order, return first success |
 | `:map-each` | `[:map-each {:from :coll :as :item :into :results :max-concurrency N} child]` | Apply child to each item; `:max-concurrency` defaults to 1 |
-| `:llm` | `[:llm {:instruction "..." :reads [...] :writes [...]}]` | Sub-LLM call with declared I/O |
+| `:llm` | `[:llm {:instruction "..." :reads [...] :writes [...]}]` | Sub-LLM call with declared I/O. Optional `:output-schemas {<write-key> <Malli-schema>}` declares the shape of each write. When the schema is structured (vector/map/etc.), the framework asks the LLM for valid JSON and parses the response back to Clojure data — useful for chaining structured outputs into downstream `:code` consumers (see "Structured LLM outputs" below). Optional `:model "..."` pins a specific LLM for this node (otherwise inherits `:sub-model` if set, else `:model`). |
 | `:code` | `[:code {:reads [...] :writes [...] :fn (fn [{:keys [inputs]}] ...)}]` | Pure-Clojure transform inside the tree. `:fn` receives `{:inputs <map-of-read-keys>}` and must return a map keyed by the declared `:writes`. Use for deterministic transforms (counts, joins, reductions) instead of paying a sub-LLM. `:fn` may also be a `"qualified.symbol/string"` resolved at execution time. |
 | `:chunk-document` | `[:chunk-document {:from :doc :size 8000 :into :chunks}]` | Helper: split a string into chunks |
 | `:aggregate` | `[:aggregate {:from :coll :writes [...]}]` | Helper: merge map-each results into per-key vectors |
@@ -245,6 +265,54 @@ When the model calls `(emit-tree! [...])`, the literal S-expression it writes is
 | `:final` | `[:final {:keys [...]}]` | Marker — declares which sandbox keys form the tree's outputs |
 
 Note that `:code` here is a **tree-DSL node** (Phase 2, runs inside a child sheet), distinct from the Phase 1 sandbox `(code ...)` primitive listed in the table above. The Phase 1 primitive runs immediately in the model's SCI context; a Phase 2 `:code` node compiles down to a `sheet/code` leaf, registered via the ephemeral-fn registry so the inline function value survives the child-sheet boundary.
+
+### Structured LLM outputs (`:output-schemas`)
+
+When an `:llm` node's downstream consumer is a `:code` node, you typically want the LLM's `:writes` value as parsed Clojure data, not a raw JSON string. Declare `:output-schemas` on the `:llm` node:
+
+```clojure
+[:llm {:instruction "Identify PII targets on this page."
+       :reads  [:page-text]
+       :writes [:targets]
+       :output-schemas
+       {:targets [:vector [:map [:page :int]
+                                [:text :string]
+                                [:category :string]
+                                [:reason :string]]]}}]
+```
+
+The framework propagates the declared schema to the child sheet's blackboard key. DSCloj's `complex-spec?` detector recognizes the structured shape, instructs the LLM to respond with JSON matching that schema, and parses the response back into Clojure data before the downstream `:code` node reads it.
+
+`:output-schemas` is a map from write-key to Malli schema. Keys without a declared schema fall back to `:any` and arrive as text.
+
+### Pre-built code-node catalog (`:available-code-nodes`)
+
+For benchmarks/tasks that ship deterministic helper functions (e.g. `apply-redactions`, `count-letter-frequencies`), set `:available-code-nodes` on the repl-researcher to surface a markdown catalog as an extra DSCloj module input field. The model sees the catalog as `inputs.available-code-nodes` and can reference any function via `[:code {:fn "ns/sym" :reads [...] :writes [...]}]` instead of writing the transform inline.
+
+```clojure
+(orc/repl-researcher "redactor"
+  :model "openai/gpt-5.4"
+  :instruction "Redact PII targets from the document."
+  :reads  [:page-texts :criteria]
+  :writes [:redacted-text-per-page :total-redactions :targets-applied :targets-missing]
+  :rlm {:available-code-nodes (slurp "resources/redaction_catalog.md")})
+```
+
+The catalog format is freeform markdown; describe each function's purpose, `:reads` shape, `:writes` shape, and any behavioral notes. The model is reminded at the end of the framework prompt to consult this input before designing `:code` nodes.
+
+### Vision inputs (`:field-type :image`)
+
+For Phase-1 sub-LLM calls AND Phase-2 `:llm` leaf nodes that read image-typed blackboard values, declare the blackboard key's schema with `:field-type :image`:
+
+```clojure
+(orc/blackboard
+  {:page-images [:vector {:field-type :image} :string]   ; vector of data URIs
+   :query       :string})
+```
+
+The framework propagates `:field-type :image` into the DSCloj module's input field, which routes the value as a multimodal `image_url` content block rather than as inline text. Without `:field-type :image`, vision tasks ship base64 data URIs as inline text — wrong content shape AND ~480K tokens per image vs ~1K for image-tile billing.
+
+The same schema is preserved from the parent sheet to the Phase-2 child sheet via `:blackboard-schemas`, so leaf `:llm` nodes inside `emit-tree!` trees inherit the correct routing.
 
 ## Output Contract
 
@@ -304,6 +372,8 @@ Per the Grain methodology — every event is monitorable.
 | `:sheet/node-execution-completed` | Every node finishes | `:status`, `:writes`, `:duration-ms`, `:usage`, optional `:partial-summary` |
 | `:sheet/rlm-tree-node-completed` | Per-node inside RLM Phase 2 trees | Structured `:node-path`, `:usage`, `:input-profile` |
 | `:sheet/rlm-tree-execution-completed` | Bookend per Phase 2 tree | `:trajectory` (full per-event log), `:total-usage`, `:task-fingerprint` placeholder |
+| `:rlm/tree-generated` | When the researcher emitted a tree (Phase-2 will execute) | `:tree-id`, `:execution-id`, `:raw-dsl` (inline-fns sanitized to `"<inline-fn>"`), `:generated-at` |
+| `:rlm/researcher-iterations` | Whenever the researcher ran ≥1 Phase-1 iteration, regardless of mode | `:execution-id`, `:iterations` (vector of `{:code :result :stdout :error :vars-created}`), `:iteration-count`, `:emitted-at` |
 | `:sheet/tick-cancelled` | When Phase 2 budget cancellation fires mid-flight | `:sheet-id`, `:tick-id` |
 
 Judges in future work can subscribe to any of these for granular signal.

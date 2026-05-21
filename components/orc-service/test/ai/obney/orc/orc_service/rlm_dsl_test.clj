@@ -483,3 +483,109 @@
           "schema for :targets collected from first :llm node")
       (is (nil? (get schemas :summary))
           "no schema collected when :output-schemas wasn't declared"))))
+
+;; =============================================================================
+;; U12: preview-vector recursive truncation for large-element vectors
+;; =============================================================================
+;;
+;; preview-vector previously included sample elements raw. For vectors of
+;; data-URI image strings (each ~150KB), this meant 450KB+ of base64 text
+;; landing in the LLM prompt's :inputs-info section per Phase-1 call.
+;; Multi-image vision benchmarks hit 1.1MB+ prompts before the fix.
+;; The fix: recursively preview large-string AND collection elements,
+;; passing primitive scalars (numbers, keywords, short strings) through
+;; unchanged so simple-data previews stay natural.
+
+(deftest preview-value-truncates-large-string-elements-in-vector
+  (testing "U12: A vector containing a 10KB string element gets a small
+            preview, not the full 10KB inlined."
+    (let [big-string (apply str (repeat 10000 "x"))
+          small-vec [1 2 3]
+          mixed-vec [big-string small-vec :keyword 42]
+          preview (rlm-sandbox/preview-value mixed-vec :max-sample 4)
+          sample (:sample preview)]
+      (is (= :vector (:type preview))
+          "Result should be a :vector preview shape")
+      (is (= 4 (:length preview))
+          ":length reflects the original element count")
+      ;; First sample element is the BIG string → must be previewed
+      (let [first-sample (first sample)]
+        (is (map? first-sample)
+            "Large-string element should be a preview map, not the raw string")
+        (is (= :string (:type first-sample))
+            "Preview map for the big string should be :type :string")
+        (is (= 10000 (:size first-sample))
+            ":size should be the original length"))
+      ;; Second sample element is a small collection → should be previewed
+      (is (map? (second sample))
+          "Collection element should be previewed (not raw)")
+      ;; Primitives stay raw
+      (is (= :keyword (nth sample 2))
+          "Keyword primitive should pass through unchanged")
+      (is (= 42 (nth sample 3))
+          "Number primitive should pass through unchanged"))))
+
+;; =============================================================================
+;; U10: :rlm/researcher-iterations event schema registered
+;; =============================================================================
+;;
+;; A new event type emitted whenever the Phase-1 researcher ran iterations,
+;; regardless of execution mode (direct execution or emit-tree!). This
+;; gives downstream observability tools a uniform iteration-capture
+;; surface. The schema lives in interface/schemas.clj.
+
+(deftest researcher-iterations-event-schema-validates
+  (testing "U10: :rlm/researcher-iterations is registered as an event schema
+            and validates a representative event body."
+    (let [schema (get schemas/events :rlm/researcher-iterations)
+          valid-body {:execution-id (random-uuid)
+                      :iterations [{:code "(+ 1 2)" :result 3 :stdout ""}]
+                      :iteration-count 1
+                      :emitted-at "2026-05-20T19:00:00.000Z"}]
+      (is (some? schema)
+          ":rlm/researcher-iterations must be registered in event-schemas")
+      (is (m/validate schema valid-body)
+          (str "Sample event body should validate; explain: "
+               (pr-str (m/explain schema valid-body)))))))
+
+;; =============================================================================
+;; PR-Dual-Model: sub-model tree-walk injection
+;; =============================================================================
+;;
+;; When the repl-researcher node config carries :sub-model (different from
+;; the main :model used for Phase-1), the executor walks the canonical
+;; Phase-2 tree and injects :model sub-model into each (sheet/llm ...) form
+;; that does not already specify :model. This is the apples-to-apples
+;; comparison pattern (e.g. predict-rlm runs gpt-5.4 as main + gpt-5.1-chat
+;; as sub for cheap sub-LLM extraction).
+;;
+;; :llm nodes with an explicit :model are left untouched.
+
+(deftest inject-sub-model-injects-into-llm-without-model
+  (testing "PR-Dual-Model: walks canonical tree, injects :model into sheet/llm
+            nodes lacking it. :llm with explicit :model stays untouched."
+    (let [tree '(sheet/sequence
+                  (sheet/llm :instruction "no model"
+                             :reads [:a]
+                             :writes [:b])
+                  (sheet/llm :instruction "explicit model"
+                             :reads [:b]
+                             :writes [:c]
+                             :model "openai/gpt-4o"))
+          ;; Reach the private fn via #' var lookup
+          inject (resolve 'ai.obney.orc.orc-service.core.executor/inject-sub-model)
+          result (inject tree "openai/gpt-5.1-chat")
+          children (rest result)
+          first-llm-opts (apply hash-map (rest (first children)))
+          second-llm-opts (apply hash-map (rest (second children)))]
+      (is (= "openai/gpt-5.1-chat" (:model first-llm-opts))
+          ":llm without :model should get sub-model injected")
+      (is (= "openai/gpt-4o" (:model second-llm-opts))
+          ":llm with explicit :model should be untouched")))
+
+  (testing "PR-Dual-Model: nil sub-model is a no-op"
+    (let [tree '(sheet/sequence
+                  (sheet/llm :instruction "x" :reads [:a] :writes [:b]))
+          inject (resolve 'ai.obney.orc.orc-service.core.executor/inject-sub-model)]
+      (is (= tree (inject tree nil))
+          "nil sub-model returns tree unchanged"))))

@@ -1125,7 +1125,19 @@
                                     [:weight :double]
                                     [:score :double]
                                     [:feedback :string]]]]
-    [:evaluated-at :string]]})
+    [:evaluated-at :string]]
+
+   ;; U10: Phase 1 researcher iteration capture. Emitted by the
+   ;; repl-researcher processor whenever the researcher ran at least
+   ;; one iteration — including direct-execution (no emit-tree!) runs.
+   ;; Lets observability tools query iteration history uniformly
+   ;; across execution modes.
+   :rlm/researcher-iterations
+   [:map
+    [:execution-id :uuid]
+    [:iterations [:vector :any]]                 ;; Each: {:code :result :stdout :error :vars-created}
+    [:iteration-count :int]
+    [:emitted-at :string]]})
 
 ;; =============================================================================
 ;; Query Schemas (Fat Query Model - one query per screen)

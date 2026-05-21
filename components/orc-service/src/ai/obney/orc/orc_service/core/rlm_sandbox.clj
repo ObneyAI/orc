@@ -61,12 +61,28 @@
    :keys (vec (keys m))
    :size (count m)})
 
+;; Forward declaration so preview-vector can call preview-value recursively
+;; for large or collection elements.
+(declare preview-value)
+
 (defn- preview-vector
-  "Preview a vector showing length and sample."
+  "Preview a vector showing length and a small sample.
+
+   U12: Primitive scalars in the sample (numbers, keywords, booleans, short
+   strings) are passed through unchanged so the preview reads naturally
+   for small data. LARGE strings and collections are recursively previewed
+   so that, e.g., vectors of data-URI image renders don't inline their
+   full content into the prompt (which would blow up the prompt size by
+   hundreds of KB)."
   [v max-sample]
   {:type :vector
    :length (count v)
-   :sample (vec (take max-sample v))})
+   :sample (vec (map (fn [item]
+                       (cond
+                         (and (string? item) (> (count item) 200)) (preview-value item)
+                         (coll? item) (preview-value item)
+                         :else item))
+                     (take max-sample v)))})
 
 (defn preview-value
   "Create a preview of a value for LLM context (token space).
