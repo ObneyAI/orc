@@ -1,0 +1,479 @@
+# Document Redaction — Before / After
+
+Source PDF: `references/predict-rlm/document_redaction/sample/input/PNFS-Employment-Agreement-2025.pdf` (6 pages, fictional employment agreement; PII-dense).
+
+Headline run: [`results/document-redaction_2026-05-20_165215.edn`](../document-redaction_2026-05-20_165215.edn) — 92 redactions / 28.9s / 52,120 tokens with apples-to-apples gpt-5.4 + gpt-5.1-chat.
+
+█-blocks replace each verbatim PII match. Block widths match the redacted text length so document structure is preserved.
+
+## Page 0
+
+### Original
+
+```
+EMPLOYMENT AGREEMENT
+Pacific Northwest Financial Services, Inc.
+1847 Harbour View Drive, Suite 400
+Vancouver, BC V6E 3S7
+Date: March 15, 2025
+This Employment Agreement (the "Agreement") is entered into by and between
+Pacific Northwest Financial Services, Inc. ("Employer") and the following
+individual ("Employee"):
+Employee Name: Margaret Elisabeth Thornbury-Watson
+Date of Birth: September 12, 1987
+Social Insurance Number: 847-291-036
+Home Address: 2934 Cypress Crescent, North Vancouver, BC V7R 2T8
+Personal Email: m.thornbury.watson@gmail.com
+Mobile Phone: (604) 889-3247
+Emergency Contact: David Watson, (604) 773-5518 (spouse)
+Position: Senior Financial Analyst, Wealth Management Division
+Start Date: April 1, 2025
+Reporting To: James Harrington, VP Wealth Management
+Annual Salary: $142,500 CAD
+SIGNATURES
+Employer Representative:
+Name: Robert Chen, Chief Human Resources Officer
+Date: March 15, 2025
+Employee:
+Name: Margaret Elisabeth Thornbury-Watson
+Date: March 15, 2025
+
+```
+
+### Redacted
+
+```
+EMPLOYMENT AGREEMENT
+Pacific Northwest Financial Services, Inc.
+██████████████████████████████████
+Vancouver, BC V6E 3S7
+Date: ██████████████
+This Employment Agreement (the "Agreement") is entered into by and between
+Pacific Northwest Financial Services, Inc. ("Employer") and the following
+individual ("Employee"):
+Employee Name: ███████████████████████████████████
+Date of Birth: ██████████████████
+Social Insurance Number: ███████████
+Home Address: █████████████████████, North Vancouver, BC ███████
+Personal Email: ████████████████████████████
+Mobile Phone: ██████████████
+Emergency Contact: ████████████, ██████████████ (spouse)
+Position: Senior Financial Analyst, Wealth Management Division
+Start Date: █████████████
+Reporting To: ████████████████, VP Wealth Management
+Annual Salary: $142,500 CAD
+SIGNATURES
+Employer Representative:
+Name: ███████████, Chief Human Resources Officer
+Date: ██████████████
+Employee:
+Name: ███████████████████████████████████
+Date: ██████████████
+
+```
+
+---
+
+## Page 1
+
+### Original
+
+```
+SCHEDULE A: EMPLOYEE DETAILS AND COMPENSATION
+1. PERSONAL INFORMATION
+Full Legal Name: Margaret Elisabeth Thornbury-Watson
+Preferred Name: Margaret
+Passport Number: QK894217 (Canada)
+Driver's License: 7284913 (British Columbia)
+Permanent Address:
+2934 Cypress Crescent
+North Vancouver, BC V7R 2T8
+Canada
+2. BANKING INFORMATION FOR DIRECT DEPOSIT
+Bank Name: Royal Bank of Canada
+Branch: Park Royal, West Vancouver
+Transit Number: 04512
+Institution Number: 003
+Account Number: 5127849
+Account Holder: Margaret E. Thornbury-Watson
+3. COMPENSATION
+Base Salary: $142,500.00 CAD per annum
+Pay Frequency: Semi-monthly (1st and 15th)
+Performance Bonus: Up to 20% of base salary, at Employer discretion
+4. BENEFITS ENROLLMENT
+Group Benefits Plan: PNFS-2025-EMP
+Life Insurance Beneficiary: David Watson (spouse)
+Beneficiary Date of Birth: June 3, 1985
+Beneficiary SIN: 912-347-058
+RRSP Matching: Employer matches 100% of contributions up to 5% of salary
+RRSP Account: RBC Direct Investing, Account #4891-7723-0056
+
+```
+
+### Redacted
+
+```
+SCHEDULE A: EMPLOYEE DETAILS AND COMPENSATION
+1. PERSONAL INFORMATION
+Full Legal Name: ███████████████████████████████████
+Preferred Name: ████████
+Passport Number: ████████ (Canada)
+Driver's License: ███████ (British Columbia)
+Permanent Address:
+█████████████████████
+North Vancouver, BC ███████
+Canada
+2. BANKING INFORMATION FOR DIRECT DEPOSIT
+Bank Name: Royal Bank of Canada
+Branch: Park Royal, West Vancouver
+Transit Number: █████
+Institution Number: 003
+Account Number: ███████
+Account Holder: ████████ E. Thornbury-Watson
+3. COMPENSATION
+Base Salary: $142,500.00 CAD per annum
+Pay Frequency: Semi-monthly (████████████)
+Performance Bonus: Up to 20% of base salary, at Employer discretion
+4. BENEFITS ENROLLMENT
+Group Benefits Plan: PNFS-2025-EMP
+Life Insurance Beneficiary: ████████████ (spouse)
+Beneficiary Date of Birth: ████████████
+Beneficiary SIN: ███████████
+RRSP Matching: Employer matches 100% of contributions up to 5% of salary
+RRSP Account: RBC Direct Investing, Account #██████████████
+
+```
+
+---
+
+## Page 2
+
+### Original
+
+```
+SCHEDULE B: REFERENCES AND BACKGROUND VERIFICATION
+1. PROFESSIONAL REFERENCES
+Reference 1:
+Name: Dr. Patricia Holmgren
+Title: Managing Director, TD Asset Management
+Phone: (416) 307-8842
+Email: patricia.holmgren@td.com
+Relationship: Former direct supervisor (2019-2023)
+Reference 2:
+Name: Alistair McKinnon
+Title: Partner, KPMG Advisory Services
+Phone: (604) 691-3200 ext. 4417
+Email: amckinnon@kpmg.ca
+Relationship: Client-side engagement lead (2021-2022)
+Reference 3:
+Name: Samantha Reeves-Park
+Title: CFO, Cascadia Renewable Energy Corp.
+Phone: (250) 412-9933
+Email: s.reeves.park@cascadiarenewable.ca
+Relationship: Colleague and project collaborator (2020-2023)
+2. BACKGROUND CHECK AUTHORIZATION
+I, Margaret Elisabeth Thornbury-Watson, hereby authorize Pacific Northwest
+Financial Services, Inc. to conduct a comprehensive background check,
+including but not limited to criminal record verification, credit history,
+employment verification, and education verification.
+Social Insurance Number (for credit check): 847-291-036
+Date of Birth (for identity verification): September 12, 1987
+Previous Employer: TD Asset Management
+Address: 66 Wellington Street West, Toronto, ON M5K 1A2
+Supervisor: Dr. Patricia Holmgren
+Phone: (416) 307-8842
+Dates of Employment: January 2019 - November 2023
+Reason for Leaving: Career advancement opportunity
+Authorization Signature: Margaret E. Thornbury-Watson
+Date: March 15, 2025
+
+```
+
+### Redacted
+
+```
+SCHEDULE B: REFERENCES AND BACKGROUND VERIFICATION
+1. PROFESSIONAL REFERENCES
+Reference 1:
+Name: █████████████████████
+Title: Managing Director, TD Asset Management
+Phone: ██████████████
+Email: ████████████████████████
+Relationship: Former direct supervisor (█████████)
+Reference 2:
+Name: █████████████████
+Title: Partner, KPMG Advisory Services
+Phone: ████████████████████████
+Email: █████████████████
+Relationship: Client-side engagement lead (█████████)
+Reference 3:
+Name: ████████████████████
+Title: CFO, Cascadia Renewable Energy Corp.
+Phone: ██████████████
+Email: ██████████████████████████████████
+Relationship: Colleague and project collaborator (█████████)
+2. BACKGROUND CHECK AUTHORIZATION
+I, ███████████████████████████████████, hereby authorize Pacific Northwest
+Financial Services, Inc. to conduct a comprehensive background check,
+including but not limited to criminal record verification, credit history,
+employment verification, and education verification.
+Social Insurance Number (for credit check): ███████████
+Date of Birth (for identity verification): ██████████████████
+Previous Employer: TD Asset Management
+Address: █████████████████████████, Toronto, ON M5K 1A2
+Supervisor: █████████████████████
+Phone: ██████████████
+Dates of Employment: ████████████████████████████
+Reason for Leaving: Career advancement opportunity
+Authorization Signature: ████████████████████████████
+Date: ██████████████
+
+```
+
+---
+
+## Page 3
+
+### Original
+
+```
+SCHEDULE C: IT ONBOARDING AND SYSTEM ACCESS
+1. CORPORATE ACCOUNTS
+Corporate Email: m.thornbury-watson@pnfs.ca
+Active Directory Username: mthornburywatson
+Employee ID: EMP-2025-0847
+Badge Number: YVR-04-2291
+2. SYSTEM ACCESS PROVISIONED
+Bloomberg Terminal: License BT-PNFS-0423
+Salesforce CRM: Standard User License
+Portfolio Analytics Suite: Full Access
+SharePoint: Wealth Management Team Site
+3. HARDWARE ASSIGNED
+Laptop: Dell Latitude 7440, Asset Tag PNFS-LT-8847
+Serial Number: 4NQ9X83-J72M
+Monitor: Dell U2722D, Asset Tag PNFS-MN-4412
+Mobile Phone: iPhone 15 Pro, (604) 812-0094 (corporate line)
+IMEI: 353847291047823
+4. PARKING AND BUILDING ACCESS
+Parking Permit: P-2025-0312 (Level B2, Harbour View Tower)
+Building Access Card: HVT-8847-MW
+Floor Access: Levels 4, 5, 12 (Wealth Management, Executive)
+5. CORPORATE CREDIT CARD
+Card Issuer: RBC Visa Business
+Card Number: 4519-8847-2291-0036
+Cardholder Name: Margaret Thornbury-Watson
+Expiry: 03/2028
+Monthly Limit: $5,000 CAD
+Approving Manager: James Harrington
+
+```
+
+### Redacted
+
+```
+SCHEDULE C: IT ONBOARDING AND SYSTEM ACCESS
+1. CORPORATE ACCOUNTS
+Corporate Email: ██████████████████████████
+Active Directory Username: ████████████████
+Employee ID: █████████████
+Badge Number: ███████████
+2. SYSTEM ACCESS PROVISIONED
+Bloomberg Terminal: License ████████████
+Salesforce CRM: Standard User License
+Portfolio Analytics Suite: Full Access
+SharePoint: Wealth Management Team Site
+3. HARDWARE ASSIGNED
+Laptop: Dell Latitude 7440, Asset Tag ████████████
+Serial Number: ████████████
+Monitor: Dell U2722D, Asset Tag ████████████
+Mobile Phone: iPhone 15 Pro, ██████████████ (corporate line)
+IMEI: ███████████████
+4. PARKING AND BUILDING ACCESS
+Parking Permit: ███████████ (Level B2, Harbour View Tower)
+Building Access Card: ███████████
+Floor Access: Levels 4, 5, 12 (Wealth Management, Executive)
+5. CORPORATE CREDIT CARD
+Card Issuer: RBC Visa Business
+Card Number: ███████████████████
+Cardholder Name: █████████████████████████
+Expiry: ███████
+Monthly Limit: $5,000 CAD
+Approving Manager: ████████████████
+
+```
+
+---
+
+## Page 4
+
+### Original
+
+```
+SCHEDULE D: HEALTH, SAFETY, AND FAMILY INFORMATION
+1. WORKPLACE HEALTH AND SAFETY
+Emergency Contact (Primary):
+Name: David Watson
+Relationship: Spouse
+Phone: (604) 773-5518
+Email: david.j.watson@outlook.com
+Address: 2934 Cypress Crescent, North Vancouver, BC V7R 2T8
+Emergency Contact (Secondary):
+Name: Eleanor Thornbury
+Relationship: Mother
+Phone: (250) 884-6617
+Address: 445 Linden Avenue, Victoria, BC V8V 4G5
+Medical Conditions / Allergies: None declared
+Blood Type: A+
+BC Health Card Number: 9847 291 036
+2. DEPENDANTS (FOR BENEFITS ENROLLMENT)
+Dependant 1:
+Name: David James Watson
+Date of Birth: June 3, 1985
+Relationship: Spouse
+SIN: 912-347-058
+BC Health Card: 9912 347 058
+Dependant 2:
+Name: Oliver Thornbury Watson
+Date of Birth: November 22, 2019
+Relationship: Child
+BC Health Card: 9201 947 223
+Dependant 3:
+Name: Clara Thornbury Watson
+Date of Birth: August 8, 2022
+Relationship: Child
+BC Health Card: 9208 822 491
+3. ACKNOWLEDGEMENT
+I confirm that the information provided above is accurate and complete.
+I understand that any material misrepresentation may result in
+termination of employment.
+Employee: Margaret Elisabeth Thornbury-Watson
+Date: March 15, 2025
+
+```
+
+### Redacted
+
+```
+SCHEDULE D: HEALTH, SAFETY, AND FAMILY INFORMATION
+1. WORKPLACE HEALTH AND SAFETY
+Emergency Contact (Primary):
+Name: ████████████
+Relationship: Spouse
+Phone: ██████████████
+Email: ██████████████████████████
+Address: █████████████████████, North Vancouver, BC ███████
+Emergency Contact (Secondary):
+Name: █████████████████
+Relationship: Mother
+Phone: ██████████████
+Address: █████████████████, Victoria, BC ███████
+Medical Conditions / Allergies: None declared
+Blood Type: A+
+BC Health Card Number: ████████████
+2. DEPENDANTS (FOR BENEFITS ENROLLMENT)
+Dependant 1:
+Name: ██████████████████
+Date of Birth: ████████████
+Relationship: Spouse
+SIN: ███████████
+BC Health Card: ████████████
+Dependant 2:
+Name: ███████████████████████
+Date of Birth: █████████████████
+Relationship: Child
+BC Health Card: ████████████
+Dependant 3:
+Name: ██████████████████████
+Date of Birth: ██████████████
+Relationship: Child
+BC Health Card: ████████████
+3. ACKNOWLEDGEMENT
+I confirm that the information provided above is accurate and complete.
+I understand that any material misrepresentation may result in
+termination of employment.
+Employee: ███████████████████████████████████
+Date: ██████████████
+
+```
+
+---
+
+## Page 5
+
+### Original
+
+```
+SCHEDULE E: NON-DISCLOSURE AND NON-COMPETE AGREEMENT
+This Non-Disclosure and Non-Compete Agreement is entered into between:
+Employer: Pacific Northwest Financial Services, Inc.
+Registered Address: 1847 Harbour View Drive, Suite 400, Vancouver, BC V6E 3S7
+Business Number: 712849301RC0001
+Employee: Margaret Elisabeth Thornbury-Watson
+SIN: 847-291-036
+Address: 2934 Cypress Crescent, North Vancouver, BC V7R 2T8
+1. NON-DISCLOSURE OBLIGATIONS
+The Employee agrees not to disclose any Confidential Information of the
+Employer, its clients, or its business partners during or after the term
+of employment. Confidential Information includes, but is not limited to,
+client lists, financial data, investment strategies, proprietary models,
+and trade secrets.
+2. NON-COMPETE CLAUSE
+For a period of twelve (12) months following termination of employment,
+the Employee shall not directly or indirectly engage in, or be employed
+by, any competing financial services firm within the Greater Vancouver
+Regional District and the Capital Regional District of British Columbia.
+3. NON-SOLICITATION
+For a period of eighteen (18) months following termination, the Employee
+shall not solicit any clients or employees of the Employer.
+4. REMEDIES
+The Employee acknowledges that breach of this Agreement may cause
+irreparable harm to the Employer and that monetary damages may be
+inadequate. The Employer shall be entitled to seek injunctive relief
+in addition to any other available remedies.
+EXECUTED as of March 15, 2025.
+Employer: Robert Chen, CHRO
+Pacific Northwest Financial Services, Inc.
+Employee: Margaret Elisabeth Thornbury-Watson
+Date: March 15, 2025
+
+```
+
+### Redacted
+
+```
+SCHEDULE E: NON-DISCLOSURE AND NON-COMPETE AGREEMENT
+This Non-Disclosure and Non-Compete Agreement is entered into between:
+Employer: Pacific Northwest Financial Services, Inc.
+Registered Address: ██████████████████████████████████, Vancouver, BC V6E 3S7
+Business Number: ███████████████
+Employee: ███████████████████████████████████
+SIN: ███████████
+Address: █████████████████████, North Vancouver, BC ███████
+1. NON-DISCLOSURE OBLIGATIONS
+The Employee agrees not to disclose any Confidential Information of the
+Employer, its clients, or its business partners during or after the term
+of employment. Confidential Information includes, but is not limited to,
+client lists, financial data, investment strategies, proprietary models,
+and trade secrets.
+2. NON-COMPETE CLAUSE
+For a period of twelve (12) months following termination of employment,
+the Employee shall not directly or indirectly engage in, or be employed
+by, any competing financial services firm within the Greater Vancouver
+Regional District and the Capital Regional District of British Columbia.
+3. NON-SOLICITATION
+For a period of eighteen (18) months following termination, the Employee
+shall not solicit any clients or employees of the Employer.
+4. REMEDIES
+The Employee acknowledges that breach of this Agreement may cause
+irreparable harm to the Employer and that monetary damages may be
+inadequate. The Employer shall be entitled to seek injunctive relief
+in addition to any other available remedies.
+EXECUTED as of ██████████████.
+Employer: ███████████, CHRO
+Pacific Northwest Financial Services, Inc.
+Employee: ███████████████████████████████████
+Date: ██████████████
+
+```
+
+---
