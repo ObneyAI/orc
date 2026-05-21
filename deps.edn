@@ -26,7 +26,8 @@
                               orc/grain-test-utils  {:local/root "components/grain-test-utils"}
                               orc/predict-rlm-pdf   {:local/root "components/predict-rlm-pdf"}
                               orc/predict-rlm-image-tools {:local/root "components/predict-rlm-image-tools"}
-                              orc/predict-rlm-redaction-tools {:local/root "components/predict-rlm-redaction-tools"}}}
+                              orc/predict-rlm-redaction-tools {:local/root "components/predict-rlm-redaction-tools"}
+                              orc/predict-rlm-invoice-tools {:local/root "components/predict-rlm-invoice-tools"}}}
 
            :test {:extra-paths ["components/orc-service/test"
                                 "components/gepa/test"
@@ -35,7 +36,8 @@
                                 "components/mcp-sheet-builder/test"
                                 "components/predict-rlm-pdf/test"
                                 "components/predict-rlm-image-tools/test"
-                                "components/predict-rlm-redaction-tools/test"]}
+                                "components/predict-rlm-redaction-tools/test"
+                                "components/predict-rlm-invoice-tools/test"]}
 
            :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]
                   :extra-deps {polylith/clj-poly {:mvn/version "0.2.22"}}
