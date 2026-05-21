@@ -21,3 +21,6 @@
 # document without re-running the benchmark.
 !document_redaction_artifacts/
 !document_redaction_artifacts/**
+# PR document_analysis headline (referenced from reports/04_document_analysis.md)
+!document-analysis-predict-rlm_2026-05-21_162203.edn
+!document-analysis-predict-rlm_2026-05-21_162203.trace.edn
