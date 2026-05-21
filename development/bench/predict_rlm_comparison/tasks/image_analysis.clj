@@ -25,8 +25,8 @@
      (r/run! t/task)
      (r/stop!)
 
-   Or via the standalone script:
-     ./development/bench/predict-rlm-comparison/scripts/run_image_analysis.sh"
+   Or via the standalone Clojure runner:
+     clj -M:dev:test -m predict-rlm-comparison.run.image-analysis"
   (:require [ai.obney.orc.predict-rlm-image-tools.interface :as img-tools]))
 
 (def ^:private image-path

@@ -23,9 +23,9 @@
      (bench/summary!)
      (bench/stop!)
 
-   Or via the standalone shell script (no REPL needed):
+   Or via the standalone Clojure -main runner (no REPL needed):
      export OPENROUTER_API_KEY=sk-or-v1-...
-     ./development/bench/predict-rlm-comparison/scripts/run_all.sh"
+     clj -M:dev:test -m predict-rlm-comparison.run.all"
   (:require [predict-rlm-comparison.runner :as runner]
             [predict-rlm-comparison.tasks.image-analysis :as image-analysis]
             [predict-rlm-comparison.tasks.document-redaction :as document-redaction]

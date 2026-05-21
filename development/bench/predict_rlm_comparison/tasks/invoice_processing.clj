@@ -24,8 +24,8 @@
      (r/run! t/task)
      (r/stop!)
 
-   Or via the standalone script:
-     ./development/bench/predict-rlm-comparison/scripts/run_invoice_processing.sh"
+   Or via the standalone Clojure runner:
+     clj -M:dev:test -m predict-rlm-comparison.run.invoice-processing"
   (:require [ai.obney.orc.predict-rlm-pdf.interface :as pdf]
             [ai.obney.orc.predict-rlm-invoice-tools.interface :as invoice-tools]
             [clojure.java.io :as io]))

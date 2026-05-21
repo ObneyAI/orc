@@ -33,8 +33,8 @@
      (r/run! t/task)
      (r/stop!)
 
-   Or via the standalone script:
-     ./development/bench/predict-rlm-comparison/scripts/run_document_redaction.sh"
+   Or via the standalone Clojure runner:
+     clj -M:dev:test -m predict-rlm-comparison.run.document-redaction"
   (:require [ai.obney.orc.predict-rlm-pdf.interface :as pdf]
             [ai.obney.orc.predict-rlm-redaction-tools.interface :as redact]))
 

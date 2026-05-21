@@ -26,37 +26,47 @@ ORC ~2.8× cheaper on tokens for image_analysis; ~1.26× cheaper for document_re
 
 ## How to run
 
-### Quick start — one script per benchmark
+### Quick start — one Clojure -main per benchmark
 
 ```bash
 export OPENROUTER_API_KEY="sk-or-v1-..."
 
-# From the repo root:
-./development/bench/predict-rlm-comparison/scripts/run_image_analysis.sh
-./development/bench/predict-rlm-comparison/scripts/run_document_redaction.sh
-./development/bench/predict-rlm-comparison/scripts/run_invoice_processing.sh
-./development/bench/predict-rlm-comparison/scripts/run_contract_comparison.sh
-./development/bench/predict-rlm-comparison/scripts/run_document_analysis.sh
+# From the repo root, run any individual benchmark:
+clj -M:dev:test -m predict-rlm-comparison.run.image-analysis
+clj -M:dev:test -m predict-rlm-comparison.run.document-redaction
+clj -M:dev:test -m predict-rlm-comparison.run.invoice-processing
+clj -M:dev:test -m predict-rlm-comparison.run.contract-comparison
+clj -M:dev:test -m predict-rlm-comparison.run.document-analysis
 
-# Or run all 5 in sequence (fastest-first):
-./development/bench/predict-rlm-comparison/scripts/run_all.sh
+# Or run all 5 in sequence (fastest-first, ~6-10 min total):
+clj -M:dev:test -m predict-rlm-comparison.run.all
 ```
 
-Each script:
-- Verifies `OPENROUTER_API_KEY` is set and `clj` is on PATH
-- Boots the runner, runs the benchmark, prints status/duration/tokens
+Each `run.*` namespace has a `(defn -main [& args] ...)` that:
+- Verifies `OPENROUTER_API_KEY` is set; fails fast with helpful error if not
+- Boots the runner, executes the task, tears down cleanly
+- Prints a structured status block (STATUS / DURATION / TOTAL TOKENS)
 - Writes the result EDN under `results/<benchmark>_<timestamp>.edn` + `.trace.edn`
-- Exits non-zero on failure (so it composes cleanly with CI / shell pipelines)
+- Exits non-zero on failure (composes cleanly with CI / shell pipelines)
 
-### Manual REPL invocation (equivalent)
+The shared bootstrap (env-check + status formatting) lives in
+[`run/_common.clj`](../predict_rlm_comparison/run/_common.clj). The full suite
+runner is [`run/all.clj`](../predict_rlm_comparison/run/all.clj).
 
-If you prefer to drive from the REPL or want to inspect intermediate state:
+### REPL invocation (equivalent, for interactive use)
 
-```bash
-clj -M:dev:test -e '
-(require (quote [predict-rlm-comparison.tasks.image-analysis :as t]))
-(require (quote [predict-rlm-comparison.runner :as r]))
-(r/start!) (r/run! t/task) (r/stop!)'
+If you prefer to drive from the REPL or want to inspect intermediate state
+without re-loading the JVM:
+
+```clojure
+;; Single benchmark
+(require '[predict-rlm-comparison.tasks.image-analysis :as t])
+(require '[predict-rlm-comparison.runner :as r])
+(r/start!) (r/run! t/task) (r/stop!)
+
+;; Or via the aggregator for the full suite + summary table
+(require '[predict-rlm-comparison.all :as bench])
+(bench/start!) (bench/run-all!) (bench/summary!) (bench/stop!)
 ```
 
 Substitute the task namespace for any of the other 4: `predict-rlm-comparison.tasks.document-redaction`, `...invoice-processing`, `...contract-comparison`, `...document-analysis`.
@@ -74,7 +84,7 @@ All 5 tasks declare `:model "openai/gpt-5.4"` + `:sub-model "openai/gpt-5.1-chat
 | invoice_processing | 25-40s | ~$0.05-0.10 |
 | contract_comparison | 50-90s | ~$0.15-0.25 |
 | document_analysis | 3-5 min | ~$1.00-1.50 (most expensive — 136-page RFP) |
-| **All 5 (`run_all.sh`)** | **6-10 min total** | **~$1.30-2.10 total** |
+| **All 5 (`run.all`)** | **6-10 min total** | **~$1.30-2.10 total** |
 
 These vary with model latency and how quickly the model converges on a workable tree.
 

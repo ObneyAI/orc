@@ -24,8 +24,8 @@
      (r/run! t/task)
      (r/stop!)
 
-   Or via the standalone script:
-     ./development/bench/predict-rlm-comparison/scripts/run_contract_comparison.sh"
+   Or via the standalone Clojure runner:
+     clj -M:dev:test -m predict-rlm-comparison.run.contract-comparison"
   (:require [ai.obney.orc.predict-rlm-pdf.interface :as pdf]))
 
 (def ^:private references-dir
