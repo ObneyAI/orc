@@ -8,9 +8,11 @@
 
 ## About predict-rlm and this suite
 
-[predict-rlm](https://github.com/Trampoline-AI/predict-rlm) is cutting-edge research from Trampoline-AI demonstrating the Recursive Language Model concept end-to-end on real documents, with fully open source code, sample inputs, and published outputs. Their openness is what made this comparison possible at all — we could read their `signature.py` files for instruction sourcing, use their verbatim sample inputs, and reference their published `sample/output/output.md` numbers.
+**This is ORC's workbench, built on behavior trees.** When we apply Recursive Language Model strategies into ORC's decomposition space — behavior trees the model emits via `emit-tree!`, with `:llm`, `:code`, `:map-each`, `:parallel`, `:sequence`, and `:final` as the building blocks — these are the results on a published, real-world benchmark suite.
 
-This suite is not a head-to-head competition. It's a set of concrete worked examples of how ORC's RLM (Repl Researcher with `emit-tree!`) approaches the same task types. predict-rlm's published runs serve as a high-quality reference baseline; the reports here describe what ORC's tree-emitting researcher does, what the resulting outputs look like, and how the per-task numbers land.
+[predict-rlm](https://github.com/Trampoline-AI/predict-rlm) is cutting-edge research from Trampoline-AI demonstrating the Recursive Language Model concept end-to-end on real documents, with fully open source code, sample inputs, and published outputs. Their openness is what made this comparison possible at all — we could read their `signature.py` files for instruction sourcing, use their verbatim sample inputs, and reference their published `sample/output/output.md` numbers. Their decomposition primitive is Python + DSPy `predict()` + `asyncio.gather()`; ORC's is the behavior tree. Same RLM idea, different toolchain.
+
+This suite is not a head-to-head competition. It's a set of concrete worked examples of how the RLM strategies look when expressed as behavior trees on the same task types. predict-rlm's published runs serve as a high-quality reference baseline; the reports here describe what ORC's tree-emitting researcher does, what the resulting outputs look like, and how the per-task numbers land.
 
 ---
 

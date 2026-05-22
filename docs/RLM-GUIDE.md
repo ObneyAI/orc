@@ -2,7 +2,7 @@
 
 RLM is a two-phase execution pattern for the `:repl-researcher` node type. The LLM iteratively generates Clojure code in a sandboxed REPL (Phase 1) and can optionally emit behavior trees that ORC executes as child ticks (Phase 2). When recursive mode is enabled, the model can inspect Phase 2 outputs and continue reasoning rather than treating `emit-tree!` as a terminator.
 
-> **Inspiration:** This mode is ORC's take on the **Recursive Language Model** concept — a model that can spawn sub-computations, inspect their outputs, and continue reasoning. Our implementation brings those benefits into ORC's behavior-tree execution model: Phase 1 is the recursive code-generation loop, Phase 2 is the spawned sub-computation (the emitted tree), and the recursive-mode opt-in lets the model fold Phase 2 outputs back into its Phase 1 state for further iteration.
+> **Inspiration and framing.** This mode is ORC's take on the **Recursive Language Model** concept — a model that can spawn sub-computations, inspect their outputs, and continue reasoning. ORC's decomposition primitive is the behavior tree: where other RLM implementations might spawn sub-computations via `predict()` calls and `asyncio.gather()`, ORC's researcher emits a behavior tree via `emit-tree!`. Phase 1 is the recursive code-generation loop; Phase 2 is the spawned sub-computation (the emitted tree); the recursive-mode opt-in lets the model fold Phase 2 outputs back into Phase 1 state for further iteration. Same RLM strategies, expressed in ORC's behavior-tree decomposition space.
 
 ## When to use RLM
 

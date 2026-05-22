@@ -1,10 +1,12 @@
 # predict-rlm Comparison Benchmark Suite
 
-This suite explores how ORC's RLM (Repl Researcher with `emit-tree!`) handles the same kinds of document-analysis, redaction, extraction, and comparison tasks that the [predict-rlm](https://github.com/Trampoline-AI/predict-rlm) project published as examples. The framing is intentional: predict-rlm is cutting-edge research from Trampoline-AI demonstrating the Recursive Language Model concept end-to-end on real documents, with fully open source code, sample inputs, and published outputs we can read directly. That openness is what makes a study like this even possible.
+**This is ORC's workbench, built on behavior trees.** When we apply Recursive Language Model strategies into ORC's decomposition space — behavior trees the model emits via `emit-tree!`, with `:llm`, `:code`, `:map-each`, `:parallel`, `:sequence`, and `:final` as the building blocks — these are the results on a published, real-world benchmark suite.
 
-We are not trying to beat predict-rlm. Their published examples gave us a concrete, high-quality reference point to ask "how would ORC approach this task?" — same input documents, same verbatim instructions where applicable, same model setup. The reports here describe what ORC's tree-emitting researcher does on each task and what the resulting outputs look like. predict-rlm's published numbers appear alongside ORC's as the reference point we're comparing against, not as a target to beat.
+[predict-rlm](https://github.com/Trampoline-AI/predict-rlm) is cutting-edge research from Trampoline-AI demonstrating the Recursive Language Model concept end-to-end on real documents, with fully open source code, sample inputs, and published outputs we can read directly. Their decomposition primitive is Python + DSPy `predict()` + `asyncio.gather()`. ORC's is the behavior tree. Same RLM idea, different toolchain — and that toolchain difference is what these reports surface.
 
-If you're exploring ORC RLM for the first time, the reports are useful concrete examples; if you're coming from predict-rlm, this is a parallel implementation in a different framework showing the same pattern is expressible.
+The framing here isn't competition. predict-rlm's published examples gave us a concrete, high-quality reference point to ask "how does this RLM strategy look when expressed as a behavior tree, on the same input documents, with the same verbatim instructions, with the same models?" The reports describe what ORC's tree-emitting researcher does on each task and what the resulting outputs look like. predict-rlm's published numbers appear alongside ORC's as the reference baseline.
+
+If you're exploring ORC for the first time, the reports are useful concrete examples of what RLM-on-behavior-trees looks like. If you're coming from predict-rlm, this is a parallel implementation showing the same RLM idea expressed in a different decomposition space.
 
 ## What's compared
 
