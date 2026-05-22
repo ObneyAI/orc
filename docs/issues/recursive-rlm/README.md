@@ -6,19 +6,39 @@
 
 ## Issue List
 
-| # | Title | Type | Blocked by |
-|---|-------|------|------------|
-| R-1 | [Core recursive loop](R-1-core-recursive-loop.md) | AFK | None |
-| R-2 | [Drill-down primitives](R-2-drill-down-primitives.md) | AFK | R-1 |
+| # | Title | Type | Blocked by | Status |
+|---|-------|------|------------|--------|
+| R-1 | [Core recursive loop](R-1-core-recursive-loop.md) | AFK | None | ✅ merged to main |
+| R-2 | [Drill-down primitives](R-2-drill-down-primitives.md) | AFK | R-1 | ✅ merged to main |
+| R-3 | [Inline-fn Fressian sanitization](R-3-inline-fn-fressian-sanitization.md) | AFK | R-1 | **open** — dominant cause of 15-min recursive runtime |
+| R-4 | [Sub-model injection in recursive mode](R-4-sub-model-injection-recursive.md) | AFK | R-3 | **open** — apples-to-apples model attribution broken |
+| R-5 | [History reuse hint](R-5-history-reuse-hint.md) | AFK | R-3 | open — optimization, lowest priority |
+| R-Bench | [5-benchmark recursive verification sweep](R-Bench-recursive-5-benchmark-sweep.md) | HITL | R-3 + R-4 | **open** — gate for always-on recursive default |
 
 ## Dependency Graph
 
 ```
-R-1 ─→ R-2
-(core      (drill-down
- recursive   primitives —
- loop)       enrichment over R-1)
+R-1 ─→ R-2  (drill-down primitives)
+ │
+ ├─→ R-3  (Fressian sanitization)
+ │    │
+ │    ├─→ R-4  (sub-model injection)
+ │    │    │
+ │    │    └─→ R-Bench  (5-benchmark sweep, HITL)
+ │    │
+ │    └─→ R-5  (history reuse, optional)
 ```
+
+## R-3..R-Bench context
+
+The recursive-mode benchmark experiment (`development/bench/predict_rlm_comparison/reports/recursive-mode-experiment.md` + `recursive-mode-plan.md`) ran all 5 predict-rlm benchmarks in recursive mode and found systematic regressions. Two framework fixes were made up-front and committed on `feature/rlm-recursive-mode-fixes`:
+
+- ✅ `validate-final!` rejects all-empty outputs (was: model could call `(final! {:k1 nil :k2 []})` and succeed silently)
+- ✅ Recursive-mode prompt leads with "`emit-tree!` is how you do work" (was: model treated emit-tree! as one option among many, never called it, called final! with empty data instead)
+
+After those, recursive-mode runs DO emit trees and produce real output, but surface three further framework bugs (R-3, R-4, R-5 above).
+
+End-goal: with R-3 + R-4 fixed (and ideally R-5), recursive mode passes the 5-benchmark sweep (R-Bench) and can become the always-on default.
 
 ## Priority — these land BEFORE Category C
 

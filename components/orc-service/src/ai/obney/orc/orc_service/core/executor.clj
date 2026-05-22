@@ -118,7 +118,16 @@
         all-failure-indices (vec (mapcat :failure-indices partial-summaries))
         all-failure-reasons (apply merge {} (map :failure-reasons partial-summaries))]
     (cond-> {:tick-id (:trace-id phase2-result)
-             :tree-raw tree-raw
+             ;; R-3: sanitize inline-fn SCI objects out of :tree-raw before
+             ;; storing in :tree-results. The summary gets persisted across
+             ;; iterations (and propagates into subsequent :sheet/tree-tick-
+             ;; started events' :inputs), so any live SCI fn objects in
+             ;; :tree-raw will crash Fressian when the read-model-processor
+             ;; tries to write tick state to LMDB. We replace each inline
+             ;; :fn fn with the placeholder string "<inline-fn>" (matching
+             ;; U8's :rlm/tree-generated event sanitization convention).
+             ;; Qualified-symbol-string :fn values pass through untouched.
+             :tree-raw (tree-executor/sanitize-tree-for-events tree-raw)
              :status status
              :elapsed-ms (:duration-ms phase2-result)
              :outputs-keys outputs-keys

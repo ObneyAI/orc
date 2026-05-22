@@ -167,7 +167,13 @@
                        (:available-code-nodes task)
                        (assoc :available-code-nodes (:available-code-nodes task))
                        effective-sub-model
-                       (assoc :sub-model effective-sub-model))]
+                       (assoc :sub-model effective-sub-model)
+                       ;; Task-level :recursive? override — when set, the
+                       ;; researcher emits a tree, gets the output back, and
+                       ;; can emit follow-up trees / call (final! ...) to
+                       ;; terminate. Default (nil/false) is terminal mode.
+                       (:recursive? task)
+                       (assoc :recursive? true))]
       (h/run-and-apply! ctx (h/make-set-repl-researcher-config-command
                               sheet-id node-id
                               (:instruction task)

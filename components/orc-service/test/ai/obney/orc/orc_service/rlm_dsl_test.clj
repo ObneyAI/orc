@@ -703,3 +703,75 @@
       (is (string? instructions))
       (is (not (re-find #"## Recursive" instructions))
           "Terminal mode (no :recursive?) must NOT include the recursive-mode prompt section"))))
+
+;; =============================================================================
+;; R-3: compute-tree-result-summary sanitizes inline-fns in :tree-raw
+;;
+;; In recursive mode, :tree-results accumulates {:tree-raw <s-expr>} entries
+;; for each emitted tree. If :tree-raw contains live SCI fn objects (from
+;; the model writing [:code {:fn (fn [...] ...)}]), persisting :tree-results
+;; through the event store crashes Fressian:
+;;
+;;   "Cannot write sci.impl.fns$fun$arity_1__29795 as tag null"
+;;
+;; Evidence: results/document-redaction-recursive_2026-05-22_121601.trace.edn
+;; — uncaught exception at T+63s, then 14 minutes of silence before timeout.
+;;
+;; Fix: compute-tree-result-summary applies the existing sanitize-tree-for-events
+;; helper to :tree-raw before storing — same treatment U8 already gives to the
+;; :rlm/tree-generated event.
+;; =============================================================================
+
+(deftest compute-tree-result-summary-sanitizes-inline-fns-in-tree-raw
+  (testing "Live SCI fn objects in :tree-raw are replaced with placeholder strings"
+    (let [inline-fn (fn [{:keys [inputs]}] {:result (count (vals inputs))})
+          tree-raw [:sequence
+                    [:code {:fn inline-fn :reads [:input-a] :writes [:result-a]}]
+                    [:final {:keys [:result-a]}]]
+          summary (executor/compute-tree-result-summary
+                    {:phase2-result {:status :success
+                                     :outputs {:result-a 42}
+                                     :duration-ms 1000
+                                     :trace-id (random-uuid)}
+                     :tick-events []
+                     :tree-raw tree-raw
+                     :writes [:result-a]})
+          sanitized-tree (:tree-raw summary)
+          fn-vals-in-sanitized (atom [])]
+      (clojure.walk/postwalk
+        (fn [node]
+          (when (and (map? node) (contains? node :fn))
+            (swap! fn-vals-in-sanitized conj (:fn node)))
+          node)
+        sanitized-tree)
+      (is (some? sanitized-tree)
+          ":tree-raw is preserved in the summary (not dropped)")
+      (is (= 1 (count @fn-vals-in-sanitized))
+          "One :fn entry preserved (the :code node's fn)")
+      (is (= "<inline-fn>" (first @fn-vals-in-sanitized))
+          "Live SCI fn was replaced with placeholder string \"<inline-fn>\"")
+      ;; Sanity: shape preserved otherwise
+      (is (= :sequence (first sanitized-tree)) "Top-level :sequence preserved")
+      (is (= :code (first (second sanitized-tree))) ":code node shape preserved"))))
+
+(deftest compute-tree-result-summary-leaves-string-fn-untouched
+  (testing "Qualified-symbol-string :fn values are NOT replaced — already serializable"
+    (let [tree-raw [:sequence
+                    [:code {:fn "ai.obney.orc.predict-rlm-redaction-tools.interface/apply-redactions"
+                            :reads [:targets] :writes [:out]}]
+                    [:final {:keys [:out]}]]
+          summary (executor/compute-tree-result-summary
+                    {:phase2-result {:status :success
+                                     :outputs {:out []}
+                                     :duration-ms 500
+                                     :trace-id (random-uuid)}
+                     :tick-events []
+                     :tree-raw tree-raw
+                     :writes [:out]})
+          fn-val (->> (:tree-raw summary)
+                      (tree-seq coll? seq)
+                      (filter #(and (map? %) (contains? % :fn)))
+                      first
+                      :fn)]
+      (is (= "ai.obney.orc.predict-rlm-redaction-tools.interface/apply-redactions" fn-val)
+          "Qualified-symbol-string :fn value passes through untouched"))))
