@@ -658,3 +658,48 @@
                    {:k1 "x" :k2 "y" :extra "oops"}
                    [:k1 :k2]))
         "Extra key throws (unchanged from existing behavior)")))
+
+;; =============================================================================
+;; build-rlm-code-generation-module — Fix-1 from recursive-mode-plan.md
+;;
+;; In the experiment, recursive-mode runs had the model executing direct
+;; (llm ...) / (code ...) calls for 5 iterations without ever calling
+;; emit-tree!. The model wasn't choosing emit-tree! as its primary work
+;; primitive because the recursive-mode section of the prompt frames it
+;; as one option among many ("When you call emit-tree! ...") rather than
+;; as the preferred path.
+;;
+;; Fix: when :recursive? true, the constructed prompt must STRONGLY prefer
+;; emit-tree! as the work primitive. Direct (llm)/(code) calls in Phase 1
+;; are documented as inspection-only, not the main loop.
+;; =============================================================================
+
+(deftest recursive-prompt-leads-with-emit-tree-as-primary-work
+  (testing "When :recursive? true, the system prompt frames emit-tree! as the primary work primitive"
+    (let [build-fn (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module)
+          node {:rlm {:recursive? true}
+                :writes [:answer]
+                :instruction "Find facts."}
+          module (build-fn node {} [] {} {} {})
+          instructions (:instructions module)]
+      (is (string? instructions) "module returns :instructions as a string")
+      (is (re-find #"## Recursive" instructions)
+          "Recursive section header is present")
+      ;; The fix: prompt must lead with "emit-tree! IS the primary work" framing,
+      ;; NOT a passive "When you call emit-tree!" framing.
+      (is (re-find #"(?i)`?emit-tree!`?\s+is\s+(how|the)" instructions)
+          "Recursive section should lead with 'emit-tree! is how/the [primary work]' — not 'When you call emit-tree!'")
+      ;; Anti-pattern callout: model shouldn't iterate direct (llm) calls
+      (is (re-find #"(?i)(should not|not your main|narrow inspection|prefer emit-tree)" instructions)
+          "Prompt should warn against iterating direct (llm)/(code) calls as the main loop"))))
+
+(deftest terminal-prompt-unchanged-when-not-recursive
+  (testing "When :recursive? is NOT set, the recursive section is omitted (no regression for terminal mode)"
+    (let [build-fn (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module)
+          node {:writes [:answer]
+                :instruction "Find facts."}
+          module (build-fn node {} [] {} {} {})
+          instructions (:instructions module)]
+      (is (string? instructions))
+      (is (not (re-find #"## Recursive" instructions))
+          "Terminal mode (no :recursive?) must NOT include the recursive-mode prompt section"))))

@@ -1443,14 +1443,33 @@
                       "Previews adapt to data type: text samples for documents, T-box/A-box summaries for graphs.\n\n"
                       ;; Include ontology examples if available
                       (or (build-ontology-examples-section node) "")
-                      ;; R-1: Descriptive recursive-mode section when :recursive? is true.
-                      ;; Factual framing only — no urgency language.
+                      ;; Descriptive recursive-mode section when :recursive? is true.
+                      ;; The framing leads with "emit-tree! is how you do work" so the
+                      ;; model treats it as the primary loop body, not one option among
+                      ;; many. Direct (llm ...) / (code ...) calls in Phase 1 are
+                      ;; explicitly scoped to narrow inspection/decision flows, not the
+                      ;; main work loop.
                       (if (get-in node [:rlm :recursive?])
-                        (str "## Recursive emit-tree! (this mode)\n\n"
-                             "When you call `(emit-tree! ...)`, the tree executes and then "
-                             "control returns to you for another iteration. The tree's "
-                             "outputs are merged into your variables (use `(get-var :summary)` "
-                             "etc.), and a summary entry is appended to `:tree-results`. The loop "
+                        (str "## Recursive mode (this mode)\n\n"
+                             "In this mode, `emit-tree!` is how you do work. Design a "
+                             "tree for one piece of the task, run it, see the result, "
+                             "decide what to do next. The loop is: `(emit-tree! ...)` → "
+                             "inspect outputs → decide → repeat, until you call "
+                             "`(final! {...})`.\n\n"
+                             "### Preferred per-iteration pattern\n"
+                             "Each iteration, prefer one of:\n"
+                             "1. `(emit-tree! ...)` to make progress on the task, OR\n"
+                             "2. `(final! {...})` to terminate when the work is done.\n\n"
+                             "Direct `(llm ...)` / `(code ...)` calls in Phase 1 are for "
+                             "narrow inspection or decision flows — they should not be "
+                             "your main work loop. If you find yourself iterating direct "
+                             "`(llm ...)` calls without emitting trees, switch to "
+                             "`emit-tree!`. Each `emit-tree!` is a full sub-tick that "
+                             "the framework executes, records, and surfaces results from.\n\n"
+                             "### After each `emit-tree!` completes\n"
+                             "The tree's outputs are merged into your variables (use "
+                             "`(get-var :summary)` etc.), a summary entry is appended "
+                             "to `:tree-results`, and control returns to you. The loop "
                              "ends only when you call `(final! {...})` or you exceed "
                              ":max-iterations.\n\n"
                              "### Reading `:tree-results`\n"
