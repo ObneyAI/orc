@@ -6,7 +6,7 @@
 
 ## Problem Statement
 
-ORC's RLM (Research Language Model) tree-emitting researcher adapts behavior tree design to the task at hand — proven across five in-house generalization benchmarks (headline report `development/bench/reports/07_final_generalization_report.md`, "37 spot-checked facts, 0 hallucinations").
+ORC's RLM (Recursive Language Model) tree-emitting researcher adapts behavior tree design to the task at hand — proven across five in-house generalization benchmarks (headline report `development/bench/reports/07_final_generalization_report.md`, "37 spot-checked facts, 0 hallucinations").
 
 To make that generalization claim defensible against a published external reference, we want apples-to-apples comparison against Trampoline-AI's predict-rlm (https://github.com/Trampoline-AI/predict-rlm), which exposes 5 reference benchmarks via a DSPy-based Python-in-WASM RLM. We've ported one (`contract_comparison_validated`). Three remain — `invoice_processing` (vision + Excel), `document_redaction` (vision + deterministic redaction), `image_analysis` (single-image VLM). Without them the comparison is incomplete and our generalization claim cannot be honestly defended at the field-suite level.
 

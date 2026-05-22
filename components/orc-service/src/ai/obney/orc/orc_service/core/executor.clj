@@ -1031,7 +1031,7 @@
 (defn execute-repl-researcher
   "Execute a repl-researcher node using iterative LLM+SCI code execution.
 
-   This implements the RLM (Research Language Model) pattern where:
+   This implements the RLM (Recursive Language Model) pattern where:
    1. LLM generates Clojure code to call MCP tools
    2. Code executes in a safe SCI sandbox
    3. Results feed back to LLM for next iteration
@@ -1316,7 +1316,7 @@
    :outputs [{:name :code
               :spec :string
               :description "Clojure code to execute"}]
-   :instructions (str "You are an RLM (Research Language Model) that constructs behavior trees to solve tasks.\n\n"
+   :instructions (str "You are an RLM (Recursive Language Model) that constructs behavior trees to solve tasks.\n\n"
                       ;; Two-space architecture explanation
                       "## Two-Space Architecture\n\n"
                       "RLM separates **Variable Space** (full data in sandbox memory) from **Token Space** (what LLMs see).\n"

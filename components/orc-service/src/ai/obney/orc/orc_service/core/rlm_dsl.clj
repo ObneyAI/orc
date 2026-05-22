@@ -1,7 +1,7 @@
 (ns ai.obney.orc.orc-service.core.rlm-dsl
   "Transform S-expr RLM DSL to canonical ORC DSL.
 
-   The RLM (Research Language Model) outputs literal S-expressions representing
+   The RLM (Recursive Language Model) outputs literal S-expressions representing
    behavior trees. This namespace transforms those to canonical ORC DSL forms
    that can be executed by the sheet service.
 

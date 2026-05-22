@@ -1,5 +1,5 @@
 (ns ai.obney.orc.orc-service.core.rlm-sandbox
-  "RLM (Research Language Model) sandbox for behavior tree construction.
+  "RLM (Recursive Language Model) sandbox for behavior tree construction.
 
    Extends the SCI sandbox with BT primitives that execute immediately:
    - (llm \"name\" :instruction \"...\" :writes [:key]) - Execute LLM node

@@ -1,5 +1,5 @@
 (ns ai.obney.orc.orc-service.rlm-mode-test
-  "Integration tests for RLM (Research Language Model) mode.
+  "Integration tests for RLM (Recursive Language Model) mode.
 
    RLM mode enables repl-researcher to construct and execute behavior trees
    as primitives, separating variable space (data in sandbox) from token space

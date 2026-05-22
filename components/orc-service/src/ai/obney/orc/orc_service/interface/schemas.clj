@@ -1089,7 +1089,7 @@
     [:metadata :any]]
 
    ;; -------------------------------------------------------------------------
-   ;; RLM (Research Language Model) Events
+   ;; RLM (Recursive Language Model) Events
    ;; -------------------------------------------------------------------------
 
    :rlm/tree-generated
