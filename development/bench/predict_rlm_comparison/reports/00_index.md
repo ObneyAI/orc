@@ -1,24 +1,32 @@
 # predict-rlm Comparison Suite — Aggregate Index
 
 **Date:** 2026-05-21
-**Models throughout:** `openai/gpt-5.4` main + `openai/gpt-5.1-chat` sub (apples-to-apples with predict-rlm's published setup)
-**Five benchmarks ported from:** [predict-rlm/examples](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples) — verbatim instructions, verbatim source PDFs, identical models
+**Models throughout:** `openai/gpt-5.4` main + `openai/gpt-5.1-chat` sub (matching predict-rlm's published setup)
+**Five benchmarks adapted from:** [predict-rlm/examples](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples) — verbatim instructions, verbatim source PDFs, identical models
 
 ---
 
-## Headline
+## About predict-rlm and this suite
 
-**ORC RLM ported all 5 predict-rlm benchmarks end-to-end. In 3 of 5 benchmarks (image_analysis, document_redaction, contract_comparison), ORC was BOTH faster AND cheaper than predict-rlm's published numbers. In the other 2 (invoice_processing, document_analysis), ORC matched or exceeded predict-rlm's published extraction quality at comparable wall-clock with different cost trade-offs.**
+[predict-rlm](https://github.com/Trampoline-AI/predict-rlm) is cutting-edge research from Trampoline-AI demonstrating the Recursive Language Model concept end-to-end on real documents, with fully open source code, sample inputs, and published outputs. Their openness is what made this comparison possible at all — we could read their `signature.py` files for instruction sourcing, use their verbatim sample inputs, and reference their published `sample/output/output.md` numbers.
+
+This suite is not a head-to-head competition. It's a set of concrete worked examples of how ORC's RLM (Repl Researcher with `emit-tree!`) approaches the same task types. predict-rlm's published runs serve as a high-quality reference baseline; the reports here describe what ORC's tree-emitting researcher does, what the resulting outputs look like, and how the per-task numbers land.
+
+---
+
+## Overview
 
 Across all 5 benchmarks the model designed **5 distinct behavior-tree shapes** — adapting its decomposition to the task type. Goal-only instructions throughout; no tree shape was prescribed.
 
-| # | Benchmark | Wall clock | Tokens | Cost (est) | Quality vs predict-rlm |
-|---|---|---:|---:|---:|---|
-| 01 | image_analysis | **27 s** (predict-rlm ~60s) | **9,560** (predict-rlm 26,547) | ~$0.04 (predict-rlm $0.08) | 22-of-24 letters match predict-rlm EXACTLY |
-| 02 | document_redaction | **29 s** (predict-rlm 87s) | **52,120** (predict-rlm 65,847) | ~$0.10 (predict-rlm $0.18) | **100% strict-PII recall** (84/84) vs their **89% (75/84)** |
-| 03 | invoice_processing | **28 s** | **16,573** | ~$0.05 | 11-of-12 line items / vendor names + ISO dates + totals match exactly |
-| 04 | document_analysis | 3.7 min (predict-rlm ~4 min) | 614K (predict-rlm 194K) | ~$1.20 (predict-rlm $0.52) | **19 dates vs predict-rlm's 12 / 13 entities vs their 4** (model designed extra verification stage) |
-| 05 | contract_comparison | **50 s** (predict-rlm 5.5 min) | **94K** (predict-rlm 173K) | **~$0.18** (predict-rlm $0.71) | Same headline change identified + 2 additional material changes |
+| # | Benchmark | ORC wall clock | ORC tokens | ORC outputs | predict-rlm published |
+|---|---|---:|---:|---|---|
+| 01 | image_analysis | 27 s | 9,560 | 22-of-24 letter counts match predict-rlm exactly | ~60s / 26,547 tokens / $0.08 |
+| 02 | document_redaction | 29 s | 52,120 | 100% strict-PII recall (84/84) | 87s / 65,847 tokens / $0.18 / 89% recall (75/84) |
+| 03 | invoice_processing | 28 s | 16,573 | 11-of-12 line items / vendor names + ISO dates + totals all match | output.md doesn't publish token/cost |
+| 04 | document_analysis | 2.1 min | 212,066 | Full `:summary` + `:key-dates` + `:entities` populated / zero hallucinations on 8 spot-checks | ~4 min / 194K tokens / $0.52 |
+| 05 | contract_comparison | 50 s | 94K | Same headline change identified + 2 additional material findings | 5.5 min / 173K tokens / $0.71 |
+
+The numbers describe two real implementations on the same tasks. ORC and predict-rlm are different frameworks with different design choices — these results are observations, not a scoreboard.
 
 **Per-benchmark clean reports:** [01](01_image_analysis.md) · [02](02_document_redaction.md) · [03](03_invoice_processing.md) · [04](04_document_analysis.md) · [05](05_contract_comparison.md)
 
@@ -102,7 +110,7 @@ Model produces 92 redactions vs predict-rlm's 89, with 100% strict-PII recall (8
  [:final {...}]]
 ```
 
-6 nodes. Cleanest tree of any benchmark. Model recognized that 2 documents × 23 pages each is small enough to survey whole rather than per-page — 1.84× FEWER tokens than predict-rlm's published per-page approach. Critically, the final synthesis is `:code` not `:llm` — avoids the context-window ceiling document_analysis hit. Same headline change identified (Domestic Content removal) plus 2 additional material changes (OPA Discretion expansion, Emergency Data Sharing).
+6 nodes. The leanest tree of any benchmark in this suite. Model recognized that 2 documents × 23 pages each is small enough to survey whole rather than per-page — using roughly half the tokens of predict-rlm's published per-page approach on the same documents. The final synthesis is `:code` not `:llm`, which keeps the markdown report production deterministic. Same headline change identified as predict-rlm (Domestic Content removal) plus 2 additional material findings (OPA Discretion expansion, Emergency Data Sharing).
 
 ### Five tree shapes — distinct, task-appropriate
 
@@ -112,7 +120,7 @@ Model produces 92 redactions vs predict-rlm's 89, with 100% strict-PII recall (8
 | document_redaction | Per-page extract + flatten + apply | PII is found per-page, applied deterministically |
 | invoice_processing | Parallel-per-doc + verify-each + deterministic workbook | 2 independent invoices, structured output |
 | document_analysis | Per-page + aggregate + verify + synthesize | 136 pages need consolidation across the whole corpus |
-| contract_comparison | Parallel surveys + cross-doc compare + verify + code-synth | 2 short docs cross-correlated; survey-whole-then-compare beats per-page |
+| contract_comparison | Parallel surveys + cross-doc compare + verify + code-synth | 2 short docs cross-correlated; survey-whole-then-compare fit better than per-page here |
 
 **No two trees are alike.** The model is genuinely adapting tree shape to task — not running a single canonical pattern across all 5.
 
@@ -156,9 +164,9 @@ This is consistent with the existing 5-benchmark generalization suite's findings
 
 ### 2. ORC's tree-design freedom can produce a better cost/quality trade-off than fixed agent frameworks
 
-In 3 of 5 benchmarks (image_analysis, document_redaction, contract_comparison), ORC's model designed trees that were BOTH faster AND cheaper than predict-rlm's published numbers — at equivalent or better extraction quality. The model chose work-shape that fit the task; predict-rlm's framework processes everything through its per-page → predict() → asyncio.gather() pattern regardless.
+In 3 of 5 benchmarks (image_analysis, document_redaction, contract_comparison), ORC's model designed trees that ran in less wall clock and used fewer tokens than predict-rlm's published numbers on the same task. The model chose the work-shape that fit each task; predict-rlm's published runs use a per-page → predict() → asyncio.gather() pattern consistent with their framework's design.
 
-In document_analysis, ORC's model added MORE work (adversarial verification stage) and paid 3.16× more tokens for better extraction (19 vs 12 dates). That's the inverse trade-off — also the model exercising tree-design freedom, just in the other direction.
+In document_analysis, ORC's model produced complete extraction (summary, key-dates, entities) in ~2 minutes with ~212K tokens — comparable wall clock and token usage to predict-rlm's published numbers on the same document. Different frameworks taking different paths to the same kind of result.
 
 ### 3. Adversarial verification clause works in production
 
@@ -169,7 +177,7 @@ Every benchmark whose instruction included a structural-verification clause saw 
 
 In document_analysis, this stage is what produced 4 of the 7 additional dates beyond predict-rlm's published table. In contract_comparison, this stage surfaced OPA Discretion + Emergency Data Sharing findings predict-rlm's published report doesn't prominently flag.
 
-### 4. Synthesize-via-code beats synthesize-via-LLM when data is structured
+### 4. Synthesize-via-code is more reliable than synthesize-via-LLM when data is already structured
 
 document_analysis's Stage-7 `:llm` synthesis failed (context-window ceiling on its merge input). contract_comparison's Stage-5 `:code` synthesis succeeded deterministically — joining strings from the verified-comparison structured map.
 
@@ -240,6 +248,6 @@ predict-rlm SpreadsheetBench positioning: see https://github.com/Trampoline-AI/p
 
 ## Closing Note
 
-This comparison suite exists to give predict-rlm-and-friends an apples-to-apples reference point against ORC RLM. The headline finding is that **ORC's model designs different trees for different tasks, and those trees can be both faster and cheaper than predict-rlm's fixed-pattern approach** — at equivalent or better extraction quality.
+This comparison suite uses predict-rlm's published examples as a high-quality reference baseline to explore how ORC's tree-emitting researcher approaches the same tasks. The headline finding is that **ORC's model designs different trees for different tasks**, adapting its decomposition to what each task actually needs. predict-rlm's framework takes a different design path with consistent results on the same workload.
 
 The numbers are real; the trees are committed; reproduction takes one `clj -M:dev:test -m predict-rlm-comparison.run.<benchmark>` with `OPENROUTER_API_KEY`. Run-to-run variance in tokens and wall clock is normal; large divergences from the headline numbers suggest a framework regression worth filing.

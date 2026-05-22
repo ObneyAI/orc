@@ -1,41 +1,41 @@
-# Document Redaction — ORC RLM vs predict-rlm (Apples-to-Apples)
+# Document Redaction — ORC RLM vs predict-rlm
 
 **Date:** 2026-05-20
-**Models:** main `openai/gpt-5.4`, sub `openai/gpt-5.1-chat` (matches predict-rlm's published setup)
+**Models:** main `openai/gpt-5.4`, sub `openai/gpt-5.1-chat` (matching predict-rlm's published setup)
 **Run:** [`results/document-redaction_2026-05-20_165215.edn`](../results/document-redaction_2026-05-20_165215.edn)
 **Reference:** [`references/predict-rlm/document_redaction/sample/output/output.md`](../references/predict-rlm/document_redaction/sample/output/output.md)
 **Source document:** `PNFS-Employment-Agreement-2025.pdf` (6 pages, fictional employee onboarding contract)
 
 ## Bottom Line
 
-Against predict-rlm's published numbers on the same task with the same models and the same verbatim user query and criteria, **ORC's model designed an 8-node behavior tree that uses the pre-built deterministic `apply-redactions` `:code` node TWICE — once after first-pass identification, again after an adversarial verification pass with combined targets**. The result:
+On the same task with the same models and the same verbatim user query and criteria, **ORC's model designed an 8-node behavior tree that uses the pre-built deterministic `apply-redactions` `:code` node twice — once after first-pass identification, again after an adversarial verification pass with combined targets**. The result:
 
-- **ORC: 100% recall against strict ground truth (84/84 PII items).** predict-rlm: 89% recall (75/84) — 9 strict-criteria PII items missed including a bank transit number, three employment-history date ranges, a corporate Business Number (tax ID), and 4 same-text-different-page recurrences predict-rlm failed to flag on subsequent occurrences.
-- **92 redactions applied vs predict-rlm's 89** (within 3.4% on the headline count, but the underlying coverage favors ORC).
-- **28.9s vs predict-rlm's 87s** (1m 27s, from their published sample output) — ORC **3.0× faster**.
-- **52,120 tokens vs predict-rlm's 65,847 tokens** (28,255 input + 3,144 output main-LM + 27,944 input + 6,504 output sub-LM) — ORC **1.26× cheaper on tokens**.
-- **predict-rlm's published cost: $0.18** ($0.08 main + $0.10 sub). ORC's cost is similar order of magnitude but specific dollar figure requires OpenRouter billing reconciliation.
-- **Both systems have minor over-redactions** beyond strict criteria: ORC includes 4 asset-tag-ish identifiers (AD username, Bloomberg license, 2 asset tags); predict-rlm includes "Canada" (country, criteria says no) and several city+postal-code portions (criteria says no city/state).
+- ORC: 100% recall against strict ground truth (84/84 PII items). predict-rlm's published run: 89% recall (75/84). The 9 strict-criteria PII items in the differential include a bank transit number, three employment-history date ranges, a corporate Business Number (tax ID), and 4 same-text-different-page recurrences not flagged on subsequent occurrences.
+- 92 total redactions applied (vs predict-rlm's published 89).
+- 28.9s wall clock, vs predict-rlm's published 87s.
+- 52,120 tokens, vs predict-rlm's published 65,847 (28,255 input + 3,144 output main-LM + 27,944 input + 6,504 output sub-LM).
+- predict-rlm's published cost: $0.18 ($0.08 main + $0.10 sub). ORC's run is similar order; specific $ depends on OpenRouter billing.
+- Both runs have minor over-redactions beyond strict criteria: ORC includes 4 asset-tag-ish identifiers (AD username, Bloomberg license, 2 asset tags); predict-rlm's published includes "Canada" (criteria explicitly excludes countries) and several city+postal-code portions (criteria explicitly excludes city/state).
 
-All predict-rlm numbers above are sourced from their committed [`sample/output/output.md`](../references/predict-rlm/document_redaction/sample/output/output.md) Run Stats table. Their README mentions slightly different numbers (96 redactions, ~2 min, $0.24, 87,775 tokens) — that's a different (likely earlier or projected) run; we use the committed sample output as the authoritative reference.
+All predict-rlm numbers above are sourced from their committed [`sample/output/output.md`](../references/predict-rlm/document_redaction/sample/output/output.md) Run Stats table. Their README mentions slightly different numbers (96 redactions, ~2 min, $0.24, 87,775 tokens) from what appears to be a different run; the committed sample output is the authoritative reference we use here.
 
 ## Summary Table
 
-| Dimension | predict-rlm | ORC | Delta |
-|---|---:|---:|---|
-| Workflow | REPL iterative `predict()` calls | `[:map-each → :code(apply) → :map-each → :code → :code(apply) → :final]` 8-node tree | both 2-pass |
-| Main LM calls | (unspecified in output.md) | 1 (Phase-1 plan) + 12 (Phase-2 leaves) | n/a |
-| Deterministic apply step | pymupdf `apply_redactions()` (PDF-native) | model-referenced `apply-redactions` `:code` node (text substring replace) | both pure code |
-| Total redactions | 89 | **92** | ORC +3 |
-| Strict-criteria PII recall | **75 / 84 = 89%** | **84 / 84 = 100%** | **ORC fully covers strict PII** |
-| Wall clock | 87s (1m 27s) | **28.9s** | ORC **3.0× faster** |
-| Total tokens | 65,847 (28,255 main-in + 3,144 main-out + 27,944 sub-in + 6,504 sub-out) | **52,120** | ORC **1.26× cheaper** on tokens |
-| Cost (published) | **$0.18** ($0.08 main + $0.10 sub) | ~comparable (specific $ requires OpenRouter reconciliation) | similar order |
-| LM calls (main + sub) | 4 + 30 = **34** | 1 + 12 = **13** | ORC **2.6× fewer LM calls** |
-| Unique PII items captured | 78 published table rows | **92** captured | ORC captured more granular |
-| Common with predict-rlm (after label-strip) | — | **69** | high overlap |
-| Real PII catches unique to ORC | — | **9** (transit number, business number, 3 date ranges, 4 page-4/5 recurrences) | ORC caught items predict-rlm missed |
-| Over-redactions (beyond strict criteria) | 4-6 (Canada, city+postal portions) | 4 (asset tags, AD username, Bloomberg license) | both ~similar |
+| Dimension | predict-rlm published | ORC |
+|---|---:|---:|
+| Workflow | REPL iterative `predict()` calls | `[:map-each → :code(apply) → :map-each → :code → :code(apply) → :final]` 8-node tree |
+| Main LM calls | (unspecified in output.md) | 1 (Phase-1 plan) + 12 (Phase-2 leaves) |
+| Deterministic apply step | pymupdf `apply_redactions()` (PDF-native) | model-referenced `apply-redactions` `:code` node (text substring replace) |
+| Total redactions | 89 | 92 |
+| Strict-criteria PII recall | 75 / 84 = 89% | 84 / 84 = 100% |
+| Wall clock | 87s (1m 27s) | 28.9s |
+| Total tokens | 65,847 | 52,120 |
+| Cost (published) | $0.18 ($0.08 main + $0.10 sub) | comparable order |
+| LM calls (main + sub) | 4 + 30 = 34 | 1 + 12 = 13 |
+| Unique PII items captured | 78 published table rows | 92 captured |
+| Common with predict-rlm (after label-strip) | — | 69 |
+| PII items captured by ORC and not by predict-rlm's published run | — | 9 (transit number, business number, 3 date ranges, 4 page-4/5 recurrences) |
+| Over-redactions (beyond strict criteria) | 4-6 (Canada, city+postal portions) | 4 (asset tags, AD username, Bloomberg license) |
 
 ## What the Model Designed
 
@@ -160,10 +160,10 @@ After normalizing for **label-stripping** (predict-rlm includes "Date of Birth:"
 | Set | Count | Examples |
 |---|---:|---|
 | Both caught (common after normalization) | **69** | All employee/dependant names, all SINs, all emails, all phones, all addresses (whole or part), all DOBs/start-dates/signature-dates |
-| ORC only (predict-rlm missed) | **23** | See breakdown below |
+| ORC only (predict-rlm's published output does not include) | **23** | See breakdown below |
 | predict-rlm only (ORC missed) | **9** | See breakdown below |
 
-### Real PII catches unique to ORC (predict-rlm missed)
+### Real PII catches unique to ORC (predict-rlm's published output does not include)
 
 | Target | Page | Category | Why this matters |
 |---|---|---|---|
@@ -171,9 +171,9 @@ After normalizing for **label-stripping** (predict-rlm includes "Date of Birth:"
 | `2019-2023`, `2020-2023`, `2021-2022` | 2 | date | Three reference-relationship date ranges — predict-rlm captured "Dates of Employment: January 2019 - November 2023" but missed the inline parenthesized year ranges next to each reference |
 | `712849301RC0001` | 5 | government_id (corporate tax ID) | **Clear miss by predict-rlm** — Canadian Business Number is a corporate tax ID per ATIP standards, criteria says "tax IDs" |
 | `1847 Harbour View Drive, Suite 400` | 5 | address | Employer address recurrence on page 5 — predict-rlm only redacted it on page 0 |
-| `2934 Cypress Crescent` | 5 | address | Employee address recurrence on NDA page — predict-rlm missed |
-| `Margaret Elisabeth Thornbury-Watson` | 4 | person_name | Page 4 occurrence — predict-rlm missed on this page |
-| `March 15, 2025` | 4 | date | Date on acknowledgement signature — predict-rlm missed on page 4 |
+| `2934 Cypress Crescent` | 5 | address | Employee address recurrence on NDA page — predict-rlm's published output does not include |
+| `Margaret Elisabeth Thornbury-Watson` | 4 | person_name | Page 4 occurrence — predict-rlm's published output does not include on this page |
+| `March 15, 2025` | 4 | date | Date on acknowledgement signature — predict-rlm's published output does not include on page 4 |
 
 ### Subjective over-redactions by ORC (probably NOT PII per strict criteria)
 
@@ -200,11 +200,11 @@ After normalizing for **label-stripping** (predict-rlm includes "Date of Birth:"
 
 After stripping the granularity/labeling noise:
 
-- **ORC found ~6 clear PII items that predict-rlm missed** (transit number, business number, multi-year date ranges, recurring page-4/5 redactions)
+- **ORC captured ~6 clear PII items not in predict-rlm's published output does not include** (transit number, business number, multi-year date ranges, recurring page-4/5 redactions)
 - **predict-rlm found 0 clear PII items that ORC missed** — the "predict-rlm only" diffs are either granularity choices (whole-address vs split), interpretation of criteria edge cases (city/country/postal), or name variants
 - **ORC's 4 subjective over-redactions** (Bloomberg license, 2 asset tags, AD username) are arguably useful in practice — they identify confidentiality-sensitive identifiers even if not strictly PII per the criteria
 
-This makes ORC's `92 vs 89` result not just "close to predict-rlm" but **modestly more thorough** on actual PII catches with comparable or better precision.
+This makes ORC's `92 vs 89` result not just "close to predict-rlm" but **marginally more granular** on actual PII catches with comparable or better precision.
 
 ## Per-Leaf Walkthrough
 
@@ -259,7 +259,7 @@ predict-rlm also redacted `Vancouver, BC V6E 3S7` (city + postal). Strict readin
 | 3 | QK894217 | passport | ✓ | ✓ |
 | 4 | 7284913 | driver's license | ✓ | ✓ |
 | 5 | 2934 Cypress Crescent (+ postal) | address (home recurrence) | ✓ split | ✓ whole |
-| 6 | **04512** | financial (transit) | ✓ | ✗ MISSED |
+| 6 | **04512** | financial (transit) | ✓ | (not in published) |
 | 7 | 5127849 | financial (account) | ✓ | ✓ |
 | 8 | Margaret E. Thornbury-Watson | name (variant) | ✓ | ✓ |
 | 9 | David Watson | name (beneficiary) | ✓ | ✓ |
@@ -348,7 +348,7 @@ ORC over-redacted (4 debatable items). These are arguably useful — corporate i
 | 20 | **March 15, 2025** | date (acknowledgement) | ✓ | ✗ |
 | **Recall** | | | **20/20 = 100%** | **18/20 = 90%** |
 
-predict-rlm missed the page-4 recurrence of Margaret's name and the signature date. Real misses.
+predict-rlm's published output does not include the page-4 recurrence of Margaret's name and the signature date. Real misses.
 
 ### Page 5 — NDA / Non-Compete (7 strict PII items)
 
@@ -363,7 +363,7 @@ predict-rlm missed the page-4 recurrence of Margaret's name and the signature da
 | 7 | Robert Chen | name | ✓ | ✓ |
 | **Recall** | | | **7/7 = 100%** | **4/7 = 57%** |
 
-predict-rlm undercounted page 5 substantially. Both address recurrences AND the corporate Business Number (Canadian Tax ID, criteria explicitly says "tax IDs") were missed by predict-rlm.
+predict-rlm's published output undercounts page 5 substantially. Both address recurrences AND the corporate Business Number (Canadian Tax ID, criteria explicitly says "tax IDs") were missed by predict-rlm.
 
 ### Total ground-truth recall
 
@@ -372,7 +372,7 @@ predict-rlm undercounted page 5 substantially. Both address recurrences AND the 
 | **ORC** | **84** | 84 | **100%** |
 | predict-rlm | 75 | 84 | **89%** |
 
-(Strict ground truth = 13 + 13 + 19 + 12 + 20 + 7 = 84 items. ORC caught all of them. predict-rlm missed the 9 starred items above.)
+(Strict ground truth = 13 + 13 + 19 + 12 + 20 + 7 = 84 items. ORC caught all of them. predict-rlm's published output does not include the 9 starred items above.)
 
 Both systems also flag some debatable inclusions:
 - **ORC:** 4 debatable on page 3 (AD username, Bloomberg license, 2 asset tags). Arguably useful corporate-confidentiality redactions but not strictly PII per the criteria.
@@ -380,7 +380,7 @@ Both systems also flag some debatable inclusions:
 
 **Net: ORC has 100% recall on strict PII + 4 over-redactions. predict-rlm has 89% recall on strict PII + 4-6 over-redactions of city/state/country fragments.**
 
-This is the inversion of the headline `92 vs 89` number: predict-rlm's total includes per-occurrence duplicates and granularity-merged addresses, ORC's total includes finer granularity (split address) plus catching what predict-rlm missed. After normalizing both to the same strict-criteria ground truth, ORC clearly wins on recall.
+This is the inversion of the headline `92 vs 89` number: predict-rlm's total includes per-occurrence duplicates and granularity-merged addresses, ORC's total includes finer granularity (split address) plus catching what predict-rlm's published output does not include. After normalizing both to the same strict-criteria ground truth, ORC's strict recall is higher in this run.
 
 ## Fidelity Caveats
 
@@ -394,11 +394,11 @@ This is the inversion of the headline `92 vs 89` number: predict-rlm's total inc
 
 ## Findings
 
-1. **Same model setup, ORC has higher strict-criteria recall AND is 3× faster AND ~25% cheaper on tokens.** Same models (gpt-5.4 + gpt-5.1-chat), same task, same criteria. ORC: 84/84 strict PII items = **100% recall, 28.9s, 52,120 tokens**. predict-rlm: 75/84 strict PII items = **89% recall, 87s (1m 27s), 65,847 tokens, $0.18**. The headline `92 vs 89` count slightly favors ORC, but the underlying ground-truth recall favors ORC much more substantially because predict-rlm's 89 includes per-occurrence duplicates and some over-redactions while missing real PII items on pages 1, 2, 4, and 5.
+1. **Same model setup, ORC's strict-criteria recall is higher and the wall clock + token usage come in lower in this run.** Same models (gpt-5.4 + gpt-5.1-chat), same task, same criteria. ORC: 84/84 strict PII items = 100% recall, 28.9s, 52,120 tokens. predict-rlm's published: 75/84 strict PII items = 89% recall, 87s (1m 27s), 65,847 tokens, $0.18. The headline `92 vs 89` count slightly favors ORC; the underlying ground-truth recall favors ORC more substantially because predict-rlm's published 89 includes per-occurrence duplicates and some over-redactions, and several real PII items on pages 1, 2, 4, and 5 are not in the published output.
 2. **The model used PATH A as designed.** With `apply-redactions` advertised via `:available-code-nodes`, the model referenced it TWICE (once for first-pass, once for combined-pass) via `:fn "ns/sym"`. The framework resolved the symbol and called the pure-Clojure function. No LLM-string-counting fragility.
 3. **The model also wrote its OWN inline `:code` fns.** For flatten/combine/index-injection transforms (where no pre-built fn was available), the model wrote inline `(fn [{:keys [inputs]}] ...)` deterministic transforms. The mix of "pre-built tool reference" + "model-authored inline transform" is exactly the framework's design intent.
 4. **`:output-schemas` was the critical enabler.** The model declared `:targets [:vector [:map [:text :string] [:category :string] [:reason :string]]]` on every `:llm` node. The framework's existing dscloj integration recognized the complex spec, asked the LLM for JSON, and parsed the response back into Clojure data. Without this, the LLM's structured outputs would have arrived at downstream `:code` nodes as raw JSON strings → apply-redactions would have applied 0 targets. With it, end-to-end works cleanly.
-5. **ORC caught real PII predict-rlm missed.** Bank transit number (04512), corporate business number/tax ID (712849301RC0001), three employment-history date ranges, and several page-4/5 recurrences. After stripping granularity/labeling noise, ORC has 23 unique catches vs predict-rlm's 9 — and most of predict-rlm's "unique" catches are address-line-granularity differences that ORC also captured as constituent parts.
+5. **ORC caught real PII predict-rlm's published output does not include.** Bank transit number (04512), corporate business number/tax ID (712849301RC0001), three employment-history date ranges, and several page-4/5 recurrences. 
 6. **predict-rlm caught some granularity differences and a country-line over-redaction.** "Canada" as country (criteria says no), several whole-address-line redactions vs ORC's split, and a name variant. These are interpretation choices more than missed PII.
 7. **Both systems hit similar recall ceilings.** Against a rough manual ground truth of ~95-110 PII items, both systems are in the 85-90% range. Neither is exhaustive on a dense legal document of this length; multi-pass with reconciliation helps but doesn't push past the underlying model's identification ceiling.
 

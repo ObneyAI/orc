@@ -1,6 +1,10 @@
 # predict-rlm Comparison Benchmark Suite
 
-Apples-to-apples comparison of ORC's RLM (Repl Researcher with `emit-tree!`) against the published [predict-rlm](https://github.com/Trampoline-AI/predict-rlm) reference implementation. Same models (`openai/gpt-5.4` main + `openai/gpt-5.1-chat` sub), same verbatim instructions, same source documents.
+This suite explores how ORC's RLM (Repl Researcher with `emit-tree!`) handles the same kinds of document-analysis, redaction, extraction, and comparison tasks that the [predict-rlm](https://github.com/Trampoline-AI/predict-rlm) project published as examples. The framing is intentional: predict-rlm is cutting-edge research from Trampoline-AI demonstrating the Recursive Language Model concept end-to-end on real documents, with fully open source code, sample inputs, and published outputs we can read directly. That openness is what makes a study like this even possible.
+
+We are not trying to beat predict-rlm. Their published examples gave us a concrete, high-quality reference point to ask "how would ORC approach this task?" — same input documents, same verbatim instructions where applicable, same model setup. The reports here describe what ORC's tree-emitting researcher does on each task and what the resulting outputs look like. predict-rlm's published numbers appear alongside ORC's as the reference point we're comparing against, not as a target to beat.
+
+If you're exploring ORC RLM for the first time, the reports are useful concrete examples; if you're coming from predict-rlm, this is a parallel implementation in a different framework showing the same pattern is expressible.
 
 ## What's compared
 
@@ -18,15 +22,15 @@ All 5 of predict-rlm's example benchmarks ported apples-to-apples (same models, 
 
 ## Headline results (from committed reference EDNs)
 
-| Benchmark | ORC | predict-rlm (verbatim from their `sample/output/output.md`) |
+| Benchmark | ORC | predict-rlm published (verbatim from their `sample/output/output.md`) |
 |---|---|---|
-| image_analysis | **9,560 tokens / 26.9s** / 22-of-24 letters match predict-rlm EXACTLY | 26,547 tokens / ~60s / $0.08 |
-| document_redaction | **92 redactions / 28.9s / 52,120 tokens** / **100% strict-PII recall** (84/84) | 89 redactions / 87s (1m 27s) / 65,847 tokens / $0.18 / **89% strict-PII recall** (75/84) |
-| invoice_processing | **16,573 tokens / 28.1s** / 2 invoices extracted, $34,804.30 total, 11/12 line items match reference xlsx | predict-rlm's output.md doesn't publish token/cost stats for this benchmark |
-| document_analysis | 614,439 tokens / 3.7 min / **19 dates** (vs predict-rlm's 12) + **13 entities** (vs their 4) — model designed an additional adversarial verification stage | 194,072 tokens / ~4 min / $0.52 / 12 dates / 4 entities |
-| contract_comparison | **94,258 tokens / 50s** / same headline change identified (Domestic Content removed) + 2 additional material findings | 173,057 tokens / ~5.5 min / $0.71 |
+| image_analysis | 9,560 tokens / 26.9s / 22-of-24 letters match predict-rlm exactly | 26,547 tokens / ~60s / $0.08 |
+| document_redaction | 92 redactions / 28.9s / 52,120 tokens / 100% strict-PII recall (84/84) | 89 redactions / 87s / 65,847 tokens / $0.18 / 89% strict-PII recall (75/84) |
+| invoice_processing | 16,573 tokens / 28.1s / 2 invoices extracted, $34,804.30 total, 11/12 line items match reference xlsx | output.md doesn't publish token/cost stats for this benchmark |
+| document_analysis | 212,066 tokens / 2.1 min / full `:summary` + `:key-dates` + `:entities` populated / zero hallucinations on 8 spot-checks | 194,072 tokens / ~4 min / $0.52 |
+| contract_comparison | 94,258 tokens / 50s / same headline change identified + 2 additional material findings | 173,057 tokens / ~5.5 min / $0.71 |
 
-**3 of 5 benchmarks: ORC was BOTH faster AND cheaper** than predict-rlm at equivalent extraction quality (image_analysis, document_redaction, contract_comparison). In document_analysis ORC traded higher token cost for more thorough extraction (19 vs 12 dates). invoice_processing matched the published structural reference exactly. See [`reports/00_index.md`](reports/00_index.md) for the cross-benchmark analysis.
+These are two real implementations of the same tasks, on the same documents, with the same model setup. The per-benchmark clean reports describe what ORC's tree-emitting researcher did on each task. predict-rlm's published numbers appear as the reference point for comparison, not as a target. See [`reports/00_index.md`](reports/00_index.md) for the cross-benchmark write-up.
 
 ## Prerequisites
 

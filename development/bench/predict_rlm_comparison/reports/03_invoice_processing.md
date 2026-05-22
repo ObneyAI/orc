@@ -1,4 +1,4 @@
-# Invoice Processing — ORC RLM vs predict-rlm (Apples-to-Apples)
+# Invoice Processing — ORC RLM vs predict-rlm
 
 **Date:** 2026-05-21
 **Models:** main `openai/gpt-5.4`, sub `openai/gpt-5.1-chat` (matches predict-rlm's published setup)
@@ -11,8 +11,8 @@
 Against predict-rlm's published reference workbook for the same task with the same models, **ORC's model designed an 8-node behavior tree that extracts both invoices in PARALLEL, runs a per-invoice adversarial verification pass, then chains a deterministic xlsx-writing `:code` node**. The result:
 
 - **Both vendors extracted correctly** (Acme Corporation, GlobalTech Solutions Ltd.) — header/letterhead reading, not the bill-to line.
-- **All headline numbers match predict-rlm's published reference EXACTLY**: subtotals, taxes, totals, dates, invoice numbers.
-- **Acme line items match predict-rlm 5-for-5 EXACTLY** (descriptions, quantities, unit prices, amounts).
+- **All headline numbers match predict-rlm's published reference exactly**: subtotals, taxes, totals, dates, invoice numbers.
+- **Acme line items match predict-rlm 5-for-5 exactly** (descriptions, quantities, unit prices, amounts).
 - **GlobalTech line items: 6 of 7** captured (one missed — the "Discount (10%)" row at -$3,100 that predict-rlm captured).
 - **Workbook structure matches predict-rlm's exactly** — same 3 sheets (Summary + per-vendor), same 7 Summary columns, same 4 line-item columns.
 - **`:total-amount = $34,804.30`** matches predict-rlm's published total exactly.
@@ -238,7 +238,7 @@ Looking at each invoice's source PDF and comparing to extracted output:
 
 ## Findings
 
-1. **Extraction quality is near-perfect.** 11 of 12 line items captured. Every dollar amount, date, and identifier extracted from both invoices matches predict-rlm's published reference EXACTLY. The one miss (GlobalTech discount) is a model-design verification gap, not a framework limitation.
+1. **Extraction quality is near-perfect.** 11 of 12 line items captured. Every dollar amount, date, and identifier extracted from both invoices matches predict-rlm's published reference exactly. The one miss (GlobalTech discount) is a model-design verification gap, not a framework limitation.
 
 2. **The model designed the right shape on iteration 1.** No retries, no failed iterations. `:parallel` extraction + per-invoice adversarial verification + `:code` for deterministic work + pre-built `build-invoice-workbook` reference — exactly what the framework's prompt + bench instruction guide toward.
 

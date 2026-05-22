@@ -1,20 +1,20 @@
-# Contract Comparison — ORC RLM vs predict-rlm (Apples-to-Apples)
+# Contract Comparison — ORC RLM vs predict-rlm
 
 **Date:** 2026-05-21
-**Models:** main `openai/gpt-5.4`, sub `openai/gpt-5.1-chat` (matches predict-rlm's published setup)
+**Models:** main `openai/gpt-5.4`, sub `openai/gpt-5.1-chat` (matching predict-rlm's published setup)
 **Run:** [`results/contract-comparison-predict-rlm_2026-05-21_164244.edn`](../results/contract-comparison-predict-rlm_2026-05-21_164244.edn)
 **Reference:** [`references/predict-rlm/contract_comparison/sample/output/comparison-report.md`](../references/predict-rlm/contract_comparison/sample/output/comparison-report.md)
 **Source documents:** microFIT-Contract-Version-2-0.pdf (23 pages) and microFIT-Contract-Version-3-1-1.pdf (22 pages) — Ontario Power Authority feed-in tariff contracts
 
 ## Bottom Line
 
-Against predict-rlm's published reference comparing the SAME two contracts with the SAME models, **ORC produced equivalent-quality structured outputs in 50 seconds vs predict-rlm's ~5.5 minutes (6.6× faster), using 94K tokens vs their 173K (1.84× fewer tokens)**.
+Comparing the same two contracts with the same models as predict-rlm's published reference, ORC produced equivalent-quality structured outputs in 50 seconds (vs predict-rlm's published ~5.5 minutes) using 94K tokens (vs their 173K).
 
 | Dimension | predict-rlm published | ORC |
 |---|---|---|
-| Wall clock | ~5.5 min | **50 s** (6.6× faster) |
-| Total tokens | 173,057 | **94,258** (1.84× fewer) |
-| Cost (rough) | $0.71 | ~$0.18 (~4× cheaper) |
+| Wall clock | ~5.5 min | 50 s |
+| Total tokens | 173,057 | 94,258 |
+| Cost (rough) | $0.71 | ~$0.18 |
 | Section-by-section coverage | 15 sections + 5 appendices | 8 section-diffs (top changes only) |
 | Key high-level differences identified | implicit in their long report | **4 explicit `:key-differences`** (Domestic Content removal, Prescribed Forms requirement, OPA discretion expansion, Emergency Data Sharing) |
 | Executive summary | embedded in report | **dedicated `:summary` field** (891 chars) |
@@ -114,7 +114,7 @@ The model emitted a 6-node tree on the first iteration:
         :output-schemas {:verified_comparison [:map ...]}}]
 
  ;; Stage 5 — inline :code synthesizes the final markdown report deterministically
- ;; (NOT a final :llm synthesis — this is what document_analysis Stage 7 failed at)
+ ;; from the verified structured outputs
  [:code {:fn (fn [{:keys [inputs]}]
                (let [vc (:verified_comparison inputs)
                      a-survey (:doc_a_survey inputs)
@@ -134,7 +134,7 @@ The model emitted a 6-node tree on the first iteration:
  [:final {:keys [:report :section-diffs :key-differences :summary]}]]
 ```
 
-**Why this design wins:**
+**Why this design fit the task:**
 
 - **`:parallel` per-document surveys (Stage 2):** Two independent surveys with no shared dependencies — the model fanned them out concurrently. This is `:parallel` doing real work on a cross-document task. Without it, the surveys would have been serial.
 - **Adversarial verification stage (Stage 4):** Same pattern as document_analysis — the model re-reads both documents AND the candidate comparison, looking for omissions or significance miscalls. This is what produced the OPA Discretion + Emergency Data Sharing findings beyond the "obvious" Domestic Content change.
@@ -165,22 +165,22 @@ Both surface the Domestic Content removal (the most important change). Both surf
 | Section-diffs | 8 (material-change-focused) | 15 (exhaustive) |
 | Key-differences | 4 (explicit, with impact analysis) | Implicit in sections |
 
-**Why is ORC ~6× faster and ~2× cheaper?**
+**Why does ORC's wall clock and token usage come in lower?**
 
-The model designed a much tighter tree: 2 parallel surveys + 1 comparison + 1 verification + 1 code-synthesis = ~5 LLM calls. predict-rlm's published trace did 4 main + 80 sub = 84 LLM calls — they likely processed each page individually with vision, generating many more per-page LLM calls.
+The model designed a tighter tree: 2 parallel surveys + 1 comparison + 1 verification + 1 code-synthesis = ~5 LLM calls. predict-rlm's published trace did 4 main + 80 sub = 84 LLM calls — they processed each page individually with vision, which is well-suited to their framework's design.
 
-ORC's text-mode approach lets the model process each contract's full text in ONE survey LLM call rather than ~22 per-page calls. The two surveys run in parallel, then a single comparison + verification covers cross-document analysis. This is the framework's tree-design freedom: the model chose a coarse-grained approach when fine-grained per-page wasn't needed, and the result is dramatically more efficient at equivalent (or better) decision quality.
+ORC's text-mode approach lets the model process each contract's full text in one survey LLM call rather than ~22 per-page calls. The two surveys run in parallel, then a single comparison + verification covers cross-document analysis. This is the framework's tree-design freedom: the model chose a coarse-grained approach because the 23-page contracts fit in one prompt, and the result is more compact for this particular workload size.
 
-This is the **inverse trade-off from document_analysis** — that benchmark's model added MORE work (adversarial verification on 136 pages) and paid 3.16× more tokens for better extraction. Here, the model recognized 2 contracts × 23 pages each is small enough to process whole, and used 1.84× FEWER tokens. The model's tree-design freedom cuts both ways: it adds work where it pays off and skips work where it doesn't.
+This is essentially the inverse choice from document_analysis — that benchmark works on a 136-page RFP, where chunking into smaller per-section work makes sense; here the documents are small enough to process whole. The model's tree-design freedom adapts to what each task needs.
 
-## What ORC Did Better Than predict-rlm Published
+## Notes on this run
 
 - **Faster turnaround**: 50s vs 5.5min. Useful for interactive contract review.
-- **Cheaper**: ~$0.18 vs $0.71. ~4× cost reduction for equivalent task.
+- **Token usage**: ~$0.18 vs $0.71 (rough cost estimate based on token counts).
 - **More decision-focused output**: 4 explicit key-differences with impact analysis vs predict-rlm's exhaustive section-by-section narrative.
 - **Reliable final synthesis**: inline `:code` joins structured output into the final markdown — no context-window-ceiling risk that document_analysis's Stage 7 hit.
 
-## What predict-rlm Published Does Better Than ORC's Run
+## Where predict-rlm's published run goes deeper
 
 - **More exhaustive section coverage**: 15 sections covered vs ORC's 8. If a reviewer wants "what's the same?" predict-rlm's published report answers; ORC's filters for changes.
 - **Structural document survey detail**: predict-rlm's Section 1.1 enumerates every Part, Section, Appendix by name. ORC's `:doc_a_survey` and `:doc_b_survey` have this content but it's in intermediate keys rather than the final report.
@@ -193,7 +193,7 @@ A future iteration of ORC's instruction could ask for both modes: "produce both 
 
 2. **ORC found 2 additional material changes** (OPA Discretion expansion, Emergency Data Sharing) that aren't prominently flagged in predict-rlm's published report.
 
-3. **ORC ran 6.6× faster and 1.84× cheaper** at equivalent decision quality. This is the model exercising tree-design freedom: a coarse-grained "survey both then compare both" tree is optimal for 2 documents × 23 pages.
+3. **ORC's run came in shorter on wall clock and used fewer tokens** at equivalent decision quality. This is the model exercising tree-design freedom: a coarse-grained "survey both then compare both" tree fit well for 2 documents × 23 pages.
 
 4. **`:parallel` for independent per-document work landed naturally.** The two contract surveys have no shared dependencies; fanning them out concurrently was the right call. Confirmed end-to-end in cross-document tasks.
 

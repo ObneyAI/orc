@@ -1,4 +1,4 @@
-# Image Analysis — ORC RLM vs predict-rlm (Apples-to-Apples)
+# Image Analysis — ORC RLM vs predict-rlm
 
 **Date:** 2026-05-20
 **Models:** main `openai/gpt-5.4`, sub `openai/gpt-5.1-chat` (matches predict-rlm's published setup)
@@ -8,30 +8,30 @@
 
 ## Bottom Line
 
-Against predict-rlm's published numbers on the same task with the same models and the same verbatim user query, **ORC's model designs a four-stage behavior tree with its own inline `:code` node for deterministic letter counting**. The result:
+On the same task with the same models and the same verbatim user query, **ORC's model designs a four-stage behavior tree with its own inline `:code` node for deterministic letter counting**. The result:
 
-- **22 of 24 letters match predict-rlm's published counts EXACTLY** (M differs by +1, T by +1)
-- **9,560 tokens vs predict-rlm's 26,547** (17,048 main-in + 1,821 main-out + 5,723 sub-in + 1,955 sub-out, from their sample/output/output.md) — ORC **2.8× cheaper on tokens**
-- **26.9s vs predict-rlm's ~60s** ("~1 minute" per their sample output) — ORC **2.2× faster**
-- **predict-rlm's published cost: $0.08** ($0.05 main + $0.03 sub). ORC cost similar order; specific $ requires OpenRouter reconciliation.
-- **409 vs 411 absolute error vs ground truth** — accuracy parity within run-to-run noise
+- 22 of 24 letters match predict-rlm's published counts exactly (M differs by +1, T by +1)
+- 9,560 tokens used, vs predict-rlm's published 26,547 (17,048 main-in + 1,821 main-out + 5,723 sub-in + 1,955 sub-out, from their sample/output/output.md)
+- 26.9s wall clock, vs predict-rlm's published ~60s
+- predict-rlm's published cost: $0.08 ($0.05 main + $0.03 sub). ORC's run is similar order; specific $ depends on OpenRouter pricing.
+- 409 vs 411 absolute error vs ground truth — accuracy parity within run-to-run noise
 - The model designed multi-pass OCR + reconciliation + a pure-Clojure letter counter from a goal-only instruction. No tree shape was specified. No counting algorithm was specified.
 
 ## Summary Table
 
-| Dimension | predict-rlm | ORC | Delta |
-|---|---:|---:|---|
-| Workflow | REPL iterative `predict()` calls | `[:sequence :llm :llm :llm :code :final]` emit-tree! | both multi-pass |
-| Main LM calls | 4 | 1 | ORC 4× fewer |
-| Sub-LM calls | 5 | 3 (`:llm`) | ORC 1.7× fewer |
-| Deterministic counter | Python `Counter` | model-authored inline Clojure `frequencies` | both pure code |
-| Total tokens | 26,547 | **9,560** | **ORC 2.8× cheaper** |
-| Cost (published) | **$0.08** | ~comparable | similar order |
-| LM calls (main + sub) | 4 + 5 = **9** | 1 + 3 = **4** | ORC **2.25× fewer LM calls** |
-| Wall clock | ~60s | **26.9s** | **ORC 2.2× faster** |
-| Per-letter exact match | — | **22 of 24** | match within ±1 on M, T |
-| Total letters extracted | 1,343 | 1,345 | within ±2 |
-| Absolute error vs ground truth | 411 | 409 | parity (within noise) |
+| Dimension | predict-rlm published | ORC |
+|---|---:|---:|
+| Workflow | REPL iterative `predict()` calls | `[:sequence :llm :llm :llm :code :final]` emit-tree! |
+| Main LM calls | 4 | 1 |
+| Sub-LM calls | 5 | 3 (`:llm`) |
+| Deterministic counter | Python `Counter` | model-authored inline Clojure `frequencies` |
+| Total tokens | 26,547 | 9,560 |
+| Cost (published) | $0.08 | comparable order |
+| LM calls (main + sub) | 4 + 5 = 9 | 1 + 3 = 4 |
+| Wall clock | ~60s | 26.9s |
+| Per-letter exact match | — | 22 of 24 |
+| Total letters extracted | 1,343 | 1,345 |
+| Absolute error vs ground truth | 411 | 409 |
 
 ## What the Model Designed
 
@@ -189,7 +189,7 @@ The dream-tree run and a hypothetical single-pass run (same model, same image) r
 
 ## Findings
 
-1. **Accuracy parity AT lower cost.** Same models, same task, same query. ORC matches predict-rlm's per-letter counts on 22 of 24 letters EXACTLY while using 2.8× fewer tokens and running in less than half the wall clock.
+1. **Accuracy parity at lower cost on this task.** Same models, same task, same query. ORC matches predict-rlm's per-letter counts on 22 of 24 letters exactly while using fewer tokens and finishing in less wall clock. Both systems undershoot ground truth by similar margins; the per-letter agreement is the meaningful signal here.
 2. **The model designs its own structural workflow.** Given a goal-only instruction with a structural-verification nudge, gpt-5.4 invents a 4-stage tree (2 OCR + reconcile + count) that mirrors predict-rlm's published methodology. The shape is the model's choice; no tree was prescribed.
 3. **The model designs its own deterministic transforms.** The `:code` node's `:fn` is an inline `(fn [{:keys [inputs]}] (let [letters (re-seq ...) freqs (frequencies ...)] {:answer ...}))` authored by the model. No pre-built counter was advertised. This is the strongest possible expression of "the engine supports the model designing complete workflows including pure-code transforms" — the model isn't choosing from a menu, it's writing the menu.
 4. **Multi-pass doesn't push past the model's OCR ceiling on this task.** Both systems undershoot ground truth by ~23%. That gap is the model's vision limit, not a workflow limit. A stronger vision model (or higher-resolution image) would close it; methodology refinement won't.
