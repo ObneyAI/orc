@@ -1,8 +1,10 @@
 # RLM (Recursive Language Model) Mode
 
-RLM is a two-phase execution pattern for the `:repl-researcher` node type. The LLM iteratively generates Clojure code in a sandboxed REPL (Phase 1) and can optionally emit behavior trees that ORC executes as child ticks (Phase 2). When recursive mode is enabled, the model can inspect Phase 2 outputs and continue reasoning rather than treating `emit-tree!` as a terminator.
+**ORC is a workbench built on behavior trees.** This guide describes how Recursive Language Model strategies — a model that can spawn sub-computations, inspect their outputs, and continue reasoning — are applied in ORC's decomposition space: behavior trees the model emits via `emit-tree!`, with `:llm`, `:code`, `:map-each`, `:parallel`, `:sequence`, and `:final` as the building blocks.
 
-> **Inspiration and framing.** This mode is ORC's take on the **Recursive Language Model** concept — a model that can spawn sub-computations, inspect their outputs, and continue reasoning. ORC's decomposition primitive is the behavior tree: where other RLM implementations might spawn sub-computations via `predict()` calls and `asyncio.gather()`, ORC's researcher emits a behavior tree via `emit-tree!`. Phase 1 is the recursive code-generation loop; Phase 2 is the spawned sub-computation (the emitted tree); the recursive-mode opt-in lets the model fold Phase 2 outputs back into Phase 1 state for further iteration. Same RLM strategies, expressed in ORC's behavior-tree decomposition space.
+In implementation terms, this is a two-phase execution pattern for the `:repl-researcher` node type. The LLM iteratively generates Clojure code in a sandboxed REPL (Phase 1) and can emit behavior trees that ORC executes as child ticks (Phase 2). When recursive mode is enabled, the model can inspect Phase 2 outputs and continue reasoning rather than treating `emit-tree!` as a terminator. Phase 1 is the recursive code-generation loop; Phase 2 is the spawned sub-computation (the emitted tree); the recursive-mode opt-in lets the model fold Phase 2 outputs back into Phase 1 state for further iteration.
+
+Where other Recursive Language Model implementations might spawn sub-computations via `predict()` calls and `asyncio.gather()`, ORC's researcher emits a behavior tree. Same RLM strategies, expressed in ORC's behavior-tree decomposition space — and that's what this guide walks through.
 
 ## When to use RLM
 

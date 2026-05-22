@@ -1,5 +1,7 @@
 # predict-rlm Comparison Suite — Aggregate Index
 
+**This is ORC's workbench, built on behavior trees.** When we apply Recursive Language Model strategies into ORC's decomposition space — behavior trees the model emits via `emit-tree!`, with `:llm`, `:code`, `:map-each`, `:parallel`, `:sequence`, and `:final` as the building blocks — these are the results on a published, real-world benchmark suite.
+
 **Date:** 2026-05-21
 **Models throughout:** `openai/gpt-5.4` main + `openai/gpt-5.1-chat` sub (matching predict-rlm's published setup)
 **Five benchmarks adapted from:** [predict-rlm/examples](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples) — verbatim instructions, verbatim source PDFs, identical models
@@ -7,8 +9,6 @@
 ---
 
 ## About predict-rlm and this suite
-
-**This is ORC's workbench, built on behavior trees.** When we apply Recursive Language Model strategies into ORC's decomposition space — behavior trees the model emits via `emit-tree!`, with `:llm`, `:code`, `:map-each`, `:parallel`, `:sequence`, and `:final` as the building blocks — these are the results on a published, real-world benchmark suite.
 
 [predict-rlm](https://github.com/Trampoline-AI/predict-rlm) is cutting-edge research from Trampoline-AI demonstrating the Recursive Language Model concept end-to-end on real documents, with fully open source code, sample inputs, and published outputs. Their openness is what made this comparison possible at all — we could read their `signature.py` files for instruction sourcing, use their verbatim sample inputs, and reference their published `sample/output/output.md` numbers. Their decomposition primitive is Python + DSPy `predict()` + `asyncio.gather()`; ORC's is the behavior tree. Same RLM idea, different toolchain.
 
