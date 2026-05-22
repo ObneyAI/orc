@@ -212,5 +212,3 @@ clj -M:dev -e '
 - **Models:** `:model "openai/gpt-5.4"` + `:sub-model "openai/gpt-5.1-chat"` configured in the task
 - **Inputs:** `screenshot.png` (microFIT page 1), default query from predict-rlm
 - **System:** in-memory event store, OpenRouter via litellm router
-
-For the development journey, infrastructure investigation, and 10 underlying framework bugs that were surfaced and fixed during this work, see [`01_image_analysis_deep_dive.md`](01_image_analysis_deep_dive.md). For the recommended upgrades that should be merged into the main ORC library so ALL RLM consumers benefit, see [`docs/prd/orc-rlm-upgrades.md`](../../../docs/prd/orc-rlm-upgrades.md).
