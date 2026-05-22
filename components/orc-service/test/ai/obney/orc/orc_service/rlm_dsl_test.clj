@@ -775,3 +775,47 @@
                       :fn)]
       (is (= "ai.obney.orc.predict-rlm-redaction-tools.interface/apply-redactions" fn-val)
           "Qualified-symbol-string :fn value passes through untouched"))))
+
+;; =============================================================================
+;; R-4: repl-researcher-config-set read-model preserves :rlm :sub-model
+;;
+;; Live evidence: AI execution events in document-redaction-recursive runs
+;; show all Phase-2 :llm leaves hitting `google/gemini-3-flash-preview-20251217`,
+;; NOT the task-declared `openai/gpt-5.1-chat` sub-model. This means
+;; `inject-sub-model` is being called with nil sub-model in recursive-mode
+;; dispatch, so it's a no-op, so the canonical tree has no :model on its
+;; (sheet/llm ...) forms, so the Phase-2 leaf executor falls back to
+;; litellm's :openrouter default model (which is what the runner config
+;; sets as the FALLBACK — gemini-3-flash).
+;;
+;; The first hypothesis is the projection. Verify the simple round-trip:
+;; if the command-processor emits an event with :rlm {:sub-model "X"},
+;; does the read-model preserve that on the node?
+;; =============================================================================
+
+(deftest repl-researcher-config-projection-preserves-sub-model
+  (testing "Read-model projects :rlm map verbatim onto the node"
+    (let [nodes* (resolve 'ai.obney.orc.orc-service.core.read-models/nodes*)
+          node-id (random-uuid)
+          event {:event/type :sheet/repl-researcher-config-set
+                 :sheet-id (random-uuid)
+                 :node-id node-id
+                 :instruction "test"
+                 :reads []
+                 :writes [:answer]
+                 :mcp-tools []
+                 :browser-tools []
+                 :model "openai/gpt-5.4"
+                 :max-iterations 5
+                 :rlm {:debug? true
+                       :recursive? true
+                       :sub-model "openai/gpt-5.1-chat"}}
+          state (nodes* {node-id {:type :repl-researcher}} event)]
+      (is (some? (get-in state [node-id :rlm]))
+          "Projection includes :rlm on the node")
+      (is (= "openai/gpt-5.1-chat" (get-in state [node-id :rlm :sub-model]))
+          ":sub-model preserved in :rlm map")
+      (is (true? (get-in state [node-id :rlm :recursive?]))
+          ":recursive? preserved in :rlm map")
+      (is (true? (get-in state [node-id :rlm :debug?]))
+          ":debug? preserved in :rlm map"))))

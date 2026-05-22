@@ -1004,3 +1004,67 @@
 (comment
   ;; Run individual test
   (clojure.test/run-tests 'ai.obney.orc.orc-service.rlm-tree-executor-test))
+
+;; =============================================================================
+;; R-4: compile-tree-node for sheet/llm preserves :model
+;;
+;; LIVE evidence: in document_redaction recursive runs, sub-model injection
+;; DOES fire (the canonical tree has :model "openai/gpt-5.1-chat" on each
+;; sheet/llm form per [DEBUG RLM] logs). But the AI execution events show
+;; ALL Phase-2 :llm calls hitting google/gemini-3-flash-preview, not
+;; openai/gpt-5.1-chat.
+;;
+;; Root cause: compile-tree-node's sheet/llm branch reads :instruction,
+;; :reads, :writes, and :retry from opts — but DROPS :model. The leaf
+;; node is created without the model attribute, so execute-llm-leaf
+;; falls back to litellm's :openrouter default (gemini-3-flash).
+;;
+;; Fix: when :model is present on sheet/llm, emit a
+;; :sheet/set-node-executor command with :executor :ai :model M.
+;; =============================================================================
+
+(deftest compile-tree-node-for-sheet-llm-preserves-model
+  (testing "When (sheet/llm :model \"X\" ...) is compiled, the projected leaf node has :model \"X\""
+    (with-test-context [ctx]
+      (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "test"))
+            sheet-id (-> sheet-result :command-result/events first :sheet-id)
+            ;; Declare keys
+            _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :a :string))
+            _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :b :string))
+            ;; Compile a (sheet/llm :model "X" ...) tree node
+            compile-fn (resolve 'ai.obney.orc.orc-service.core.rlm-tree-executor/compile-tree-node)
+            tree '(sheet/llm
+                    :instruction "test"
+                    :reads [:a]
+                    :writes [:b]
+                    :model "openai/gpt-5.1-chat")
+            result (compile-fn ctx sheet-id tree nil)
+            leaf-id (:node-id result)
+            ;; Read the projected leaf node from the read-model
+            rm-fn (resolve 'ai.obney.orc.orc-service.core.read-models/get-node)
+            node (rm-fn ctx sheet-id leaf-id)]
+        (is (some? node) "Leaf node exists in read-model")
+        (is (= "openai/gpt-5.1-chat" (:model node))
+            "Model attribute preserved from (sheet/llm :model ...) onto the projected leaf")
+        (is (= :ai (:executor node))
+            "Executor set to :ai (so the leaf is dispatched as an LLM call)")))))
+
+(deftest compile-tree-node-for-sheet-llm-without-model-leaves-no-model
+  (testing "When :model is absent, the projected leaf node has no :model (no regression for terminal mode)"
+    (with-test-context [ctx]
+      (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "test"))
+            sheet-id (-> sheet-result :command-result/events first :sheet-id)
+            _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :a :string))
+            _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :b :string))
+            compile-fn (resolve 'ai.obney.orc.orc-service.core.rlm-tree-executor/compile-tree-node)
+            tree '(sheet/llm
+                    :instruction "test"
+                    :reads [:a]
+                    :writes [:b])
+            result (compile-fn ctx sheet-id tree nil)
+            leaf-id (:node-id result)
+            rm-fn (resolve 'ai.obney.orc.orc-service.core.read-models/get-node)
+            node (rm-fn ctx sheet-id leaf-id)]
+        (is (some? node) "Leaf node exists in read-model")
+        (is (nil? (:model node))
+            "Model is nil when not specified on the sheet/llm form")))))

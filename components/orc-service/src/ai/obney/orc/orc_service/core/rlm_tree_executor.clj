@@ -388,6 +388,21 @@
            :sheet-id sheet-id
            :node-id leaf-id
            :retry (:retry opts)}))
+      ;; R-4: Set executor :ai (always — sheet/llm forms dispatch to the :ai
+      ;; executor at Phase-2 leaf execution time) and pass :model through when
+      ;; present. Without this, sub-model injection (PR-Dual-Model) is silently
+      ;; dropped at compile time: the canonical tree has :model on each
+      ;; (sheet/llm ...) form but the projected leaf node has no model
+      ;; attribute, so execute-llm-leaf falls back to litellm's :openrouter
+      ;; default (typically gemini-3-flash).
+      (run-command! context
+        (cond-> {:command/name :sheet/set-node-executor
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :sheet-id sheet-id
+                 :node-id leaf-id
+                 :executor :ai}
+          (:model opts) (assoc :model (:model opts))))
       {:node-id leaf-id
        :ephemeral-fn-keys []})
 
