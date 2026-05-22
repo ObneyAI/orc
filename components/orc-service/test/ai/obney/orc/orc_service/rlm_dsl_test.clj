@@ -589,3 +589,72 @@
           inject (resolve 'ai.obney.orc.orc-service.core.executor/inject-sub-model)]
       (is (= tree (inject tree nil))
           "nil sub-model returns tree unchanged"))))
+
+;; =============================================================================
+;; validate-final! — Fix-2 from recursive-mode-plan.md
+;;
+;; Currently validate-final! only checks key presence — it accepts an output
+;; map like {:k1 nil :k2 [] :k3 ""} as valid because all declared writes are
+;; PRESENT. This lets the recursive-mode model "give up" and call (final! ...)
+;; with all-empty values to satisfy the validator without doing real work.
+;;
+;; Fix: when EVERY declared write maps to nil OR an empty-collection OR an
+;; empty-string, validate-final! must throw to surface the "model gave up"
+;; failure mode. Partial-empty (one key with content, another empty) remains
+;; valid — some tasks legitimately have empty per-field outputs.
+;; =============================================================================
+
+(deftest validate-final-rejects-all-empty-output
+  (testing "validate-final! throws when every declared write maps to nil/empty"
+    (is (thrown? Exception
+                 (rlm-sandbox/validate-final!
+                   {:total-redactions nil
+                    :targets-applied []
+                    :redacted-text-per-page []}
+                   [:total-redactions :targets-applied :redacted-text-per-page]))
+        "All-empty-values output should be rejected — model called final! without doing work")
+
+    (is (thrown? Exception
+                 (rlm-sandbox/validate-final!
+                   {:answer ""}
+                   [:answer]))
+        "Empty-string single-write output should be rejected")
+
+    (is (thrown? Exception
+                 (rlm-sandbox/validate-final!
+                   {:results nil}
+                   [:results]))
+        "Single nil output should be rejected")))
+
+(deftest validate-final-allows-partial-empty-output
+  (testing "validate-final! ACCEPTS outputs with at least one non-empty value"
+    (is (some? (rlm-sandbox/validate-final!
+                 {:total-redactions 5
+                  :targets-applied []
+                  :targets-missing []}
+                 [:total-redactions :targets-applied :targets-missing]))
+        "Mixed empty + non-empty is legitimate (e.g. zero misses)")
+
+    (is (some? (rlm-sandbox/validate-final!
+                 {:answer "the answer"}
+                 [:answer]))
+        "Single non-empty write passes")
+
+    (is (some? (rlm-sandbox/validate-final!
+                 {:invoices [{:vendor "Acme"}] :total-amount 0.0}
+                 [:invoices :total-amount]))
+        "Non-empty vector + zero number is legitimate")))
+
+(deftest validate-final-still-checks-key-presence
+  (testing "Existing missing-key + extra-key validation is preserved"
+    (is (thrown? Exception
+                 (rlm-sandbox/validate-final!
+                   {:k1 "x"}
+                   [:k1 :k2]))
+        "Missing key throws (unchanged from existing behavior)")
+
+    (is (thrown? Exception
+                 (rlm-sandbox/validate-final!
+                   {:k1 "x" :k2 "y" :extra "oops"}
+                   [:k1 :k2]))
+        "Extra key throws (unchanged from existing behavior)")))

@@ -234,12 +234,27 @@
 ;; Final! Validation
 ;; =============================================================================
 
+(defn- empty-value?
+  "True if v is nil, an empty collection, or an empty string. Numbers and
+   booleans are never considered empty (zero is a legitimate value)."
+  [v]
+  (cond
+    (nil? v) true
+    (string? v) (zero? (count v))
+    (coll? v) (empty? v)
+    :else false))
+
 (defn validate-final!
   "Validate that final! output matches declared writes.
 
    Throws if:
    - Output contains keys not in writes
-   - Output is missing required keys from writes"
+   - Output is missing required keys from writes
+   - Output is non-trivially all-empty: every declared write maps to nil,
+     an empty collection, or an empty string. This catches the failure
+     mode where the model calls (final! ...) with all-blank values to
+     satisfy the schema without doing actual work — common in recursive
+     mode when the model never emits a tree and gives up at max-iterations."
   [output declared-writes]
   (let [output-keys (set (keys output))
         writes-set (set declared-writes)
@@ -257,6 +272,18 @@
                       {:missing-keys missing-keys
                        :declared-writes declared-writes
                        :output-keys output-keys})))
+    ;; Reject all-empty outputs — every declared write maps to nil / empty
+    ;; collection / empty string. This is the "model gave up" failure mode
+    ;; (e.g. recursive mode exhausting iterations without ever emitting a tree).
+    (when (and (seq declared-writes)
+               (every? #(empty-value? (get output %)) declared-writes))
+      (throw (ex-info (str "final! called with all empty values — every declared write "
+                           "maps to nil/empty-collection/empty-string. The model should "
+                           "produce meaningful work via emit-tree! before terminating. "
+                           "Declared writes: " declared-writes)
+                      {:empty-keys (vec declared-writes)
+                       :declared-writes declared-writes
+                       :output output})))
     output))
 
 ;; =============================================================================
