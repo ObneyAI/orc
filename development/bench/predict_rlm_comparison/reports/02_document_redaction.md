@@ -415,9 +415,6 @@ clj -M:dev -e '
 (runner/stop!)'
 ```
 
-- **Branch:** `feature/predict-rlm-benchmarks` (off main `37cf07d`)
 - **Models:** `openai/gpt-5.4` main + `openai/gpt-5.1-chat` sub
 - **Inputs:** `PNFS-Employment-Agreement-2025.pdf` (6 pages), redaction criteria from predict-rlm's run.py
 - **System:** in-memory event store, OpenRouter via litellm router, LMDB cache map-size 512MB
-
-For the development journey, U11 framework upgrade derivation, and full debugging trail, see [`02_document_redaction_deep_dive.md`](02_document_redaction_deep_dive.md). For the upgrades that should be merged into the main ORC library so all RLM consumers benefit, see [`docs/prd/orc-rlm-upgrades.md`](../../../docs/prd/orc-rlm-upgrades.md).

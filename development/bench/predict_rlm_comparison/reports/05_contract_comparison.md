@@ -136,10 +136,10 @@ The model emitted a 6-node tree on the first iteration:
 
 **Why this design wins:**
 
-- **`:parallel` per-document surveys (Stage 2):** Two independent surveys with no shared dependencies — the model fanned them out concurrently. This is U13 doing real work on a cross-document task. Without it, the surveys would have been serial.
+- **`:parallel` per-document surveys (Stage 2):** Two independent surveys with no shared dependencies — the model fanned them out concurrently. This is `:parallel` doing real work on a cross-document task. Without it, the surveys would have been serial.
 - **Adversarial verification stage (Stage 4):** Same pattern as document_analysis — the model re-reads both documents AND the candidate comparison, looking for omissions or significance miscalls. This is what produced the OPA Discretion + Emergency Data Sharing findings beyond the "obvious" Domestic Content change.
 - **Inline `:code` for final synthesis (Stage 5) — NOT an `:llm`:** The final markdown report is built deterministically from the verified comparison's structured output. This is the key insight that document_analysis's tree missed: synthesizing a final markdown narrative is more reliably done in `:code` (joining strings from structured maps) than in an `:llm` (which can fail under context-window pressure). The `:report` field is therefore reliably populated regardless of LLM execution variance.
-- **`:output-schemas` end-to-end:** Every `:llm` declares Malli schemas, so the framework parses JSON responses into Clojure maps for downstream consumers. U11 working through the full pipeline.
+- **`:output-schemas` end-to-end:** Every `:llm` declares Malli schemas, so the framework parses JSON responses into Clojure maps for downstream consumers.
 - **`:significance` enum (`"major"`, `"minor"`, `"identical"`):** Forces the model to classify changes rather than leaving them ambiguous. The instruction tells it "Mark 'major' only for changes to legal terms, obligations, pricing, dates, liability, remedies, term/termination" — a real legal-classification heuristic.
 
 ## Section-Diff Coverage Comparison
@@ -195,7 +195,7 @@ A future iteration of ORC's instruction could ask for both modes: "produce both 
 
 3. **ORC ran 6.6× faster and 1.84× cheaper** at equivalent decision quality. This is the model exercising tree-design freedom: a coarse-grained "survey both then compare both" tree is optimal for 2 documents × 23 pages.
 
-4. **`:parallel` for independent per-document work landed naturally.** The two contract surveys have no shared dependencies; fanning them out concurrently was the right call. U13 confirmed end-to-end in cross-document tasks.
+4. **`:parallel` for independent per-document work landed naturally.** The two contract surveys have no shared dependencies; fanning them out concurrently was the right call. Confirmed end-to-end in cross-document tasks.
 
 5. **Inline `:code` for final synthesis is more reliable than `:llm` synthesis.** document_analysis's Stage-7 LLM synthesis failed (context-window ceiling); contract_comparison's Stage-5 `:code` synthesis succeeds deterministically because it joins strings from structured maps. This is a meta-insight for tree design: synthesize-via-code when the data is structured enough to template.
 

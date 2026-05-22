@@ -165,7 +165,7 @@ The model designed an 8-node extraction-verification-synthesis pipeline on the f
 
 - **Stage 5 (adversarial completeness review) is where ORC outperforms predict-rlm's published table.** The model re-reads the aggregate AND the candidate consolidated output, and asks "what did we miss?" That's what surfaced the 7 additional dates beyond predict-rlm's 12, including the proposal-validity discrepancy (60d in §2.8 vs 90d in Schedule Four).
 - **Per-page :evidence captures** in Stage 2 give Stage 5 something concrete to verify against — every claim has a verbatim quote to ground it. This is structurally why hallucinations stay zero across 19 dates and 13 entities.
-- **`:output-schemas` on every `:llm`** means downstream `:code` nodes receive parsed Clojure maps, not JSON-text strings. U11 doing real work end-to-end.
+- **`:output-schemas` on every `:llm`** means downstream `:code` nodes receive parsed Clojure maps, not JSON-text strings. Structured outputs working end-to-end.
 - **`:max-concurrency 4`** balances parallelism with rate-limit friendliness on OpenRouter. 136 pages / 4 concurrent = ~34 sequential rounds.
 
 The tree is more elaborate than the invoice_processing tree (which was 8 nodes total) — but for good reason: 136 pages worth of content needs aggregate + consolidation + verification stages that 2 invoices do not.

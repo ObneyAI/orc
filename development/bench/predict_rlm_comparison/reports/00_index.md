@@ -2,7 +2,6 @@
 
 **Date:** 2026-05-21
 **Models throughout:** `openai/gpt-5.4` main + `openai/gpt-5.1-chat` sub (apples-to-apples with predict-rlm's published setup)
-**Branch:** `feature/predict-rlm-benchmarks` (off `main` 69b0ab9, includes PR-Framework U4-U13)
 **Five benchmarks ported from:** [predict-rlm/examples](https://github.com/Trampoline-AI/predict-rlm/tree/main/examples) — verbatim instructions, verbatim source PDFs, identical models
 
 ---
@@ -59,7 +58,7 @@ Model produces 92 redactions vs predict-rlm's 89, with 100% strict-PII recall (8
 
 ```
 [:sequence
- [:parallel                                    ; U13 — both invoices extracted concurrently
+ [:parallel                                    ; both invoices extracted concurrently
   [:llm extract-acme]
   [:llm extract-globaltech]]
  [:llm adversarial-verify-acme]                ; per-invoice verification :llm
@@ -94,7 +93,7 @@ Model produces 92 redactions vs predict-rlm's 89, with 100% strict-PII recall (8
 ```
 [:sequence
  [:code flatten-and-page-number-both-docs]
- [:parallel                                    ; U13 again — independent per-doc surveys
+ [:parallel                                    ; independent per-doc surveys
   [:llm survey-doc-a]
   [:llm survey-doc-b]]
  [:llm initial-comparison]                     ; reads BOTH texts + BOTH surveys
@@ -176,22 +175,22 @@ document_analysis's Stage-7 `:llm` synthesis failed (context-window ceiling on i
 
 The model recognized this between benchmarks: when downstream consumers need a single markdown document and the inputs are well-structured maps, an inline `:code` node templating the markdown is more reliable than asking an `:llm` to synthesize it. This is a meta-insight the model converged on across benchmarks.
 
-### 5. `:parallel` (U13) enables real concurrency for independent work
+### 5. `:parallel` enables real concurrency for independent work
 
 invoice_processing and contract_comparison both chose `:parallel` for independent per-document work:
 - invoice_processing: parallel extraction of 2 invoices (acme + globaltech)
 - contract_comparison: parallel structural surveys of 2 contracts (v2.0 + v3.1.1)
 
-Without U13 (the `:parallel`-compilation fix shipped in PR-Framework), these trees would have crashed at compile time. The fix is exercising real workload through Phase-2 execution.
+The `:parallel` node compiles into a concurrent execution branch where independent children run in parallel through Phase-2 execution.
 
-### 6. `:output-schemas` end-to-end (U11) is load-bearing
+### 6. `:output-schemas` end-to-end is load-bearing
 
-Every benchmark's `:llm` nodes declare Malli `:output-schemas` for their writes. dscloj parses LLM responses as JSON; downstream `:code` nodes receive properly-typed Clojure maps. Without U11:
+Every benchmark's `:llm` nodes declare Malli `:output-schemas` for their writes. dscloj parses LLM responses as JSON; downstream `:code` nodes receive properly-typed Clojure maps. Without it:
 - invoice_processing couldn't pass invoice maps to `build-invoice-workbook`
 - document_analysis couldn't aggregate per-page extractions
 - contract_comparison couldn't compare structured doc surveys
 
-U11 is load-bearing infrastructure for any structured-data benchmark.
+Structured `:output-schemas` are load-bearing infrastructure for any structured-data benchmark.
 
 ---
 
@@ -243,8 +242,4 @@ predict-rlm SpreadsheetBench positioning: see https://github.com/Trampoline-AI/p
 
 This comparison suite exists to give predict-rlm-and-friends an apples-to-apples reference point against ORC RLM. The headline finding is that **ORC's model designs different trees for different tasks, and those trees can be both faster and cheaper than predict-rlm's fixed-pattern approach** — at equivalent or better extraction quality.
 
-The numbers are real; the trees are committed; reproduction takes one `clj -M:dev:test` per benchmark with `OPENROUTER_API_KEY`. Anything in this report that doesn't reproduce on a fresh run is a bug — please file it.
-
-**Branch:** `feature/predict-rlm-benchmarks`
-**Framework PR (merged):** ObneyAI/orc PR #1 — RLM framework upgrades U4-U13
-**Bench-suite PR (merged):** ObneyAI/orc PR #2 — predict-rlm comparison benchmark suite
+The numbers are real; the trees are committed; reproduction takes one `clj -M:dev:test -m predict-rlm-comparison.run.<benchmark>` with `OPENROUTER_API_KEY`. Run-to-run variance in tokens and wall clock is normal; large divergences from the headline numbers suggest a framework regression worth filing.

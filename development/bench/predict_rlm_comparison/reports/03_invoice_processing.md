@@ -113,9 +113,9 @@ The model emitted this 8-node tree on the first iteration:
 
 **Why this is the right shape for the task:**
 
-- **`:parallel` for independent work**: the two invoices have nothing to do with each other, so the model fanned them out concurrently. This is the framework's intended use of `:parallel` — and it exercises U13 (the `:parallel`-compilation fix shipped in PR-Framework, without which the tree would crash at compile time).
+- **`:parallel` for independent work**: the two invoices have nothing to do with each other, so the model fanned them out concurrently. This is the framework's intended use of `:parallel` — independent children execute in parallel through Phase-2.
 - **Adversarial verification clause picked up**: the task instruction's "STRUCTURAL VERIFICATION REQUIREMENT" clause translated directly into a second `:llm` pass per invoice, with the original page images PLUS the candidate extraction as input. This is the model executing the structural-verification pattern we've been validating across all three benchmarks.
-- **`:output-schemas` on every `:llm`**: every per-invoice `:llm` declares the full Invoice schema (including nested `:line-items` shape). Downstream `:code` nodes receive parsed Clojure maps, not JSON-text strings — U11 in action.
+- **`:output-schemas` on every `:llm`**: every per-invoice `:llm` declares the full Invoice schema (including nested `:line-items` shape). Downstream `:code` nodes receive parsed Clojure maps, not JSON-text strings — structured outputs in action.
 - **Mix of pre-built and inline `:code`**: the model used the advertised `build-invoice-workbook` for the deterministic xlsx step (path A — qualified-symbol reference) AND wrote its own inline transforms for combining invoices and producing the summary string (path B — inline-fn). The framework's design intent of "advertise pre-built fns + let the model author inline transforms when nothing pre-built fits" worked exactly as intended.
 - **Single Phase-1 iteration**: the model designed the entire tree on the first attempt. No retries.
 
@@ -242,11 +242,11 @@ Looking at each invoice's source PDF and comparing to extracted output:
 
 2. **The model designed the right shape on iteration 1.** No retries, no failed iterations. `:parallel` extraction + per-invoice adversarial verification + `:code` for deterministic work + pre-built `build-invoice-workbook` reference — exactly what the framework's prompt + bench instruction guide toward.
 
-3. **`:parallel` works end-to-end.** This is the first benchmark where the model spontaneously chose `:parallel` to fan-out independent work. U13 (the `:parallel`-compilation fix shipped in PR-Framework) was discovered during the layered benchmark verification before this report; this run confirms `:parallel` is now functional through the full Phase-1 → Phase-2 → output path.
+3. **`:parallel` works end-to-end.** This is the first benchmark where the model spontaneously chose `:parallel` to fan-out independent work. The run confirms `:parallel` is functional through the full Phase-1 → Phase-2 → output path.
 
-4. **`:output-schemas` end-to-end on every `:llm`.** Every per-invoice extraction declares the full Invoice schema including the nested `:line-items` shape. dscloj parses LLM responses as JSON; downstream `:code` nodes receive proper Clojure maps. U11 in action.
+4. **`:output-schemas` end-to-end on every `:llm`.** Every per-invoice extraction declares the full Invoice schema including the nested `:line-items` shape. dscloj parses LLM responses as JSON; downstream `:code` nodes receive proper Clojure maps.
 
-5. **Mix of pre-built and inline `:code` works as designed.** The model referenced `build-invoice-workbook` via qualified-symbol-string (path A — pre-built tool) for the deterministic xlsx step, AND wrote its own inline `(fn ...)` for invoice-combination and summary-string production (path B — inline fn). Both forms in the same tree, both Fressian-serializable in stored events (U8 sanitization).
+5. **Mix of pre-built and inline `:code` works as designed.** The model referenced `build-invoice-workbook` via qualified-symbol-string (path A — pre-built tool) for the deterministic xlsx step, AND wrote its own inline `(fn ...)` for invoice-combination and summary-string production (path B — inline fn). Both forms in the same tree, both serializable in stored events.
 
 6. **Workbook structure is byte-for-byte equivalent.** Same sheets, same column order, same data layout. A reviewer would have to do a per-row diff to spot the missing GlobalTech discount line. Open both workbooks side-by-side — they look identical.
 

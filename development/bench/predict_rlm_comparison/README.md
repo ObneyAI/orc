@@ -30,9 +30,9 @@ All 5 of predict-rlm's example benchmarks ported apples-to-apples (same models, 
 
 ## Prerequisites
 
-- **`OPENROUTER_API_KEY`** environment variable. Both benchmarks bill ~$0.05-0.15 per run via OpenRouter (gpt-5.4 + gpt-5.1-chat).
+- **`OPENROUTER_API_KEY`** environment variable. Each benchmark bills ~$0.05-1.50 per run via OpenRouter (gpt-5.4 + gpt-5.1-chat).
 - Clojure CLI tools installed (`clj`).
-- The PR-Framework upgrades (U4-U13) merged on `main`. See [`docs/RLM-GUIDE.md`](../../../docs/RLM-GUIDE.md) for the framework feature set.
+- See [`docs/RLM-GUIDE.md`](../../../docs/RLM-GUIDE.md) for the framework feature set the benchmarks exercise.
 
 ## How to run
 
@@ -83,7 +83,7 @@ Substitute the task namespace for any of the other 4: `predict-rlm-comparison.ta
 
 ### Models
 
-All 5 tasks declare `:model "openai/gpt-5.4"` + `:sub-model "openai/gpt-5.1-chat"`. The framework's PR-Dual-Model machinery walks the emit-tree! tree and injects the sub-model into every `:llm` node that doesn't specify its own model, so Phase-2 sub-LLM calls hit gpt-5.1-chat while Phase-1 (tree design) runs through gpt-5.4. This matches predict-rlm's published config.
+All 5 tasks declare `:model "openai/gpt-5.4"` + `:sub-model "openai/gpt-5.1-chat"`. The framework injects the sub-model into every `:llm` node that doesn't specify its own model, so Phase-2 sub-LLM calls hit gpt-5.1-chat while Phase-1 (tree design) runs through gpt-5.4. This matches predict-rlm's published config.
 
 ## Expected runtime + cost
 
@@ -109,18 +109,19 @@ results/<benchmark>_<timestamp>.trace.edn  # mulog events emitted during the run
 
 The `.gitignore` in `results/` excludes all `.edn` files EXCEPT the 4 headline files cited in the reports. Your fresh runs land as untracked files for local inspection.
 
-## Comparing your run to the committed reference
+## Inspecting your output
 
-After running a benchmark:
+Each run writes a result EDN under `results/<benchmark>_<timestamp>.edn` containing `:status`, `:outputs`, `:duration-ms`, `:usage`, and the full `:node-trace`. The output shape per benchmark:
 
-1. **Check `:status :success`** — the runner prints this at the end. Anything else is a real failure to investigate.
-2. **For image_analysis**: open the result EDN's `:outputs :answer` field. Compare letter counts against `references/predict-rlm/image_analysis/sample/output/output.md`. Expect ≥18-of-26 letters to match exactly (model run-to-run variance accounts for the rest).
-3. **For document_redaction**: check `:outputs :total-redactions` is in the 80-95 range and `:outputs :targets-applied` is a vector of real PII items (names, SINs, addresses, dates).
-4. **For invoice_processing**: open `results/invoice_extraction.xlsx` side-by-side with `references/predict-rlm/invoice_processing/sample/output/invoice_extraction.xlsx`. Should have same 3-sheet structure, same column layout, equivalent line-item rows.
-5. **For document_analysis**: check `:outputs :key-dates` has ~12-20 dates in ISO format; `:outputs :key-entities` has ~10-15 named people/orgs/roles. Compare to predict-rlm's published table in `references/predict-rlm/document_analysis/sample/output/report.md`.
-6. **For contract_comparison**: check `:outputs :summary` mentions the Domestic Content removal (the headline change in microFIT v2.0 → v3.1.1). `:outputs :key-differences` should be 3-5 items with `:area`, `:description`, `:impact` fields. Compare to predict-rlm's published `references/predict-rlm/contract_comparison/sample/output/comparison-report.md`.
+| Benchmark | Key output fields | What to compare against |
+|---|---|---|
+| image_analysis | `:outputs :answer` (markdown string with letter counts) | predict-rlm's published table in `references/predict-rlm/image_analysis/sample/output/output.md` |
+| document_redaction | `:outputs :total-redactions`, `:outputs :targets-applied`, `:outputs :redacted-text-per-page` | predict-rlm's published 89 redactions in `references/predict-rlm/document_redaction/sample/output/output.md` |
+| invoice_processing | `:outputs :invoices`, `:outputs :total-amount`, `:outputs :workbook-path` | predict-rlm's reference workbook at `references/predict-rlm/invoice_processing/sample/output/invoice_extraction.xlsx` (open both side-by-side) |
+| document_analysis | `:outputs :key-dates`, `:outputs :key-entities`, `:outputs :report` | predict-rlm's published table in `references/predict-rlm/document_analysis/sample/output/report.md` |
+| contract_comparison | `:outputs :summary`, `:outputs :section-diffs`, `:outputs :key-differences`, `:outputs :report` | predict-rlm's published `references/predict-rlm/contract_comparison/sample/output/comparison-report.md` |
 
-If your numbers fall well outside these ranges (e.g. 0 redactions, status `:failure`), that's a **bug**, not run-to-run variance. The framework has been verified to reliably produce results in these ranges; investigate root cause rather than re-running.
+The 5 clean reports under `reports/` walk through the headline-run output field-by-field with side-by-side comparisons against the predict-rlm reference for each benchmark — read those for the detailed comparison rubric.
 
 ## Each task file is a worked example
 
@@ -138,7 +139,7 @@ Each file's top-of-file docstring shows:
 - What predict-rlm task it ports (verbatim instruction sourcing)
 - Fidelity caveats specific to that task
 - The exact REPL incantation to run it
-- The standalone shell script path
+- The standalone Clojure `-main` runner namespace under `run/`
 
 The `:task` map at the bottom of each file is the complete shape: name, slug, model + sub-model, instruction, input-schemas, output-schemas, input-loader, writes, evaluation-criteria, and `:predict-rlm-reported` metadata. **Copy any of these as a template for building your own ORC RLM benchmark.**
 
@@ -164,8 +165,7 @@ Key choices documented across those reports:
 ## References
 
 - **predict-rlm**: https://github.com/Trampoline-AI/predict-rlm (MIT license — `references/predict-rlm/LICENSE`)
-- **ORC RLM Guide**: [`docs/RLM-GUIDE.md`](../../../docs/RLM-GUIDE.md)
-- **PR-Framework**: 10 framework upgrades enabling these benchmarks (U4-U13, see PR description)
+- **ORC RLM Guide**: [`docs/RLM-GUIDE.md`](../../../docs/RLM-GUIDE.md) — full reference for the `repl-researcher` node, `:rlm` mode options, Phase-2 tree DSL primitives, observability events
 
 ## Adding a new benchmark
 
