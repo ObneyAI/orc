@@ -955,6 +955,36 @@
                                desc (malli-schema->description schema)]]
                      (str "- " key-name ": " desc))))))
 
+(defn- parse-error-position
+  "If `error` is a SCI parse error of the form
+   '... at [L C]' (line L, column C — 1-indexed in SCI), return [L C].
+   Returns nil otherwise."
+  [error]
+  (when (string? error)
+    (when-let [m (re-find #"at\s+\[(\d+)\s+(\d+)\]" error)]
+      [(Long/parseLong (nth m 1)) (Long/parseLong (nth m 2))])))
+
+(defn- format-error-with-context
+  "R-6: For SCI parse errors with [line col] markers, append the offending
+   line of code + a caret pointer pinning the column. This surfaces the
+   structural-exact location so the model can fix the specific character
+   rather than re-emitting similar-broken code on the next iteration.
+
+   Non-parse errors (or codes that don't have the indicated line) pass
+   through with just the error message."
+  [code error]
+  (if-let [[line col] (parse-error-position error)]
+    (let [lines (str/split (or code "") #"\n")
+          target-line (when (<= 1 line (count lines))
+                        (nth lines (dec line)))]
+      (if target-line
+        (str "Error: " error "\n"
+             "At that line:\n"
+             "  " target-line "\n"
+             "  " (apply str (repeat (dec col) " ")) "^")
+        (str "Error: " error)))
+    (str "Error: " error)))
+
 (defn- build-iteration-history
   "Format iteration history for LLM context.
 
@@ -962,7 +992,13 @@
    variables each iteration created — VERBATIM. Truncating any of this
    second-guesses the model and hides what it actually did, degrading
    its ability to reason across iterations (and, in recursive mode,
-   to see the full trees it has already emitted)."
+   to see the full trees it has already emitted).
+
+   R-6: When an iteration's :error is a SCI parse error with a [line col]
+   marker, the formatted history also includes the offending line + a
+   caret pointer pinning the column. This makes the structural-exact
+   location of the parse failure visible so the model can fix the
+   specific character rather than retrying similar broken code."
   [history]
   (when (seq history)
     (str "\n\n## Previous Iterations\n"
@@ -973,7 +1009,7 @@
                            "Code:\n```clojure\n" code "\n```\n"
                            (when (seq stdout) (str "Output:\n" stdout "\n"))
                            (if error
-                             (str "Error: " error)
+                             (format-error-with-context code error)
                              (str "Result: " result))
                            (when (seq vars-created)
                              (str "\nVariables created: " (str/join ", " (map str vars-created))))))

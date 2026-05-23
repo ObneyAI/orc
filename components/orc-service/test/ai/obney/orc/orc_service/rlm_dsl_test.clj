@@ -853,3 +853,56 @@
       ;; Must contrast against get-input misuse
       (is (re-find #"(?i)(not|don'?t).*get-input.*(tree|prior|output)" instructions)
           "Prompt should warn against using get-input for tree outputs"))))
+
+;; =============================================================================
+;; R-6: build-iteration-history surfaces SCI parse-error line/caret context
+;;
+;; Live evidence (post R-3 + R-4 + R-5 sweep): contract_comparison and
+;; document_analysis recursive runs both waste 2 iterations on SCI parse
+;; errors before self-recovering. Errors like:
+;;
+;;   Unmatched delimiter: ], expected: } to match { at [16 11]
+;;
+;; carry exact line/col but the model doesn't always zero in on them.
+;; Adding the offending line + caret pointer to the iteration history
+;; surfaces the structural-exact location.
+;; =============================================================================
+
+(deftest build-iteration-history-shows-parse-error-line-with-caret
+  (testing "When :error is a SCI parse error with [line col], history shows the offending line + caret"
+    (let [bih (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-iteration-history)
+          ;; Synthetic code with a known broken line at L=3 C=12
+          code (str "(emit-tree!\n"
+                    " [:sequence\n"
+                    "  [:llm {:reads [:x] :writes [:y]]\n"   ;; <-- the broken ]
+                    "  [:final {:keys [:y]}]])")
+          history [{:code code
+                    :error "Unmatched delimiter: ], expected: } to match { at [3 12]"
+                    :result ""
+                    :vars-created []}]
+          out (bih history)]
+      (is (string? out) "history is a string")
+      ;; The full original error message MUST still be present
+      (is (re-find #"Unmatched delimiter" out)
+          "Original error message preserved")
+      ;; The offending line text (the L=3 line) must appear in context
+      (is (re-find #"\[:llm \{:reads \[:x\] :writes \[:y\]\]" out)
+          "Offending line surfaced in history")
+      ;; A caret marker ^ should pin the position
+      (is (re-find #"\^" out)
+          "Caret marker '^' appears to pin the error column"))))
+
+(deftest build-iteration-history-leaves-non-parse-errors-untouched
+  (testing "Non-parse errors (e.g. final! validation) do not get line/caret treatment"
+    (let [bih (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-iteration-history)
+          code "(final! {})"
+          history [{:code code
+                    :error "final! called with all empty values"
+                    :result ""
+                    :vars-created []}]
+          out (bih history)]
+      (is (re-find #"final! called with all empty values" out)
+          "Original error message preserved as-is")
+      ;; No caret expected for non-parse errors
+      (is (not (re-find #"\^" out))
+          "Non-parse errors do not get a caret marker"))))
