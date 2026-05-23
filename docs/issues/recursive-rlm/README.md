@@ -10,10 +10,12 @@
 |---|-------|------|------------|--------|
 | R-1 | [Core recursive loop](R-1-core-recursive-loop.md) | AFK | None | ✅ merged to main |
 | R-2 | [Drill-down primitives](R-2-drill-down-primitives.md) | AFK | R-1 | ✅ merged to main |
-| R-3 | [Inline-fn Fressian sanitization](R-3-inline-fn-fressian-sanitization.md) | AFK | R-1 | **open** — dominant cause of 15-min recursive runtime |
-| R-4 | [Sub-model injection in recursive mode](R-4-sub-model-injection-recursive.md) | AFK | R-3 | **open** — apples-to-apples model attribution broken |
-| R-5 | [History reuse hint](R-5-history-reuse-hint.md) | AFK | R-3 | open — optimization, lowest priority |
-| R-Bench | [5-benchmark recursive verification sweep](R-Bench-recursive-5-benchmark-sweep.md) | HITL | R-3 + R-4 | **open** — gate for always-on recursive default |
+| R-3 | [Inline-fn Fressian sanitization](R-3-inline-fn-fressian-sanitization.md) | AFK | R-1 | ✅ committed (905s → 131s, 6.9× faster, 0 Fressian errors) |
+| R-4 | [Sub-model injection in recursive mode](R-4-sub-model-injection-recursive.md) | AFK | R-3 | ✅ committed (Phase-2 :llm leaves now hit gpt-5.1-chat, not gemini-3-flash) |
+| R-5 | [History reuse hint](R-5-history-reuse-hint.md) | AFK | R-3 | ✅ committed (document_redaction 197s → 60s, 3.3× faster) |
+| R-Bench | [5-benchmark recursive verification sweep](R-Bench-recursive-5-benchmark-sweep.md) | HITL | R-3 + R-4 | ✅ **5/5 SUCCESS** — recursive matches/beats terminal mode |
+| R-6 | [Syntax-error retry optimization](R-6-syntax-error-retry-optimization.md) | AFK | R-Default | open — optional follow-up |
+| R-Default | [Make recursive the default RLM mode](R-Default-make-recursive-default.md) | AFK | R-Bench | **open** — flip the default |
 
 ## Dependency Graph
 
