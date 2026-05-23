@@ -1481,6 +1481,24 @@
                              "to `:tree-results`, and control returns to you. The loop "
                              "ends only when you call `(final! {...})` or you exceed "
                              ":max-iterations.\n\n"
+                             "### Accessing prior tree outputs — use `get-var`, NOT `get-input`\n"
+                             "When you call `(emit-tree! ...)`, the tree's `:writes`-declared keys "
+                             "land in your sandbox variables. Subsequent iterations access them via "
+                             "`(get-var :key)`, NOT via `(get-input :key)`. `get-input` only returns "
+                             "the repl-researcher node's declared input keys (the data passed INTO "
+                             "the researcher) — it does NOT see prior-tree outputs. If you try to "
+                             "access a prior tree's write via `get-input`, you'll get nil, and the "
+                             "subsequent `(final! ...)` will be rejected as all-empty.\n\n"
+                             "Concretely, after `(emit-tree! ...)` writes `:total-redactions` and "
+                             "`:targets-applied`:\n"
+                             "```clojure\n"
+                             ";; CORRECT — read prior tree's writes:\n"
+                             "(final! {:total-redactions (get-var :total-redactions)\n"
+                             "         :targets-applied  (get-var :targets-applied)})\n"
+                             "```\n"
+                             "Re-emitting the same tree to recompute data you already have is "
+                             "wasteful — check `(list-vars)` or `:tree-results` to see what's "
+                             "already in your sandbox before designing the next tree.\n\n"
                              "### Reading `:tree-results`\n"
                              "Each entry has `:status` — one of:\n"
                              "  - `:success` — the tree completed and all sub-nodes succeeded\n"
@@ -1925,7 +1943,30 @@
                             _ (swap! cumulative-tree-ms + (or (:duration-ms phase2-result) 0))
                             _ (dbg "\n[DEBUG RLM] Recursive recur — :tree-results entries:"
                                    (count (:tree-results @sandbox-vars))
-                                   "summary status:" (:status summary))]
+                                   "summary status:" (:status summary))
+                            ;; R-5: After the recursive-mode merge, update the
+                            ;; LAST iteration history entry so its :vars-created
+                            ;; reflects the tree's :writes-declared output keys
+                            ;; (which the merge just added to sandbox-vars), not
+                            ;; just the transient :generated-tree / :generated-
+                            ;; tree-raw markers. This is what surfaces to the
+                            ;; next iteration's prompt so the model sees what
+                            ;; data is now available via (get-var ...) and
+                            ;; doesn't redundantly re-emit a tree that recomputes
+                            ;; data it already has.
+                            tree-output-keys (vec (:outputs-keys summary))
+                            new-history (if (seq tree-output-keys)
+                                          (update new-history
+                                                  (dec (count new-history))
+                                                  (fn [entry]
+                                                    (let [prior-vars (or (:vars-created entry) [])
+                                                          ;; Drop the markers; surface the actual
+                                                          ;; tree writes instead.
+                                                          marker-syms #{:generated-tree :generated-tree-raw}
+                                                          kept (remove marker-syms prior-vars)]
+                                                      (assoc entry :vars-created
+                                                             (vec (distinct (concat kept tree-output-keys)))))))
+                                          new-history)]
                         (recur (inc iteration) new-history))
                       ;; Non-recursive (current behavior, preserved) — merge results and return.
                       (let [p1-usage @total-usage

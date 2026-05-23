@@ -819,3 +819,37 @@
           ":recursive? preserved in :rlm map")
       (is (true? (get-in state [node-id :rlm :debug?]))
           ":debug? preserved in :rlm map"))))
+
+;; =============================================================================
+;; R-5: iteration history shows tree-write keys + prompt guides get-var usage
+;;
+;; LIVE evidence: in document_redaction recursive runs (post R-3 + R-4),
+;; the model emits 4 trees but never reuses prior trees' outputs. Each
+;; tree re-does the wrap-pages + per-page extraction from scratch.
+;; Then iter 3 calls (final! {:total-redactions (get-input :total-redactions)})
+;; — using get-input INSTEAD of get-var for tree-output keys. get-input
+;; only returns the repl-researcher's input declarations, so it returns
+;; nil → empty final! → Fix 2 rejects → max-iterations.
+;;
+;; Two complementary fixes (R-5 in the issue tracker):
+;; (a) Iteration history needs to surface what each tree WROTE (currently
+;;     it only shows :generated-tree / :generated-tree-raw markers — the
+;;     actual write keys live in :tree-results but aren't surfaced).
+;; (b) Recursive-mode prompt must contrast (get-var ...) vs (get-input ...)
+;;     and make clear that tree outputs are reached via get-var.
+;; =============================================================================
+
+(deftest recursive-prompt-contrasts-get-var-vs-get-input-for-tree-outputs
+  (testing "When :recursive? true, the prompt explicitly tells the model that tree outputs use get-var (not get-input)"
+    (let [build-fn (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module)
+          node {:rlm {:recursive? true}
+                :writes [:answer]
+                :instruction "Find facts."}
+          module (build-fn node {} [] {} {} {})
+          instructions (:instructions module)]
+      ;; Must mention get-var for prior tree outputs
+      (is (re-find #"(?i)`?get-var`?.*(prior|previous|tree.*output|already)" instructions)
+          "Prompt should explain that get-var accesses prior tree outputs")
+      ;; Must contrast against get-input misuse
+      (is (re-find #"(?i)(not|don'?t).*get-input.*(tree|prior|output)" instructions)
+          "Prompt should warn against using get-input for tree outputs"))))
