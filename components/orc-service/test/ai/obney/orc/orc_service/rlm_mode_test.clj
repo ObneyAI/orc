@@ -103,13 +103,19 @@
 ;; =============================================================================
 
 (defn- setup-rlm-repl-researcher-sheet!
-  "Create a sheet with an RLM-enabled repl-researcher node."
+  "Create a sheet with an RLM-enabled repl-researcher node.
+
+   R-Default: these tests were written against terminal-mode dispatch
+   semantics. After R-Default flipped recursive to be the always-on
+   default, the helper's default rlm-config explicitly opts back into
+   terminal mode (:recursive? false). Tests that genuinely want recursive
+   behavior can pass :rlm-config {:recursive? true}."
   [ctx & {:keys [instruction reads writes model rlm-config max-iterations]
           :or {instruction "Research the question"
                reads [:question]
                writes [:answer]
                model "minimax/minimax-m1"
-               rlm-config true
+               rlm-config {:recursive? false}
                max-iterations 5}}]
   (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "RLM Test"))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
@@ -178,7 +184,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use the llm primitive to answer the question"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "What is 2+2?"})
                 result (wait-for-completion promise :timeout-ms 30000)]
 
@@ -201,7 +207,7 @@
         (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                    ctx
                                    :writes [:answer]  ;; correct key
-                                   :rlm-config true)
+                                   :rlm-config {:recursive? false})
               {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
               result (wait-for-completion promise)]
 
@@ -252,7 +258,7 @@
                                       sheet-id node-id
                                       "Count the characters in the document"
                                       [:document] [:answer] []
-                                      :rlm true))
+                                      :rlm {:recursive? false}))
               ;; Execute with large document
               (let [{:keys [promise]} (dispatch-async-execute! ctx sheet-id {:document large-doc})
                     result (wait-for-completion promise)]
@@ -283,7 +289,7 @@
                   node-id (-> node-result :command-result/events first :node-id)]
               (h/run-and-apply! ctx (h/make-set-repl-researcher-config-command
                                       sheet-id node-id "Process document" [:document] [:answer] []
-                                      :rlm true))
+                                      :rlm {:recursive? false}))
               (let [{:keys [promise]} (dispatch-async-execute! ctx sheet-id {:document large-doc})
                     _ (wait-for-completion promise)
                     inputs-info @captured-inputs-info]
@@ -338,7 +344,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use sequence to run two steps"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
@@ -383,7 +389,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use map-each to classify fruits"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
@@ -426,7 +432,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use fallback for resilience"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
@@ -478,7 +484,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use condition to branch"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
@@ -515,7 +521,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use code primitive for computation"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
@@ -562,7 +568,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Use parallel to run two steps"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
@@ -588,7 +594,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Store and return a value"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
 
@@ -607,7 +613,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Store and retrieve"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             (is (= :success (:status result)) (str "Expected success, got: " (:status result)))
@@ -625,7 +631,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Get nonexistent var"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             (is (= :success (:status result)) (str "Expected success, got: " (:status result)))
@@ -653,7 +659,7 @@
                                      ctx
                                      :instruction "Store then retrieve"
                                      :max-iterations 3
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             (is (= :success (:status result)) (str "Expected success, got: " (:status result) " error: " (:error result)))
@@ -676,7 +682,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "List vars"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             (is (= :success (:status result)) (str "Expected success, got: " (:status result)))
@@ -742,7 +748,7 @@
                                      ctx
                                      :instruction "Test task"
                                      :reads [:question]
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test input"})
                 _ (wait-for-completion promise)
                 instructions (:instructions @captured-module)]
@@ -776,7 +782,7 @@
                                      ctx
                                      :instruction "Test task"
                                      :max-iterations 3
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             ;; Verify execution succeeded
@@ -813,7 +819,7 @@
                                      ctx
                                      :instruction "Process data"
                                      :max-iterations 3
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             (is (= :success (:status result)))
@@ -850,7 +856,7 @@
                                      ctx
                                      :instruction "Test"
                                      :max-iterations 3
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             (is (= :success (:status result)))
@@ -889,7 +895,7 @@
                                      ctx
                                      :instruction "Test"
                                      :max-iterations 3
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             ;; May succeed or fail depending on whether truncation affects execution
@@ -931,7 +937,7 @@
                                      ctx
                                      :instruction "Access data"
                                      :max-iterations 3
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             ;; Should eventually succeed
@@ -983,7 +989,7 @@
                                      ctx
                                      :instruction "Do something"
                                      :max-iterations 3
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "test"})
                 result (wait-for-completion promise)]
             ;; Should eventually succeed after fixing the error
@@ -1052,7 +1058,7 @@
                                      :instruction "Summarize the document"
                                      :reads [:document]
                                      :max-iterations 5
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 ;; Set a large document value
                 _ (h/run-and-apply! ctx {:command/name :sheet/set-key-value
                                          :command/id (random-uuid)
@@ -1320,7 +1326,7 @@
                                      ctx
                                      :instruction "Test task"
                                      :max-iterations 1
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:input "test"})
                 _ (wait-for-completion promise)
                 instructions @captured-instructions]
@@ -1355,7 +1361,7 @@
                                      ctx
                                      :instruction "Test"
                                      :max-iterations 1
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:input "test"})
                 _ (wait-for-completion promise)
                 instructions @captured-instructions]
@@ -1378,7 +1384,7 @@
                                      ctx
                                      :instruction "Test"
                                      :max-iterations 1
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:input "test"})
                 _ (wait-for-completion promise)
                 instructions @captured-instructions]
@@ -1416,7 +1422,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Generate a BT for document analysis"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise tick-id]} (dispatch-async-execute! ctx sheet-id {:document "test doc"})
                 result (wait-for-completion promise :timeout-ms 30000)]
 
@@ -1517,7 +1523,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Generate a BT"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise tick-id]} (dispatch-async-execute! ctx sheet-id {:document "test doc"})
                 result (wait-for-completion promise :timeout-ms 10000)
                 ;; Query for :rlm/tree-generated events
@@ -1559,7 +1565,7 @@
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Generate a BT"
-                                     :rlm-config true)
+                                     :rlm-config {:recursive? false})
                 {:keys [promise tick-id]} (dispatch-async-execute! ctx sheet-id {:document "test doc"})
                 result (wait-for-completion promise :timeout-ms 10000)]
             ;; Wait a bit for async processor to run

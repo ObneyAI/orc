@@ -2,7 +2,7 @@
 
 **ORC is a workbench built on behavior trees.** This guide describes how Recursive Language Model strategies — a model that can spawn sub-computations, inspect their outputs, and continue reasoning — are applied in ORC's decomposition space: behavior trees the model emits via `emit-tree!`, with `:llm`, `:code`, `:map-each`, `:parallel`, `:sequence`, and `:final` as the building blocks.
 
-In implementation terms, this is a two-phase execution pattern for the `:repl-researcher` node type. The LLM iteratively generates Clojure code in a sandboxed REPL (Phase 1) and can emit behavior trees that ORC executes as child ticks (Phase 2). When recursive mode is enabled, the model can inspect Phase 2 outputs and continue reasoning rather than treating `emit-tree!` as a terminator. Phase 1 is the recursive code-generation loop; Phase 2 is the spawned sub-computation (the emitted tree); the recursive-mode opt-in lets the model fold Phase 2 outputs back into Phase 1 state for further iteration.
+In implementation terms, this is a two-phase execution pattern for the `:repl-researcher` node type. The LLM iteratively generates Clojure code in a sandboxed REPL (Phase 1) and can emit behavior trees that ORC executes as child ticks (Phase 2). **Recursive mode is the default** — each `emit-tree!` returns control to Phase 1 so the model can inspect outputs, accumulate sandbox-vars across iterations, and call `(final! ...)` when ready. Terminal mode (`:rlm {:recursive? false}`) is preserved as an explicit opt-out for the rare case a single tree emission is genuinely terminal. Phase 1 is the recursive code-generation loop; Phase 2 is the spawned sub-computation (the emitted tree); the recursive merge folds Phase 2 outputs back into Phase 1 sandbox-vars for further iteration.
 
 Where other Recursive Language Model implementations might spawn sub-computations via `predict()` calls and `asyncio.gather()`, ORC's researcher emits a behavior tree. Same RLM strategies, expressed in ORC's behavior-tree decomposition space — and that's what this guide walks through.
 
@@ -78,7 +78,7 @@ There's nothing special about being a child — the researcher emits the same `:
 - **Budget composition.** If you set `:timeout-ms` on the researcher, it bounds total Phase 1 + cumulative tree-execution wall-time *for that researcher only* — it doesn't account for sibling nodes. If your overall workflow has a deadline, the researcher's `:timeout-ms` should be set lower than the remaining time you want to allow.
 - **Multiple researchers in one workflow** are supported — each gets its own Phase 1 loop and (if it calls `emit-tree!`) its own Phase 2 child tick. Their iteration counts and budgets are independent.
 
-## Basic usage (terminal mode — default)
+## Basic usage (recursive mode — default)
 
 The simplest case: a workflow whose root is a single `repl-researcher` node.
 
@@ -117,7 +117,8 @@ The model:
 1. Iterates up to `:max-iterations` times, generating Clojure code each iteration.
 2. Code can call `(llm ...)`, `(code ...)`, `(store! ...)`, `(get-var ...)`, etc.
 3. Optionally calls `(emit-tree! [...])` to design a behavior tree for ORC to execute.
-4. Terminal mode: when the model calls `emit-tree!`, Phase 2 runs and the result returns to the caller — the loop ends immediately.
+4. Recursive mode (default): when the model calls `emit-tree!`, Phase 2 runs, its `:writes`-declared outputs are merged into the sandbox variables (accessible via `(get-var :key)`), a summary entry is appended to `:tree-results`, and control returns to Phase 1 for another iteration. The loop ends when the model calls `(final! {...})` or `:max-iterations` is exhausted.
+5. Terminal mode (`:rlm {:recursive? false}` — explicit opt-out): when the model calls `emit-tree!`, Phase 2 runs and the result returns to the caller immediately — the loop ends without further Phase 1 iterations.
 
 ## Configuration reference
 
@@ -476,18 +477,20 @@ This is what `runtime/deliver-completion!` forwards to the synchronous caller �
 
 The repo ships a 5-task benchmark that demonstrates RLM generalizes — the model designs **structurally different trees** for **structurally different tasks** given only goal-only instructions (no example trees, no algorithm hints). See [`development/bench/RESULTS.md`](../development/bench/RESULTS.md) for the headline report and [`development/bench/README.md`](../development/bench/README.md) for run instructions.
 
-The bench tasks use the *terminal* `emit-tree!` mode (`:rlm {:debug? true}`). They demonstrate the model's ability to design one good tree for a task — not the recursive flow. A separate slice will migrate the bench to recursive mode and validate no-regression there.
+The bench tasks now run in recursive mode by default — each `emit-tree!` returns to Phase 1, the model can inspect outputs via `(get-var ...)`, accumulate state across iterations, and call `(final! ...)` to terminate. The 5-benchmark verification sweep confirmed recursive matches or beats terminal-mode quality at equal or lower token cost.
 
 ## Quick reference
 
 ```clojure
-;; Terminal mode (model designs ONE tree, Phase 2 runs, done)
+;; Recursive mode (default — emit-tree! returns to Phase 1; model decides next move)
 {:rlm true}
 {:rlm {:debug? true}}
-
-;; Recursive mode (emit-tree! returns to Phase 1; model decides next move)
-{:rlm {:recursive? true}}
+{:rlm {:recursive? true}}            ;; explicit
 {:rlm {:recursive? true :debug? true}}
+
+;; Terminal mode (explicit opt-out — model designs ONE tree, Phase 2 runs, done)
+{:rlm {:recursive? false}}
+{:rlm {:recursive? false :debug? true}}
 ```
 
 Same node config either way. The `:recursive?` flag controls one thing: whether Phase 2's result is returned to the caller (terminal) or merged back into sandbox-vars + recurred (recursive).

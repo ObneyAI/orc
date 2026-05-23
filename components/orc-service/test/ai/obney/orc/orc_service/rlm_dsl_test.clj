@@ -343,7 +343,13 @@
                     :instruction "Generate a BT"
                     :reads [:document]
                     :writes [:summary]
-                    :rlm true
+                    ;; R-Default: this test exercises the terminal-mode
+                    ;; dispatch shape (single tree → return result with
+                    ;; :generated-tree-raw at the top level). After R-Default
+                    ;; flipped recursive to be the default, we explicitly opt
+                    ;; out via :recursive? false to keep this test exercising
+                    ;; the terminal dispatch.
+                    :rlm {:recursive? false}
                     :max-iterations 5}
               blackboard {:document {:key :document :schema :string :value "test doc" :version 1}}
               result (ai.obney.orc.orc-service.core.executor/execute-repl-researcher-rlm
@@ -693,16 +699,17 @@
       (is (re-find #"(?i)(should not|not your main|narrow inspection|prefer emit-tree)" instructions)
           "Prompt should warn against iterating direct (llm)/(code) calls as the main loop"))))
 
-(deftest terminal-prompt-unchanged-when-not-recursive
-  (testing "When :recursive? is NOT set, the recursive section is omitted (no regression for terminal mode)"
+(deftest terminal-prompt-omitted-only-when-recursive-explicitly-false
+  (testing "After R-Default: terminal mode is reached ONLY via explicit :rlm {:recursive? false}"
     (let [build-fn (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module)
-          node {:writes [:answer]
+          node {:rlm {:recursive? false}
+                :writes [:answer]
                 :instruction "Find facts."}
           module (build-fn node {} [] {} {} {})
           instructions (:instructions module)]
       (is (string? instructions))
       (is (not (re-find #"## Recursive" instructions))
-          "Terminal mode (no :recursive?) must NOT include the recursive-mode prompt section"))))
+          "Explicit :recursive? false opts OUT of recursive mode (the escape hatch)"))))
 
 ;; =============================================================================
 ;; R-3: compute-tree-result-summary sanitizes inline-fns in :tree-raw
@@ -906,3 +913,42 @@
       ;; No caret expected for non-parse errors
       (is (not (re-find #"\^" out))
           "Non-parse errors do not get a caret marker"))))
+
+;; =============================================================================
+;; R-Default: recursive mode is the default
+;;
+;; After R-3 + R-4 + R-5 + R-Bench (5/5 benchmarks passed in recursive mode),
+;; the legacy "opt-in via :rlm {:recursive? true}" framing flips. Now:
+;;
+;; - :rlm true       → recursive mode (was: terminal)
+;; - :rlm {}         → recursive mode (no opt-in needed)
+;; - :rlm {:recursive? true}  → recursive (explicit)
+;; - :rlm {:recursive? false} → terminal (explicit opt-OUT — escape hatch)
+;;
+;; The recursive-mode prompt section + the recursive-mode-dispatch branch
+;; in execute-repl-researcher-rlm now use a "default-to-true" semantic.
+;; =============================================================================
+
+(deftest recursive-prompt-includes-section-when-rlm-is-true-boolean
+  (testing "When :rlm is just `true` (legacy shorthand), the recursive-mode section IS in the prompt"
+    (let [build-fn (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module)
+          node {:rlm true :writes [:answer] :instruction "test"}
+          module (build-fn node {} [] {} {} {})]
+      (is (re-find #"## Recursive" (:instructions module))
+          ":rlm true should default to recursive mode (after R-Default)"))))
+
+(deftest recursive-prompt-omitted-when-rlm-recursive-explicitly-false
+  (testing "When :rlm {:recursive? false}, the recursive-mode section is OMITTED (terminal mode escape hatch)"
+    (let [build-fn (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module)
+          node {:rlm {:recursive? false} :writes [:answer] :instruction "test"}
+          module (build-fn node {} [] {} {} {})]
+      (is (not (re-find #"## Recursive" (:instructions module)))
+          ":rlm {:recursive? false} should preserve terminal-mode behavior"))))
+
+(deftest recursive-prompt-included-when-rlm-map-without-recursive-key
+  (testing "When :rlm is a map without :recursive? (e.g. {:debug? true}), recursive is still the default"
+    (let [build-fn (requiring-resolve 'ai.obney.orc.orc-service.core.executor/build-rlm-code-generation-module)
+          node {:rlm {:debug? true} :writes [:answer] :instruction "test"}
+          module (build-fn node {} [] {} {} {})]
+      (is (re-find #"## Recursive" (:instructions module))
+          "Missing :recursive? key should default to recursive mode"))))

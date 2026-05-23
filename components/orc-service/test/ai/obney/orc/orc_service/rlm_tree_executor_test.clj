@@ -141,7 +141,7 @@
                     :instruction "Analyze the document and extract a summary"
                     :reads [:document]
                     :writes [:summary]
-                    :rlm true
+                    :rlm {:recursive? false}
                     :max-iterations 5}
               blackboard {:document {:key :document
                                      :schema :string
@@ -717,7 +717,7 @@
                       :instruction "Anything"
                       :reads [:doc]
                       :writes [:summary]
-                      :rlm true
+                      :rlm {:recursive? false}
                       :max-iterations 1
                       :timeout-ms 100}  ;; Tiny budget — Phase 1's 150ms sleep exhausts it
                 blackboard {:doc {:key :doc :schema :string :value "hello" :version 1}}
@@ -761,7 +761,7 @@
                     :instruction "Summarize the doc"
                     :reads [:doc]
                     :writes [:summary]
-                    :rlm true
+                    :rlm {:recursive? false}
                     :max-iterations 1
                     ;; Total budget 500ms. Phase 1 is fast (<100ms), Phase 2's
                     ;; first sub-LLM sleeps 800ms → cancellation must fire.
@@ -812,7 +812,7 @@
                     :instruction "Summarize"
                     :reads [:doc]
                     :writes [:summary]
-                    :rlm true
+                    :rlm {:recursive? false}
                     :max-iterations 1
                     :timeout-ms 60000}  ;; Generous budget — happy path
               blackboard {:doc {:key :doc :schema :string :value "hello" :version 1}}

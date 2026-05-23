@@ -1488,13 +1488,19 @@
                       "Previews adapt to data type: text samples for documents, T-box/A-box summaries for graphs.\n\n"
                       ;; Include ontology examples if available
                       (or (build-ontology-examples-section node) "")
-                      ;; Descriptive recursive-mode section when :recursive? is true.
+                      ;; Descriptive recursive-mode section.
+                      ;; R-Default: recursive is now the default mode. The section is
+                      ;; included UNLESS the user explicitly opts out via
+                      ;; :rlm {:recursive? false}. Map-mode without an explicit
+                      ;; :recursive? key (e.g. {:debug? true}) or boolean :rlm true
+                      ;; both default to recursive.
+                      ;;
                       ;; The framing leads with "emit-tree! is how you do work" so the
                       ;; model treats it as the primary loop body, not one option among
                       ;; many. Direct (llm ...) / (code ...) calls in Phase 1 are
                       ;; explicitly scoped to narrow inspection/decision flows, not the
                       ;; main work loop.
-                      (if (get-in node [:rlm :recursive?])
+                      (if (not= false (get-in node [:rlm :recursive?]))
                         (str "## Recursive mode (this mode)\n\n"
                              "In this mode, `emit-tree!` is how you do work. Design a "
                              "tree for one piece of the task, run it, see the result, "
@@ -1665,7 +1671,11 @@
         ;; R-1: Cumulative timing metrics for the recursive mode response
         ;; observability fields. Updated only when :recursive? is true.
         cumulative-tree-ms (atom 0)
-        recursive-mode? (boolean (get-in node [:rlm :recursive?]))]
+        ;; R-Default: recursive is now the default mode. Terminal mode is the
+        ;; explicit opt-out via :rlm {:recursive? false}. :rlm true, :rlm {},
+        ;; and :rlm {:debug? true} (no explicit :recursive? key) all default
+        ;; to recursive.
+        recursive-mode? (not= false (get-in node [:rlm :recursive?]))]
 
     (try
       (loop [iteration 0
