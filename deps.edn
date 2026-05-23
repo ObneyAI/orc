@@ -23,13 +23,16 @@
                               orc/mcp-sheet-builder {:local/root "components/mcp-sheet-builder"}
                               orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
-                              orc/grain-test-utils  {:local/root "components/grain-test-utils"}}}
+                              orc/grain-test-utils  {:local/root "components/grain-test-utils"}
+                              orc/trace-logic       {:local/root "components/trace-logic"}}}
 
            :test {:extra-paths ["components/orc-service/test"
                                 "components/gepa/test"
                                 "components/colbert/test"
                                 "components/ontology/test"
-                                "components/mcp-sheet-builder/test"]}
+                                "components/mcp-sheet-builder/test"
+                                "components/trace-logic/test"]
+                  :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}}}
 
            :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]
                   :extra-deps {polylith/clj-poly {:mvn/version "0.2.22"}}

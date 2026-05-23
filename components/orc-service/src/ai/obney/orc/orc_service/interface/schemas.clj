@@ -125,6 +125,12 @@
     ;; Parallel-only fields
     [:success-policy {:optional true} [:enum :all :any :majority]]
     [:failure-policy {:optional true} [:enum :all :any]]
+    ;; Optional: routing key for opt-in strategy multimethods (e.g.,
+    ;; trace-logic registers :adaptive / :policy). Default behavior
+    ;; (linear next-child + boolean parallel completion) applies when
+    ;; this is nil, which is always unless a strategy-providing
+    ;; component is loaded and the workflow author opts in.
+    [:strategy-id {:optional true} [:maybe :keyword]]
     ;; Map-each-only fields
     [:source-key {:optional true} :keyword]        ;; Blackboard key with list to iterate
     [:item-key {:optional true} :keyword]          ;; Blackboard key for current item

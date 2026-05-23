@@ -5,7 +5,13 @@
    - Execute leaf nodes when tree tick starts
    - Handle sequence/fallback/parallel composite node logic
    - Handle map-each iteration
-   - Update blackboard with node outputs"
+   - Update blackboard with node outputs
+
+   Composite-node decision points (next-child selection, parallel
+   completion) dispatch through multimethods so that opt-in components
+   (e.g., trace-logic) can register adaptive strategies without
+   modifying this file. The default dispatches preserve the engine's
+   original linear / boolean semantics exactly."
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
@@ -14,6 +20,49 @@
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
             [clojure.string :as str]))
+
+;; =============================================================================
+;; Strategy multimethods (extension points for opt-in components)
+;; =============================================================================
+
+(defmulti next-child-strategy
+  "Decide which sibling runs next for sequence/fallback advancement.
+
+   Dispatches on `:strategy-id` from the parent node. Default `:linear`
+   preserves the engine's left-to-right behavior. Optional components
+   (e.g., trace-logic) can `defmethod` other strategy keywords to
+   register adaptive selection.
+
+   Inputs map: {:siblings [...], :child-index int, :parent {...}}.
+   Returns the selected next-child id (or nil if no next child)."
+  (fn [{:keys [strategy-id]}] (or strategy-id :linear)))
+
+(defmethod next-child-strategy :linear
+  [{:keys [siblings child-index]}]
+  (get (vec siblings) (inc child-index)))
+
+(defmethod next-child-strategy :default
+  [args]
+  ;; Unknown strategy id: fall back to :linear semantics rather than error,
+  ;; so that absence of an opt-in component can never block execution.
+  (next-child-strategy (assoc args :strategy-id :linear)))
+
+(defmulti parallel-completion-strategy
+  "Decide if a parallel node has completed and with what status.
+
+   Dispatches on `:strategy-id` from the parent node. Default `:boolean`
+   preserves the engine's existing :all/:any/:majority semantics.
+
+   Inputs map: {:child-counts {...}, :success-policy ..., :failure-policy ...,
+                :parent {...}}.
+   Returns nil if the node should not complete yet, or
+   {:status :success/:failure} if it should."
+  (fn [{:keys [strategy-id]}] (or strategy-id :boolean)))
+
+(defmethod parallel-completion-strategy :default
+  [args]
+  ;; Unknown strategy: fall back to :boolean semantics.
+  (parallel-completion-strategy (assoc args :strategy-id :boolean)))
 
 ;; =============================================================================
 ;; Output Key Normalization
@@ -747,10 +796,8 @@
      :total-children total
      :completed (count child-completions)}))
 
-(defn- evaluate-parallel-completion
-  "Evaluate if a parallel node should complete based on its policies.
-   Returns nil if not ready, or {:status :success/:failure} if ready."
-  [child-counts success-policy failure-policy]
+(defmethod parallel-completion-strategy :boolean
+  [{:keys [child-counts success-policy failure-policy]}]
   (let [{:keys [success failure total-children completed]} child-counts
         ;; Default policies
         success-policy (or success-policy :all)
@@ -800,7 +847,11 @@
       (let [parent (get nodes-by-id parent-id)
             siblings (:children-ids parent)
             child-index (.indexOf (vec siblings) child-id)
-            next-child-id (get (vec siblings) (inc child-index))
+            next-child-id (next-child-strategy
+                           {:strategy-id (:strategy-id parent)
+                            :siblings siblings
+                            :child-index child-index
+                            :parent parent})
             blackboard (resolve-blackboard context sheet-id tick-id)]
         (case (:type parent)
           :sequence
@@ -955,10 +1006,12 @@
           ;; Uses event-store CAS to prevent duplicate completions when
           ;; multiple children complete rapidly and all see the same state.
           (let [child-counts (count-child-statuses context sheet-id tick-id parent exec-context)
-                completion (evaluate-parallel-completion
-                            child-counts
-                            (:success-policy parent)
-                            (:failure-policy parent))]
+                completion (parallel-completion-strategy
+                            {:strategy-id (:strategy-id parent)
+                             :child-counts child-counts
+                             :success-policy (:success-policy parent)
+                             :failure-policy (:failure-policy parent)
+                             :parent parent})]
             (when completion
               (let [event (->event
                             {:type :sheet/node-execution-completed
