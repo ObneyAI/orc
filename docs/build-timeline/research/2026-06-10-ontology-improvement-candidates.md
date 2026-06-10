@@ -106,6 +106,102 @@ formalization-lite) with nothing at either end.
 
 ## Pending
 
-- ProtegeOWLTutorial PDF distillation (tool outage) — expected to reinforce
-  B3-B6 with additional pitfall detail (existential/universal traps, covering
-  axioms, OWA consequences); fold in when extraction unblocks.
+- ~~ProtegeOWLTutorial PDF distillation (tool outage)~~ → **COMPLETE 2026-06-10
+  (later that day).** Pages 1-108 read page-by-page. Reinforcements + new
+  candidates folded into the appendix below.
+
+---
+
+## Appendix — ProtegeOWLTutorial reinforcements + new candidates
+
+The Manchester tutorial (Horridge et al., v1.3) confirmed and substantially
+**sharpened** the bucket-B candidates, plus surfaced six new ones rooted in
+hard-won OWL practice. Strongest reinforcements first.
+
+### Strong reinforcements
+
+**B3 (roles vs classes) — VINDICATED.** Footnote p23: *"if we had named
+HamTopping Ham, then this could have implied to human eyes that anything
+that is a kind of ham is also a kind of MeatTopping... class names
+themselves carry no formal semantics in OWL."* LLMs read implicit
+membership into class names the reasoner never sees. The lint sharpens: flag
+class names whose surface form implies relationships not asserted.
+
+**B4 (disjointness) — RAISED TO LOAD-BEARING.** The ProbeInconsistentTopping
+example (pp 49-53): without disjointness, defined-class classification
+produces silently wrong answers. *"OWL Classes are assumed to 'overlap'. We
+therefore cannot assume that an individual is not a member of a particular
+class simply because it has not been asserted to be a member of that
+class."* For LLM extraction this is the difference between meaningful and
+meaningless inference. Disjoint-siblings extraction stops being a "nice
+addition" and becomes **a correctness gate**.
+
+**B5 (formality ceiling) — CONFIRMED with a load-bearing footnote.** Pp 36
+on domain/range: *"the fact that domain and range conditions do not behave
+as constraints and the fact that they can cause 'unexpected' classification
+results... we generally advise against doing this."* Domain/range are
+AXIOMS the reasoner uses for classification, NOT validators. Reinforces our
+"axioms-as-data + separate :code lints" strategy — you cannot rely on
+domain/range to validate extraction input.
+
+### New candidates (PDF only)
+
+| # | Candidate | Source | Gap |
+|---|-----------|--------|-----|
+| **B10** | **Closure axioms emitted by extraction.** When a source describes what reads as a complete enumeration (no "etc.", "such as", "including"), discovery emits a universal restriction `prop only (a ∪ b ∪ c)` alongside the existentials. Without this, downstream defined-class inference is silently incomplete. | pp 62-66 (the famous OWA + Margherita-as-Vegetarian example) | **THE biggest LLM-extraction trap.** A discovery LLM will list toppings/properties without saying "and only these" — the reasoner then can't classify the result. |
+| **B11** | **Single-parent assertion discipline ("ontology normalisation").** Assert each class with at most one parent; let consumers/reasoners compute multi-inheritance. Discovery that finds multiple potential parents picks the most specific single one + emits the others as restrictions, not parents. | p57: *"construct the class hierarchy as a simple tree... no more than one superclass... helps to keep the ontology in a maintainable and modular state."* | LLMs will assert messy multi-parent hierarchies that bake in errors. |
+| **B12** | **Value-Partition design pattern for enums.** Every enum-shaped field (severity, status, category, spiciness) → partition class + N disjoint covered subclasses + functional accessor property. The canonical OWL pattern for "exactly one of these." Currently we'd represent enums as Malli `[:enum ...]` which validates but doesn't surface in the graph. | pp 67-70 (the SpicinessValuePartition pattern, called out explicitly as "a design pattern... proven solution"). | Enum semantics lost on export; no graph-level reasoning over alternative values. |
+| **B13** | **"Universal without existential = bug" lint.** If discovery emits `only` on property X without a corresponding `some` on X, flag — universal restrictions are vacuously satisfied by individuals with no relationship at all. | p99: *"particularly unusual (and probably an error)... only participate... and also those individuals that do not participate in any... relationships."* | Trivially-satisfiable extraction artifacts that look meaningful but aren't. |
+| **B14** | **Annotation properties as first-class export.** rdfs:label, rdfs:comment, owl:versionInfo, owl:priorVersion, owl:backwardsCompatibleWith, rdfs:seeAlso, rdfs:isDefinedBy. Our `label`/`description`/`source-id`/`created-at` ARE annotation properties; surface them as such in TTL export. The owl:priorVersion/backwardsCompatibleWith pair is exactly hindsight's observation-history pattern in OWL form. | pp 95-97 + annotation-property semantics constraints ("cannot have domain/range") | TTL export today doesn't capture provenance/version metadata in a standards-compliant way. |
+| **B15** | **Multi-language labels.** rdfs:label supports language tags (e.g. `"Pizza"@en`, `"Pizza"@it`). For consumers extracting from multi-lingual sources (international podcast/document corpora, area51 advisor experiences in mixed languages), real future need. | p96: *"rdfs:label can also be used to provide multi-lingual names for ontology elements."* | RECORDED. No near-term consumer requires it but the schema needs to admit it from day one to avoid retrofit. |
+
+### Refinements to existing candidates
+
+- **C4 (dedup cascade) gets a UNA twist.** Per p101: *"Cardinality restrictions
+  rely on 'counting' distinct individuals... rather than being viewed as an
+  error, it will be inferred that two of the names refer to the same
+  individual."* Our dedup is also resolving the UNA question in our favor —
+  the system DECIDES whether two names refer to the same thing, and that
+  decision is recorded as a `sameAs` event. The cascade IS the UNA-resolver.
+  This sharpens C3's "differ in number/negation/entity → KEEP" guard:
+  numeric/negation differences are evidence for `differentFrom`, not just
+  evidence-against-merge.
+
+- **C10 (typed relations) gets property hierarchies.** Per pp 27-28: properties
+  can have sub-properties. `hasTopping ⊑ hasIngredient` means asserting
+  `A hasTopping B` automatically gives `A hasIngredient B`. For us: a
+  property hierarchy on extracted relations (`composes-into` and
+  `member-of` as sub-properties of a generic `relates-to`?) would compress
+  retrieval traversal and give consumers a generic "any relationship"
+  query.
+
+### Methodology principles reinforced for the new doc
+
+The tutorial's "ontology normalisation" + "open world + closure axioms" +
+"disjointness is not optional" + "names carry no formal semantics" form a
+coherent discipline that should land **explicitly in the ARCHITECTURE doc's
+"what the substrate is NOT" section** when revised post-PRD: we are not
+inferring class membership via DL restrictions, but we ARE relying on
+disjointness + closure to make the data we extract internally consistent for
+the consumer's downstream reasoning (whether that's our embedding-based
+classification or an external Protégé/reasoner workflow).
+
+### Tier placement for the new candidates
+
+- **B10 closure axioms** → WITH-REBUILD. **Highest-impact correctness item
+  in the new set** — extraction without closure produces silently incomplete
+  ontologies, exactly the failure mode our consumers won't notice until they
+  query.
+- **B11 single-parent + B13 universal-without-existential** → WITH-REBUILD,
+  ride the same :code lint library as B3/B4/B6.
+- **B12 value partitions** → WITH-REBUILD for the schema, NEXT for full
+  enum-discovery (model needs to recognize "enum-shaped" attributes).
+- **B14 annotation-property export** → WITH-REBUILD. TTL export already has
+  to be touched if any of A3/A4 land.
+- **B15 multi-language labels** → RECORDED. Schema admits language-tagged
+  values from day one; no extraction work until a consumer pulls.
+- Refinements to C4/C10 → adopt within their existing tier slots.
+
+The PDF reading **does not change** the Q6 triage's tier assignments — it
+reinforces the WITH-REBUILD arc and confirms why B-bucket items belong
+there.
