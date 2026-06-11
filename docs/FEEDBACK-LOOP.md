@@ -98,20 +98,32 @@ Every sheet execution automatically captures detailed traces.
 
 ---
 
-### Stage 2: Evaluation (4 Judges)
+### Stage 2: Evaluation (5 Default Judges + Custom)
 
-Run reference-free evaluation using LLM-as-judge patterns.
+Run reference-free evaluation using LLM-as-judge patterns. The evaluation component supports both retrospective batch evaluation AND inline per-event evaluation that fires automatically when `:repl-researcher` nodes complete — see [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md) for both modes.
 
 **Component:** `components/evaluation/`
 
-**Four Built-in Judges:**
+**Five Default Judges (auto-attach to `:repl-researcher` when Living Description opt-in is on):**
+
+Four LLM judges + one deterministic heuristic. See [`RLM-GUIDE.md` § Attaching judges](RLM-GUIDE.md#attaching-judges-to-your-behavior-trees) for the attach flow and how custom judges integrate.
+
+**Four Built-in LLM Judges (and their advisory weights — see note below):**
 
 | Judge | Weight | Purpose |
 |-------|--------|---------|
-| Grounding | 35% | Detects hallucinations - is response grounded in inputs? |
-| Instruction Following | 25% | Did the LLM follow the instruction? |
-| Reasoning | 20% | Is the reasoning coherent and logical? |
-| Completeness | 20% | Are all aspects of the task addressed? |
+| Grounding | 35% (advisory) | Detects hallucinations - is response grounded in inputs? |
+| Instruction Following | 25% (advisory) | Did the LLM follow the instruction? |
+| Reasoning | 20% (advisory) | Is the reasoning coherent and logical? |
+| Completeness | 20% (advisory) | Are all aspects of the task addressed? |
+
+**Plus one deterministic judge added 2026-06:**
+
+| Judge | Implementation | Purpose |
+|---|---|---|
+| Heuristic Structural | Pure Clojure, no LLM | Grades the SHAPE of trees the model produces (`:generated-tree-raw`). Fires per `:rlm/tree-generated` AND on terminal completions. |
+
+> **Note on weights (2026-06):** The `% weight` column above is *advisory* — these specific numbers (35/25/20/20) aren't used as defaults in code. When multiple judges attach to a node, a `:judge/composite-score-computed` event lands per tick alongside the per-judge `:judge/score-emitted` events. Default policy: even-weight (1/N) when consumers don't set explicit weights; explicit `:judge-config :weight` values normalize to sum to 1.0. Single-judge ticks don't emit a composite (score = composite by definition).
 
 ```clojure
 (require '[ai.obney.orc.evaluation.interface :as eval])

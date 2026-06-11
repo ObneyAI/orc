@@ -28,9 +28,14 @@
             [ai.obney.orc.ontology.core.rule-extraction :as rule-extraction]
             [ai.obney.orc.ontology.core.commands] ;; Register defcommand handlers for tree profiles
             [ai.obney.orc.ontology.core.evolutionary-commands] ;; Register defcommand handlers for evolutionary builder
-            [ai.obney.orc.ontology.core.todo-processors] ;; Register todo processors for auto-learning
+            [ai.obney.orc.ontology.core.todo-processors :as todo-processors] ;; Register todo processors for auto-learning
+            [ai.obney.orc.ontology.core.reranker :as reranker]
+            [ai.obney.orc.ontology.core.task-classifier :as task-classifier]
+            [ai.obney.orc.ontology.core.seeds :as seeds]
+            [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.grain.event-store-v3.interface :as event-store]
-            [ai.obney.grain.read-model-processor-v2.interface :as rmp]))
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
+            [com.brunobonacci.mulog :as u]))
 
 ;; =============================================================================
 ;; Static Ontology Access
@@ -103,6 +108,313 @@
   "Get profile for a specific tree including strengths, weaknesses, and problem mappings."
   [ctx tree-id]
   (rm/get-tree-profile ctx tree-id))
+
+(defn get-description
+  "Return the CURRENT Living Description body for the given target.
+
+   Granularity is one of :node-type, :node-instance, :tree-fingerprint.
+   Target-id shape depends on the granularity:
+   - :node-type        → keyword (e.g. :llm, :map-each)
+   - :node-instance    → [sheet-id node-id] tuple of UUIDs
+   - :tree-fingerprint → string (the canonical-tree-raw hash)
+
+   Returns nil if no description has been recorded for the target."
+  [ctx granularity target-id]
+  (rm/get-description ctx granularity target-id))
+
+(defn get-description-history
+  "Return the full chronological history of every description version
+   recorded for the (granularity, target-id) target. Each entry is
+   {:body :recorded-at :event-id}. Empty vector if none recorded."
+  [ctx granularity target-id]
+  (rm/get-description-history ctx granularity target-id))
+
+(defn seed-baseline-corpus!
+  "C-Baseline: emit the baseline seed corpus that ships with the ontology
+   component (~45 hand-authored descriptions covering common node-types,
+   structural tree-classes, and behavioral subtrees).
+
+   Consumers using ORC via git deps call this on first start to bootstrap
+   the description corpus. Without it the R-Inject classifier path has
+   nothing to retrieve against and the Living Description loop has no
+   starting bodies for the consolidator to refine.
+
+   Returns a vec of command-results — one per dispatch. The 23 structural
+   tree-class seeds are dual-emitted (under :tree-fingerprint AND
+   :tree-class scopes) so the prepend assembler's body-fetch hits from
+   bootstrap onward; node-type and behavioral-subtree seeds are emitted
+   once each. Total dispatches: 68.
+
+   Idempotent: re-running appends new :tree-description-updated events
+   with the same body and the read-model projects the latest as `:current`
+   while preserving `:history` for audit."
+  [ctx]
+  (seeds/seed-baseline-corpus! ctx))
+
+(defn baseline-seeds
+  "Pure-data inspection: return the loaded baseline seed catalog as
+   `{:node-types <vec> :tree-classes <vec> :behavioral-subtrees <vec>}`.
+
+   For consumers and tests that want to walk the corpus without
+   dispatching commands (e.g., asserting invariants over seed bodies,
+   diffing against an app-specific extension)."
+  []
+  (seeds/baseline-seeds))
+
+(defn get-consolidation-threshold
+  "C-2a-3a: return the configured consolidation threshold for a
+   target-type keyword. Falls back to the default 10 events when no
+   per-target-type override has been set via
+   :ontology/set-consolidation-threshold."
+  [ctx target-type]
+  (rm/get-consolidation-threshold ctx target-type))
+
+(defn get-consolidation-delta
+  "C-2a-3a: return the current delta-counter (events-since-last-
+   consolidation) for the given (target-type, target-id) target.
+   Returns 0 when no events have ticked the counter."
+  [ctx target-type target-id]
+  (rm/get-consolidation-delta ctx target-type target-id))
+
+(defn get-consolidation-budget
+  "C-2a-3c: return the configured hourly consolidation budget for a
+   target-type keyword. Falls back to default 100 when no per-target-type
+   override has been set via :ontology/set-consolidation-budget."
+  [ctx target-type]
+  (rm/get-consolidation-budget ctx target-type))
+
+(defn get-recent-consolidation-count
+  "C-2a-3c: return how many :*-description-updated events have fired for
+   the given target-type in the rolling last-hour window. Used by the
+   consolidator's budget gate."
+  [ctx target-type]
+  (rm/get-recent-consolidation-count ctx target-type))
+
+(defn get-living-description-enabled?
+  "Gap-1: return the system-level Living Description opt-in flag.
+   Default false when no `:ontology/set-living-description-enabled`
+   event has been emitted. When true, the writing side of the loop
+   activates (consolidator, threshold tracking, per-event evaluator
+   runtime). Read side (R-Inject's :auto-classify? in :rlm config)
+   is independent."
+  [ctx]
+  (rm/get-living-description-enabled? ctx))
+
+(defn get-reindex-config
+  "C-2b-1: return the current ColBERT re-index configuration —
+   {:reindex-threshold-events N :reindex-timer-minutes T}. Falls back
+   to defaults (10 events, 5 minutes) when no :ontology/set-reindex-config
+   command has been emitted."
+  [ctx]
+  (rm/get-reindex-config ctx))
+
+(defn get-reindex-state
+  "C-2b-1: return the current re-index state for the ColBERT description
+   corpus — {:events-since-last-rebuild N :last-rebuild-timestamp
+   ISO-string :index-built? bool}. The re-index processor reads this to
+   decide threshold-or-timer trigger firing."
+  [ctx]
+  (rm/get-reindex-state ctx))
+
+(defn bootstrap-reindex!
+  "C-2b-1: bootstrap the ColBERT ontology-descriptions index. Call this
+   once during application startup, AFTER tp/start has wired up the
+   re-index processor. If descriptions already exist in the event store
+   AND no index has been built yet, this triggers an initial rebuild so
+   the search API has something to retrieve from immediately.
+
+   Idempotent — if the index already exists, this is a no-op (the
+   threshold-or-timer trigger handles future rebuilds)."
+  [ctx]
+  (todo-processors/maybe-rebuild! ctx))
+
+;; =============================================================================
+;; C-2b-1 — search-descriptions: parameterized retrieval API
+;; =============================================================================
+
+(defn- latest-ontology-descriptions-index
+  "Return the most-recently-created active ColBERT index with name
+   'ontology-descriptions', or nil if none exists."
+  [ctx]
+  (let [candidates (filter #(= "ontology-descriptions" (:index-name %))
+                           (colbert/list-indexes ctx))]
+    (when (seq candidates)
+      (last (sort-by :created-at candidates)))))
+
+(defn- granularity-name
+  "Granularity field round-trips through ColBERT's Python bridge as a
+   JSON string, so a stored value of `:node-type` comes back as
+   \"node-type\". Compare by name to bridge that gap."
+  [v]
+  (cond
+    (keyword? v) (name v)
+    (string? v)  v
+    :else        (str v)))
+
+(defn- normalize-search-result
+  "The ColBERT Python bridge returns snake_case keys (`:document_id`,
+   `:document_metadata`). The docstring on `colbert/search` promises
+   kebab-case — that's a doc-vs-code mismatch in the colbert component
+   that we work around here. Also re-keywordize known metadata fields
+   so downstream consumers don't have to deal with stringified keywords
+   from the JSON roundtrip."
+  [r]
+  (let [meta (or (:document-metadata r) (:document_metadata r))
+        norm-meta (when meta
+                    (cond-> meta
+                      (:granularity meta) (update :granularity
+                                                   #(if (keyword? %) % (keyword %)))))]
+    (-> r
+        (assoc :document-id (or (:document-id r) (:document_id r)))
+        (assoc :document-metadata norm-meta)
+        (dissoc :document_id :document_metadata))))
+
+(def ^:private rerank-over-fetch-multiplier
+  "Default over-fetch when reranking: pull 2x the caller's :k from
+   ColBERT so the reranker has signal to actually re-order."
+  2)
+
+(def ^:private rerank-hard-cap
+  "Hard cap on the candidate count fed to the reranker. Bounds the
+   structured-output prompt size regardless of caller :k."
+  50)
+
+(defn- rerank-fetch-k
+  "How many candidates to pull from ColBERT when reranking. Caller asks
+   for top-:k; we pull 2x that for the reranker to choose from, hard-
+   capped at rerank-hard-cap."
+  [k]
+  (min rerank-hard-cap (max k (* rerank-over-fetch-multiplier k))))
+
+(defn- apply-rerank
+  "JOIN the reranker's delta output back to the original ColBERT
+   candidates on :document-id, returning the top-N in the reranker's
+   order. Each result carries the original ColBERT fields PLUS
+   :reasoning, :fitness-score, and :rerank-source from the reranker.
+
+   R01: each result is stamped with :rerank-source. On the success
+   path the value is :reranker. On the fallback path (reranker threw,
+   returned nil, or returned empty) the value is :colbert-fallback
+   AND :fitness-score/:reasoning are explicitly nil so downstream
+   `(or (:fitness-score x) 0.0)` short-circuits don't mask the
+   absence."
+  [ctx candidates rerank-intent query k]
+  (let [reranked (try
+                   (reranker/rerank! ctx
+                     {:query query
+                      :intent rerank-intent
+                      :candidates candidates})
+                   (catch Throwable t
+                     (u/log ::rerank-failed
+                            :query query
+                            :error (.getMessage t))
+                     nil))]
+    (if (seq reranked)
+      (let [by-doc-id (into {} (map (juxt :document-id identity)) candidates)
+            joined (keep (fn [r]
+                           (when-let [orig (get by-doc-id (:document-id r))]
+                             (-> orig
+                                 (assoc :reasoning (:reasoning r))
+                                 (assoc :fitness-score (:fitness-score r))
+                                 (assoc :rerank-source :reranker))))
+                         reranked)]
+        (vec (take k joined)))
+      (do
+        (u/log ::rerank-failed
+               :query query
+               :note "Reranker returned no results; falling back to pure ColBERT ordering.")
+        (->> candidates
+             (take k)
+             (mapv (fn [c]
+                     (-> c
+                         (assoc :reasoning nil)
+                         (assoc :fitness-score nil)
+                         (assoc :rerank-source :colbert-fallback)))))))))
+
+(defn search-descriptions
+  "C-2b-1+C-2b-2: parameterized retrieval over the ColBERT-indexed
+   Living Description corpus. Returns top-K results, optionally
+   filtered by granularity and optionally reranked by an LLM against
+   the caller's intent.
+
+   Args:
+     ctx  - context map with :event-store, :tenant-id, etc.
+     opts - options map:
+       :query              - natural-language query string (REQUIRED)
+       :granularity        - filter to one of :node-type, :node-instance,
+                             :tree-fingerprint; or :all (default :all)
+       :k                  - top-K to return (default 10)
+       :rerank-with-intent - optional string. When provided, the
+                             ColBERT top-(2k or capped 50) is run
+                             through an LLM reranker that returns
+                             a reordered list with per-result
+                             :reasoning + :fitness-score.
+
+   Returns a vector of result maps:
+     [{:content \"...\" :score 0.87 :rank 1 :document-id \"...\"
+       :document-metadata {:granularity :target-id :confidence :last-update}
+       ;; Present only when :rerank-with-intent was provided:
+       :reasoning \"...\" :fitness-score 0.87}]
+
+   Cold-search semantics: if no ontology-descriptions index has been
+   built yet, returns [] and logs ::search-cold-no-index. NEVER
+   triggers a synchronous rebuild (would block the caller ~30-60s).
+
+   Rerank-failure semantics: if the LLM call throws or returns nil,
+   fall back to the pure-ColBERT top-K + log ::rerank-failed. The
+   caller sees no exception."
+  [ctx {:keys [query granularity k rerank-with-intent]
+        :or {granularity :all k 10}}]
+  (if-let [index (latest-ontology-descriptions-index ctx)]
+    (let [fetch-k (if rerank-with-intent
+                    (rerank-fetch-k k)
+                    (if (= granularity :all) k (* 3 k)))
+          raw-results (mapv normalize-search-result
+                            (colbert/search ctx
+                              {:query query
+                               :index-id (:index-id index)
+                               :k fetch-k}))
+          filtered (if (= granularity :all)
+                     raw-results
+                     (let [g-name (granularity-name granularity)]
+                       (filterv #(= g-name
+                                    (granularity-name
+                                      (-> % :document-metadata :granularity)))
+                                raw-results)))]
+      (if rerank-with-intent
+        (apply-rerank ctx filtered rerank-with-intent query k)
+        (vec (take k filtered))))
+    (do
+      (u/log ::search-cold-no-index
+             :query query
+             :note "No ontology-descriptions index has been built yet. Returning empty results.")
+      [])))
+
+;; =============================================================================
+;; C-2c-1 — classify-task: pure task → tree-class classification
+;; =============================================================================
+
+(def classify-task
+  "C-2c-1: pure classification function. Given a task signature +
+   optional parent-context summary + threshold, returns a tree-class
+   assignment (matched corpus entry above threshold OR fresh UUID mint).
+
+   See `ai.obney.orc.ontology.core.task-classifier/classify-task` for
+   the full docstring."
+  task-classifier/classify-task)
+
+(def classify-behaviors
+  "R05b: pure behavioral classification. Given a task signature +
+   threshold (+ optional :structural-context + :top-n), returns top-N
+   behavioral-subtree examples from the Layer-2 corpus with reasoning.
+
+   The corpus is FEW-SHOT EXAMPLE MATERIAL for the recursive RLM
+   researcher; the model decides reuse/adapt/mint. composes-into
+   edges in the concept graph are RETRIEVAL HINTS, not gates.
+
+   See `ai.obney.orc.ontology.core.task-classifier/classify-behaviors`
+   for the full docstring."
+  task-classifier/classify-behaviors)
 
 (defn get-all-tree-profiles
   "Get all tree profiles."
@@ -753,6 +1065,8 @@
        :seed-uris - Collection of starting concept URIs for graph expansion
        :query-text - Natural language query for embedding search
        :scope - Filter to specific ontology scope
+       :ontology-id - Filter by single ontology-id
+       :ontology-ids - Filter by multiple ontology-ids (returns union)
        :limit - Maximum results (default 10)
        :min-similarity - Minimum embedding similarity (default 0.3)
        :max-depth - BFS expansion depth (default 2)
@@ -766,6 +1080,25 @@
       :method \"rrf\"}"
   [event-store opts]
   (retrieval/hybrid-search event-store opts))
+
+(defn hybrid-search-batch
+  "Batched hybrid-search over MANY query-texts. The ColBERT signal runs in ONE
+   batched pass (index loaded ONCE, one bridge round-trip); embedding + graph stay
+   per-query (in-JVM). Returns a vector of per-query result-maps, each shaped exactly
+   like hybrid-search's output, aligned to `:query-texts`.
+
+   Use over a whole transcript instead of mapping hybrid-search per line: collapses N
+   ColBERT round-trips (and N index loads) into one, no per-search reload, while
+   keeping the embedding+ColBERT RRF fusion substance-identical to the single-query
+   path.
+
+   Args:
+     event-store: Grain event store
+     opts: same as hybrid-search, except
+       :query-texts - Vector of natural-language queries (instead of :query-text)
+       :seed-uris   - shared graph seeds applied to every query (usually nil)"
+  [event-store opts]
+  (retrieval/hybrid-search-batch event-store opts))
 
 (defn hybrid-search-failures
   "Search failure concepts using hybrid graph + embedding search.
@@ -1550,3 +1883,183 @@
              vec)]
     {:domain domain
      :recommendations recommendations}))
+
+;; =============================================================================
+;; Evolutionary Ontology Building
+;; =============================================================================
+;;
+;; These functions provide ontology construction from various source types:
+;; - CSV files → entities and relationships
+;; - Text documents → concept extraction and taxonomy
+;; - SQL databases → schema-to-ontology mapping
+;; - Unified interface → auto-detection and routing
+;;
+
+(defn build-ontology-from-sources
+  "Build ontology from multiple sources using the evolutionary pipeline.
+
+   This is the main entry point for batch ontology construction.
+
+   Args:
+     ctx: Context with :event-store
+     params:
+       :sources - Vector of source maps:
+         [{:path \"data.csv\" :type \"csv\"}
+          {:path \"database.db\" :type \"sql\"}
+          {:content \"text...\" :type \"text\"}]
+       :config - Configuration:
+         :base-uri - Ontology namespace (default: http://ontology.local/)
+         :similarity-threshold - Entity resolution threshold (default: 0.85)
+         :enable-colbert? - Enable ColBERT indexing (default: true)
+         :enable-embeddings? - Enable embedding generation (default: true)
+
+   Supported source types:
+     - \"csv\" - CSV files (provide :entity-column, :entity-type in config)
+     - \"text\" - Text documents (provide :domain in config)
+     - \"sql\"/\"sqlite\"/\"db\" - SQLite databases
+     - \"json\" - JSON files/data (provide :domain in config for better extraction)
+     - \"rdf\" - RDF/OWL imports (planned)
+
+   Returns:
+     {:ontology-id uuid
+      :build-id uuid
+      :total-sources int
+      :total-concepts int
+      :total-triples int
+      :ttl-output string
+      :events [...]}
+
+   Example:
+     (build-ontology-from-sources ctx
+       {:sources [{:path \"/data/programs.csv\" :type \"csv\"}
+                  {:path \"/data/ipeds.db\" :type \"sql\"}]
+        :config {:base-uri \"http://education.ai/\"
+                 :entity-column \"name\"
+                 :entity-type \"Program\"}})"
+  [ctx params]
+  (require '[ai.obney.orc.ontology.core.evolutionary-builder :as evo-builder])
+  ((resolve 'ai.obney.orc.ontology.core.evolutionary-builder/build-from-sources) ctx params))
+
+(defn evolve-ontology
+  "Evolve existing ontology with new sources (incremental mode).
+
+   Extends an existing ontology without rebuilding from scratch.
+
+   Args:
+     ctx: Context with :event-store
+     params:
+       :ontology-id - UUID of existing ontology
+       :sources - Vector of new sources to add
+       :config - Configuration options
+
+   Returns:
+     Same as build-ontology-from-sources"
+  [ctx params]
+  (require '[ai.obney.orc.ontology.core.evolutionary-builder :as evo-builder])
+  ((resolve 'ai.obney.orc.ontology.core.evolutionary-builder/evolve) ctx params))
+
+(defn extract-from-csv
+  "Extract ontology from CSV data using the CSV ORC sheet.
+
+   Args:
+     ctx: ORC context
+     opts:
+       :csv-data - Parsed CSV as vector of maps, or CSV string
+       :entity-column - Column to use as entity label
+       :entity-type - OWL class name
+       :base-uri - Ontology namespace
+
+   Returns:
+     {:status :success/:failed
+      :entities [...] :relationships [...] :tbox {...}
+      :owl-output string}"
+  [ctx opts]
+  (require '[ai.obney.orc.ontology.sheets.csv-ontology :as csv-ont])
+  (let [build! (resolve 'ai.obney.orc.ontology.sheets.csv-ontology/build-csv-ontology-pipeline!)
+        run! (resolve 'ai.obney.orc.ontology.sheets.csv-ontology/run-csv-to-ontology)
+        sheet-id (build! ctx)]
+    (run! ctx sheet-id opts)))
+
+(defn extract-from-text
+  "Extract ontology from text using the taxonomy ORC sheet.
+
+   Args:
+     ctx: ORC context
+     opts:
+       :source-text - Text to extract concepts from
+       :domain - Domain context (e.g., \"artificial intelligence\")
+       :existing-concepts - Concepts to avoid re-extracting
+
+   Returns:
+     {:status :success/:failed
+      :concepts [...] :relationships [...] :top-concepts [...]
+      :skos-output string}"
+  [ctx opts]
+  (require '[ai.obney.orc.ontology.sheets.ontology-exploration :as text-ont])
+  (let [build! (resolve 'ai.obney.orc.ontology.sheets.ontology-exploration/build-taxonomy-pipeline!)
+        run! (resolve 'ai.obney.orc.ontology.sheets.ontology-exploration/run-taxonomy-pipeline)
+        sheet-id (build! ctx)]
+    (run! ctx sheet-id opts)))
+
+(defn extract-from-sql
+  "Extract ontology from SQLite database using the SQL ORC sheet.
+
+   Args:
+     ctx: ORC context
+     opts:
+       :db-path - Path to SQLite database file
+       :base-uri - Ontology namespace (default: http://example.org/db#)
+       :max-tables - Max tables to process (default: 50)
+       :max-instances - Max instances per table for A-box (default: 10)
+
+   Returns:
+     {:status :success/:failed
+      :domain - Detected domain
+      :domain-description - Domain description
+      :tbox {:classes [...] :object-properties [...] :datatype-properties [...]}
+      :abox [...]
+      :owl-output string
+      :statistics {...}}"
+  [ctx opts]
+  (require '[ai.obney.orc.ontology.sheets.sql-ontology :as sql-ont])
+  (let [build! (resolve 'ai.obney.orc.ontology.sheets.sql-ontology/build-sql-ontology-pipeline!)
+        run! (resolve 'ai.obney.orc.ontology.sheets.sql-ontology/run-sql-to-ontology)
+        sheet-id (build! ctx)]
+    (run! ctx sheet-id opts)))
+
+(defn extract-unified
+  "Unified ontology extraction - auto-detects source type.
+
+   This is the simplest API - provide a source and let the system
+   determine the appropriate extraction method.
+
+   Args:
+     ctx: ORC context
+     source: Map with:
+       :path - File path (optional if :content provided)
+       :content - Inline content (optional if :path provided)
+       :type - Source type override (optional, will auto-detect)
+       Plus type-specific options
+
+   Auto-detection:
+     - .csv → CSV extraction
+     - .db/.sqlite → SQL extraction
+     - .txt/.md → Text extraction
+     - .json → JSON extraction (planned)
+     - .ttl/.rdf/.owl → RDF import (planned)
+
+   Returns:
+     {:status :success/:failed/:not-implemented
+      :source-type :csv/:text/:sql/:json/:rdf
+      ...type-specific outputs...}"
+  [ctx source]
+  (require '[ai.obney.orc.ontology.sheets.unified-ontology :as unified])
+  ((resolve 'ai.obney.orc.ontology.sheets.unified-ontology/extract) ctx source))
+
+(defn extract-unified-multiple
+  "Extract ontologies from multiple sources with unified API.
+
+   Returns map of source identifiers to extraction results."
+  [ctx sources]
+  (require '[ai.obney.orc.ontology.sheets.unified-ontology :as unified])
+  ((resolve 'ai.obney.orc.ontology.sheets.unified-ontology/extract-multiple) ctx sources))

@@ -1,0 +1,61 @@
+{:slug "domain-003-marathon-training",
+ :envelope
+ {:assigned-tree-id #uuid "5a08300e-10e3-305a-80c1-17eafea15ff7",
+  :confidence 0.95,
+  :top-candidates
+  [{:content
+    "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+    :score 107.71723175048828,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151870-05:00"},
+    :reasoning
+    "The marathon training plan request is a multi-constraint scheduling task (age, mileage, pace goals, injury history, elevation, equipment) that requires a staged sequential pipeline. This pattern allows the LLM to propose the 16-week assignment while using a code-driven conflict-check to ensure hard constraints—like the 55-60 mile peak by week 14 and the 4th-week cutback cycles—are strictly honored, which prevents the typical LLM failure of violating mileage progression rules.",
+    :fitness-score 0.95,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 106.47135162353516,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.142242-05:00"},
+    :reasoning
+    "While the query results in a relatively long output (16 weeks of data), it is a synthesis task rather than a large document extraction task. The chunked-extraction pattern's use of :map-each and :aggregate is a poor fit for a linear training progression where each week must build on the volume and physiological adaptation of the previous week, making relative training load difficult to maintain across independent chunks.",
+    :fitness-score 0.2,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 106.02336120605469,
+    :rank 7,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.149787-05:00"},
+    :reasoning
+    "The fallback pattern is designed for error handling and graceful degradation between models or strategies. While a training plan might need 'recovery' for injury, this structural pattern is about execution flow failure (e.g., API errors) rather than the logic of designing a physiological adaptation schedule. It provides no structural guidance for the complex scheduling and constraint-matching required by the intent.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}],
+  :reasoning
+  "The marathon training plan request is a multi-constraint scheduling task (age, mileage, pace goals, injury history, elevation, equipment) that requires a staged sequential pipeline. This pattern allows the LLM to propose the 16-week assignment while using a code-driven conflict-check to ensure hard constraints—like the 55-60 mile peak by week 14 and the 4th-week cutback cycles—are strictly honored, which prevents the typical LLM failure of violating mileage progression rules.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6706,
+ :parent-chain []}

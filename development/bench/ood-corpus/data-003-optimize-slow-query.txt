@@ -1,0 +1,37 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: data
+;; Why OOD: query optimization needs structural rewrite + index recommendation grounded in stats.
+A slow query in production:
+
+```sql
+SELECT u.id, u.name, u.email,
+       COUNT(o.id) AS order_count,
+       SUM(o.total_cents) AS lifetime_value
+FROM users u
+LEFT JOIN orders o ON o.user_id = u.id AND o.status = 'completed'
+WHERE u.signup_date >= NOW() - INTERVAL '90 days'
+  AND u.email_verified = TRUE
+GROUP BY u.id, u.name, u.email
+HAVING COUNT(o.id) >= 3
+ORDER BY lifetime_value DESC
+LIMIT 100;
+```
+
+Table stats:
+- `users` (12M rows, ~5 GB): indexes on (id PK), (signup_date)
+- `orders` (180M rows, ~80 GB): indexes on (id PK), (user_id),
+  (created_at), (status)
+- The query runs in 14 seconds. Customer-facing dashboard expects <500ms.
+
+Diagnose AND fix. Provide:
+- `:query-plan-analysis` — the most likely bottleneck (sequential scan,
+  bad join order, sort spill, etc.) and the signals that point to it
+- `:proposed-rewrite` — the rewritten SQL with an explanation of each
+  change
+- `:index-recommendations` — exact `CREATE INDEX` statements with the
+  rationale for each (and the storage / write-amplification cost)
+- `:expected-improvement` — your honest estimate of post-fix p95
+- `:verification-plan` — what to measure to confirm the improvement
+  before rolling it out to all dashboards
+- `:risks` — what could regress; consider write amplification, index
+  bloat, planner reliance on stats

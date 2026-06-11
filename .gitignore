@@ -13,3 +13,21 @@ __pycache__/
 *.pyc
 .DS_Store
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Benchmark / live-verify run output — regenerated every run, never committed.
+development/bench/generalization-results/
+
+# Large binary test fixtures. Keep these local; share via external storage if needed.
+development/resources/
+
+# ColBERT runtime artifacts — Python virtualenv + binary index data.
+# These are local infrastructure for both the description corpus (agent
+# self-improving loop) and the evolutionary ontology extraction pipeline.
+# Rebuild via scripts/setup-colbert.sh.
+.venv-colbert/
+.ragatouille/
+
+# Local-only follow-up working notes. Survive compaction (filesystem-tracked)
+# but never committed — they're scratch planning that becomes stale fast.
+docs/issues/c2d-followups/

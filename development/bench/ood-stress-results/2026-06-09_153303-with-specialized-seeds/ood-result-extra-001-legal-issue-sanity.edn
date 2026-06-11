@@ -1,0 +1,47 @@
+{:slug "extra-001-legal-issue-sanity",
+ :envelope
+ {:assigned-tree-id #uuid "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+  :confidence 1.0,
+  :top-candidates
+  [{:content
+    "Risk-analysis trees identify and categorize risks/obligations from a document into a per-item :risk-matrix (HIGH/MEDIUM/LOW + justification) plus an :executive-summary. The proven shape is per-section :map-each with structured :output-schemas: split by section delimiter, classify each section under bounded concurrency, aggregate the matrix, then synthesize the executive summary. Always use :output-schemas to constrain severity to an enum — free-form strings drift across iterations and break aggregation.",
+    :score 73.20087432861328,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b002-d0c0a0a0a0a2\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b002-d0c0a0a0a0a2",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.141013-05:00"},
+    :reasoning
+    "This candidate perfectly matches the intent to classify and identify concerns (risks) with specific metadata. It explicitly recommends a :risk-matrix shape with severity levels (HIGH/MEDIUM/LOW) and justifications, which aligns with the user's requirement for a severity rating and a statement of concern. It also utilizes :output-schemas to constrain severity to an enum, matching the structured :issues output requested.",
+    :fitness-score 1.0,
+    :rerank-source :reranker}
+   {:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 73.55482482910156,
+    :rank 7,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151172-05:00"},
+    :reasoning
+    "This pattern is designed for sequential data transformation and formatting (ETL) rather than evaluative risk assessment. While it uses :llm and :code nodes, it lacks the specialized 'classify and aggregate' structure required to generate the specific 'severity' and 'area of law' fields requested in the legal review task.",
+    :fitness-score 0.3,
+    :rerank-source :reranker}],
+  :reasoning
+  "This candidate perfectly matches the intent to classify and identify concerns (risks) with specific metadata. It explicitly recommends a :risk-matrix shape with severity levels (HIGH/MEDIUM/LOW) and justifications, which aligns with the user's requirement for a severity rating and a statement of concern. It also utilizes :output-schemas to constrain severity to an enum, matching the structured :issues output requested.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5316,
+ :parent-chain []}

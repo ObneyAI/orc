@@ -1,0 +1,32 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: data
+;; Why OOD: pipeline DESIGN with SCD handling — distinct from ChunkedExtraction or aggregation seeds.
+A company has 5 source databases (Postgres for transactional, MySQL for
+legacy ERP, MongoDB for product catalog, Snowflake for warehoused
+analytics, Salesforce for CRM). They need to build a dimensional model
+(star schema) for executive dashboards.
+
+CDC streams from the 5 sources are available via Debezium → Kafka.
+Update frequencies vary: transactional ~1K events/min, ERP ~10/min,
+catalog ~5/min, Snowflake batch every 4 hours, Salesforce ~200/min.
+
+Design the ETL pipeline:
+- Identify the fact tables and dimension tables (a "customer orders by
+  product category" star at minimum)
+- Choose an SCD strategy per dimension (Type 1 vs Type 2 vs Type 6) with
+  reasoning grounded in WHO will query the data + what questions they
+  ask
+- Define the join logic to reconcile customer IDs across sources
+  (Salesforce uses external_id, transactional uses customer_id,
+  legacy ERP uses cust_no — and they aren't always perfectly matched)
+- Handle late-arriving facts (Snowflake batch lags transactional by up to
+  4 hours)
+- Define the freshness SLA for dashboards (real-time? 15-min? hourly?)
+  and justify with consumer needs
+
+Return:
+- `:fact-tables` + `:dimension-tables` (name, grain, columns, SCD type)
+- `:ingestion-flow` (per-source path through Kafka → transform → load)
+- `:reconciliation-strategy` for customer-ID conflicts
+- `:freshness-sla` + the architectural choices that achieve it
+- `:open-questions` — things you'd need to ask the business before finalizing

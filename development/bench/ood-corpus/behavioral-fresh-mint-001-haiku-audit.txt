@@ -1,0 +1,17 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: behavioral-fresh-mint
+;; Why OOD: form-constrained creative writing (haiku) over a structured input (audit findings). No baseline behavior covers form-constrained authorship.
+You are given a list of 5 security audit findings on a deployed web application:
+
+  - Finding A: SQL injection possible in /search endpoint via the `q` parameter
+  - Finding B: Session cookies set without Secure or HttpOnly flags
+  - Finding C: User input reflected unescaped in error messages (XSS)
+  - Finding D: Admin role check bypassable by tampering with JWT `role` claim
+  - Finding E: Sensitive logs (auth tokens) stored in plaintext on disk
+
+Produce a haiku (5-7-5 syllable structure) for EACH finding that captures the
+essence of the vulnerability in evocative imagery while preserving technical
+accuracy. Each haiku should make the reader feel the seriousness without
+naming the CVE category directly.
+
+Return a vector of 5 maps `{:finding "A" :haiku "..."}` ordered A through E.

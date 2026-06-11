@@ -1,0 +1,27 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: domain
+;; Why OOD: human-physiology programming with progressive overload + injury risk constraints.
+Build a 16-week marathon training plan for a runner with the following profile:
+
+- Age 38, recreational runner, currently logging 25 miles/week
+- Goal: complete a marathon in 4:00 (~9:09/mile pace)
+- Previous race: half-marathon in 1:55 six months ago
+- Available training time: weekday runs 45-60 min, long run on Saturday or Sunday
+- Constraints: prior right Achilles tendinopathy (no flare-up in 18 months),
+  no track access, lives at 6,200 ft elevation, gym access (treadmill +
+  basic strength equipment)
+
+Produce a week-by-week plan that:
+- Builds peak training volume to ~55-60 miles/week by week 13-14
+- Includes appropriate variety: easy runs, tempo runs, intervals,
+  long runs, recovery runs
+- Has a 3-week taper (weeks 14-15-16) appropriate for the goal time
+- Includes specific paces (easy / marathon / tempo / interval) calibrated
+  to a 4:00 marathon goal
+- Schedules 2 strength sessions per week with exercise types appropriate
+  for runners (no heavy lifting; focus on glute / hip / calf stability
+  given the Achilles history)
+- Provides cutback weeks every 4th week to allow adaptation
+- Includes specific WARNING SIGNS that would warrant a deload or rest week
+
+Output: `{:week-by-week [<week-plan> ...] :paces {...} :strength-program :red-flags}`

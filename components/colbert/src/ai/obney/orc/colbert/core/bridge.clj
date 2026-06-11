@@ -37,14 +37,24 @@
   (or (System/getProperty "colbert.venv.path")
       ".venv-colbert"))
 
+;; ColBERT bridge script path - defaults to scripts/colbert_bridge.py relative to
+;; the JVM cwd (correct when running FROM the orc repo). Consumers that depend on
+;; orc as a read-only git/SHA library (e.g. a separate app) run from their own cwd
+;; where that relative path does not resolve, so they override it with an absolute
+;; path via -Dcolbert.bridge.script=... (typically the script in their gitlibs
+;; checkout of orc, alongside an absolute -Dcolbert.venv.path).
+(def ^:private bridge-script-path
+  (or (System/getProperty "colbert.bridge.script")
+      "scripts/colbert_bridge.py"))
+
 (defn- get-python-cmd
   "Get the Python command, preferring venv if available."
   []
   (let [venv-python (str venv-path "/bin/python")]
     (if (.exists (java.io.File. venv-python))
-      [venv-python "-u" "scripts/colbert_bridge.py"]
+      [venv-python "-u" bridge-script-path]
       ;; Fallback to system python
-      ["python" "-u" "scripts/colbert_bridge.py"])))
+      ["python" "-u" bridge-script-path])))
 
 (def ^:private default-timeout-ms 60000)
 

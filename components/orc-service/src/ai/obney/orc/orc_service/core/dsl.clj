@@ -144,8 +144,9 @@
                  :include-patterns true
                  :include-failures true
                  :tree-id uuid  ;; for self-learning
-                 :self-learning? true}"
-  [name & {:keys [model instruction reads writes retry judges context]}]
+                 :self-learning? true}
+     :options - Executor options passed through to DSCloj for this node"
+  [name & {:keys [model instruction reads writes retry judges context options]}]
   (cond-> {:node-type :leaf
            :name name
            :executor :ai
@@ -155,7 +156,8 @@
            :writes (vec writes)}
     retry (assoc :retry retry)
     judges (assoc :judges (vec judges))
-    context (assoc :context context)))
+    context (assoc :context context)
+    options (assoc :options options)))
 
 (defn code
   "Define a code executor leaf node.
@@ -219,20 +221,43 @@
      :mcp-tools - Vector of MCP tool names (require :call-tool-fn in context)
      :browser-tools - Vector of agent-browser tool names (e.g., [\"open\" \"snapshot\" \"click\"])
      :max-iterations - Max research iterations (default 10)
+     :rlm - Enable RLM mode with BT primitives (default: false)
 
    Browser tools are shell-based (no session management) and include:
      open, snapshot, click, fill, type, press, scroll, wait,
-     get-text, get-url, get-title, back, forward, screenshot"
-  [name & {:keys [model instruction reads writes mcp-tools browser-tools max-iterations]}]
-  {:node-type :repl-researcher
-   :name name
-   :model model
-   :instruction instruction
-   :reads (vec (or reads []))
-   :writes (vec (or writes []))
-   :mcp-tools (vec (or mcp-tools []))
-   :browser-tools (vec (or browser-tools []))
-   :max-iterations (or max-iterations 10)})
+     get-text, get-url, get-title, back, forward, screenshot
+
+   RLM Mode:
+     When :rlm true, the sandbox gains behavior tree primitives:
+     - (llm \"name\" :instruction \"...\" :writes [:key]) - Execute sub-LLM call
+     - (sequence \"name\" child1 child2 ...) - Execute in order
+     - (parallel \"name\" child1 child2 ...) - Execute concurrently
+     - (map-each \"name\" coll f) - Process collection items
+     - (fallback \"name\" child1 child2 ...) - First non-nil result
+     - (condition \"name\" pred then else) - Branch on predicate
+     - (code \"name\" :writes [:key] :body expr) - Pure computation
+     - (final! {:key value}) - Capture validated output
+     - (get-input :key) - Load full input value
+     - inputs - Preview map (metadata only)"
+  [name & {:keys [model instruction reads writes mcp-tools browser-tools max-iterations rlm context options]}]
+  (cond-> {:node-type :repl-researcher
+           :name name
+           :model model
+           :instruction instruction
+           :reads (vec (or reads []))
+           :writes (vec (or writes []))
+           :mcp-tools (vec (or mcp-tools []))
+           :browser-tools (vec (or browser-tools []))
+           :max-iterations (or max-iterations 10)}
+    (some? rlm) (assoc :rlm rlm)
+    ;; :context is the ontology-injection config (same shape :leaf llm nodes
+    ;; accept). The runtime apply-ontology-context pipeline reads :context and
+    ;; prepends formatted principles to :instruction at execute time. The
+    ;; :sheet/set-node-context command + read-model projection are generic;
+    ;; this DSL wedge plus the relaxed command-side guard wire it through
+    ;; for :repl-researcher.
+    context (assoc :context context)
+    options (assoc :options options)))
 
 (defn delegate
   "Define a delegate node for subworkflow execution.
@@ -426,7 +451,8 @@
         (h/run-and-apply! ctx
           (h/make-set-node-executor-command sheet-id node-id (:executor node)
             :model (:model node)
-            :fn (:fn node)))
+            :fn (:fn node)
+            :options (:options node)))
         ;; Set instruction if AI node
         (when (:instruction node)
           (h/run-and-apply! ctx
@@ -469,7 +495,18 @@
             (:instruction node) (:reads node) (:writes node) (:mcp-tools node)
             :model (:model node)
             :max-iterations (:max-iterations node)
-            :browser-tools (:browser-tools node))))
+            :browser-tools (:browser-tools node)
+            :rlm (:rlm node)
+            :options (:options node)))
+        ;; Set ontology context if configured. The runtime processor's
+        ;; apply-ontology-context reads :context from the node and prepends
+        ;; formatted principles to :instruction at execute time. The
+        ;; :sheet/set-node-context command + read-model projection are
+        ;; generic across node types; this build-workflow emit wires the
+        ;; pipeline through for :repl-researcher.
+        (when-let [context (:context node)]
+          (h/run-and-apply! ctx
+            (h/make-set-node-context-command sheet-id node-id context))))
 
       :delegate
       (do
@@ -689,7 +726,8 @@
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (seq (:mcp-tools node)) (assoc :mcp-tools (:mcp-tools node))
                    (:model node) (assoc :model (:model node))
-                   (:max-iterations node) (assoc :max-iterations (:max-iterations node))))
+                   (:max-iterations node) (assoc :max-iterations (:max-iterations node))
+                   (some? (:rlm node)) (assoc :rlm (:rlm node))))
           ;; Delegate-specific
           (= :delegate (:type node))
           (merge (cond-> {}
@@ -783,7 +821,8 @@
             (:instruction node) (vec (:reads node)) (vec (:writes node))
             (vec (:mcp-tools node))
             :model (:model node)
-            :max-iterations (:max-iterations node))))
+            :max-iterations (:max-iterations node)
+            :rlm (:rlm node))))
 
       :delegate
       (when (:target-sheet-id node)
@@ -1005,7 +1044,8 @@
                 :reads (:reads node)
                 :writes (:writes node)
                 :mcp-tools (:mcp-tools node)
-                :max-iterations (:max-iterations node)})]
+                :max-iterations (:max-iterations node)
+                :rlm (:rlm node)})]
     (if (empty? opts)
       (list (dsl-sym 'repl-researcher) (:name node))
       (apply list (dsl-sym 'repl-researcher) (:name node) opts))))

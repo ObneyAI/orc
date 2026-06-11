@@ -1,0 +1,75 @@
+{:slug "behavioral-fresh-mint-002-melody-encoding-pi",
+ :envelope
+ {:assigned-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+  :confidence 0.85,
+  :reasoning
+  "The task requires a multi-step iterative process: first translating digits to notes via logic (code), then generating melodic metadata (rhythm/duration) and explanatory prose (LLM). SequentialPipeline is the best fit for this 'calculate -> enrich -> format' flow.",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "SequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.",
+    :score 68.84904479980469,
+    :rank 7,
+    :document-id ":tree-fingerprint:\"seed:tree:SequentialPipeline\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:SequentialPipeline",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464938-05:00"},
+    :reasoning
+    "The task requires a multi-step iterative process: first translating digits to notes via logic (code), then generating melodic metadata (rhythm/duration) and explanatory prose (LLM). SequentialPipeline is the best fit for this 'calculate -> enrich -> format' flow.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "Parallel-sum is the pure-code MapReduce variant: chunk → :code per-chunk computation → :code arithmetic reduce. Both stages are deterministic — same input produces byte-identical output. Use higher :max-concurrency (8+) on :map-each since :code calls have no rate-limit risk. NEVER use :llm for arithmetic per-chunk work. NEVER apply non-associative reducers (median, percentile) to partial per-chunk results — they require the full set. Use parallel-classify-aggregate when the per-chunk work requires LLM judgment.",
+    :score 69.70550537109375,
+    :rank 3,
+    :document-id
+    ":tree-fingerprint:#uuid \"c38abdbd-be30-38e7-8f81-e431cdba7a07\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470631-05:00"},
+    :reasoning
+    "The digit-to-note mapping is a deterministic arithmetic operation suitable for the ':code per-chunk computation' described here. However, it lacks the secondary LLM synthesis stage needed for the rhythmic explanation and bonus naming.",
+    :fitness-score 0.5,
+    :rerank-source :reranker}
+   {:content
+    "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+    :score 66.02648162841797,
+    :rank 9,
+    :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ChunkedExtraction",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464585-05:00"},
+    :reasoning
+    "While the query involves processing a sequence of 20 digits, it is not a 'large document' (under the 5KB threshold mentioned), and the task requires creative synthesis rather than just independent extraction.",
+    :fitness-score 0.3,
+    :rerank-source :reranker}
+   {:content
+    "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+    :score 69.37600708007812,
+    :rank 5,
+    :document-id
+    ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470984-05:00"},
+    :reasoning
+    "This pattern is for classification/counting using LLMs. Mapping digits of pi to scale degrees is a rigid mathematical rule, and using LLM judgment for the digit mapping as suggested by this pattern would be inefficient and prone to error.",
+    :fitness-score 0.15,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6856,
+ :parent-chain []}

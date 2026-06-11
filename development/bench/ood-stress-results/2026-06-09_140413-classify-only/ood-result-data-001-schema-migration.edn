@@ -1,0 +1,76 @@
+{:slug "data-001-schema-migration",
+ :envelope
+ {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :confidence 0.85,
+  :reasoning
+  "The ETL pipeline fingerprint best fits this task's multi-stage dependency structure. The migration requires sequential :writes (DDL/DML backfills) feeding into the next stage's :reads (verification/constraint checks). The recommended pattern of using :llm for transformation (resolving guest emails) and :code for deterministic formatting (DDL execution) aligns with the complex data backfill and schema enforcement requirements.",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 114.4953384399414,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468124-05:00"},
+    :reasoning
+    "The ETL pipeline fingerprint best fits this task's multi-stage dependency structure. The migration requires sequential :writes (DDL/DML backfills) feeding into the next stage's :reads (verification/constraint checks). The recommended pattern of using :llm for transformation (resolving guest emails) and :code for deterministic formatting (DDL execution) aligns with the complex data backfill and schema enforcement requirements.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+    :score 112.76848602294922,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470984-05:00"},
+    :reasoning
+    "The parallel-classify-aggregate pattern is useful for the data backfill portion of the migration (mapping legacy guest checkouts to potential emails via classification logic), but it lacks the sequential structural complexity needed to handle the DDL ordering and locking implications described in the intent.",
+    :fitness-score 0.55,
+    :rerank-source :reranker}
+   {:content
+    "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+    :score 109.9444808959961,
+    :rank 9,
+    :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ChunkedExtraction",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464585-05:00"},
+    :reasoning
+    "While the backfill involves 840K rows that could be processed in chunks, this pattern focuses on document processing rather than database state transitions. It provides a mechanism for the DML backfill but fails to address the critical DDL sequencing and application-side guards required for a zero-downtime migration.",
+    :fitness-score 0.4,
+    :rerank-source :reranker}
+   {:content
+    "Parallel-sum is the pure-code MapReduce variant: chunk → :code per-chunk computation → :code arithmetic reduce. Both stages are deterministic — same input produces byte-identical output. Use higher :max-concurrency (8+) on :map-each since :code calls have no rate-limit risk. NEVER use :llm for arithmetic per-chunk work. NEVER apply non-associative reducers (median, percentile) to partial per-chunk results — they require the full set. Use parallel-classify-aggregate when the per-chunk work requires LLM judgment.",
+    :score 110.32809448242188,
+    :rank 7,
+    :document-id
+    ":tree-fingerprint:#uuid \"c38abdbd-be30-38e7-8f81-e431cdba7a07\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470631-05:00"},
+    :reasoning
+    "This pattern is restricted to deterministic code-only MapReduce. Migration tasks involving non-deterministic data recovery (finding missing guest emails) and external schema state are poorly served by a model that explicitly forbids LLM-based logic for the transformation stage.",
+    :fitness-score 0.2,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 7062,
+ :parent-chain []}

@@ -1,0 +1,62 @@
+{:slug "conv-002-architecture-recommendation",
+ :envelope
+ {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :confidence 0.85,
+  :reasoning
+  "The query requires a structured architectural recommendation across five distinct categories (Transport, Authority, Orchestration, Data, Observability). The ETL pipeline pattern's use of sequential stages where :llm transforms content and :code handles deterministic formatting/aggregation perfectly mirrors the task of taking raw requirements and producing a structured, multi-part recommendation document with consistent sub-sections (decision, failure mode, test).",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 93.47516632080078,
+    :rank 10,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151172-05:00"},
+    :reasoning
+    "The query requires a structured architectural recommendation across five distinct categories (Transport, Authority, Orchestration, Data, Observability). The ETL pipeline pattern's use of sequential stages where :llm transforms content and :code handles deterministic formatting/aggregation perfectly mirrors the task of taking raw requirements and producing a structured, multi-part recommendation document with consistent sub-sections (decision, failure mode, test).",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 97.32884979248047,
+    :rank 3,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.157194-05:00"},
+    :reasoning
+    "While the query involves multiple 'choices', it is not a comparison of sources or versions (like A vs B research). It is a single synthesis task. Comparative summary is less fit because it expects parallel extraction from multiple research sources, whereas this task is a single-prompt design generation based on one set of constraints.",
+    :fitness-score 0.4,
+    :rerank-source :reranker}
+   {:content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :score 96.94290161132812,
+    :rank 5,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.154727-05:00"},
+    :reasoning
+    "The model-cascade is a cost-optimization and reliability pattern for high-volume inference. While the user mentions a cost budget for their *app*, the task itself is a complex design synthesis that requires high reasoning capability, making a cheap-to-expensive fallback logic inappropriate for generating a high-stakes architecture plan.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6009,
+ :parent-chain []}

@@ -1,0 +1,47 @@
+{:slug "data-004-streaming-aggregation",
+ :envelope
+ {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :confidence 0.8,
+  :reasoning
+  "The task requires a linear design document covering multiple specific architectural sections (Watermarks, Windowing, Streams, Late-data, Reconciliation) in a sequential narrative. The ETL pattern's recommended shape of 2-4 sequential stages aligns with the logic of taking raw streaming specs and transforming them into a structured design doc, specifically utilizing :code for the deterministic technical aggregation components of the Flink pipeline.",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 144.4983367919922,
+    :rank 1,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468124-05:00"},
+    :reasoning
+    "The task requires a linear design document covering multiple specific architectural sections (Watermarks, Windowing, Streams, Late-data, Reconciliation) in a sequential narrative. The ETL pattern's recommended shape of 2-4 sequential stages aligns with the logic of taking raw streaming specs and transforming them into a structured design doc, specifically utilizing :code for the deterministic technical aggregation components of the Flink pipeline.",
+    :fitness-score 0.8,
+    :rerank-source :reranker}
+   {:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 137.20321655273438,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.471664-05:00"},
+    :reasoning
+    "The comparative-summary pattern is a poor fit because the intent is not to compare multiple different streaming technologies or designs (N-source comparison), but rather to build one cohesive design for a single system. The requirement for parallel extraction from multiple sources is not present in the user's design task, which focuses on a single logic flow from ingest to two specific sinks.",
+    :fitness-score 0.3,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5672,
+ :parent-chain []}

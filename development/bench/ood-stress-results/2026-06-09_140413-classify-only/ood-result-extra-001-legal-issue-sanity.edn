@@ -1,0 +1,47 @@
+{:slug "extra-001-legal-issue-sanity",
+ :envelope
+ {:assigned-tree-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+  :confidence 1.0,
+  :top-candidates
+  [{:content
+    "Legal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.",
+    :score 73.1903305053711,
+    :rank 8,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b004-d0c0a0a0a0a4\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.463860-05:00"},
+    :reasoning
+    "This candidate perfectly matches the task's structural requirements for 'legal-issue-detection'. It explicitly handles the caller's requested output fields (severity, area-of-law, citation, recommendation) and mandates a :citation field in the schema to ensure the model references the clause text as requested in the query. The recommendation to use :code for the rollup aligns with the structured ':issues' output requirement.",
+    :fitness-score 1.0,
+    :rerank-source :reranker}
+   {:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 73.49847412109375,
+    :rank 7,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468124-05:00"},
+    :reasoning
+    "While this candidate describes sequential transformations, it focuses on general ETL and token optimization rather than the specific multi-field structured analysis required for legal review. It lacks the critical citation-handling and risk-analysis patterns necessary to produce the five specific output components (severity, area, citation, revision) requested in the query.",
+    :fitness-score 0.3,
+    :rerank-source :reranker}],
+  :reasoning
+  "This candidate perfectly matches the task's structural requirements for 'legal-issue-detection'. It explicitly handles the caller's requested output fields (severity, area-of-law, citation, recommendation) and mandates a :citation field in the schema to ensure the model references the clause text as requested in the query. The recommendation to use :code for the rollup aligns with the structured ':issues' output requirement.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 12157,
+ :parent-chain []}

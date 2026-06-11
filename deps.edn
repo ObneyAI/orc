@@ -1,4 +1,4 @@
-{:aliases {:dev {:extra-paths ["development/src"]
+{:aliases {:dev {:extra-paths ["development/src" "development/bench"]
                  :jvm-opts ["--add-opens=java.base/java.nio=ALL-UNNAMED"
                             "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"]
                  :extra-deps {org.clojure/clojure {:mvn/version "1.12.0"}
@@ -24,14 +24,23 @@
                               orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
                               orc/grain-test-utils  {:local/root "components/grain-test-utils"}
-                              orc/trace-logic       {:local/root "components/trace-logic"}}}
+                              orc/trace-logic       {:local/root "components/trace-logic"}
+                              orc/predict-rlm-pdf   {:local/root "components/predict-rlm-pdf"}
+                              orc/predict-rlm-image-tools {:local/root "components/predict-rlm-image-tools"}
+                              orc/predict-rlm-redaction-tools {:local/root "components/predict-rlm-redaction-tools"}
+                              orc/predict-rlm-invoice-tools {:local/root "components/predict-rlm-invoice-tools"}}}
 
            :test {:extra-paths ["components/orc-service/test"
                                 "components/gepa/test"
                                 "components/colbert/test"
+                                "components/evaluation/test"
                                 "components/ontology/test"
                                 "components/mcp-sheet-builder/test"
-                                "components/trace-logic/test"]
+                                "components/trace-logic/test"
+                                "components/predict-rlm-pdf/test"
+                                "components/predict-rlm-image-tools/test"
+                                "components/predict-rlm-redaction-tools/test"
+                                "components/predict-rlm-invoice-tools/test"]
                   :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}}}
 
            :poly {:main-opts ["-m" "polylith.clj.core.poly-cli.core"]

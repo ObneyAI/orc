@@ -1,0 +1,76 @@
+{:slug "code-004-debug-memory-leak",
+ :envelope
+ {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :confidence 0.92,
+  :top-candidates
+  [{:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 202.96583557128906,
+    :rank 10,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468124-05:00"},
+    :reasoning
+    "The task requires a multi-stage sequential analysis (root-cause, evidence-chain, remediation, verification, alternatives) where the content from one stage (root cause hypothesis) must feed the next (evidence/remediation), matching the ETL pipeline's sequential stage-chaining pattern. The task's output requirement for specific keys parallels the recommendation for intermediate output-schemas to detect stage failures.",
+    :fitness-score 0.92,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 206.87110900878906,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464242-05:00"},
+    :reasoning
+    "The task involves analyzing multiple disparate artifacts (heap dump, GC log, app logs) and aggregating them into a final diagnosis. This resembles the map-each (analyze unique artifacts) and aggregate/synthesis (final diagnosis) stages of the chunked-extraction pattern, although the input is not a single large document.",
+    :fitness-score 0.65,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 211.52182006835938,
+    :rank 4,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.466631-05:00"},
+    :reasoning
+    "While the query involves a failure (OOM), the task itself is a diagnostic synthesis, not a runtime recovery system. The content describes fallback/failure semantics which align with the query's subject matter (a failing service) but not the structural intent of the analysis task.",
+    :fitness-score 0.25,
+    :rerank-source :reranker}
+   {:content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :score 207.0308837890625,
+    :rank 7,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.469945-05:00"},
+    :reasoning
+    "This candidate focuses on deterministic backups for stochastic failures. It matches the technical domain of the service crash but provides no structural guidance for the requested multi-part analytical report.",
+    :fitness-score 0.18,
+    :rerank-source :reranker}],
+  :reasoning
+  "The task requires a multi-stage sequential analysis (root-cause, evidence-chain, remediation, verification, alternatives) where the content from one stage (root cause hypothesis) must feed the next (evidence/remediation), matching the ETL pipeline's sequential stage-chaining pattern. The task's output requirement for specific keys parallels the recommendation for intermediate output-schemas to detect stage failures.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 7819,
+ :parent-chain []}

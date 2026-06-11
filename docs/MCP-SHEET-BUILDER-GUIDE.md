@@ -232,7 +232,7 @@ Node A (writes :result)  ->  Blackboard  ->  Node B (reads :result)
 
 ### What It Does
 
-The `repl-researcher` node implements the **RLM (Research Language Model)** pattern:
+The `repl-researcher` node implements the **RLM (Recursive Language Model)** pattern:
 
 ```
                     REPL RESEARCHER LOOP

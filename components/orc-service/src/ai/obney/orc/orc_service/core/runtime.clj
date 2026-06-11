@@ -7,7 +7,37 @@
    - Completion registry for sync callers waiting on async execution"
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]))
+
+;; =============================================================================
+;; C-2c-2 — auto-classification envelope helper
+;;
+;; The wedge in todo_processors.clj dispatches :ontology/assign-task-class
+;; which emits :ontology/task-classified tagged with [:tick tick-id]. After
+;; a tick completes, we query by that tag and fold the latest match into
+;; the run-result envelope as :auto-classification.
+;; =============================================================================
+
+(defn collect-tick-classification
+  "Query the event store for :ontology/task-classified events tagged with
+   [:tick tick-id]; if any, return the latest as a run-result envelope
+   map {:tree-id :confidence :top-candidates :was-fresh-mint?}. Returns
+   nil when no classification event exists for this tick."
+  [context tick-id]
+  (try
+    (when-let [event-store (:event-store context)]
+      (let [events (->> (es/read event-store
+                                  {:tenant-id (:tenant-id context)
+                                   :types #{:ontology/task-classified}
+                                   :tags #{[:tick tick-id]}})
+                        (into []))]
+        (when-let [e (last events)]
+          {:tree-id (:assigned-tree-id e)
+           :confidence (:confidence e)
+           :top-candidates (vec (take 3 (:top-candidates e)))
+           :was-fresh-mint? (:was-fresh-mint? e)})))
+    (catch Exception _ nil)))
 
 ;; =============================================================================
 ;; Snapshot Parsing for Published Version Execution
@@ -169,6 +199,14 @@
     (deliver p result)
     (swap! completion-registry dissoc tick-id)))
 
+(defn deregister-completion!
+  "Remove a tick-id's promise without delivering. Use when the upstream
+   command dispatch was rejected (anomaly) and no events will ever
+   resolve the promise — otherwise the caller hangs on (deref p timeout)
+   for the full budget."
+  [tick-id]
+  (swap! completion-registry dissoc tick-id))
+
 ;; =============================================================================
 ;; Public API
 ;; =============================================================================
@@ -194,6 +232,9 @@
      :langfuse-client - Langfuse client (passed to async pipeline via options)
      :store-trace? - Store trace in event store (default true, passed via options)
      :max-ticks - Override re-tick budget for this execution (defaults to *max-tick-iterations*)
+     :tick-id - Optional caller-supplied execution id for correlating live progress
+     :parent-tick-id - Optional lineage marker when this execution is a child of
+                       another tick (RLM Phase 2 trees, delegate nodes)
      :llm-call-budget - Max LLM calls before failing (opt-in only, NO default)
 
    Returns:
@@ -204,9 +245,9 @@
       :executed-version ...}     ;; Version number if published version was used"
   [context sheet-id inputs & {:keys [timeout-ms use-version force-draft
                                       trace? langfuse-client store-trace?
-                                      max-ticks llm-call-budget]
+                                      max-ticks llm-call-budget tick-id parent-tick-id]
                                :or {timeout-ms 300000 store-trace? true}}]
-  (let [tick-id (random-uuid)
+  (let [tick-id (or tick-id (random-uuid))
         p (register-completion! tick-id)
         start-time (System/currentTimeMillis)
         cmd-result (cp/process-command
@@ -223,6 +264,7 @@
                                                  langfuse-client (assoc :langfuse-client langfuse-client)
                                                  max-ticks (assoc :max-ticks max-ticks)
                                                  llm-call-budget (assoc :llm-call-budget llm-call-budget))}
+                              parent-tick-id (assoc :parent-tick-id parent-tick-id)
                               use-version (assoc :use-version use-version)
                               force-draft (assoc :force-draft force-draft))))]
     (if (:cognitect.anomalies/category cmd-result)
@@ -239,4 +281,9 @@
           {:status :timeout
            :error "Execution timed out"
            :duration-ms duration-ms}
-          (assoc result :duration-ms duration-ms))))))
+          (cond-> (assoc result :duration-ms duration-ms)
+            ;; Fold the C-2c-2 auto-classification envelope when an
+            ;; :ontology/task-classified event was emitted during this tick.
+            (collect-tick-classification context tick-id)
+            (assoc :auto-classification
+                   (collect-tick-classification context tick-id))))))))

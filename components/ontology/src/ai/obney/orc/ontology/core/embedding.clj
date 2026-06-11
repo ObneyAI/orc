@@ -162,7 +162,9 @@
      (try
        (let [model (get-embedding-model model-id)]
          (with-open [predictor (.newPredictor model)]
-           (vec (.predict predictor text))))
+           ;; .predict returns a float[]; coerce to doubles so emitted
+           ;; :ontology/concept-embedded events satisfy the [:vector :double] schema
+           (mapv double (.predict predictor text))))
        (catch Exception e
          (println "[DJL] Error generating embedding:" (.getMessage e))
          nil)))))

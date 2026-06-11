@@ -1,0 +1,75 @@
+{:slug "code-002-investigate-flaky-test",
+ :envelope
+ {:assigned-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+  :confidence 0.92,
+  :top-candidates
+  [{:content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :score 127.43092346191406,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.469229-05:00"},
+    :reasoning
+    "The 'Producer/validator' pattern is the highest fitness match because the query describes a classic validation loop: producing a state (user signup), validating it (polling for email/login), and encountering an error (timeout). The recommendation to use :code as a correctness oracle exactly matches the need to debug a deterministic Python integration test system where one service (email-mock) validates the output of another (signup).",
+    :fitness-score 0.92,
+    :rerank-source :reranker}
+   {:content
+    "ValidationLoop is a producer-then-validator pattern where one node emits a candidate output and a second node checks it. The classical 'loop' form (produce → validate → conditional retry on failure) requires :condition for branching — NOT emit-able by RLM's tree-DSL today. The constrained variant the model CAN author: producer → validator emitting a :valid? flag → downstream consumer reading the flag. Always prefer :code validators with explicit schema checks over :llm validators when validation criteria are deterministic — faster, cheaper, no judgment ambiguity.",
+    :score 125.86857604980469,
+    :rank 8,
+    :document-id ":tree-fingerprint:\"seed:tree:ValidationLoop\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ValidationLoop",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.465628-05:00"},
+    :reasoning
+    "This matches the structural shape of the intent—a sequence of produce → validate. The advice to use :code validators for deterministic criteria is highly relevant to an integration test polling an email mock. However, it scores slightly lower than the Producer/validator candidate as it notes RLM emission limitations which might affect implementation flexibility for the requested hypotheses.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 123.27577209472656,
+    :rank 10,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468124-05:00"},
+    :reasoning
+    "The ETL pattern matches the sequential 'chain' of events described in the test (signup -> email -> login). The focus on declaring schemas to identify offending stages maps well to debugging which part of the test pipeline is failing in CI. It is less fit than the validator patterns because the intent is focused on a failure loop/timeout rather than a simple data transformation pipeline.",
+    :fitness-score 0.65,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 125.93234252929688,
+    :rank 6,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.466631-05:00"},
+    :reasoning
+    "While the test suite effectively 'fails over' to a failure state, the intent isn't to build graceful degradation but to find a root cause. The pattern's mention of masking bugs through silent fallbacks is a relevant warning for CI flakes, but the structural match is weak as the test is intended to pass or fail, not recover.",
+    :fitness-score 0.4,
+    :rerank-source :reranker}],
+  :reasoning
+  "The 'Producer/validator' pattern is the highest fitness match because the query describes a classic validation loop: producing a state (user signup), validating it (polling for email/login), and encountering an error (timeout). The recommendation to use :code as a correctness oracle exactly matches the need to debug a deterministic Python integration test system where one service (email-mock) validates the output of another (signup).",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 7455,
+ :parent-chain []}

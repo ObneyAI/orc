@@ -32,6 +32,8 @@
             [ai.obney.orc.evaluation.core.rubrics :as rubrics]
             [ai.obney.orc.evaluation.core.trace-extraction :as traces]
             [ai.obney.orc.evaluation.core.sheets :as sheets]
+            ;; Gap-1: per-event evaluator runtime + judge-scores read-model
+            [ai.obney.orc.evaluation.core.judge-runtime :as judge-runtime]
             ;; Load schemas to register them
             [ai.obney.orc.evaluation.interface.schemas]))
 
@@ -128,6 +130,29 @@
 (def DEFAULT_RUBRICS
   "Default set of rubrics for reference-free evaluation."
   rubrics/DEFAULT_RUBRICS)
+
+;; =============================================================================
+;; Re-exports: Per-event evaluator runtime (Gap-1)
+;; =============================================================================
+
+(def get-judge-scores
+  "Gap-1: return the vector of judge result entries emitted for the given
+   (sheet-id, node-id, tick-id) tuple. Empty vector when no judges fired
+   for that tick. Each entry has :judge-name :judge-config :score
+   :feedback :dimensions :emitted-at. Consolidator (Gap-3) consumes this
+   read-model to enrich its LLM reflection input."
+  judge-runtime/get-judge-scores)
+
+(def get-effective-judges-for-node
+  "Gap-5: return the effective judge list for a node — a vec of
+   {:judge-name :judge-config} entries. Resolution order:
+     1. Explicit consumer attachment (even empty) wins
+     2. Default attachment for :repl-researcher nodes (5 judges) when
+        the Living Description opt-in is on
+     3. Empty otherwise
+   Used by judge-runtime at dispatch time; also useful for operators
+   to introspect what's wired."
+  judge-runtime/get-effective-judges-for-node)
 
 ;; =============================================================================
 ;; Re-exports: Trace Extraction

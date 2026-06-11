@@ -461,24 +461,32 @@ Judges are defined at the workflow level (paralleling `sheet/blackboard`) and st
 │  Emit :sheet/node-judges-set for nodes with :judges param   │
 └────────────────────────────┬────────────────────────────────┘
                              │
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Retrospective Evaluation                                    │
-│  1. Query historical traces from event store                │
-│  2. Look up judge definitions from read model               │
-│  3. Run judge LLM calls with defined criteria               │
-│  4. Aggregate scores using configured weights               │
-└─────────────────────────────────────────────────────────────┘
+                ┌────────────┴────────────┐
+                ▼                         ▼
+┌──────────────────────┐  ┌──────────────────────────────────┐
+│  Retrospective       │  │  Inline (per-event runtime)       │
+│  Batch evaluation    │  │  Added 2026-06 via Gap-1.         │
+│  via                 │  │  When Living Description flag is  │
+│  evaluation-suite    │  │  on, :evaluation/on-node-         │
+│  on historical       │  │  execution-completed processor    │
+│  traces.             │  │  fires attached judges (default + │
+│                      │  │  custom :type) in parallel via    │
+│                      │  │  futures.                         │
+└──────────────────────┘  └──────────────────────────────────┘
 ```
 
 ### Judge Types
 
-| Type | Default Weight | Evaluates |
+| Type | Configured Weight | Evaluates |
 |------|----------------|-----------|
-| `:grounding` | 35% | Hallucination detection - claims supported by inputs? |
-| `:instruction-following` | 25% | Task compliance - did LLM follow instruction? |
-| `:reasoning` | 20% | Logical coherence - reasoning clear and valid? |
-| `:completeness` | 20% | Coverage - all required aspects addressed? |
+| `:grounding` | 35% (advisory) | Hallucination detection - claims supported by inputs? |
+| `:instruction-following` | 25% (advisory) | Task compliance - did LLM follow instruction? |
+| `:reasoning` | 20% (advisory) | Logical coherence - reasoning clear and valid? |
+| `:completeness` | 20% (advisory) | Coverage - all required aspects addressed? |
+| `:heuristic-structural` | n/a | (added 2026-06) Deterministic Clojure heuristic that grades the SHAPE of trees the model produces. No LLM call. |
+| `:custom` | n/a | (added 2026-06) References a consumer-built eval sheet via `:sheet-id`. Sub-executes the eval workflow against the host node's outputs. See [`RLM-GUIDE.md`](RLM-GUIDE.md#building-a-custom-judge). |
+
+> **Note on weights:** The `%` column is *advisory* — those specific numbers aren't applied as defaults. When multiple judges attach to a node, a `:judge/composite-score-computed` event is emitted per tick with a weighted composite. Default policy: even-weight (1/N) when no explicit weights; consumer-set `:weight` values normalize to sum to 1.0. The per-judge `:judge-averages` in the consolidator's reflection input stays alongside the composite — both signals are available.
 
 ### Events
 

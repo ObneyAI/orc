@@ -1,0 +1,35 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: code
+;; Why OOD: multi-source forensic analysis (heap traces + logs + code) to localize a cause. Behaviors don't capture "synthesize hypothesis from heterogeneous diagnostic sources".
+A production JVM service is OOM-killing under steady load after 4-6 hours.
+You have three diagnostic artifacts:
+
+1. **Heap dump summary** (truncated):
+   ```
+   Top 10 retained-size classes:
+     org.example.cache.LRUEntry          412 MB  (32M instances)
+     byte[]                               87 MB
+     java.lang.String                     21 MB
+     java.util.HashMap$Node               19 MB
+     org.example.ws.WebSocketSession      17 MB  (4K instances)
+     ...
+   ```
+
+2. **GC log** (last hour):
+   - Young-gen collections every ~30s, 200ms pause each
+   - Full GC events every ~5 min, 2-3 sec pause each, reclaiming <5% of heap
+   - Heap usage trends from 60% → 95% over the 4-hour window
+
+3. **Application logs** (correlated to crash):
+   - WebSocket connect/disconnect events: ~400/minute connect, ~300/minute disconnect
+   - LRU cache evictions logged at warn level: ~0/minute (cache is configured with maxSize=10000)
+   - No exceptions or error log lines
+
+Diagnose the most likely root cause AND propose a remediation. Output:
+- `:root-cause-hypothesis` — one sentence
+- `:evidence-chain` — which signals from each artifact support the hypothesis
+- `:remediation` — concrete code/config changes
+- `:verification-plan` — how to confirm the fix worked in pre-prod before
+  redeploying
+- `:alternative-hypotheses` — at least one other plausible cause + why it's
+  less likely

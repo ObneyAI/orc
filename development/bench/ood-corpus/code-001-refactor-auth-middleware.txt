@@ -1,0 +1,22 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: code
+;; Why OOD: architectural refactoring of an existing module. Behaviors cover analysis/extraction/critique — not stateful refactor proposals.
+A team's legacy Node.js Express middleware handles authentication via three
+separate functions executing in sequence on every protected route:
+`authenticate(req, res, next)`, `loadUserSession(req, res, next)`, and
+`enforceRateLimit(req, res, next)`. The three share repeated work (parsing
+the Authorization header, querying Redis for session data) and have grown
+to ~600 lines with overlapping responsibilities.
+
+Propose a refactored design that:
+- Unifies the three functions into ONE coherent auth middleware
+- Eliminates the repeated work (Redis lookup happens once)
+- Preserves backward compatibility (existing route handlers must not break)
+- Adds testability (each step independently mockable)
+- Documents the new contract for downstream route handlers
+
+Return:
+- `:refactored-design` — a structured outline of the new module shape
+- `:migration-plan` — ordered steps to apply the refactor without downtime
+- `:risks` — what could break, what would surface as a test failure
+- `:rationale` — 2-3 paragraphs explaining the design decisions

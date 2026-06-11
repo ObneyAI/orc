@@ -73,7 +73,10 @@
     ;; SOURCE DATA - enables regeneration if disk wiped
     [:documents [:vector :string]]
     [:document-ids [:vector :string]]
-    [:document-metadatas {:optional true} [:vector [:map-of :keyword :any]]]
+    ;; nil = "no per-document metadata" is a valid state; the create-index command
+    ;; emits the key as nil when none are supplied (concept indexing), so accept it
+    ;; (optional alone permits absence, not a present nil).
+    [:document-metadatas {:optional true} [:maybe [:vector [:map-of :keyword :any]]]]
 
     ;; COUNTS - for quick queries without loading docs
     [:document-count :int]

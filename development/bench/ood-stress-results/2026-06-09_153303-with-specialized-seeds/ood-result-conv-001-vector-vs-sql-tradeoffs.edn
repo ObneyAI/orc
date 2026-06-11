@@ -1,0 +1,62 @@
+{:slug "conv-001-vector-vs-sql-tradeoffs",
+ :envelope
+ {:assigned-tree-id #uuid "d41af303-dcb2-3599-9198-0c006d1cc364",
+  :confidence 0.95,
+  :top-candidates
+  [{:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 100.94119262695312,
+    :rank 8,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.157194-05:00"},
+    :reasoning
+    "The query specifically asks for a 'Comparative summary' of multiple architectural options (pgvector, dedicated vector DB, or ES hybrid). This candidate establishes a pattern of 'parallel per-source extraction' (researching the 3 options) and a ':code aggregator' to structure extractions, which perfectly maps to the requirement for specific JSON keys like :operational-cost-comparison and :recommendation. It specifically mentions synthesizing a 'structured comparison (common / differences / recommendation)', which is exactly what the prompt requires.",
+    :fitness-score 0.95,
+    :rerank-source :reranker}
+   {:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 106.77669525146484,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151172-05:00"},
+    :reasoning
+    "While the query requires a multi-stage logic (research then explain), the 'ETL pipeline' pattern is designed for sequential data transformation where each stage's output feeds the next. This query is more about 'multi-source research-then-synthesize' (comparing distinct options) rather than a linear data transformation pipeline. It lacks the explicit recommendation/comparison structure required by the intent.",
+    :fitness-score 0.3,
+    :rerank-source :reranker}
+   {:content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :score 100.3243408203125,
+    :rank 10,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.154727-05:00"},
+    :reasoning
+    "The 'Model cascade' pattern is for cost-optimization and fallback-recovery (cheap vs expensive models). While the query mentions cost, the structural shape of the task is a complex analytical comparison, not a traffic-routing or error-handling scenario between two models. It does not provide a framework for the N-way comparison requested.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}],
+  :reasoning
+  "The query specifically asks for a 'Comparative summary' of multiple architectural options (pgvector, dedicated vector DB, or ES hybrid). This candidate establishes a pattern of 'parallel per-source extraction' (researching the 3 options) and a ':code aggregator' to structure extractions, which perfectly maps to the requirement for specific JSON keys like :operational-cost-comparison and :recommendation. It specifically mentions synthesizing a 'structured comparison (common / differences / recommendation)', which is exactly what the prompt requires.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6301,
+ :parent-chain []}

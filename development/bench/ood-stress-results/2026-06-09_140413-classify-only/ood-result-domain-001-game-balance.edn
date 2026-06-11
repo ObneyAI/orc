@@ -1,0 +1,77 @@
+{:slug "domain-001-game-balance",
+ :envelope
+ {:assigned-tree-id #uuid "1c0f6cd8-6187-3d8e-993e-2df630968760",
+  :confidence 0.85,
+  :reasoning
+  "The task requires processing a multi-class balance problem (4 classes) and converging on a specific win-rate matrix. The 'parallel-classify-aggregate' pattern aligns with the need to handle multiple distinct categories (classes) and uses a ':code reducer' which is perfect for the deterministic math of computing win-rate matrices and generating the ':rounds' vector. The :enum output schema fits the fixed set of 4 classes provided in the query.",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+    :score 130.31500244140625,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470984-05:00"},
+    :reasoning
+    "The task requires processing a multi-class balance problem (4 classes) and converging on a specific win-rate matrix. The 'parallel-classify-aggregate' pattern aligns with the need to handle multiple distinct categories (classes) and uses a ':code reducer' which is perfect for the deterministic math of computing win-rate matrices and generating the ':rounds' vector. The :enum output schema fits the fixed set of 4 classes provided in the query.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 122.00218963623047,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464242-05:00"},
+    :reasoning
+    "This pattern provides a structural skeleton for multi-stage processing (:map-each -> :aggregate -> :synthesis). The iteration described in the query (simulate matches -> aggregate results -> synthesize adjustments) follows this flow. However, it lacks the specific classification/labeling focus needed to distinguish between the 4 discrete class kits.",
+    :fitness-score 0.6,
+    :rerank-source :reranker}
+   {:content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :score 120.61994934082031,
+    :rank 6,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470296-05:00"},
+    :reasoning
+    "The query describes an iterative optimization/balancing task, not a fallback recovery or cost-optimization problem. There is no intent for a 'cheap -> expensive' model escalation; the task is about convergence across a balanced matrix.",
+    :fitness-score 0.15,
+    :rerank-source :reranker}
+   {:content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :score 120.54890441894531,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.469945-05:00"},
+    :reasoning
+    "This pattern is for error handling and deterministic fallbacks. While the game simulation might utilize code, the overall task is an optimization loop for balance, not a 'primary-fails-use-backup' architecture.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6363,
+ :parent-chain []}

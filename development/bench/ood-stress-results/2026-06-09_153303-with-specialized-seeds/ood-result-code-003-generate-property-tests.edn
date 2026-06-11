@@ -1,0 +1,90 @@
+{:slug "code-003-generate-property-tests",
+ :envelope
+ {:assigned-tree-id #uuid "75676f28-e368-367e-abec-1b4ed30abd08",
+  :confidence 0.92,
+  :top-candidates
+  [{:content
+    "MapReduce is a 3-stage shape: :chunk-document → :map-each [:llm] → :code reducer. The reducer is deterministic Clojure (count, sum, dedup, flatten, group-by) rather than LLM synthesis, saving tokens and eliminating aggregation ambiguity. Pair the per-chunk :llm with :output-schemas so the reducer's destructuring is safe. Choose MapReduce over ChunkedExtraction when the cross-chunk combine is mechanical; choose ChunkedExtraction when it requires natural-language judgment.",
+    :score 142.8174591064453,
+    :rank 10,
+    :document-id ":tree-fingerprint:\"seed:tree:MapReduce\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:MapReduce",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.150286-05:00"},
+    :reasoning
+    "The task requires generating structured test cases and invariants from a code spec. This fits the MapReduce pattern where the 'map' stage (generating properties/tests) is followed by a deterministic reduction (organizing them into vectors/lists). This candidate specifically mentions deterministic reducers (count, flatten, dedup) which aligns with the structured output requirements (:property-tests vector and :invariants list).",
+    :fitness-score 0.92,
+    :rerank-source :reranker}
+   {:content
+    "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+    :score 152.68138122558594,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.156076-05:00"},
+    :reasoning
+    "This hybrid variant is appropriate because the task involves an LLM classifier-like role (interpreting the Python spec) and a code-based reducer to ensure the output conforms to the requested schema. The focus on narrow LLM scope per chunk helps in generating specific property tests from the function signature.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "Parallel-sum is the pure-code MapReduce variant: chunk → :code per-chunk computation → :code arithmetic reduce. Both stages are deterministic — same input produces byte-identical output. Use higher :max-concurrency (8+) on :map-each since :code calls have no rate-limit risk. NEVER use :llm for arithmetic per-chunk work. NEVER apply non-associative reducers (median, percentile) to partial per-chunk results — they require the full set. Use parallel-classify-aggregate when the per-chunk work requires LLM judgment.",
+    :score 154.09886169433594,
+    :rank 1,
+    :document-id
+    ":tree-fingerprint:#uuid \"c38abdbd-be30-38e7-8f81-e431cdba7a07\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.155047-05:00"},
+    :reasoning
+    "While 'pure-code' logic is mentioned, the task itself is a request for an LLM to generate code. This candidate is relevant because it discusses arithmetic-like deterministic logic (the merge_intervals function itself), but the 'NEVER use :llm for arithmetic' rule is a slight mismatch since we are using an LLM to generate the testing logic for that arithmetic.",
+    :fitness-score 0.65,
+    :rerank-source :reranker}
+   {:content
+    "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+    :score 143.74969482421875,
+    :rank 9,
+    :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ChunkedExtraction",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.142712-05:00"},
+    :reasoning
+    "This represents a general processing shape, but is less specific than MapReduce for this task. The 'extraction' aspect fits gathering properties from the spec, but the task doesn't require a large document synthesis, making this slightly lower in fitness.",
+    :fitness-score 0.4,
+    :rerank-source :reranker}
+   {:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 145.50111389160156,
+    :rank 5,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.157194-05:00"},
+    :reasoning
+    "This variant focuses on multi-source research and synthesis. Since the input is a single Python function signature and a single paragraph spec, the 'multi-source' and 'comparative' aspects of this pattern are unnecessary and don't match the task's single-source structural shape.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}],
+  :reasoning
+  "The task requires generating structured test cases and invariants from a code spec. This fits the MapReduce pattern where the 'map' stage (generating properties/tests) is followed by a deterministic reduction (organizing them into vectors/lists). This candidate specifically mentions deterministic reducers (count, flatten, dedup) which aligns with the structured output requirements (:property-tests vector and :invariants list).",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 7027,
+ :parent-chain []}

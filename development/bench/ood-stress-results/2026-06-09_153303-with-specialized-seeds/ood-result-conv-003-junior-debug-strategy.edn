@@ -1,0 +1,61 @@
+{:slug "conv-003-junior-debug-strategy",
+ :envelope
+ {:assigned-tree-id #uuid "5a08300e-10e3-305a-80c1-17eafea15ff7",
+  :confidence 0.92,
+  :top-candidates
+  [{:content
+    "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+    :score 107.44912719726562,
+    :rank 8,
+    :document-id
+    ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151870-05:00"},
+    :reasoning
+    "This candidate describes a staged sequential pipeline that separates a proposal phase from a code-driven constraint validation phase. This structural shape perfectly aligns with the mentorship task's goal of teaching a junior to break a problem into testable hypotheses (constraints/proposals) and then use code-driven validation (precision/checking) to isolate why a double-charge occurs. The 'conflict-check with code' stage mirrors the specific requirement to teach the junior how to use logging and debuggers to verify hard constraints in the checkout flow.",
+    :fitness-score 0.92,
+    :rerank-source :reranker}
+   {:content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :score 108.69032287597656,
+    :rank 6,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.154383-05:00"},
+    :reasoning
+    "This pattern focuses on primary-backup fallback logic. While it mentions 'silent masks' and 'activation rate trends' which are relevant to the bug's intermittent nature, its structural intent is about recovery from failure rather than the diagnostic breakdown requested. It is less helpful for building a 'debugging strategy' but offers a relevant warning about deterministic alternatives and monitoring.",
+    :fitness-score 0.45,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 111.5030517578125,
+    :rank 4,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.149787-05:00"},
+    :reasoning
+    "This is a generic recovery composite. While it mentions using a 'judge' or 'logging' to surface failures (relevant to the 'double-charge' visibility), its core purpose is graceful degradation in production, not a pedagogical framework for teaching a junior engineer how to investigate root causes or construct reproducible cases.",
+    :fitness-score 0.38,
+    :rerank-source :reranker}],
+  :reasoning
+  "This candidate describes a staged sequential pipeline that separates a proposal phase from a code-driven constraint validation phase. This structural shape perfectly aligns with the mentorship task's goal of teaching a junior to break a problem into testable hypotheses (constraints/proposals) and then use code-driven validation (precision/checking) to isolate why a double-charge occurs. The 'conflict-check with code' stage mirrors the specific requirement to teach the junior how to use logging and debuggers to verify hard constraints in the checkout flow.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6751,
+ :parent-chain []}

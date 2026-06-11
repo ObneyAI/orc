@@ -1,0 +1,25 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: conv
+;; Why OOD: persuasive-rhetorical task with explicit objection handling. Behaviors don't track "defend a position against named opposing views".
+You are the engineering lead on a team that just chose to migrate from
+Kubernetes to a single-binary self-hosted PaaS (e.g., Fly.io / Render /
+Coolify-style) for your 50-person SaaS. The PM team is skeptical — they've
+heard "everyone uses k8s" and worry about hiring, ecosystem risk, and
+vendor lock-in.
+
+Compose a 5-7 paragraph internal memo defending the decision. Address each
+of the PM concerns directly. Use ONLY arguments grounded in the team's
+actual situation (small ops headcount, predictable traffic, no
+multi-region requirement). Avoid generic "k8s is complicated" rants —
+PMs have heard those and discounted them.
+
+The memo must:
+- Open with a one-sentence position statement
+- Quote (or paraphrase) at least 3 specific PM objections you've heard
+- Provide concrete data (or describe what data would resolve the objection)
+- Acknowledge what could go wrong (don't sweep risks under the rug — PMs
+  will sniff this out and lose trust)
+- End with a clear next step (decision point, trial period boundary, or
+  validation milestone)
+
+Output: `{:memo-title :paragraphs [<paragraph-text>] :next-step}`

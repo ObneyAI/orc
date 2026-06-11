@@ -1,0 +1,77 @@
+{:slug "domain-001-game-balance",
+ :envelope
+ {:assigned-tree-id #uuid "1c0f6cd8-6187-3d8e-993e-2df630968760",
+  :confidence 0.65,
+  :reasoning
+  "The task requires balancing 4 classes through iterative head-to-head simulations and parameter adjustment. Parallel-classify-aggregate mirrors the structural need to simulate multiple matchups (chunks) in parallel via :llm or simulation logic, and then use a :code reducer to aggregate win-rates and determine if they fall within the [45%, 55%] window. The recommendation to use parallel-sum for arithmetic work aligns with the task's focus on win-rate convergence.",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+    :score 130.24185180664062,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.156076-05:00"},
+    :reasoning
+    "The task requires balancing 4 classes through iterative head-to-head simulations and parameter adjustment. Parallel-classify-aggregate mirrors the structural need to simulate multiple matchups (chunks) in parallel via :llm or simulation logic, and then use a :code reducer to aggregate win-rates and determine if they fall within the [45%, 55%] window. The recommendation to use parallel-sum for arithmetic work aligns with the task's focus on win-rate convergence.",
+    :fitness-score 0.65,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 121.99896240234375,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.142242-05:00"},
+    :reasoning
+    "While primarily for documents, this pattern provides the :map-each and :aggregate nodes necessary for the iterative simulation cycles described in the intent. The requirement to produce a vector of :rounds and a :final-balance map aligns with the :aggregate and final synthesis stages of this pattern. It lacks the specific 'classification' logic of the top choice but fits the parallel execution requirements.",
+    :fitness-score 0.55,
+    :rerank-source :reranker}
+   {:content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :score 120.63864135742188,
+    :rank 6,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.154727-05:00"},
+    :reasoning
+    "This pattern focuses on model escalation and cost-saving, which is irrelevant to the iterative balance simulation logic requested. The task does not involve falling back from a cheap model to an expensive one based on difficulty or confidence.",
+    :fitness-score 0.15,
+    :rerank-source :reranker}
+   {:content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :score 120.54891967773438,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.154383-05:00"},
+    :reasoning
+    "This pattern is for error recovery and deterministic backups. The game balancing task is a success-path iterative refinement process, not a failure-recovery workflow. There is no 'primary' vs 'backup' logic in the simulation loop described.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6923,
+ :parent-chain []}

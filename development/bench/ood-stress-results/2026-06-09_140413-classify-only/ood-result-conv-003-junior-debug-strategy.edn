@@ -1,0 +1,61 @@
+{:slug "conv-003-junior-debug-strategy",
+ :envelope
+ {:assigned-tree-id #uuid "b377a44e-6d21-3e3a-a33f-7227f899e401",
+  :confidence 0.85,
+  :reasoning
+  "This candidate is the best fit because the junior engineer's specific bug—double-charging a customer—is a classic 'failure of idempotency' often found in charging logic. The FallbackRecovery pattern's content specifically addresses 'graceful degradation' and the 'Risk: silently masks bugs,' recommending pairing with logging to surface when errors occur. This directly supports the intent of teaching the junior how to structure logic that handles failures (like a Stripe timeout) without accidental side-effects like double-charging.",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 111.50882720947266,
+    :rank 4,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.466631-05:00"},
+    :reasoning
+    "This candidate is the best fit because the junior engineer's specific bug—double-charging a customer—is a classic 'failure of idempotency' often found in charging logic. The FallbackRecovery pattern's content specifically addresses 'graceful degradation' and the 'Risk: silently masks bugs,' recommending pairing with logging to surface when errors occur. This directly supports the intent of teaching the junior how to structure logic that handles failures (like a Stripe timeout) without accidental side-effects like double-charging.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :score 108.67401885986328,
+    :rank 6,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.469945-05:00"},
+    :reasoning
+    "This is highly relevant as it provides a concrete implementation of the fallback strategy. It emphasizes using :code for deterministic backups and emitting markers for operator visibility. This aligns with the 'specific steps' requested in the query, allowing the junior to recognize if the 'double charge' is happening because a retry (backup) is firing after a primary partial success.",
+    :fitness-score 0.8,
+    :rerank-source :reranker}
+   {:content
+    "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+    :score 107.43562316894531,
+    :rank 7,
+    :document-id
+    ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468866-05:00"},
+    :reasoning
+    "While this focuses on sequential pipelines, the 'conflict-check with code' stage is a useful principle for the junior to learn. It teaches the separation of the intent (charge a card) from the validation (has this transaction ID already succeeded?). However, it is less directly applicable to a checkout bug than the recovery-based patterns.",
+    :fitness-score 0.4,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6318,
+ :parent-chain []}

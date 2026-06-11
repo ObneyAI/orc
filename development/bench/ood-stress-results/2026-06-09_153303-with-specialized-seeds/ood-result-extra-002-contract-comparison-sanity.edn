@@ -1,0 +1,92 @@
+{:slug "extra-002-contract-comparison-sanity",
+ :envelope
+ {:assigned-tree-id #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+  :confidence 1.0,
+  :top-candidates
+  [{:content
+    "Contract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.",
+    :score 104.31257629394531,
+    :rank 6,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b003-d0c0a0a0a0a3\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.141379-05:00"},
+    :reasoning
+    "This candidate is a perfect structural match. It explicitly defines the 'Contract-comparison' task-class, recommending a :parallel per-contract extraction into :output-schemas followed by a sequential synthesis. This mirrors the query's need for a structured comparison of differences, similarities, and a recommendation.",
+    :fitness-score 1.0,
+    :rerank-source :reranker}
+   {:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 106.87834167480469,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.157194-05:00"},
+    :reasoning
+    "This is the general 'Comparative summary' variant. It fits the 'multi-source research-then-synthesize' shape perfectly, but its content notes that for exactly two versions, the specialized 'contract-comparison' class is preferred. It remains highly relevant because it mandates :parallel extraction and identical schemas for alignment.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 101.51463317871094,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.142242-05:00"},
+    :reasoning
+    "While the query involves processing two text blocks, they are short snippets, not long documents. The 'Chunked-extraction' pattern is useful for large scale, but its recommendation to skip for <5KB documents applies here. It provides a structural foundation but isn't the primary task-class.",
+    :fitness-score 0.4,
+    :rerank-source :reranker}
+   {:content
+    "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+    :score 101.73841857910156,
+    :rank 7,
+    :document-id
+    ":tree-fingerprint:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151521-05:00"},
+    :reasoning
+    "This pattern focuses on iterative refinement of a single artifact (draft -> critique -> revise). While it could improve the 'recommendation' part of the query, it doesn't address the primary structural requirement of multi-source extraction and comparison.",
+    :fitness-score 0.2,
+    :rerank-source :reranker}
+   {:content
+    "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+    :score 111.02279663085938,
+    :rank 1,
+    :document-id
+    ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.154727-05:00"},
+    :reasoning
+    "This is a performance and cost optimization pattern (model hierarchy/fallback) for high-traffic scenarios. It does not address the structural logic of comparing two distinct sources of legal text.",
+    :fitness-score 0.0,
+    :rerank-source :reranker}],
+  :reasoning
+  "This candidate is a perfect structural match. It explicitly defines the 'Contract-comparison' task-class, recommending a :parallel per-contract extraction into :output-schemas followed by a sequential synthesis. This mirrors the query's need for a structured comparison of differences, similarities, and a recommendation.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 7268,
+ :parent-chain []}

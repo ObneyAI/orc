@@ -588,6 +588,167 @@ Create deterministic executors for testing:
 
 ---
 
+## Attaching Judges to Nodes
+
+Judges are evaluators that grade a node's outputs after execution and emit `:judge/score-emitted` events. The judge system is **general** — any `:leaf` or `:repl-researcher` node can have judges attached. RLM-specific defaults (the 5 default judges auto-attached to `:repl-researcher` when the Living Description opt-in flag is on) are covered separately in [`RLM-GUIDE.md`](RLM-GUIDE.md#attaching-judges-to-your-behavior-trees); this section is the general attachment surface.
+
+### Two-step attachment
+
+Judges attach in two steps via existing commands (no DSL change needed):
+
+```clojure
+;; 1. Declare the judge on the host sheet
+(cp/process-command
+  (assoc ctx :command
+         {:command/name :sheet/declare-judge
+          :command/id (random-uuid)
+          :command/timestamp (time/now)
+          :sheet-id host-sheet-id
+          :judge-name "my-grounding"
+          :judge-config {:type :grounding}}))   ;; or :reasoning / :completeness /
+                                                ;; :instruction-following / :heuristic-structural /
+                                                ;; :custom
+
+;; 2. Attach declared judges to a specific node
+(cp/process-command
+  (assoc ctx :command
+         {:command/name :sheet/set-node-judges
+          :command/id (random-uuid)
+          :command/timestamp (time/now)
+          :sheet-id host-sheet-id
+          :node-id leaf-or-repl-researcher-node-id
+          :judges ["my-grounding"]}))   ;; vector of declared judge-names
+```
+
+`:sheet/set-node-judges` accepts ONLY `:leaf` and `:repl-researcher` node types. Composite nodes (`:sequence`, `:parallel`, etc.) can't have judges directly — attach to their leaf children instead.
+
+### Judge types
+
+| Type | What it does | Code path |
+|---|---|---|
+| `:grounding` | LLM judge — checks if outputs are supported by inputs | `judges/grounding-judge` |
+| `:instruction-following` | LLM judge — did the LLM follow the instruction? | `judges/instruction-following-judge` |
+| `:reasoning` | LLM judge — logical consistency of the response | `judges/reasoning-judge` |
+| `:completeness` | LLM judge — does the output cover all required aspects? | `judges/completeness-judge` |
+| `:heuristic-structural` | Deterministic — grades shape of `:writes :generated-tree-raw` if present | `heuristic-structural/evaluate-tree-structure` |
+| `:custom` | Consumer-defined ORC workflow as judge — see below | `invoke-custom-judge` |
+
+### When judges fire
+
+When the **Living Description opt-in flag is on**, the per-event evaluator runtime (`components/evaluation/src/.../core/judge_runtime.clj`) subscribes to `:sheet/node-execution-completed` events and fires attached judges in parallel via futures with a 60s per-judge timeout. Score events land as `:judge/score-emitted`.
+
+Opt-in:
+
+```clojure
+(cp/process-command
+  (assoc ctx :command
+         {:command/name :ontology/set-living-description-enabled
+          :command/id (random-uuid)
+          :command/timestamp (time/now)
+          :enabled? true}))
+```
+
+When the flag is OFF (default), the processor returns immediately with zero overhead — no LLM calls, no events emitted. Existing tests + the legacy retrospective evaluation path continue to work unchanged.
+
+### Building a custom judge
+
+A custom judge is a separate ORC workflow that grades the host node's outputs. The eval workflow's blackboard MUST declare:
+
+- **Reads** (provided by the runtime at execution time): `:host-inputs`, `:host-outputs`, `:host-instruction`, `:host-trace`
+- **Writes** (the judge's outputs): `:score` (double 0.0-1.0), `:feedback` (string), optionally `:dimensions` (vector)
+
+Two shapes:
+
+**Deterministic `:code` judge:**
+
+```clojure
+;; Eval fn — resolved by FQ-name STRING at execution time
+(defn schema-compliance-judge
+  "Score 1.0 if host outputs contain required keys, 0.0 otherwise."
+  [{:keys [inputs]}]
+  (let [host-outputs (:host-outputs inputs)
+        required-keys #{:issues :recommendations}
+        present (set (keys host-outputs))]
+    {:score (if (every? present required-keys) 1.0 0.0)
+     :feedback (str "Missing keys: " (clojure.set/difference required-keys present))}))
+
+;; Build the judge as a single-node workflow
+(def schema-judge-workflow
+  (sheet/workflow "schema-compliance"
+    (sheet/blackboard {:host-inputs :any :host-outputs :any
+                       :host-instruction :any :host-trace :any
+                       :score :double :feedback :string})
+    (sheet/code "eval"
+      :fn "myapp.judges/schema-compliance-judge"     ; FQ-name STRING — not a symbol
+      :reads [:host-outputs]
+      :writes [:score :feedback])))
+
+(def schema-judge-sheet-id (sheet/build-workflow! ctx schema-judge-workflow))
+```
+
+**LLM-graded judge** (same structured-output pattern as the 4 built-in LLM judges):
+
+```clojure
+(def hallucination-risk-judge
+  (sheet/workflow "hallucination-risk"
+    (sheet/blackboard {:host-inputs :any :host-outputs :any
+                       :host-instruction :any :host-trace :any
+                       :score :double :feedback :string})
+    (sheet/llm "grade"
+      :model "google/gemini-3-flash-preview"
+      :instruction "Evaluate the hallucination risk of the host's outputs against
+                    the original inputs. Higher risk = claims unsupported by inputs.
+                    Return :score (0.0-1.0, where 1.0 = no risk) and :feedback."
+      :reads [:host-outputs :host-instruction]
+      :writes [:score :feedback])))
+
+(def hallucination-sheet-id (sheet/build-workflow! ctx hallucination-risk-judge))
+```
+
+### Attaching a custom judge
+
+```clojure
+(cp/process-command
+  (assoc ctx :command
+         {:command/name :sheet/declare-judge
+          :command/id (random-uuid)
+          :command/timestamp (time/now)
+          :sheet-id host-sheet-id
+          :judge-name "hallucination-risk"
+          :judge-config {:type :custom :sheet-id hallucination-sheet-id}}))
+
+(cp/process-command
+  (assoc ctx :command
+         {:command/name :sheet/set-node-judges
+          :command/id (random-uuid)
+          :command/timestamp (time/now)
+          :sheet-id host-sheet-id
+          :node-id host-node-id
+          :judges ["hallucination-risk"]}))
+```
+
+When the host node's `:sheet/node-execution-completed` event fires, the runtime sub-executes the eval sheet with the host's writes, harvests `:score` + `:feedback` + `:dimensions` from the outputs, and emits a `:judge/score-emitted` event tagged with `(sheet, node, tick)`.
+
+### Querying scores
+
+```clojure
+(require '[ai.obney.orc.evaluation.interface :as eval])
+
+(eval/get-judge-scores ctx host-sheet-id host-node-id tick-id)
+;; => [{:judge-name "my-grounding" :score 0.85 :feedback "..." :dimensions [...] ...}
+;;     {:judge-name "hallucination-risk" :score 0.92 :feedback "..." :dimensions [...] ...}]
+```
+
+### Current limits
+
+- **Multi-judge composite scoring is available.** When 2+ judges fire on a (sheet, node, tick), the runtime also emits a `:judge/composite-score-computed` event with the weighted composite. Default policy: even-weight (1/N) when consumers don't set explicit weights; consumer-set `:judge-config :weight` values normalize to sum to 1.0. The `:contributing-judges` field on the event shows the effective normalized weight each judge applied — useful for debugging "how did this composite get computed?"
+- **Recursion ceiling.** A `:custom` judge sheet whose internal nodes have their own `:judges` attached → those nested judges are SKIPPED (default `:judge-depth` ceiling = 1). Prevents runaway sub-tick chains.
+- **Per-judge timeout** defaults to 60 seconds. Override per-judge via `:judge-config.:timeout-ms`.
+- **`:code` node `:fn` must be a FQ-name STRING**, not a symbol literal. The runtime calls `requiring-resolve` on the string.
+- **Dimension `:weight`** is required by the `:judge/score-emitted` event schema. The runtime auto-fills `:weight 1.0` when consumers don't provide it, so simple consumers can omit it from their LLM rubric.
+
+---
+
 ## GEPA Integration
 
 Make workflows optimizable by GEPA (Genetic-Pareto Prompt Optimizer).
@@ -684,3 +845,6 @@ See [GEPA-GUIDE.md](./GEPA-GUIDE.md) for comprehensive GEPA documentation.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) - System architecture overview
 - [GEPA-GUIDE.md](./GEPA-GUIDE.md) - GEPA prompt optimization
 - [EVENT-STORE-PATTERNS.md](./EVENT-STORE-PATTERNS.md) - Event store query patterns
+- [EVALUATION-COMPONENT.md](./EVALUATION-COMPONENT.md) - Judges + evaluation internals
+- [RLM-GUIDE.md](./RLM-GUIDE.md) - Recursive Language Model mode + how judge scores feed back into the next run
+- [LIVING-DESCRIPTIONS.md](./LIVING-DESCRIPTIONS.md) - How rolling description updates incorporate judge signal

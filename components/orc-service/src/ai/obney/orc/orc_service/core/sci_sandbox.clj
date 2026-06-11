@@ -217,7 +217,18 @@
      {:namespaces (merge {'clojure.core safe-core-final
                           'user (merge flat browser-bindings)}
                          namespaces)  ;; e.g., {'linear {'list_issues <fn>}}
-      :bindings all-bindings})))
+      :bindings all-bindings
+      ;; Expose JVM classes SCI's evaluator references internally when
+      ;; constructing collections from model-generated code. Without these,
+      ;; map literals with computed values in model-written fns fail at
+      ;; invocation with "Could not resolve symbol: clojure.lang.PersistentArrayMap/...".
+      ;; The classes listed here are the impl types Clojure's reader/compiler
+      ;; references when building persistent collections.
+      :classes {'clojure.lang.PersistentArrayMap clojure.lang.PersistentArrayMap
+                'clojure.lang.PersistentHashMap clojure.lang.PersistentHashMap
+                'clojure.lang.PersistentVector clojure.lang.PersistentVector
+                'clojure.lang.PersistentHashSet clojure.lang.PersistentHashSet
+                'clojure.lang.PersistentTreeMap clojure.lang.PersistentTreeMap}})))
 
 ;; ============================================================================
 ;; Code Execution

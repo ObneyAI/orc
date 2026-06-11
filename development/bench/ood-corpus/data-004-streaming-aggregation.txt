@@ -1,0 +1,30 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: data
+;; Why OOD: window-semantic + late-arrival policy design — system-design shape with timeliness/correctness tradeoffs.
+You need to design a streaming aggregation that computes "items sold per
+SKU per 5-minute window" with the following properties:
+
+- Event source: 50K events/second from POS terminals across 800 stores
+- Each event is `{:store-id :sku :quantity :sold-at :received-at}` —
+  `:received-at` may be MINUTES later than `:sold-at` for offline-mode
+  terminals that batch-upload when reconnected
+- Some events arrive up to 6 hours late (worst case)
+- Downstream consumers (executive dashboard) need <2-min freshness for
+  CURRENT windows
+- A separate consumer (inventory forecasting) needs ACCURATE final
+  counts even if it costs 6+ hours
+- Compute infrastructure: Kafka + Flink (the team has 2 engineers
+  comfortable with both)
+
+Design the aggregation pipeline with:
+- The choice of WATERMARK strategy and what it costs
+- The choice of WINDOW type (tumbling, sliding, session) and why
+- The TWO output streams (one for the fast-freshness dashboard, one for
+  the accurate-final-count forecaster) and how they share computation
+- Late-data policy: what gets dropped vs upserted into the late-arrival
+  output stream
+- The reconciliation strategy for cases where the dashboard had stale
+  data that's now corrected (UI considerations matter here, not just
+  data-plane considerations)
+
+Output a design doc with sections covering each of the above.

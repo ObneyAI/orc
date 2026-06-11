@@ -1,0 +1,556 @@
+;;  10 node-type seeds — :llm :code :map-each :parallel :sequence :fallback :condition :chunk-document :aggregate :final.
+;; Generated from development/src/seed_descriptions.clj — DO NOT EDIT BY HAND.
+;; To regenerate: clj -M:dev -e "(load-file \"components/ontology/scripts/regen-seeds.clj\")"
+;; Each entry: {:target-id <uuid-or-keyword-or-string> :body {<description-body>}}
+
+[{:target-id :llm,
+  :body
+  {:capabilities
+   ["produces structured or free-form text output from instruction + reads"
+    "per-chunk extraction inside :map-each parents"
+    "classification / labeling with bounded output schema"
+    "short-form synthesis where the output fits within model max-tokens"],
+   :strengths
+   [{:trait
+     "produces stable structured output when :output-schemas is declared",
+     :good-when
+     "the output is structured (vector/map) and the model honors :output-schemas",
+     :recommended-pattern
+     "[:llm {:reads [:chunk] :writes [:entities] :output-schemas {:entities [:vector :string]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "succeeds reliably on bounded per-item work inside :map-each",
+     :good-when
+     "input is a single chunk / item and the output is concise",
+     :recommended-pattern
+     "[:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:result]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "free-form long output can truncate mid-response, breaking downstream consumers",
+     :avoid-when
+     "an :llm node is asked to produce many KB of free-form prose AND a downstream :code consumer parses the response",
+     :recommended-alternative
+     "use :output-schemas to constrain shape; or split the work into smaller per-chunk :llm calls under a :map-each",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "rate-limit exhaustion when many :llm nodes run in unbounded parallel",
+     :avoid-when
+     "input has >6 parallel :llm sub-calls AND :max-concurrency is unset on the parent :map-each",
+     :recommended-alternative
+     "set :max-concurrency to 3 on the :map-each parent",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["per-chunk entity extraction in document-analysis"
+    "per-section classification in legal-issue-detection"
+    "executive summary synthesis as the final step in chunked-extraction trees"],
+   :avoid-when
+   ["the work is deterministic (counts, joins, regex) — use :code instead"
+    "the output is non-textual binary — use a different node type"],
+   :summary
+   "The :llm node calls a sub-LLM with instruction + reads → writes. It is the workhorse of Phase 2 trees: reliable for per-chunk extraction, classification, and bounded synthesis. Prefer :output-schemas for structured outputs to avoid downstream parsing fragility. Inside :map-each, bound :max-concurrency to ~3 to avoid sub-LLM rate-limit exhaustion.",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :code,
+  :body
+  {:capabilities
+   ["pure Clojure transform: :reads → :fn → :writes (no LLM call)"
+    "deterministic aggregation of :map-each results"
+    "format conversion (JSON ⇄ Clojure data, vector ⇄ map, scalar ⇄ wrapped)"
+    "cheap counts / joins / regex / dedup / filter operations"],
+   :strengths
+   [{:trait
+     "spends zero tokens on deterministic work that an LLM would otherwise do",
+     :good-when
+     "the transform is mechanical (counting, joining, deduping, regex extracting)",
+     :recommended-pattern
+     "[:code {:reads [:items] :writes [:total] :fn (fn [{:keys [items]}] {:total (count items)})}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "consolidates :map-each results into a single shape downstream consumers can use",
+     :good-when
+     "a :map-each writes a vector of per-item results and a downstream node needs a flat map / single value",
+     :recommended-pattern
+     "[:code {:reads [:per-chunk-results] :writes [:all-entities] :fn (fn [{:keys [per-chunk-results]}] {:all-entities (vec (mapcat :entities per-chunk-results))})}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "exceptions in the inline :fn crash the node with no LLM-style retry",
+     :avoid-when
+     "the transform depends on the input shape and the input is not schema-guaranteed (e.g. :reads receives an LLM-generated vector whose elements might be nil)",
+     :recommended-alternative
+     "defensive destructuring + nil-handling inside :fn; OR upstream :llm node should use :output-schemas to guarantee shape",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "the inline :fn must be SCI-safe — no dynamic require, no Java interop outside the SCI whitelist",
+     :avoid-when
+     "the transform requires a library not on the SCI whitelist OR uses dynamic resolution",
+     :recommended-alternative
+     "use a qualified-symbol :fn ('my.ns/transform) to reference a real Clojure fn instead of an inline lambda",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["counting / aggregating :map-each results in document-analysis"
+    "joining per-chunk extractions into a flat entity list"
+    "regex-extracting structured fields from semi-structured LLM output"
+    "format conversion between vector-of-maps and map-of-vectors shapes"],
+   :avoid-when
+   ["the work requires natural-language understanding — use :llm instead"
+    "the work involves non-deterministic / external I/O (network, files) — :code is in-process pure compute only"],
+   :summary
+   "The :code node runs a pure Clojure :fn over :reads to produce :writes — no LLM call, no tokens spent. It is the right tool for deterministic transforms (counts, joins, regex, dedup, aggregation of :map-each results). Inline :fn must be SCI-safe; defensive nil-handling is critical because input shape may not be guaranteed. Prefer :code over :llm whenever the work is mechanical.",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :map-each,
+  :body
+  {:capabilities
+   [":from collection-key, :as item-name, body fn, :into results-key"
+    "bounded parallelism via :max-concurrency"
+    "natural fit for per-chunk extraction, per-record classification, per-document analysis"
+    "produces a vector of per-iteration results downstream :code or :aggregate consumes"],
+   :strengths
+   [{:trait
+     "bounded :max-concurrency (3) avoids sub-LLM rate-limit exhaustion on chunked extraction",
+     :good-when
+     "the child body contains :llm calls AND the source collection has more than ~5 items",
+     :recommended-pattern
+     "[:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:result]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "partial-result tolerance — :partial status on some-failed scenarios leaves successful items usable",
+     :good-when
+     "the downstream consumer can synthesize from a successes-only vector (e.g., summary from 22 of 24 chunks)",
+     :recommended-pattern
+     "[:sequence [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:result]}]] [:code {:reads [:results] :writes [:synthesis] :fn (fn [{:keys [results]}] {:synthesis (filterv some? results)})}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "unbounded :max-concurrency exhausts sub-LLM rate limits on chunked extractions with 6+ items",
+     :avoid-when
+     ":max-concurrency is unset AND the source collection has > 6 items AND the child body contains :llm calls",
+     :recommended-alternative
+     "always set :max-concurrency to 3 (or a value tuned to the LLM provider's per-second rate limit) on :map-each over chunks",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "ALL iterations failing (e.g., schema mismatch in every item) returns :status :failure with empty results — downstream :code crashes on nil/empty input",
+     :avoid-when "downstream :code requires non-empty :results",
+     :recommended-alternative
+     "wrap the :code in a :fallback OR add a :condition guard that branches on (seq results)",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["per-chunk entity extraction in document-analysis benchmark"
+    "per-section classification in legal-issue-detection benchmark"
+    "per-page processing in predict-rlm-comparison image_analysis + document_redaction tasks"],
+   :avoid-when
+   ["the source collection is empty or single-item — use a direct :llm or :code instead"
+    "the child body needs to share state across iterations — :map-each iterations are independent"
+    "ordered processing matters AND iterations are not commutative — use :sequence of :llm/:code chain instead"],
+   :summary
+   "The :map-each node iterates a child body over a source collection's elements with bounded parallelism. THE primary workhorse for chunked extraction and per-record classification. Always set :max-concurrency to ~3 when the child body contains :llm calls to avoid sub-LLM rate-limit exhaustion. Partial-failure tolerance is built-in (:status :partial leaves successful items usable). Avoid when iterations need shared state — use :sequence instead.",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :parallel,
+  :body
+  {:capabilities
+   ["runs child nodes concurrently against the same blackboard state"
+    "natural fit for independent extractions where each child writes to a distinct key"
+    "cross-validation patterns (same input through two different prompts → compare)"
+    "speedup over :sequence when child latencies are similar AND children are independent"],
+   :strengths
+   [{:trait
+     "wall-time reduction when children take similar duration and don't depend on each other",
+     :good-when
+     "the same source data must be transformed three+ ways AND each transformation writes to a distinct key",
+     :recommended-pattern
+     "[:parallel [:llm {:reads [:document] :writes [:summary]}] [:llm {:reads [:document] :writes [:entities]}] [:llm {:reads [:document] :writes [:key-dates]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "writes to overlapping :writes keys race; last-writer-wins is non-deterministic",
+     :avoid-when
+     "two or more children declare the same key in their :writes",
+     :recommended-alternative
+     "give each child a distinct :writes key, OR use :sequence so writes happen in order, OR aggregate via :code after",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "total wall-time equals the SLOWEST child — not a speedup if children are very uneven",
+     :avoid-when
+     "one child is dramatically slower than the others AND a downstream node needs all children's results before proceeding",
+     :recommended-alternative
+     "use :sequence with the slow child first so downstream consumers can start as soon as siblings complete; OR split the slow child into smaller :map-each iterations",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "children cannot read each other's outputs — they execute concurrently",
+     :avoid-when
+     "a child's :reads include any key another sibling writes to",
+     :recommended-alternative
+     "use :sequence to chain dependent computations, OR restructure so each child reads only from blackboard keys set BEFORE the :parallel",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["concurrent independent extractions in document-analysis (summary + entities + dates in one pass)"
+    "cross-validation pattern (two prompts on the same input → compare)"
+    "fan-out to multiple sub-LLM models in dual-model evaluation (using per-:llm :model override)"],
+   :avoid-when
+   ["the work is per-element over a collection — use :map-each instead"
+    "any child depends on another child's output — use :sequence"
+    "only one child exists — drop the :parallel wrapper"],
+   :summary
+   "The :parallel node runs its children concurrently against the shared blackboard. Use it for independent transformations of the same input where each child writes to a DISTINCT key. Children cannot read each other's outputs; overlapping :writes keys race; total wall-time equals the slowest child. Choose :sequence when children must chain; choose :map-each when iterating over a collection.",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :sequence,
+  :body
+  {:capabilities
+   ["runs children in order; each child's :writes available to subsequent children's :reads"
+    "structural backbone of pipelined trees (chunk → map-each → aggregate → synthesize)"
+    "stops at first :failure-status child (use :fallback if you want to try siblings)"
+    "propagates :partial status — if any child returns :partial, the sequence reports :partial"],
+   :strengths
+   [{:trait
+     "natural pipelined flow when each step depends on the prior step's output",
+     :good-when
+     "computation has logical phases (extract → aggregate → synthesize) where order matters",
+     :recommended-pattern
+     "[:sequence [:chunk-document {:from :document :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:result]}]] [:code {:reads [:results] :writes [:summary] :fn (fn [{:keys [results]}] {:summary (str/join \" \" results)})}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "predictable failure semantics: first-failure halts the chain; status of any child propagates",
+     :good-when
+     "you want fail-fast behavior — downstream steps shouldn't run if an upstream step failed",
+     :recommended-pattern
+     "[:sequence [:llm {:writes [:initial-extract]}] [:llm {:reads [:initial-extract] :writes [:refined]}] [:final {:keys [:refined]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "no parallelism — total wall-time is the SUM of all children's durations",
+     :avoid-when
+     "two or more children are independent AND each is non-trivial in latency",
+     :recommended-alternative
+     "use :parallel for the independent children; or use :map-each if the work is per-item over a collection",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "over-decomposition into many small :llm children burns sub-LLM tokens that could be one call",
+     :avoid-when
+     "the sequence is 3+ :llm children doing successive small transformations on the same data",
+     :recommended-alternative
+     "consolidate into ONE :llm node with a longer instruction covering all the steps; OR use :code for any deterministic intermediate steps",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["root of nearly every chunked-extraction tree (chunk → map-each → aggregate → synth)"
+    "ETL-style pipelines where each stage refines the prior stage's output"
+    "any tree whose final node is a :final marker — :sequence is the natural root container"],
+   :avoid-when
+   ["children are independent — use :parallel"
+    "iterating over a collection — use :map-each"
+    "the tree has only one child — drop the :sequence wrapper"],
+   :summary
+   "The :sequence node runs children in order; each child's :writes are available to the next child's :reads. It is the structural backbone of almost every non-trivial Phase 2 tree (chunk → map-each → aggregate → synthesize). Stops fail-fast on first :failure; propagates :partial. Avoid when children are independent (use :parallel) or when the chain is 3+ small :llm steps (consolidate into one larger :llm or use :code for deterministic intermediates).",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :fallback,
+  :body
+  {:capabilities
+   ["runs children in order; returns on first :success"
+    "tries the next sibling when the previous returns :failure"
+    "natural recovery pattern: primary approach + simpler fallback"
+    "graceful degradation when the primary might fail but a degraded version is acceptable"],
+   :strengths
+   [{:trait
+     "graceful recovery when the primary approach has a known partial-failure mode",
+     :good-when
+     "you have a high-quality but fragile primary AND a lower-quality but reliable backup that produces equivalent :writes",
+     :recommended-pattern
+     "[:fallback [:llm {:model \"openai/gpt-5\" :instruction \"complex extraction\" :writes [:result]}] [:llm {:model \"google/gemini-2.5-flash\" :instruction \"simpler extraction\" :writes [:result]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "each failed child still runs to completion before failure is detected — total cost includes wasted work",
+     :avoid-when
+     "the primary child has high token cost AND fails often (you pay full cost on every primary attempt)",
+     :recommended-alternative
+     "use a :condition guard to PREDICT which child to run based on input shape, instead of trying the expensive one first; OR put the cheaper child first if its success rate is close to the primary's",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "silently masks real bugs — if the primary always fails and the fallback always covers, the regression is invisible",
+     :avoid-when
+     "the primary is intended to be the canonical path AND silent fallback would hide degradation",
+     :recommended-alternative
+     "instead of :fallback, use :sequence with a :condition that fails LOUDLY when the primary fails; OR add a judge or downstream :code node that logs/alerts when the fallback fires",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "children must produce equivalent :writes for downstream consumers to work uniformly",
+     :avoid-when
+     "primary and fallback write different keys OR different shapes for the same key",
+     :recommended-alternative
+     "use :code after the :fallback to normalize the output shape; OR ensure all children's :writes declarations match",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["model-quality fallback: try a high-capability model first, fall back to a cheaper one"
+    "schema-strict-then-loose: try :output-schemas first, fall back to free-form parsing"
+    "primary-then-rule-based: try LLM extraction, fall back to regex/template matching via :code"],
+   :avoid-when
+   ["all children would succeed (just use the first one — :fallback adds nothing)"
+    "you want both children's results combined — use :parallel"
+    "you want only one child to run based on a condition you can predict — use :condition"],
+   :summary
+   "The :fallback node tries children in order, returning on first :success. THE recovery composite: use for graceful degradation when a primary approach may fail but a simpler alternative is acceptable. Cost: each failed child runs to completion before failure is detected, so the slow/expensive child should NOT be first if its failure rate is high. Risk: silently masks real bugs — pair with a judge or logging :code to surface when the fallback fires.",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :condition,
+  :body
+  {:capabilities
+   ["branches execution based on a code predicate over the blackboard"
+    ":check is a fn returning truthy/falsy; node returns :success or the configured :on-fail status"
+    "useful for guards that gate downstream work on intermediate-state shape"
+    "NOT currently emit-able by RLM in emit-tree! — canonical ORC DSL only as of this seed's authoring"],
+   :strengths
+   [{:trait
+     "explicit guard that stops a sequence cleanly when a precondition isn't met",
+     :good-when
+     "a downstream step requires a specific shape AND you can express the precondition as a small predicate",
+     :recommended-pattern
+     "[:sequence [:llm {:writes [:extracted]}] [:condition {:check (fn [{:keys [extracted]}] (seq extracted)) :on-fail :failure}] [:code {:reads [:extracted] :writes [:synth] :fn (fn [{:keys [extracted]}] {:synth extracted})}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "the predicate fn must be SCI-safe — same constraints as :code",
+     :avoid-when
+     "the predicate needs library access outside the SCI whitelist OR dynamic resolution",
+     :recommended-alternative
+     "extract the predicate to a qualified-symbol fn; OR upstream the check into a :code node that explicitly :writes a :guard-met? boolean and switch on it",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     "RLM models cannot emit :condition in emit-tree! today — patterns using :condition are hand-built-only",
+     :avoid-when
+     "designing an emit-tree! pattern AND wanting branching behavior",
+     :recommended-alternative
+     "use :fallback for the recovery-style branching (try the strict path, fall back on failure); OR design the work as :sequence with always-execute steps",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["preconditions in hand-built workflows (gate downstream work on intermediate-state shape)"
+    "schema validation between :llm extraction and :code consumption"
+    "fail-loud guards in production workflows that need surface-able failures"],
+   :avoid-when
+   ["the branching can be expressed via :fallback — prefer that (no SCI predicate surface)"
+    "designing for emit-tree! — RLM cannot emit :condition today"],
+   :summary
+   "The :condition node branches based on a code predicate over the blackboard — exists in canonical ORC DSL for hand-built workflows but is NOT currently emit-able by RLM in emit-tree!. Use as a guard in hand-built pipelines when a downstream step has a precondition. The predicate fn is SCI-constrained (same as :code). For emit-tree! patterns that want branching, prefer :fallback (when supported) or design the work as always-execute :sequence steps.",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :chunk-document,
+  :body
+  {:capabilities
+   ["splits a string source from :from into substrings, writes a vector to :into"
+    "supports fixed :size (chunk every N chars) OR :delimiter (split on a separator)"
+    "compiles to an inline :code node — no LLM call, deterministic"
+    "the standard preamble for any chunked-extraction tree (:chunk-document → :map-each → :llm → :aggregate)"],
+   :strengths
+   [{:trait
+     "deterministic chunking with zero token cost — the right tool for splitting a large document",
+     :good-when
+     "input is a string AND downstream work is per-chunk (extraction, classification)",
+     :recommended-pattern
+     "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:result]}]]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     ":delimiter-based splitting respects document structure (sections, paragraphs) better than fixed-:size for semantic boundaries",
+     :good-when
+     "the document has natural separators (e.g. '===CHUNK===', '\\n\\n' for paragraphs, headers)",
+     :recommended-pattern
+     "[:chunk-document {:from :document :delimiter \"===\" :into :sections}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "fixed :size splits ignore semantic structure — entities/dates may straddle chunk boundaries",
+     :avoid-when
+     "the document has clear semantic separators that should be preserved AND :size is set without considering them",
+     :recommended-alternative
+     "use :delimiter when the document has natural separators; OR set :size large enough that semantic content rarely straddles boundaries (default 5000 chars is usually safe)",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["preamble step in document-analysis benchmark"
+    "section-splitting in legal-issue-detection (delimiter-based on heading markers)"
+    "page-splitting in predict-rlm-comparison document_redaction (per-page entity extraction)"],
+   :avoid-when
+   ["input is already a collection — skip directly to :map-each"
+    "the document is small enough to fit in one LLM call — use a single :llm without chunking"],
+   :summary
+   "The :chunk-document node splits a string source into a vector of substrings — the standard preamble for chunked-extraction trees. Use :size for fixed-length chunks (default 5000 chars is safe) or :delimiter to preserve semantic boundaries like sections or paragraphs. Always pair with :map-each + bounded :max-concurrency downstream to process chunks safely.",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :aggregate,
+  :body
+  {:capabilities
+   ["consolidates :map-each results into a single value or merged map"
+    "flattens a vector of per-iteration result maps into per-key vectors"
+    "compiles to an inline :code node — no LLM call, deterministic"
+    "the standard step AFTER :map-each in chunked-extraction trees, BEFORE downstream synthesis"],
+   :strengths
+   [{:trait
+     "natural consolidator for :map-each results without spending tokens",
+     :good-when
+     "a :map-each writes a vector of per-iteration result maps AND downstream consumer needs a per-key flat map",
+     :recommended-pattern
+     "[:sequence [:map-each {:from :chunks :as :chunk :into :chunk-results} [:llm {:reads [:chunk] :writes [:entities :dates]}]] [:aggregate {:from :chunk-results :writes [:entities :dates]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "the default aggregation just appends per-key — doesn't deduplicate, doesn't reconcile conflicting values across iterations",
+     :avoid-when
+     "different iterations may produce conflicting values for the same conceptual entity (e.g. the same person mentioned by different names)",
+     :recommended-alternative
+     "use a downstream :code node with custom dedup/reconciliation logic instead of relying on :aggregate's default merge",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["final-stage merge in document-analysis (per-chunk entities → all-entities)"
+    "consolidating per-section classifications in legal-issue-detection"
+    "merging per-page extraction results in predict-rlm-comparison"],
+   :avoid-when
+   ["the consolidation requires deduplication, sorting, or conflict resolution — use :code with explicit logic"
+    ":map-each results are already shaped correctly for downstream consumption"],
+   :summary
+   "The :aggregate node consolidates a :map-each's result vector into a per-key flat map. The standard post-:map-each step in chunked-extraction trees. Default merge appends per-key without deduplication — for richer consolidation logic (dedup, sort, conflict resolution), use a downstream :code node instead.",
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id :final,
+  :body
+  {:capabilities
+   ["declares which blackboard keys form the tree's final outputs via :keys"
+    "marker only — no execution; tree compilation uses it to validate output coverage"
+    "REQUIRED as the last child of any emit-tree! root :sequence (or as the root if the tree is one composite)"],
+   :strengths
+   [{:trait
+     "explicit output contract — makes the tree's intended outputs unambiguous",
+     :good-when
+     "every tree (always — :final is required at the root level)",
+     :recommended-pattern
+     "[:sequence [:chunk-document {:from :document :size 5000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :results :max-concurrency 3} [:llm {:reads [:chunk] :writes [:summary :entities :dates]}]] [:aggregate {:from :results :writes [:summary :entities :dates]}] [:final {:keys [:summary :entities :dates]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "omitting :final means the tree has no declared outputs — the parent repl-researcher cannot extract :writes properly",
+     :avoid-when
+     "every emit-tree! tree (you must always include :final at the root)",
+     :recommended-alternative
+     "always include [:final {:keys [...]}] as the last child of the root composite; OR if your root IS a single :llm/:code, wrap in [:sequence ... [:final {...}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}
+    {:trait
+     ":final's :keys must match the parent repl-researcher node's :writes — mismatches cause output reconciliation failures",
+     :avoid-when
+     "the :final's declared :keys differs from the parent repl-researcher's :writes declaration",
+     :recommended-alternative
+     "include EVERY parent :writes key in :final's :keys; if the tree doesn't produce all of them, redesign upstream nodes to ensure each :writes key is populated",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-26T00:00:00Z",
+     :last-reinforced-at "2026-05-26T00:00:00Z"}],
+   :representative-uses
+   ["terminal marker in every emit-tree! tree"
+    "explicit output contract in benchmark tasks (document-analysis, risk-analysis, etc.)"],
+   :avoid-when
+   ["it's the only node in your tree without other children — a single :llm doesn't need :final wrapping (the parent's :writes covers it)"],
+   :summary
+   "The :final node is a terminal marker declaring which blackboard keys form the tree's outputs. Required as the last child of any emit-tree! root :sequence (or as the root if the tree is one composite). :final's :keys must match the parent repl-researcher's :writes — mismatches cause output reconciliation failures.",
+   :version 1,
+   :consolidated-from-event-count 0}}]

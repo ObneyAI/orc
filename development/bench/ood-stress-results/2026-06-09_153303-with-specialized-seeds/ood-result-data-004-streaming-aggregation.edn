@@ -1,0 +1,45 @@
+{:slug "data-004-streaming-aggregation",
+ :envelope
+ {:assigned-tree-id #uuid "971ded84-309f-43ef-b694-c0408c8e970e",
+  :confidence 0.0,
+  :top-candidates
+  [{:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 144.6458740234375,
+    :rank 1,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151172-05:00"},
+    :reasoning nil,
+    :fitness-score nil,
+    :rerank-source :colbert-fallback}
+   {:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 137.20843505859375,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.157194-05:00"},
+    :reasoning nil,
+    :fitness-score nil,
+    :rerank-source :colbert-fallback}],
+  :reasoning
+  "Top candidate did not pass confidence threshold; minting fresh task class.",
+  :was-fresh-mint? true,
+  :parent-tree-id nil,
+  :rerank-fallback? true},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? true},
+ :elapsed-ms 5509,
+ :parent-chain []}

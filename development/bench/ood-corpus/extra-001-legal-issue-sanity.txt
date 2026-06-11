@@ -1,0 +1,22 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: extra
+;; Why included: SANITY CHECK — this task SHOULD direct-match the legal-issue-detection seed at high confidence. If it doesn't, the classifier itself is broken (not the OOD pattern).
+Review the following short non-compete clause from a software engineer's
+employment agreement and identify all legal concerns. Each finding must
+include:
+- A concise statement of the concern
+- Severity (high / medium / low) with one-sentence justification
+- Area of law (contract / employment / IP / etc.)
+- Direct citation of the offending clause text
+- A concrete suggested revision
+
+Clause text:
+"Employee agrees that during employment and for a period of three (3)
+years following separation from the Company for any reason, Employee
+shall not directly or indirectly engage in, accept employment with, or
+provide services to any business that competes with the Company in any
+geographic area where the Company operates or contemplates operating.
+Violation of this clause shall subject Employee to injunctive relief
+and liquidated damages of $100,000 per violation."
+
+Return a vector of findings as structured `:issues`.

@@ -1,0 +1,1485 @@
+{:corpus
+ [{:slug "behavioral-fresh-mint-001-haiku-audit",
+   :instruction
+   "You are given a list of 5 security audit findings on a deployed web application:\n\n  - Finding A: SQL injection possible in /search endpoint via the `q` parameter\n  - Finding B: Session cookies set without Secure or HttpOnly flags\n  - Finding C: User input reflected unescaped in error messages (XSS)\n  - Finding D: Admin role check bypassable by tampering with JWT `role` claim\n  - Finding E: Sensitive logs (auth tokens) stored in plaintext on disk\n\nProduce a haiku (5-7-5 syllable structure) for EACH finding that captures the\nessence of the vulnerability in evocative imagery while preserving technical\naccuracy. Each haiku should make the reader feel the seriousness without\nnaming the CVE category directly.\n\nReturn a vector of 5 maps `{:finding \"A\" :haiku \"...\"}` ordered A through E.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/behavioral-fresh-mint-001-haiku-audit.txt"}
+  {:slug "behavioral-fresh-mint-002-melody-encoding-pi",
+   :instruction
+   "Encode the first 20 digits of pi (3.14159265358979323846) as a melody.\n\nConstraints:\n- 7-note scale: map digit 0 to rest, digits 1-7 to scale degrees (do, re, mi, fa,\n  sol, la, ti), digits 8-9 to octave-up of degrees 1-2.\n- Output the melody as a vector of 20 maps `{:digit N :note \"...\" :octave O\n  :duration \"quarter|half|whole\"}` where duration is chosen to give the\n  melody a singable rhythm (not all quarter notes).\n- Add a brief explanation (3-5 sentences) of the musical decisions: which key\n  you chose, how rhythm choices shape the phrase, whether the melody resolves.\n- Bonus: name a famous tune that the resulting melody RESEMBLES, if any.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/behavioral-fresh-mint-002-melody-encoding-pi.txt"}
+  {:slug "behavioral-fresh-mint-003-recipe-iambic-pentameter",
+   :instruction
+   "Write a recipe for chocolate chip cookies (yield: 24 cookies) where EVERY\ninstruction step is rendered in iambic pentameter (10 syllables per line,\nunstressed-stressed pattern).\n\nConstraints:\n- The ingredient list can stay in normal prose.\n- The numbered steps (8-12 steps) must each be a line of iambic pentameter.\n- Cooking times, temperatures, and physical actions must remain accurate —\n  the meter constraint cannot compromise the recipe's correctness.\n- Output: `{:ingredients [...] :steps [...] :yield \"24 cookies\"}`.\n\nYou may use the natural elasticity of English (contractions, syllabic\nelision) to make the meter work.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/behavioral-fresh-mint-003-recipe-iambic-pentameter.txt"}
+  {:slug "code-001-refactor-auth-middleware",
+   :instruction
+   "A team's legacy Node.js Express middleware handles authentication via three\nseparate functions executing in sequence on every protected route:\n`authenticate(req, res, next)`, `loadUserSession(req, res, next)`, and\n`enforceRateLimit(req, res, next)`. The three share repeated work (parsing\nthe Authorization header, querying Redis for session data) and have grown\nto ~600 lines with overlapping responsibilities.\n\nPropose a refactored design that:\n- Unifies the three functions into ONE coherent auth middleware\n- Eliminates the repeated work (Redis lookup happens once)\n- Preserves backward compatibility (existing route handlers must not break)\n- Adds testability (each step independently mockable)\n- Documents the new contract for downstream route handlers\n\nReturn:\n- `:refactored-design` — a structured outline of the new module shape\n- `:migration-plan` — ordered steps to apply the refactor without downtime\n- `:risks` — what could break, what would surface as a test failure\n- `:rationale` — 2-3 paragraphs explaining the design decisions",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/code-001-refactor-auth-middleware.txt"}
+  {:slug "code-002-investigate-flaky-test",
+   :instruction
+   "A Python integration test `test_user_signup_flow` fails ~5% of the time in CI\nbut never on local development. The test creates a user, sends a verification\nemail, polls the email-mock service for delivery, then asserts the user can\nlog in. CI output for failing runs shows the polling step times out at 30s.\nLocal runs of the same test complete in ~2s.\n\nRecent context:\n- The CI workers run on shared k8s nodes with a noisy-neighbor problem\n- The email-mock service runs as a sidecar container with no resource limits\n- Tests were stable until 3 weeks ago when the team upgraded the polling\n  library from v2.1 → v2.4\n\nProduce a RANKED list (most likely → least likely) of hypotheses for the\nflakiness, with each entry containing:\n- `:hypothesis` — one-sentence description\n- `:why-this-cause` — the reasoning chain from observed symptoms\n- `:falsifiability-test` — a SPECIFIC experiment that would PROVE this is\n  NOT the cause (e.g., \"if we revert the polling library to v2.1 and the\n  flakiness rate drops to 0%, hypothesis X is confirmed\")\n- `:effort-to-test` — `:low | :medium | :high`\n\nReturn at least 5 hypotheses. End with `:next-action` — which hypothesis\nto test first and why.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/code-002-investigate-flaky-test.txt"}
+  {:slug "code-003-generate-property-tests",
+   :instruction
+   "You are given a Python function signature and a one-paragraph spec:\n\n```python\ndef merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:\n    \"\"\"Merge overlapping or adjacent integer intervals.\n\n    Each input interval is (start, end) with start <= end. Two intervals\n    overlap if they share at least one integer point. Two intervals are\n    adjacent if end_a + 1 == start_b. The output is sorted by start,\n    contains no overlapping or adjacent intervals, and covers exactly\n    the same set of integer points as the input.\n    \"\"\"\n```\n\nGenerate a comprehensive set of PROPERTY-BASED test cases using Hypothesis\n(or descriptive equivalent) that exercise:\n- Empty input, single-interval input\n- All-disjoint, all-overlapping, mixed\n- Adjacent boundary cases (end_a + 1 == start_b)\n- Single-point intervals (start == end)\n- Negative integers, zero, very large integers\n- Duplicate intervals, fully-nested intervals\n- Properties that hold for ALL valid outputs (idempotency, sortedness,\n  point-set equivalence to input, no internal overlaps)\n\nReturn:\n- `:property-tests` — a vector of `{:property-name :description :hypothesis-code}` entries\n- `:invariants` — a list of plain-English properties the output must satisfy\n- `:notes` — anything that surfaced during generation that suggests the spec\n  itself might be ambiguous or under-specified",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/code-003-generate-property-tests.txt"}
+  {:slug "code-004-debug-memory-leak",
+   :instruction
+   "A production JVM service is OOM-killing under steady load after 4-6 hours.\nYou have three diagnostic artifacts:\n\n1. **Heap dump summary** (truncated):\n   ```\n   Top 10 retained-size classes:\n     org.example.cache.LRUEntry          412 MB  (32M instances)\n     byte[]                               87 MB\n     java.lang.String                     21 MB\n     java.util.HashMap$Node               19 MB\n     org.example.ws.WebSocketSession      17 MB  (4K instances)\n     ...\n   ```\n\n2. **GC log** (last hour):\n   - Young-gen collections every ~30s, 200ms pause each\n   - Full GC events every ~5 min, 2-3 sec pause each, reclaiming <5% of heap\n   - Heap usage trends from 60% → 95% over the 4-hour window\n\n3. **Application logs** (correlated to crash):\n   - WebSocket connect/disconnect events: ~400/minute connect, ~300/minute disconnect\n   - LRU cache evictions logged at warn level: ~0/minute (cache is configured with maxSize=10000)\n   - No exceptions or error log lines\n\nDiagnose the most likely root cause AND propose a remediation. Output:\n- `:root-cause-hypothesis` — one sentence\n- `:evidence-chain` — which signals from each artifact support the hypothesis\n- `:remediation` — concrete code/config changes\n- `:verification-plan` — how to confirm the fix worked in pre-prod before\n  redeploying\n- `:alternative-hypotheses` — at least one other plausible cause + why it's\n  less likely",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/code-004-debug-memory-leak.txt"}
+  {:slug "conv-001-vector-vs-sql-tradeoffs",
+   :instruction
+   "A small B2B SaaS team is debating whether to add a vector database (e.g.,\npgvector extension on their existing Postgres, OR a dedicated Weaviate/\nQdrant deployment) to power a \"find similar customer-support tickets\"\nfeature, OR whether to handle it with a Postgres LIKE + Elasticsearch\nhybrid.\n\nThe team has:\n- 12 engineers (4 backend, 4 frontend, 2 SRE, 2 mobile)\n- ~3M support tickets in Postgres today\n- Strong Postgres operational expertise\n- No prior vector-DB experience\n- 6-week timeline to ship the feature\n- Existing Elasticsearch cluster (3-node, used for full-text search on tickets)\n\nExplain the tradeoffs across these three options with a clear recommendation\nfor THIS team given THEIR context (not in the abstract). Include:\n- `:option-summaries` — what each option actually does at a 200-foot level\n- `:fit-to-team-constraints` — how each option lands against the team's\n  current expertise, infrastructure, and timeline\n- `:operational-cost-comparison` — what each costs to run + maintain over 1\n  year and 3 years\n- `:quality-comparison` — relevance, latency, recall expectations\n- `:recommendation` — pick ONE option + explain why for THIS team\n- `:caveats` — what conditions would change the recommendation",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/conv-001-vector-vs-sql-tradeoffs.txt"}
+  {:slug "conv-002-architecture-recommendation",
+   :instruction
+   "A consumer-app startup needs an architecture recommendation for their next\n6-month build:\n\n- Product: real-time multiplayer trivia game, expected scale 50K concurrent\n  users at launch, 500K within 6 months\n- Latency budget: question-broadcast to all participants in a match must\n  arrive within 200 ms p99\n- Team: 6 engineers, 2 of whom have GraphQL experience, none with WebRTC\n- Existing infra: AWS, terraform-managed, RDS Postgres for user data,\n  Cloudflare on the edge\n- Cost budget: $3K/mo at 50K users, scaling sublinearly thereafter\n\nRecommend an architecture with specific tech choices for:\n- Real-time message transport (WebSocket vs Server-Sent Events vs polling)\n- Game-state authority (server-authoritative vs hybrid)\n- Match orchestration (single-process matchmaker vs distributed)\n- Data tier (Postgres alone vs Postgres + Redis vs separate write/read)\n- Observability stack\n\nFor EACH choice include:\n- The decision\n- Why it fits the constraints\n- What FAILURE MODE it creates and how it's mitigated\n- A plausibility test the team can run in week 1 to validate the choice\n  before sinking implementation effort",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/conv-002-architecture-recommendation.txt"}
+  {:slug "conv-003-junior-debug-strategy",
+   :instruction
+   "A junior engineer on your team has been stuck for two days on a bug: a\ncheckout flow occasionally charges a customer twice. They've added logging,\nre-read the Stripe docs, and stared at the code. They're frustrated and\nconsidering asking you to \"just take a look at it.\"\n\nInstead of solving the bug yourself, walk the junior through a debugging\nstrategy they can apply NEXT TIME they hit a similar wall. Make it\nactionable — explain the principles AND the specific steps you'd take if\nyou were them on THIS bug.\n\nCover:\n- How to break the problem space into testable hypotheses\n- How to construct minimum-reproducible cases\n- When to add logging vs. attach a debugger vs. read the upstream library\n  source\n- How to recognize you're at a wall vs. genuinely making progress\n- When to escalate (and how to frame the escalation so the senior can help\n  efficiently)\n- The specific FIRST 2-3 steps you'd take TONIGHT on this checkout-double-\n  charge bug\n\nTone: warm, concrete, no condescension. The junior is smart and motivated;\nthey just haven't built the troubleshooting reflexes yet.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/conv-003-junior-debug-strategy.txt"}
+  {:slug "conv-004-defend-controversial-choice",
+   :instruction
+   "You are the engineering lead on a team that just chose to migrate from\nKubernetes to a single-binary self-hosted PaaS (e.g., Fly.io / Render /\nCoolify-style) for your 50-person SaaS. The PM team is skeptical — they've\nheard \"everyone uses k8s\" and worry about hiring, ecosystem risk, and\nvendor lock-in.\n\nCompose a 5-7 paragraph internal memo defending the decision. Address each\nof the PM concerns directly. Use ONLY arguments grounded in the team's\nactual situation (small ops headcount, predictable traffic, no\nmulti-region requirement). Avoid generic \"k8s is complicated\" rants —\nPMs have heard those and discounted them.\n\nThe memo must:\n- Open with a one-sentence position statement\n- Quote (or paraphrase) at least 3 specific PM objections you've heard\n- Provide concrete data (or describe what data would resolve the objection)\n- Acknowledge what could go wrong (don't sweep risks under the rug — PMs\n  will sniff this out and lose trust)\n- End with a clear next step (decision point, trial period boundary, or\n  validation milestone)\n\nOutput: `{:memo-title :paragraphs [<paragraph-text>] :next-step}`",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/conv-004-defend-controversial-choice.txt"}
+  {:slug "data-001-schema-migration",
+   :instruction
+   "A production Postgres table `orders` (28M rows, ~12 GB, ~5K inserts/min,\n~12K reads/min) needs the column `customer_email` migrated from\n`varchar(255) NULL` to `varchar(255) NOT NULL`. Today ~3% of rows have\nNULL (legacy guest checkouts). The app writes new orders with a non-NULL\nemail but doesn't enforce.\n\nPlan a zero-downtime migration. Cover:\n- The ordered DDL + DML steps (with rollback at each)\n- The data backfill strategy for the 840K NULL rows (where do they get\n  emails from? customer_id can join to users.email, but ~5% of orders\n  are guest checkouts with NO matching user record)\n- The application-side guards that prevent new NULL writes during the\n  migration window\n- How to detect partial-migration state (rows backfilled but constraint\n  not yet applied)\n- The locking implications of `ALTER TABLE ... SET NOT NULL` on a\n  28M-row table and how to avoid table-wide locks\n- Verification checks at each step\n- Total estimated migration window and the rollback plan if a step fails\n  past the point of safe rollback\n\nOutput a stepwise migration runbook the on-call engineer could follow\nwithout further guidance.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/data-001-schema-migration.txt"}
+  {:slug "data-002-etl-cdc-to-dim",
+   :instruction
+   "A company has 5 source databases (Postgres for transactional, MySQL for\nlegacy ERP, MongoDB for product catalog, Snowflake for warehoused\nanalytics, Salesforce for CRM). They need to build a dimensional model\n(star schema) for executive dashboards.\n\nCDC streams from the 5 sources are available via Debezium → Kafka.\nUpdate frequencies vary: transactional ~1K events/min, ERP ~10/min,\ncatalog ~5/min, Snowflake batch every 4 hours, Salesforce ~200/min.\n\nDesign the ETL pipeline:\n- Identify the fact tables and dimension tables (a \"customer orders by\n  product category\" star at minimum)\n- Choose an SCD strategy per dimension (Type 1 vs Type 2 vs Type 6) with\n  reasoning grounded in WHO will query the data + what questions they\n  ask\n- Define the join logic to reconcile customer IDs across sources\n  (Salesforce uses external_id, transactional uses customer_id,\n  legacy ERP uses cust_no — and they aren't always perfectly matched)\n- Handle late-arriving facts (Snowflake batch lags transactional by up to\n  4 hours)\n- Define the freshness SLA for dashboards (real-time? 15-min? hourly?)\n  and justify with consumer needs\n\nReturn:\n- `:fact-tables` + `:dimension-tables` (name, grain, columns, SCD type)\n- `:ingestion-flow` (per-source path through Kafka → transform → load)\n- `:reconciliation-strategy` for customer-ID conflicts\n- `:freshness-sla` + the architectural choices that achieve it\n- `:open-questions` — things you'd need to ask the business before finalizing",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/data-002-etl-cdc-to-dim.txt"}
+  {:slug "data-003-optimize-slow-query",
+   :instruction
+   "A slow query in production:\n\n```sql\nSELECT u.id, u.name, u.email,\n       COUNT(o.id) AS order_count,\n       SUM(o.total_cents) AS lifetime_value\nFROM users u\nLEFT JOIN orders o ON o.user_id = u.id AND o.status = 'completed'\nWHERE u.signup_date >= NOW() - INTERVAL '90 days'\n  AND u.email_verified = TRUE\nGROUP BY u.id, u.name, u.email\nHAVING COUNT(o.id) >= 3\nORDER BY lifetime_value DESC\nLIMIT 100;\n```\n\nTable stats:\n- `users` (12M rows, ~5 GB): indexes on (id PK), (signup_date)\n- `orders` (180M rows, ~80 GB): indexes on (id PK), (user_id),\n  (created_at), (status)\n- The query runs in 14 seconds. Customer-facing dashboard expects <500ms.\n\nDiagnose AND fix. Provide:\n- `:query-plan-analysis` — the most likely bottleneck (sequential scan,\n  bad join order, sort spill, etc.) and the signals that point to it\n- `:proposed-rewrite` — the rewritten SQL with an explanation of each\n  change\n- `:index-recommendations` — exact `CREATE INDEX` statements with the\n  rationale for each (and the storage / write-amplification cost)\n- `:expected-improvement` — your honest estimate of post-fix p95\n- `:verification-plan` — what to measure to confirm the improvement\n  before rolling it out to all dashboards\n- `:risks` — what could regress; consider write amplification, index\n  bloat, planner reliance on stats",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/data-003-optimize-slow-query.txt"}
+  {:slug "data-004-streaming-aggregation",
+   :instruction
+   "You need to design a streaming aggregation that computes \"items sold per\nSKU per 5-minute window\" with the following properties:\n\n- Event source: 50K events/second from POS terminals across 800 stores\n- Each event is `{:store-id :sku :quantity :sold-at :received-at}` —\n  `:received-at` may be MINUTES later than `:sold-at` for offline-mode\n  terminals that batch-upload when reconnected\n- Some events arrive up to 6 hours late (worst case)\n- Downstream consumers (executive dashboard) need <2-min freshness for\n  CURRENT windows\n- A separate consumer (inventory forecasting) needs ACCURATE final\n  counts even if it costs 6+ hours\n- Compute infrastructure: Kafka + Flink (the team has 2 engineers\n  comfortable with both)\n\nDesign the aggregation pipeline with:\n- The choice of WATERMARK strategy and what it costs\n- The choice of WINDOW type (tumbling, sliding, session) and why\n- The TWO output streams (one for the fast-freshness dashboard, one for\n  the accurate-final-count forecaster) and how they share computation\n- Late-data policy: what gets dropped vs upserted into the late-arrival\n  output stream\n- The reconciliation strategy for cases where the dashboard had stale\n  data that's now corrected (UI considerations matter here, not just\n  data-plane considerations)\n\nOutput a design doc with sections covering each of the above.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/data-004-streaming-aggregation.txt"}
+  {:slug "domain-001-game-balance",
+   :instruction
+   "Balance a 4-class deckbuilder card game (Mage / Rogue / Warrior / Cleric)\nso that across simulated head-to-head matches, every pair of classes\nconverges to a win-rate in the [45%, 55%] window.\n\nEach class has a starting kit:\n- Mage:    24 HP, 3 spell-cards (5 dmg @ 4 mana), 1 shield-card (block 2 @ 1 mana)\n- Rogue:   26 HP, 4 quick-cards (2 dmg @ 1 mana), 1 dodge-card (50% block @ 2 mana)\n- Warrior: 30 HP, 2 attack-cards (4 dmg @ 3 mana), 1 armor-card (block 3 @ 2 mana)\n- Cleric:  28 HP, 2 heal-cards (heal 5 @ 3 mana), 2 smite-cards (3 dmg @ 2 mana)\n\nYou are NOT given a baseline win-rate matrix. The work is iterative:\n- Hypothesize a starting balance (which class is over/under-tuned and why)\n- Simulate enough head-to-head matches to estimate the 4x4 win-rate matrix\n- Identify any pair outside [45%, 55%]\n- Adjust class parameters (HP / card damage / card cost) on the outlier classes\n- Re-simulate the affected matchups\n- Repeat until all 6 pairwise matchups converge into [45%, 55%]\n\nProduce:\n- :final-balance — the converged class parameters as a map keyed by class\n- :rounds — vector of {:round-N {:adjustments {...} :winrate-matrix {...}}}\n- :rationale — 2-3 paragraphs explaining iteration strategy + convergence",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/domain-001-game-balance.txt"}
+  {:slug "domain-002-recipe-scaling",
+   :instruction
+   "A small restaurant has a chef-tested recipe for ratatouille that yields\n6 plates from these ingredients + technique:\n\nIngredients:\n- 2 medium eggplants, diced 1 cm\n- 3 zucchini, diced 1 cm\n- 2 red bell peppers, diced 1 cm\n- 4 plum tomatoes, peeled + diced\n- 1 large onion, finely chopped\n- 4 garlic cloves, minced\n- 1/2 cup olive oil\n- 2 tsp salt, 1 tsp ground black pepper\n- 1 tbsp dried herbes de Provence\n- Fresh basil for garnish\n\nTechnique:\n- Sweat onions and garlic in olive oil 5 min\n- Add peppers, cook 5 min\n- Add eggplant + zucchini, cook 10 min with occasional stirring\n- Add tomatoes + seasoning, simmer covered 25 min\n- Uncover, reduce 10 min\n\nScale this recipe to feed 60 plates for a catering event. NOT a simple\n10x multiplication — provide a scaled recipe that accounts for:\n- Knife work + dicing time at scale (suggest a workflow + station setup)\n- Cookware capacity (a 12\" pan can hold ~6 plates of vegetables; what\n  changes with scaling?)\n- Heat distribution in larger pans / pots (timing adjustments)\n- Seasoning at scale (salt doesn't scale linearly with vegetable volume)\n- Texture preservation (over-stirring with larger batches mashes the\n  vegetables)\n- Service timing (how far in advance can this be cooked + held without\n  texture loss)\n- Cost estimate at typical restaurant supplier pricing\n\nOutput: `{:scaled-ingredients :revised-technique :workflow :timing :cost-estimate :pitfalls-and-mitigations}`",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/domain-002-recipe-scaling.txt"}
+  {:slug "domain-003-marathon-training",
+   :instruction
+   "Build a 16-week marathon training plan for a runner with the following profile:\n\n- Age 38, recreational runner, currently logging 25 miles/week\n- Goal: complete a marathon in 4:00 (~9:09/mile pace)\n- Previous race: half-marathon in 1:55 six months ago\n- Available training time: weekday runs 45-60 min, long run on Saturday or Sunday\n- Constraints: prior right Achilles tendinopathy (no flare-up in 18 months),\n  no track access, lives at 6,200 ft elevation, gym access (treadmill +\n  basic strength equipment)\n\nProduce a week-by-week plan that:\n- Builds peak training volume to ~55-60 miles/week by week 13-14\n- Includes appropriate variety: easy runs, tempo runs, intervals,\n  long runs, recovery runs\n- Has a 3-week taper (weeks 14-15-16) appropriate for the goal time\n- Includes specific paces (easy / marathon / tempo / interval) calibrated\n  to a 4:00 marathon goal\n- Schedules 2 strength sessions per week with exercise types appropriate\n  for runners (no heavy lifting; focus on glute / hip / calf stability\n  given the Achilles history)\n- Provides cutback weeks every 4th week to allow adaptation\n- Includes specific WARNING SIGNS that would warrant a deload or rest week\n\nOutput: `{:week-by-week [<week-plan> ...] :paces {...} :strength-program :red-flags}`",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/domain-003-marathon-training.txt"}
+  {:slug "domain-004-symphony-to-quartet",
+   :instruction
+   "Reduce the second movement (Andante) of Mozart's Symphony No. 40 in G\nminor (K. 550) — originally scored for full orchestra (strings + winds) —\nto a string quartet arrangement (2 violins, viola, cello).\n\nYou don't have the score in front of you; work from your knowledge of\nthe piece. Produce:\n- `:voice-assignments` — for each thematic moment of the movement, which\n  quartet instrument takes the lead melody, which provide harmonic\n  texture, and which fills rhythmic support\n- `:range-considerations` — call out any passage that requires a\n  transposition or octave shift to fit a quartet voice's range\n  (e.g., violin 1 going below G3, viola going above C6, cello stretching\n  for the original double-bass low end)\n- `:harmonic-decisions` — when the original has 7-8 simultaneous voices\n  but the quartet has 4, which voices do you keep + which do you omit,\n  and what's the principle (root + 3rd + 5th + 7th preserves harmonic\n  identity; doubled octaves drop first)\n- `:dynamics-and-articulation` — what the quartet must do that the\n  orchestra didn't (more aggressive bowing for sustained chords, etc.)\n  to preserve the emotional arc\n- `:loss-and-gain` — what's IRREDUCIBLY lost moving from orchestra to\n  quartet (sheer mass of sound) and what the quartet GAINS (intimacy,\n  interplay)\n\nOutput as a structured arrangement document a chamber-music coach could\nuse to read-through with their quartet.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/domain-004-symphony-to-quartet.txt"}
+  {:slug "extra-001-legal-issue-sanity",
+   :instruction
+   "Review the following short non-compete clause from a software engineer's\nemployment agreement and identify all legal concerns. Each finding must\ninclude:\n- A concise statement of the concern\n- Severity (high / medium / low) with one-sentence justification\n- Area of law (contract / employment / IP / etc.)\n- Direct citation of the offending clause text\n- A concrete suggested revision\n\nClause text:\n\"Employee agrees that during employment and for a period of three (3)\nyears following separation from the Company for any reason, Employee\nshall not directly or indirectly engage in, accept employment with, or\nprovide services to any business that competes with the Company in any\ngeographic area where the Company operates or contemplates operating.\nViolation of this clause shall subject Employee to injunctive relief\nand liquidated damages of $100,000 per violation.\"\n\nReturn a vector of findings as structured `:issues`.",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/extra-001-legal-issue-sanity.txt"}
+  {:slug "extra-002-contract-comparison-sanity",
+   :instruction
+   "Compare two SaaS subscription contracts and produce a structured\ncomparison highlighting key provisions that differ.\n\nContract A — Enterprise tier, signed by ACME Corp:\n\"Renewal: Annual auto-renewal unless cancelled with 60 days notice.\nPrice escalation capped at 3% per year. Termination for convenience\npermitted with 90 days notice. Service credit of 10% MRR for any month\nwith <99.9% uptime. Data export: full export in JSON within 30 days of\ntermination at no charge.\"\n\nContract B — Enterprise tier, signed by Globex Inc:\n\"Renewal: 3-year auto-renewal unless cancelled with 90 days notice\nprior to the END of the 3-year term (no partial-term termination).\nPrice escalation: indexed to CPI plus 2%, no cap. Termination for\ncause only after 30-day cure period. Service credit of 5% MRR after\nSECOND consecutive month of <99.5% uptime. Data export: structured\nexport available for $50K one-time fee, 90-day timeline.\"\n\nProduce a structured comparison:\n- :key-differences — vector of {:topic :a-provision :b-provision :impact-summary}\n- :similarities — provisions that materially align\n- :recommendation — for a buyer in 2026, which contract structure is more favorable\n  and what changes to request if forced to sign the less-favorable one",
+   :source-path
+   "/Users/darylroberts/Desktop/Code/orc/development/bench/ood-corpus/extra-002-contract-comparison-sanity.txt"}],
+ :results
+ [{:slug "behavioral-fresh-mint-001-haiku-audit",
+   :envelope
+   {:assigned-tree-id #uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :confidence 0.9,
+    :top-candidates
+    [{:content
+      "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+      :score 76.90230560302734,
+      :rank 10,
+      :document-id
+      ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471327-05:00"},
+      :reasoning
+      "The user's task requires processing a list of 5 distinct findings into a vector of corresponding haikus. This matches the 'chunk → per-chunk :llm extraction → :aggregate' pattern described in ResearchThenSynthesize. Each finding acts as a chunk that requires an individual LLM transformation (haiku generation) before being aggregated into the final required map structure.",
+      :fitness-score 0.9,
+      :rerank-source :reranker}
+     {:content
+      "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+      :score 78.69950866699219,
+      :rank 6,
+      :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:FallbackRecovery",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.466631-05:00"},
+      :reasoning
+      "This candidate describes an error-handling flow for a primary/backup sequence. While security findings imply failures, the actual task structure is a parallel translation of five items rather than a recovery operation where a backup runs if a primary fails. It does not provide the necessary iterative or chunking logic required for the 5-item list input.",
+      :fitness-score 0.15,
+      :rerank-source :reranker}],
+    :reasoning
+    "The user's task requires processing a list of 5 distinct findings into a vector of corresponding haikus. This matches the 'chunk → per-chunk :llm extraction → :aggregate' pattern described in ResearchThenSynthesize. Each finding acts as a chunk that requires an individual LLM transformation (haiku generation) before being aggregated into the final required map structure.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6244,
+   :parent-chain []}
+  {:slug "behavioral-fresh-mint-002-melody-encoding-pi",
+   :envelope
+   {:assigned-tree-id #uuid "2ead65e6-6373-38de-81c4-ef7bf067afc9",
+    :confidence 0.85,
+    :reasoning
+    "The task requires a multi-step iterative process: first translating digits to notes via logic (code), then generating melodic metadata (rhythm/duration) and explanatory prose (LLM). SequentialPipeline is the best fit for this 'calculate -> enrich -> format' flow.",
+    :parent-tree-id nil,
+    :was-fresh-mint? false,
+    :top-candidates
+    [{:content
+      "SequentialPipeline is a :sequence of 2+ :llm/:code nodes where each step consumes the previous step's output. Natural for ETL (extract → enrich → format) and iterative refinement (draft → critique → revise). Avoid when stages are independent (use :parallel) or when 3+ small :llm steps could be one larger :llm — small successive :llm calls burn tokens that a single multi-step instruction would cover.",
+      :score 68.84904479980469,
+      :rank 7,
+      :document-id
+      ":tree-fingerprint:\"seed:tree:SequentialPipeline\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:SequentialPipeline",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464938-05:00"},
+      :reasoning
+      "The task requires a multi-step iterative process: first translating digits to notes via logic (code), then generating melodic metadata (rhythm/duration) and explanatory prose (LLM). SequentialPipeline is the best fit for this 'calculate -> enrich -> format' flow.",
+      :fitness-score 0.85,
+      :rerank-source :reranker}
+     {:content
+      "Parallel-sum is the pure-code MapReduce variant: chunk → :code per-chunk computation → :code arithmetic reduce. Both stages are deterministic — same input produces byte-identical output. Use higher :max-concurrency (8+) on :map-each since :code calls have no rate-limit risk. NEVER use :llm for arithmetic per-chunk work. NEVER apply non-associative reducers (median, percentile) to partial per-chunk results — they require the full set. Use parallel-classify-aggregate when the per-chunk work requires LLM judgment.",
+      :score 69.70550537109375,
+      :rank 3,
+      :document-id
+      ":tree-fingerprint:#uuid \"c38abdbd-be30-38e7-8f81-e431cdba7a07\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470631-05:00"},
+      :reasoning
+      "The digit-to-note mapping is a deterministic arithmetic operation suitable for the ':code per-chunk computation' described here. However, it lacks the secondary LLM synthesis stage needed for the rhythmic explanation and bonus naming.",
+      :fitness-score 0.5,
+      :rerank-source :reranker}
+     {:content
+      "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+      :score 66.02648162841797,
+      :rank 9,
+      :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:ChunkedExtraction",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464585-05:00"},
+      :reasoning
+      "While the query involves processing a sequence of 20 digits, it is not a 'large document' (under the 5KB threshold mentioned), and the task requires creative synthesis rather than just independent extraction.",
+      :fitness-score 0.3,
+      :rerank-source :reranker}
+     {:content
+      "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+      :score 69.37600708007812,
+      :rank 5,
+      :document-id
+      ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470984-05:00"},
+      :reasoning
+      "This pattern is for classification/counting using LLMs. Mapping digits of pi to scale degrees is a rigid mathematical rule, and using LLM judgment for the digit mapping as suggested by this pattern would be inefficient and prone to error.",
+      :fitness-score 0.15,
+      :rerank-source :reranker}],
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? false,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6856,
+   :parent-chain []}
+  {:slug "behavioral-fresh-mint-003-recipe-iambic-pentameter",
+   :envelope
+   {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :confidence 0.9,
+    :top-candidates
+    [{:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 54.24169921875,
+      :rank 1,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "This ETL pipeline pattern best matches the task's structural need to first transform content (generating the raw recipe and meter) and then apply deterministic formatting (structuring the output as a specific map with yield and ingredients). The combination of :llm for transformation and :code for enforcing the final JSON structure matches the logic required for this prompt.",
+      :fitness-score 0.9,
+      :rerank-source :reranker}
+     {:content
+      "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+      :score 54.07412338256836,
+      :rank 3,
+      :document-id
+      ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470984-05:00"},
+      :reasoning
+      "While this candidate involves :llm and :code components, it is optimized for classification and counting across chunks. The recipe task is a single creative generation rather than a MapReduce operation, making the 'aggregate' and 'labeling' focus a poor fit for the creative constraints.",
+      :fitness-score 0.3,
+      :rerank-source :reranker}
+     {:content
+      "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+      :score 54.018211364746094,
+      :rank 6,
+      :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:ChunkedExtraction",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464585-05:00"},
+      :reasoning
+      "This pattern is designed for processing long documents via chunking. The query's input is a short prompt, and the task requires holistic generation of a cohesive recipe and meter, which would be broken by the independent chunk-processing logic of this pattern.",
+      :fitness-score 0.1,
+      :rerank-source :reranker}
+     {:content
+      "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+      :score 51.96393585205078,
+      :rank 9,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464242-05:00"},
+      :reasoning
+      "Like the previous candidate, this is a chunked-extraction pattern for large documents. It is fundamentally irrelevant to a creative generation task that needs to maintain consistent meter across a short list of steps.",
+      :fitness-score 0.1,
+      :rerank-source :reranker}],
+    :reasoning
+    "This ETL pipeline pattern best matches the task's structural need to first transform content (generating the raw recipe and meter) and then apply deterministic formatting (structuring the output as a specific map with yield and ingredients). The combination of :llm for transformation and :code for enforcing the final JSON structure matches the logic required for this prompt.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6625,
+   :parent-chain []}
+  {:slug "code-001-refactor-auth-middleware",
+   :envelope
+   {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :confidence 0.95,
+    :top-candidates
+    [{:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 90.00968933105469,
+      :rank 1,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "The ETL pipeline pattern perfectly matches the structural shape of the requested middleware refactor: it focuses on collapsing 2-4 sequential stages into a single unit while using schemas (contracts) to manage intermediate state. The recommendation to collapse successive stages to eliminate repeated work directly addresses the caller's need to unify three functions and stop redundant Redis lookups.",
+      :fitness-score 0.95,
+      :rerank-source :reranker}
+     {:content
+      "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+      :score 87.63233184814453,
+      :rank 6,
+      :document-id
+      ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468866-05:00"},
+      :reasoning
+      "The scheduling pattern captures the sequential nature of 'propose assignment' then 'conflict-check', which mirrors the middleware's logic of 'authenticating' then 'enforcing limits'. However, it is less fit than the ETL pattern because it emphasizes creativity-vs-precision rather than the data-flow optimization and stage-collapsing required by the legacy code refactor.",
+      :fitness-score 0.65,
+      :rerank-source :reranker}
+     {:content
+      "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+      :score 87.92974090576172,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.469229-05:00"},
+      :reasoning
+      "The producer/validator pattern is a poor fit because the intent is to refactor a linear execution chain into a unified module, not to implement an iterative retry loop between two nodes. The request does not involve an LLM generation step needing a formal correctness oracle.",
+      :fitness-score 0.2,
+      :rerank-source :reranker}],
+    :reasoning
+    "The ETL pipeline pattern perfectly matches the structural shape of the requested middleware refactor: it focuses on collapsing 2-4 sequential stages into a single unit while using schemas (contracts) to manage intermediate state. The recommendation to collapse successive stages to eliminate repeated work directly addresses the caller's need to unify three functions and stop redundant Redis lookups.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6141,
+   :parent-chain []}
+  {:slug "code-002-investigate-flaky-test",
+   :envelope
+   {:assigned-tree-id #uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+    :confidence 0.92,
+    :top-candidates
+    [{:content
+      "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+      :score 127.43092346191406,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.469229-05:00"},
+      :reasoning
+      "The 'Producer/validator' pattern is the highest fitness match because the query describes a classic validation loop: producing a state (user signup), validating it (polling for email/login), and encountering an error (timeout). The recommendation to use :code as a correctness oracle exactly matches the need to debug a deterministic Python integration test system where one service (email-mock) validates the output of another (signup).",
+      :fitness-score 0.92,
+      :rerank-source :reranker}
+     {:content
+      "ValidationLoop is a producer-then-validator pattern where one node emits a candidate output and a second node checks it. The classical 'loop' form (produce → validate → conditional retry on failure) requires :condition for branching — NOT emit-able by RLM's tree-DSL today. The constrained variant the model CAN author: producer → validator emitting a :valid? flag → downstream consumer reading the flag. Always prefer :code validators with explicit schema checks over :llm validators when validation criteria are deterministic — faster, cheaper, no judgment ambiguity.",
+      :score 125.86857604980469,
+      :rank 8,
+      :document-id ":tree-fingerprint:\"seed:tree:ValidationLoop\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:ValidationLoop",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.465628-05:00"},
+      :reasoning
+      "This matches the structural shape of the intent—a sequence of produce → validate. The advice to use :code validators for deterministic criteria is highly relevant to an integration test polling an email mock. However, it scores slightly lower than the Producer/validator candidate as it notes RLM emission limitations which might affect implementation flexibility for the requested hypotheses.",
+      :fitness-score 0.85,
+      :rerank-source :reranker}
+     {:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 123.27577209472656,
+      :rank 10,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "The ETL pattern matches the sequential 'chain' of events described in the test (signup -> email -> login). The focus on declaring schemas to identify offending stages maps well to debugging which part of the test pipeline is failing in CI. It is less fit than the validator patterns because the intent is focused on a failure loop/timeout rather than a simple data transformation pipeline.",
+      :fitness-score 0.65,
+      :rerank-source :reranker}
+     {:content
+      "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+      :score 125.93234252929688,
+      :rank 6,
+      :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:FallbackRecovery",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.466631-05:00"},
+      :reasoning
+      "While the test suite effectively 'fails over' to a failure state, the intent isn't to build graceful degradation but to find a root cause. The pattern's mention of masking bugs through silent fallbacks is a relevant warning for CI flakes, but the structural match is weak as the test is intended to pass or fail, not recover.",
+      :fitness-score 0.4,
+      :rerank-source :reranker}],
+    :reasoning
+    "The 'Producer/validator' pattern is the highest fitness match because the query describes a classic validation loop: producing a state (user signup), validating it (polling for email/login), and encountering an error (timeout). The recommendation to use :code as a correctness oracle exactly matches the need to debug a deterministic Python integration test system where one service (email-mock) validates the output of another (signup).",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 7455,
+   :parent-chain []}
+  {:slug "code-003-generate-property-tests",
+   :envelope
+   {:assigned-tree-id #uuid "1ed607c4-e057-4379-ba9e-d589d48a9bb1",
+    :confidence 0.0,
+    :top-candidates
+    [{:content
+      "Parallel-sum is the pure-code MapReduce variant: chunk → :code per-chunk computation → :code arithmetic reduce. Both stages are deterministic — same input produces byte-identical output. Use higher :max-concurrency (8+) on :map-each since :code calls have no rate-limit risk. NEVER use :llm for arithmetic per-chunk work. NEVER apply non-associative reducers (median, percentile) to partial per-chunk results — they require the full set. Use parallel-classify-aggregate when the per-chunk work requires LLM judgment.",
+      :score 154.10691833496094,
+      :rank 1,
+      :document-id
+      ":tree-fingerprint:#uuid \"c38abdbd-be30-38e7-8f81-e431cdba7a07\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470631-05:00"},
+      :reasoning nil,
+      :fitness-score nil,
+      :rerank-source :colbert-fallback}
+     {:content
+      "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+      :score 152.66383361816406,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470984-05:00"},
+      :reasoning nil,
+      :fitness-score nil,
+      :rerank-source :colbert-fallback}
+     {:content
+      "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+      :score 145.57215881347656,
+      :rank 5,
+      :document-id
+      ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471664-05:00"},
+      :reasoning nil,
+      :fitness-score nil,
+      :rerank-source :colbert-fallback}
+     {:content
+      "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+      :score 143.74658203125,
+      :rank 9,
+      :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:ChunkedExtraction",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464585-05:00"},
+      :reasoning nil,
+      :fitness-score nil,
+      :rerank-source :colbert-fallback}],
+    :reasoning
+    "Top candidate did not pass confidence threshold; minting fresh task class.",
+    :was-fresh-mint? true,
+    :parent-tree-id nil,
+    :rerank-fallback? true},
+   :outcome
+   {:direct-matched? false,
+    :walk-down-fired? false,
+    :was-fresh-mint? true,
+    :rerank-fallback? true},
+   :elapsed-ms 7860,
+   :parent-chain []}
+  {:slug "code-004-debug-memory-leak",
+   :envelope
+   {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :confidence 0.92,
+    :top-candidates
+    [{:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 202.96583557128906,
+      :rank 10,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "The task requires a multi-stage sequential analysis (root-cause, evidence-chain, remediation, verification, alternatives) where the content from one stage (root cause hypothesis) must feed the next (evidence/remediation), matching the ETL pipeline's sequential stage-chaining pattern. The task's output requirement for specific keys parallels the recommendation for intermediate output-schemas to detect stage failures.",
+      :fitness-score 0.92,
+      :rerank-source :reranker}
+     {:content
+      "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+      :score 206.87110900878906,
+      :rank 9,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464242-05:00"},
+      :reasoning
+      "The task involves analyzing multiple disparate artifacts (heap dump, GC log, app logs) and aggregating them into a final diagnosis. This resembles the map-each (analyze unique artifacts) and aggregate/synthesis (final diagnosis) stages of the chunked-extraction pattern, although the input is not a single large document.",
+      :fitness-score 0.65,
+      :rerank-source :reranker}
+     {:content
+      "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+      :score 211.52182006835938,
+      :rank 4,
+      :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:FallbackRecovery",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.466631-05:00"},
+      :reasoning
+      "While the query involves a failure (OOM), the task itself is a diagnostic synthesis, not a runtime recovery system. The content describes fallback/failure semantics which align with the query's subject matter (a failing service) but not the structural intent of the analysis task.",
+      :fitness-score 0.25,
+      :rerank-source :reranker}
+     {:content
+      "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+      :score 207.0308837890625,
+      :rank 7,
+      :document-id
+      ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.469945-05:00"},
+      :reasoning
+      "This candidate focuses on deterministic backups for stochastic failures. It matches the technical domain of the service crash but provides no structural guidance for the requested multi-part analytical report.",
+      :fitness-score 0.18,
+      :rerank-source :reranker}],
+    :reasoning
+    "The task requires a multi-stage sequential analysis (root-cause, evidence-chain, remediation, verification, alternatives) where the content from one stage (root cause hypothesis) must feed the next (evidence/remediation), matching the ETL pipeline's sequential stage-chaining pattern. The task's output requirement for specific keys parallels the recommendation for intermediate output-schemas to detect stage failures.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 7819,
+   :parent-chain []}
+  {:slug "conv-001-vector-vs-sql-tradeoffs",
+   :envelope
+   {:assigned-tree-id #uuid "d41af303-dcb2-3599-9198-0c006d1cc364",
+    :confidence 0.95,
+    :top-candidates
+    [{:content
+      "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+      :score 100.93016052246094,
+      :rank 8,
+      :document-id
+      ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471664-05:00"},
+      :reasoning
+      "The query's structural shape is a multi-option evaluation (pgvector vs. dedicated vector DB vs. Postgres/Elasticsearch hybrid). This candidate describes the 'Comparative summary' pattern, which uses parallel extraction (researching the options) followed by a final :llm synthesis of commonalities, differences, and a specific recommendation. This directly maps to the query's requested output format including :option-summaries, :quality-comparison, and :recommendation.",
+      :fitness-score 0.95,
+      :rerank-source :reranker}
+     {:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 106.76826477050781,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "While this candidate deals with sequential transformation, the query is less of a linear pipeline (ETL) and more of a multi-criteria decision analysis. The ETL pattern focuses on content transformation and deterministic formatting, which helps with the :operational-cost-comparison data, but it lacks the structural support for the 'multi-source research-then-synthesize' required to compare three distinct technological architectures.",
+      :fitness-score 0.45,
+      :rerank-source :reranker}
+     {:content
+      "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+      :score 100.3133544921875,
+      :rank 10,
+      :document-id
+      ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470296-05:00"},
+      :reasoning
+      "This candidate focuses on cost-optimization through LLM-to-LLM tiering (Model Cascade). While the query mentions cost constraints, the task is a complex qualitative comparison across different infrastructure categories, not a runtime fallback strategy for LLM inference. It provides no structural pattern for synthesis or cross-comparison of three distinct technology options.",
+      :fitness-score 0.1,
+      :rerank-source :reranker}],
+    :reasoning
+    "The query's structural shape is a multi-option evaluation (pgvector vs. dedicated vector DB vs. Postgres/Elasticsearch hybrid). This candidate describes the 'Comparative summary' pattern, which uses parallel extraction (researching the options) followed by a final :llm synthesis of commonalities, differences, and a specific recommendation. This directly maps to the query's requested output format including :option-summaries, :quality-comparison, and :recommendation.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6388,
+   :parent-chain []}
+  {:slug "conv-002-architecture-recommendation",
+   :envelope
+   {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :confidence 0.75,
+    :reasoning
+    "The query requires a structured sequential output where each design decision (transport, state, orchestration, data, observability) builds upon the constraints and feeds into a final recommendation. The ETL pipeline pattern's use of sequential stages and :output-schemas to prevent downstream mismatches ensures that the architecture recommendations (intermediates) remain consistent with the 'Constraints' stage of the prompt.",
+    :parent-tree-id nil,
+    :was-fresh-mint? false,
+    :top-candidates
+    [{:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 93.43515014648438,
+      :rank 9,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "The query requires a structured sequential output where each design decision (transport, state, orchestration, data, observability) builds upon the constraints and feeds into a final recommendation. The ETL pipeline pattern's use of sequential stages and :output-schemas to prevent downstream mismatches ensures that the architecture recommendations (intermediates) remain consistent with the 'Constraints' stage of the prompt.",
+      :fitness-score 0.75,
+      :rerank-source :reranker}
+     {:content
+      "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+      :score 97.32374572753906,
+      :rank 3,
+      :document-id
+      ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471664-05:00"},
+      :reasoning
+      "While the query asks for multiple tech choices, it is not fundamentally a 'multi-source' research task or a comparison of N distinct existing sources to find differences. It is a single-stream architectural design task. Parallel extraction would not benefit the tight coupling required between choice and failure mode mitigation for a specific product context.",
+      :fitness-score 0.3,
+      :rerank-source :reranker}
+     {:content
+      "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+      :score 96.9451675415039,
+      :rank 5,
+      :document-id
+      ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470296-05:00"},
+      :reasoning
+      "The model cascade is a cost-optimization and reliability pattern for LLM routing. While the user mentions a cost budget, this query is about generating a complex, high-reasoning policy document (architecture recommendation), not about reducing inference costs via primary/backup routing models.",
+      :fitness-score 0.1,
+      :rerank-source :reranker}],
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? false,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6623,
+   :parent-chain []}
+  {:slug "conv-003-junior-debug-strategy",
+   :envelope
+   {:assigned-tree-id #uuid "b377a44e-6d21-3e3a-a33f-7227f899e401",
+    :confidence 0.85,
+    :reasoning
+    "This candidate is the best fit because the junior engineer's specific bug—double-charging a customer—is a classic 'failure of idempotency' often found in charging logic. The FallbackRecovery pattern's content specifically addresses 'graceful degradation' and the 'Risk: silently masks bugs,' recommending pairing with logging to surface when errors occur. This directly supports the intent of teaching the junior how to structure logic that handles failures (like a Stripe timeout) without accidental side-effects like double-charging.",
+    :parent-tree-id nil,
+    :was-fresh-mint? false,
+    :top-candidates
+    [{:content
+      "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+      :score 111.50882720947266,
+      :rank 4,
+      :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:FallbackRecovery",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.466631-05:00"},
+      :reasoning
+      "This candidate is the best fit because the junior engineer's specific bug—double-charging a customer—is a classic 'failure of idempotency' often found in charging logic. The FallbackRecovery pattern's content specifically addresses 'graceful degradation' and the 'Risk: silently masks bugs,' recommending pairing with logging to surface when errors occur. This directly supports the intent of teaching the junior how to structure logic that handles failures (like a Stripe timeout) without accidental side-effects like double-charging.",
+      :fitness-score 0.85,
+      :rerank-source :reranker}
+     {:content
+      "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+      :score 108.67401885986328,
+      :rank 6,
+      :document-id
+      ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.469945-05:00"},
+      :reasoning
+      "This is highly relevant as it provides a concrete implementation of the fallback strategy. It emphasizes using :code for deterministic backups and emitting markers for operator visibility. This aligns with the 'specific steps' requested in the query, allowing the junior to recognize if the 'double charge' is happening because a retry (backup) is firing after a primary partial success.",
+      :fitness-score 0.8,
+      :rerank-source :reranker}
+     {:content
+      "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+      :score 107.43562316894531,
+      :rank 7,
+      :document-id
+      ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468866-05:00"},
+      :reasoning
+      "While this focuses on sequential pipelines, the 'conflict-check with code' stage is a useful principle for the junior to learn. It teaches the separation of the intent (charge a card) from the validation (has this transaction ID already succeeded?). However, it is less directly applicable to a checkout bug than the recovery-based patterns.",
+      :fitness-score 0.4,
+      :rerank-source :reranker}],
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? false,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6318,
+   :parent-chain []}
+  {:slug "conv-004-defend-controversial-choice",
+   :envelope
+   {:assigned-tree-id #uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :confidence 0.95,
+    :top-candidates
+    [{:content
+      "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+      :score 95.9102783203125,
+      :rank 9,
+      :document-id
+      ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471327-05:00"},
+      :reasoning
+      "The task requires synthesizing a cohesive narrative (the internal memo) from multiple distinct inputs (PM concerns, headcount data, traffic patterns, and risk assessments). The ResearchThenSynthesize pattern's structure of extracting themes and providing a final synthesis perfectly matches the requirement to address specific objections while maintaining a single position statement.",
+      :fitness-score 0.95,
+      :rerank-source :reranker}
+     {:content
+      "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+      :score 97.82789611816406,
+      :rank 4,
+      :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:FallbackRecovery",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.466631-05:00"},
+      :reasoning
+      "While the query mentions addressing concerns (recovery from skepticism), the task structure is not a 'try-fail-fallback' execution flow. This pattern is designed for graceful degradation, whereas the intent is generative narrative synthesis.",
+      :fitness-score 0.2,
+      :rerank-source :reranker}
+     {:content
+      "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+      :score 98.09294891357422,
+      :rank 2,
+      :document-id
+      ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.469945-05:00"},
+      :reasoning
+      "The primary-backup pattern is irrelevant as it focuses on deterministic code fallbacks for transient failures, which does not relate to composing a multi-paragraph argumentative memo with specific rhetorical requirements.",
+      :fitness-score 0.1,
+      :rerank-source :reranker}],
+    :reasoning
+    "The task requires synthesizing a cohesive narrative (the internal memo) from multiple distinct inputs (PM concerns, headcount data, traffic patterns, and risk assessments). The ResearchThenSynthesize pattern's structure of extracting themes and providing a final synthesis perfectly matches the requirement to address specific objections while maintaining a single position statement.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 5524,
+   :parent-chain []}
+  {:slug "data-001-schema-migration",
+   :envelope
+   {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :confidence 0.85,
+    :reasoning
+    "The ETL pipeline fingerprint best fits this task's multi-stage dependency structure. The migration requires sequential :writes (DDL/DML backfills) feeding into the next stage's :reads (verification/constraint checks). The recommended pattern of using :llm for transformation (resolving guest emails) and :code for deterministic formatting (DDL execution) aligns with the complex data backfill and schema enforcement requirements.",
+    :parent-tree-id nil,
+    :was-fresh-mint? false,
+    :top-candidates
+    [{:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 114.4953384399414,
+      :rank 2,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "The ETL pipeline fingerprint best fits this task's multi-stage dependency structure. The migration requires sequential :writes (DDL/DML backfills) feeding into the next stage's :reads (verification/constraint checks). The recommended pattern of using :llm for transformation (resolving guest emails) and :code for deterministic formatting (DDL execution) aligns with the complex data backfill and schema enforcement requirements.",
+      :fitness-score 0.85,
+      :rerank-source :reranker}
+     {:content
+      "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+      :score 112.76848602294922,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470984-05:00"},
+      :reasoning
+      "The parallel-classify-aggregate pattern is useful for the data backfill portion of the migration (mapping legacy guest checkouts to potential emails via classification logic), but it lacks the sequential structural complexity needed to handle the DDL ordering and locking implications described in the intent.",
+      :fitness-score 0.55,
+      :rerank-source :reranker}
+     {:content
+      "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+      :score 109.9444808959961,
+      :rank 9,
+      :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:ChunkedExtraction",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464585-05:00"},
+      :reasoning
+      "While the backfill involves 840K rows that could be processed in chunks, this pattern focuses on document processing rather than database state transitions. It provides a mechanism for the DML backfill but fails to address the critical DDL sequencing and application-side guards required for a zero-downtime migration.",
+      :fitness-score 0.4,
+      :rerank-source :reranker}
+     {:content
+      "Parallel-sum is the pure-code MapReduce variant: chunk → :code per-chunk computation → :code arithmetic reduce. Both stages are deterministic — same input produces byte-identical output. Use higher :max-concurrency (8+) on :map-each since :code calls have no rate-limit risk. NEVER use :llm for arithmetic per-chunk work. NEVER apply non-associative reducers (median, percentile) to partial per-chunk results — they require the full set. Use parallel-classify-aggregate when the per-chunk work requires LLM judgment.",
+      :score 110.32809448242188,
+      :rank 7,
+      :document-id
+      ":tree-fingerprint:#uuid \"c38abdbd-be30-38e7-8f81-e431cdba7a07\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470631-05:00"},
+      :reasoning
+      "This pattern is restricted to deterministic code-only MapReduce. Migration tasks involving non-deterministic data recovery (finding missing guest emails) and external schema state are poorly served by a model that explicitly forbids LLM-based logic for the transformation stage.",
+      :fitness-score 0.2,
+      :rerank-source :reranker}],
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? false,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 7062,
+   :parent-chain []}
+  {:slug "data-002-etl-cdc-to-dim",
+   :envelope
+   {:assigned-tree-id #uuid "d41af303-dcb2-3599-9198-0c006d1cc364",
+    :confidence 0.95,
+    :top-candidates
+    [{:content
+      "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+      :score 145.4999237060547,
+      :rank 2,
+      :document-id
+      ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471664-05:00"},
+      :reasoning
+      "The task requires processing 5 distinct, heterogeneous data sources (Postgres, MySQL, MongoDB, Snowflake, Salesforce) to build a unified dimensional model. The 'Comparative summary' pattern's parallel per-source extraction matches the need to handle independent source streams with varying frequencies, and its use of a :code aggregator and final :llm synthesis aligns with the requirement to reconcile disparate IDs and synthesize a final star-schema design from multiple inputs.",
+      :fitness-score 0.95,
+      :rerank-source :reranker}
+     {:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 144.46563720703125,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "While the query uses the term 'ETL pipeline', this specific tree-class is defined as a 2-4 stage linear chain. The caller's task involves a complex fan-in of 5 different sources with different schemas and update frequencies, which is better served by parallel source extraction than a simple sequential chain where stage A must finish before B. It lacks the multi-source aggregation emphasis needed for the reconciliation of IDs across 5 systems.",
+      :fitness-score 0.4,
+      :rerank-source :reranker}],
+    :reasoning
+    "The task requires processing 5 distinct, heterogeneous data sources (Postgres, MySQL, MongoDB, Snowflake, Salesforce) to build a unified dimensional model. The 'Comparative summary' pattern's parallel per-source extraction matches the need to handle independent source streams with varying frequencies, and its use of a :code aggregator and final :llm synthesis aligns with the requirement to reconcile disparate IDs and synthesize a final star-schema design from multiple inputs.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 5869,
+   :parent-chain []}
+  {:slug "data-003-optimize-slow-query",
+   :envelope
+   {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :confidence 0.9,
+    :top-candidates
+    [{:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 109.84075927734375,
+      :rank 10,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "The SQL optimization task is an ETL-like sequential process: analysis (:reads) -> rewrite/index recommendations (:llm content transformation) -> verification plan/risks (:code or logic for formatting/finalizing). The explicit requirement for distinct outputs (analysis, rewrite, indices) matches the 'sequential stages' pattern of an ETL pipeline with defined output schemas.",
+      :fitness-score 0.9,
+      :rerank-source :reranker}
+     {:content
+      "Document-analysis trees extract summary + key-dates + entities from a large single-document input. The proven shape is chunked-extraction: :chunk-document → :map-each (bounded :max-concurrency 3) over per-chunk :llm → :aggregate → final synthesis :llm. Always chunk for documents above ~5KB. Always bound :max-concurrency to avoid sub-LLM rate-limit exhaustion. For independent summary + entity extraction, use :parallel to reduce wall-time.",
+      :score 114.21857452392578,
+      :rank 6,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b001-d0c0a0a0a0a1\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.462689-05:00"},
+      :reasoning
+      "This candidate fits the 'synthesis' requirement of the task. The query and table stats act as a 'document' that requires extraction of specific entities (bottlenecks, SQL, indices). However, it falls behind ETL because the task requires distinct sequential downstream reasoning (risks/verification) rather than just a flat synthesis of the input document.",
+      :fitness-score 0.6,
+      :rerank-source :reranker}
+     {:content
+      "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+      :score 122.9315185546875,
+      :rank 1,
+      :document-id
+      ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470984-05:00"},
+      :reasoning
+      "While the query involves aggregation, the task is to *analyze* the query, not to perform map-reduce classification on the dataset itself. Using an LLM to classify chunks is irrelevant here since the input is a single, small SQL query and table schema, not a large dataset needing chunking.",
+      :fitness-score 0.2,
+      :rerank-source :reranker}
+     {:content
+      "Parallel-sum is the pure-code MapReduce variant: chunk → :code per-chunk computation → :code arithmetic reduce. Both stages are deterministic — same input produces byte-identical output. Use higher :max-concurrency (8+) on :map-each since :code calls have no rate-limit risk. NEVER use :llm for arithmetic per-chunk work. NEVER apply non-associative reducers (median, percentile) to partial per-chunk results — they require the full set. Use parallel-classify-aggregate when the per-chunk work requires LLM judgment.",
+      :score 115.69061279296875,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"c38abdbd-be30-38e7-8f81-e431cdba7a07\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470631-05:00"},
+      :reasoning
+      "Parallel-sum is designed for deterministic code-based arithmetic over chunks. This task is a diagnostic reasoning task requiring LLM judgment for performance tuning, which this candidate explicitly prohibits ('NEVER use :llm for arithmetic per-chunk work').",
+      :fitness-score 0.0,
+      :rerank-source :reranker}],
+    :reasoning
+    "The SQL optimization task is an ETL-like sequential process: analysis (:reads) -> rewrite/index recommendations (:llm content transformation) -> verification plan/risks (:code or logic for formatting/finalizing). The explicit requirement for distinct outputs (analysis, rewrite, indices) matches the 'sequential stages' pattern of an ETL pipeline with defined output schemas.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 7473,
+   :parent-chain []}
+  {:slug "data-004-streaming-aggregation",
+   :envelope
+   {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+    :confidence 0.8,
+    :reasoning
+    "The task requires a linear design document covering multiple specific architectural sections (Watermarks, Windowing, Streams, Late-data, Reconciliation) in a sequential narrative. The ETL pattern's recommended shape of 2-4 sequential stages aligns with the logic of taking raw streaming specs and transforming them into a structured design doc, specifically utilizing :code for the deterministic technical aggregation components of the Flink pipeline.",
+    :parent-tree-id nil,
+    :was-fresh-mint? false,
+    :top-candidates
+    [{:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 144.4983367919922,
+      :rank 1,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "The task requires a linear design document covering multiple specific architectural sections (Watermarks, Windowing, Streams, Late-data, Reconciliation) in a sequential narrative. The ETL pattern's recommended shape of 2-4 sequential stages aligns with the logic of taking raw streaming specs and transforming them into a structured design doc, specifically utilizing :code for the deterministic technical aggregation components of the Flink pipeline.",
+      :fitness-score 0.8,
+      :rerank-source :reranker}
+     {:content
+      "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+      :score 137.20321655273438,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471664-05:00"},
+      :reasoning
+      "The comparative-summary pattern is a poor fit because the intent is not to compare multiple different streaming technologies or designs (N-source comparison), but rather to build one cohesive design for a single system. The requirement for parallel extraction from multiple sources is not present in the user's design task, which focuses on a single logic flow from ingest to two specific sinks.",
+      :fitness-score 0.3,
+      :rerank-source :reranker}],
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? false,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 5672,
+   :parent-chain []}
+  {:slug "domain-001-game-balance",
+   :envelope
+   {:assigned-tree-id #uuid "1c0f6cd8-6187-3d8e-993e-2df630968760",
+    :confidence 0.85,
+    :reasoning
+    "The task requires processing a multi-class balance problem (4 classes) and converging on a specific win-rate matrix. The 'parallel-classify-aggregate' pattern aligns with the need to handle multiple distinct categories (classes) and uses a ':code reducer' which is perfect for the deterministic math of computing win-rate matrices and generating the ':rounds' vector. The :enum output schema fits the fixed set of 4 classes provided in the query.",
+    :parent-tree-id nil,
+    :was-fresh-mint? false,
+    :top-candidates
+    [{:content
+      "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+      :score 130.31500244140625,
+      :rank 2,
+      :document-id
+      ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470984-05:00"},
+      :reasoning
+      "The task requires processing a multi-class balance problem (4 classes) and converging on a specific win-rate matrix. The 'parallel-classify-aggregate' pattern aligns with the need to handle multiple distinct categories (classes) and uses a ':code reducer' which is perfect for the deterministic math of computing win-rate matrices and generating the ':rounds' vector. The :enum output schema fits the fixed set of 4 classes provided in the query.",
+      :fitness-score 0.85,
+      :rerank-source :reranker}
+     {:content
+      "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+      :score 122.00218963623047,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464242-05:00"},
+      :reasoning
+      "This pattern provides a structural skeleton for multi-stage processing (:map-each -> :aggregate -> :synthesis). The iteration described in the query (simulate matches -> aggregate results -> synthesize adjustments) follows this flow. However, it lacks the specific classification/labeling focus needed to distinguish between the 4 discrete class kits.",
+      :fitness-score 0.6,
+      :rerank-source :reranker}
+     {:content
+      "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+      :score 120.61994934082031,
+      :rank 6,
+      :document-id
+      ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470296-05:00"},
+      :reasoning
+      "The query describes an iterative optimization/balancing task, not a fallback recovery or cost-optimization problem. There is no intent for a 'cheap -> expensive' model escalation; the task is about convergence across a balanced matrix.",
+      :fitness-score 0.15,
+      :rerank-source :reranker}
+     {:content
+      "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+      :score 120.54890441894531,
+      :rank 9,
+      :document-id
+      ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.469945-05:00"},
+      :reasoning
+      "This pattern is for error handling and deterministic fallbacks. While the game simulation might utilize code, the overall task is an optimization loop for balance, not a 'primary-fails-use-backup' architecture.",
+      :fitness-score 0.1,
+      :rerank-source :reranker}],
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? false,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6363,
+   :parent-chain []}
+  {:slug "domain-002-recipe-scaling",
+   :envelope
+   {:assigned-tree-id #uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891",
+    :confidence 0.9,
+    :top-candidates
+    [{:content
+      "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+      :score 131.31451416015625,
+      :rank 5,
+      :document-id
+      ":tree-fingerprint:\"seed:tree:ResearchThenSynthesize\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:ResearchThenSynthesize",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.467696-05:00"},
+      :reasoning
+      "The task requires a high-reasoning synthesis that integrates multiple constraints (scaling ingredients, kitchen physics, workflow design, and cost estimation) into a cohesive 'revised-technique' and 'workflow'. The ResearchThenSynthesize pattern's 4-stage map-then-synthesize approach is the best fit for taking the source recipe data and reasoning across it to produce the structured narrative output requested.",
+      :fitness-score 0.9,
+      :rerank-source :reranker}
+     {:content
+      "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+      :score 135.1847381591797,
+      :rank 2,
+      :document-id
+      ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471664-05:00"},
+      :reasoning
+      "The task involves a single recipe source rather than multiple independent documents to be compared. While it does require extraction and synthesis, the 'comparative summary' structure is designed for multi-source alignment and cross-source difference analysis, which does not match the single-input scaling nature of this recipe task.",
+      :fitness-score 0.4,
+      :rerank-source :reranker}
+     {:content
+      "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+      :score 127.87556457519531,
+      :rank 9,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464242-05:00"},
+      :reasoning
+      "The input is a small recipe snippet (<5KB), whereas Chunked-extraction is explicitly recommended for large documents and emphasizes mechanical extraction over the complex creative reasoning and culinary synthesis required to scale a recipe while accounting for heat distribution and texture preservation.",
+      :fitness-score 0.2,
+      :rerank-source :reranker}],
+    :reasoning
+    "The task requires a high-reasoning synthesis that integrates multiple constraints (scaling ingredients, kitchen physics, workflow design, and cost estimation) into a cohesive 'revised-technique' and 'workflow'. The ResearchThenSynthesize pattern's 4-stage map-then-synthesize approach is the best fit for taking the source recipe data and reasoning across it to produce the structured narrative output requested.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6260,
+   :parent-chain []}
+  {:slug "domain-003-marathon-training",
+   :envelope
+   {:assigned-tree-id #uuid "5a08300e-10e3-305a-80c1-17eafea15ff7",
+    :confidence 0.92,
+    :top-candidates
+    [{:content
+      "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+      :score 107.7420654296875,
+      :rank 2,
+      :document-id
+      ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468866-05:00"},
+      :reasoning
+      "The marathon plan request is fundamentally a constraint-satisfaction scheduling problem (volume progression, pacing math, strength frequency, and medical history constraints). This candidate's 'enumerate constraints → propose assignment → conflict-check' pattern directly addresses the need to validate the plan against specific numeric targets (55-60mpw) and physiological constraints (Achilles history).",
+      :fitness-score 0.92,
+      :rerank-source :reranker}
+     {:content
+      "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+      :score 106.4676513671875,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464242-05:00"},
+      :reasoning
+      "While the query involves generating a long 16-week output, it is a generative scheduling task rather than a chunked extraction task from a large source document. The :map-each and :aggregate pattern is intended for document processing, not for synthesizing a coherent weekly progression where each week depends on the volume of the previous.",
+      :fitness-score 0.15,
+      :rerank-source :reranker}
+     {:content
+      "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+      :score 106.0770492553711,
+      :rank 7,
+      :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "seed:tree:FallbackRecovery",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.466631-05:00"},
+      :reasoning
+      "The intent is to generate a proactive, comprehensive training plan, not to implement a graceful degradation system. While the marathon runner might need a 'fallback' if injured, the structural shape of the task (building a 16-week schedule) does not match the child-node failure logic described here.",
+      :fitness-score 0.05,
+      :rerank-source :reranker}],
+    :reasoning
+    "The marathon plan request is fundamentally a constraint-satisfaction scheduling problem (volume progression, pacing math, strength frequency, and medical history constraints). This candidate's 'enumerate constraints → propose assignment → conflict-check' pattern directly addresses the need to validate the plan against specific numeric targets (55-60mpw) and physiological constraints (Achilles history).",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6694,
+   :parent-chain []}
+  {:slug "domain-004-symphony-to-quartet",
+   :envelope
+   {:assigned-tree-id #uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+    :confidence 0.95,
+    :top-candidates
+    [{:content
+      "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+      :score 134.59664916992188,
+      :rank 5,
+      :document-id
+      ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471327-05:00"},
+      :reasoning
+      "The caller's intent is to create a complex 'structured arrangement document' involving multiple distinct sections (:voice-assignments, :range-considerations, etc.) derived from a synthesis of musical knowledge. This matches the 'Briefing generation' pattern (ResearchThenSynthesize) because it requires extracting thematic and harmonic details from the 'original' and synthesizing them into a 'cohesive narrative' for a chamber-music coach. The requirement for :loss-and-gain specifically mirrors the 'cross-chunk reasoning' (themes, contradictions) mentioned in this fingerprint's synthesis stage.",
+      :fitness-score 0.95,
+      :rerank-source :reranker}
+     {:content
+      "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+      :score 136.1659698486328,
+      :rank 3,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464242-05:00"},
+      :reasoning
+      "While the task involves processing multiple 'sub-tasks' (the required sections), the Chunked-extraction pattern is primarily concerned with structural reduction and data extraction from long documents to bounded map operations. The caller's task is essentially a complex creative synthesis/briefing rather than a high-concurrency extraction of data points from a massive text file, making this structural pattern less aligned with the desired output of a structured coach's guide.",
+      :fitness-score 0.4,
+      :rerank-source :reranker}],
+    :reasoning
+    "The caller's intent is to create a complex 'structured arrangement document' involving multiple distinct sections (:voice-assignments, :range-considerations, etc.) derived from a synthesis of musical knowledge. This matches the 'Briefing generation' pattern (ResearchThenSynthesize) because it requires extracting thematic and harmonic details from the 'original' and synthesizing them into a 'cohesive narrative' for a chamber-music coach. The requirement for :loss-and-gain specifically mirrors the 'cross-chunk reasoning' (themes, contradictions) mentioned in this fingerprint's synthesis stage.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 5986,
+   :parent-chain []}
+  {:slug "extra-001-legal-issue-sanity",
+   :envelope
+   {:assigned-tree-id #uuid "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+    :confidence 1.0,
+    :top-candidates
+    [{:content
+      "Legal-issue-detection trees flag legal concerns in a document with per-issue severity, area-of-law, source citation, and recommendation. The proven shape mirrors risk-analysis but with citation as a first-class output: per-section :map-each with :output-schemas requiring :citation field, then :code (NOT :llm) for the severity-summary rollup. Always require citation in the schema so users can verify the model's flags against the source.",
+      :score 73.1903305053711,
+      :rank 8,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b004-d0c0a0a0a0a4\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b004-d0c0a0a0a0a4",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.463860-05:00"},
+      :reasoning
+      "This candidate perfectly matches the task's structural requirements for 'legal-issue-detection'. It explicitly handles the caller's requested output fields (severity, area-of-law, citation, recommendation) and mandates a :citation field in the schema to ensure the model references the clause text as requested in the query. The recommendation to use :code for the rollup aligns with the structured ':issues' output requirement.",
+      :fitness-score 1.0,
+      :rerank-source :reranker}
+     {:content
+      "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+      :score 73.49847412109375,
+      :rank 7,
+      :document-id
+      ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468124-05:00"},
+      :reasoning
+      "While this candidate describes sequential transformations, it focuses on general ETL and token optimization rather than the specific multi-field structured analysis required for legal review. It lacks the critical citation-handling and risk-analysis patterns necessary to produce the five specific output components (severity, area, citation, revision) requested in the query.",
+      :fitness-score 0.3,
+      :rerank-source :reranker}],
+    :reasoning
+    "This candidate perfectly matches the task's structural requirements for 'legal-issue-detection'. It explicitly handles the caller's requested output fields (severity, area-of-law, citation, recommendation) and mandates a :citation field in the schema to ensure the model references the clause text as requested in the query. The recommendation to use :code for the rollup aligns with the structured ':issues' output requirement.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 12157,
+   :parent-chain []}
+  {:slug "extra-002-contract-comparison-sanity",
+   :envelope
+   {:assigned-tree-id #uuid "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+    :confidence 1.0,
+    :top-candidates
+    [{:content
+      "Contract-comparison trees compare two contracts (or two versions) for key differences, similarities, and a recommendation. The proven shape: :parallel per-contract structured-extraction (:output-schemas guaranteeing typed provisions), then sequential synthesis :llm consuming the structured vectors (NOT raw text). Always extract first, then diff — feeding both raw contracts to a single synthesis :llm hits attention limits and induces hallucinated provisions.",
+      :score 104.39324188232422,
+      :rank 6,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b003-d0c0a0a0a0a3\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b003-d0c0a0a0a0a3",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.463494-05:00"},
+      :reasoning
+      "This candidate is a perfect architectural match. It explicitly mentions comparing two contracts/versions and mandates a :parallel per-contract structured-extraction followed by a sequential synthesis. This mirrors the query's need for a structured comparison of Contract A and B without hitting attention limits.",
+      :fitness-score 1.0,
+      :rerank-source :reranker}
+     {:content
+      "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+      :score 106.8621826171875,
+      :rank 4,
+      :document-id
+      ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.471664-05:00"},
+      :reasoning
+      "This is a strong secondary match as it describes the general 'multi-source research-then-synthesize' variant. It correctly prescribes :parallel extraction and extraction-first-then-diff logic, though it notes that 'contract-comparison' is the more specific class for exactly two versions.",
+      :fitness-score 0.85,
+      :rerank-source :reranker}
+     {:content
+      "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+      :score 101.5106430053711,
+      :rank 10,
+      :document-id
+      ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.464242-05:00"},
+      :reasoning
+      "While contract comparison involves extraction, this pattern focuses on chunking large documents into small pieces. The provided contract snippets are very short (~50-100 words), and the guidance explicitly says to skip this pattern for documents <5KB, making it less relevant for this specific input size.",
+      :fitness-score 0.3,
+      :rerank-source :reranker}
+     {:content
+      "Iterative refinement is a fixed-N sequence (typically 3 stages: draft → critique → revise) where each stage transforms a single artifact toward higher quality. The critique stage forces explicit articulation of defects before the revision stage addresses them — measurably improves nuanced outputs over single-pass with self-edit. Always pass the original prompt into the revision stage so the rewrite doesn't drift. Avoid for short/concrete outputs (single :llm is enough) or for unbounded-quality scenarios (use validation-loop instead). Distinct from validation-loop: refinement is a fixed-N polish; validation-loop is producer/validator with retry.",
+      :score 101.67084503173828,
+      :rank 8,
+      :document-id
+      ":tree-fingerprint:#uuid \"aef71f08-76bf-373c-862a-1250ef23f450\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "aef71f08-76bf-373c-862a-1250ef23f450",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.468509-05:00"},
+      :reasoning
+      "The iterative refinement pattern (draft-critique-revise) is designed for single-artifact polish (like improving the wording of a recommendation), but it does not address the multi-source input structure required to compare two distinct contracts side-by-side.",
+      :fitness-score 0.2,
+      :rerank-source :reranker}
+     {:content
+      "Model cascade is fallback-recovery where both children are :llm but at different tiers (cheap → expensive). The cheap path handles 80%+ of traffic at fractional cost; the expensive path handles hard cases. Critical refinement: insert a confidence-check between tiers — the cheap model's confidently-wrong outputs are the main risk and :fallback alone only catches outright failure. Use DIFFERENT providers for the two tiers to avoid correlated outages. Use primary-backup when the backup is deterministic (regex/template/cache); use model-cascade specifically for LLM-to-LLM escalation with cost economics.",
+      :score 111.01995849609375,
+      :rank 1,
+      :document-id
+      ":tree-fingerprint:#uuid \"24bfab75-94ed-35f8-9323-ec6e33b0440d\"",
+      :document-metadata
+      {:granularity :tree-fingerprint,
+       :target-id "24bfab75-94ed-35f8-9323-ec6e33b0440d",
+       :confidence 1.0,
+       :last-update "2026-06-09T14:03:34.470296-05:00"},
+      :reasoning
+      "This pattern is for cost/reliability optimization via model tiers (cheap vs. expensive). It does not provide any structural guidance for the semantic task of comparing data from two distinct sources into a structured diff.",
+      :fitness-score 0.1,
+      :rerank-source :reranker}],
+    :reasoning
+    "This candidate is a perfect architectural match. It explicitly mentions comparing two contracts/versions and mandates a :parallel per-contract structured-extraction followed by a sequential synthesis. This mirrors the query's need for a structured comparison of Contract A and B without hitting attention limits.",
+    :was-fresh-mint? false,
+    :parent-tree-id nil,
+    :rerank-fallback? false},
+   :outcome
+   {:direct-matched? true,
+    :walk-down-fired? true,
+    :was-fresh-mint? false,
+    :rerank-fallback? false},
+   :elapsed-ms 6824,
+   :parent-chain []}],
+ :metrics
+ {:rerank-failure-count 1,
+  :fresh-mint-rate 0.04761904761904762,
+  :walk-down-fired-rate 0.9523809523809524,
+  :parent-chain-depth-distribution {0 21},
+  :walk-down-fired-count 20,
+  :fresh-mint-count 1,
+  :direct-match-count 14,
+  :total-count 21,
+  :rerank-failure-rate 0.04761904761904762,
+  :latency-p95-ms 7860,
+  :latency-mean-ms 6867.285714285714,
+  :latency-median-ms 6623,
+  :direct-match-rate 0.6666666666666667},
+ :generated-at
+ "2026-06-09T14:06:37.292898Value(Year,4,19,EXCEEDS_PAD)'-'Value(MonthOfYear,2)'-'Value(DayOfMonth,2)'_'Value(HourOfDay,2)Value(MinuteOfHour,2)Value(SecondOfMinute,2)"}

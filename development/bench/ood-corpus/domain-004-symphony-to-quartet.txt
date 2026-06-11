@@ -1,0 +1,29 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: domain
+;; Why OOD: musical reduction with voice-leading + range constraints — none of the seeds cover artistic adaptation.
+Reduce the second movement (Andante) of Mozart's Symphony No. 40 in G
+minor (K. 550) — originally scored for full orchestra (strings + winds) —
+to a string quartet arrangement (2 violins, viola, cello).
+
+You don't have the score in front of you; work from your knowledge of
+the piece. Produce:
+- `:voice-assignments` — for each thematic moment of the movement, which
+  quartet instrument takes the lead melody, which provide harmonic
+  texture, and which fills rhythmic support
+- `:range-considerations` — call out any passage that requires a
+  transposition or octave shift to fit a quartet voice's range
+  (e.g., violin 1 going below G3, viola going above C6, cello stretching
+  for the original double-bass low end)
+- `:harmonic-decisions` — when the original has 7-8 simultaneous voices
+  but the quartet has 4, which voices do you keep + which do you omit,
+  and what's the principle (root + 3rd + 5th + 7th preserves harmonic
+  identity; doubled octaves drop first)
+- `:dynamics-and-articulation` — what the quartet must do that the
+  orchestra didn't (more aggressive bowing for sustained chords, etc.)
+  to preserve the emotional arc
+- `:loss-and-gain` — what's IRREDUCIBLY lost moving from orchestra to
+  quartet (sheer mass of sound) and what the quartet GAINS (intimacy,
+  interplay)
+
+Output as a structured arrangement document a chamber-music coach could
+use to read-through with their quartet.

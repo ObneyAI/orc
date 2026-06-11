@@ -1,0 +1,16 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: behavioral-fresh-mint
+;; Why OOD: dual-constraint authorship — recipe instruction AND poetic meter.
+Write a recipe for chocolate chip cookies (yield: 24 cookies) where EVERY
+instruction step is rendered in iambic pentameter (10 syllables per line,
+unstressed-stressed pattern).
+
+Constraints:
+- The ingredient list can stay in normal prose.
+- The numbered steps (8-12 steps) must each be a line of iambic pentameter.
+- Cooking times, temperatures, and physical actions must remain accurate —
+  the meter constraint cannot compromise the recipe's correctness.
+- Output: `{:ingredients [...] :steps [...] :yield "24 cookies"}`.
+
+You may use the natural elasticity of English (contractions, syllabic
+elision) to make the meter work.

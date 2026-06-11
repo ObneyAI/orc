@@ -1,0 +1,61 @@
+{:slug "domain-003-marathon-training",
+ :envelope
+ {:assigned-tree-id #uuid "5a08300e-10e3-305a-80c1-17eafea15ff7",
+  :confidence 0.92,
+  :top-candidates
+  [{:content
+    "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+    :score 107.7420654296875,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468866-05:00"},
+    :reasoning
+    "The marathon plan request is fundamentally a constraint-satisfaction scheduling problem (volume progression, pacing math, strength frequency, and medical history constraints). This candidate's 'enumerate constraints → propose assignment → conflict-check' pattern directly addresses the need to validate the plan against specific numeric targets (55-60mpw) and physiological constraints (Achilles history).",
+    :fitness-score 0.92,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 106.4676513671875,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464242-05:00"},
+    :reasoning
+    "While the query involves generating a long 16-week output, it is a generative scheduling task rather than a chunked extraction task from a large source document. The :map-each and :aggregate pattern is intended for document processing, not for synthesizing a coherent weekly progression where each week depends on the volume of the previous.",
+    :fitness-score 0.15,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 106.0770492553711,
+    :rank 7,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.466631-05:00"},
+    :reasoning
+    "The intent is to generate a proactive, comprehensive training plan, not to implement a graceful degradation system. While the marathon runner might need a 'fallback' if injured, the structural shape of the task (building a 16-week schedule) does not match the child-node failure logic described here.",
+    :fitness-score 0.05,
+    :rerank-source :reranker}],
+  :reasoning
+  "The marathon plan request is fundamentally a constraint-satisfaction scheduling problem (volume progression, pacing math, strength frequency, and medical history constraints). This candidate's 'enumerate constraints → propose assignment → conflict-check' pattern directly addresses the need to validate the plan against specific numeric targets (55-60mpw) and physiological constraints (Achilles history).",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6694,
+ :parent-chain []}

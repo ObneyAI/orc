@@ -1,0 +1,75 @@
+{:slug "code-002-investigate-flaky-test",
+ :envelope
+ {:assigned-tree-id #uuid "fb026cba-6425-3637-b0b1-05aaef1154f3",
+  :confidence 0.92,
+  :top-candidates
+  [{:content
+    "ValidationLoop is a producer-then-validator pattern where one node emits a candidate output and a second node checks it. The classical 'loop' form (produce → validate → conditional retry on failure) requires :condition for branching — NOT emit-able by RLM's tree-DSL today. The constrained variant the model CAN author: producer → validator emitting a :valid? flag → downstream consumer reading the flag. Always prefer :code validators with explicit schema checks over :llm validators when validation criteria are deterministic — faster, cheaper, no judgment ambiguity.",
+    :score 125.87731170654297,
+    :rank 8,
+    :document-id ":tree-fingerprint:\"seed:tree:ValidationLoop\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ValidationLoop",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.149049-05:00"},
+    :reasoning
+    "The query describes a classic software validation loop: producing a state (user signup), validating that state (polling email-mock), and checking a condition (login). This candidate explicitly mentions the 'produce → validate → conditional retry' pattern and advocates for :code validators to handle deterministic criteria like the email delivery check described in the query.",
+    :fitness-score 0.92,
+    :rerank-source :reranker}
+   {:content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :score 127.42730712890625,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.153679-05:00"},
+    :reasoning
+    "This candidate covers the 'Producer/validator' pattern which matches the structural shape of the user signup flow. It specifically mentions an 'explicit retry budget' and 'validator should be :code', which aligns perfectly with investigating why the 30s polling timeout (the retry budget) is failing in CI.",
+    :fitness-score 0.88,
+    :rerank-source :reranker}
+   {:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 123.3004150390625,
+    :rank 10,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151172-05:00"},
+    :reasoning
+    "The test flow is a sequential pipeline (Signup → Email → Login) similar to ETL stages. However, the core issue is a temporal failure in a validation step, not a data transformation mismatch, making this a secondary structural match.",
+    :fitness-score 0.45,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 125.91841888427734,
+    :rank 5,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.149787-05:00"},
+    :reasoning
+    "While the CI failure represents a 'failure' state, the test intent is to verify success, not to implement a production-grade 'graceful degradation' (like switching to a backup service). This pattern is less relevant to the root cause analysis of a flaky test.",
+    :fitness-score 0.25,
+    :rerank-source :reranker}],
+  :reasoning
+  "The query describes a classic software validation loop: producing a state (user signup), validating that state (polling email-mock), and checking a condition (login). This candidate explicitly mentions the 'produce → validate → conditional retry' pattern and advocates for :code validators to handle deterministic criteria like the email delivery check described in the query.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6849,
+ :parent-chain []}

@@ -2,6 +2,8 @@
  :deps {ai.djl/api {:mvn/version "0.31.1"}
         ai.djl.huggingface/tokenizers {:mvn/version "0.31.1"}
         ai.djl.pytorch/pytorch-engine {:mvn/version "0.31.1"}
-        org.clojure/data.csv {:mvn/version "1.1.0"}}
+        org.clojure/data.csv {:mvn/version "1.1.0"}
+        org.clojure/data.json {:mvn/version "2.5.0"}
+        org.xerial/sqlite-jdbc {:mvn/version "3.47.0.0"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {}}}}

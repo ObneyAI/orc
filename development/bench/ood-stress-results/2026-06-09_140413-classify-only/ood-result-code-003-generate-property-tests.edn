@@ -1,0 +1,72 @@
+{:slug "code-003-generate-property-tests",
+ :envelope
+ {:assigned-tree-id #uuid "1ed607c4-e057-4379-ba9e-d589d48a9bb1",
+  :confidence 0.0,
+  :top-candidates
+  [{:content
+    "Parallel-sum is the pure-code MapReduce variant: chunk → :code per-chunk computation → :code arithmetic reduce. Both stages are deterministic — same input produces byte-identical output. Use higher :max-concurrency (8+) on :map-each since :code calls have no rate-limit risk. NEVER use :llm for arithmetic per-chunk work. NEVER apply non-associative reducers (median, percentile) to partial per-chunk results — they require the full set. Use parallel-classify-aggregate when the per-chunk work requires LLM judgment.",
+    :score 154.10691833496094,
+    :rank 1,
+    :document-id
+    ":tree-fingerprint:#uuid \"c38abdbd-be30-38e7-8f81-e431cdba7a07\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c38abdbd-be30-38e7-8f81-e431cdba7a07",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470631-05:00"},
+    :reasoning nil,
+    :fitness-score nil,
+    :rerank-source :colbert-fallback}
+   {:content
+    "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+    :score 152.66383361816406,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470984-05:00"},
+    :reasoning nil,
+    :fitness-score nil,
+    :rerank-source :colbert-fallback}
+   {:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 145.57215881347656,
+    :rank 5,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.471664-05:00"},
+    :reasoning nil,
+    :fitness-score nil,
+    :rerank-source :colbert-fallback}
+   {:content
+    "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+    :score 143.74658203125,
+    :rank 9,
+    :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ChunkedExtraction",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464585-05:00"},
+    :reasoning nil,
+    :fitness-score nil,
+    :rerank-source :colbert-fallback}],
+  :reasoning
+  "Top candidate did not pass confidence threshold; minting fresh task class.",
+  :was-fresh-mint? true,
+  :parent-tree-id nil,
+  :rerank-fallback? true},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? false,
+  :was-fresh-mint? true,
+  :rerank-fallback? true},
+ :elapsed-ms 7860,
+ :parent-chain []}

@@ -1,0 +1,61 @@
+{:slug "conv-004-defend-controversial-choice",
+ :envelope
+ {:assigned-tree-id #uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+  :confidence 0.95,
+  :top-candidates
+  [{:content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :score 95.9102783203125,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.471327-05:00"},
+    :reasoning
+    "The task requires synthesizing a cohesive narrative (the internal memo) from multiple distinct inputs (PM concerns, headcount data, traffic patterns, and risk assessments). The ResearchThenSynthesize pattern's structure of extracting themes and providing a final synthesis perfectly matches the requirement to address specific objections while maintaining a single position statement.",
+    :fitness-score 0.95,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 97.82789611816406,
+    :rank 4,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.466631-05:00"},
+    :reasoning
+    "While the query mentions addressing concerns (recovery from skepticism), the task structure is not a 'try-fail-fallback' execution flow. This pattern is designed for graceful degradation, whereas the intent is generative narrative synthesis.",
+    :fitness-score 0.2,
+    :rerank-source :reranker}
+   {:content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :score 98.09294891357422,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.469945-05:00"},
+    :reasoning
+    "The primary-backup pattern is irrelevant as it focuses on deterministic code fallbacks for transient failures, which does not relate to composing a multi-paragraph argumentative memo with specific rhetorical requirements.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}],
+  :reasoning
+  "The task requires synthesizing a cohesive narrative (the internal memo) from multiple distinct inputs (PM concerns, headcount data, traffic patterns, and risk assessments). The ResearchThenSynthesize pattern's structure of extracting themes and providing a final synthesis perfectly matches the requirement to address specific objections while maintaining a single position statement.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5524,
+ :parent-chain []}

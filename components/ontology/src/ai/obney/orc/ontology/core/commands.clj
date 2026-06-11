@@ -421,6 +421,7 @@
         :tags #{[:concept concept-id]}  ;; Only UUID-based tags allowed
         :body {:concept-id concept-id
                :uri uri
+               :ontology-id (:ontology-id concept)
                :scope (:scope concept)
                :text-embedded text
                :field-source (name (first fields-set))
@@ -466,6 +467,7 @@
                                :tags #{[:concept concept-id]}  ;; Only UUID-based tags allowed
                                :body {:concept-id concept-id
                                       :uri (:uri concept)
+                                      :ontology-id (:ontology-id concept)
                                       :scope (:scope concept)
                                       :text-embedded text
                                       :field-source (name (first fields-set))
@@ -636,6 +638,381 @@
                                 :domain-type (:domain-type result)
                                 :tree-id tree-id}
          :command-result/events events}))))
+
+;; =============================================================================
+;; C-2 Living Description Commands
+;; =============================================================================
+;; One command per granularity. Each emits the corresponding
+;; *-description-updated event. Append-only — the read-model maintains
+;; "current" + "history" per (granularity, target-id).
+;;
+;; Tag values must be UUIDs per Grain's event-store-v3 contract. For
+;; non-UUID target-ids (keywords for node-types, strings for tree-
+;; fingerprints) we derive a deterministic UUID via nameUUIDFromBytes
+;; (same idiom used in orc-service/core/runtime.clj for deterministic
+;; node IDs). The natural-form target-id is still carried inside the
+;; event body so consumers retrieve it directly.
+
+(defn- stable-uuid-from
+  "Derive a deterministic UUID from a stringifiable value. Used for
+   tag values where the target-id is not natively a UUID (node-type
+   keyword, tree-fingerprint hash)."
+  [v]
+  (java.util.UUID/nameUUIDFromBytes (.getBytes (str v) "UTF-8")))
+
+(defcommand :ontology record-node-type-description
+  "Record (or update) the description for a node-type — a cross-sheet
+   aggregation across every node of this :type. Emits the
+   :ontology/node-type-description-updated event."
+  [{{:keys [target-id body]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/node-type-description-updated
+      :tags #{[:description-target (stable-uuid-from (str "node-type:" target-id))]}
+      :body {:target-type :node-type
+             :target-id target-id
+             :body body
+             :recorded-at (now-str)}})]})
+
+(defcommand :ontology record-node-instance-description
+  "Record (or update) the description for a specific node instance —
+   keyed by [sheet-id node-id]. Emits the
+   :ontology/node-instance-description-updated event."
+  [{{:keys [target-id body]} :command}]
+  (let [[sheet-id node-id] target-id]
+    {:command-result/events
+     [(->event
+       {:type :ontology/node-instance-description-updated
+        :tags #{[:sheet sheet-id]
+                [:node node-id]
+                [:description-target (stable-uuid-from
+                                       (str "node-instance:" sheet-id ":" node-id))]}
+        :body {:target-type :node-instance
+               :target-id target-id
+               :body body
+               :recorded-at (now-str)}})]}))
+
+(defcommand :ontology record-tree-description
+  "Record (or update) the description for a tree-fingerprint —
+   identifying all trees with the same canonical structure. Emits the
+   :ontology/tree-description-updated event."
+  [{{:keys [target-id body]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/tree-description-updated
+      :tags #{[:description-target (stable-uuid-from
+                                     (str "tree-fingerprint:" target-id))]}
+      :body {:target-type :tree-fingerprint
+             :target-id target-id
+             :body body
+             :recorded-at (now-str)}})]})
+
+(defcommand :ontology record-tree-class-description
+  "C-Loop-1: record (or update) the description for a tree-class —
+   the substrate R-Inject's classifier reads via get-description.
+   Distinct from :tree-fingerprint, which keys on canonical-S-expr
+   SHAs of observed trees; :tree-class keys on the stable seed UUID
+   (or fresh-mint root UUID) the classifier assigns. Emits the same
+   :ontology/tree-description-updated event with :target-type :tree-class."
+  [{{:keys [target-id body]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/tree-description-updated
+      :tags #{[:description-target (stable-uuid-from
+                                     (str "tree-class:" target-id))]}
+      :body {:target-type :tree-class
+             :target-id target-id
+             :body body
+             :recorded-at (now-str)}})]})
+
+(defcommand :ontology record-anti-recency-rejection
+  "Gap-6: record an audit event when the anti-recency validator
+   REJECTED an emission because the LLM-produced body dropped a
+   protected entry (high confidence + high evidence-count) from the
+   prior body. Emits :ontology/anti-recency-rejection. Audit trail
+   only — does not affect the description read-model."
+  [{{:keys [target-type target-id bucket entry-trait prior-confidence
+            prior-evidence-count reason rejected-body]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/anti-recency-rejection
+      :tags #{[:description-target (stable-uuid-from
+                                     (str target-type ":" target-id))]}
+      :body {:target-type target-type
+             :target-id target-id
+             :bucket bucket
+             :entry-trait entry-trait
+             :prior-confidence prior-confidence
+             :prior-evidence-count prior-evidence-count
+             :reason reason
+             :rejected-body rejected-body
+             :detected-at (now-str)}})]})
+
+(defcommand :ontology record-anti-recency-clamp
+  "Gap-6: record an audit event when the anti-recency validator
+   CLAMPED a protected entry's confidence because the LLM dropped it
+   by more than max-confidence-decrease-per-cycle. Emits :ontology/
+   anti-recency-clamp-applied. Audit trail only — the clamped body
+   is still emitted normally via record-description."
+  [{{:keys [target-type target-id bucket entry-trait prior-confidence
+            llm-confidence clamped-confidence reason]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/anti-recency-clamp-applied
+      :tags #{[:description-target (stable-uuid-from
+                                     (str target-type ":" target-id))]}
+      :body {:target-type target-type
+             :target-id target-id
+             :bucket bucket
+             :entry-trait entry-trait
+             :prior-confidence prior-confidence
+             :llm-confidence llm-confidence
+             :clamped-confidence clamped-confidence
+             :reason reason
+             :detected-at (now-str)}})]})
+
+;; =============================================================================
+;; C-2a-3a — Consolidation trigger commands
+;; =============================================================================
+;;
+;; Two commands:
+;; 1. :ontology/request-consolidation — emits :ontology/consolidation-requested.
+;;    Manual REPL helper sets :on-demand? true; the threshold-tracking
+;;    processor (todo_processors.clj) emits with :on-demand? false.
+;; 2. :ontology/set-consolidation-threshold — event-sourced threshold config.
+;;    Emits :ontology/consolidation-threshold-set. The threshold-config
+;;    read-model projects this for per-target-type lookup with a default
+;;    of 10 events.
+
+(defcommand :ontology request-consolidation
+  "Emit an :ontology/consolidation-requested event for the given target.
+
+   Two paths:
+
+   1. On-demand (:on-demand? true) — always emits. Used by REPL helpers
+      and tests that want a consolidation regardless of counter state.
+
+   2. Threshold-driven (:on-demand? false / unset) — uses Grain CAS to
+      enforce exactly-once-per-threshold-crossing semantics:
+
+         * Reads the target's lifetime :total source-event count and
+           configured threshold from read-models.
+         * Derives crossing-number = (quot total threshold) — stable
+           across all concurrent handlers within the same threshold
+           window of source events.
+         * Tags the event with [:crossing <stable-uuid-from-crossing>]
+           and CAS-guards on that tag being absent. The first concurrent
+           handler's append succeeds; subsequent handlers' appends get
+           ::anom/conflict and emit no event.
+
+      This survives burst-event races where N processor handlers all
+      observe delta >= threshold before any prior reset has propagated
+      to projections — only the first handler's CAS predicate evaluates
+      true at append time inside the event store."
+  [{{:keys [target-id target-type on-demand?]} :command :as ctx}]
+  (let [target-uuid (stable-uuid-from
+                      (str (name target-type) ":" target-id))
+        threshold-driven? (not on-demand?)
+        ;; Crossing-number stays constant across a window of `threshold`
+        ;; source events. All concurrent handlers within the window
+        ;; compute the same crossing-uuid; CAS lets only one win.
+        crossing-uuid (when threshold-driven?
+                        (let [total (rm/get-consolidation-total
+                                      ctx target-type target-id)
+                              threshold (rm/get-consolidation-threshold
+                                          ctx target-type)
+                              crossing-num (quot total threshold)]
+                          (stable-uuid-from
+                            (str (name target-type) ":" target-id
+                                 ":crossing-" crossing-num))))
+        event (->event
+                (cond-> {:type :ontology/consolidation-requested
+                         :tags (cond-> #{[:description-target target-uuid]}
+                                 crossing-uuid (conj [:crossing crossing-uuid]))
+                         :body {:target-type target-type
+                                :target-id target-id
+                                :on-demand? (boolean on-demand?)
+                                :requested-at (now-str)}}))]
+    (cond-> {:command-result/events [event]}
+      threshold-driven?
+      (assoc :command-result/cas
+             {:types #{:ontology/consolidation-requested}
+              :tags #{[:crossing crossing-uuid]}
+              :predicate-fn (fn [existing] (empty? (into [] existing)))}))))
+
+(defcommand :ontology set-consolidation-threshold
+  "Set the consolidation threshold for a target-type. Emits
+   :ontology/consolidation-threshold-set; the threshold-config read-model
+   projects this for runtime threshold lookup."
+  [{{:keys [target-type threshold]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/consolidation-threshold-set
+      :tags #{[:description-target (stable-uuid-from
+                                     (str "threshold:" (name target-type)))]}
+      :body {:target-type target-type
+             :threshold threshold
+             :set-at (now-str)}})]})
+
+(defcommand :ontology set-living-description-enabled
+  "Gap-1: flip the system-level opt-in for the Living Description loop.
+   When set to true, the writing side of the loop activates — consolidator
+   handles requests, threshold processor's consolidation-requested emissions
+   are honored, the per-event evaluator runtime auto-executes attached
+   judges, and (future C-3) judge feedback feeds into consolidator inputs.
+   Default false (consumer must opt in)."
+  [{{:keys [enabled?]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/living-description-enabled-set
+      :tags #{[:description-target (stable-uuid-from "living-description-enabled-config")]}
+      :body {:enabled? enabled?
+             :set-at (now-str)}})]})
+
+(defcommand :ontology set-consolidation-budget
+  "C-2a-3c: set the hourly consolidation budget for a target-type.
+   Emits :ontology/consolidation-budget-set; the budget-config read-model
+   projects this for runtime budget lookup. Default 100/hour applies
+   when no override has been set."
+  [{{:keys [target-type budget]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/consolidation-budget-set
+      :tags #{[:description-target (stable-uuid-from
+                                     (str "budget:" (name target-type)))]}
+      :body {:target-type target-type
+             :budget budget
+             :set-at (now-str)}})]})
+
+(defcommand :ontology set-reindex-config
+  "C-2b-1: set the global ColBERT re-index config (event-count threshold
+   + timer-minutes). Emits :ontology/reindex-config-set; the reindex-config
+   read-model projects this for runtime lookup. Defaults (10 events, 5
+   minutes) apply when no override has been set."
+  [{{:keys [reindex-threshold-events reindex-timer-minutes]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/reindex-config-set
+      :tags #{[:description-target (stable-uuid-from "reindex-config")]}
+      :body {:reindex-threshold-events reindex-threshold-events
+             :reindex-timer-minutes reindex-timer-minutes
+             :set-at (now-str)}})]})
+
+;; =============================================================================
+;; C-2c-2 — Auto-classifier command
+;; =============================================================================
+;;
+;; Dispatched by the executor's auto-classify wedge after `classify-task`
+;; computes a tree-class assignment. Stamps :classified-at and emits
+;; :ontology/task-classified with the full body. The [:tick tick-id] tag
+;; lets the runtime cheaply query "what was this tick's classification?"
+;; when constructing the run-result envelope.
+
+(defcommand :ontology assign-task-class
+  "C-2c-2 + C-2d-2: record an auto-classification decision. Takes the
+   result of `ontology/classify-task` plus the (source-sheet-id,
+   source-tick-id, source-node-id) provenance triple and emits
+   :ontology/task-classified. Stateless beyond the event itself; the
+   classification machinery (classify-task) is pure and runs upstream
+   in the executor wedge.
+
+   C-2d-2 — optional :parent-tree-id forwarded from the walk-down
+   classifier when the result is a deep match or fresh-mint under a
+   matched ancestor. Omitted on top-level matches and when walk-down
+   is disabled."
+  [{{:keys [source-sheet-id source-tick-id source-node-id
+            assigned-tree-id confidence top-candidates reasoning
+            was-fresh-mint? parent-tree-id rerank-failed?
+            behavioral-subtrees]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/task-classified
+      :tags #{[:tick source-tick-id]
+              [:description-target assigned-tree-id]}
+      :body (cond-> {:source-sheet-id source-sheet-id
+                     :source-tick-id source-tick-id
+                     :source-node-id source-node-id
+                     :assigned-tree-id assigned-tree-id
+                     :confidence confidence
+                     :top-candidates top-candidates
+                     :reasoning reasoning
+                     :classified-at (now-str)
+                     :was-fresh-mint? was-fresh-mint?}
+              parent-tree-id (assoc :parent-tree-id parent-tree-id)
+              ;; R01: forward reranker-failure flag when present.
+              (some? rerank-failed?) (assoc :rerank-failed? rerank-failed?)
+              ;; R05b: forward behavioral-subtree classification when
+              ;; the wedge called classify-behaviors after classify-task.
+              ;; Omit when absent so legacy events stay unchanged.
+              (some? behavioral-subtrees)
+              (assoc :behavioral-subtrees behavioral-subtrees))})]})
+
+;; =============================================================================
+;; R05c — Mint a new behavioral-subtree concept
+;; =============================================================================
+;; Closes the self-evolution loop on the agent side: the recursive RLM
+;; researcher's sandbox primitive (mint-behavior! ...) (orc-service)
+;; dispatches this command with :provenance :agent-minted, populating
+;; :minted-by-sheet-id / :minted-by-tick-id from the sandbox context.
+;; Hand-authored mints dispatch directly with :provenance :human-authored.
+;;
+;; The handler:
+;;   - Generates a fresh UUID for the new target-id (single owner of
+;;     identity; callers don't pass :target-id)
+;;   - Emits TWO events: the audit-trail :ontology/behavioral-subtree-minted
+;;     AND the standard :ontology/tree-description-updated so the R05a
+;;     reactive processor projects the concept + composes-into edges +
+;;     parent-behavior skos:broader link.
+;;   - Stamps :scope :behavioral-subtree on the description body so the
+;;     R05a processor's filter fires. Rejects bodies that explicitly
+;;     declare a different scope to surface intent mismatch.
+;;   - Stamps :minted-at ISO timestamp.
+
+(defcommand :ontology mint-behavioral-subtree
+  "R05c: mint a new behavioral-subtree concept. Returns two events:
+   the provenance-tagged audit-trail event and the standard
+   tree-description-updated event the R05a processor projects into the
+   concept graph. :provenance is MANDATORY — never default; mixing
+   agent-minted and human-authored entries breaks the audit trail for
+   future C-3 review queues."
+  [{{:keys [name body parent-behavior provenance
+            minted-by-sheet-id minted-by-tick-id]} :command}]
+  (let [body-scope (:scope body)]
+    (when (and (some? body-scope) (not= body-scope :behavioral-subtree))
+      (throw (ex-info
+               (str "mint-behavioral-subtree rejects body with :scope " body-scope
+                    "; mint affordance only routes to :behavioral-subtree.")
+               {::anom/category ::anom/incorrect
+                :body-scope body-scope}))))
+  ;; C-Loop-2 D4: derive the target-id from (name, parent-behavior) so the
+  ;; same logical mint always lands at the same identity. If the agent
+  ;; accidentally calls (mint-behavior! "name" ...) twice, both calls
+  ;; resolve to the same concept rather than polluting the graph with
+  ;; duplicates. Audit events still emit per call — provenance trail is
+  ;; preserved.
+  (let [identity-bytes (.getBytes (str "mint:" name ":" parent-behavior) "UTF-8")
+        target-id (java.util.UUID/nameUUIDFromBytes identity-bytes)
+        minted-at (now-str)
+        stamped-body (cond-> (assoc body :scope :behavioral-subtree)
+                       parent-behavior (assoc :parent-behavior parent-behavior))]
+    {:command-result/events
+     [(->event
+        {:type :ontology/behavioral-subtree-minted
+         :tags #{[:behavioral-subtree-minted target-id]}
+         :body (cond-> {:target-id target-id
+                        :name name
+                        :provenance provenance
+                        :minted-at minted-at}
+                 parent-behavior   (assoc :parent-behavior parent-behavior)
+                 minted-by-sheet-id (assoc :minted-by-sheet-id minted-by-sheet-id)
+                 minted-by-tick-id  (assoc :minted-by-tick-id minted-by-tick-id))})
+      (->event
+        {:type :ontology/tree-description-updated
+         :tags #{[:description-target target-id]}
+         :body {:target-type :tree-fingerprint
+                :target-id target-id
+                :body stamped-body
+                :recorded-at minted-at}})]}))
 
 ;; =============================================================================
 ;; Site Registry Commands (Generic Site Pattern Learning)

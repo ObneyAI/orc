@@ -1,0 +1,33 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: code
+;; Why OOD: test GENERATION (with edge-case coverage discipline) — distinct from extraction/validation.
+You are given a Python function signature and a one-paragraph spec:
+
+```python
+def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping or adjacent integer intervals.
+
+    Each input interval is (start, end) with start <= end. Two intervals
+    overlap if they share at least one integer point. Two intervals are
+    adjacent if end_a + 1 == start_b. The output is sorted by start,
+    contains no overlapping or adjacent intervals, and covers exactly
+    the same set of integer points as the input.
+    """
+```
+
+Generate a comprehensive set of PROPERTY-BASED test cases using Hypothesis
+(or descriptive equivalent) that exercise:
+- Empty input, single-interval input
+- All-disjoint, all-overlapping, mixed
+- Adjacent boundary cases (end_a + 1 == start_b)
+- Single-point intervals (start == end)
+- Negative integers, zero, very large integers
+- Duplicate intervals, fully-nested intervals
+- Properties that hold for ALL valid outputs (idempotency, sortedness,
+  point-set equivalence to input, no internal overlaps)
+
+Return:
+- `:property-tests` — a vector of `{:property-name :description :hypothesis-code}` entries
+- `:invariants` — a list of plain-English properties the output must satisfy
+- `:notes` — anything that surfaced during generation that suggests the spec
+  itself might be ambiguous or under-specified

@@ -1,0 +1,26 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: conv
+;; Why OOD: pedagogical/mentoring discourse — explain HOW to think, not produce a finished artifact.
+A junior engineer on your team has been stuck for two days on a bug: a
+checkout flow occasionally charges a customer twice. They've added logging,
+re-read the Stripe docs, and stared at the code. They're frustrated and
+considering asking you to "just take a look at it."
+
+Instead of solving the bug yourself, walk the junior through a debugging
+strategy they can apply NEXT TIME they hit a similar wall. Make it
+actionable — explain the principles AND the specific steps you'd take if
+you were them on THIS bug.
+
+Cover:
+- How to break the problem space into testable hypotheses
+- How to construct minimum-reproducible cases
+- When to add logging vs. attach a debugger vs. read the upstream library
+  source
+- How to recognize you're at a wall vs. genuinely making progress
+- When to escalate (and how to frame the escalation so the senior can help
+  efficiently)
+- The specific FIRST 2-3 steps you'd take TONIGHT on this checkout-double-
+  charge bug
+
+Tone: warm, concrete, no condescension. The junior is smart and motivated;
+they just haven't built the troubleshooting reflexes yet.

@@ -287,7 +287,13 @@
 
 (defcommand :sheet set-node-context
   {:authorized? authenticated?}
-  "Set the ontology context for a leaf node (for self-learning injection)."
+  "Set the ontology context for a node (for self-learning injection).
+
+   Originally restricted to :leaf nodes; relaxed in C-1 to also accept
+   :repl-researcher nodes, since the runtime apply-ontology-context
+   pipeline (todo_processors.clj) reads :context from any node with
+   :instruction and prepends formatted principles to it. The read-model
+   projection is generic so no other change was needed."
   [{{:keys [sheet-id node-id context]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
@@ -296,9 +302,9 @@
       {::anom/category ::anom/not-found
        ::anom/message "Node not found"}
 
-      (not= :leaf (:type node))
+      (not (#{:leaf :repl-researcher} (:type node)))
       {::anom/category ::anom/incorrect
-       ::anom/message "Only leaf nodes can have context"}
+       ::anom/message "Only :leaf and :repl-researcher nodes can have context"}
 
       :else
       {:command-result/events
@@ -411,7 +417,7 @@
    - :ai executor uses DSCloj with optional model selection
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
-  [{{:keys [sheet-id node-id executor model fn tools]} :command
+  [{{:keys [sheet-id node-id executor model fn tools options]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
     (cond
@@ -439,10 +445,12 @@
                   model (assoc :model model)
                   fn (assoc :fn fn)
                   tools (assoc :tools (vec tools))
+                  options (assoc :options options)
                   (:executor node) (assoc :previous-executor (:executor node))
                   (:model node) (assoc :previous-model (:model node))
                   (:fn node) (assoc :previous-fn (:fn node))
-                  (:tools node) (assoc :previous-tools (:tools node)))})]})))
+                  (:tools node) (assoc :previous-tools (:tools node))
+                  (:options node) (assoc :previous-options (:options node)))})]})))
 
 (defcommand :sheet set-node-retry
   {:authorized? authenticated?}
@@ -583,7 +591,7 @@
 (defcommand :sheet set-repl-researcher-config
   {:authorized? authenticated?}
   "Set configuration for a repl-researcher node."
-  [{{:keys [sheet-id node-id instruction reads writes mcp-tools browser-tools model max-iterations]} :command
+  [{{:keys [sheet-id node-id instruction reads writes mcp-tools browser-tools model max-iterations rlm timeout-ms options]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
         blackboard (rm/get-blackboard-by-key ctx sheet-id)
@@ -622,13 +630,19 @@
                   browser-tools (assoc :browser-tools (vec browser-tools))
                   model (assoc :model model)
                   max-iterations (assoc :max-iterations max-iterations)
+                  (some? rlm) (assoc :rlm rlm)
+                  options (assoc :options options)
+                  ;; D-003: optional total budget (Phase 1 + Phase 2) in ms
+                  timeout-ms (assoc :timeout-ms timeout-ms)
                   (:instruction node) (assoc :previous-instruction (:instruction node))
                   (seq (:reads node)) (assoc :previous-reads (:reads node))
                   (seq (:writes node)) (assoc :previous-writes (:writes node))
                   (seq (:mcp-tools node)) (assoc :previous-mcp-tools (:mcp-tools node))
                   (seq (:browser-tools node)) (assoc :previous-browser-tools (:browser-tools node))
                   (:model node) (assoc :previous-model (:model node))
-                  (:max-iterations node) (assoc :previous-max-iterations (:max-iterations node)))})]})))
+                  (:max-iterations node) (assoc :previous-max-iterations (:max-iterations node))
+                  (:options node) (assoc :previous-options (:options node))
+                  (:timeout-ms node) (assoc :previous-timeout-ms (:timeout-ms node)))})]})))
 
 (defcommand :sheet set-delegate-config
   {:authorized? authenticated?}
@@ -868,7 +882,13 @@
 
 (defcommand :sheet set-node-judges
   {:authorized? authenticated?}
-  "Set which evaluation judges apply to a node."
+  "Set which evaluation judges apply to a node.
+
+   Gap-5: accepts both `:leaf` and `:repl-researcher` node types. The
+   judge runtime fires on `:sheet/node-execution-completed` events
+   regardless of executor kind; allowing repl-researcher attachment
+   lets consumers override the Gap-5 default-attachment behavior on
+   any repl-researcher node."
   [{{:keys [sheet-id node-id judges]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
@@ -879,9 +899,9 @@
       {::anom/category ::anom/not-found
        ::anom/message "Node not found"}
 
-      (not= :leaf (:type node))
+      (not (contains? #{:leaf :repl-researcher} (:type node)))
       {::anom/category ::anom/incorrect
-       ::anom/message "Only leaf nodes can have evaluation judges"}
+       ::anom/message "Only :leaf and :repl-researcher nodes can have evaluation judges"}
 
       (seq unknown-judges)
       {::anom/category ::anom/not-found
@@ -908,7 +928,7 @@
   "Start a tree tick (execute from root).
    When inputs are provided, builds a full execution snapshot for
    independent async execution with tick-scoped blackboard isolation."
-  [{{:keys [sheet-id tick-id inputs use-version force-draft options]} :command
+  [{{:keys [sheet-id tick-id parent-tick-id inputs use-version force-draft options]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))]
     (if inputs
@@ -933,6 +953,7 @@
                              :tick-id new-tick-id
                              :inputs inputs
                              :execution-snapshot snapshot}
+                      parent-tick-id (assoc :parent-tick-id parent-tick-id)
                       (:version-number snapshot) (assoc :version-number (:version-number snapshot))
                       options (assoc :options options))})]}))
       ;; Legacy UI tick: no snapshot, reads live sheet state
@@ -956,8 +977,9 @@
              {:type :sheet/tree-tick-started
               :tags #{[:sheet sheet-id]
                       [:tick new-tick-id]}
-              :body {:sheet-id sheet-id
-                     :tick-id new-tick-id}})]})))))
+              :body (cond-> {:sheet-id sheet-id
+                             :tick-id new-tick-id}
+                      parent-tick-id (assoc :parent-tick-id parent-tick-id))})]})))))
 (defcommand :sheet tick-node
   {:authorized? authenticated?}
   "Start a single node tick (for testing or manual execution)."
@@ -1007,10 +1029,25 @@
   {:authorized? authenticated?}
   "Complete a node execution (internal command from todo processor).
    For tick-scoped executions, also emits execution-value-written events
-   atomically with the completion event to avoid race conditions."
-  [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs]} :command
+   atomically with the completion event to avoid race conditions.
+
+   Optional :usage carries per-node token counts from LLM calls."
+  [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage
+            node-type completion-kind]} :command
     :as ctx}]
-  (let [completion-event (->event
+  (let [;; Gap-7: when the dispatch site didn't explicitly set
+        ;; :completion-kind but the node is a recursive repl-researcher,
+        ;; derive the kind from :status. :tree-generated marks an
+        ;; intermediate Phase 1 emit-tree iteration; :success/:failure
+        ;; marks the terminal (final!) call.
+        derived-kind (when (and (nil? completion-kind)
+                                (= :repl-researcher node-type))
+                       (cond
+                         (= :tree-generated status) :tree-iteration
+                         (contains? #{:success :failure :timeout} status) :terminal
+                         :else nil))
+        effective-completion-kind (or completion-kind derived-kind)
+        completion-event (->event
                            {:type :sheet/node-execution-completed
                             :tags #{[:sheet sheet-id]
                                     [:node node-id]
@@ -1022,10 +1059,22 @@
                                     (seq writes) (assoc :writes writes)
                                     duration-ms (assoc :duration-ms duration-ms)
                                     error (assoc :error error)
-                                    (seq inputs) (assoc :inputs inputs))})
+                                    (seq inputs) (assoc :inputs inputs)
+                                    (seq usage) (assoc :usage usage)
+                                    ;; C-2a-2: propagate :node-type so the
+                                    ;; per-node-type aggregator can partition
+                                    ;; without looking up via the sheets RM.
+                                    (some? node-type) (assoc :node-type node-type)
+                                    ;; Gap-7: distinguish intermediate vs
+                                    ;; terminal repl-researcher completions so
+                                    ;; judge routing can pick the right grader
+                                    ;; per kind.
+                                    (some? effective-completion-kind)
+                                    (assoc :completion-kind effective-completion-kind))})
         ;; For tick-scoped executions with successful writes, emit bb writes atomically
+        ;; Also handle :tree-generated status (RLM two-phase execution)
         tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
-        bb-write-events (when (and tick-scoped? (= :success status) (seq writes))
+        bb-write-events (when (and tick-scoped? (#{:success :tree-generated} status) (seq writes))
                           (mapv (fn [[k v]]
                                   (->event
                                     {:type :sheet/execution-value-written
@@ -1040,6 +1089,57 @@
      (if bb-write-events
        (into bb-write-events [completion-event])
        [completion-event])}))
+
+(defcommand :sheet record-rlm-tree-node-completion
+  {:authorized? authenticated?}
+  "Emit a :sheet/rlm-tree-node-completed event with the precomputed
+   structured node-path, the node's :usage, and an optional :input-profile
+   capturing input characteristics for each :reads key. Fires alongside
+   the generic complete-node-execution event for LLM leaf calls.
+   Reserved for the RLM learning loop — future fields (scores, feedback)
+   will be added by downstream judges."
+  [{{:keys [sheet-id tick-id node-id node-path usage input-profile]} :command
+    :as _ctx}]
+  {:command-result/events
+   [(->event
+      {:type :sheet/rlm-tree-node-completed
+       :tags #{[:sheet sheet-id]
+               [:node node-id]
+               [:tick tick-id]}
+       :body (cond-> {:sheet-id sheet-id
+                      :tick-id tick-id
+                      :node-id node-id
+                      :node-path node-path
+                      :usage usage}
+               (seq input-profile) (assoc :input-profile input-profile))})]})
+
+(defcommand :sheet record-rlm-tree-execution-completion
+  {:authorized? authenticated?}
+  "Emit a :sheet/rlm-tree-execution-completed bookend event when a Phase 2
+   RLM tree-execution finishes. Carries the full trajectory of events for
+   the tick, total usage, task-fingerprint placeholder (issue 012), and
+   the C-2a-2 fields :tree-fingerprint + :status + :duration-ms that drive
+   the per-tree-fingerprint rolling-metrics aggregator. The new fields are
+   carried in the event body — the partition-by-fingerprint read-model
+   reads :tree-fingerprint from the event body directly (tag values must
+   be UUIDs in event-store-v3, so we don't tag with the string fingerprint)."
+  [{{:keys [sheet-id tick-id trajectory total-usage task-fingerprint
+            tree-fingerprint status duration-ms]} :command
+    :as _ctx}]
+  {:command-result/events
+   [(->event
+      (cond-> {:type :sheet/rlm-tree-execution-completed
+               :tags #{[:sheet sheet-id]
+                       [:tick tick-id]}
+               :body {:sheet-id sheet-id
+                      :tick-id tick-id
+                      :trajectory trajectory
+                      :total-usage total-usage
+                      :timestamp (java.time.Instant/now)
+                      :task-fingerprint task-fingerprint}}
+        (some? tree-fingerprint) (assoc-in [:body :tree-fingerprint] tree-fingerprint)
+        (some? status)           (assoc-in [:body :status] status)
+        (some? duration-ms)      (assoc-in [:body :duration-ms] duration-ms)))]})
 
 (defcommand :sheet fail-node-execution
   {:authorized? authenticated?}

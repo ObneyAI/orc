@@ -172,6 +172,32 @@
             (is (= 1 (count tick-started-events)))
             (is (= sheet-id (:sheet-id (first tick-started-events))))))))))
 
+(deftest execute-accepts-caller-supplied-tick-id-test
+  (testing "execute uses caller supplied tick id for progress correlation"
+    (h/with-async-test-context [ctx]
+      (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Tick Correlation"))
+            sheet-id (-> sheet-result :command-result/events first :sheet-id)
+            tick-id (random-uuid)]
+
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :input :string))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :output :string))
+
+        (let [seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
+              seq-id (-> seq-result :command-result/events first :node-id)
+              leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id seq-id))
+              leaf-id (-> leaf-result :command-result/events first :node-id)]
+
+          (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id leaf-id :code
+                                  :fn "ai.obney.orc.orc-service.runtime-test/identity-fn"))
+          (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [:input] [:output]))
+
+          (let [result (sheet/execute ctx sheet-id {:input "test"} :tick-id tick-id)
+                tick-started-events (read-events-by-type (:event-store ctx)
+                                                         :sheet/tree-tick-started)]
+            (is (= :success (:status result)))
+            (is (= tick-id (:trace-id result)))
+            (is (= [tick-id] (mapv :tick-id tick-started-events)))))))))
+
 (deftest execute-emits-tick-completed-event-test
   (testing "execute emits :sheet/tree-tick-completed event with correct status"
     (h/with-async-test-context [ctx]

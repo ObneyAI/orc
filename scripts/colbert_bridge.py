@@ -40,23 +40,39 @@ _rag_trainer = None
 def suppress_stdout():
     """Context manager to suppress stdout during ColBERT operations.
 
-    ColBERT prints progress messages to stdout which interferes with our
-    JSON-RPC protocol. This redirects stdout to devnull during operations.
+    ColBERT/transformers/tqdm print progress messages to stdout which
+    interferes with our JSON-RPC framing. This redirects BOTH sys.stdout
+    (Python-level prints) AND file descriptor 1 (C-extension prints like
+    torch printf) to devnull during operations.
     """
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stdout_fd = os.dup(1)
     old_stdout = sys.stdout
     try:
+        sys.stdout.flush()
+        os.dup2(devnull, 1)
         sys.stdout = open(os.devnull, 'w')
         yield
     finally:
+        sys.stdout.flush()
         sys.stdout.close()
         sys.stdout = old_stdout
+        os.dup2(old_stdout_fd, 1)
+        os.close(old_stdout_fd)
+        os.close(devnull)
 
 
 def get_ragatouille():
-    """Lazy load RAGatouille to reduce startup time."""
+    """Lazy load RAGatouille to reduce startup time.
+
+    The import itself prints a deprecation banner to stdout (PyLate
+    migration notice). That breaks our JSON-RPC framing — the Clojure
+    bridge reads the first stdout line as JSON. So we suppress stdout
+    during the import."""
     global _rag_model, _rag_trainer
     if _rag_model is None:
-        from ragatouille import RAGPretrainedModel, RAGTrainer
+        with suppress_stdout():
+            from ragatouille import RAGPretrainedModel, RAGTrainer
         _rag_model = RAGPretrainedModel
         _rag_trainer = RAGTrainer
     return _rag_model, _rag_trainer
@@ -118,6 +134,14 @@ class ColBERTBridge:
         Returns:
             {"status": "loaded", "alias": str}
         """
+        # Idempotent: the alias is the unique index-id, so if it's already loaded the
+        # right model/index is already in memory. Skip the (expensive) reload — callers
+        # invoke load_model before every search, and reloading the index from disk per
+        # search makes per-line retrieval (e.g. cleaning a transcript) pathologically
+        # slow (one full index load per query).
+        if alias in self.models:
+            return {"status": "cached", "alias": alias}
+
         RAGPretrainedModel, _ = get_ragatouille()
 
         with suppress_stdout():

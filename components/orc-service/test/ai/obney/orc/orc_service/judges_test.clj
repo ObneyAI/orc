@@ -1,7 +1,9 @@
 (ns ai.obney.orc.orc-service.judges-test
   "Tests for evaluation judges DSL and commands."
   (:require [clojure.test :refer [deftest testing is]]
+            [malli.core :as m]
             [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.orc-service.interface.schemas :as schemas]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]))
 
@@ -96,6 +98,83 @@
                                         {:type :grounding}))]
         (is (h/is-anomaly? result))
         (is (= :cognitect.anomalies/not-found (h/anomaly-category result)))))))
+
+;; =============================================================================
+;; Gap-8 RED#6 — :weight on judge-config rejects negative numbers,
+;; accepts both integers and doubles, accepts absence (optional)
+;; =============================================================================
+;;
+;; The composite-score computation in evaluation/judge-runtime treats
+;; :weight as the consumer's declared per-judge weight (Gap-8 RED#4
+;; share-remaining-mass policy normalizes them). The schema MUST reject
+;; negative weights (nonsensical for a probability mass) AND accept
+;; integer literals like `1` (currently rejected because the field is
+;; typed :double — a footgun for consumers who write `:weight 1`).
+
+(defn- declare-judge-schema []
+  (get schemas/commands :sheet/declare-judge))
+
+(deftest gap8-judge-weight-schema-accepts-valid-doubles
+  (testing "Gap-8 RED#6: :weight 0.5 (double in [0, 1]) is accepted"
+    (let [body {:sheet-id (random-uuid)
+                :judge-name "g"
+                :judge-config {:type :grounding :weight 0.5}}]
+      (is (m/validate (declare-judge-schema) body)
+          (str "Schema must validate a normal double weight. Explain: "
+               (pr-str (m/explain (declare-judge-schema) body)))))))
+
+(deftest gap8-judge-weight-schema-accepts-integer-literal
+  (testing "Gap-8 RED#6: :weight 1 (integer literal) is accepted — consumers write this naturally"
+    (let [body {:sheet-id (random-uuid)
+                :judge-name "g"
+                :judge-config {:type :grounding :weight 1}}]
+      (is (m/validate (declare-judge-schema) body)
+          (str ":weight 1 (integer) must validate; currently the schema is :double which "
+               "rejects this surprising consumers. Explain: "
+               (pr-str (m/explain (declare-judge-schema) body)))))))
+
+(deftest gap8-judge-weight-schema-rejects-negative
+  (testing "Gap-8 RED#6: :weight -0.5 is rejected — negative weights are nonsensical for a composite"
+    (let [body {:sheet-id (random-uuid)
+                :judge-name "g"
+                :judge-config {:type :grounding :weight -0.5}}]
+      (is (not (m/validate (declare-judge-schema) body))
+          "Negative weight must be rejected by the schema"))))
+
+(deftest gap8-judge-weight-schema-rejects-non-numeric
+  (testing "Gap-8 RED#6: :weight \"0.5\" (string) is rejected"
+    (let [body {:sheet-id (random-uuid)
+                :judge-name "g"
+                :judge-config {:type :grounding :weight "0.5"}}]
+      (is (not (m/validate (declare-judge-schema) body))
+          "String weight must be rejected — only numbers accepted"))))
+
+(deftest gap8-judge-weight-schema-accepts-absence
+  (testing "Gap-8 RED#6: :weight omitted (relying on Gap-8 even-weight default) is still accepted"
+    (let [body {:sheet-id (random-uuid)
+                :judge-name "g"
+                :judge-config {:type :grounding}}]
+      (is (m/validate (declare-judge-schema) body)
+          ":weight is optional — absence falls through to RED#2 even-weight default"))))
+
+(deftest gap8-judge-declared-event-weight-schema-mirrors-command
+  (testing "Gap-8 RED#6: :sheet/judge-declared event body has the SAME :weight rules as the command schema"
+    (let [event-schema (get schemas/events :sheet/judge-declared)
+          base {:sheet-id (random-uuid)
+                :judge-name "g"
+                :criteria-version 1}
+          good (assoc base :judge-config {:type :grounding :weight 0.5})
+          good-int (assoc base :judge-config {:type :grounding :weight 1})
+          bad-neg (assoc base :judge-config {:type :grounding :weight -0.5})
+          bad-str (assoc base :judge-config {:type :grounding :weight "0.5"})]
+      (is (m/validate event-schema good)
+          "Event schema accepts a normal double weight")
+      (is (m/validate event-schema good-int)
+          "Event schema accepts an integer weight (mirror of command schema)")
+      (is (not (m/validate event-schema bad-neg))
+          "Event schema rejects negative weight")
+      (is (not (m/validate event-schema bad-str))
+          "Event schema rejects string weight"))))
 
 (deftest set-node-judges-command-test
   (h/with-test-context [ctx]

@@ -1,0 +1,26 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: code
+;; Why OOD: root-cause hypothesis ranking from observed symptoms. Behaviors cover analysis/investigation but the form (hypothesis ranking with falsifiability tests) isn't a tracked seed.
+A Python integration test `test_user_signup_flow` fails ~5% of the time in CI
+but never on local development. The test creates a user, sends a verification
+email, polls the email-mock service for delivery, then asserts the user can
+log in. CI output for failing runs shows the polling step times out at 30s.
+Local runs of the same test complete in ~2s.
+
+Recent context:
+- The CI workers run on shared k8s nodes with a noisy-neighbor problem
+- The email-mock service runs as a sidecar container with no resource limits
+- Tests were stable until 3 weeks ago when the team upgraded the polling
+  library from v2.1 → v2.4
+
+Produce a RANKED list (most likely → least likely) of hypotheses for the
+flakiness, with each entry containing:
+- `:hypothesis` — one-sentence description
+- `:why-this-cause` — the reasoning chain from observed symptoms
+- `:falsifiability-test` — a SPECIFIC experiment that would PROVE this is
+  NOT the cause (e.g., "if we revert the polling library to v2.1 and the
+  flakiness rate drops to 0%, hypothesis X is confirmed")
+- `:effort-to-test` — `:low | :medium | :high`
+
+Return at least 5 hypotheses. End with `:next-action` — which hypothesis
+to test first and why.

@@ -1,0 +1,26 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: data
+;; Why OOD: zero-downtime DDL planning with explicit failure-mode handling. Behaviors don't track "stateful schema evolution under load".
+A production Postgres table `orders` (28M rows, ~12 GB, ~5K inserts/min,
+~12K reads/min) needs the column `customer_email` migrated from
+`varchar(255) NULL` to `varchar(255) NOT NULL`. Today ~3% of rows have
+NULL (legacy guest checkouts). The app writes new orders with a non-NULL
+email but doesn't enforce.
+
+Plan a zero-downtime migration. Cover:
+- The ordered DDL + DML steps (with rollback at each)
+- The data backfill strategy for the 840K NULL rows (where do they get
+  emails from? customer_id can join to users.email, but ~5% of orders
+  are guest checkouts with NO matching user record)
+- The application-side guards that prevent new NULL writes during the
+  migration window
+- How to detect partial-migration state (rows backfilled but constraint
+  not yet applied)
+- The locking implications of `ALTER TABLE ... SET NOT NULL` on a
+  28M-row table and how to avoid table-wide locks
+- Verification checks at each step
+- Total estimated migration window and the rollback plan if a step fails
+  past the point of safe rollback
+
+Output a stepwise migration runbook the on-call engineer could follow
+without further guidance.

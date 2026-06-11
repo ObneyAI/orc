@@ -1,0 +1,47 @@
+{:slug "domain-002-recipe-scaling",
+ :envelope
+ {:assigned-tree-id #uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891",
+  :confidence 0.7,
+  :reasoning
+  "The task requires taking a single source (the recipe/technique) and applying complex reasoning across multiple dimensions (workflow, scaling physics, pricing) to produce a structured synthesis. ResearchThenSynthesize fits this 'narrative synthesis' shape better than the parallel source comparison pattern, as it accommodates the integrated reasoning needed to generate a cohesive catering plan from a single input document.",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :score 131.3460693359375,
+    :rank 5,
+    :document-id
+    ":tree-fingerprint:\"seed:tree:ResearchThenSynthesize\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.150766-05:00"},
+    :reasoning
+    "The task requires taking a single source (the recipe/technique) and applying complex reasoning across multiple dimensions (workflow, scaling physics, pricing) to produce a structured synthesis. ResearchThenSynthesize fits this 'narrative synthesis' shape better than the parallel source comparison pattern, as it accommodates the integrated reasoning needed to generate a cohesive catering plan from a single input document.",
+    :fitness-score 0.7,
+    :rerank-source :reranker}
+   {:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 135.1931610107422,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.157194-05:00"},
+    :reasoning
+    "This pattern is designed for multi-source comparison (paralleling multiple different inputs). Since the query provides a single set of inputs (one recipe) and asks for an expansion/transformation of that single source rather than a comparison across different recipes or sources, this pattern is structurally mismatched.",
+    :fitness-score 0.2,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5395,
+ :parent-chain []}

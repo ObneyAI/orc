@@ -1,0 +1,62 @@
+{:slug "code-001-refactor-auth-middleware",
+ :envelope
+ {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :confidence 0.95,
+  :top-candidates
+  [{:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 90.03702545166016,
+    :rank 1,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151172-05:00"},
+    :reasoning
+    "The ETL pipeline pattern directly addresses the caller's need to refactor sequential stages (auth, session, rate-limit) that pass data to one another. Specifically, the recommendation to 'collapse very short successive stages' provides a direct blueprint for unifying the three 600-line functions into a coherent module, while the emphasis on ':output-schemas' on intermediates solves the caller's requirement for documenting the contract for downstream route handlers.",
+    :fitness-score 0.95,
+    :rerank-source :reranker}
+   {:content
+    "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+    :score 87.61679077148438,
+    :rank 6,
+    :document-id
+    ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151870-05:00"},
+    :reasoning
+    "This pattern provides a sequential structure for checking constraints and assignments, which mirrors the 'authenticate → check session → enforce limit' flow. The recommendation to separate creative proposal from precision-based validation aligns with splitting the auth logic from the deterministic Redis/Header checks, though it is less specific than the ETL model for internal state management between middleware stages.",
+    :fitness-score 0.75,
+    :rerank-source :reranker}
+   {:content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :score 87.9297866821289,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.153679-05:00"},
+    :reasoning
+    "While this candidate deals with validation, it focuses on iterative retries and feedback loops between a producer and a validator. The caller's intent is a linear refactor of existing middleware into a single pass, not an iterative loop with a retry budget, making this pattern a poor structural fit for a deterministic auth-chain refactor.",
+    :fitness-score 0.3,
+    :rerank-source :reranker}],
+  :reasoning
+  "The ETL pipeline pattern directly addresses the caller's need to refactor sequential stages (auth, session, rate-limit) that pass data to one another. Specifically, the recommendation to 'collapse very short successive stages' provides a direct blueprint for unifying the three 600-line functions into a coherent module, while the emphasis on ':output-schemas' on intermediates solves the caller's requirement for documenting the contract for downstream route handlers.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6365,
+ :parent-chain []}

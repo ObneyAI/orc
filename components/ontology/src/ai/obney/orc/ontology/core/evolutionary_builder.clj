@@ -36,6 +36,7 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [clojure.string :as str]
             [clojure.data.csv :as csv]
+            [clojure.data.json :as json]
             [clojure.java.io :as io]
             [com.brunobonacci.mulog :as mu]))
 
@@ -61,14 +62,43 @@
    :auto-detect-embedding-fields? true})
 
 ;; =============================================================================
+;; Ontology ID Normalization (Issue 001: Grain Schema Compliance)
+;; =============================================================================
+
+(defn- normalize-ontology-id
+  "Normalize ontology-id to UUID for Grain schema compliance.
+
+   Grain's tag schema requires [:tuple :keyword :uuid], so ontology-ids
+   must be UUIDs. This function:
+   - Passes through existing UUIDs unchanged
+   - Converts strings to deterministic UUIDs using nameUUIDFromBytes
+
+   Deterministic conversion means the same string always produces the
+   same UUID, preserving query semantics."
+  [id]
+  (if (uuid? id)
+    id
+    (java.util.UUID/nameUUIDFromBytes (.getBytes (str id)))))
+
+;; =============================================================================
 ;; Source Loading
 ;; =============================================================================
 
 (defn load-source-content
   "Load content from a source specification.
-   Returns {:content string :file-size int}"
-  [{:keys [path content]}]
+   For SQL databases, returns the path (no content loading needed).
+   Returns {:content string :file-size int :db-path string (for SQL)}"
+  [{:keys [path content type]}]
   (cond
+    ;; SQL database - don't load content, just validate path exists
+    (or (= type "sql") (= type "sqlite") (= type "db")
+        (and path (str/ends-with? path ".db")))
+    (if (and path (.exists (java.io.File. ^String path)))
+      {:content path  ;; For SQL, content IS the path
+       :db-path path
+       :file-size (.length (java.io.File. ^String path))}
+      (throw (ex-info "Database file not found" {:path path})))
+
     ;; Direct content provided
     content
     {:content content
@@ -109,7 +139,7 @@
   [ctx]
   (or (get @orc-sheet-ids :csv)
       (let [;; Require dynamically to avoid circular deps at compile time
-            csv-ns (requiring-resolve 'csv-ontology/build-csv-ontology-pipeline!)
+            csv-ns (requiring-resolve 'ai.obney.orc.ontology.sheets.csv-ontology/build-csv-ontology-pipeline!)
             sheet-id (csv-ns ctx)]
         (swap! orc-sheet-ids assoc :csv sheet-id)
         sheet-id)))
@@ -119,9 +149,29 @@
   [ctx]
   (or (get @orc-sheet-ids :text)
       (let [;; Require dynamically to avoid circular deps at compile time
-            text-ns (requiring-resolve 'ontology-exploration/build-taxonomy-pipeline!)
+            text-ns (requiring-resolve 'ai.obney.orc.ontology.sheets.ontology-exploration/build-taxonomy-pipeline!)
             sheet-id (text-ns ctx)]
         (swap! orc-sheet-ids assoc :text sheet-id)
+        sheet-id)))
+
+(defn- ensure-sql-sheet!
+  "Ensure the SQL ontology ORC sheet is built, return its ID."
+  [ctx]
+  (or (get @orc-sheet-ids :sql)
+      (let [;; Require dynamically to avoid circular deps at compile time
+            sql-ns (requiring-resolve 'ai.obney.orc.ontology.sheets.sql-ontology/build-sql-ontology-pipeline!)
+            sheet-id (sql-ns ctx)]
+        (swap! orc-sheet-ids assoc :sql sheet-id)
+        sheet-id)))
+
+(defn- ensure-json-sheet!
+  "Ensure the JSON ontology ORC sheet is built, return its ID."
+  [ctx]
+  (or (get @orc-sheet-ids :json)
+      (let [;; Require dynamically to avoid circular deps at compile time
+            json-ns (requiring-resolve 'ai.obney.orc.ontology.sheets.json-ontology/build-json-ontology-pipeline!)
+            sheet-id (json-ns ctx)]
+        (swap! orc-sheet-ids assoc :json sheet-id)
         sheet-id)))
 
 ;; =============================================================================
@@ -165,7 +215,7 @@
         sheet-id (ensure-csv-sheet! ctx)
 
         ;; Require run function dynamically
-        run-fn (requiring-resolve 'csv-ontology/run-csv-to-ontology)
+        run-fn (requiring-resolve 'ai.obney.orc.ontology.sheets.csv-ontology/run-csv-to-ontology)
 
         ;; Execute ORC workflow
         result (run-fn ctx sheet-id
@@ -238,7 +288,7 @@
         sheet-id (ensure-text-sheet! ctx)
 
         ;; Require run function dynamically
-        run-fn (requiring-resolve 'ontology-exploration/run-taxonomy-pipeline)
+        run-fn (requiring-resolve 'ai.obney.orc.ontology.sheets.ontology-exploration/run-taxonomy-pipeline)
 
         ;; Execute ORC workflow
         result (run-fn ctx sheet-id
@@ -253,12 +303,21 @@
             causal-rels (get-in result [:validation :causal-relations] [])]
         {:concepts
          (mapv (fn [c]
-                 (let [label (or (get c "label") (get c :label) "Unknown")]
+                 (let [label (or (get c "label") (get c :label) "Unknown")
+                       ;; Ensure alt-labels is always a vector of strings
+                       raw-alt-labels (or (get c "alt_labels") (get c :alt_labels))
+                       alt-labels (cond
+                                    (nil? raw-alt-labels) []
+                                    (string? raw-alt-labels) (if (str/blank? raw-alt-labels)
+                                                               []
+                                                               (vec (map str/trim (str/split raw-alt-labels #","))))
+                                    (sequential? raw-alt-labels) (vec raw-alt-labels)
+                                    :else [])]
                    {:uri (str (:base-uri config) (str/replace label #"\s+" "_"))
                     :label label
                     :definition (or (get c "definition") (get c :definition) "")
                     :entity-type (or (get c "entity_type") (get c :entity_type) "Concept")
-                    :alt-labels (or (get c "alt_labels") (get c :alt_labels) [])
+                    :alt-labels alt-labels
                     :source-id source-id
                     :confidence (or (get c "confidence") (get c :confidence) 0.8)}))
                concepts)
@@ -292,6 +351,137 @@
                        :source-id source-id
                        :status (:status result)})))))
 
+(defn extract-concepts-from-sql
+  "Extract concepts from SQL database using sql_ontology ORC sheet.
+
+   Args:
+     ctx - Context with :event-store
+     source-id - UUID of the source
+     db-path - Path to SQLite database file
+     config - Configuration with :base-uri, :max-tables, :max-instances
+
+   Returns:
+     {:concepts [...] :relationships [...] :tbox {...} :abox [...] :owl-output string}"
+  [ctx source-id db-path config]
+  (let [;; Build/get ORC sheet
+        sheet-id (ensure-sql-sheet! ctx)
+
+        ;; Require run function dynamically
+        run-fn (requiring-resolve 'ai.obney.orc.ontology.sheets.sql-ontology/run-sql-to-ontology)
+
+        ;; Execute ORC workflow
+        result (run-fn ctx sheet-id
+                 {:db-path db-path
+                  :base-uri (or (:base-uri config) "http://db.local/")
+                  :max-tables (or (:max-tables config) 50)
+                  :max-instances (or (:max-instances config) 10)})]
+
+    (if (= :success (:status result))
+      ;; Map ORC output to evolutionary format
+      (let [table-entities (or (:table-entities result) {})
+            tbox (:tbox result)
+            abox (or (:abox result) [])]
+        {:concepts
+         ;; Create concepts from table entities (classes)
+         (vec
+          (for [[table-name entity-info] table-entities]
+            {:uri (str (:base-uri config)
+                       (or (:class-name entity-info) table-name))
+             :label (or (:class-name entity-info) table-name)
+             :definition (or (:definition entity-info) "")
+             :entity-type (or (:entity-type entity-info) "DatabaseEntity")
+             :source-id source-id
+             :source-table table-name
+             :confidence 1.0}))
+
+         :relationships
+         ;; Extract relationships from object properties
+         (vec
+          (for [prop (get tbox :object-properties [])]
+            {:subject (:domain prop)
+             :predicate (:label prop)
+             :object (:range prop)
+             :source "foreign-key"}))
+
+         :tbox tbox
+         :abox abox
+         :domain (:domain result)
+         :domain-description (:domain-description result)
+         :owl-output (:owl-output result)})
+
+      ;; NEVER fall back - throw so the issue can be debugged and fixed
+      (throw (ex-info "ORC SQL extraction failed"
+                      {:error (:error result)
+                       :source-id source-id
+                       :db-path db-path
+                       :status (:status result)})))))
+
+(defn extract-concepts-from-json
+  "Extract concepts from JSON source using json_ontology ORC sheet.
+
+   Args:
+     ctx - Context with :event-store
+     source-id - UUID of the source
+     json-data - Parsed JSON data (map or vector) or JSON string
+     config - Configuration with :base-uri, :domain
+
+   Returns:
+     {:concepts [...] :relationships [...] :tbox {...} :abox [...] :owl-output string}"
+  [ctx source-id json-data config]
+  (let [;; Parse JSON string if needed
+        parsed-data (if (string? json-data)
+                      (json/read-str json-data :key-fn keyword)
+                      json-data)
+
+        ;; Build/get ORC sheet
+        sheet-id (ensure-json-sheet! ctx)
+
+        ;; Require run function dynamically
+        run-fn (requiring-resolve 'ai.obney.orc.ontology.sheets.json-ontology/run-json-to-ontology)
+
+        ;; Execute ORC workflow
+        result (run-fn ctx sheet-id
+                 {:json-data parsed-data
+                  :base-uri (or (:base-uri config) "http://json.local/")
+                  :domain (:domain config)})]
+
+    (if (= :success (:status result))
+      ;; Map ORC output to evolutionary format
+      (let [concepts (or (:concepts result) [])
+            relationships (or (:relationships result) [])
+            tbox (:tbox result)
+            abox (or (:abox result) [])]
+        {:concepts
+         (mapv (fn [c]
+                 {:uri (or (:uri c) (str (:base-uri config) (str/replace (or (:label c) "Unknown") #"\s+" "_")))
+                  :label (or (:label c) "Unknown")
+                  :definition (or (:definition c) "")
+                  :entity-type (or (:entity-type c) "Entity")
+                  :source-id source-id
+                  :confidence (or (:confidence c) 0.8)})
+               concepts)
+
+         :relationships
+         (mapv (fn [r]
+                 {:subject (or (:subject r) "")
+                  :predicate (or (:predicate r) "relatedTo")
+                  :object (or (:object r) "")
+                  :confidence (or (:confidence r) 0.8)})
+               relationships)
+
+         :tbox {:classes (or (:classes tbox) [])
+                :object-properties (or (:object-properties tbox) [])
+                :datatype-properties (or (:datatype-properties tbox) [])}
+
+         :abox abox
+         :owl-output (:owl-output result)})
+
+      ;; NEVER fall back - throw so the issue can be debugged and fixed
+      (throw (ex-info "ORC JSON extraction failed"
+                      {:error (:error result)
+                       :source-id source-id
+                       :status (:status result)})))))
+
 (defn extract-from-source
   "Extract concepts and relationships from a source.
    Dispatches to the appropriate ORC extraction pipeline based on source type.
@@ -299,9 +489,9 @@
    Args:
      ctx - Context with :event-store (needed for ORC sheet execution)
      source-id - UUID of the source
-     source-type - Type string: 'csv', 'text', 'json', 'sql', 'rdf'
-     content - Content to extract from (string or parsed data)
-     config - Configuration options
+     source-type - Type string: 'csv', 'text', 'json', 'sql', 'sqlite', 'db', 'rdf'
+     content - Content to extract from (string, parsed data, or db path for SQL)
+     config - Configuration options (may include :db-path for SQL sources)
 
    Returns:
      {:concepts [...] :relationships [...]}"
@@ -309,11 +499,36 @@
   (case source-type
     "csv" (extract-concepts-from-csv ctx source-id content config)
     "text" (extract-concepts-from-text ctx source-id content config)
-    "json" {:concepts [] :relationships []}  ;; TODO: JSON extraction
-    "sql" {:concepts [] :relationships []}   ;; TODO: SQL extraction
+
+    ;; SQL/SQLite database extraction
+    ("sql" "sqlite" "db")
+    (let [;; For SQL, content should be the db path, or look in config
+          db-path (or (when (and (string? content)
+                                 (str/ends-with? content ".db"))
+                        content)
+                      (:db-path config)
+                      (:path config))]
+      (if db-path
+        (extract-concepts-from-sql ctx source-id db-path config)
+        (throw (ex-info "SQL extraction requires :db-path or .db file path"
+                        {:source-id source-id :source-type source-type}))))
+
+    "json" (extract-concepts-from-json ctx source-id content config)
     "rdf" {:concepts [] :relationships []}   ;; TODO: RDF import
-    ;; Default - treat as text
-    (extract-concepts-from-text ctx source-id content config)))
+
+    ;; Auto-detect based on content/path
+    (cond
+      ;; Looks like a SQLite database path
+      (and (string? content) (str/ends-with? content ".db"))
+      (extract-concepts-from-sql ctx source-id content config)
+
+      ;; Looks like CSV (starts with headers or has commas)
+      (and (string? content) (str/includes? content ",") (str/includes? content "\n"))
+      (extract-concepts-from-csv ctx source-id content config)
+
+      ;; Default - treat as text
+      :else
+      (extract-concepts-from-text ctx source-id content config))))
 
 ;; =============================================================================
 ;; Build Pipeline
@@ -324,8 +539,9 @@
   [read-models sources]
   (reduce (fn [{:keys [registered events]} source]
             (let [{:keys [path content type]} source
-                  content-loaded (when path (load-source-content source))
+                  content-loaded (when path (load-source-content (assoc source :type type)))
                   actual-content (or content (:content content-loaded))
+                  db-path (:db-path content-loaded)  ;; For SQL sources
 
                   result (source-registry/register-source!
                            read-models
@@ -336,7 +552,8 @@
               {:registered (conj registered
                                  (assoc result
                                         :source source
-                                        :loaded-content actual-content))
+                                        :loaded-content actual-content
+                                        :db-path db-path))  ;; Preserve db-path for SQL
                :events (into events (:events result))}))
           {:registered [] :events []}
           sources))
@@ -350,13 +567,17 @@
      config - Configuration options"
   [ctx registered-sources config]
   (reduce (fn [{:keys [all-concepts all-relationships all-tbox all-abox events]} reg]
-            (let [{:keys [source-id loaded-content source]} reg
+            (let [{:keys [source-id loaded-content source db-path]} reg
+                  ;; Merge db-path into config for SQL sources
+                  source-config (if db-path
+                                  (assoc config :db-path db-path :path (:path source))
+                                  config)
                   extraction (extract-from-source
                                ctx
                                source-id
                                (:type source)
                                loaded-content
-                               config)
+                               source-config)
                   ;; Tag concepts with source-id (may already be tagged by ORC extraction)
                   tagged-concepts (mapv #(if (:source-id %)
                                            %
@@ -452,7 +673,8 @@
       :events [...]}"
   [{:keys [event-store] :as ctx} {:keys [sources config]}]
   (let [config (merge default-config config)
-        ontology-id (or (:ontology-id config) (java.util.UUID/randomUUID))
+        ;; Normalize ontology-id to UUID for Grain schema compliance (Issue 001)
+        ontology-id (normalize-ontology-id (or (:ontology-id config) (java.util.UUID/randomUUID)))
         build-id (java.util.UUID/randomUUID)
         config (assoc config :ontology-id ontology-id)
 
@@ -550,16 +772,17 @@
                                (mu/log ::embedding-failed :error (.getMessage e))
                                nil)))
 
-        ;; Emit embedding events if successful
-        ;; 1. Summary event for tracking
-        embedding-summary-event (when embedding-result
+        ;; Emit embedding events if successful and there are actual embeddings
+        ;; 1. Summary event for tracking (only if embeddings were generated)
+        embedding-summary-event (when (and embedding-result
+                                           (pos? (:embedded-count embedding-result 0)))
                                   (->event {:type :evolutionary/concepts-embedded
                                             :tags #{[:ontology ontology-id]
                                                     [:build build-id]}
                                             :body {:ontology-id ontology-id
                                                    :build-id build-id
                                                    :embedded-count (:embedded-count embedding-result)
-                                                   :embedding-fields (:fields-used embedding-result)
+                                                   :embedding-fields (or (:fields-used embedding-result) [])
                                                    :model-id (:model-id embedding-result)
                                                    :embedded-at (str (java.time.Instant/now))}}))
 
@@ -647,6 +870,8 @@
    Returns: Same as build-from-sources"
   [{:keys [event-store] :as ctx} {:keys [ontology-id sources config]}]
   (let [config (merge default-config config)
+        ;; Normalize ontology-id to UUID for Grain schema compliance (Issue 001)
+        ontology-id (normalize-ontology-id ontology-id)
         build-id (java.util.UUID/randomUUID)
         config (assoc config :ontology-id ontology-id)
 

@@ -17,24 +17,340 @@
    - Blackboard values → DSCloj input values
    - DSCloj output values → Blackboard writes"
   (:require [dscloj.core :as dscloj]
-            [litellm.router :as litellm-router]
             [clojure.string :as str]
+            [clojure.set]
+            [clojure.walk :as walk]
             [cheshire.core :as json]
             [malli.core :as m]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.observability :as obs]
-            [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]))
+            [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
+            [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
+            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
+            [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
+            [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [clojure.core.async :as async]))
+
+;; Forward declarations
+(declare execute-repl-researcher-rlm)
+
+;; =============================================================================
+;; D-003: resolve-phase2-budget — pure deep module
+;; =============================================================================
+
+(def ^:private phase2-default-budget-ms
+  "Hardcoded fallback budget when no :timeout-ms is set on the repl-researcher
+   node and no :timeout-ms is set in the parent tick options. Preserves the
+   pre-D-003 behavior of a generous 15-minute ceiling for Phase 2."
+  900000)
+
+(defn resolve-phase2-budget
+  "Resolve the budget that Phase 2 (tree execution) should be allowed to consume,
+   given the repl-researcher node config, the parent tick's timeout (if any),
+   and the wall-time already spent in Phase 1.
+
+   Lookup order:
+     1. (:timeout-ms node)        → :source :node
+     2. :parent-timeout-ms arg    → :source :tick
+     3. 900_000 ms hardcoded      → :source :hardcoded
+
+   Returns:
+     {:total-budget-ms N
+      :remaining-ms N             ;; clamped to >= 0
+      :source :node | :tick | :hardcoded
+      :exhausted? boolean}        ;; true iff remaining <= 0"
+  [{:keys [node parent-timeout-ms phase1-elapsed-ms]}]
+  (let [[total source] (cond
+                         (:timeout-ms node) [(:timeout-ms node) :node]
+                         parent-timeout-ms  [parent-timeout-ms :tick]
+                         :else              [phase2-default-budget-ms :hardcoded])
+        remaining-raw (- total phase1-elapsed-ms)
+        remaining (max 0 remaining-raw)]
+    {:total-budget-ms total
+     :remaining-ms remaining
+     :source source
+     :exhausted? (<= remaining-raw 0)}))
+
+;; =============================================================================
+;; R-1: compute-tree-result-summary — pure deep module
+;; =============================================================================
+
+(def ^:private outputs-preview-string-limit
+  "Maximum characters of a string value to surface in `:outputs-previews`.
+
+   R-7a: this preview is a SAMPLE for the model's reasoning context — it is
+   not a substitute for `(get-var :key)` or `(node-output ...)`, which still
+   return the full untruncated value. Cap is intentionally generous so the
+   model can spot semantic anomalies (e.g. all-zero letter counts after a
+   non-empty transcription) directly from the summary."
+  500)
+
+(defn- compute-output-preview
+  "Build a single preview value for one entry in `:outputs-previews`.
+
+   Shape per type:
+     string → first N chars + overflow marker when len > N (verbatim
+              content otherwise)
+     vector/seq/list → {:count N :sample-3 [first three pr-str'd values]}
+     map → {:keys [sorted-keys] :sample-3 [[k v-preview] ...]}
+     scalar (number, boolean, keyword, nil, other) → pr-str
+   "
+  [v]
+  (cond
+    (string? v)
+    (let [n (count v)]
+      (if (<= n outputs-preview-string-limit)
+        v
+        (str (subs v 0 outputs-preview-string-limit)
+             "…(truncated, full " n " chars)")))
+
+    (or (vector? v) (seq? v) (list? v))
+    (let [items (vec (take 3 v))]
+      {:count (count v)
+       :sample-3 (mapv #(let [s (pr-str %)]
+                          (if (<= (count s) 200) s (str (subs s 0 200) "…")))
+                       items)})
+
+    (map? v)
+    (let [ks (sort (keys v))
+          ks-sample (take 3 ks)]
+      {:keys (vec ks)
+       :sample-3 (mapv (fn [k]
+                         (let [vp (compute-output-preview (get v k))]
+                           [k vp]))
+                       ks-sample)})
+
+    :else
+    (pr-str v)))
+
+(defn detect-nil-writes
+  "Return the subset of :writes-declared whose value in :outputs is nil or empty.
+
+   C-Loop-4 soft signal: a tree can return :status :success while some declared
+   writes are nil / empty-collection (the risk-analysis broken-aggregator case).
+   The model on the next iteration needs to SEE this so it can decide whether
+   to recover or whether 'empty' is the correct answer for the task. This
+   helper is a pure detector; it does NOT fail the run.
+
+   'Empty' means: nil, \"\", [], (), {}, #{}.
+   'Empty' does NOT mean: 0 (numeric zero), false (boolean) — both can be real
+   answers a task is asking for.
+
+   Declared keys absent from :outputs entirely are treated as nil — the model
+   contracted to produce them and didn't."
+  [{:keys [outputs writes-declared]}]
+  (vec
+    (for [k writes-declared
+          :let [v (get outputs k)]
+          :when (or (nil? v)
+                    (and (or (string? v)
+                             (coll? v))
+                         (empty? v)))]
+      k)))
+
+(defn compute-tree-result-summary
+  "Build the lightweight :tree-results summary entry for a Phase 2 tree execution.
+
+   Inputs:
+     {:phase2-result <result from tree-executor/execute-tree>
+      :tick-events   <vec of events tagged with [:tick child-tick-id]>
+      :tree-raw      <S-expr the model wrote — from sandbox-vars :generated-tree-raw>
+      :writes        [<node :writes declared keys>]}
+
+   Returns a map shaped per the R-1 PRD (factual fields only — no prose,
+   no severity, no retry hints, no full trajectory).
+
+   Conditional fields:
+     - :failure-indices + :failure-reasons appear only when :status is :partial
+       or :failure (derived from D-008's :partial-summary in the map-each's
+       :sheet/node-execution-completed event).
+     - :phase2-elapsed-ms + :budget-remaining-ms + :nodes-completed-before-cancel
+       appear only when :status is :timeout (from D-003's response shape)."
+  [{:keys [phase2-result tick-events tree-raw writes]}]
+  (let [node-completions (filter #(= :sheet/node-execution-completed (:event/type %))
+                                 tick-events)
+        ;; D-008 partial-summary lives on the map-each's own completion event.
+        ;; There can be zero or more such events; surface them all.
+        partial-summaries (keep :partial-summary node-completions)
+        ;; Leaf counts — exclude any node that carries :partial-summary, which
+        ;; is the D-008 marker that distinguishes map-each parent completions
+        ;; from leaf completions. Map-each can emit :partial OR :failure on its
+        ;; own completion event (depending on how many children failed), so
+        ;; status-filtering alone double-counts the parent into the leaf total.
+        leaf-completions (remove :partial-summary
+                                 (filter #(contains? #{:success :failure} (:status %))
+                                         node-completions))
+        succeeded (count (filter #(= :success (:status %)) leaf-completions))
+        failed (count (filter #(= :failure (:status %)) leaf-completions))
+        total (count leaf-completions)
+        writes-set (set writes)
+        outputs-keys (vec (filter writes-set (keys (:outputs phase2-result))))
+        ;; R-7a: per-output-key value previews so the model can spot
+        ;; semantically broken payloads from the summary alone, without
+        ;; needing to drill down via (get-var ...) / (node-output ...).
+        outputs-previews (into {}
+                               (map (fn [k] [k (compute-output-preview
+                                                 (get (:outputs phase2-result) k))]))
+                               outputs-keys)
+        ;; C-Loop-4: soft signal — declared writes whose values came back
+        ;; nil/empty. Surfaces broken-aggregator cases (e.g. risk-analysis
+        ;; :obligations nil / :penalties nil under :status :success) on the
+        ;; model's next iteration so it can choose to recover. The system
+        ;; does NOT force-fail; the model decides whether "empty" is the
+        ;; correct answer for its task.
+        nil-writes (detect-nil-writes {:outputs (:outputs phase2-result)
+                                       :writes-declared writes})
+        status (:status phase2-result)
+        ;; Combine failure-indices + failure-reasons across all partial-summary
+        ;; events (typically only one map-each per tree, but support multiple).
+        all-failure-indices (vec (mapcat :failure-indices partial-summaries))
+        all-failure-reasons (apply merge {} (map :failure-reasons partial-summaries))
+        ;; T2-Hardening-A: surface direct-leaf failure entries inline on the
+        ;; summary so the model sees WHICH leaf failed with WHAT error without
+        ;; needing an explicit `(tree-failures)` drill-down call. Reuses the
+        ;; same filtering logic the drill-down primitive uses — direct-leaf
+        ;; failure events are leaf-completion events with :status :failure
+        ;; that do NOT carry :partial-summary (those are map-each parents
+        ;; whose per-child failures already surface via :failure-indices /
+        ;; :failure-reasons above). Factual entries — {:node-id :status :error}
+        ;; — per the orc principle: descriptive, not prescriptive. Map-each
+        ;; per-index failures stay on the existing channel; direct-leaf
+        ;; failures get this new channel.
+        all-leaf-failures (drill/tree-failures-from-events tick-events)
+        direct-leaf-failures (vec (filter :node-id all-leaf-failures))]
+    (cond-> {:tick-id (:trace-id phase2-result)
+             ;; R-3: sanitize inline-fn SCI objects out of :tree-raw before
+             ;; storing in :tree-results. The summary gets persisted across
+             ;; iterations (and propagates into subsequent :sheet/tree-tick-
+             ;; started events' :inputs), so any live SCI fn objects in
+             ;; :tree-raw will crash Fressian when the read-model-processor
+             ;; tries to write tick state to LMDB. We replace each inline
+             ;; :fn fn with the placeholder string "<inline-fn>" (matching
+             ;; U8's :rlm/tree-generated event sanitization convention).
+             ;; Qualified-symbol-string :fn values pass through untouched.
+             :tree-raw (tree-executor/sanitize-tree-for-events tree-raw)
+             :status status
+             :elapsed-ms (:duration-ms phase2-result)
+             :outputs-keys outputs-keys
+             :outputs-previews outputs-previews
+             :nodes-succeeded succeeded
+             :nodes-failed failed
+             :nodes-total total
+             :usage (:usage phase2-result)}
+      (seq nil-writes)
+      (assoc :nil-writes nil-writes)
+
+      (and (contains? #{:partial :failure} status) (seq partial-summaries))
+      (assoc :failure-indices all-failure-indices
+             :failure-reasons all-failure-reasons)
+
+      (seq direct-leaf-failures)
+      (assoc :failed-leaves direct-leaf-failures)
+
+      (= :timeout status)
+      (assoc :phase2-elapsed-ms (:phase2-elapsed-ms phase2-result)
+             :budget-remaining-ms (:budget-remaining-ms phase2-result)
+             :nodes-completed-before-cancel (count leaf-completions)))))
+
+(defn merge-tree-result-into-sandbox
+  "Return new sandbox-vars after a Phase 2 tree execution.
+
+   - Merges Phase 2's :writes-declared output keys into sandbox-vars (NOT input
+     blackboard keys, even though they appear in phase2-result :outputs).
+   - Appends the summary entry to :tree-results (existing vector preserved;
+     nil → []).
+   - Dissoc's :generated-tree (the canonical dispatch marker) so the dispatch
+     doesn't re-fire on the same tree on the next iteration. PRESERVES
+     :generated-tree-raw so the final! return path (and downstream consumers
+     like benchmark EDN capture) can record WHAT the model actually designed."
+  [sandbox-vars phase2-result writes summary]
+  (let [writes-set (set writes)
+        outputs-to-merge (select-keys (:outputs phase2-result) writes-set)
+        prior-results (get sandbox-vars :tree-results [])]
+    (-> sandbox-vars
+        (dissoc :generated-tree)
+        (merge outputs-to-merge)
+        (assoc :tree-results (conj prior-results summary)))))
+
+;; =============================================================================
+;; Levenshtein Distance and Variable Suggestions
+;; =============================================================================
+
+(defn levenshtein-distance
+  "Calculate the Levenshtein (edit) distance between two strings."
+  [s1 s2]
+  (let [len1 (count s1)
+        len2 (count s2)]
+    (cond
+      (zero? len1) len2
+      (zero? len2) len1
+      :else
+      (let [matrix (make-array Long/TYPE (inc len1) (inc len2))]
+        ;; Initialize first row and column
+        (doseq [i (range (inc len1))]
+          (aset matrix i 0 (long i)))
+        (doseq [j (range (inc len2))]
+          (aset matrix 0 j (long j)))
+        ;; Fill in the rest of the matrix
+        (doseq [i (range 1 (inc len1))
+                j (range 1 (inc len2))]
+          (let [cost (if (= (nth s1 (dec i)) (nth s2 (dec j))) 0 1)]
+            (aset matrix i j
+                  (long (min (inc (aget matrix (dec i) j))           ; deletion
+                             (inc (aget matrix i (dec j)))           ; insertion
+                             (+ (aget matrix (dec i) (dec j)) cost)))))) ; substitution
+        (aget matrix len1 len2)))))
+
+(defn suggest-similar-key
+  "Suggest a similar key from available keys using Levenshtein distance.
+   Returns the most similar key if:
+   - The distance is <= half the longer string's length + 1
+   - Or one is a prefix/substring of the other
+   This allows 'doc' to match 'document' and 'chunk' to match 'chunks'."
+  [missing-key available-keys]
+  (let [missing-str (name missing-key)
+        scored-keys (for [k available-keys
+                         :let [k-str (name k)
+                               dist (levenshtein-distance missing-str k-str)
+                               max-len (max (count missing-str) (count k-str))
+                               ;; Allow edit distance up to half the longer string + 1
+                               threshold (inc (quot max-len 2))
+                               ;; Also match if one is prefix of the other
+                               is-prefix? (or (str/starts-with? k-str missing-str)
+                                             (str/starts-with? missing-str k-str))]
+                         :when (or (<= dist threshold) is-prefix?)]
+                     [k dist])
+        best (first (sort-by second scored-keys))]
+    (first best)))
+
+(defn format-error-with-suggestions
+  "Format an error message with helpful suggestions.
+   For missing variable errors, includes available variables and suggestions."
+  [error-msg available-vars]
+  (let [;; Try to extract the missing key from error message
+        missing-key-match (re-find #":(\w+)" error-msg)
+        missing-key (when missing-key-match (keyword (second missing-key-match)))
+        suggestion (when missing-key (suggest-similar-key missing-key available-vars))]
+    (str error-msg
+         (when (seq available-vars)
+           (str "\nAvailable variables: " (str/join ", " (map str available-vars))))
+         (when suggestion
+           (str "\nDid you mean: " suggestion "?")))))
 
 ;; =============================================================================
 ;; Usage Normalization
 ;; =============================================================================
 
 (defn- normalize-usage
-  "Normalize DSCloj/litellm usage map from snake_case to kebab-case."
+  "Normalize DSCloj/litellm usage map to kebab-case.
+   Handles both snake_case (raw API) and kebab-case (already normalized) inputs."
   [usage]
   (when usage
-    {:prompt-tokens (:prompt_tokens usage 0)
-     :completion-tokens (:completion_tokens usage 0)
-     :total-tokens (:total_tokens usage 0)}))
+    {:prompt-tokens (or (:prompt-tokens usage) (:prompt_tokens usage) 0)
+     :completion-tokens (or (:completion-tokens usage) (:completion_tokens usage) 0)
+     :total-tokens (or (:total-tokens usage) (:total_tokens usage) 0)}))
 
 ;; =============================================================================
 ;; Schema Description Generation
@@ -375,26 +691,65 @@
           (:reads node)))
 
 ;; =============================================================================
+;; PR-Dual-Model: sub-model tree-walk injection
+;; =============================================================================
+
+(defn- inject-sub-model
+  "Walk a canonical-DSL emit-tree! tree and inject :model sub-model into each
+   (sheet/llm ...) form that does not already specify :model.
+
+   No-op when sub-model is nil (single-model setup).
+
+   Used by the Phase-2 dispatch in execute-repl-researcher-rlm to route
+   sub-LLM calls through a different model than the Phase-1 researcher
+   (e.g. main-LM gpt-5.4 for tree-design + sub-LM gpt-5.1-chat for the
+   actual leaf executions, matching predict-rlm's apples-to-apples setup).
+
+   :llm forms with an explicit :model are left untouched."
+  [tree sub-model]
+  (if (nil? sub-model)
+    tree
+    (walk/postwalk
+      (fn [node]
+        (if (and (seq? node)
+                 (= 'sheet/llm (first node))
+                 (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
+                   (and opts (not (contains? opts :model)))))
+          (concat node [:model sub-model])
+          node))
+      tree)))
+
+;; =============================================================================
 ;; Code Executor
 ;; =============================================================================
 
 (defn resolve-fn
   "Resolve a fully-qualified function symbol string to a function.
+   Also supports ephemeral functions registered via tree-executor for Phase 2.
    Returns {:fn f} on success or {:error msg} on failure."
   [fn-symbol-str]
-  (try
-    (let [[ns-str fn-str] (str/split fn-symbol-str #"/")
-          ns-sym (symbol ns-str)
-          fn-sym (symbol fn-str)]
-      ;; Try to find namespace first (may already be loaded)
-      (when-not (find-ns ns-sym)
-        ;; Only require if namespace not already loaded
-        (require ns-sym))
-      (if-let [f (ns-resolve (find-ns ns-sym) fn-sym)]
-        {:fn (if (var? f) @f f)}
-        {:error (str "Function not found: " fn-symbol-str)}))
-    (catch Exception e
-      {:error (str "Failed to resolve function: " fn-symbol-str " - " (.getMessage e))})))
+  (cond
+    ;; Check ephemeral function registry first (for Phase 2 tree execution)
+    (str/starts-with? fn-symbol-str "ephemeral-fn-")
+    (if-let [f (tree-executor/lookup-ephemeral-fn fn-symbol-str)]
+      {:fn f}
+      {:error (str "Ephemeral function not found: " fn-symbol-str)})
+
+    ;; Standard namespace/function resolution
+    :else
+    (try
+      (let [[ns-str fn-str] (str/split fn-symbol-str #"/")
+            ns-sym (symbol ns-str)
+            fn-sym (symbol fn-str)]
+        ;; Try to find namespace first (may already be loaded)
+        (when-not (find-ns ns-sym)
+          ;; Only require if namespace not already loaded
+          (require ns-sym))
+        (if-let [f (ns-resolve (find-ns ns-sym) fn-sym)]
+          {:fn (if (var? f) @f f)}
+          {:error (str "Function not found: " fn-symbol-str)}))
+      (catch Exception e
+        {:error (str "Failed to resolve function: " fn-symbol-str " - " (.getMessage e))}))))
 
 (defn execute-code
   "Execute a Clojure function as a leaf node.
@@ -406,7 +761,7 @@
    The function should return a map of blackboard key -> value for writes.
 
    Args:
-     node - The leaf node map with :fn (fully-qualified symbol string)
+     node - The leaf node map with :fn (fully-qualified symbol string or inline fn)
      blackboard - Map of key -> {:key, :type, :value, :version}
      context - Additional context (event-store, etc.)
 
@@ -417,8 +772,11 @@
       :duration-ms int}"
   [node blackboard context]
   (let [start-time (System/currentTimeMillis)
-        fn-symbol (:fn node)
-        resolved (resolve-fn fn-symbol)]
+        fn-or-symbol (:fn node)
+        ;; Support both inline functions and symbol strings
+        resolved (if (fn? fn-or-symbol)
+                   {:fn fn-or-symbol}
+                   (resolve-fn fn-or-symbol))]
     (if (:error resolved)
       {:status :failure
        :error (:error resolved)
@@ -426,8 +784,6 @@
       (try
         (let [f (:fn resolved)
               ;; Gather inputs from blackboard
-              ;; Code executors use keyword keys: (get inputs :site-url)
-              ;; DSCloj handles keyword→string translation when sending to LLM
               inputs (reduce (fn [acc key-name]
                                (if-let [entry (get blackboard key-name)]
                                  (assoc acc key-name (:value entry))
@@ -435,17 +791,55 @@
                              {}
                              (:reads node))
               ;; Call the function with context
-              ;; Include :execution-context so code executors can access event-store
-              ;; for recording learnings via ontology (auto-learning)
               result (f (assoc context :inputs inputs :execution-context context))
-              duration-ms (- (System/currentTimeMillis) start-time)]
-          ;; Result should be a map of key -> value
-          (if (map? result)
+              duration-ms (- (System/currentTimeMillis) start-time)
+              writes (:writes node)
+              ;; U7: Reconcile the function's return value with the declared :writes.
+              ;;
+              ;; Accepted shapes:
+              ;;   1. A map containing at least one declared write key → keep
+              ;;      declared keys only (extra keys ignored).
+              ;;   2. A map containing NONE of the declared write keys, with
+              ;;      exactly one :write → wrap entire map under that key.
+              ;;      (Useful when fns like `assoc-in` return a transformed
+              ;;      map and the model declares a single :writes target.)
+              ;;   3. A non-map non-nil scalar with exactly one :write
+              ;;      → wrap under that key (lets simple transforms like
+              ;;      `clojure.string/upper-case` or `frequencies` compose
+              ;;      naturally without forcing the model to remember to wrap).
+              ;;
+              ;; Failure cases:
+              ;;   - nil result → fail clearly.
+              ;;   - Non-map result with multiple :writes → ambiguous, fail clearly.
+              ;;   - Map result with NONE of declared writes AND multiple :writes
+              ;;     declared → ambiguous (which key gets the result?), fail clearly.
+              writes-set (set writes)
+              result-keys (when (map? result) (set (keys result)))
+              has-some-write? (and result-keys
+                                   (seq (clojure.set/intersection writes-set result-keys)))
+              outputs (cond
+                        (nil? result) nil
+                        ;; Map with at least one declared write → keep declared keys
+                        has-some-write? (select-keys result writes)
+                        ;; Single-write + non-map scalar → wrap
+                        (and (= 1 (count writes)) (not (map? result)))
+                        {(first writes) result}
+                        ;; Single-write + map (no matching keys) → wrap whole map
+                        (and (= 1 (count writes)) (map? result))
+                        {(first writes) result}
+                        :else nil)]
+          (if (map? outputs)
             {:status :success
-             :outputs result
+             :outputs outputs
              :duration-ms duration-ms}
             {:status :failure
-             :error (str "Code executor function must return a map, got: " (type result))
+             :error (str "Code executor result could not be reconciled with declared :writes "
+                         (pr-str writes)
+                         ". Function returned: "
+                         (cond
+                           (nil? result) "nil"
+                           (map? result) (str "map with keys " (pr-str (keys result)))
+                           :else (str (type result))))
              :duration-ms duration-ms}))
         (catch Exception e
           {:status :failure
@@ -455,29 +849,6 @@
 ;; =============================================================================
 ;; AI Execution
 ;; =============================================================================
-
-(defn- get-provider-with-model
-  "Get or create a provider config with the specified model.
-
-   litellm-clj's router ignores :model in request options when using a registered
-   provider keyword. To work around this, when a model override is specified,
-   we dynamically register a model-specific provider if it doesn't exist.
-
-   Returns the provider keyword to use (either original or model-specific)."
-  [provider model-override]
-  (if (and model-override (keyword? provider))
-    ;; Create a model-specific provider name
-    (let [model-provider-name (keyword (str (name provider) "/" model-override))
-          existing (litellm-router/get-config model-provider-name)]
-      (when-not existing
-        ;; Register the model-specific provider
-        (let [base-config (litellm-router/get-config provider)]
-          (when base-config
-            (litellm-router/register! model-provider-name
-                                      (assoc base-config :model model-override)))))
-      model-provider-name)
-    ;; No override needed, use provider as-is
-    provider))
 
 (defn- outputs-have-nil?
   "Check if any output values are nil, including nested maps where all values are nil."
@@ -508,30 +879,91 @@
    This function flattens nested :map schemas into separate output fields
    (matching Python DSPy's approach), then reassembles them back into
    nested structure for the blackboard."
-  [node blackboard provider & {:keys [options] :or {options {}}}]
+  [node blackboard provider & {:keys [options stream] :or {options {}}}]
   (let [start-time (System/currentTimeMillis)
         module (build-module node blackboard)
         inputs (gather-inputs node blackboard)
         output-mapping (:output-mapping module)
         ;; Remove the mapping from module before passing to DSCloj
         dscloj-module (dissoc module :output-mapping)
-        ;; Build effective provider config with model override if specified
-        effective-provider (get-provider-with-model provider (:model node))
-        ;; Request metadata for usage tracking
-        ;; Disable validation since we serialize complex inputs to JSON strings
-        dscloj-options (assoc options :validate? false)
+        ;; Request metadata for usage tracking via :with-metadata? true.
+        ;; Disable validation since we serialize complex inputs to JSON strings.
+        ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
+        ;; but preserve an explicit caller/node :use-function-calling? override
+        ;; for models where tool-backed structured output is more reliable.
+        ;; The node's :model rides through as a per-request override —
+        ;; litellm-clj's router honors :model in the request options.
+        dscloj-options (merge {:validate? false
+                               :with-metadata? true
+                               :use-function-calling? false}
+                              options
+                              (when (:model node) {:model (:model node)}))
         ;; Retry config - defaults to 1 retry with 500ms delay
         max-retries (get options :max-retries 1)
         retry-delay-ms (get options :retry-delay-ms 500)
 
+        ;; Token streaming (Stage 2). Active only when ALL of: a subscriber
+        ;; asked for deltas on this tick (`stream` config threaded from the
+        ;; todo processor), the loaded DSCloj has predict-stream-v2
+        ;; (capability detection — older pins fall back to blocking), and
+        ;; the node isn't using function-calling (no text stream to parse).
+        predict-stream-v2 (when (and stream
+                                     (or (:fields? stream) (:raw? stream))
+                                     (not (:use-function-calling? dscloj-options)))
+                            (some-> (resolve 'dscloj.core/predict-stream-v2) deref))
+        emit-delta! (when predict-stream-v2
+                      (let [base (cond-> (select-keys stream [:sheet-id :node-id])
+                                   (:map-each stream) (assoc :map-each (:map-each stream)))]
+                        ;; :attempt lets consumers detect a retry restart and
+                        ;; reset their per-node delta accumulation.
+                        (fn [attempt m]
+                          (streaming/emit! (:tick-id stream)
+                                           (merge base {:attempt attempt} m)))))
+
+        ;; Single streaming attempt: consume the typed-event channel,
+        ;; forwarding deltas/field-snapshots to the stream hub, and return
+        ;; the EXACT shape try-once returns so retry/budget/event emission
+        ;; are identical to the blocking path.
+        try-once-streaming
+        (fn [attempt]
+          (let [ch (predict-stream-v2 provider dscloj-module inputs dscloj-options)]
+            (loop [terminal nil]
+              (if-let [ev (async/<!! ch)]
+                (case (:dscloj/event ev)
+                  :delta (do (when (:raw? stream)
+                               (emit-delta! attempt
+                                            {:orc.stream/type :llm-raw-delta
+                                             :text (:text ev)}))
+                             (recur terminal))
+                  :fields (do (when (:fields? stream)
+                                (emit-delta! attempt
+                                             {:orc.stream/type :llm-fields
+                                              :fields (reassemble-flattened-outputs
+                                                       (:fields ev) output-mapping)}))
+                              (recur terminal))
+                  :error (recur {:error (str "LLM stream error: " (pr-str (:error ev)))})
+                  :final (let [outputs (reassemble-flattened-outputs (:outputs ev) output-mapping)]
+                           (when (:fields? stream)
+                             (emit-delta! attempt
+                                          {:orc.stream/type :llm-fields
+                                           :fields outputs
+                                           :final? true}))
+                           (recur {:outputs outputs
+                                   :usage (normalize-usage (:usage ev))
+                                   :model (or (:model ev) (:model node))}))
+                  (recur terminal))
+                (or terminal {:error "LLM stream ended without a final result"})))))
+
         ;; Single attempt function
-        try-once (fn []
-                   (let [result (dscloj/predict effective-provider dscloj-module inputs dscloj-options)
-                         ;; DSCloj returns outputs directly as a flat map, not wrapped in {:outputs ...}
-                         raw-outputs (or (:outputs result) result)
-                         ;; Reassemble flattened outputs back into nested structure
-                         outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
-                     {:outputs outputs :usage (normalize-usage (:usage result)) :model (or (:model result) (:model node))}))
+        try-once (fn [attempt]
+                   (if predict-stream-v2
+                     (try-once-streaming attempt)
+                     (let [result (dscloj/predict provider dscloj-module inputs dscloj-options)
+                           ;; DSCloj returns outputs directly as a flat map, not wrapped in {:outputs ...}
+                           raw-outputs (or (:outputs result) result)
+                           ;; Reassemble flattened outputs back into nested structure
+                           outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
+                       {:outputs outputs :usage (normalize-usage (:usage result)) :model (or (:model result) (:model node))})))
 
         ;; Compute backoff delay for a given attempt
         backoff-for (fn [attempt]
@@ -542,7 +974,7 @@
     (loop [attempt 0]
       (let [{:keys [outputs usage model error]}
             (try
-              (try-once)
+              (try-once attempt)
               (catch Exception e
                 {:error (.getMessage e)}))]
         (cond
@@ -624,13 +1056,13 @@
                                  :let [entry (get blackboard key-name)]
                                  :when entry]
                              [key-name (:value entry)]))
-        ;; Build effective provider config with model override if specified
-        effective-provider (get-provider-with-model provider (:model node))
         ;; Request metadata for usage tracking
         ;; Disable validation since inputs may be JSON serialized
-        dscloj-options (assoc options :validate? false)]
+        ;; The node's :model rides through as a per-request override.
+        dscloj-options (cond-> (assoc options :validate? false)
+                         (:model node) (assoc :model (:model node)))]
     (try
-      (let [response (dscloj/predict effective-provider module input-values dscloj-options)
+      (let [response (dscloj/predict provider module input-values dscloj-options)
             ;; Response now has {:outputs {...} :usage {...} :model "..."}
             bool-result (get-in response [:outputs :result])
             duration-ms (- (System/currentTimeMillis) start-time)]
@@ -672,18 +1104,104 @@
                                desc (malli-schema->description schema)]]
                      (str "- " key-name ": " desc))))))
 
+(defn- parse-error-position
+  "If `error` is a SCI parse error of the form
+   '... at [L C]' (line L, column C — 1-indexed in SCI), return [L C].
+   Returns nil otherwise."
+  [error]
+  (when (string? error)
+    (when-let [m (re-find #"at\s+\[(\d+)\s+(\d+)\]" error)]
+      [(Long/parseLong (nth m 1)) (Long/parseLong (nth m 2))])))
+
+(defn- diagnose-parse-error
+  "Look at a SCI parse error message and return a short actionable hint
+   when the failure matches a known recurring pattern. Returns nil for
+   error messages that don't match a known pattern.
+
+   Patterns recognized:
+   - 'Unmatched delimiter' — the common failure in :output-schemas with
+     nested maps; suggests walking back through the parent {} of the
+     reported column.
+   - 'EOF while reading' — code truncated mid-form; usually a brace or
+     paren never closed.
+   - 'Could not resolve symbol' — usually a typo or missing require."
+  [error]
+  (cond
+    (re-find #"(?i)unmatched delimiter" error)
+    (str "Diagnostic hint: an 'Unmatched delimiter' error in (emit-tree! [...]) "
+         "almost always means a nested map schema (e.g. inside :output-schemas) "
+         "has a missing or mis-typed closing brace. Walk back from the column "
+         "marker until you find the unclosed { — fix THAT brace, not the one "
+         "the error points at.")
+
+    (re-find #"(?i)eof while reading" error)
+    (str "Diagnostic hint: 'EOF while reading' means a delimiter "
+         "(paren/bracket/brace) was opened but never closed. Re-emit the "
+         "whole tree carefully — count opens vs closes at each depth.")
+
+    (re-find #"(?i)could not resolve symbol" error)
+    (str "Diagnostic hint: 'Could not resolve symbol' usually means a typo. "
+         "Only the primitives listed in your instruction (llm, code, "
+         "emit-tree!, final!, get-input, get-var, store!) are bound. "
+         "Don't reference clojure.core fns by alias.")
+
+    :else nil))
+
+(defn- format-error-with-context
+  "R-6: For SCI parse errors with [line col] markers, append the offending
+   line of code + a caret pointer pinning the column. This surfaces the
+   structural-exact location so the model can fix the specific character
+   rather than re-emitting similar-broken code on the next iteration.
+
+   Adds a diagnostic hint when the error matches a known recurring pattern
+   (Unmatched delimiter / EOF while reading / Could not resolve symbol).
+
+   Non-parse errors (or codes that don't have the indicated line) pass
+   through with just the error message + the diagnostic hint when known."
+  [code error]
+  (let [hint (diagnose-parse-error (or error ""))
+        hint-line (when hint (str "\n" hint))]
+    (if-let [[line col] (parse-error-position error)]
+      (let [lines (str/split (or code "") #"\n")
+            target-line (when (<= 1 line (count lines))
+                          (nth lines (dec line)))]
+        (if target-line
+          (str "Error: " error "\n"
+               "At that line:\n"
+               "  " target-line "\n"
+               "  " (apply str (repeat (dec col) " ")) "^"
+               hint-line)
+          (str "Error: " error hint-line)))
+      (str "Error: " error hint-line))))
+
 (defn- build-iteration-history
-  "Format iteration history for LLM context."
+  "Format iteration history for LLM context.
+
+   The model sees its own prior code, results, stdout, errors, and the
+   variables each iteration created — VERBATIM. Truncating any of this
+   second-guesses the model and hides what it actually did, degrading
+   its ability to reason across iterations (and, in recursive mode,
+   to see the full trees it has already emitted).
+
+   R-6: When an iteration's :error is a SCI parse error with a [line col]
+   marker, the formatted history also includes the offending line + a
+   caret pointer pinning the column. This makes the structural-exact
+   location of the parse failure visible so the model can fix the
+   specific character rather than retrying similar broken code."
   [history]
   (when (seq history)
     (str "\n\n## Previous Iterations\n"
          (str/join "\n\n"
                    (map-indexed
-                    (fn [idx {:keys [code result stdout]}]
+                    (fn [idx {:keys [code result stdout error vars-created]}]
                       (str "### Iteration " (inc idx) "\n"
                            "Code:\n```clojure\n" code "\n```\n"
                            (when (seq stdout) (str "Output:\n" stdout "\n"))
-                           "Result: " result))
+                           (if error
+                             (format-error-with-context code error)
+                             (str "Result: " result))
+                           (when (seq vars-created)
+                             (str "\nVariables created: " (str/join ", " (map str vars-created))))))
                     history)))))
 
 (defn- build-code-generation-module
@@ -747,11 +1265,16 @@
 (defn execute-repl-researcher
   "Execute a repl-researcher node using iterative LLM+SCI code execution.
 
-   This implements the RLM (Research Language Model) pattern where:
+   This implements the RLM (Recursive Language Model) pattern where:
    1. LLM generates Clojure code to call MCP tools
    2. Code executes in a safe SCI sandbox
    3. Results feed back to LLM for next iteration
    4. Converges when FINAL_ANSWER is detected
+
+   When :rlm is true on the node, uses RLM mode with BT primitives:
+   - (llm ...) for sub-LLM calls
+   - (final! ...) for validated output capture
+   - (get-input ...) for loading input values
 
    Args:
      node - The repl-researcher node map with :instruction, :reads, :writes, :mcp-tools
@@ -769,8 +1292,12 @@
       :duration-ms int
       :usage {:prompt-tokens N :completion-tokens N :total-tokens N}}"
   [node blackboard provider context & {:keys [options] :or {options {}}}]
-  (let [start-time (System/currentTimeMillis)
-        max-iterations (or (:max-iterations node) 10)
+  (let [execution-options (merge options (:options node))]
+    ;; Route to RLM mode if enabled
+    (if (:rlm node)
+      (execute-repl-researcher-rlm node blackboard provider context :options execution-options)
+    (let [start-time (System/currentTimeMillis)
+          max-iterations (or (:max-iterations node) 10)
         mcp-tools (or (:mcp-tools node) [])
         browser-tools (or (:browser-tools node) [])
         call-tool-fn (:call-tool-fn context)
@@ -783,9 +1310,6 @@
 
         ;; Build blackboard metadata (types only, no values)
         bb-metadata (build-blackboard-metadata node blackboard)
-
-        ;; Build effective provider config with model override if specified
-        effective-provider (get-provider-with-model provider (:model node))
 
         ;; Track usage across iterations
         total-usage (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})]
@@ -824,29 +1348,36 @@
                         :context bb-metadata
                         :history (or (build-iteration-history history) "None")
                         :tools (str/join ", " all-tools)}
-                ;; Ensure model is passed in options for DSCloj
-                dscloj-options (cond-> (assoc options :validate? false)
+                ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
+                ;; The node's :model rides through as a per-request override.
+                dscloj-options (cond-> (assoc execution-options :validate? false :with-metadata? true)
                                  (:model node) (assoc :model (:model node)))
 
-                ;; Generate code - use base provider, model is in dscloj-options
                 llm-result (dscloj/predict provider module inputs dscloj-options)
-                ;; DSCloj returns {:code "..."} directly, not {:outputs {:code "..."}}
-                ;; Strip markdown code fences if present (some LLMs wrap code in ```clojure...```)
+                ;; Extract code from LLM result
+                ;; With :with-metadata? true, dscloj returns {:outputs {:code "..."} :usage {...}}
+                ;; Code may be a string or a parsed Clojure form (if function calling mode parsed it)
                 code (let [raw (or (:code llm-result) (get-in llm-result [:outputs :code]))]
-                       (if (string? raw)
+                       (cond
+                         (string? raw)
                          (-> raw
                              (str/replace #"^```(?:clojure|clj|edn)?\s*\n?" "")
                              (str/replace #"\n?```\s*$" "")
                              str/trim)
-                         raw))
 
-                ;; Update usage tracking
-                _ (when-let [usage (:usage llm-result)]
+                         (some? raw)
+                         ;; Already parsed Clojure form - convert back to string for sandbox
+                         (pr-str raw)
+
+                         :else nil))
+
+                ;; Update usage tracking (normalize handles snake_case -> kebab-case)
+                _ (when-let [u (normalize-usage (:usage llm-result))]
                     (swap! total-usage
-                           (fn [u]
-                             {:prompt-tokens (+ (:prompt-tokens u 0) (:prompt_tokens usage 0))
-                              :completion-tokens (+ (:completion-tokens u 0) (:completion_tokens usage 0))
-                              :total-tokens (+ (:total-tokens u 0) (:total_tokens usage 0))})))]
+                           (fn [acc]
+                             {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
+                              :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
+                              :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))})))]
 
             (cond
               ;; No code generated
@@ -920,6 +1451,1118 @@
         {:status :failure
          :error (.getMessage e)
          :duration-ms (- (System/currentTimeMillis) start-time)
+         :usage @total-usage}))))))
+
+;; =============================================================================
+;; RLM Mode Execution (BT as Primitive)
+;; =============================================================================
+
+(defn- format-variable-preview
+  "Format a single variable preview for the Available Variables section."
+  [k preview source]
+  (let [type-str (name (or (:type preview) :unknown))
+        size-str (cond
+                   (:size preview) (str (:size preview) " chars")
+                   (:length preview) (str (:length preview) " items")
+                   :else nil)
+        type-size (if size-str
+                    (str "(" type-str ", " size-str ")")
+                    (str "(" type-str ")"))
+        preview-str (cond
+                      (:preview preview) (str "  Preview: \"" (:preview preview) "\"")
+                      (:value preview) (str "  Value: " (pr-str (:value preview)))
+                      (:sample preview) (str "  Sample: " (pr-str (:sample preview)))
+                      (:keys preview) (str "  Keys: " (pr-str (:keys preview)))
+                      :else nil)]
+    (str k " " type-size " " source
+         (when preview-str (str "\n" preview-str)))))
+
+(defn- build-available-variables-section
+  "Build the Available Variables section for the RLM prompt."
+  [blackboard sandbox-vars-map var-creation-times]
+  (let [;; Format blackboard variables
+        blackboard-entries (for [[k v] blackboard
+                                 :let [preview (rlm-sandbox/preview-value (:value v))]]
+                             (format-variable-preview k preview "[from blackboard]"))
+        ;; Format sandbox variables (created during execution)
+        sandbox-entries (for [[k v] sandbox-vars-map
+                              :when (not (contains? blackboard k))]  ;; Don't duplicate blackboard keys
+                          (let [preview (rlm-sandbox/preview-value v)
+                                iteration (get var-creation-times k 0)
+                                source (str "[created iteration " iteration "]")]
+                            (format-variable-preview k preview source)))]
+    (when (or (seq blackboard-entries) (seq sandbox-entries))
+      (str "## Available Variables\n\n"
+           (str/join "\n\n" (concat blackboard-entries sandbox-entries))
+           "\n\n"))))
+
+(defn- build-ontology-examples-section
+  "Build a section of the prompt with few-shot examples from ontology.
+   Returns nil if no examples available."
+  [node]
+  (when-let [examples-fn (get-in node [:rlm :examples-fn])]
+    (let [examples (try (examples-fn {}) (catch Exception _ []))]
+      (when (seq examples)
+        (str "## Example from ontology (successful patterns)\n\n"
+             (str/join "\n\n"
+                       (for [{:keys [task tree score]} examples]
+                         (str "**Task**: " task "\n"
+                              "**Score**: " (when score (format "%.2f" (double score))) "\n"
+                              "```clojure\n"
+                              "(emit-tree! " (pr-str tree) ")\n"
+                              "```")))
+             "\n\n")))))
+
+(defn- build-rlm-code-generation-module
+  "Build DSCloj module for generating code in RLM mode.
+
+   In RLM mode, the LLM generates code that can:
+   - Call (llm \"name\" :instruction \"...\" :writes [:key]) to execute sub-LLM calls
+   - Call (final! {:key value}) to return validated results
+   - Call (get-input :key) to load input values into variable space
+   - Call store!/get-var to manage computed variables
+   - Access 'inputs' map for metadata previews of available data
+
+   U9: When (:rlm node) is a map containing :available-code-nodes (string), that
+   catalog is surfaced as an extra dscloj input field so the model can use
+   the listed functions inside emit-tree! :code nodes."
+  [node inputs-preview history blackboard sandbox-vars-map var-creation-times]
+  (let [rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
+        available-code-nodes (get rlm-config :available-code-nodes)
+        base-inputs [{:name :task
+                      :spec :string
+                      :description "The research task to complete"}
+                     {:name :inputs-info
+                      :spec :string
+                      :description "Available inputs with metadata previews (type, size, sample)"}
+                     {:name :history
+                      :spec :string
+                      :description "Results from previous iterations (if any)"}]
+        all-inputs (cond-> base-inputs
+                     available-code-nodes
+                     (conj {:name :available-code-nodes
+                            :spec :string
+                            :description "Catalog of pre-built Clojure functions you can reference in emit-tree! :code nodes via {:fn \"ns/sym\" ...}. Read this carefully if present."}))]
+    {:inputs all-inputs
+   :outputs [{:name :reasoning
+              :spec :string
+              :description "Brief explanation (2-5 sentences) of WHY you are choosing this tree shape: which inputs are driving the design, which primitives you picked and why, what alternative you considered and rejected, and which prepended corpus suggestions (if any) you adopted or skipped. Write this BEFORE you write :code."}
+             {:name :code
+              :spec :string
+              :description "Clojure code to execute"}]
+   :instructions (str "You are an RLM (Recursive Language Model) that constructs behavior trees to solve tasks.\n\n"
+                      ;; Two-space architecture explanation
+                      "## Two-Space Architecture\n\n"
+                      "RLM separates **Variable Space** (full data in sandbox memory) from **Token Space** (what LLMs see).\n"
+                      "- Available Variables show PREVIEWS (type, size, sample) - not full content\n"
+                      "- Use (get-input :key) to load full values into variable space\n"
+                      "- Sub-LLM calls via :reads receive previews, keeping token usage bounded\n\n"
+                      ;; Add Available Variables section
+                      (build-available-variables-section blackboard sandbox-vars-map var-creation-times)
+                      "## Available Primitives\n\n"
+                      "### llm - Execute a sub-LLM call\n"
+                      "```clojure\n"
+                      "(llm \"name\" :instruction \"What to do\" :reads [:key] :writes [:output-key])\n"
+                      "```\n"
+                      "- Returns a map with the :writes keys populated\n"
+                      "- :reads [...] passes FULL values to the sub-LLM (no truncation)\n"
+                      "- You control chunk sizes in your code - sub-LLMs receive exactly what you pass\n"
+                      "- :reads keys MUST match exact names from Available Variables section\n\n"
+                      "### final! - Return validated result\n"
+                      "```clojure\n"
+                      "(final! {:key value})\n"
+                      "```\n"
+                      "- MUST include exactly the keys declared in :writes\n"
+                      "- Validates output matches contract\n\n"
+                      "### get-input - Load full value into variable space\n"
+                      "```clojure\n"
+                      "(get-input :key)\n"
+                      "```\n"
+                      "- Returns the full value (not just preview)\n"
+                      "- Use this to access input data for processing\n\n"
+                      "### store!/get-var - Manage computed variables\n"
+                      "```clojure\n"
+                      "(store! :name value)  ;; Store and return value\n"
+                      "(get-var :name)       ;; Retrieve stored value (nil if not found)\n"
+                      "(list-vars)           ;; List all variables with previews\n"
+                      "```\n\n"
+                      "### sequence - Execute children in order\n"
+                      "```clojure\n"
+                      "(sequence \"name\" child1 child2 ...)\n"
+                      "```\n"
+                      "- Executes each child in sequence\n"
+                      "- Merges all result maps together\n\n"
+                      "### map-each - Process collection items\n"
+                      "```clojure\n"
+                      "(map-each \"name\" :collection-key :as :item-name\n"
+                      "  (fn [] (llm \"process\" :reads [:item-name] :writes [:result])))\n"
+                      "```\n"
+                      "- Iterates over collection from :collection-key in variables\n"
+                      "- Injects each item as :item-name (as preview)\n"
+                      "- Body function called for each item\n"
+                      "- Returns vector of results\n\n"
+                      "### code - Pure computation (no LLM)\n"
+                      "```clojure\n"
+                      "(code \"name\" :writes [:result] :body (+ 1 2))\n"
+                      "```\n"
+                      "- Executes pure Clojure computation\n"
+                      "- No LLM call involved\n"
+                      "- Result stored in :writes key\n\n"
+                      "### emit-tree! - Generate a behavior tree for execution\n"
+                      "```clojure\n"
+                      "(emit-tree! [:sequence\n"
+                      "              [:chunk-document {:from :document :size 5000 :into :chunks}]\n"
+                      "              [:map-each {:from :chunks :as :chunk :into :results}\n"
+                      "                [:llm {:instruction \"Extract key info\" :reads [:chunk] :writes [:info]}]]\n"
+                      "              [:aggregate {:from :results :writes [:all-info]}]\n"
+                      "              [:final {:keys [:summary]}]])\n"
+                      "```\n"
+                      "- Emits a behavior tree S-expression for two-phase execution\n"
+                      "- Use this when you need to design a processing pipeline\n"
+                      "- Available node types:\n"
+                      "  - :sequence - Execute children in order\n"
+                      "  - :parallel - Execute children concurrently (independent work only)\n"
+                      "  - :llm - Execute a sub-LLM call with {:instruction :reads :writes}\n"
+                      "      Optional :output-schemas {<write-key> <Malli-schema>} declares the shape of each\n"
+                      "      :writes value. When you set this and the schema is structured (e.g. [:vector [:map-of :any :any]],\n"
+                      "      [:map [:foo :string] [:bar :int]]), the framework asks the LLM for valid JSON and parses\n"
+                      "      the response back into Clojure data automatically. Without :output-schemas, the LLM's :writes\n"
+                      "      values arrive as raw text strings — fine if your downstream consumer is another :llm prompt,\n"
+                      "      but problematic if a :code node expects parsed Clojure data (vectors, maps, etc.).\n"
+                      "      Example:\n"
+                      "        [:llm {:instruction \"Identify PII targets on this page; return :targets as a vector of maps.\"\n"
+                      "               :reads [:page-text]\n"
+                      "               :writes [:targets]\n"
+                      "               :output-schemas {:targets [:vector [:map-of :any :any]]}}]\n"
+                      "  - :map-each - Process collection items with {:from :as :into :max-concurrency N} (N=1 default, use 3-5 for parallel independent items)\n"
+                      "  - :chunk-document - Split document into chunks with {:from :size :into}\n"
+                      "  - :aggregate - Combine results with {:from :writes}\n"
+                      "  - :code - Deterministic Clojure computation. Two forms:\n"
+                      "      (a) Pre-built fn by qualified-symbol string: {:fn \"ns/sym\" :reads [...] :writes [...]}\n"
+                      "          (see :available-code-nodes for fns available in this task, if any)\n"
+                      "      (b) INLINE function written by you: {:fn (fn [{:keys [inputs]}] {...output-map...}) :reads [...] :writes [...]}\n"
+                      "          The inline fn receives a context map with :inputs (the :reads keys -> values).\n"
+                      "          It must return either a map with the :writes keys, or a single value (auto-wrapped under the\n"
+                      "          single declared :write). Use this when no pre-built fn exists and you need a deterministic transform.\n"
+                      "          Example: [:code {:fn (fn [{:keys [inputs]}] (let [s (-> inputs vals first)] {:counts (frequencies s)}))\n"
+                      "                            :reads [:text] :writes [:counts]}]\n"
+                      "  - :final - Return validated output with {:keys [...]}\n"
+                      "- The tree is stored for learning and can be reused\n\n"
+                      "## Default Mode: emit-tree!\n\n"
+                      "**emit-tree! is your default execution mode.** For ANY non-trivial workflow — anything\n"
+                      "with multiple steps, parallel sub-tasks, deterministic transforms alongside LLM calls,\n"
+                      "large inputs, or quality/verification requirements — emit a tree.\n\n"
+                      "The narrow exceptions (when emit-tree! is overkill):\n"
+                      "- The task is trivially small: single short input, single output, no intermediate work.\n"
+                      "- A single (llm ...) call OR a single :code computation would clearly suffice end-to-end.\n\n"
+                      "### Anti-pattern: chained sequential (llm ...) calls in Phase 1\n\n"
+                      "**If you find yourself writing 2+ sequential (llm ...) calls in Phase 1 code, that is\n"
+                      "a strong signal you should use emit-tree! instead.** The chained pattern translates\n"
+                      "directly to [:sequence [:llm ...] [:llm ...] [:final {...}]]. The tree gives you:\n"
+                      "- Per-node observability and retry\n"
+                      "- Composition with :code nodes for deterministic transforms\n"
+                      "- Event-trace coverage that direct Phase-1 chaining does not produce\n\n"
+                      "### Use :code nodes for deterministic transforms\n\n"
+                      "For deterministic work — counting, regex matching, deduplication, string\n"
+                      "replacement, aggregation, format conversion — prefer a :code node over a\n"
+                      "sub-LLM call. Counting characters/items via (llm ...) is hallucination-\n"
+                      "prone; a pure-Clojure function is definitively correct.\n\n"
+                      "### Common emit-tree! patterns\n\n"
+                      "For any large data that exceeds token limits, use emit-tree! to design a processing pipeline:\n"
+                      "- **Documents**: :chunk-document to split text, then :map-each + :llm per chunk, then :aggregate.\n"
+                      "- **Graphs/Ontology**: Traverse by neighborhood or sample subgraphs, then :map-each + :llm.\n"
+                      "- **Collections**: Partition into batches, then :map-each + :llm per batch.\n"
+                      "- **Vision over multiple images**: :map-each over an image vector with :llm reading individual image keys.\n\n"
+                      "The pattern is always: break into bounded sub-problems → sub-LLM per piece → :code or :aggregate.\n"
+                      "Previews adapt to data type: text samples for documents, T-box/A-box summaries for graphs.\n\n"
+                      ;; Include ontology examples if available
+                      (or (build-ontology-examples-section node) "")
+                      ;; Descriptive recursive-mode section.
+                      ;; R-Default: recursive is now the default mode. The section is
+                      ;; included UNLESS the user explicitly opts out via
+                      ;; :rlm {:recursive? false}. Map-mode without an explicit
+                      ;; :recursive? key (e.g. {:debug? true}) or boolean :rlm true
+                      ;; both default to recursive.
+                      ;;
+                      ;; The framing leads with "emit-tree! is how you do work" so the
+                      ;; model treats it as the primary loop body, not one option among
+                      ;; many. Direct (llm ...) / (code ...) calls in Phase 1 are
+                      ;; explicitly scoped to narrow inspection/decision flows, not the
+                      ;; main work loop.
+                      (if (not= false (get-in node [:rlm :recursive?]))
+                        (str "## Recursive mode (this mode)\n\n"
+                             "In this mode, `emit-tree!` is how you do work. Design a "
+                             "tree for one piece of the task, run it, see the result, "
+                             "decide what to do next. The loop is: `(emit-tree! ...)` → "
+                             "inspect outputs → decide → repeat, until you call "
+                             "`(final! {...})`.\n\n"
+                             "### Preferred per-iteration pattern\n"
+                             "Each iteration, prefer one of:\n"
+                             "1. `(emit-tree! ...)` to make progress on the task, OR\n"
+                             "2. `(final! {...})` to terminate when the work is done.\n\n"
+                             "Direct `(llm ...)` / `(code ...)` calls in Phase 1 are for "
+                             "narrow inspection or decision flows — they should not be "
+                             "your main work loop. If you find yourself iterating direct "
+                             "`(llm ...)` calls without emitting trees, switch to "
+                             "`emit-tree!`. Each `emit-tree!` is a full sub-tick that "
+                             "the framework executes, records, and surfaces results from.\n\n"
+                             "### After each `emit-tree!` completes\n"
+                             "The tree's outputs are merged into your variables (use "
+                             "`(get-var :summary)` etc.), a summary entry is appended "
+                             "to `:tree-results`, and control returns to you. The loop "
+                             "ends only when you call `(final! {...})` or you exceed "
+                             ":max-iterations.\n\n"
+                             "### Accessing prior tree outputs — use `get-var`, NOT `get-input`\n"
+                             "When you call `(emit-tree! ...)`, the tree's `:writes`-declared keys "
+                             "land in your sandbox variables. Subsequent iterations access them via "
+                             "`(get-var :key)`, NOT via `(get-input :key)`. `get-input` only returns "
+                             "the repl-researcher node's declared input keys (the data passed INTO "
+                             "the researcher) — it does NOT see prior-tree outputs. If you try to "
+                             "access a prior tree's write via `get-input`, you'll get nil, and the "
+                             "subsequent `(final! ...)` will be rejected as all-empty.\n\n"
+                             "Concretely, after `(emit-tree! ...)` writes `:total-redactions` and "
+                             "`:targets-applied`:\n"
+                             "```clojure\n"
+                             ";; CORRECT — read prior tree's writes:\n"
+                             "(final! {:total-redactions (get-var :total-redactions)\n"
+                             "         :targets-applied  (get-var :targets-applied)})\n"
+                             "```\n"
+                             "Re-emitting the same tree to recompute data you already have is "
+                             "wasteful — check `(list-vars)` or `:tree-results` to see what's "
+                             "already in your sandbox before designing the next tree.\n\n"
+                             "### Reading `:tree-results`\n"
+                             "Each entry has `:status` — one of:\n"
+                             "  - `:success` — the tree completed and all sub-nodes succeeded\n"
+                             "  - `:partial` — some sub-nodes failed; outputs reflect the successful subset\n"
+                             "  - `:failure` — the tree did not produce useful outputs\n"
+                             "  - `:timeout` — the tree was cancelled before completion (budget exhausted)\n\n"
+                             "Other fields per entry: `:elapsed-ms`, `:outputs-keys` (what was merged), "
+                             "`:nodes-succeeded`, `:nodes-failed`, `:nodes-total`. On `:partial` or "
+                             "`:failure` you also get `:failure-indices` + `:failure-reasons` "
+                             "(verbatim error strings).\n\n"
+                             "### Interpretation depends on your task\n"
+                             "For some tasks `:partial` is acceptable (e.g., document summarization "
+                             "with 22 of 24 chunks succeeded is usually fine). For others it requires "
+                             "follow-up (e.g., obligations extraction where missing chunks could miss "
+                             "obligations). You decide based on your task and the outputs you got.\n\n"
+
+                             ;; R-Recover: failure-recovery nudge.
+                             ;;
+                             ;; When a prior tree fails or partially fails, the natural-but-wasteful
+                             ;; reaction is to re-emit the same tree from scratch. That re-runs every
+                             ;; sub-LLM that already succeeded, doubling cost. The recursive RLM
+                             ;; design already preserves successful writes in sandbox-vars across
+                             ;; iterations — but only if the model CHOOSES to use them.
+                             ;;
+                             ;; This section tells the model how to recover correctly: investigate
+                             ;; the failure first, then design a tree that RESUMES from surviving
+                             ;; vars and only re-runs the failed nodes.
+                             ;;
+                             ;; Sentinel phrase: 'recover from a failed tree' (pinned by unit test).
+                             "### Recover from a failed tree — investigate then resume, don't rebuild\n"
+                             "When `:tree-results` shows `:status :failure`, `:partial`, or `:timeout`, "
+                             "DO NOT re-emit the same tree from scratch — that wastes every sub-LLM "
+                             "call that already succeeded. Successful writes are preserved in your "
+                             "sandbox variables across iterations. Use them.\n\n"
+                             ;; C-Loop-4 nil-writes signal.
+                             ;;
+                             ;; A tree can return :status :success while some declared writes
+                             ;; are nil or empty-collection (e.g. risk-analysis: an aggregator
+                             ;; that misread :map-each output shape produced :obligations nil
+                             ;; + :penalties nil; downstream synthesis honestly reported "no
+                             ;; obligations identified"). The system surfaces this as a SOFT
+                             ;; signal — :nil-writes [<keys>] on the summary entry — and the
+                             ;; model decides whether empty is the correct answer for its task.
+                             ;;
+                             ;; Sentinel: ':nil-writes' (pinned by unit test).
+                             "ALSO trigger recovery when `:status :success` but `:nil-writes` "
+                             "is non-empty on the most-recent `:tree-results` entry. `:nil-writes` "
+                             "lists declared writes that came back as `nil`, empty string, empty "
+                             "vector/map/seq/set — i.e. nil/empty values for keys the tree was "
+                             "contracted to produce. The run did not fail; the values are just "
+                             "missing or empty. Decide whether that is the CORRECT answer for "
+                             "your task (some tasks legitimately return empty results) or whether "
+                             "downstream nodes (often aggregator `:code` fns) silently produced "
+                             "nothing useful and you need to recover. If recovery is needed, the "
+                             "same flow below applies — investigate, inventory surviving vars, "
+                             "and design a smaller resume tree.\n\n"
+                             "Recovery flow:\n"
+                             "  1. **Investigate**: read `:failed-leaves` (each entry has `:node-id` "
+                             "+ `:error` — surfaces direct-leaf runtime failures), `:failure-reasons` "
+                             "and `:failure-indices` (map-each per-child failures), OR `:nil-writes` "
+                             "keys on a `:status :success` entry whose declared writes came back "
+                             "nil/empty. If those fields aren't specific enough, drill in with "
+                             "`(tree-failures)` / `(tree-detail tick-id)` / `(node-output node-id)`.\n"
+                             "  2. **Inventory surviving vars**: check `(list-vars)` or `:outputs-keys` "
+                             "from the same `:tree-results` entry to see EXACTLY what data already "
+                             "exists in your sandbox. Often the failure is downstream of work that "
+                             "produced perfectly usable intermediate outputs.\n"
+                             "  3. **Design a smaller resume tree** that reads the surviving vars via "
+                             "`(get-var ...)` and ONLY runs the nodes needed to finish the work the "
+                             "failed tree didn't complete. Do not include nodes that recompute data "
+                             "you already have.\n\n"
+                             "Concrete pattern:\n"
+                             "```clojure\n"
+                             ";; Prior tree produced :findings and :missing_items successfully,\n"
+                             ";; but the recommendations :llm and the final :code transform failed.\n"
+                             ";; DO NOT re-emit the whole extraction + gap-analysis tree.\n"
+                             ";; RESUME from the surviving structured data:\n"
+                             "(emit-tree!\n"
+                             "  [:sequence\n"
+                             "   [:llm {:instruction \"Generate recommendations from findings + gaps\"\n"
+                             "          :reads [:findings :missing_items]\n"
+                             "          :writes [:recommendation_data]}]\n"
+                             "   [:code {:fn shape-final-writes\n"
+                             "           :reads [:findings :missing_items :recommendation_data]\n"
+                             "           :writes [:issues :ambiguities :missing :recommendations]}]\n"
+                             "   [:final {:keys [:issues :ambiguities :missing :recommendations]}]])\n"
+                             "```\n\n"
+                             "Re-emitting a tree is appropriate ONLY when the failure is fundamental "
+                             "to the design (e.g., the prior tree never produced ANY usable outputs, "
+                             "or the failure exposes that the original design was structurally wrong "
+                             "and needs a different shape). In those cases, treat the prior tree as "
+                             "diagnostic information — what you learned from its failure should inform "
+                             "the new design, not be discarded.\n\n"
+
+                             "### After a tree completes\n"
+                             "You can:\n"
+                             "  - Call `(emit-tree! ...)` again to run another tree\n"
+                             "  - Run `(llm ...)` or `(code ...)` inline for follow-up work\n"
+                             "  - Call `(final! {...})` to terminate and return your answer\n\n"
+                             "### Drill-down primitives — use only when the summary is insufficient\n"
+                             "If `:tree-results` summary fields don't give you enough to decide your next step, "
+                             "you can read the full event-store record of the most-recent (or a specific) tree:\n"
+                             "  - `(tree-detail)` / `(tree-detail tick-id)` — full structured record: per-node "
+                             "`:status`, `:duration-ms`, `:writes`, `:usage`, `:input-profile`, and any `:partial-summary`\n"
+                             "  - `(tree-trajectory)` / `(tree-trajectory tick-id)` — chronological per-event "
+                             "log of what happened inside the tree\n"
+                             "  - `(tree-failures)` — failure entries with errors + per-failure input profiles "
+                             "(joins direct leaf failures with map-each `:partial-summary` failure indices)\n"
+                             "  - `(node-output node-id)` — writes map of a specific completed node\n"
+                             "  - `(node-input-profile node-id)` — input profile (chunk shape, etc.) of a specific node\n\n"
+                             "These return potentially large data — prefer the `:tree-results` summary first and only "
+                             "drill down when you genuinely need the extra detail to make a decision.\n\n"
+                             ;; R-7c: verify-before-final nudge.
+                             ;;
+                             ;; The model can emit a structurally-valid tree that produces a
+                             ;; semantically broken payload (e.g. iter 0 of image_analysis
+                             ;; wrote :answer with all-zero A-Z counts despite real OCR
+                             ;; text). validate-final! cannot catch this — :answer is a
+                             ;; non-empty string. The model needs a prompt-level nudge to
+                             ;; peek at the value via (get-var :key) and sanity-check it
+                             ;; before terminating. R-7a's :outputs-previews surface this
+                             ;; in the summary; this section turns that signal into a
+                             ;; specific instruction.
+                             ;;
+                             ;; Sentinel phrase: 'verify before final' (pinned by unit test).
+                             "### Verify before final\n"
+                             "Finalization is the DEFAULT next step once the required outputs are "
+                             "populated. Before `(final! {...})`, glance at `:outputs-previews` on "
+                             "the most recent `:tree-results` entry to spot CLEARLY broken payloads — "
+                             "e.g. an A-Z letter count block that reads `A: 0, B: 0, ...` for "
+                             "non-empty transcription text, a required structured array that came "
+                             "back `[]`, or `nil` where structured data should be. Only emit another "
+                             "tree if a value is OBVIOUSLY broken in that sense; minor imperfections, "
+                             "stylistic differences, or completeness questions are fine — finalize "
+                             "and let the evaluation layer judge quality.\n\n")
+                        "")
+                      ;; T2-Hardening-C: forward guidance — recurring SCI/Clojure
+                      ;; pitfalls observed across the bench suite that the model
+                      ;; consistently hits on first iteration. Each bullet pairs
+                      ;; the footgun with a concrete workaround so the rule is
+                      ;; immediately actionable. Generic across all tasks; do
+                      ;; NOT add task-specific guidance here.
+                      "## Common pitfalls\n"
+                      "These are recurring SCI/Clojure footguns that hit model-authored code. "
+                      "Reading this list once now prevents the retry loop from rediscovering "
+                      "each pitfall via execution failure. Each entry pairs the failure mode "
+                      "with the concrete fix.\n\n"
+                      "- **Set literals with computed elements fail SCI's reader.** "
+                      "`#{(get-in m k1) (get-in m k2)}` — the elements aren't literal values "
+                      "so the reader rejects the form. Use `(set [(expr1) (expr2)])` to build "
+                      "a set from runtime values.\n"
+                      "- **`frequencies` on collections that may contain `nil` produces a "
+                      "`{nil N}` entry that collides downstream.** When the source collection "
+                      "has nils (e.g. partially-populated schedule slots), build the count "
+                      "from the non-nil values: `(frequencies (filter some? coll))`.\n"
+                      "- **`(get-var :foo)` returns `nil` after a Phase-2 `:failure`.** "
+                      "If the prior tree's leaf failed, the value it was supposed to write "
+                      "never landed. Always check before consuming: "
+                      "`(when-let [v (get-var :foo)] ...)`. Don't assume vars exist just "
+                      "because the writes were DECLARED on the tree — the writes are an "
+                      "intent, not a fact.\n"
+                      "- **Namespaced symbols don't resolve in the SCI sandbox.** "
+                      "`clojure.string/join`, `clojure.set/intersection`, etc. won't load. "
+                      "Use the bound sandbox primitives or re-derive locally with `(let ...)` "
+                      "+ basic Clojure (`str`, `apply`, `interpose`, `reduce`, `map`, "
+                      "`filter`, `into`, `vec`).\n"
+                      "- **`:output-schemas` must match downstream `:code` consumer's "
+                      "expectations.** If the `:llm` declares `:output-schemas {:foo "
+                      ":string}` but the downstream `:code` expects a parsed map, the "
+                      "consumer crashes on `(get parsed-map ...)`. Match the Malli shape "
+                      "to the actual data shape: `[:map [:a :string] [:b :int]]`, NOT "
+                      "`[:map :a :string :b :int]`. Nested map fields require `[:map [:k "
+                      ":type]]` brace nesting.\n"
+                      "- **Inline-fn bodies that reference unbound names fail at execution "
+                      "time, not at emit.** When you write `[:code {:fn (fn [{:keys "
+                      "[inputs]}] (use-name x))}]` and `x` isn't bound, SCI doesn't notice "
+                      "until the leaf actually runs; the error surfaces as 'Could not "
+                      "resolve symbol' from inside the validator, far from your emit-tree "
+                      "call. Double-check that every name your `:fn` body references is "
+                      "either in `(:keys [...])` destructured from `inputs`, in a `let` "
+                      "binding inside the fn, or a sandbox primitive.\n"
+                      "- **`(get-in m [...])` on nil returns nil silently.** If your "
+                      "`:reads` brings in a value that's nil (because a prior step "
+                      "failed), `(get-in nil [:k1 :k2])` returns nil instead of throwing. "
+                      "Downstream operations on nil throw far from the actual problem. "
+                      "Verify the top of the data is non-nil before deep `get-in`.\n"
+                      "- **For-comprehensions return lazy sequences that defer side "
+                      "effects.** `(for [x xs] (process! x))` doesn't execute until the "
+                      "result is consumed; if the surrounding code only checks `(count "
+                      "...)` or the result is dropped, the side effects never fire. Use "
+                      "`(mapv ...)` or wrap in `(doall ...)` when you need eager "
+                      "evaluation or predictable error attribution.\n\n"
+
+                      "## Output Contract\n"
+                      "You MUST call (final! {...}) with keys: " (pr-str (:writes node)) "\n\n"
+                      "## CRITICAL OUTPUT FORMAT\n"
+                      "Your response MUST start with `[[ ## code ## ]]` on its own line, followed by RAW Clojure code (NO markdown code fences, NO ```clojure or ``` tags), and end with `[[ ## completed ## ]]`.\n\n"
+                      "Correct format:\n"
+                      "```\n"
+                      "[[ ## code ## ]]\n"
+                      "(emit-tree! [:sequence ...])\n"
+                      "[[ ## completed ## ]]\n"
+                      "```\n\n"
+                      "WRONG (do NOT use markdown fences around your code):\n"
+                      "```\n"
+                      "```clojure\n"
+                      "(emit-tree! [:sequence ...])\n"
+                      "```\n"
+                      "```\n\n"
+                      "## Example: Simple Analysis (small data)\n"
+                      "```clojure\n"
+                      "(let [data (get-input :document)\n"
+                      "      result (llm \"analyze\" \n"
+                      "               :instruction \"Analyze this text\"\n"
+                      "               :reads [:document]\n"
+                      "               :writes [:analysis])]\n"
+                      "  (final! {:answer (:analysis result)}))\n"
+                      "```\n\n"
+                      "## Example: Processing Large Data (PREFERRED - use emit-tree!)\n"
+                      "For ANY large data (documents, collections, etc.), ALWAYS use emit-tree!:\n"
+                      "```clojure\n"
+                      "(emit-tree!\n"
+                      "  [:sequence\n"
+                      "   [:chunk-document {:from :document :size 8000 :into :chunks}]\n"
+                      "   [:map-each {:from :chunks :as :chunk :into :chunk_results}\n"
+                      "    [:llm {:instruction \"Extract key information from this section\"\n"
+                      "           :reads [:chunk]\n"
+                      "           :writes [:info]}]]\n"
+                      "   [:aggregate {:from :chunk_results :writes [:all_info]}]\n"
+                      "   [:llm {:instruction \"Synthesize the extracted information into a final summary\"\n"
+                      "          :reads [:all_info]\n"
+                      "          :writes [:summary]}]\n"
+                      "   [:final {:keys [:summary]}]])\n"
+                      "```\n"
+                      "This is the PREFERRED approach because:\n"
+                      "- Tree structure is stored for learning and reuse\n"
+                      "- Proper chunking with :chunk-document\n"
+                      "- Clean separation of concerns\n"
+                      "- Integrates with ORC behavior tree engine\n\n"
+                      "## Your Task\n"
+                      (:instruction node)
+                      ;; U9: When :available-code-nodes is configured on the
+                      ;; repl-researcher, surface the catalog cross-reference
+                      ;; at the end of the prompt so the model knows to read
+                      ;; it before designing emit-tree! :code nodes.
+                      (when available-code-nodes
+                        "\n\nA catalog of pre-built code-node functions is provided in the :available-code-nodes input above. Use them via [:code {:fn \"...\"}] in your emit-tree! tree when their semantics match what you need. Their input/output shapes are documented there.\n\n"))}))
+
+(defn execute-repl-researcher-rlm
+  "Execute a repl-researcher node in RLM mode.
+
+   RLM mode provides BT primitives in the sandbox:
+   - (llm ...) executes sub-LLM calls
+   - (final! ...) validates and captures output
+   - (get-input ...) loads input values
+
+   This separates variable space (sandbox memory) from token space (LLM context).
+
+   Options:
+   - :debug? - Enable verbose debug output for troubleshooting (default: false)"
+  [node blackboard provider context & {:keys [options] :or {options {}}}]
+  (let [start-time (System/currentTimeMillis)
+        max-iterations (or (:max-iterations node) 10)
+        mcp-tools (or (:mcp-tools node) [])
+        browser-tools (or (:browser-tools node) [])
+        call-tool-fn (:call-tool-fn context)
+        declared-writes (:writes node)
+        ;; Extract debug? from node's :rlm config (can be {:debug? true}) or from options
+        rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
+        debug? (or (get rlm-config :debug? false) (get options :debug? false))
+
+        ;; Debug helper
+        dbg (fn [& args] (when debug? (apply println "[DEBUG RLM]" args)))
+
+        ;; Build inputs preview for LLM context
+        inputs-preview (rlm-sandbox/build-inputs-preview blackboard)
+
+        ;; Track usage across iterations
+        total-usage (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})
+
+        ;; Persistent sandbox-vars across iterations (for store!/get-var)
+        sandbox-vars (atom {})
+
+        ;; Track when each variable was created (iteration number)
+        var-creation-times (atom {})
+
+        ;; R-1: Cumulative timing metrics for the recursive mode response
+        ;; observability fields. Updated only when :recursive? is true.
+        cumulative-tree-ms (atom 0)
+        ;; R-Default: recursive is now the default mode. Terminal mode is the
+        ;; explicit opt-out via :rlm {:recursive? false}. :rlm true, :rlm {},
+        ;; and :rlm {:debug? true} (no explicit :recursive? key) all default
+        ;; to recursive.
+        recursive-mode? (not= false (get-in node [:rlm :recursive?]))]
+
+    (try
+      (loop [iteration 0
+             history []]
+        (cond
+          (>= iteration max-iterations)
+          (let [total-elapsed (- (System/currentTimeMillis) start-time)
+                ;; Surface what survived even on failure so bench reports +
+                ;; downstream consumers can inspect what the model produced.
+                final-sandbox @sandbox-vars
+                surviving-vars (dissoc final-sandbox
+                                       :generated-tree :generated-tree-raw
+                                       :iteration-reasonings :tree-results)
+                generated-tree-raw (:generated-tree-raw final-sandbox)
+                iteration-reasonings (:iteration-reasonings final-sandbox)]
+            (cond-> {:status :failure
+                     :error "Max iterations reached without final!"
+                     :outputs surviving-vars
+                     :iterations history
+                     :duration-ms total-elapsed
+                     :usage @total-usage
+                     :cumulative-tree-ms @cumulative-tree-ms
+                     :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
+              generated-tree-raw (assoc :generated-tree-raw generated-tree-raw)
+              (seq iteration-reasonings) (assoc :iteration-reasonings
+                                                (vec iteration-reasonings))))
+
+          ;; Pre-iteration budget check. The existing check inside the
+          ;; emit-tree! branch only fires when the model successfully emits
+          ;; a tree, so an iteration that does direct (llm ...) work without
+          ;; emitting a tree was previously uncapped. Without this check the
+          ;; model could burn many minutes of LLM calls per iteration before
+          ;; the next budget check ran. Check at the TOP of every iteration
+          ;; so any iteration that pushes elapsed past total-budget bails
+          ;; out fast instead of making another long-running LLM call.
+          (let [phase1-elapsed (- (System/currentTimeMillis) start-time)
+                budget (resolve-phase2-budget
+                        {:node node
+                         :parent-timeout-ms (:parent-timeout-ms context)
+                         :phase1-elapsed-ms phase1-elapsed})]
+            (:exhausted? budget))
+          (let [phase1-elapsed (- (System/currentTimeMillis) start-time)
+                budget (resolve-phase2-budget
+                        {:node node
+                         :parent-timeout-ms (:parent-timeout-ms context)
+                         :phase1-elapsed-ms phase1-elapsed})]
+            {:status :failure
+             :error (str "Budget exhausted in Phase 1 ("
+                         phase1-elapsed "ms elapsed of "
+                         (:total-budget-ms budget) "ms "
+                         "[source=" (name (:source budget)) "]; "
+                         "no time left for next iteration)")
+             :iterations history
+             :duration-ms phase1-elapsed
+             :phase1-elapsed-ms phase1-elapsed
+             :usage @total-usage
+             :budget budget
+             :cumulative-tree-ms @cumulative-tree-ms
+             :cumulative-thinking-ms (max 0 (- phase1-elapsed @cumulative-tree-ms))})
+
+          :else
+          ;; Generate code using LLM
+          (let [module (build-rlm-code-generation-module node inputs-preview history
+                                                          blackboard @sandbox-vars @var-creation-times)
+                inputs {:task (:instruction node)
+                        :inputs-info (pr-str inputs-preview)
+                        :history (or (build-iteration-history history) "None")}
+                ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
+                ;; but preserve an explicit caller/node :use-function-calling? override.
+                ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
+                ;; The node's :model rides through as a per-request override.
+                dscloj-options (merge {:validate? false
+                                       :use-function-calling? false
+                                       :with-metadata? true}
+                                      options
+                                      (when (:model node) {:model (:model node)}))
+
+                ;; Live-stream visibility: ephemeral, no-op without subscribers.
+                _ (streaming/emit! (:tick-id context)
+                                   (cond-> {:orc.stream/type :rlm-iteration-started
+                                            :iteration (inc iteration)
+                                            :max-iterations max-iterations}
+                                     (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                     (:node-id context) (assoc :node-id (:node-id context))))
+
+                _ (dbg "\n========== ITERATION" (inc (count history)) "==========")
+                _ (dbg "node :model =" (:model node))
+                _ (dbg "provider =" provider)
+                _ (dbg "dscloj-options =" dscloj-options)
+                _ (dbg "module :outputs =" (:outputs module))
+                _ (dbg "module :instructions length =" (count (:instructions module)))
+                _ (dbg "inputs :task =" (:task inputs))
+                _ (dbg "inputs :inputs-info =" (:inputs-info inputs))
+                _ (dbg "calling dscloj/predict...")
+                llm-result (try
+                             (dscloj/predict provider module inputs dscloj-options)
+                             (catch Exception e
+                               (dbg "dscloj/predict EXCEPTION:" (.getMessage e))
+                               {:code nil :error (.getMessage e)}))
+                _ (dbg "dscloj/predict returned")
+                _ (dbg "llm-result keys:" (keys llm-result))
+                _ (when (and debug? (:usage llm-result))
+                    (dbg "usage:" (:usage llm-result)))
+                _ (dbg ":code type:" (type (:code llm-result)))
+                _ (dbg ":code nil?:" (nil? (:code llm-result)))
+                _ (dbg "[:outputs :code] nil?:" (nil? (get-in llm-result [:outputs :code])))
+                _ (dbg "[:outputs] keys:" (keys (:outputs llm-result)))
+                _ (when debug?
+                    (dbg "FULL llm-result:" (pr-str llm-result)))
+                _ (when (and debug? (get-in llm-result [:outputs :code]))
+                    (dbg "GENERATED CODE (full):" (get-in llm-result [:outputs :code])))
+                _ (dbg ":code blank?:" (if (string? (:code llm-result))
+                                         (str/blank? (:code llm-result))
+                                         "N/A"))
+                _ (when (and debug? (string? (:code llm-result)))
+                    (dbg ":code length:" (count (:code llm-result)))
+                    (dbg ":code (full):" (:code llm-result)))
+                _ (dbg "========================================\n")
+                ;; Extract code from LLM result
+                ;; With function calling mode, code may be returned as:
+                ;; 1. A string (normal case) - strip markdown fences and whitespace
+                ;; 2. A parsed Clojure data structure (function calling parsed the JSON) - convert to string
+                code (let [raw (or (:code llm-result) (get-in llm-result [:outputs :code]))]
+                       (cond
+                         (string? raw)
+                         (-> raw
+                             (str/replace #"^```(?:clojure|clj|edn)?\s*\n?" "")
+                             (str/replace #"\n?```\s*$" "")
+                             str/trim)
+
+                         (some? raw)
+                         ;; Already parsed Clojure form - convert back to string for sandbox
+                         (pr-str raw)
+
+                         :else nil))
+
+                ;; Extract reasoning from LLM result and stash it into sandbox-vars
+                ;; under :iteration-reasonings (vector accumulates one per iteration).
+                ;; This is the model's stated rationale for the tree it's about to emit —
+                ;; useful for understanding whether the prepended corpus suggestions
+                ;; actually influenced the design choices.
+                reasoning (or (:reasoning llm-result)
+                              (get-in llm-result [:outputs :reasoning]))
+                _ (when (string? reasoning)
+                    (swap! sandbox-vars update :iteration-reasonings
+                           (fnil conj []) reasoning))
+
+                _ (when (and (string? code) (not (str/blank? code)))
+                    (streaming/emit! (:tick-id context)
+                                     (cond-> {:orc.stream/type :rlm-code-generated
+                                              :iteration (inc iteration)
+                                              :code (streaming/truncate-value code)}
+                                       (string? reasoning) (assoc :reasoning (streaming/truncate-value reasoning))
+                                       (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                       (:node-id context) (assoc :node-id (:node-id context)))))
+
+                ;; Update usage tracking (normalize handles snake_case -> kebab-case)
+                _ (when-let [u (normalize-usage (:usage llm-result))]
+                    (swap! total-usage
+                           (fn [acc]
+                             {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens u))
+                              :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens u))
+                              :total-tokens (+ (:total-tokens acc 0) (:total-tokens u))})))]
+
+            (cond
+                (str/blank? code)
+                {:status :failure
+                 :error "LLM did not generate code"
+                 :iterations history
+                 :duration-ms (- (System/currentTimeMillis) start-time)
+                 :usage @total-usage}
+
+                :else
+                ;; Build RLM sandbox context with BT primitives
+                ;; Pass persistent sandbox-vars so variables survive across iterations
+                (let [vars-before (set (keys @sandbox-vars))
+                    rlm-ctx (rlm-sandbox/build-rlm-context
+                            {:provider provider
+                             :blackboard blackboard
+                             :declared-writes declared-writes
+                             :call-tool-fn call-tool-fn
+                             :mcp-tools mcp-tools
+                             :browser-tools browser-tools
+                             :sandbox-vars sandbox-vars
+                             :recursive? recursive-mode?
+                             :event-store (:event-store context)
+                             :tenant-id (:tenant-id context)
+                             ;; C-Loop-3: thread the command-context opts
+                             ;; through so mint-behavior! + get-description
+                             ;; SCI bindings can dispatch commands + read
+                             ;; the descriptions read-model. The outer
+                             ;; processor enriches context with sheet-id/
+                             ;; tick-id; command-registry + cache come from
+                             ;; the standard Grain context.
+                             :command-registry (:command-registry context)
+                             :cache (:cache context)
+                             :sheet-id (:sheet-id context)
+                             :tick-id (:tick-id context)})
+                    exec-result (rlm-sandbox/execute-rlm-code rlm-ctx code)
+                    ;; Track new variables created in this iteration
+                    vars-after (set (keys @sandbox-vars))
+                    new-vars (clojure.set/difference vars-after vars-before)
+                    _ (doseq [k new-vars]
+                        (swap! var-creation-times assoc k (inc iteration)))
+                    new-history (conj history
+                                      {:code code
+                                       :result (:result exec-result)
+                                       :stdout (:stdout exec-result)
+                                       :error (:error exec-result)
+                                       :vars-created (vec new-vars)})
+                    final-output (:final-output exec-result)
+                    _ (streaming/emit! (:tick-id context)
+                                       (cond-> {:orc.stream/type :rlm-sandbox-completed
+                                                :iteration (inc iteration)
+                                                :final? (some? final-output)}
+                                         (some? (:result exec-result))
+                                         (assoc :result (streaming/truncate-value (:result exec-result)))
+                                         (:stdout exec-result)
+                                         (assoc :stdout (streaming/truncate-value (:stdout exec-result)))
+                                         (:error exec-result)
+                                         (assoc :error (str (:error exec-result)))
+                                         (seq new-vars)
+                                         (assoc :vars-created (vec new-vars))
+                                         (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                         (:node-id context) (assoc :node-id (:node-id context))))
+                    ;; Aggregate sub-LLM usage into total usage
+                    sub-llm-usage (:sub-llm-usage exec-result)
+                    _ (when (and sub-llm-usage (pos? (:total-tokens sub-llm-usage 0)))
+                        (swap! total-usage
+                               (fn [acc]
+                                 {:prompt-tokens (+ (:prompt-tokens acc 0) (:prompt-tokens sub-llm-usage 0))
+                                  :completion-tokens (+ (:completion-tokens acc 0) (:completion-tokens sub-llm-usage 0))
+                                  :total-tokens (+ (:total-tokens acc 0) (:total-tokens sub-llm-usage 0))})))
+                    _ (when debug?
+                        (dbg "exec-result :error:" (:error exec-result))
+                        (dbg "exec-result :final-output:" final-output)
+                        (when (pos? (:total-tokens sub-llm-usage 0))
+                          (dbg "sub-llm-usage:" sub-llm-usage)))]
+
+                (cond
+                  ;; Security violation - fail immediately (no retry)
+                  (and (:error exec-result)
+                       (str/includes? (str (:error exec-result)) "Security"))
+                  {:status :failure
+                   :error (:error exec-result)
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage @total-usage}
+
+                  ;; Recoverable error - add to history and continue iteration
+                  ;; This gives the model a chance to self-correct
+                  (:error exec-result)
+                  (let [error-msg (:error exec-result)
+                        available-vars (concat (keys blackboard) (keys @sandbox-vars))
+                        enhanced-error (format-error-with-suggestions error-msg available-vars)
+                        error-history (conj history
+                                           {:code code
+                                            :result nil
+                                            :stdout (:stdout exec-result)
+                                            :error enhanced-error
+                                            :vars-created []})]
+                    (recur (inc iteration) error-history))
+
+                  ;; final! was called - return the validated output
+                  final-output
+                  (let [total-elapsed (- (System/currentTimeMillis) start-time)
+                        ;; When the model called emit-tree! before final!,
+                        ;; the designed tree lives in sandbox-vars. Propagate
+                        ;; it to the return so downstream consumers (bench
+                        ;; runner, ontology recorders, observability) can
+                        ;; capture WHAT the model designed — not just what
+                        ;; final! produced. nil when the model went direct
+                        ;; without ever emit-tree!-ing.
+                        generated-tree-raw (:generated-tree-raw @sandbox-vars)
+                        iteration-reasonings (:iteration-reasonings @sandbox-vars)
+                        _ (when debug?
+                            (dbg "RETURN PATH: final! branch; sandbox-vars keys:" (keys @sandbox-vars))
+                            (dbg "RETURN PATH: :iteration-reasonings count:"
+                                 (count (or iteration-reasonings []))))]
+                    (cond-> {:status :success
+                             :outputs final-output
+                             :final-answer final-output
+                             :iterations new-history
+                             :duration-ms total-elapsed
+                             :usage @total-usage
+                             :iteration-reasonings (vec (or iteration-reasonings []))
+                             :cumulative-tree-ms @cumulative-tree-ms
+                             :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
+                      generated-tree-raw
+                      (assoc :generated-tree-raw generated-tree-raw)))
+
+                  ;; emit-tree! was called - trigger Phase 2 execution automatically
+                  ;; Phase 1 generated the tree, now execute it via child ORC tick
+                  (contains? @sandbox-vars :generated-tree)
+                  (let [;; PR-Dual-Model: when (:sub-model rlm-config) or
+                        ;; (:sub-model node) is set, walk the canonical tree
+                        ;; and inject :model sub-model into each (sheet/llm ...)
+                        ;; form that lacks an explicit :model. The Phase-2 leaf
+                        ;; executor passes that :model through as a per-request
+                        ;; override. Backward compatible — nil sub-model is a
+                        ;; no-op.
+                        sub-model (or (get rlm-config :sub-model)
+                                      (:sub-model node))
+                        generated-tree (inject-sub-model
+                                         (:generated-tree @sandbox-vars)
+                                         sub-model)
+                        generated-tree-raw (:generated-tree-raw @sandbox-vars)
+                        ;; Debug: Print the generated tree
+                        _ (when debug?
+                            (when sub-model
+                              (println "\n[DEBUG RLM] Sub-model injected into :llm nodes lacking :model:" sub-model))
+                            (println "\n[DEBUG RLM] Phase 2 triggered - emit-tree! was called")
+                            (println "[DEBUG RLM] Generated tree (raw S-expr):")
+                            (clojure.pprint/pprint generated-tree-raw)
+                            (println "\n[DEBUG RLM] Generated tree (canonical ORC DSL):")
+                            (clojure.pprint/pprint generated-tree))
+                        ;; D-003: resolve Phase 2 budget from node :timeout-ms,
+                        ;; parent tick :timeout-ms (passed via context), or hardcoded fallback.
+                        phase1-elapsed-ms (- (System/currentTimeMillis) start-time)
+                        budget (resolve-phase2-budget
+                                 {:node node
+                                  :parent-timeout-ms (:parent-timeout-ms context)
+                                  :phase1-elapsed-ms phase1-elapsed-ms})
+                        _ (when debug?
+                            (println "\n[DEBUG RLM] Phase 2 budget:" budget))]
+                    (if (:exhausted? budget)
+                      ;; D-003: skip Phase 2 entirely when budget is exhausted in Phase 1.
+                      {:status :failure
+                       :error (str "Budget exhausted in Phase 1 ("
+                                   phase1-elapsed-ms "ms elapsed of "
+                                   (:total-budget-ms budget) "ms "
+                                   "[source=" (name (:source budget)) "]; "
+                                   "no time left for Phase 2)")
+                       :iterations new-history
+                       :duration-ms phase1-elapsed-ms
+                       :phase1-elapsed-ms phase1-elapsed-ms
+                       :usage @total-usage
+                       :budget budget}
+                      (let [;; Execute Phase 2: spawn child tick with the generated tree
+                            ;; Pass all sandbox-vars (except the tree itself) as inputs
+                            phase2-vars (dissoc @sandbox-vars :generated-tree :generated-tree-raw)
+                            _ (when debug?
+                                (println "\n[DEBUG RLM] Phase 2 sandbox vars:" (keys phase2-vars)))
+                            phase2-result (try
+                                            (tree-executor/execute-tree
+                                              generated-tree
+                                              context
+                                              {:sandbox-vars phase2-vars
+                                               :blackboard (reduce-kv
+                                                             (fn [acc k entry]
+                                                               (assoc acc k (:value entry)))
+                                                             {}
+                                                             blackboard)
+                                               ;; U6: preserve parent blackboard schemas
+                                               ;; (e.g. [:string {:field-type :image}]) so
+                                               ;; the child sheet's leaves see proper
+                                               ;; routing. Without this the child falls back
+                                               ;; to type-inference from value, which loses
+                                               ;; image routing.
+                                               :blackboard-schemas (reduce-kv
+                                                                     (fn [acc k entry]
+                                                                       (if-let [s (:schema entry)]
+                                                                         (assoc acc k s)
+                                                                         acc))
+                                                                     {}
+                                                                     blackboard)
+                                               :timeout-ms (:remaining-ms budget)})
+                                            (catch Exception e
+                                              (println "[DEBUG RLM] Phase 2 execution ERROR:" (.getMessage e))
+                                              (.printStackTrace e)
+                                              {:status :failure
+                                               :error (str "Phase 2 execution failed: " (.getMessage e))}))
+                            ;; D-003: when Phase 2 times out, dispatch :sheet cancel-tick
+                            ;; on the child tick so it stops executing in the background.
+                            ;; The tree executor's timeout default carries :sheet-id +
+                            ;; :trace-id specifically so we can cancel here. Wait ~500ms
+                            ;; after dispatching so in-flight nodes settle their writes
+                            ;; (the bookend :sheet/rlm-tree-execution-completed event
+                            ;; needs that window).
+                            _ (when (= :timeout (:status phase2-result))
+                                (let [child-tick-id (:trace-id phase2-result)
+                                      child-sheet-id (:sheet-id phase2-result)]
+                                  (when (and child-tick-id child-sheet-id)
+                                    (cp/process-command
+                                      (assoc context :command
+                                             {:command/id (random-uuid)
+                                              :command/timestamp (time/now)
+                                              :command/name :sheet/cancel-tick
+                                              :sheet-id child-sheet-id
+                                              :tick-id child-tick-id}))
+                                    ;; ~500ms drain so in-flight nodes settle their
+                                    ;; writes into the event store before we return.
+                                    (Thread/sleep 500))))
+                            phase1-duration phase1-elapsed-ms
+                        _ (when debug?
+                            (println "\n[DEBUG RLM] Phase 2 result:")
+                            (println "  status:" (:status phase2-result))
+                            (println "  error:" (:error phase2-result))
+                            (println "  outputs keys:" (keys (:outputs phase2-result)))
+                            (println "  duration-ms:" (:duration-ms phase2-result)))]
+                    ;; R-1: When :recursive? true, DON'T return Phase 2's result —
+                    ;; instead merge outputs into sandbox-vars, append a summary entry
+                    ;; to :tree-results, clear :generated-tree, and recur to give the
+                    ;; model another iteration to reason about the tree's outcome.
+                    (if recursive-mode?
+                      (let [child-tick-id (:trace-id phase2-result)
+                            tenant-id (:tenant-id context)
+                            event-store (:event-store context)
+                            tick-events (when (and event-store child-tick-id)
+                                          (into [] (es/read event-store
+                                                     (cond-> {:tags #{[:tick child-tick-id]}}
+                                                       tenant-id (assoc :tenant-id tenant-id)))))
+                            ;; Augment phase2-result with R-1 fields so the summary
+                            ;; can surface timeout-specific data when present.
+                            phase2-result+budget
+                            (cond-> phase2-result
+                              (= :timeout (:status phase2-result))
+                              (assoc :phase2-elapsed-ms (or (:duration-ms phase2-result)
+                                                            (:remaining-ms budget))
+                                     :budget-remaining-ms 0))
+                            summary (compute-tree-result-summary
+                                      {:phase2-result phase2-result+budget
+                                       :tick-events tick-events
+                                       :tree-raw generated-tree-raw
+                                       :writes declared-writes})
+                            _ (swap! sandbox-vars merge-tree-result-into-sandbox
+                                     phase2-result+budget declared-writes summary)
+                            _ (swap! cumulative-tree-ms + (or (:duration-ms phase2-result) 0))
+                            ;; Aggregate Phase 2 sub-LLM usage into the
+                            ;; tick-level total-usage. Without this the
+                            ;; saved EDN's :usage reflects only Phase 1
+                            ;; (design + final-call) tokens, hiding the
+                            ;; actual cost of executing the model's tree.
+                            ;; The non-recursive return path already does
+                            ;; this combine via combined-usage; recursive
+                            ;; mode needs the equivalent per-iteration
+                            ;; accumulation.
+                            p2-usage (:usage phase2-result)
+                            _ (when (and p2-usage (pos? (:total-tokens p2-usage 0)))
+                                (swap! total-usage
+                                       (fn [acc]
+                                         (-> acc
+                                             (update :prompt-tokens
+                                                     (fnil + 0 0)
+                                                     (or (:prompt-tokens p2-usage) 0))
+                                             (update :completion-tokens
+                                                     (fnil + 0 0)
+                                                     (or (:completion-tokens p2-usage) 0))
+                                             (update :total-tokens
+                                                     (fnil + 0 0)
+                                                     (or (:total-tokens p2-usage) 0))))))
+                            _ (dbg "\n[DEBUG RLM] Recursive recur — :tree-results entries:"
+                                   (count (:tree-results @sandbox-vars))
+                                   "summary status:" (:status summary))
+                            ;; R-5: After the recursive-mode merge, update the
+                            ;; LAST iteration history entry so its :vars-created
+                            ;; reflects the tree's :writes-declared output keys
+                            ;; (which the merge just added to sandbox-vars), not
+                            ;; just the transient :generated-tree / :generated-
+                            ;; tree-raw markers. This is what surfaces to the
+                            ;; next iteration's prompt so the model sees what
+                            ;; data is now available via (get-var ...) and
+                            ;; doesn't redundantly re-emit a tree that recomputes
+                            ;; data it already has.
+                            tree-output-keys (vec (:outputs-keys summary))
+                            new-history (if (seq tree-output-keys)
+                                          (update new-history
+                                                  (dec (count new-history))
+                                                  (fn [entry]
+                                                    (let [prior-vars (or (:vars-created entry) [])
+                                                          ;; Drop the markers; surface the actual
+                                                          ;; tree writes instead.
+                                                          marker-syms #{:generated-tree :generated-tree-raw}
+                                                          kept (remove marker-syms prior-vars)]
+                                                      (assoc entry :vars-created
+                                                             (vec (distinct (concat kept tree-output-keys)))))))
+                                          new-history)]
+                        (recur (inc iteration) new-history))
+                      ;; Non-recursive (current behavior, preserved) — merge results and return.
+                      (let [p1-usage @total-usage
+                            p2-usage (:usage phase2-result)
+                            ;; Preserve :by-node from Phase 2 (the per-node breakdown
+                            ;; of sub-LLM calls inside the generated tree).
+                            p2-by-node (:by-node p2-usage)
+                            combined-usage (cond-> {:prompt-tokens (+ (:prompt-tokens p1-usage 0)
+                                                                     (:prompt-tokens p2-usage 0))
+                                                    :completion-tokens (+ (:completion-tokens p1-usage 0)
+                                                                          (:completion-tokens p2-usage 0))
+                                                    :total-tokens (+ (:total-tokens p1-usage 0)
+                                                                     (:total-tokens p2-usage 0))}
+                                             (seq p2-by-node) (assoc :by-node p2-by-node))]
+                        {:status (:status phase2-result)
+                         :outputs (:outputs phase2-result)
+                         :generated-tree-raw generated-tree-raw
+                         :iteration-reasonings (:iteration-reasonings @sandbox-vars)
+                         :iterations new-history
+                         :duration-ms (+ phase1-duration (or (:duration-ms phase2-result) 0))
+                         :usage combined-usage
+                         :breakdown {:phase1 p1-usage :phase2 p2-usage}
+                         :phase2-duration-ms (:duration-ms phase2-result)
+                         :phase2-error (:error phase2-result)
+                         ;; D-003: surface elapsed timings on the happy path so callers
+                         ;; can debug whether budget is being spent on Phase 1 or Phase 2.
+                         :phase1-elapsed-ms phase1-duration
+                         :phase2-elapsed-ms (cond
+                                              (number? (:duration-ms phase2-result))
+                                              (:duration-ms phase2-result)
+                                              ;; On timeout, execute-tree returns no duration —
+                                              ;; we can derive it from the remaining budget that
+                                              ;; we passed (it's what actually got consumed).
+                                              (= :timeout (:status phase2-result))
+                                              (:remaining-ms budget)
+                                              :else nil)
+                         :phase2-tick-id (:trace-id phase2-result)
+                         :budget budget})))))
+
+                  ;; Check for FINAL_ANSWER pattern (fallback)
+                  (or (sci-sandbox/contains-final-answer? (:result exec-result))
+                      (sci-sandbox/contains-final-answer? (:stdout exec-result)))
+                  (let [final-answer (or (sci-sandbox/extract-final-answer (:result exec-result))
+                                         (sci-sandbox/extract-final-answer (:stdout exec-result)))
+                        outputs (if (map? final-answer)
+                                  final-answer
+                                  {(first declared-writes) final-answer})]
+                    {:status :success
+                     :outputs outputs
+                     :final-answer final-answer
+                     :iterations new-history
+                     :duration-ms (- (System/currentTimeMillis) start-time)
+                     :usage @total-usage})
+
+                  ;; Continue iteration
+                  :else
+                  (recur (inc iteration) new-history)))))))
+
+      (catch Exception e
+        {:status :failure
+         :error (.getMessage e)
+         :duration-ms (- (System/currentTimeMillis) start-time)
          :usage @total-usage}))))
 
 ;; =============================================================================
@@ -975,18 +2618,19 @@
       :outputs {string-key value}
       :error string?
       :duration-ms int}"
-  [node blackboard provider & {:keys [context options] :or {context {} options {}}}]
+  [node blackboard provider & {:keys [context options stream] :or {context {} options {}}}]
   (let [executor-type (or (:executor node) :ai)
         retry-config (:retry node)
+        execution-options (merge options (:options node))
         execute-fn (fn []
                      (case executor-type
-                       :ai (execute-ai node blackboard provider :options options)
+                       :ai (execute-ai node blackboard provider :options execution-options :stream stream)
                        :code (execute-code node blackboard context)
                        :tool {:status :failure
                               :error "Tool executor not yet implemented"
                               :duration-ms 0}
                        ;; Default to AI
-                       (execute-ai node blackboard provider :options options)))]
+                       (execute-ai node blackboard provider :options execution-options :stream stream)))]
     (if retry-config
       (execute-with-retry execute-fn retry-config)
       (execute-fn))))

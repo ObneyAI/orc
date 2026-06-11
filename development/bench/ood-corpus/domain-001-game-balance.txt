@@ -1,0 +1,25 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: domain
+;; Why OOD: iterative parameter tuning against simulated feedback — the C-Loop-3 single-task PASS shape.
+Balance a 4-class deckbuilder card game (Mage / Rogue / Warrior / Cleric)
+so that across simulated head-to-head matches, every pair of classes
+converges to a win-rate in the [45%, 55%] window.
+
+Each class has a starting kit:
+- Mage:    24 HP, 3 spell-cards (5 dmg @ 4 mana), 1 shield-card (block 2 @ 1 mana)
+- Rogue:   26 HP, 4 quick-cards (2 dmg @ 1 mana), 1 dodge-card (50% block @ 2 mana)
+- Warrior: 30 HP, 2 attack-cards (4 dmg @ 3 mana), 1 armor-card (block 3 @ 2 mana)
+- Cleric:  28 HP, 2 heal-cards (heal 5 @ 3 mana), 2 smite-cards (3 dmg @ 2 mana)
+
+You are NOT given a baseline win-rate matrix. The work is iterative:
+- Hypothesize a starting balance (which class is over/under-tuned and why)
+- Simulate enough head-to-head matches to estimate the 4x4 win-rate matrix
+- Identify any pair outside [45%, 55%]
+- Adjust class parameters (HP / card damage / card cost) on the outlier classes
+- Re-simulate the affected matchups
+- Repeat until all 6 pairwise matchups converge into [45%, 55%]
+
+Produce:
+- :final-balance — the converged class parameters as a map keyed by class
+- :rounds — vector of {:round-N {:adjustments {...} :winrate-matrix {...}}}
+- :rationale — 2-3 paragraphs explaining iteration strategy + convergence

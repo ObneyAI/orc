@@ -1,0 +1,76 @@
+{:slug "behavioral-fresh-mint-003-recipe-iambic-pentameter",
+ :envelope
+ {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :confidence 0.9,
+  :top-candidates
+  [{:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 54.24169921875,
+    :rank 1,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468124-05:00"},
+    :reasoning
+    "This ETL pipeline pattern best matches the task's structural need to first transform content (generating the raw recipe and meter) and then apply deterministic formatting (structuring the output as a specific map with yield and ingredients). The combination of :llm for transformation and :code for enforcing the final JSON structure matches the logic required for this prompt.",
+    :fitness-score 0.9,
+    :rerank-source :reranker}
+   {:content
+    "Parallel-classify-aggregate is the hybrid MapReduce variant: chunk → :llm classifier per-chunk → :code reducer for counts. The :llm scope stays narrow (single category label per chunk) while the :code reducer handles deterministic counting. Always declare :output-schemas with an :enum on the classifier to prevent label drift. Always bound :map-each :max-concurrency to 3 (LLM rate limits). The code reducer must explicitly handle nil/missing labels. Use parallel-sum when the per-chunk work is arithmetic; use chunked-extraction when cross-chunk reasoning is needed.",
+    :score 54.07412338256836,
+    :rank 3,
+    :document-id
+    ":tree-fingerprint:#uuid \"1c0f6cd8-6187-3d8e-993e-2df630968760\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "1c0f6cd8-6187-3d8e-993e-2df630968760",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.470984-05:00"},
+    :reasoning
+    "While this candidate involves :llm and :code components, it is optimized for classification and counting across chunks. The recipe task is a single creative generation rather than a MapReduce operation, making the 'aggregate' and 'labeling' focus a poor fit for the creative constraints.",
+    :fitness-score 0.3,
+    :rerank-source :reranker}
+   {:content
+    "ChunkedExtraction is the canonical 4-stage shape for processing large documents: :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Reusable across any domain where the input is a large document and the work is per-chunk independent. Always bound :max-concurrency on the :map-each to avoid sub-LLM rate-limit exhaustion. Skip the pattern for documents <5KB or when cross-chunk reasoning is required.",
+    :score 54.018211364746094,
+    :rank 6,
+    :document-id ":tree-fingerprint:\"seed:tree:ChunkedExtraction\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ChunkedExtraction",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464585-05:00"},
+    :reasoning
+    "This pattern is designed for processing long documents via chunking. The query's input is a short prompt, and the task requires holistic generation of a cohesive recipe and meter, which would be broken by the independent chunk-processing logic of this pattern.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 51.96393585205078,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464242-05:00"},
+    :reasoning
+    "Like the previous candidate, this is a chunked-extraction pattern for large documents. It is fundamentally irrelevant to a creative generation task that needs to maintain consistent meter across a short list of steps.",
+    :fitness-score 0.1,
+    :rerank-source :reranker}],
+  :reasoning
+  "This ETL pipeline pattern best matches the task's structural need to first transform content (generating the raw recipe and meter) and then apply deterministic formatting (structuring the output as a specific map with yield and ingredients). The combination of :llm for transformation and :code for enforcing the final JSON structure matches the logic required for this prompt.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6625,
+ :parent-chain []}

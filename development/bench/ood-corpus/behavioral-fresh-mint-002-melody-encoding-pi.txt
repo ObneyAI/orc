@@ -1,0 +1,14 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: behavioral-fresh-mint
+;; Why OOD: cross-modality encoding (digits → music). Behaviors cover analysis, classification, transformation of typed data — not this cross-modal mapping.
+Encode the first 20 digits of pi (3.14159265358979323846) as a melody.
+
+Constraints:
+- 7-note scale: map digit 0 to rest, digits 1-7 to scale degrees (do, re, mi, fa,
+  sol, la, ti), digits 8-9 to octave-up of degrees 1-2.
+- Output the melody as a vector of 20 maps `{:digit N :note "..." :octave O
+  :duration "quarter|half|whole"}` where duration is chosen to give the
+  melody a singable rhythm (not all quarter notes).
+- Add a brief explanation (3-5 sentences) of the musical decisions: which key
+  you chose, how rhythm choices shape the phrase, whether the melody resolves.
+- Bonus: name a famous tune that the resulting melody RESEMBLES, if any.

@@ -1,0 +1,47 @@
+{:slug "data-002-etl-cdc-to-dim",
+ :envelope
+ {:assigned-tree-id #uuid "d41af303-dcb2-3599-9198-0c006d1cc364",
+  :confidence 0.92,
+  :top-candidates
+  [{:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 145.5204620361328,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.157194-05:00"},
+    :reasoning
+    "The task requires processing 5 distinct, heterogeneous data sources (Postgres, MySQL, MongoDB, Snowflake, Salesforce) to build a unified dimensional model. The comparative-summary pattern is the best fit because it explicitly handles 'parallel per-source extraction' followed by a 'final :llm synthesis', which matches the need to extract schemas/entities from 5 sources and synthesize them into a single star-schema design and reconciliation strategy.",
+    :fitness-score 0.92,
+    :rerank-source :reranker}
+   {:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 144.49790954589844,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.151172-05:00"},
+    :reasoning
+    "While titled 'ETL pipelines', this pattern describes a sequential chain (A->B->C) rather than a multi-source integration. It fails to address the independent nature of the 5 source databases mentioned in the query. The recommendation to avoid this pattern when 'stages can run in parallel' makes it a poorer fit than the comparative-summary variant for a 5-source architecture design task.",
+    :fitness-score 0.45,
+    :rerank-source :reranker}],
+  :reasoning
+  "The task requires processing 5 distinct, heterogeneous data sources (Postgres, MySQL, MongoDB, Snowflake, Salesforce) to build a unified dimensional model. The comparative-summary pattern is the best fit because it explicitly handles 'parallel per-source extraction' followed by a 'final :llm synthesis', which matches the need to extract schemas/entities from 5 sources and synthesize them into a single star-schema design and reconciliation strategy.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5404,
+ :parent-chain []}

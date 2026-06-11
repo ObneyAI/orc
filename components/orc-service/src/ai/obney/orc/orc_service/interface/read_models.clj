@@ -70,6 +70,20 @@
   (core/get-blackboard-by-key ctx sheet-id))
 
 ;; =============================================================================
+;; Judge Read Model Functions (Gap-1)
+;; =============================================================================
+
+(defn get-judges
+  "Get all judges declared for a sheet as a map keyed by judge name."
+  [ctx sheet-id]
+  (core/get-judges ctx sheet-id))
+
+(defn get-judge
+  "Get a single declared judge by name."
+  [ctx sheet-id judge-name]
+  (core/get-judge ctx sheet-id judge-name))
+
+;; =============================================================================
 ;; Tick Read Model Functions
 ;; =============================================================================
 
@@ -153,3 +167,21 @@
    - :total-executions - total number of executions"
   [ctx sheet-id]
   (core/get-tree-rolling-metrics ctx sheet-id))
+
+(defn get-node-type-metrics
+  "C-2a-2: get cross-sheet rolling metrics for a node-type keyword.
+
+   Returns map with :node-type :success-count :failure-count
+   :total-duration :executions, or nil when no events with that
+   :node-type have been recorded."
+  [ctx node-type]
+  (core/get-node-type-metrics ctx node-type))
+
+(defn get-tree-fingerprint-metrics
+  "C-2a-2: get cross-sheet rolling metrics for a tree-fingerprint hash.
+
+   Returns map with :tree-fingerprint :success-count :failure-count
+   :total-duration :executions, or nil when no rlm-tree-execution-
+   completed events with that :tree-fingerprint have been recorded."
+  [ctx tree-fingerprint]
+  (core/get-tree-fingerprint-metrics ctx tree-fingerprint))

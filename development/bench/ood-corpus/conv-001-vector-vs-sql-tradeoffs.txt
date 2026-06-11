@@ -1,0 +1,27 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: conv
+;; Why OOD: tradeoff-explanation discourse with stakeholder framing. Closest behavior is "design" but the shape (decision-with-context, not artifact-from-constraints) differs.
+A small B2B SaaS team is debating whether to add a vector database (e.g.,
+pgvector extension on their existing Postgres, OR a dedicated Weaviate/
+Qdrant deployment) to power a "find similar customer-support tickets"
+feature, OR whether to handle it with a Postgres LIKE + Elasticsearch
+hybrid.
+
+The team has:
+- 12 engineers (4 backend, 4 frontend, 2 SRE, 2 mobile)
+- ~3M support tickets in Postgres today
+- Strong Postgres operational expertise
+- No prior vector-DB experience
+- 6-week timeline to ship the feature
+- Existing Elasticsearch cluster (3-node, used for full-text search on tickets)
+
+Explain the tradeoffs across these three options with a clear recommendation
+for THIS team given THEIR context (not in the abstract). Include:
+- `:option-summaries` — what each option actually does at a 200-foot level
+- `:fit-to-team-constraints` — how each option lands against the team's
+  current expertise, infrastructure, and timeline
+- `:operational-cost-comparison` — what each costs to run + maintain over 1
+  year and 3 years
+- `:quality-comparison` — relevance, latency, recall expectations
+- `:recommendation` — pick ONE option + explain why for THIS team
+- `:caveats` — what conditions would change the recommendation

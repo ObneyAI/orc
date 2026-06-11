@@ -1,0 +1,28 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: conv
+;; Why OOD: constraint-bound architectural recommendation with explicit failure-mode discussion.
+A consumer-app startup needs an architecture recommendation for their next
+6-month build:
+
+- Product: real-time multiplayer trivia game, expected scale 50K concurrent
+  users at launch, 500K within 6 months
+- Latency budget: question-broadcast to all participants in a match must
+  arrive within 200 ms p99
+- Team: 6 engineers, 2 of whom have GraphQL experience, none with WebRTC
+- Existing infra: AWS, terraform-managed, RDS Postgres for user data,
+  Cloudflare on the edge
+- Cost budget: $3K/mo at 50K users, scaling sublinearly thereafter
+
+Recommend an architecture with specific tech choices for:
+- Real-time message transport (WebSocket vs Server-Sent Events vs polling)
+- Game-state authority (server-authoritative vs hybrid)
+- Match orchestration (single-process matchmaker vs distributed)
+- Data tier (Postgres alone vs Postgres + Redis vs separate write/read)
+- Observability stack
+
+For EACH choice include:
+- The decision
+- Why it fits the constraints
+- What FAILURE MODE it creates and how it's mitigated
+- A plausibility test the team can run in week 1 to validate the choice
+  before sinking implementation effort

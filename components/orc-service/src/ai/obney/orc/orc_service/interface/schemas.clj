@@ -21,8 +21,30 @@
   [:enum :ai :code :tool])
 
 (def node-status
-  "Node execution status"
-  [:enum :idle :running :success :failure])
+  "Node execution status.
+
+   :partial is emitted by map-each when 0 < failed < total items (D-008).
+   Sequence/fallback parents treat :partial as continuation (same as :success).
+
+   :timeout is emitted by RLM repl-researcher nodes when Phase 2 exceeds the
+   budget (D-003). Surfaces to the parent so callers can distinguish 'no
+   useful output' from a deliberate failure."
+  [:enum :idle :running :success :failure :partial :timeout])
+
+(def partial-summary
+  "Denormalized at-a-glance synopsis of partial/failure outcome on a map-each.
+   The canonical record stays in per-child :sheet/node-execution-completed
+   events; this summary is a convenience for judges and dashboards.
+
+   D-008: :failure-input-profiles is reserved for future enrichment when
+   the map-each handler has access to per-child input profiles."
+  [:map
+   [:total :int]
+   [:succeeded :int]
+   [:failed :int]
+   [:failure-indices [:vector :int]]
+   [:failure-reasons [:map-of :int :string]]
+   [:failure-input-profiles {:optional true} [:map-of :int :map]]])
 
 ;; Legacy field-type enum - kept for migration from old format
 (def field-type
@@ -117,6 +139,7 @@
     [:model {:optional true} :string]              ;; OpenRouter model ID (e.g., "google/gemini-2.5-flash")
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
     [:tools {:optional true} [:vector :keyword]]   ;; Tools available to AI for :ai executor
+    [:options {:optional true} :map]               ;; Per-node executor/DSCloj options
     [:retry {:optional true} [:map
                               [:max-attempts :int]
                               [:backoff-ms [:vector :int]]]]
@@ -139,6 +162,10 @@
     ;; Repl-researcher-only fields
     [:mcp-tools {:optional true} [:vector :string]] ;; Available MCP tool names for research
     [:max-iterations {:optional true} :int]         ;; Max research iterations (default 10)
+    ;; D-003: total budget (Phase 1 + Phase 2) in ms. When set, takes precedence
+    ;; over the parent tick :options :timeout-ms and the 900_000ms hardcoded
+    ;; fallback. Phase 2 receives the remaining budget after Phase 1 completes.
+    [:timeout-ms {:optional true} :int]
     ;; Delegate-only fields
     [:target-sheet-id {:optional true} :uuid]       ;; Sheet to delegate execution to
     [:delegate-timeout-ms {:optional true} :int]    ;; Timeout for delegated execution
@@ -190,7 +217,7 @@
     [:parent-id {:optional true} :uuid]           ;; Parent node ID (for reference only)
     [:path [:vector :string]]                     ;; Path from root e.g. ["root" "fallback-1" "task-a"]
     [:child-index {:optional true} :int]          ;; Which child of parent (0-indexed)
-    [:status [:enum :success :failure :running :skipped]]
+    [:status [:enum :success :failure :running :skipped :partial :timeout]]
     [:started-at :any]
     [:completed-at {:optional true} :any]
     [:duration-ms {:optional true} :int]
@@ -206,7 +233,7 @@
     [:started-at :any]
     [:completed-at :any]
     [:duration-ms :int]
-    [:status [:enum :success :failure :timeout]]
+    [:status [:enum :success :failure :timeout :partial]]
     [:input-snapshot :map]                        ;; Blackboard at start
     [:output-snapshot :map]                       ;; Blackboard at end
     [:node-traces [:vector ::node-trace]]
@@ -336,7 +363,8 @@
     [:executor executor-type]
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
-    [:tools {:optional true} [:vector :keyword]]]
+    [:tools {:optional true} [:vector :keyword]]
+    [:options {:optional true} :map]]
 
    :sheet/set-node-retry
    [:map
@@ -379,7 +407,10 @@
     [:writes [:vector :keyword]]                        ;; Output keys (final-answer, iterations, etc.)
     [:mcp-tools [:vector :string]]                      ;; Available MCP tool names
     [:model {:optional true} :string]                   ;; OpenRouter model ID
-    [:max-iterations {:optional true} :int]]            ;; Default 10
+    [:max-iterations {:optional true} :int]             ;; Default 10
+    [:rlm {:optional true} [:or :boolean :map]]         ;; Enable RLM mode (true or {:debug? true})
+    [:options {:optional true} :map]                    ;; Per-node executor/DSCloj options
+    [:timeout-ms {:optional true} :int]]                ;; D-003: total Phase-1+Phase-2 budget
 
    :sheet/set-delegate-config
    [:map
@@ -434,7 +465,12 @@
     [:judge-config [:map
                     [:type :keyword]  ;; :grounding, :completeness, :instruction-following, :reasoning, :custom
                     [:criteria {:optional true} :string]  ;; Custom criteria description
-                    [:weight {:optional true} :double]    ;; Weight for aggregation (0.0-1.0)
+                    ;; Weight for aggregation. The Gap-8 composite-score
+                    ;; normalizer accepts ANY non-negative number (integer
+                    ;; or double) — values are re-scaled per the share-
+                    ;; remaining-mass policy. Negative weights are rejected
+                    ;; because they're nonsensical for a probability mass.
+                    [:weight {:optional true} [:and number? [:>= 0.0]]]
                     [:sheet-id {:optional true} :uuid]]]] ;; For :custom type - reference to judge sheet
 
    :sheet/set-node-judges
@@ -451,6 +487,9 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id {:optional true} :uuid]
+    ;; Lineage: tick that spawned this one (RLM Phase 2 trees, delegate
+    ;; nodes). Lets observers correlate a child-tick cascade to its root.
+    [:parent-tick-id {:optional true} :uuid]
     ;; Fields for async execution with isolated blackboard
     [:inputs {:optional true} :map]
     [:use-version {:optional true} :int]
@@ -475,10 +514,29 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:status [:enum :success :failure]]
+    [:status [:enum :success :failure :tree-generated :partial :timeout]]
     [:writes [:map-of :keyword :any]]
     [:duration-ms {:optional true} :int]
-    [:inputs {:optional true} [:map-of :keyword :any]]]
+    [:inputs {:optional true} [:map-of :keyword :any]]
+    ;; Gap-7: carry through to the event body. See :completion-kind on
+    ;; :sheet/node-execution-completed.
+    [:completion-kind {:optional true} [:enum :tree-iteration :terminal]]
+    ;; Optional per-node token usage from LLM calls. Universal — applies to
+    ;; any leaf node that calls an LLM, not just RLM Phase 2 contexts.
+    [:usage {:optional true}
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]]]
+    ;; D-008: present when a map-each terminates in :partial or :failure.
+    [:partial-summary {:optional true} partial-summary]
+    ;; C-2a-2: node-type keyword (:llm, :code, :map-each, :parallel, ...).
+    ;; Drives the per-node-type rolling-metrics aggregator without forcing
+    ;; the read-model to look up node-type via the sheets read-model.
+    ;; Optional for backwards compatibility — older callers / replayed
+    ;; events without this field are skipped by the per-node-type
+    ;; aggregator.
+    [:node-type {:optional true} :keyword]]
 
    :sheet/fail-node-execution
    [:map
@@ -486,6 +544,52 @@
     [:tick-id :uuid]
     [:node-id :uuid]
     [:error :string]
+    [:duration-ms {:optional true} :int]]
+
+   ;; Records an RLM-tree node completion. Emitted by execute-leaf-node
+   ;; alongside the generic complete-node-execution when an LLM call has
+   ;; usage. Produces a :sheet/rlm-tree-node-completed event with a
+   ;; precomputed node-path. Future fields (scores, feedback) get added
+   ;; by downstream judge work.
+   :sheet/record-rlm-tree-node-completion
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:node-path [:vector :map]]
+    [:usage
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]]]
+    ;; Optional :input-profile keyed by node :reads — describes input
+    ;; characteristics so future judges/pattern-matchers can correlate
+    ;; outcomes to input shape.
+    [:input-profile {:optional true} [:map-of :keyword :map]]]
+
+   ;; Bookend event for an RLM Phase 2 tree-execution. Emitted once when
+   ;; the tree-tick finishes (success or failure). Carries the full
+   ;; trajectory of events, total token usage, and a placeholder for
+   ;; task-fingerprint (filled by later issue 012 work).
+   :sheet/record-rlm-tree-execution-completion
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:trajectory [:vector :map]]
+    [:total-usage [:map]]
+    [:task-fingerprint {:optional true} [:maybe :string]]
+    ;; C-2a-2: deterministic hash of canonical tree-raw S-expression.
+    ;; Stable across the inline-fn sanitization step. Drives the per-
+    ;; tree-fingerprint rolling-metrics aggregator. Optional for
+    ;; backwards compatibility with replays of older events.
+    [:tree-fingerprint {:optional true} [:maybe :string]]
+    ;; C-2a-2: tree-execution outcome. Required for the per-tree-
+    ;; fingerprint aggregator to count successes vs failures. Optional
+    ;; for backwards compatibility — older events without this field
+    ;; are skipped by the aggregator.
+    [:status {:optional true} [:enum :success :failure :partial :timeout]]
+    ;; C-2a-2: wall-clock duration of Phase 2 execution. Optional for
+    ;; the same reason :status is.
     [:duration-ms {:optional true} :int]]
 
    ;; -------------------------------------------------------------------------
@@ -679,10 +783,12 @@
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
+    [:options {:optional true} :map]
     [:previous-executor {:optional true} executor-type]
     [:previous-model {:optional true} :string]
     [:previous-fn {:optional true} :string]
-    [:previous-tools {:optional true} [:vector :keyword]]]
+    [:previous-tools {:optional true} [:vector :keyword]]
+    [:previous-options {:optional true} :map]]
 
    :sheet/node-retry-set
    [:map
@@ -738,12 +844,18 @@
     [:mcp-tools [:vector :string]]
     [:model {:optional true} :string]
     [:max-iterations {:optional true} :int]
+    [:rlm {:optional true} [:or :boolean :map]]
+    [:options {:optional true} :map]
+    [:timeout-ms {:optional true} :int]                            ;; D-003
     [:previous-instruction {:optional true} :string]
     [:previous-reads {:optional true} [:vector :keyword]]
     [:previous-writes {:optional true} [:vector :keyword]]
     [:previous-mcp-tools {:optional true} [:vector :string]]
     [:previous-model {:optional true} :string]
-    [:previous-max-iterations {:optional true} :int]]
+    [:previous-max-iterations {:optional true} :int]
+    [:previous-rlm {:optional true} [:or :boolean :map]]
+    [:previous-options {:optional true} :map]
+    [:previous-timeout-ms {:optional true} :int]]                  ;; D-003
 
    :sheet/delegate-config-set
    [:map
@@ -801,7 +913,8 @@
     [:judge-config [:map
                     [:type :keyword]
                     [:criteria {:optional true} :string]
-                    [:weight {:optional true} :double]
+                    ;; Mirror of :sheet/declare-judge :weight constraint.
+                    [:weight {:optional true} [:and number? [:>= 0.0]]]
                     [:sheet-id {:optional true} :uuid]]]
     [:criteria-version {:optional true} :int]]
 
@@ -820,6 +933,9 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
+    ;; Lineage: tick that spawned this one (RLM Phase 2 trees, delegate
+    ;; nodes). Absent for root ticks and on events from older versions.
+    [:parent-tick-id {:optional true} :uuid]
     [:iteration {:optional true} :int]
     ;; Fields for async execution with isolated blackboard
     [:inputs {:optional true} :map]
@@ -839,17 +955,91 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:status [:enum :success :failure :running]]
+    [:status [:enum :success :failure :running :tree-generated :partial :timeout]]
     [:writes {:optional true} [:map-of :keyword :any]]
     [:duration-ms {:optional true} :int]
-    [:inputs {:optional true} [:map-of :keyword :any]]]
+    [:inputs {:optional true} [:map-of :keyword :any]]
+    ;; Optional per-node token usage when the node was an LLM call.
+    [:usage {:optional true}
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]]]
+    ;; D-008: present on map-each completion events when status is :partial or :failure.
+    [:partial-summary {:optional true} partial-summary]
+    ;; C-2a-2: node-type keyword carried through from the command for the
+    ;; per-node-type rolling-metrics aggregator. Optional for backwards
+    ;; compatibility with old replayed events.
+    [:node-type {:optional true} :keyword]
+    ;; Gap-7: distinguishes intermediate-tree-iteration completions of
+    ;; recursive repl-researcher nodes (where :generated-tree-raw is in
+    ;; :writes) from the terminal (final!) completion (where the
+    ;; synthesized task outputs are in :writes). Used by the judge
+    ;; runtime's resolver to route appropriate judges per kind.
+    ;; Optional — legacy / non-repl-researcher events omit it.
+    [:completion-kind {:optional true} [:enum :tree-iteration :terminal]]]
+
+   ;; RLM-specific learning-signal event. Fires alongside the generic
+   ;; node-execution-completed when an LLM call completes inside an RLM
+   ;; Phase 2 tree. Carries a precomputed :node-path identifying the
+   ;; node's position in map-each iterations, plus :usage. Future
+   ;; iterations of this PRD's work (O03+) will extend this event with
+   ;; :input-profile, and downstream judge work will add :scores and
+   ;; :feedback. Kept distinct from the generic event so the RLM-specific
+   ;; fields don't pollute universal node lifecycle.
+   :sheet/rlm-tree-node-completed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    ;; Structured path: [{:type :map-each :parent uuid :index N} ... {:type :leaf :node-id uuid}]
+    [:node-path [:vector :map]]
+    [:usage
+     [:map
+      [:prompt-tokens {:optional true} :int]
+      [:completion-tokens {:optional true} :int]
+      [:total-tokens {:optional true} :int]]]
+    ;; :input-profile keyed by :reads keys. Each value is
+    ;; {:length N :word-count N :line-count N}. Captures input shape
+    ;; so future judges can correlate quality outcomes to inputs.
+    [:input-profile {:optional true} [:map-of :keyword :map]]
+    ;; Future-expansion placeholders documented for forward compatibility
+    [:scores {:optional true} :map]
+    [:feedback {:optional true} :string]]
+
+   ;; Bookend event emitted when a Phase 2 RLM tree-execution finishes.
+   :sheet/rlm-tree-execution-completed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    ;; Full event log for the tick — vec of {:event-type :timestamp
+    ;; :node-id (optional) ...}. Consistent with Grain "all events
+    ;; flow through the log" methodology.
+    [:trajectory [:vector :map]]
+    ;; Aggregate usage at completion time.
+    [:total-usage [:map]]
+    ;; Placeholder for task-fingerprint (filled by issue 012).
+    [:task-fingerprint {:optional true} [:maybe :string]]
+    ;; C-2a-2: deterministic hash of canonical tree-raw S-expression.
+    ;; Drives per-tree-fingerprint rolling metrics. Optional for
+    ;; backwards compatibility with replayed older events.
+    [:tree-fingerprint {:optional true} [:maybe :string]]
+    ;; C-2a-2: tree-execution outcome. Required for the per-tree-
+    ;; fingerprint aggregator to count successes vs failures.
+    [:status {:optional true} [:enum :success :failure :partial :timeout]]
+    ;; C-2a-2: wall-clock duration of Phase 2 execution.
+    [:duration-ms {:optional true} :int]
+    [:timestamp [:fn inst?]]]
 
    :sheet/tree-tick-completed
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:iteration {:optional true} :int]
-    [:root-status [:enum :success :failure :running]]
+    ;; D-008: :partial added so map-each can surface partial outcomes.
+    ;; D-003: :timeout added so RLM repl-researcher can surface Phase 2
+    ;; budget cancellation as a tree-level signal.
+    [:root-status [:enum :success :failure :running :tree-generated :partial :timeout]]
     [:outputs {:optional true} :map]
     [:error {:optional true} :string]]
 
@@ -964,7 +1154,66 @@
    :sheet/tree-metadata-extracted
    [:map
     [:sheet-id :uuid]
-    [:metadata :any]]})
+    [:metadata :any]]
+
+   ;; -------------------------------------------------------------------------
+   ;; RLM (Recursive Language Model) Events
+   ;; -------------------------------------------------------------------------
+
+   :rlm/tree-generated
+   [:map
+    [:tree-id :uuid]
+    [:execution-id :uuid]
+    [:raw-dsl :any]                              ;; S-expr literal from LLM (serializable)
+    [:iteration-count {:optional true} :int]    ;; How many REPL iterations
+    [:input-metadata {:optional true} [:map
+                                       [:size :int]
+                                       [:type :keyword]]]
+    [:generated-at :string]
+    ;; Gap-7b: the repl-researcher node that emitted the tree. Without
+    ;; this, downstream evaluators (e.g. heuristic-structural via
+    ;; :rlm/tree-generated) must scan :sheet/node-execution-started
+    ;; events to find the host node, which is ambiguous when multiple
+    ;; nodes share the same tick (root + Phase 2 children). Optional
+    ;; for backwards compatibility with replayed events.
+    [:node-id {:optional true} :uuid]
+    [:sheet-id {:optional true} :uuid]]
+
+   :rlm/tree-executed
+   [:map
+    [:tree-id :uuid]
+    [:execution-id :uuid]
+    [:status [:enum :success :failure]]
+    [:outputs {:optional true} :map]
+    [:duration-ms :int]
+    [:node-traces {:optional true} [:vector :any]]
+    [:error {:optional true} :string]]
+
+   :rlm/tree-evaluated
+   [:map
+    [:tree-id :uuid]
+    [:execution-id :uuid]
+    [:score :double]                             ;; 0.0 to 1.0
+    [:feedback :string]                          ;; Actionable feedback
+    [:dimensions {:optional true} [:vector       ;; Optional breakdown by dimension
+                                   [:map
+                                    [:name :string]
+                                    [:weight :double]
+                                    [:score :double]
+                                    [:feedback :string]]]]
+    [:evaluated-at :string]]
+
+   ;; U10: Phase 1 researcher iteration capture. Emitted by the
+   ;; repl-researcher processor whenever the researcher ran at least
+   ;; one iteration — including direct-execution (no emit-tree!) runs.
+   ;; Lets observability tools query iteration history uniformly
+   ;; across execution modes.
+   :rlm/researcher-iterations
+   [:map
+    [:execution-id :uuid]
+    [:iterations [:vector :any]]                 ;; Each: {:code :result :stdout :error :vars-created}
+    [:iteration-count :int]
+    [:emitted-at :string]]})
 
 ;; =============================================================================
 ;; Query Schemas (Fat Query Model - one query per screen)

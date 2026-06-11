@@ -1,0 +1,28 @@
+
+--- PAGE 1 ---
+INVOICE
+Acme Corporation
+123 Industrial Blvd, Suite 400
+Austin, TX 78701
+Phone: (512) 555-0100 | Email: billing@acmecorp.com
+Invoice #: INV-2025-0042
+Date: 2025-03-15
+Due Date: 2025-04-14
+PO #: PO-88712
+Bill To:
+TechStart Inc.
+456 Innovation Drive
+San Francisco, CA 94105
+Attn: Sarah Johnson, Procurement
+Description Qty Unit Price Amount
+Cloud hosting - Standard Plan (Mar 2025) 1 $2,400.00 $2,400.00
+Additional storage (500 GB) 2 $150.00 $300.00
+Premium support package 1 $800.00 $800.00
+API calls overage (50,000 calls) 1 $125.00 $125.00
+SSL certificate renewal 3 $49.99 $149.97
+Subtotal: $3,774.97
+Tax (8.25%): $311.43
+Total Due: $4,086.40
+Payment Terms: Net 30
+Bank: First National Bank | Account: 9876543210 | Routing: 021000021
+Please include invoice number on all payments.

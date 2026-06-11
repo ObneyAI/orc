@@ -1,0 +1,26 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: extra
+;; Why included: SANITY CHECK — this task SHOULD direct-match the contract-comparison seed. Same role as extra-001: verify the classifier isn't broken-toward-fresh-mint.
+Compare two SaaS subscription contracts and produce a structured
+comparison highlighting key provisions that differ.
+
+Contract A — Enterprise tier, signed by ACME Corp:
+"Renewal: Annual auto-renewal unless cancelled with 60 days notice.
+Price escalation capped at 3% per year. Termination for convenience
+permitted with 90 days notice. Service credit of 10% MRR for any month
+with <99.9% uptime. Data export: full export in JSON within 30 days of
+termination at no charge."
+
+Contract B — Enterprise tier, signed by Globex Inc:
+"Renewal: 3-year auto-renewal unless cancelled with 90 days notice
+prior to the END of the 3-year term (no partial-term termination).
+Price escalation: indexed to CPI plus 2%, no cap. Termination for
+cause only after 30-day cure period. Service credit of 5% MRR after
+SECOND consecutive month of <99.5% uptime. Data export: structured
+export available for $50K one-time fee, 90-day timeline."
+
+Produce a structured comparison:
+- :key-differences — vector of {:topic :a-provision :b-provision :impact-summary}
+- :similarities — provisions that materially align
+- :recommendation — for a buyer in 2026, which contract structure is more favorable
+  and what changes to request if forced to sign the less-favorable one

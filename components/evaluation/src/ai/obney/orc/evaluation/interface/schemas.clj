@@ -22,7 +22,43 @@
 ;; =============================================================================
 
 (defschemas events
-  {:evaluation/trace-evaluated
+  {;; Gap-1: unified evaluator protocol — per-event evaluator output.
+   ;; Emitted by the judge-runtime processor (subscribed to
+   ;; :sheet/node-execution-completed) for each attached judge that
+   ;; runs successfully. The consolidator (under Gap-3) consumes these
+   ;; events alongside raw execution evidence to update Living
+   ;; Description bodies.
+   :judge/score-emitted
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:judge-name :string]
+    [:judge-config :map]
+    [:score [:and number? [:>= 0.0] [:<= 1.0]]]
+    [:feedback :string]
+    [:dimensions [:vector DimensionScore]]
+    [:emitted-at :string]]
+
+   ;; Gap-8: weighted composite score across all judges that fired
+   ;; for a single (sheet, node, tick) tuple. Emitted in the same
+   ;; processor cycle as the per-judge :judge/score-emitted events
+   ;; (after parallel-future deref completes). Read-models can index
+   ;; this for fast per-tick composite lookups; downstream optimization
+   ;; (GEPA-style scalar fitness) reads from here.
+   :judge/composite-score-computed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:composite-score [:and number? [:>= 0.0] [:<= 1.0]]]
+    [:contributing-judges [:vector [:map
+                                    [:judge-name :string]
+                                    [:score number?]
+                                    [:weight number?]]]]
+    [:emitted-at :string]]
+
+   :evaluation/trace-evaluated
    [:map
     [:trace-id :uuid]
     [:sheet-id :uuid]

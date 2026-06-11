@@ -1,0 +1,61 @@
+{:slug "code-004-debug-memory-leak",
+ :envelope
+ {:assigned-tree-id #uuid "00000000-c1c1-4001-b001-d0c0a0a0a0a1",
+  :confidence 0.95,
+  :reasoning
+  "This candidate provides a comprehensive structural pattern for general document analysis including chunking, map-each processing, and final synthesis, which serves as the foundational tree-class for tasks requiring multi-step extraction from large text inputs.",
+  :parent-tree-id #uuid "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 206.85812377929688,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.142242-05:00"},
+    :reasoning
+    "The query requires a multi-stage analytical process: diagnosing a complex system failure and synthesizing a report (root-cause, evidence-chain, remediation, verification, alternatives). The Chunked-extraction pattern's 4-stage skeleton (:chunk-document -> :map-each -> :aggregate -> :llm synthesis) best matches the structural requirement of processing multiple distinct diagnostic artifacts (the chunks) to produce a final synthesized diagnosis.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 211.52078247070312,
+    :rank 4,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.149787-05:00"},
+    :reasoning
+    "This candidate describes a simple recovery mechanism for children. While the query involves a 'root cause' and 'remediation', the task itself is a complex analysis of data, not a runtime execution pattern where a backup handles a primary's failure. It lacks the structural complexity needed for synthesis.",
+    :fitness-score 0.25,
+    :rerank-source :reranker}
+   {:content
+    "Primary-backup is the canonical fallback-recovery instance: try the preferred path first, fall back to a deterministic alternative on detected failure. The backup MUST be :code (deterministic) to avoid doubling the failure surface. Always exactly 2 children — stacking 3+ silently masks systemic issues. Always emit a marker indicating which path produced the result so operators see the activation rate trend. Use for transient/stochastic primary failures with a known-good fallback. Use model-cascade when the backup is also an LLM (cheap → expensive escalation).",
+    :score 207.02886962890625,
+    :rank 7,
+    :document-id
+    ":tree-fingerprint:#uuid \"c1b27691-4a1b-3ee2-bb73-595b155b99be\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "c1b27691-4a1b-3ee2-bb73-595b155b99be",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.154383-05:00"},
+    :reasoning
+    "This candidate describes a specific primary-backup logic for error handling in execution. It does not fit the task of analyzing three disparate diagnostic logs to generate a comprehensive report. It is more of an implementation detail for a single node rather than a pattern for the requested multi-input analysis.",
+    :fitness-score 0.15,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 8426,
+ :parent-chain []}

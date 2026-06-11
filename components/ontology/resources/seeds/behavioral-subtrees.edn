@@ -1,0 +1,773 @@
+;;  12 behavioral-subtree seeds — Research / Extraction / Analysis / Synthesis / Ideation / Design / Critique / Validation / Code-building / Transformation / Classification / Investigation.
+;; Generated from development/src/seed_descriptions.clj — DO NOT EDIT BY HAND.
+;; To regenerate: clj -M:dev -e "(load-file \"components/ontology/scripts/regen-seeds.clj\")"
+;; Each entry: {:target-id <uuid-or-keyword-or-string> :body {<description-body>}}
+
+[{:target-id #uuid "8ad38e72-05e4-3201-bac7-3ed9c54a2791",
+  :body
+  {:capabilities
+   ["formulate one or more search/retrieval queries from the task goal, fan out queries, collect raw source material into a named :writes key"
+    "natural fit at the start of a tree when the task needs evidence the model doesn't already have in context"
+    "outputs are typically a vector of source snippets or a map of source-id → raw content for downstream extraction/synthesis"],
+   :strengths
+   [{:trait
+     "fan out independent queries with :parallel (or :map-each over queries) so wall-time stays bounded by the slowest single query, not the sum",
+     :good-when
+     "queries are independent (no need to read result A before issuing query B) AND each query is cheap relative to the task budget",
+     :recommended-pattern
+     "[:parallel [:llm {:reads [:goal] :writes [:result-a]}] [:llm {:reads [:goal] :writes [:result-b]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "declare the source-type and shape in the :reads of downstream nodes so synthesis/analysis can branch on source provenance without re-inferring it from raw text",
+     :good-when
+     "downstream stages need to attribute findings to specific sources OR weight sources by trust",
+     :recommended-pattern
+     "[:llm {:reads [:goal] :writes [:sources] :output-schemas {:sources [:vector [:map [:source-id :string] [:trust :double] [:content :string]]]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["all needed material is already in :reads — skip research; go directly to extraction or analysis"
+    "the task is purely computational/structural with no external grounding need"
+    "retrieval would happen via a deterministic tool call (search index, DB lookup) — that's a :code node, not a behavioral research subtree"],
+   :composes-into
+   [#uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac"
+    "seed:tree:ResearchThenSynthesize"
+    "seed:tree:FallbackRecovery"],
+   :weaknesses
+   [{:trait
+     "issuing one giant 'find everything relevant' query forces the model to compress in retrieval AND lose source attribution — downstream stages can't backtrack",
+     :avoid-when "the task needs traceable evidence per finding",
+     :recommended-alternative
+     "decompose the goal into 2-4 narrower queries (each scoped to a sub-aspect), fan them out in :parallel, preserve source-id per snippet for downstream attribution",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "research without a fallback path silently fails open when external sources timeout or refuse — downstream stages see :sources nil and silently produce vacuous output",
+     :avoid-when
+     "external retrieval is on the critical path AND the rest of the tree can't degrade gracefully",
+     :recommended-alternative
+     "wrap the primary retrieval in :fallback with a secondary source OR a 'use only model's prior knowledge with explicit low-confidence flag' branch",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Research gathers raw external/contextual material to seed downstream behaviors. Best implemented as :parallel fan-out over 2-4 narrower queries (preserving source-id for downstream attribution) rather than one giant retrieve-everything query. ALWAYS provide a fallback path when retrieval is on the critical path — silent failure of external sources produces vacuous downstream output. Naturally composes into research-then-synthesize shells (sequential research → synthesis), briefing-generation (with structured per-source output), and fallback-recovery shells (primary source + backup). Avoid when all material is already in :reads or the task is purely structural.",
+   :representative-uses
+   ["pre-analysis fact gathering: 'find recent rulings on X' → top-N case snippets with citations"
+    "pre-synthesis briefing: 'collect what's known about company Y' → multi-source dossier"
+    "pre-classification grounding: 'lookup definitions of these terms' → controlled-vocabulary anchors"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "abe10f3b-ab49-3916-ae30-0ca7abfcad96",
+  :body
+  {:capabilities
+   ["given raw text/documents, identify and emit the named items required by the downstream task as a typed vector or per-item map"
+    "natural fit anywhere a tree needs to go from prose to structured fields before reasoning over them"
+    "outputs are typically a vector of extraction records with consistent :output-schemas"],
+   :strengths
+   [{:trait
+     "declare :output-schemas on the extraction :llm so the structure is enforced at parse time — downstream stages can :read with confidence in the shape",
+     :good-when
+     "downstream reasoning depends on specific fields (dates, names, amounts) being present and well-typed",
+     :recommended-pattern
+     "[:llm {:reads [:document] :writes [:extracts] :output-schemas {:extracts [:vector [:map [:type :string] [:value :string] [:source-span :string]]]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "for documents large enough to risk context truncation, use :map-each over chunks with bounded :max-concurrency so per-chunk extraction parallelizes safely under sub-LLM rate limits",
+     :good-when
+     "input is a single large document AND extraction is per-chunk independent",
+     :recommended-pattern
+     "[:map-each {:items :chunks :as :chunk :max-concurrency 3 :writes [:per-chunk-extracts]} [:llm {:reads [:chunk] :writes [:per-chunk-extracts]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the raw material is already structured (JSON, DB rows) — use :code node, not :llm extraction"
+    "the task wants reasoning over the items, not extraction of them — that's analysis behavior, not extraction"
+    "items are uniform and a regex/parser would do — extraction belongs in :code"],
+   :composes-into
+   [#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"
+    "seed:tree:ChunkedExtraction"
+    "seed:tree:MapReduce"],
+   :weaknesses
+   [{:trait
+     "extraction prompts that ask 'pull out the important parts' without a typed schema produce inconsistent shape across runs — downstream :reads fail silently or get garbage",
+     :avoid-when
+     "downstream stages bind specific field names from the extraction output",
+     :recommended-alternative
+     "explicit :output-schemas with named fields + a concrete example in the prompt; treat extraction shape as a contract",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "single-pass extraction over a multi-page document misses items in the middle when token budget pressures the model to summarize instead of extract",
+     :avoid-when
+     "input is >~3 pages AND extraction needs to be high-recall",
+     :recommended-alternative
+     "chunk the document, run :map-each per-chunk extraction with consistent :output-schemas, aggregate after — preserves per-span recall",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Extraction turns raw text into typed structured items. The proven shape uses :llm with explicit :output-schemas as a shape contract, and :map-each (bounded :max-concurrency) over chunks when the document is large enough to risk token-pressure recall loss. NEVER ship extraction without a typed schema — downstream stages bind on field names and silent shape drift produces vacuous output. Composes naturally into etl-pipeline (sequential extract → enrich → emit shells), chunked-extraction (per-chunk parallel extraction), and map-reduce (parallel per-document extraction + aggregate). Avoid when raw material is already structured or when the task wants reasoning over items rather than extraction of them.",
+   :representative-uses
+   ["entity extraction from contracts: party names, dates, amounts → typed vector with source spans"
+    "claim extraction from articles: claim text + speaker + evidence-class"
+    "field extraction from forms: per-field typed value with confidence per field"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "b3597aa7-3957-3734-90c6-531d27c08f67",
+  :body
+  {:capabilities
+   ["given a vector/map of pre-extracted items, produce a structured set of findings (patterns / problems / opportunities) with per-finding evidence"
+    "natural fit as a mid-tree stage between extraction (upstream) and synthesis/critique/code-building (downstream)"
+    "outputs are typically a vector of findings, each with :type / :evidence / :confidence / :affected-items"],
+   :strengths
+   [{:trait
+     "tie each finding to the specific extracted item(s) that triggered it via an :affected-items reference field — downstream stages can audit, drill down, or prioritize findings by evidence weight",
+     :good-when
+     "downstream stages need to attribute findings to evidence OR rank findings by support",
+     :recommended-pattern
+     "[:llm {:reads [:extracts] :writes [:findings] :output-schemas {:findings [:vector [:map [:type :string] [:evidence :string] [:confidence :double] [:affected-items [:vector :string]]]]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "for multi-dimensional analysis (e.g., risk / opportunity / blocker across the same items), use :parallel one-:llm-per-dimension stages — each stage has a tight focus and can produce richer per-dimension reasoning",
+     :good-when
+     "the analysis has 2-4 orthogonal dimensions that benefit from separate prompts",
+     :recommended-pattern
+     "[:parallel [:llm {:reads [:extracts] :writes [:risks]}] [:llm {:reads [:extracts] :writes [:opportunities]}] [:llm {:reads [:extracts] :writes [:blockers]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the task is just summarizing — that's synthesis behavior, not analysis (analysis produces findings; synthesis produces narrative)"
+    "the task is generating new options — that's ideation, not analysis"
+    "the items haven't been extracted yet — extraction must run first"],
+   :composes-into
+   [#uuid "d41af303-dcb2-3599-9198-0c006d1cc364"
+    "seed:tree:ChunkedExtraction"
+    "seed:tree:SequentialPipeline"],
+   :weaknesses
+   [{:trait
+     "analyzing raw documents (skipping extraction) forces the analysis :llm to do BOTH extraction and reasoning — quality degrades on both since the model can't optimize attention for either",
+     :avoid-when
+     "the input is raw documents AND the analysis needs to attribute findings to specific items",
+     :recommended-alternative
+     "two-stage: extract structured items first, then analyze over the extracts; preserves analyzability of findings",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "single-pass analysis over a long flat list of items loses signal on per-item nuance — findings cluster around the most prominent items",
+     :avoid-when
+     "item count is high AND each item deserves per-item attention",
+     :recommended-alternative
+     "use :map-each per-item analysis with bounded :max-concurrency, then aggregate findings — preserves per-item granularity",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Analysis reasons over already-extracted items to produce structured findings (patterns / problems / opportunities) with per-finding evidence. Always tie findings to specific items via :affected-items references for downstream auditability. For multi-dimensional analysis, fan out per-dimension :llm stages via :parallel — each stage gets a tighter focus. NEVER skip the extraction stage: analyzing raw documents conflates extraction and reasoning, degrading both. Composes into comparative-summary (multi-source structured findings), chunked-extraction (per-chunk parallel analysis), and sequential-pipeline (extract → analyze → synthesize). Avoid when the task is summarizing (use synthesis) or generating options (use ideation).",
+   :representative-uses
+   ["risk analysis over extracted contract clauses: per-clause risk score + reasoning + mitigation"
+    "pattern detection across log events: clusters of related events + frequency + suspected cause"
+    "gap analysis over a feature list: required-vs-present + missing-items + priority"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "2bce84a1-d186-3892-8131-c19b59e4543e",
+  :body
+  {:capabilities
+   ["given multiple structured inputs (findings, extracts, source quotes), produce a single integrated artifact — narrative, report, recommendation"
+    "natural fit at the tail of a tree where multiple parallel branches converge"
+    "outputs are typically a single string (or small structured map) where the structure of the inputs has been collapsed into coherent prose"],
+   :strengths
+   [{:trait
+     "make the synthesizer's :reads contain the per-source extractions structured by source-id rather than a free-form concat — supports apples-to-apples reference and avoids the model losing track of which finding came from where",
+     :good-when
+     "synthesis needs to attribute claims to sources OR balance per-source weight",
+     :recommended-pattern
+     "[:llm {:reads [:by-source] :writes [:narrative] :output-schemas {:narrative :string}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "for long final artifacts, scaffold the synthesis with a :code node that pre-builds a structured outline from the inputs, then have the :llm fill each section — preserves coverage of all inputs",
+     :good-when
+     "the final artifact is multi-section AND each section maps to a distinct cluster of inputs",
+     :recommended-pattern
+     "[:sequence [:code {:reads [:findings] :writes [:outline] :fn (fn [{:keys [inputs]}] {:outline (mapv :type (:findings inputs))})}] [:llm {:reads [:findings :outline] :writes [:narrative]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the task is generating new options — that's ideation, not synthesis"
+    "the task is checking against criteria — that's critique or validation"
+    "there's only one input — no synthesis needed; just transform or format"],
+   :composes-into
+   [#uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac"
+    #uuid "d41af303-dcb2-3599-9198-0c006d1cc364"
+    "seed:tree:SequentialPipeline"],
+   :weaknesses
+   [{:trait
+     "synthesizing >5 distinct inputs in a single :llm call exceeds context — the model drops inputs from the middle of the context window silently",
+     :avoid-when "input count >5 AND each input is substantive",
+     :recommended-alternative
+     "hierarchical synthesis: cluster inputs into 2-3 groups → per-group :llm synthesis → final :llm integrates the group narratives",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "free-form synthesis output (no :output-schemas) makes downstream stages (critique / validation) work on unstructured prose — they can't easily check coverage or shape",
+     :avoid-when
+     "downstream stages need to verify specific sections are present",
+     :recommended-alternative
+     "declare a structured :output-schemas on the synthesis (e.g., :map with :summary :recommendations :open-questions) — downstream critique/validation can verify each named field",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Synthesis integrates multiple structured inputs into a single cohesive artifact (narrative / report / recommendation). Always provide the synthesizer with inputs structured by source-id (not free-form concat) so attribution stays intact. For long artifacts, scaffold via a :code-built outline that the :llm fills section-by-section — preserves coverage. NEVER synthesize >5 substantive inputs in one call: do hierarchical clustering instead. Declare :output-schemas on the synthesis output when downstream stages (critique / validation) need to verify specific sections. Composes into briefing-generation, comparative-summary, and sequential-pipeline shells. Avoid when the task is ideation (new options) or critique (checking against criteria).",
+   :representative-uses
+   ["multi-source briefing: extracts from N articles → single executive summary with citations"
+    "comparative report: per-vendor extractions → structured comparison + recommendation"
+    "investigation conclusion: per-witness extractions → integrated timeline + assessment"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "1b1480f1-66b3-399a-8715-e5b8f023a71b",
+  :body
+  {:capabilities
+   ["given a goal or constraint set, generate N distinct candidate options/approaches/designs"
+    "natural fit at the head of a tree when the work needs exploration before convergence"
+    "outputs are typically a vector of N candidate entries, each with rationale + risk + expected-outcome"],
+   :strengths
+   [{:trait
+     "fan out per-perspective :llm calls in :parallel — different prompt framings (cost-optimized / robustness-optimized / contrarian) produce genuinely distinct candidates rather than minor variations of one anchor",
+     :good-when
+     "the task benefits from genuine divergence rather than N close-together suggestions",
+     :recommended-pattern
+     "[:parallel [:llm {:reads [:goal] :writes [:cost-opt-options]}] [:llm {:reads [:goal] :writes [:robust-options]}] [:llm {:reads [:goal] :writes [:contrarian-options]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "require each candidate to declare the explicit tradeoff it makes (lower X for higher Y) — the per-candidate tradeoff field is what makes the downstream selection stage actionable",
+     :good-when "downstream stage will pick one of the candidates",
+     :recommended-pattern
+     "[:llm {:reads [:goal] :writes [:options] :output-schemas {:options [:vector [:map [:option :string] [:rationale :string] [:tradeoff :string] [:risk :string]]]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the task has one obvious right answer — ideation just wastes tokens"
+    "downstream consumers can't pick from candidates — that's wasted divergence"
+    "the task is mechanical transformation — that's transformation, not ideation"],
+   :composes-into
+   ["seed:tree:ParallelIndependent" "seed:tree:SequentialPipeline"],
+   :weaknesses
+   [{:trait
+     "asking a single :llm for 'N options' produces variations on the model's first guess — the options cluster around one local optimum and miss genuinely different approaches",
+     :avoid-when
+     "the value depends on having genuinely different approaches",
+     :recommended-alternative
+     "fan out :parallel per-perspective stages with distinct prompts; merge afterward; the parallelism enforces divergence",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "ideation without a downstream convergence stage produces options that never get selected — the tree generates value the next stage doesn't use",
+     :avoid-when
+     "no downstream stage exists to pick / score / synthesize the candidates",
+     :recommended-alternative
+     "always pair ideation with a downstream convergence (selection :llm / critique-and-pick / synthesis); ideation alone is incomplete",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Ideation generates divergent candidate options/alternatives. The proven shape uses :parallel per-perspective :llm stages with distinct prompt framings (cost-optimized / robustness-optimized / contrarian) — parallelism enforces genuine divergence rather than variations on one anchor. ALWAYS require per-candidate tradeoff declarations so the downstream selection stage is actionable. NEVER ship ideation without a downstream convergence stage (selection / critique-and-pick / synthesis) — orphan candidates produce no value. Composes into parallel-independent shells (parallel candidate generation) and sequential-pipeline shells (ideation → critique → select). Avoid for tasks with one obvious answer or no downstream selector.",
+   :representative-uses
+   ["product-feature brainstorming: 5 candidate features with rationale + tradeoff + risk"
+    "approach exploration for a hard problem: 3 architectural sketches with cost-vs-robustness tradeoff"
+    "creative variation generation: N candidate names/taglines/copy variants"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "abe48812-ad0f-3a27-a142-806558801fc0",
+  :body
+  {:capabilities
+   ["given a goal + constraints + (optionally) candidate options, produce a single concrete plan/spec/architecture as the chosen direction"
+    "natural fit as the convergence stage after research/extraction/analysis/ideation; the gate before code-building or execution"
+    "outputs are typically a single structured spec (sections / decisions / open-questions) with explicit decisions rather than a list of options"],
+   :strengths
+   [{:trait
+     "structure the design output as :map with named sections (decisions / open-questions / risks) — downstream code-building or execution can :read specific sections without re-parsing prose",
+     :good-when
+     "the design will feed automated downstream stages (code-building, validation, execution)",
+     :recommended-pattern
+     "[:llm {:reads [:goal :constraints :options] :writes [:spec] :output-schemas {:spec [:map [:decisions [:vector :string]] [:open-questions [:vector :string]] [:risks [:vector :string]]]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "iterate design via draft → critique → refined-spec when the design is non-trivial — single-pass design tends to leave decisions implicit",
+     :good-when
+     "the design has multiple interacting decisions AND the cost of a wrong call is high",
+     :recommended-pattern
+     "[:sequence [:llm {:reads [:goal] :writes [:draft-spec]}] [:llm {:reads [:draft-spec :goal] :writes [:critique]}] [:llm {:reads [:draft-spec :critique] :writes [:refined-spec]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the task is generating options to choose from — that's ideation, not design"
+    "the task is just executing a known plan — that's code-building or transformation"
+    "the task is checking an existing design — that's critique or validation"],
+   :composes-into
+   [#uuid "aef71f08-76bf-373c-862a-1250ef23f450"
+    "seed:tree:SequentialPipeline"],
+   :weaknesses
+   [{:trait
+     "designs that leave open-questions implicit force the downstream stage to either fail or guess — both produce drift between intended and actual outcome",
+     :avoid-when "downstream stages will execute against the design",
+     :recommended-alternative
+     "require an explicit :open-questions field in the spec output — empty means 'I'm confident'; non-empty surfaces the gap",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "design without explicit consideration of the constraints (as part of :reads) tends to produce specs that look reasonable but violate the constraints in subtle ways",
+     :avoid-when
+     "the task has hard constraints (budget / API limits / shape requirements)",
+     :recommended-alternative
+     "always include constraints as a separate :reads input on the design stage AND require the spec output to reference how each constraint was honored",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Design produces a single committable plan/spec/architecture from inputs (goal + constraints + optional candidate options). Always structure as :map with named sections (decisions / open-questions / risks) — downstream automated stages bind on these. For non-trivial designs with interacting decisions, iterate via draft → critique → refined-spec. ALWAYS require an :open-questions field — empty means 'I'm confident', non-empty surfaces the gap before downstream stages run against an implicit guess. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (analysis → design → code-building) shells. Avoid when the task is option generation (use ideation) or execution against a known plan (use code-building).",
+   :representative-uses
+   ["technical architecture spec from a problem brief + constraints"
+    "experiment design from a research question + dataset constraints"
+    "API contract design from a feature spec + backwards-compat requirements"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "0f11dba5-c331-3cdf-81fa-8ee114fc224f",
+  :body
+  {:capabilities
+   ["given an artifact + quality criteria, produce a structured critique — per-criterion grade + list of specific issues + suggested fixes"
+    "natural fit downstream of synthesis/design/code-building, upstream of refinement loops or human review"
+    "outputs are typically a map with per-criterion scores + a vector of specific issues with locations + a vector of suggested improvements"],
+   :strengths
+   [{:trait
+     "require per-issue location references (line number / section name / item id) so the downstream refinement stage knows exactly what to address — vague issues produce vague fixes",
+     :good-when
+     "the artifact is structured and references are addressable",
+     :recommended-pattern
+     "[:llm {:reads [:artifact :criteria] :writes [:issues] :output-schemas {:issues [:vector [:map [:location :string] [:problem :string] [:severity :string] [:suggested-fix :string]]]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "score against an explicit per-criterion rubric (not a single overall grade) so the refinement stage knows which dimension needs work — overall-grade-only critiques produce regressions in unscored dimensions",
+     :good-when
+     "quality has multiple distinct dimensions (correctness / clarity / completeness / efficiency)",
+     :recommended-pattern
+     "[:llm {:reads [:artifact :rubric] :writes [:scores] :output-schemas {:scores [:map-of :string :double]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the task is checking against formal rules (pass/fail) — that's validation, not critique"
+    "the artifact has no downstream consumer to act on the critique — orphan critique wastes tokens"
+    "the task is generating the artifact itself — critique is downstream of production"],
+   :composes-into
+   [#uuid "0682ce06-3c86-3083-92db-e2c43a66e54b"
+    #uuid "aef71f08-76bf-373c-862a-1250ef23f450"
+    "seed:tree:ValidationLoop"],
+   :weaknesses
+   [{:trait
+     "self-critique on the same model (no prompt-framing change) tends to ratify the original artifact — the model is biased toward consistency with its prior output",
+     :avoid-when
+     "the critique stage uses the same :llm with the same role framing as the producer",
+     :recommended-alternative
+     "use a different prompt persona (skeptical reviewer / safety auditor) OR a different model OR an explicit checklist that forces specific question forms — adversarial framing improves catch rate",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "critiques that don't produce actionable per-issue fixes leave the refinement stage with nothing to act on — issues phrased as 'unclear' don't tell the writer what to do",
+     :avoid-when "the critique feeds a refinement stage",
+     :recommended-alternative
+     "every issue must include a :suggested-fix — explicit phrasing of how to address it; not 'consider revising' but 'replace X with Y because Z'",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Critique evaluates an artifact against quality criteria, producing per-criterion grades + located issues + suggested fixes. Always require per-issue location references AND per-issue :suggested-fix — vague critiques produce vague refinements. Score against an explicit per-dimension rubric, NOT a single overall grade, so refinement knows where to focus. NEVER use the same prompt persona for critique as for the original producer — self-critique ratifies. Use adversarial framing (skeptical reviewer / safety auditor) or an explicit checklist. Composes into draft-critique (validation-loop child) and iterative-refinement (sequential-pipeline child) shells; also into validation-loop pattern when paired with a producer. Avoid for formal rule-checking (use validation) or for orphan critiques with no downstream consumer.",
+   :representative-uses
+   ["draft review: per-section grade + specific issues + suggested rewrites"
+    "code review: per-file findings + severity + suggested fix"
+    "design review: per-decision check + risks + open questions"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "1361eafc-6a90-391a-97a9-b558118f1f57",
+  :body
+  {:capabilities
+   ["given an artifact + a formal rule set (schema / spec / policy), produce a pass/fail decision per rule + reasons for any failures"
+    "natural fit as a gate node before downstream commitment (publish / merge / execute)"
+    "outputs are typically {:passed? boolean :violations [...]} or a per-rule pass-fail map with reasons"],
+   :strengths
+   [{:trait
+     "implement the rule check itself in :code when the rule is mechanical (schema validation / regex match / field presence) — :code is deterministic and cheap; only fall back to :llm for rules that need judgment",
+     :good-when "the rules are objective and machine-checkable",
+     :recommended-pattern
+     "[:code {:reads [:artifact :schema] :writes [:result] :fn (fn [{:keys [inputs]}] {:result {:passed? true :violations []}})}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "structure the failure output as a vector of {:rule :reason :affected-location} entries — gives the upstream producer (validation-loop) actionable retry signal",
+     :good-when
+     "validation feeds a retry/refinement loop where the producer needs to know what to fix",
+     :recommended-pattern
+     "[:llm {:reads [:artifact :rules] :writes [:result] :output-schemas {:result [:map [:passed? :boolean] [:violations [:vector [:map [:rule :string] [:reason :string] [:location :string]]]]]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the task is quality assessment with judgment — that's critique, not validation"
+    "the task is choosing among options — that's selection, downstream of ideation"
+    "there's no commitment downstream that depends on pass/fail — gate is unnecessary"],
+   :composes-into
+   [#uuid "acbcf0ca-6478-3a63-8b93-31b93bf0902c"
+    "seed:tree:ValidationLoop"
+    "seed:tree:FallbackRecovery"],
+   :weaknesses
+   [{:trait
+     "single :llm-based validation on a mechanical rule (schema match / field presence) is non-deterministic AND wastes tokens — the same artifact gets different pass/fail across runs",
+     :avoid-when "the rule is fully expressible as code",
+     :recommended-alternative
+     "implement mechanical rules in :code; use :llm only for judgment-requiring rules (semantic-fit / policy-intent / tone)",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "validation without a fallback path silently blocks the tree when external rule sources fail — the gate never opens",
+     :avoid-when
+     "validation depends on an external service (policy API, schema registry) AND the rest of the tree can't degrade",
+     :recommended-alternative
+     "wrap external validation in :fallback with a local cached rule set OR a 'human review queue' branch — gate fails gracefully",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Validation checks an artifact against formal rules, producing pass/fail + per-rule reasons. ALWAYS implement mechanical rules (schema / regex / field presence) in :code — deterministic and cheap. Only use :llm for judgment-requiring rules (semantic-fit / policy-intent). Structure failures as {:rule :reason :location} entries so the upstream producer in a validation-loop gets actionable retry signal. Wrap external rule sources in :fallback when the gate is on the critical path — silent failure of validation blocks the tree. Composes into producer-validator (validation-loop child), validation-loop pattern (with producer), and fallback-recovery shells (primary + backup validators). Avoid for judgment-based quality assessment (use critique) or for option selection (use convergent stage).",
+   :representative-uses
+   ["schema validation against a JSON Schema / Malli spec"
+    "policy compliance check against an org's content rules"
+    "completeness check: required sections present, required fields populated"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0",
+  :body
+  {:capabilities
+   ["given a spec + constraints + (optionally) examples, produce executable code / scripts / config as the artifact"
+    "natural fit at the tail of a tree after design has produced the spec, before validation gates the result"
+    "outputs are typically code strings with :file-path / :language / :imports / :tests so downstream stages can persist or execute"],
+   :strengths
+   [{:trait
+     "structure the code output as :map with :file-path / :language / :imports / :code so downstream stages (validation / persistence / execution) can bind on specific fields rather than re-parse a code blob",
+     :good-when
+     "the code feeds automated downstream stages (linting, test runs, file writes)",
+     :recommended-pattern
+     "[:llm {:reads [:spec] :writes [:artifact] :output-schemas {:artifact [:map [:file-path :string] [:language :string] [:imports [:vector :string]] [:code :string]]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "iterate code via draft → critique → refined-code when the code is non-trivial — single-pass code has higher defect rates than draft-critique-refine for the same prompt",
+     :good-when
+     "the code involves multiple interacting decisions (error handling / edge cases / type contracts)",
+     :recommended-pattern
+     "[:sequence [:llm {:reads [:spec] :writes [:draft-code]}] [:llm {:reads [:draft-code :spec] :writes [:critique]}] [:llm {:reads [:draft-code :critique] :writes [:refined-code]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the artifact is a mechanical transformation (CSV → JSON, format conversion) — use transformation, not code-building"
+    "the task is reviewing existing code — that's critique, not code-building"
+    "no spec exists yet — run design first; code-building's input is a spec"],
+   :composes-into
+   [#uuid "aef71f08-76bf-373c-862a-1250ef23f450"
+    "seed:tree:SequentialPipeline"],
+   :weaknesses
+   [{:trait
+     "code-building without an explicit :spec input (just a goal string) produces code that maps to the model's first guess at what the goal meant — divergence from intent surfaces only at test time",
+     :avoid-when
+     "the goal is ambiguous OR the consequences of wrong-interpretation are expensive",
+     :recommended-alternative
+     "always pipe code-building's :reads through a design stage first; the design's :spec field is the input to code-building, not the raw goal",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "single-shot generation of a long file (>200 lines) produces code with internal inconsistencies — function signatures mismatch their callers, imports declared but unused",
+     :avoid-when
+     "the artifact is a long file with multiple cohesive sections",
+     :recommended-alternative
+     "scaffold via :code-built outline (top-of-file imports / function-declarations / glue), then :map-each per-section generation, then :code-stitched final — preserves consistency across sections",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Code-building produces executable code / scripts / config from a spec. Always structure output as :map with :file-path / :language / :imports / :code — downstream automated stages bind on these. For non-trivial code, iterate via draft → critique → refined-code; single-pass produces higher defect rates. NEVER feed code-building a raw goal — always pipe through a design stage first so the input is a spec, not an open-ended ask. For long files (>200 lines), scaffold then :map-each per-section to preserve cross-section consistency. Composes into iterative-refinement (draft → critique → finalize) and sequential-pipeline (design → code → validate) shells. Avoid for mechanical transformation (use transformation) or code review (use critique).",
+   :representative-uses
+   ["function implementation from a typed spec + examples"
+    "config file generation from a deployment plan"
+    "test case generation from a behavior specification"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb",
+  :body
+  {:capabilities
+   ["given input data + a target shape spec, emit the input restructured to the target shape"
+    "natural fit anywhere a tree needs to change data shape without semantic interpretation"
+    "outputs are typically a single restructured value or a vector of per-item transformations"],
+   :strengths
+   [{:trait
+     "implement transformations in :code (NOT :llm) when the mapping is deterministic — preserves byte-for-byte fidelity, costs zero tokens, runs in milliseconds",
+     :good-when
+     "the transformation rule can be expressed as a pure function over the input",
+     :recommended-pattern
+     "[:code {:reads [:input] :writes [:output] :fn (fn [{:keys [inputs]}] {:output (mapv (fn [r] (select-keys r [:a :b])) (:input inputs))})}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "for per-item independent transformations over a vector, use :map-each rather than a single batch :code call when the per-item work is non-trivial — supports per-item failure isolation",
+     :good-when
+     "items can fail independently AND partial success has value",
+     :recommended-pattern
+     "[:map-each {:items :records :as :record :writes [:transformed]} [:code {:reads [:record] :writes [:transformed] :fn (fn [{:keys [inputs]}] {:transformed (assoc (:record inputs) :stamp \"x\")})}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the transformation needs semantic reasoning (translation / paraphrase / domain-shift) — that's NOT deterministic; use :llm"
+    "the task is producing new structure from raw text — that's extraction"
+    "the input is unstructured — extract first, then transform"],
+   :composes-into
+   [#uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f"
+    #uuid "c38abdbd-be30-38e7-8f81-e431cdba7a07"
+    "seed:tree:MapReduce"],
+   :weaknesses
+   [{:trait
+     "using :llm for a deterministic transformation (CSV → JSON, snake_case → camelCase) produces non-deterministic output AND wastes tokens",
+     :avoid-when "the transformation rule is fully specifiable",
+     :recommended-alternative
+     "always :code for deterministic transformations; reserve :llm for transformations that need judgment (semantic-rephrasing / style-shift / domain-translation)",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "transformations without :output-schemas on the downstream :reads break silently when an upstream change shifts the output shape — the consumer gets garbage instead of an error",
+     :avoid-when
+     "the transformation feeds another stage that binds on specific fields",
+     :recommended-alternative
+     "declare :output-schemas on the transformation output AND :input-schemas on the downstream :reads — shape mismatch fails loudly at the boundary, not deep in the consumer",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Transformation is mechanical reshape of data between deterministic shapes. ALWAYS use :code (not :llm) for deterministic transformations — preserves fidelity, costs nothing, runs in ms; :llm for transformation produces non-deterministic output. For per-item independent transformations, :map-each isolates per-item failures. ALWAYS declare :output-schemas on transformation output and :input-schemas on downstream :reads so shape mismatch fails at the boundary, not deep in the consumer. Composes into etl-pipeline (sequential transform chain), parallel-sum (map-reduce transformation), sequential-pipeline shells, and map-reduce shells. Avoid for transformations that need judgment (semantic rephrasing / style shift — use :llm) or for unstructured input (extract first).",
+   :representative-uses
+   ["CSV row → JSON object mapping per-field"
+    "extracted entity records → DB-row shape with derived fields"
+    "input list → output list with N filters / projections applied"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "01f78800-c0e7-34b3-bb09-a7a6a95a022d",
+  :body
+  {:capabilities
+   ["given a set of items + a category vocabulary, emit per-item category assignments (optionally multi-label with confidence)"
+    "natural fit when downstream stages branch or aggregate by category"
+    "outputs are typically a vector of {:item-id :category :confidence} or a map from item-id to category"],
+   :strengths
+   [{:trait
+     "fan out per-item classification via :map-each with bounded :max-concurrency — per-item LLM calls give richer per-item reasoning than a single batch classifier prompt",
+     :good-when
+     "items are independent AND per-item context matters for accuracy",
+     :recommended-pattern
+     "[:map-each {:items :items :as :item :max-concurrency 3 :writes [:classifications]} [:llm {:reads [:item :vocabulary] :writes [:classification] :output-schemas {:classification [:map [:category :string] [:confidence :double]]}}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "include the category vocabulary in :reads of each per-item classifier — anchors the model to the closed-set output and prevents drift to free-form labels",
+     :good-when "the category set is closed and stable",
+     :recommended-pattern
+     "[:llm {:reads [:item :vocabulary] :writes [:classification] :output-schemas {:classification [:enum :a :b :c]}}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["categories are open-ended / emergent — that's clustering, not classification"
+    "items are uniform and a regex/rule would do — that's :code transformation, not behavioral classification"
+    "the task is generating new categories — that's ideation, not classification"],
+   :composes-into
+   [#uuid "1c0f6cd8-6187-3d8e-993e-2df630968760"
+    "seed:tree:MapReduce"
+    "seed:tree:ParallelIndependent"],
+   :weaknesses
+   [{:trait
+     "classifying without the vocabulary in the prompt produces free-form labels that drift across runs — downstream aggregation over categories breaks",
+     :avoid-when
+     "downstream stages aggregate / branch on category equality",
+     :recommended-alternative
+     "always include the closed-set vocabulary in :reads AND constrain output via :output-schemas with [:enum ...] of the allowed categories",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "single batch classification of N>20 items in one :llm call loses per-item attention — accuracy degrades at the tail of the batch",
+     :avoid-when "item count >20 AND per-item accuracy matters",
+     :recommended-alternative
+     ":map-each per-item with bounded :max-concurrency — wall-time stays low and per-item attention is preserved",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Classification assigns each item from a set to one or more predefined categories. ALWAYS include the closed-set vocabulary in :reads AND constrain output via :output-schemas with [:enum ...] of allowed categories — open-ended output drifts across runs and breaks downstream aggregation. Prefer :map-each per-item (with bounded :max-concurrency) over batch classification for >20 items — preserves per-item attention. Composes into parallel-classify-aggregate (map-reduce variant), map-reduce shells, and parallel-independent shells (multi-axis classification with per-axis classifier). Avoid for open-ended labels (clustering), for rule-based assignments (use :code), or for category set generation (use ideation).",
+   :representative-uses
+   ["per-document topic classification: each document → topic label + confidence"
+    "per-issue triage: each support ticket → category from a fixed taxonomy"
+    "per-clause risk-class assignment: each contract clause → risk level + reasoning"],
+   :version 1,
+   :consolidated-from-event-count 0}}
+ {:target-id #uuid "760be698-0bb8-3a5a-a2bd-1d45445a5861",
+  :body
+  {:capabilities
+   ["given symptoms + ambient context (logs, code, test artifacts, stack traces), produce a structured hypothesis with supporting evidence and a recommended fix or next step"
+    "natural fit when the goal is to explain WHY something is broken — distinct from Research (gather new material) and Analysis (reason over already-extracted items)"
+    "outputs are typically a single root-cause statement + supporting evidence references + a recommended-fix or next-step"],
+   :strengths
+   [{:trait
+     "enumerate candidate hypotheses UPFRONT from the symptom before collecting evidence — separates 'what could be wrong' from 'what is wrong' so evidence rules out rather than confirms the first guess",
+     :good-when
+     "the failure mode space is bounded AND the model can enumerate likely causes from the symptom alone",
+     :recommended-pattern
+     "[:sequence [:llm {:reads [:symptom :context] :writes [:candidate-hypotheses]}] [:llm {:reads [:candidate-hypotheses :context] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining :context] :writes [:root-cause :recommended-fix]}] [:final {:keys [:root-cause :recommended-fix]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "for investigations over large evidence sets (multi-file logs, large codebases), chunk the evidence and run per-chunk hypothesis-evidence collection via :map-each so per-chunk reasoning parallelizes and the aggregator sees per-chunk findings tagged with their source",
+     :good-when
+     "evidence is too large to fit in a single :llm context AND per-chunk findings can be aggregated without losing per-chunk attribution",
+     :recommended-pattern
+     "[:map-each {:items :evidence-chunks :as :chunk :max-concurrency 3 :writes [:per-chunk-findings]} [:llm {:reads [:chunk :symptom] :writes [:per-chunk-findings] :output-schemas {:per-chunk-findings [:vector [:map [:hypothesis :string] [:supporting-evidence :string] [:chunk-id :string]]]}}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :avoid-when
+   ["the task is exploration without a specific failure to explain — that's research, not investigation"
+    "the items have already been extracted and the task is reasoning over them — that's analysis"
+    "the task is producing a new spec or design from scratch — that's design (no failure to investigate)"
+    "the task is checking against known formal rules — that's validation (the rules are known; nothing to investigate)"],
+   :composes-into
+   ["seed:tree:SequentialPipeline"
+    "seed:tree:FallbackRecovery"
+    "seed:tree:ChunkedExtraction"],
+   :weaknesses
+   [{:trait
+     "single-pass investigation on a complex symptom converges on the first plausible hypothesis without ruling out alternatives — produces overconfident root-cause claims that fail when the true cause was the second hypothesis",
+     :avoid-when
+     "the symptom has multiple plausible causes AND the cost of acting on the wrong root cause is high",
+     :recommended-alternative
+     "explicit multi-hypothesis enumeration upfront; an intermediate :llm stage must rule out at least ONE candidate hypothesis with evidence before convergence to a root cause is allowed",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}
+    {:trait
+     "investigation without ambient context (just the symptom + nothing else) produces vacuous 'could be X / could be Y' output the consumer can't act on — the model has no evidence to rule anything in or out",
+     :avoid-when
+     "context (logs / code / tests / stack traces) is available in the system but not passed in :reads",
+     :recommended-alternative
+     "always pass ambient context explicitly in :reads; if the context is too large for a single :llm node, compose into chunked-extraction via :map-each so per-chunk evidence reaches the hypothesis-evidence stage",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-05-28T00:00:00Z",
+     :last-reinforced-at "2026-05-28T00:00:00Z"}],
+   :scope :behavioral-subtree,
+   :summary
+   "Investigation explains WHY a system is misbehaving. Best implemented as an explicit hypothesis-then-evidence shape: enumerate candidate causes from the symptom UPFRONT, then collect evidence to rule out alternatives, then converge on the root cause + recommended fix. ALWAYS pass ambient context (logs / code / tests / stack traces) in :reads — context-free investigation produces vacuous output. For large evidence sets (multi-file logs, large codebases), compose into chunked-extraction shells so per-chunk evidence collection parallelizes. Composes into sequential-pipeline (canonical hypothesis chain), fallback-recovery (try-one-path-then-another when initial hypothesis fails), and chunked-extraction (investigating large evidence sets). Distinct from Research (which gathers external material to seed new work, not explain existing breakage) and Analysis (which reasons over already-extracted items, not raw symptoms). Avoid when the task is exploration without a specific failure to explain.",
+   :representative-uses
+   ["investigate why an integration test is flaky: enumerate timing / shared-state / environment hypotheses; rule out via test logs + run history; recommend the deterministic fix"
+    "generate property-based tests that exercise edge cases — property test generation IS investigation, finding inputs that break invariants"
+    "debug a memory leak in a long-running service: enumerate allocator / reference-cycle / cache-bloat hypotheses; rule out via heap snapshots + allocation profiles; recommend the targeted fix"
+    "review a post-incident report for missing root-cause analysis: enumerate plausible causes the report didn't address; surface the gap with evidence from the timeline"],
+   :version 1,
+   :consolidated-from-event-count 0}}]

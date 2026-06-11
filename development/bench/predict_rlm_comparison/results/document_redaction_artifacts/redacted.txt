@@ -1,0 +1,220 @@
+=== PAGE 0 ===
+
+EMPLOYMENT AGREEMENT
+Pacific Northwest Financial Services, Inc.
+██████████████████████████████████
+Vancouver, BC V6E 3S7
+Date: ██████████████
+This Employment Agreement (the "Agreement") is entered into by and between
+Pacific Northwest Financial Services, Inc. ("Employer") and the following
+individual ("Employee"):
+Employee Name: ███████████████████████████████████
+Date of Birth: ██████████████████
+Social Insurance Number: ███████████
+Home Address: █████████████████████, North Vancouver, BC ███████
+Personal Email: ████████████████████████████
+Mobile Phone: ██████████████
+Emergency Contact: ████████████, ██████████████ (spouse)
+Position: Senior Financial Analyst, Wealth Management Division
+Start Date: █████████████
+Reporting To: ████████████████, VP Wealth Management
+Annual Salary: $142,500 CAD
+SIGNATURES
+Employer Representative:
+Name: ███████████, Chief Human Resources Officer
+Date: ██████████████
+Employee:
+Name: ███████████████████████████████████
+Date: ██████████████
+
+
+--- PAGE BREAK ---
+
+=== PAGE 1 ===
+
+SCHEDULE A: EMPLOYEE DETAILS AND COMPENSATION
+1. PERSONAL INFORMATION
+Full Legal Name: ███████████████████████████████████
+Preferred Name: ████████
+Passport Number: ████████ (Canada)
+Driver's License: ███████ (British Columbia)
+Permanent Address:
+█████████████████████
+North Vancouver, BC ███████
+Canada
+2. BANKING INFORMATION FOR DIRECT DEPOSIT
+Bank Name: Royal Bank of Canada
+Branch: Park Royal, West Vancouver
+Transit Number: █████
+Institution Number: 003
+Account Number: ███████
+Account Holder: ████████ E. Thornbury-Watson
+3. COMPENSATION
+Base Salary: $142,500.00 CAD per annum
+Pay Frequency: Semi-monthly (████████████)
+Performance Bonus: Up to 20% of base salary, at Employer discretion
+4. BENEFITS ENROLLMENT
+Group Benefits Plan: PNFS-2025-EMP
+Life Insurance Beneficiary: ████████████ (spouse)
+Beneficiary Date of Birth: ████████████
+Beneficiary SIN: ███████████
+RRSP Matching: Employer matches 100% of contributions up to 5% of salary
+RRSP Account: RBC Direct Investing, Account #██████████████
+
+
+--- PAGE BREAK ---
+
+=== PAGE 2 ===
+
+SCHEDULE B: REFERENCES AND BACKGROUND VERIFICATION
+1. PROFESSIONAL REFERENCES
+Reference 1:
+Name: █████████████████████
+Title: Managing Director, TD Asset Management
+Phone: ██████████████
+Email: ████████████████████████
+Relationship: Former direct supervisor (█████████)
+Reference 2:
+Name: █████████████████
+Title: Partner, KPMG Advisory Services
+Phone: ████████████████████████
+Email: █████████████████
+Relationship: Client-side engagement lead (█████████)
+Reference 3:
+Name: ████████████████████
+Title: CFO, Cascadia Renewable Energy Corp.
+Phone: ██████████████
+Email: ██████████████████████████████████
+Relationship: Colleague and project collaborator (█████████)
+2. BACKGROUND CHECK AUTHORIZATION
+I, ███████████████████████████████████, hereby authorize Pacific Northwest
+Financial Services, Inc. to conduct a comprehensive background check,
+including but not limited to criminal record verification, credit history,
+employment verification, and education verification.
+Social Insurance Number (for credit check): ███████████
+Date of Birth (for identity verification): ██████████████████
+Previous Employer: TD Asset Management
+Address: █████████████████████████, Toronto, ON M5K 1A2
+Supervisor: █████████████████████
+Phone: ██████████████
+Dates of Employment: ████████████████████████████
+Reason for Leaving: Career advancement opportunity
+Authorization Signature: ████████████████████████████
+Date: ██████████████
+
+
+--- PAGE BREAK ---
+
+=== PAGE 3 ===
+
+SCHEDULE C: IT ONBOARDING AND SYSTEM ACCESS
+1. CORPORATE ACCOUNTS
+Corporate Email: ██████████████████████████
+Active Directory Username: ████████████████
+Employee ID: █████████████
+Badge Number: ███████████
+2. SYSTEM ACCESS PROVISIONED
+Bloomberg Terminal: License ████████████
+Salesforce CRM: Standard User License
+Portfolio Analytics Suite: Full Access
+SharePoint: Wealth Management Team Site
+3. HARDWARE ASSIGNED
+Laptop: Dell Latitude 7440, Asset Tag ████████████
+Serial Number: ████████████
+Monitor: Dell U2722D, Asset Tag ████████████
+Mobile Phone: iPhone 15 Pro, ██████████████ (corporate line)
+IMEI: ███████████████
+4. PARKING AND BUILDING ACCESS
+Parking Permit: ███████████ (Level B2, Harbour View Tower)
+Building Access Card: ███████████
+Floor Access: Levels 4, 5, 12 (Wealth Management, Executive)
+5. CORPORATE CREDIT CARD
+Card Issuer: RBC Visa Business
+Card Number: ███████████████████
+Cardholder Name: █████████████████████████
+Expiry: ███████
+Monthly Limit: $5,000 CAD
+Approving Manager: ████████████████
+
+
+--- PAGE BREAK ---
+
+=== PAGE 4 ===
+
+SCHEDULE D: HEALTH, SAFETY, AND FAMILY INFORMATION
+1. WORKPLACE HEALTH AND SAFETY
+Emergency Contact (Primary):
+Name: ████████████
+Relationship: Spouse
+Phone: ██████████████
+Email: ██████████████████████████
+Address: █████████████████████, North Vancouver, BC ███████
+Emergency Contact (Secondary):
+Name: █████████████████
+Relationship: Mother
+Phone: ██████████████
+Address: █████████████████, Victoria, BC ███████
+Medical Conditions / Allergies: None declared
+Blood Type: A+
+BC Health Card Number: ████████████
+2. DEPENDANTS (FOR BENEFITS ENROLLMENT)
+Dependant 1:
+Name: ██████████████████
+Date of Birth: ████████████
+Relationship: Spouse
+SIN: ███████████
+BC Health Card: ████████████
+Dependant 2:
+Name: ███████████████████████
+Date of Birth: █████████████████
+Relationship: Child
+BC Health Card: ████████████
+Dependant 3:
+Name: ██████████████████████
+Date of Birth: ██████████████
+Relationship: Child
+BC Health Card: ████████████
+3. ACKNOWLEDGEMENT
+I confirm that the information provided above is accurate and complete.
+I understand that any material misrepresentation may result in
+termination of employment.
+Employee: ███████████████████████████████████
+Date: ██████████████
+
+
+--- PAGE BREAK ---
+
+=== PAGE 5 ===
+
+SCHEDULE E: NON-DISCLOSURE AND NON-COMPETE AGREEMENT
+This Non-Disclosure and Non-Compete Agreement is entered into between:
+Employer: Pacific Northwest Financial Services, Inc.
+Registered Address: ██████████████████████████████████, Vancouver, BC V6E 3S7
+Business Number: ███████████████
+Employee: ███████████████████████████████████
+SIN: ███████████
+Address: █████████████████████, North Vancouver, BC ███████
+1. NON-DISCLOSURE OBLIGATIONS
+The Employee agrees not to disclose any Confidential Information of the
+Employer, its clients, or its business partners during or after the term
+of employment. Confidential Information includes, but is not limited to,
+client lists, financial data, investment strategies, proprietary models,
+and trade secrets.
+2. NON-COMPETE CLAUSE
+For a period of twelve (12) months following termination of employment,
+the Employee shall not directly or indirectly engage in, or be employed
+by, any competing financial services firm within the Greater Vancouver
+Regional District and the Capital Regional District of British Columbia.
+3. NON-SOLICITATION
+For a period of eighteen (18) months following termination, the Employee
+shall not solicit any clients or employees of the Employer.
+4. REMEDIES
+The Employee acknowledges that breach of this Agreement may cause
+irreparable harm to the Employer and that monetary damages may be
+inadequate. The Employer shall be entitled to seek injunctive relief
+in addition to any other available remedies.
+EXECUTED as of ██████████████.
+Employer: ███████████, CHRO
+Pacific Northwest Financial Services, Inc.
+Employee: ███████████████████████████████████
+Date: ██████████████

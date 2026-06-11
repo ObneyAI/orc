@@ -1,0 +1,47 @@
+{:slug "domain-004-symphony-to-quartet",
+ :envelope
+ {:assigned-tree-id #uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+  :confidence 0.95,
+  :top-candidates
+  [{:content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :score 134.59664916992188,
+    :rank 5,
+    :document-id
+    ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.471327-05:00"},
+    :reasoning
+    "The caller's intent is to create a complex 'structured arrangement document' involving multiple distinct sections (:voice-assignments, :range-considerations, etc.) derived from a synthesis of musical knowledge. This matches the 'Briefing generation' pattern (ResearchThenSynthesize) because it requires extracting thematic and harmonic details from the 'original' and synthesizing them into a 'cohesive narrative' for a chamber-music coach. The requirement for :loss-and-gain specifically mirrors the 'cross-chunk reasoning' (themes, contradictions) mentioned in this fingerprint's synthesis stage.",
+    :fitness-score 0.95,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 136.1659698486328,
+    :rank 3,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464242-05:00"},
+    :reasoning
+    "While the task involves processing multiple 'sub-tasks' (the required sections), the Chunked-extraction pattern is primarily concerned with structural reduction and data extraction from long documents to bounded map operations. The caller's task is essentially a complex creative synthesis/briefing rather than a high-concurrency extraction of data points from a massive text file, making this structural pattern less aligned with the desired output of a structured coach's guide.",
+    :fitness-score 0.4,
+    :rerank-source :reranker}],
+  :reasoning
+  "The caller's intent is to create a complex 'structured arrangement document' involving multiple distinct sections (:voice-assignments, :range-considerations, etc.) derived from a synthesis of musical knowledge. This matches the 'Briefing generation' pattern (ResearchThenSynthesize) because it requires extracting thematic and harmonic details from the 'original' and synthesizing them into a 'cohesive narrative' for a chamber-music coach. The requirement for :loss-and-gain specifically mirrors the 'cross-chunk reasoning' (themes, contradictions) mentioned in this fingerprint's synthesis stage.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5986,
+ :parent-chain []}

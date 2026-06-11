@@ -1,0 +1,62 @@
+{:slug "code-001-refactor-auth-middleware",
+ :envelope
+ {:assigned-tree-id #uuid "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+  :confidence 0.95,
+  :top-candidates
+  [{:content
+    "ETL pipelines chain 2-4 sequential stages where each stage's :writes feed the next stage's :reads. The proven shape uses :llm for content transformation and :code for deterministic formatting/aggregation at the tail. Always declare :output-schemas on intermediates so shape mismatches identify the offending stage, not the downstream consumer. Collapse very short successive stages into a single :llm to save tokens. Avoid when work is per-chunk independent (use chunked-extraction) or stages can run in parallel (use :parallel).",
+    :score 90.00968933105469,
+    :rank 1,
+    :document-id
+    ":tree-fingerprint:#uuid \"fc82d884-b2c7-38a7-9783-ac2bba41237f\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "fc82d884-b2c7-38a7-9783-ac2bba41237f",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468124-05:00"},
+    :reasoning
+    "The ETL pipeline pattern perfectly matches the structural shape of the requested middleware refactor: it focuses on collapsing 2-4 sequential stages into a single unit while using schemas (contracts) to manage intermediate state. The recommendation to collapse successive stages to eliminate repeated work directly addresses the caller's need to unify three functions and stop redundant Redis lookups.",
+    :fitness-score 0.95,
+    :rerank-source :reranker}
+   {:content
+    "Scheduling tasks fit a staged sequential pipeline: enumerate constraints → propose assignment → conflict-check with code → emit final + justification. The pattern separates LLM-driven proposal (good at creativity) from code-driven constraint validation (good at precision). Always use :code for the conflict-check stage — LLMs silently violate multiple hard constraints in single-pass. For high-conflict problem spaces where retry-until-feasible is needed, wrap in validation-loop instead. Examples: on-call rotation, meeting scheduling across timezones, shift assignment.",
+    :score 87.63233184814453,
+    :rank 6,
+    :document-id
+    ":tree-fingerprint:#uuid \"5a08300e-10e3-305a-80c1-17eafea15ff7\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "5a08300e-10e3-305a-80c1-17eafea15ff7",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.468866-05:00"},
+    :reasoning
+    "The scheduling pattern captures the sequential nature of 'propose assignment' then 'conflict-check', which mirrors the middleware's logic of 'authenticating' then 'enforcing limits'. However, it is less fit than the ETL pattern because it emphasizes creativity-vs-precision rather than the data-flow optimization and stage-collapsing required by the legacy code refactor.",
+    :fitness-score 0.65,
+    :rerank-source :reranker}
+   {:content
+    "Producer/validator is the canonical validation-loop instance where one node generates a candidate and another checks it against formal rules, with an explicit retry budget. The validator should be :code (not :llm) when rules are syntactic — this provides a true correctness oracle uncorrelated with producer failures. Always pass validator :issues back to the producer on retry so the model addresses specific failures. Always cap :max-retries at 3 to bound LLM cost. Avoid for tasks with no formal validation rules (use iterative-refinement) or when validation requires deep judgment (use LLM evaluation/judge instead).",
+    :score 87.92974090576172,
+    :rank 4,
+    :document-id
+    ":tree-fingerprint:#uuid \"acbcf0ca-6478-3a63-8b93-31b93bf0902c\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "acbcf0ca-6478-3a63-8b93-31b93bf0902c",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.469229-05:00"},
+    :reasoning
+    "The producer/validator pattern is a poor fit because the intent is to refactor a linear execution chain into a unified module, not to implement an iterative retry loop between two nodes. The request does not involve an LLM generation step needing a formal correctness oracle.",
+    :fitness-score 0.2,
+    :rerank-source :reranker}],
+  :reasoning
+  "The ETL pipeline pattern perfectly matches the structural shape of the requested middleware refactor: it focuses on collapsing 2-4 sequential stages into a single unit while using schemas (contracts) to manage intermediate state. The recommendation to collapse successive stages to eliminate repeated work directly addresses the caller's need to unify three functions and stop redundant Redis lookups.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6141,
+ :parent-chain []}

@@ -1,0 +1,39 @@
+;; Provenance: hand-authored 2026-06-09 for R04 OOD stress
+;; Family: domain
+;; Why OOD: physical-process scaling with food-science constraints — quantity ≠ proportionality.
+A small restaurant has a chef-tested recipe for ratatouille that yields
+6 plates from these ingredients + technique:
+
+Ingredients:
+- 2 medium eggplants, diced 1 cm
+- 3 zucchini, diced 1 cm
+- 2 red bell peppers, diced 1 cm
+- 4 plum tomatoes, peeled + diced
+- 1 large onion, finely chopped
+- 4 garlic cloves, minced
+- 1/2 cup olive oil
+- 2 tsp salt, 1 tsp ground black pepper
+- 1 tbsp dried herbes de Provence
+- Fresh basil for garnish
+
+Technique:
+- Sweat onions and garlic in olive oil 5 min
+- Add peppers, cook 5 min
+- Add eggplant + zucchini, cook 10 min with occasional stirring
+- Add tomatoes + seasoning, simmer covered 25 min
+- Uncover, reduce 10 min
+
+Scale this recipe to feed 60 plates for a catering event. NOT a simple
+10x multiplication — provide a scaled recipe that accounts for:
+- Knife work + dicing time at scale (suggest a workflow + station setup)
+- Cookware capacity (a 12" pan can hold ~6 plates of vegetables; what
+  changes with scaling?)
+- Heat distribution in larger pans / pots (timing adjustments)
+- Seasoning at scale (salt doesn't scale linearly with vegetable volume)
+- Texture preservation (over-stirring with larger batches mashes the
+  vegetables)
+- Service timing (how far in advance can this be cooked + held without
+  texture loss)
+- Cost estimate at typical restaurant supplier pricing
+
+Output: `{:scaled-ingredients :revised-technique :workflow :timing :cost-estimate :pitfalls-and-mitigations}`

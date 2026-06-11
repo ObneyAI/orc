@@ -1,0 +1,47 @@
+{:slug "domain-004-symphony-to-quartet",
+ :envelope
+ {:assigned-tree-id #uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+  :confidence 0.85,
+  :reasoning
+  "The user's request for a 'structured arrangement document' involving multiple specific sections (:voice-assignments, :harmonic-decisions, etc.) aligns with the Briefing Generation pattern of 'ResearchThenSynthesize'. The task requires analyzing various musical elements (equivalent to extraction) and performing a final synthesis to produce a cohesive narrative/guide for a chamber-music coach.",
+  :parent-tree-id nil,
+  :was-fresh-mint? false,
+  :top-candidates
+  [{:content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :score 134.5968780517578,
+    :rank 5,
+    :document-id
+    ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.156769-05:00"},
+    :reasoning
+    "The user's request for a 'structured arrangement document' involving multiple specific sections (:voice-assignments, :harmonic-decisions, etc.) aligns with the Briefing Generation pattern of 'ResearchThenSynthesize'. The task requires analyzing various musical elements (equivalent to extraction) and performing a final synthesis to produce a cohesive narrative/guide for a chamber-music coach.",
+    :fitness-score 0.85,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 136.58966064453125,
+    :rank 3,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T15:31:49.142242-05:00"},
+    :reasoning
+    "While this task involves processing a complex 'input' (the symphony), it is not a large-document extraction problem in the data-processing sense. The structural pattern of chunking and mapping with concurrency is less relevant here than the thematic synthesis and narrative output described in the briefing generation candidate.",
+    :fitness-score 0.3,
+    :rerank-source :reranker}],
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? false,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 5222,
+ :parent-chain []}

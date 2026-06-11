@@ -1,0 +1,4 @@
+{:paths ["src" "resources"]
+ :deps {org.apache.pdfbox/pdfbox {:mvn/version "3.0.3"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}

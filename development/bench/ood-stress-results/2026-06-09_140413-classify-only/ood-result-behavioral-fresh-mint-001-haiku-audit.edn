@@ -1,0 +1,46 @@
+{:slug "behavioral-fresh-mint-001-haiku-audit",
+ :envelope
+ {:assigned-tree-id #uuid "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+  :confidence 0.9,
+  :top-candidates
+  [{:content
+    "Briefing generation is the canonical ResearchThenSynthesize instance: chunk → per-chunk :llm extraction → :aggregate → final synthesis :llm that produces a cohesive narrative. The synthesis stage's access to ALL per-chunk material enables cross-chunk reasoning (themes, contradictions). Always extract supporting quotes alongside summaries to support traceability. Watch context overflow — reduce per-chunk granularity if chunk count is high. Wire a grounding judge on the output when the briefing goes to a decision-maker. Use document-analysis (chunked-extraction) for structured triples; use chunked-extraction for terminal aggregation without synthesis.",
+    :score 76.90230560302734,
+    :rank 10,
+    :document-id
+    ":tree-fingerprint:#uuid \"153f1c69-e1d8-3592-8e62-391a7fab2dac\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "153f1c69-e1d8-3592-8e62-391a7fab2dac",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.471327-05:00"},
+    :reasoning
+    "The user's task requires processing a list of 5 distinct findings into a vector of corresponding haikus. This matches the 'chunk → per-chunk :llm extraction → :aggregate' pattern described in ResearchThenSynthesize. Each finding acts as a chunk that requires an individual LLM transformation (haiku generation) before being aggregated into the final required map structure.",
+    :fitness-score 0.9,
+    :rerank-source :reranker}
+   {:content
+    "FallbackRecovery is a :fallback of two children where the primary runs first; on :failure, the backup runs. The canonical recovery composite for graceful degradation (cost-tiered model fallback, schema-strict-then-loose, LLM-then-rule-based). NOT currently emit-able by RLM — for emit-tree! patterns wanting recovery semantics, use a single :llm with instruction-level fallback wording. Each failed primary still runs to completion before failure is detected — put the cheaper child first if its success rate is close to the primary's. Risk: silently masks bugs — pair with logging :code or a judge to surface when the backup fires.",
+    :score 78.69950866699219,
+    :rank 6,
+    :document-id ":tree-fingerprint:\"seed:tree:FallbackRecovery\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:FallbackRecovery",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.466631-05:00"},
+    :reasoning
+    "This candidate describes an error-handling flow for a primary/backup sequence. While security findings imply failures, the actual task structure is a parallel translation of five items rather than a recovery operation where a backup runs if a primary fails. It does not provide the necessary iterative or chunking logic required for the 5-item list input.",
+    :fitness-score 0.15,
+    :rerank-source :reranker}],
+  :reasoning
+  "The user's task requires processing a list of 5 distinct findings into a vector of corresponding haikus. This matches the 'chunk → per-chunk :llm extraction → :aggregate' pattern described in ResearchThenSynthesize. Each finding acts as a chunk that requires an individual LLM transformation (haiku generation) before being aggregated into the final required map structure.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6244,
+ :parent-chain []}

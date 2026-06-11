@@ -9,6 +9,7 @@
             [ai.obney.orc.grain-test-utils.interface :as tu]
             [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.orc.colbert.core.commands]
+            [ai.obney.orc.colbert.core.operations :as operations]
             [ai.obney.orc.colbert.core.read-models :as rm]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-v3.interface :refer [->event]]
@@ -138,15 +139,21 @@
 ;; =============================================================================
 
 (deftest rerank-without-bridge-returns-fault-test
-  (testing "rerank returns fault when bridge is unavailable"
-    (let [result (tu/process-command! *ctx*
-                   {:command/name :colbert/rerank
-                    :query "test query"
-                    :documents ["doc 1" "doc 2"]
-                    :k 2})]
-      ;; Without the Python bridge running, this should return a fault anomaly
-      (is (= ::anom/fault (::anom/category result))
-          "Should return fault anomaly when bridge unavailable"))))
+  (testing "rerank returns a fault anomaly when the bridge call fails (e.g. bridge unavailable)"
+    ;; Force the bridge-unavailable condition deterministically rather than relying
+    ;; on the absence of a .venv-colbert (which makes this test pass/fail depending
+    ;; on the dev's environment): simulate the bridge call throwing. The command
+    ;; handler must convert the exception into an ::anom/fault map regardless of
+    ;; host state (venv present or absent).
+    (with-redefs [operations/rerank (fn [& _]
+                                      (throw (ex-info "ColBERT bridge unavailable (simulated)" {})))]
+      (let [result (tu/process-command! *ctx*
+                     {:command/name :colbert/rerank
+                      :query "test query"
+                      :documents ["doc 1" "doc 2"]
+                      :k 2})]
+        (is (= ::anom/fault (::anom/category result))
+            "Should return fault anomaly when the bridge call fails")))))
 
 ;; =============================================================================
 ;; Regenerate Index Command Tests

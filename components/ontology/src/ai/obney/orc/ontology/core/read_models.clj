@@ -23,9 +23,13 @@
 
 (def concept-events
   "Events that affect the concept graph read model"
-  #{:ontology/concept-created
+  #{;; Domain events (from commands)
+    :ontology/concept-created
     :ontology/concept-updated
-    :ontology/relationship-created})
+    :ontology/relationship-created
+    ;; Evolutionary events (from builder)
+    :evolutionary/concepts-extracted
+    :evolutionary/relationships-extracted})
 
 (def tree-profile-events
   "Events that affect tree profile read model"
@@ -34,6 +38,17 @@
     :ontology/tree-problem-mapping-created
     :ontology/tree-problem-mapping-updated
     :ontology/domain-knowledge-added})
+
+(def description-events
+  "C-2: events that affect the Living Description read model.
+
+   One event type per granularity (node-type, node-instance, tree-fingerprint).
+   Append-only — each event is a new version of the target's description;
+   the projection maintains both 'current' (latest body) and 'history'
+   (chronological vector of all versions)."
+  #{:ontology/node-type-description-updated
+    :ontology/node-instance-description-updated
+    :ontology/tree-description-updated})
 
 (def node-learning-events
   "Events that affect node-level learning read model"
@@ -101,9 +116,76 @@
           (update-in [source-uri :related] (fnil conj #{}) target-uri)
           (update-in [target-uri :related] (fnil conj #{}) source-uri))
 
+      ;; R05a — behavior:composes-into is the bridge from behavioral
+      ;; subtrees (Layer 2) to structural shells (Layer 1). The behavior
+      ;; carries an outgoing :composes-into set of shell URIs; the shell
+      ;; carries an incoming :composed-by set of behavior URIs. R05b's
+      ;; classify-behaviors traverses these edges when narrowing
+      ;; candidates by structural-context.
+      "behavior:composes-into"
+      (-> state
+          (update-in [source-uri :composes-into] (fnil conj #{}) target-uri)
+          (update-in [target-uri :composed-by] (fnil conj #{}) source-uri))
+
       ;; Other predicates (owl:causes, etc.) - store as related
       (-> state
           (update-in [source-uri :related] (fnil conj #{}) target-uri)))))
+
+;; -----------------------------------------------------------------------------
+;; Evolutionary Event Handlers
+;; -----------------------------------------------------------------------------
+;; These handlers process events from the evolutionary ontology builder,
+;; allowing concepts extracted from JSON/CSV/SQL/text sources to be queryable
+;; through the same read model as domain-created concepts.
+
+(defmethod concepts* :evolutionary/concepts-extracted
+  [state event]
+  ;; event has :concepts vector, each with :uri :label :definition :entity-type etc
+  (let [ontology-id (:ontology-id event)]
+    (reduce (fn [acc concept]
+              (let [uri (:uri concept)]
+                (assoc acc uri
+                       {:uri uri
+                        :id nil  ;; No concept-id from evolutionary path
+                        :ontology-id ontology-id
+                        :label (:label concept)
+                        :description (or (:definition concept) "")
+                        :scope (keyword (or (:entity-type concept) "entity"))
+                        :broader #{}
+                        :narrower #{}
+                        :related #{}
+                        :indicators []
+                        :alt-labels (or (:alt-labels concept) [])
+                        :confidence (:confidence concept 1.0)
+                        :source-id (:source-id concept)
+                        :created-at (:extracted-at event)})))
+            state
+            (:concepts event))))
+
+(defmethod concepts* :evolutionary/relationships-extracted
+  [state event]
+  ;; event has :relationships vector, each with :subject :predicate :object
+  (reduce (fn [acc {:keys [subject predicate object]}]
+            (case predicate
+              "skos:broader"
+              (-> acc
+                  (update-in [subject :broader] (fnil conj #{}) object)
+                  (update-in [object :narrower] (fnil conj #{}) subject))
+
+              "skos:narrower"
+              (-> acc
+                  (update-in [subject :narrower] (fnil conj #{}) object)
+                  (update-in [object :broader] (fnil conj #{}) subject))
+
+              "skos:related"
+              (-> acc
+                  (update-in [subject :related] (fnil conj #{}) object)
+                  (update-in [object :related] (fnil conj #{}) subject))
+
+              ;; Other predicates - store as related by default
+              (update-in acc [subject :related] (fnil conj #{}) object)))
+          state
+          (:relationships event)))
 
 (defmethod concepts* :default [state _] state)
 
@@ -113,7 +195,7 @@
   (reduce concepts* initial-state events))
 
 (defreadmodel :ontology concepts
-  {:events concept-events, :version 1}
+  {:events concept-events, :version 2}  ;; v2: Added evolutionary event support
   [state event] (concepts* state event))
 
 ;; =============================================================================
@@ -235,6 +317,450 @@
   [state event] (tree-profiles* state event))
 
 ;; =============================================================================
+;; C-2 Living Descriptions Projection
+;; =============================================================================
+;; State shape:
+;;   {<granularity> {<target-id> {:current <latest-body>
+;;                                :history [<event-as-map>, ...chronological]}}}
+;;
+;; Each *-description-updated event REPLACES :current and APPENDS to :history.
+;; This is the foundation for `get-description` (latest body) and
+;; `get-description-history` (full audit trail) queries.
+
+(defmulti descriptions*
+  "Apply an event to the Living Description read-model state."
+  (fn [_state event] (:event/type event)))
+
+(defmethod descriptions* :default [state _] state)
+
+(defn- apply-description-event
+  "Generic projection: the event has :target-type (granularity), :target-id
+   (granularity-specific key), :body (the description body), :recorded-at.
+   Replaces :current with the new body; appends a versioned entry to :history."
+  [state event]
+  (let [granularity (:target-type event)
+        target-id (:target-id event)
+        body (:body event)
+        recorded-at (:recorded-at event)
+        history-entry {:body body
+                       :recorded-at recorded-at
+                       :event-id (:event/id event)}]
+    (-> state
+        (assoc-in [granularity target-id :current] body)
+        (update-in [granularity target-id :history]
+                   (fnil conj []) history-entry))))
+
+(defmethod descriptions* :ontology/node-type-description-updated [state event]
+  (apply-description-event state event))
+
+(defmethod descriptions* :ontology/node-instance-description-updated [state event]
+  (apply-description-event state event))
+
+(defmethod descriptions* :ontology/tree-description-updated [state event]
+  (apply-description-event state event))
+
+(defn descriptions
+  "Build the Living Description state from a seq of events."
+  [initial-state events]
+  (reduce descriptions* initial-state events))
+
+(defreadmodel :ontology descriptions
+  {:events description-events, :version 1}
+  [state event] (descriptions* state event))
+
+(defn get-description
+  "Return the CURRENT description body for the (granularity, target-id)
+   target, or nil if no description exists.
+
+   Granularity is one of :node-type, :node-instance, :tree-fingerprint.
+   The target-id is whatever shape the granularity uses (keyword for
+   :node-type, [sheet-id node-id] tuple for :node-instance, string for
+   :tree-fingerprint)."
+  [ctx granularity target-id]
+  (get-in (rmp/project ctx :ontology/descriptions)
+          [granularity target-id :current]))
+
+(defn get-description-history
+  "Return the chronological vector of all description versions ever
+   recorded for the (granularity, target-id) target. Empty vector if
+   none recorded."
+  [ctx granularity target-id]
+  (or (get-in (rmp/project ctx :ontology/descriptions)
+              [granularity target-id :history])
+      []))
+
+;; =============================================================================
+;; C-2a-3a — Consolidation threshold config read-model
+;; =============================================================================
+;;
+;; Event-sourced per-target-type threshold configuration. The
+;; threshold-tracking processor reads this to decide when to emit
+;; :ontology/consolidation-requested. Unset target-types use the default
+;; threshold of 10.
+
+(def ^:private default-consolidation-threshold
+  "Default delta-since-last-consolidation count that triggers a
+   consolidation request when no per-target-type override has been set."
+  10)
+
+(defmulti consolidation-thresholds*
+  "Apply an event to the threshold-config state map.
+   State: {target-type → int}."
+  (fn [_state event] (:event/type event)))
+
+(defmethod consolidation-thresholds* :default [state _] state)
+
+(defmethod consolidation-thresholds* :ontology/consolidation-threshold-set
+  [state event]
+  (assoc state (:target-type event) (:threshold event)))
+
+(defn consolidation-thresholds
+  "Build the threshold-config state from a seq of events."
+  [initial-state events]
+  (reduce consolidation-thresholds* initial-state events))
+
+(defreadmodel :ontology consolidation-thresholds
+  {:events #{:ontology/consolidation-threshold-set} :version 1}
+  [state event] (consolidation-thresholds* state event))
+
+(defn get-consolidation-threshold
+  "Return the configured threshold for a target-type, or the default 10."
+  [ctx target-type]
+  (or (get (rmp/project ctx :ontology/consolidation-thresholds) target-type)
+      default-consolidation-threshold))
+
+;; =============================================================================
+;; Gap-1 — Living Description opt-in flag read-model
+;; =============================================================================
+;;
+;; System-level boolean gating the WRITING side of the Living Description
+;; loop. State is a map `{:enabled? boolean}` because read-models always
+;; project to a map shape; the lone field is the flag itself.
+;; Default false when no event has been emitted (consumer must opt in).
+
+(defmulti living-description-enabled*
+  (fn [_state event] (:event/type event)))
+
+(defmethod living-description-enabled* :default [state _] state)
+
+(defmethod living-description-enabled* :ontology/living-description-enabled-set
+  [state event]
+  (assoc state :enabled? (boolean (:enabled? event))))
+
+(defn living-description-enabled
+  "Build the opt-in flag state from a seq of events."
+  [initial-state events]
+  (reduce living-description-enabled* initial-state events))
+
+(defreadmodel :ontology living-description-enabled
+  {:events #{:ontology/living-description-enabled-set} :version 1}
+  [state event] (living-description-enabled* state event))
+
+(defn get-living-description-enabled?
+  "Return the current Living Description opt-in flag (default false)."
+  [ctx]
+  (boolean (:enabled? (rmp/project ctx :ontology/living-description-enabled))))
+
+;; =============================================================================
+;; C-2a-3c — Consolidation budget config read-model
+;; =============================================================================
+;;
+;; Hourly consolidation budget per target-type. The consolidator gate
+;; reads this to decide whether to run the LLM reflection or skip the
+;; consolidation due to budget exhaustion. Unset target-types use the
+;; default budget of 100/hour.
+
+(def ^:private default-consolidation-budget
+  "Default consolidations-per-hour-per-target-type allowed when no
+   per-target-type override has been set."
+  100)
+
+(defmulti consolidation-budgets*
+  (fn [_state event] (:event/type event)))
+
+(defmethod consolidation-budgets* :default [state _] state)
+
+(defmethod consolidation-budgets* :ontology/consolidation-budget-set
+  [state event]
+  (assoc state (:target-type event) (:budget event)))
+
+(defn consolidation-budgets
+  "Build the budget-config state from a seq of events."
+  [initial-state events]
+  (reduce consolidation-budgets* initial-state events))
+
+(defreadmodel :ontology consolidation-budgets
+  {:events #{:ontology/consolidation-budget-set} :version 1}
+  [state event] (consolidation-budgets* state event))
+
+(defn get-consolidation-budget
+  "Return the configured hourly budget for a target-type, or the default 100."
+  [ctx target-type]
+  (or (get (rmp/project ctx :ontology/consolidation-budgets) target-type)
+      default-consolidation-budget))
+
+;; =============================================================================
+;; C-2b-1 — Re-index config read-model
+;; =============================================================================
+;;
+;; Global re-index configuration (not per-target-type). Drives the
+;; hybrid threshold-OR-timer trigger in the re-index processor.
+;; Defaults: 10 events, 5 minutes.
+
+(def ^:private default-reindex-config
+  {:reindex-threshold-events 10
+   :reindex-timer-minutes 5})
+
+(defmulti reindex-config*
+  (fn [_state event] (:event/type event)))
+
+(defmethod reindex-config* :default [state _] state)
+
+(defmethod reindex-config* :ontology/reindex-config-set
+  [_state event]
+  {:reindex-threshold-events (:reindex-threshold-events event)
+   :reindex-timer-minutes (:reindex-timer-minutes event)})
+
+(defn reindex-config
+  "Build the re-index config state from a seq of events."
+  [initial-state events]
+  (reduce reindex-config* initial-state events))
+
+(defreadmodel :ontology reindex-config
+  {:events #{:ontology/reindex-config-set} :version 1}
+  [state event] (reindex-config* state event))
+
+(defn get-reindex-config
+  "Return the current re-index config (merge of defaults + any
+   :ontology/reindex-config-set event)."
+  [ctx]
+  (merge default-reindex-config
+         (rmp/project ctx :ontology/reindex-config)))
+
+;; =============================================================================
+;; C-2b-1 — Re-index state read-model
+;; =============================================================================
+;;
+;; Tracks per-rebuild-cycle state:
+;;   :events-since-last-rebuild — incremented on each :ontology/*-description-updated
+;;   :last-rebuild-timestamp — ISO string, set when :colbert/index-created lands
+;;   :index-built? — false until first :colbert/index-created
+;;
+;; The re-index processor reads this to decide threshold-or-timer trigger
+;; firing. The :colbert/index-created event resets the counter and updates
+;; the timestamp.
+
+(def ^:private initial-reindex-state
+  {:events-since-last-rebuild 0
+   :last-rebuild-timestamp nil
+   :index-built? false})
+
+(defmulti reindex-state*
+  (fn [_state event] (:event/type event)))
+
+(defmethod reindex-state* :default [state _] state)
+
+(defmethod reindex-state* :ontology/node-type-description-updated [state _event]
+  (update state :events-since-last-rebuild (fnil inc 0)))
+
+(defmethod reindex-state* :ontology/node-instance-description-updated [state _event]
+  (update state :events-since-last-rebuild (fnil inc 0)))
+
+(defmethod reindex-state* :ontology/tree-description-updated [state _event]
+  (update state :events-since-last-rebuild (fnil inc 0)))
+
+(defmethod reindex-state* :colbert/index-created [state event]
+  ;; Only rebuilds of the ontology-descriptions index reset our state.
+  ;; Other indexes (tree-profiles, concepts) don't affect us.
+  (if (= "ontology-descriptions" (:index-name event))
+    (assoc state
+           :events-since-last-rebuild 0
+           :last-rebuild-timestamp (str (or (:event/timestamp event)
+                                            (java.time.Instant/now)))
+           :index-built? true)
+    state))
+
+(defn reindex-state
+  "Build the re-index state from a seq of events."
+  [initial-state events]
+  (reduce reindex-state* (or initial-state initial-reindex-state) events))
+
+(defreadmodel :ontology reindex-state
+  {:events #{:ontology/node-type-description-updated
+             :ontology/node-instance-description-updated
+             :ontology/tree-description-updated
+             :colbert/index-created}
+   :version 1}
+  [state event] (reindex-state* state event))
+
+(defn get-reindex-state
+  "Return the current re-index state — {:events-since-last-rebuild N
+   :last-rebuild-timestamp ISO-string :index-built? bool}."
+  [ctx]
+  (merge initial-reindex-state
+         (rmp/project ctx :ontology/reindex-state)))
+
+;; =============================================================================
+;; C-2a-3c — Recent consolidations counter read-model
+;; =============================================================================
+;;
+;; Tracks the timestamps of recent :*-description-updated events per
+;; target-type. The budget gate counts entries within the last hour
+;; window. Per-target-type granularity (not per-target-id) so a single
+;; runaway target can't exhaust the budget for unrelated targets within
+;; the same target-type — though in practice a single runaway target
+;; WOULD trigger budget cap and stop until the hour rolls.
+
+(defmulti recent-consolidations*
+  (fn [_state event] (:event/type event)))
+
+(defmethod recent-consolidations* :default [state _] state)
+
+(defn- record-consolidation-timestamp [state event]
+  (let [target-type (:target-type event)
+        ts (or (some-> event :event/timestamp str) (str (java.time.Instant/now)))]
+    (update state target-type (fnil conj []) ts)))
+
+(defmethod recent-consolidations* :ontology/node-type-description-updated [state event]
+  (record-consolidation-timestamp state event))
+(defmethod recent-consolidations* :ontology/node-instance-description-updated [state event]
+  (record-consolidation-timestamp state event))
+(defmethod recent-consolidations* :ontology/tree-description-updated [state event]
+  (record-consolidation-timestamp state event))
+
+(defn recent-consolidations
+  "Build the recent-consolidations state from a seq of events."
+  [initial-state events]
+  (reduce recent-consolidations* initial-state events))
+
+(defreadmodel :ontology recent-consolidations
+  {:events #{:ontology/node-type-description-updated
+             :ontology/node-instance-description-updated
+             :ontology/tree-description-updated}
+   :version 1}
+  [state event] (recent-consolidations* state event))
+
+(defn- ts->instant [^String s]
+  (try (java.time.Instant/parse s)
+       (catch Exception _
+         (try (.toInstant (java.time.OffsetDateTime/parse s))
+              (catch Exception _ nil)))))
+
+(defn get-recent-consolidation-count
+  "Return how many :*-description-updated events have fired for the
+   given target-type in the rolling last-hour window. Used by the
+   consolidator's budget gate."
+  [ctx target-type]
+  (let [now (java.time.Instant/now)
+        cutoff (.minusSeconds now 3600)
+        all (get (rmp/project ctx :ontology/recent-consolidations) target-type [])]
+    (->> all
+         (keep ts->instant)
+         (filter #(.isAfter ^java.time.Instant % cutoff))
+         count)))
+
+;; =============================================================================
+;; C-2a-3a — Consolidation delta-counter read-model
+;; =============================================================================
+;;
+;; Tracks per-(target-type, target-id):
+;;   :delta — events since last :ontology/consolidation-requested (drives
+;;            the threshold-tracking processor's fire decision)
+;;   :total — lifetime count of source events for this target (used to
+;;            derive the deterministic "crossing-number" that CAS-guards
+;;            the consolidation-requested append for exactly-once
+;;            semantics across concurrent processor handlers)
+;;
+;; Four event types project:
+;;   :sheet/node-execution-completed     → increments :delta + :total for
+;;                                          [:node-type kw] AND
+;;                                          [:node-instance [sheet node]]
+;;   :sheet/rlm-tree-execution-completed → increments :delta + :total for
+;;                                          [:tree-fingerprint fp]
+;;   :ontology/task-classified           → increments :delta + :total for
+;;                                          [:tree-class assigned-tree-id]
+;;                                          (C-Loop-1: drives the Living
+;;                                          Description loop at the
+;;                                          classifier's substrate)
+;;   :ontology/consolidation-requested   → resets :delta to 0 (:total
+;;                                          continues climbing)
+
+(defn- bump-counter
+  "Increment both :delta and :total at the given target path."
+  [state path]
+  (-> state
+      (update-in (conj path :delta) (fnil inc 0))
+      (update-in (conj path :total) (fnil inc 0))))
+
+(defmulti consolidation-delta-counters*
+  (fn [_state event] (:event/type event)))
+
+(defmethod consolidation-delta-counters* :default [state _] state)
+
+(defmethod consolidation-delta-counters* :sheet/node-execution-completed
+  [state event]
+  (let [node-type (:node-type event)
+        sheet-id  (:sheet-id event)
+        node-id   (:node-id event)]
+    (cond-> state
+      (some? node-type)
+      (bump-counter [:node-type node-type])
+
+      (and (some? sheet-id) (some? node-id))
+      (bump-counter [:node-instance [sheet-id node-id]]))))
+
+(defmethod consolidation-delta-counters* :sheet/rlm-tree-execution-completed
+  [state event]
+  (if-let [fp (:tree-fingerprint event)]
+    (bump-counter state [:tree-fingerprint fp])
+    state))
+
+(defmethod consolidation-delta-counters* :ontology/task-classified
+  [state event]
+  (if-let [tree-class-id (:assigned-tree-id event)]
+    (bump-counter state [:tree-class tree-class-id])
+    state))
+
+(defmethod consolidation-delta-counters* :ontology/consolidation-requested
+  [state event]
+  (let [target-type (:target-type event)
+        target-id   (:target-id event)]
+    (assoc-in state [target-type target-id :delta] 0)))
+
+(defn consolidation-delta-counters
+  "Build the delta-counter state from a seq of events."
+  [initial-state events]
+  (reduce consolidation-delta-counters* initial-state events))
+
+(defreadmodel :ontology consolidation-delta-counters
+  {:events #{:sheet/node-execution-completed
+             :sheet/rlm-tree-execution-completed
+             :ontology/task-classified
+             :ontology/consolidation-requested}
+   :version 2}
+  [state event] (consolidation-delta-counters* state event))
+
+(defn get-consolidation-delta
+  "Return the current delta-counter (events-since-last-consolidation)
+   for the (target-type, target-id) target. Returns 0 when no events
+   have ticked the counter."
+  [ctx target-type target-id]
+  (or (get-in (rmp/project ctx :ontology/consolidation-delta-counters)
+              [target-type target-id :delta])
+      0))
+
+(defn get-consolidation-total
+  "Return the lifetime total count of source events for the
+   (target-type, target-id) target. Used by the CAS guard on
+   consolidation-requested emissions to derive the crossing-number
+   that enforces exactly-once-per-threshold-crossing across
+   concurrent processor handlers."
+  [ctx target-type target-id]
+  (or (get-in (rmp/project ctx :ontology/consolidation-delta-counters)
+              [target-type target-id :total])
+      0))
+
+;; =============================================================================
 ;; Node Experiences Projection
 ;; =============================================================================
 ;; Aggregates patterns by node type across all nodes
@@ -275,12 +801,23 @@
 ;; =============================================================================
 
 (defn get-concepts
-  "Get all concepts, optionally filtered by scope."
-  [ctx & [{:keys [scope broader-uri]}]]
-  (let [all-concepts (vals (rmp/project ctx :ontology/concepts))]
+  "Get all concepts, optionally filtered by scope and/or ontology-id.
+
+   Options:
+     :scope       - Filter by concept scope
+     :broader-uri - Filter by concepts with this URI in their broader set
+     :ontology-id - Filter by single ontology-id
+     :ontology-ids - Filter by multiple ontology-ids (returns union)"
+  [ctx & [{:keys [scope broader-uri ontology-id ontology-ids]}]]
+  (let [all-concepts (vals (rmp/project ctx :ontology/concepts))
+        ont-id-set (cond
+                     ontology-ids (set ontology-ids)
+                     ontology-id #{ontology-id}
+                     :else nil)]
     (cond->> all-concepts
       scope (filter #(= scope (:scope %)))
-      broader-uri (filter #(contains? (:broader %) broader-uri)))))
+      broader-uri (filter #(contains? (:broader %) broader-uri))
+      ont-id-set (filter #(contains? ont-id-set (:ontology-id %))))))
 
 (defn get-concept-by-uri
   "Get a single concept by URI."
@@ -469,11 +1006,23 @@
   (get (rmp/project ctx :ontology/concept-embeddings {:tags #{[:uri uri]}}) uri))
 
 (defn get-all-concept-embeddings
-  "Get all concept embeddings, optionally filtered by scope."
-  [ctx & [{:keys [scope]}]]
-  (if scope
-    (rmp/project ctx :ontology/concept-embeddings {:tags #{[:scope scope]}})
-    (rmp/project ctx :ontology/concept-embeddings)))
+  "Get all concept embeddings, optionally filtered by scope and/or ontology-id.
+
+   Options:
+     :scope       - Filter by concept scope
+     :ontology-id - Filter by single ontology-id
+     :ontology-ids - Filter by multiple ontology-ids (returns union)"
+  [ctx & [{:keys [scope ontology-id ontology-ids]}]]
+  (let [all-embeddings (if scope
+                         (rmp/project ctx :ontology/concept-embeddings {:tags #{[:scope scope]}})
+                         (rmp/project ctx :ontology/concept-embeddings))
+        ont-id-set (cond
+                     ontology-ids (set ontology-ids)
+                     ontology-id #{ontology-id}
+                     :else nil)]
+    (if ont-id-set
+      (into {} (filter #(contains? ont-id-set (:ontology-id (val %))) all-embeddings))
+      all-embeddings)))
 
 (defn get-tree-profile-embedding
   "Get embedding for a specific tree profile."
@@ -512,21 +1061,25 @@
 
 (defn- ontology-colbert-indexes*
   "Reducer for ontology-colbert-indexes read model.
-   Tracks which ColBERT index is associated with each ontology."
-  [state {:keys [type body]}]
-  (case type
+   Tracks which ColBERT index is associated with each ontology.
+
+   NB: events arrive with :event/type and their body flattened to the top level
+   (v3 event store), exactly like every other read model here — NOT as a nested
+   {:type :body}. Reading :type/:body meant this projection never fired."
+  [state event]
+  (case (:event/type event)
     :evolutionary/colbert-indexed
-    (assoc state (:ontology-id body)
-           {:colbert-index-id (:index-id body)
-            :index-name (:index-name body)
-            :colbert-fields (vec (:colbert-fields body))
-            :document-count (:document-count body)
-            :indexed-at (:indexed-at body)})
+    (assoc state (:ontology-id event)
+           {:colbert-index-id (:index-id event)
+            :index-name (:index-name event)
+            :colbert-fields (vec (:colbert-fields event))
+            :document-count (:document-count event)
+            :indexed-at (:indexed-at event)})
 
     :evolutionary/colbert-index-updated
-    (update state (:ontology-id body) merge
-            {:colbert-index-id (:index-id body)
-             :updated-at (:updated-at body)})
+    (update state (:ontology-id event) merge
+            {:colbert-index-id (:index-id event)
+             :updated-at (:updated-at event)})
 
     ;; Pass through unchanged
     state))

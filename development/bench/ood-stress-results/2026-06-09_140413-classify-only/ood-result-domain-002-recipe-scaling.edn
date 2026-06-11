@@ -1,0 +1,62 @@
+{:slug "domain-002-recipe-scaling",
+ :envelope
+ {:assigned-tree-id #uuid "cda1f7c2-978a-37c5-9ddb-3dae4e0c6891",
+  :confidence 0.9,
+  :top-candidates
+  [{:content
+    "ResearchThenSynthesize is a 4-stage shape: :chunk-document → :map-each [:llm extract] → :aggregate → final :llm synthesis. The final :llm integrates the aggregated per-chunk material into a cohesive narrative answer. Choose it when the answer requires reasoning across the whole document AND the output is a synthesis (briefing, summary, recommendation), not a flat extraction. Distinct from MapReduce (which uses :code for deterministic mechanical reduction) and from ChunkedExtraction (whose terminal step is the :aggregate merge). Watch the synthesis token budget — aggressive per-chunk extraction can overflow the final context — and pair with a grounding judge if claims must be traceable.",
+    :score 131.31451416015625,
+    :rank 5,
+    :document-id
+    ":tree-fingerprint:\"seed:tree:ResearchThenSynthesize\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "seed:tree:ResearchThenSynthesize",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.467696-05:00"},
+    :reasoning
+    "The task requires a high-reasoning synthesis that integrates multiple constraints (scaling ingredients, kitchen physics, workflow design, and cost estimation) into a cohesive 'revised-technique' and 'workflow'. The ResearchThenSynthesize pattern's 4-stage map-then-synthesize approach is the best fit for taking the source recipe data and reasoning across it to produce the structured narrative output requested.",
+    :fitness-score 0.9,
+    :rerank-source :reranker}
+   {:content
+    "Comparative summary is the multi-source research-then-synthesize variant: parallel per-source extraction → :code aggregator structures extractions per source → final :llm synthesizes a structured comparison (common / differences / recommendation). Always use :parallel (not :sequence) for independent per-source stages — wall-time becomes max(per-source). CRITICAL: use IDENTICAL :output-schemas across per-source stages so comparable fields stay aligned. Limit to ~5 sources per synthesis; for more, do hierarchical comparison. Use contract-comparison (parallel-independent task-class) when the structure is exactly diff-two-versions; comparative-summary is for general N-source comparison.",
+    :score 135.1847381591797,
+    :rank 2,
+    :document-id
+    ":tree-fingerprint:#uuid \"d41af303-dcb2-3599-9198-0c006d1cc364\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "d41af303-dcb2-3599-9198-0c006d1cc364",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.471664-05:00"},
+    :reasoning
+    "The task involves a single recipe source rather than multiple independent documents to be compared. While it does require extraction and synthesis, the 'comparative summary' structure is designed for multi-source alignment and cross-source difference analysis, which does not match the single-input scaling nature of this recipe task.",
+    :fitness-score 0.4,
+    :rerank-source :reranker}
+   {:content
+    "Chunked-extraction is THE structural pattern for processing large documents — cross-cuts every domain-specific task class involving long-document extraction. The canonical 4-stage skeleton is :chunk-document → :map-each (bounded :max-concurrency 3) → :aggregate → optional final :llm synthesis. Empirically, injecting the bounded-:max-concurrency principle changes the model's design: the emitted :map-each carries :max-concurrency 3 when the principle is in scope, and is unbounded when the principle is absent — a structurally different tree. Always bound :max-concurrency to 3 (tune higher only after measuring provider rate limits). Skip the pattern entirely for documents <5KB.",
+    :score 127.87556457519531,
+    :rank 9,
+    :document-id
+    ":tree-fingerprint:#uuid \"00000000-c1c1-4001-b005-d0c0a0a0a0a5\"",
+    :document-metadata
+    {:granularity :tree-fingerprint,
+     :target-id "00000000-c1c1-4001-b005-d0c0a0a0a0a5",
+     :confidence 1.0,
+     :last-update "2026-06-09T14:03:34.464242-05:00"},
+    :reasoning
+    "The input is a small recipe snippet (<5KB), whereas Chunked-extraction is explicitly recommended for large documents and emphasizes mechanical extraction over the complex creative reasoning and culinary synthesis required to scale a recipe while accounting for heat distribution and texture preservation.",
+    :fitness-score 0.2,
+    :rerank-source :reranker}],
+  :reasoning
+  "The task requires a high-reasoning synthesis that integrates multiple constraints (scaling ingredients, kitchen physics, workflow design, and cost estimation) into a cohesive 'revised-technique' and 'workflow'. The ResearchThenSynthesize pattern's 4-stage map-then-synthesize approach is the best fit for taking the source recipe data and reasoning across it to produce the structured narrative output requested.",
+  :was-fresh-mint? false,
+  :parent-tree-id nil,
+  :rerank-fallback? false},
+ :outcome
+ {:direct-matched? true,
+  :walk-down-fired? true,
+  :was-fresh-mint? false,
+  :rerank-fallback? false},
+ :elapsed-ms 6260,
+ :parent-chain []}

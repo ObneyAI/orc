@@ -283,8 +283,8 @@
 (defn make-set-node-executor-command
   "Create a set-node-executor command.
    executor-type: :ai, :code, or :tool
-   opts: {:model \"...\", :fn \"...\", :tools [...]}"
-  [sheet-id node-id executor-type & {:keys [model fn tools]}]
+   opts: {:model \"...\", :fn \"...\", :tools [...], :options {...}}"
+  [sheet-id node-id executor-type & {:keys [model fn tools options]}]
   (cond-> {:command/name :sheet/set-node-executor
            :command/id (random-uuid)
            :command/timestamp (time/now)
@@ -293,7 +293,8 @@
            :executor executor-type}
     model (assoc :model model)
     fn (assoc :fn fn)
-    tools (assoc :tools tools)))
+    tools (assoc :tools tools)
+    options (assoc :options options)))
 
 (defn make-set-node-retry-command
   "Create a set-node-retry command."
@@ -354,7 +355,7 @@
 
 (defn make-set-repl-researcher-config-command
   "Create a set-repl-researcher-config command."
-  [sheet-id node-id instruction reads writes mcp-tools & {:keys [model max-iterations browser-tools]}]
+  [sheet-id node-id instruction reads writes mcp-tools & {:keys [model max-iterations browser-tools rlm timeout-ms options]}]
   (cond-> {:command/name :sheet/set-repl-researcher-config
            :command/id (random-uuid)
            :command/timestamp (time/now)
@@ -366,7 +367,10 @@
            :mcp-tools (vec (or mcp-tools []))}
     model (assoc :model model)
     max-iterations (assoc :max-iterations max-iterations)
-    browser-tools (assoc :browser-tools (vec browser-tools))))
+    browser-tools (assoc :browser-tools (vec browser-tools))
+    (some? rlm) (assoc :rlm rlm)
+    timeout-ms (assoc :timeout-ms timeout-ms)
+    options (assoc :options options)))
 
 (defn make-set-delegate-config-command
   "Create a set-delegate-config command.

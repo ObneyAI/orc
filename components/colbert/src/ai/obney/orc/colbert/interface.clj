@@ -211,6 +211,36 @@
   [ctx opts]
   (operations/search-for-rrf ctx opts))
 
+(defn search-batch
+  "Batch-search a ColBERT index for many queries in ONE round-trip, index loaded
+   ONCE. Returns a vector of result-lists aligned to `:queries`.
+
+   Args:
+     ctx - Context map containing :event-store
+     opts - Options map:
+       :queries  - Vector of query strings (required)
+       :index-id - Index UUID (required)
+       :k        - Results per query (default: 10)"
+  [ctx opts]
+  (operations/search-batch ctx opts))
+
+(defn search-for-rrf-batch
+  "Batched `search-for-rrf`: ONE index load + ONE round-trip for all queries.
+   Returns a vector aligned to `:queries`, each a vector of {:uri :score} for RRF
+   fusion. The batched integration point for ontology hybrid-search over a whole
+   transcript.
+
+   Args:
+     ctx - Context map containing :event-store
+     opts - Options map:
+       :queries    - Vector of query strings (required)
+       :index-id   - ColBERT index UUID (required)
+       :k          - Results per query (default: 20)
+       :normalize? - Normalize scores to [0,1] (default: true)
+       :weight     - Score weight multiplier (default: 1.0)"
+  [ctx opts]
+  (operations/search-for-rrf-batch ctx opts))
+
 (defn hybrid-search
   "Combine ColBERT with existing ontology search via RRF.
 
@@ -338,6 +368,81 @@
   "Health check for the Python bridge."
   []
   (bridge/ping))
+
+(defn health-check
+  "Deeper health check than `ping`: verifies the bridge AND that the
+   ColBERT model+tokenizer dependencies are intact enough to build an
+   index over a 2-document corpus.
+
+   Catches the failure modes that a bare `(ping)` misses — `(ping)`
+   only verifies the bridge subprocess started, but the ragatouille
+   import chain has historically broken on package-version skews that
+   only surface when create_index is actually called:
+
+     - ragatouille 0.0.9 importing langchain.retrievers (broken on
+       langchain >= 0.3 because that module moved)
+     - colbert-ai 0.2.22 referencing HF_ColBERT.all_tied_weights_keys
+       (removed in transformers 5.x)
+     - fast-pytorch-kmeans needing psutil (undeclared dependency)
+
+   The tiny in-memory build below exercises the same code path the
+   bench runs through and surfaces those errors immediately. Total
+   runtime: ~5-10s on a fresh JVM (cold ColBERT model load).
+
+   Returns a map:
+     {:status :ok    :ping {:status \"ok\"} :index-id <uuid>}
+     {:status :fail  :stage :ping        :error \"...\"}
+     {:status :fail  :stage :index-build :error \"...\"}
+
+   Standalone — does NOT require a ctx with an event-store. Uses an
+   in-memory event store so the create-index command can dispatch
+   without bringing up the full Grain machinery."
+  []
+  (let [ping-result (try (bridge/ping) (catch Exception e {:error (.getMessage e)}))]
+    (cond
+      (:error ping-result)
+      {:status :fail :stage :ping :error (:error ping-result)}
+
+      (not= "ok" (:status ping-result))
+      {:status :fail :stage :ping :error (str "ping returned: " (pr-str ping-result))}
+
+      :else
+      (try
+        ;; Build a 2-document index against a minimal in-memory event-
+        ;; store ctx. This exercises the model load + index materialization
+        ;; path without depending on the bench setup.
+        (let [es-ns (requiring-resolve 'ai.obney.grain.event-store-v3.interface/start)
+              ps-ns (requiring-resolve 'ai.obney.grain.pubsub.interface/start)
+              ps    (ps-ns {:type :core-async :topic-fn :event/type})
+              es    (es-ns {:conn {:type :in-memory} :event-pubsub ps :logger nil})
+              ctx   {:event-store es
+                     :tenant-id   (random-uuid)
+                     :event-pubsub ps}
+              ;; Use a bigger corpus so faiss's k-means clusterer has
+              ;; enough training points. ColBERT/PLAID defaults to 32
+              ;; clusters; the corpus's token count must exceed that.
+              ;; The 8 sentences below give ~50+ tokens once split.
+              corpus ["The quick brown fox jumps over the lazy dog every morning."
+                      "ColBERT enables late-interaction retrieval via per-token embeddings."
+                      "Late-interaction beats single-vector encoding for nuanced queries."
+                      "RAGatouille wraps ColBERT for plug-and-play index building."
+                      "Vector databases store dense embeddings for similarity search."
+                      "Schema-driven retrieval improves precision on structured tasks."
+                      "The Python bridge subprocess loads the ColBERT model lazily."
+                      "Faiss provides fast approximate nearest-neighbor search."]
+              result (operations/create-index! ctx
+                       {:collection corpus
+                        :index-name "health-check-tiny"
+                        :model-name "colbert-ir/colbertv2.0"
+                        :split-documents? false
+                        :max-document-length 256})]
+          {:status :ok
+           :ping ping-result
+           :index-id (:index-id result)})
+        (catch Exception e
+          {:status :fail
+           :stage :index-build
+           :error (.getMessage e)})))))
 
 ;; =============================================================================
 ;; Tree Profile Indexing

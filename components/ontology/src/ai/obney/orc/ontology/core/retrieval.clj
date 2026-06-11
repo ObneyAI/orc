@@ -615,6 +615,8 @@
      query-text: Natural language search query
      opts:
        :scope - Filter to specific ontology scope (:failure, :success, :problem)
+       :ontology-id - Filter by single ontology-id
+       :ontology-ids - Filter by multiple ontology-ids (returns union)
        :limit - Maximum results (default 10)
        :min-similarity - Minimum cosine similarity threshold (default 0.5)
        :model-id - Embedding model to use (default: all-MiniLM-L6-v2)
@@ -623,16 +625,20 @@
      Vector of {:uri :similarity :label :description} sorted by similarity
 
    Requires concept embeddings to be generated first via ontology/embed-concepts-batch."
-  [ctx query-text & {:keys [scope limit min-similarity model-id]
+  [ctx query-text & {:keys [scope ontology-id ontology-ids limit min-similarity model-id]
                       :or {limit 10 min-similarity 0.5}}]
   (when (and ctx query-text)
     (let [;; Generate query embedding
           query-embedding (embedding/embed-text query-text
                                                  (when model-id {:model-id model-id}))
 
-          ;; Get stored concept embeddings
+          ;; Get stored concept embeddings (filtered by scope and/or ontology-id)
+          filter-opts (cond-> {}
+                        scope (assoc :scope scope)
+                        ontology-id (assoc :ontology-id ontology-id)
+                        ontology-ids (assoc :ontology-ids ontology-ids))
           concept-embeddings (rm/get-all-concept-embeddings ctx
-                                                             (when scope {:scope scope}))]
+                                                             (when (seq filter-opts) filter-opts))]
 
       (when (and query-embedding (seq concept-embeddings))
         ;; Search using embedding similarity
@@ -735,9 +741,94 @@
           (println "ColBERT search failed:" (.getMessage e))
           nil)))))
 
+(defn- resolve-colbert-search-batch-fn
+  "Dynamically resolve the ColBERT search-for-rrf-batch function if available."
+  []
+  (try
+    (when-let [ns (find-ns 'ai.obney.orc.colbert.interface)]
+      (ns-resolve ns 'search-for-rrf-batch))
+    (catch Exception _ nil)))
+
+(defn colbert-search-concepts-batch
+  "Batched `colbert-search-concepts`: ONE index load + ONE bridge round-trip for ALL
+   queries. Returns a vector aligned to `query-texts`, each a vector of {:uri :score}
+   for RRF fusion — or nil when ColBERT is unavailable.
+
+   Args:
+     ctx - Context map containing :event-store
+     query-texts - Vector of natural-language search queries
+     opts:
+       :colbert-index-id - ColBERT index UUID (required)
+       :limit - Maximum results per query (default 20)
+       :weight - Score weight for RRF (default 1.0)"
+  [ctx query-texts & {:keys [colbert-index-id limit weight]
+                      :or {limit 20 weight 1.0}}]
+  (when-let [search-fn (resolve-colbert-search-batch-fn)]
+    (when (and colbert-index-id (seq query-texts))
+      (try
+        (search-fn ctx {:queries (vec query-texts)
+                        :index-id colbert-index-id
+                        :k limit
+                        :normalize? true
+                        :weight weight})
+        (catch Exception e
+          ;; Log but don't fail - ColBERT is optional
+          (println "ColBERT batch search failed:" (.getMessage e))
+          nil)))))
+
 ;; =============================================================================
 ;; Hybrid Search (Graph + Embeddings + ColBERT via RRF)
 ;; =============================================================================
+
+(defn- fuse-and-enrich
+  "Fuse graph/embedding/colbert result-lists via RRF and enrich the top `limit` with
+   concept metadata + per-signal ranks. The shared fusion core of hybrid-search (one
+   query) and hybrid-search-batch (per query). Input result maps carry their native
+   score keys: graph/colbert use :score, embedding uses :similarity."
+  [{:keys [graph-results embedding-results colbert-results weights limit signals]
+    :or {weights {:graph 1.0 :embedding 1.0 :colbert 1.0} limit 10}}]
+  (let [;; Prepare batches for RRF — each batch is [{:uri :score} ...]
+        graph-batch (when (seq graph-results)
+                      (mapv (fn [{:keys [uri score]}]
+                              {:uri uri :score (* (:graph weights 1.0) score)})
+                            graph-results))
+        embedding-batch (when (seq embedding-results)
+                          (mapv (fn [{:keys [uri similarity]}]
+                                  {:uri uri :score (* (:embedding weights 1.0) similarity)})
+                                embedding-results))
+        ;; ColBERT batch is already formatted with :uri :score
+        colbert-batch (when (seq colbert-results) colbert-results)
+        batches (filterv seq [graph-batch embedding-batch colbert-batch])
+        merged (when (seq batches)
+                 (graph/merge-batches batches :method "rrf"))
+        graph-ranks (when graph-batch
+                      (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)]) graph-batch)))
+        embedding-ranks (when embedding-batch
+                          (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)]) embedding-batch)))
+        colbert-ranks (when colbert-batch
+                        (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)]) colbert-batch)))
+        enriched-results (->> merged
+                              (take limit)
+                              (mapv (fn [{:keys [uri score]}]
+                                      (let [concept (static/get-concept-by-uri uri)]
+                                        {:uri uri
+                                         :score score
+                                         :graph-rank (get graph-ranks uri)
+                                         :embedding-rank (get embedding-ranks uri)
+                                         :colbert-rank (get colbert-ranks uri)
+                                         :label (:label concept)
+                                         :description (:description concept)
+                                         :scope (:scope concept)}))))]
+    {:results enriched-results
+     :graph-results (vec graph-results)
+     :embedding-results (vec embedding-results)
+     :colbert-results (vec colbert-results)
+     :method "rrf"
+     :signals-enabled signals
+     :batches-used (cond-> []
+                     (seq graph-batch) (conj :graph)
+                     (seq embedding-batch) (conj :embedding)
+                     (seq colbert-batch) (conj :colbert))}))
 
 (defn hybrid-search
   "Hybrid search combining graph-based BFS, embedding similarity, and ColBERT via RRF.
@@ -757,6 +848,8 @@
        :seed-uris - Collection of starting concept URIs for graph expansion
        :query-text - Natural language query for embedding/ColBERT search
        :scope - Filter to specific ontology scope
+       :ontology-id - Filter by single ontology-id
+       :ontology-ids - Filter by multiple ontology-ids (returns union)
        :limit - Maximum results (default 10)
        :min-similarity - Minimum embedding similarity (default 0.3)
        :max-depth - BFS expansion depth (default 2)
@@ -774,7 +867,7 @@
       :colbert-results [...]
       :method \"rrf\"
       :batches-used [:graph :embedding :colbert]}"
-  [ctx {:keys [seed-uris query-text scope limit min-similarity max-depth decay
+  [ctx {:keys [seed-uris query-text scope ontology-id ontology-ids limit min-similarity max-depth decay
                        colbert-index-id weights signals]
                 :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
                      weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
@@ -783,9 +876,6 @@
         graph-enabled? (contains? signals :graph)
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
-
-        ;; Build context for ColBERT (event-store is primary context)
-        colbert-ctx ctx
 
         ;; Graph-based BFS results (when enabled and seeds provided)
         graph-results (when (and graph-enabled? (seq seed-uris))
@@ -798,6 +888,8 @@
         embedding-results (when (and embedding-enabled? query-text)
                             (semantic-search-concepts ctx query-text
                                                        :scope scope
+                                                       :ontology-id ontology-id
+                                                       :ontology-ids ontology-ids
                                                        :limit (* 2 limit)
                                                        :min-similarity min-similarity))
 
@@ -806,66 +898,69 @@
                           (colbert-search-concepts ctx query-text
                                                     :colbert-index-id colbert-index-id
                                                     :limit (* 2 limit)
-                                                    :weight (:colbert weights 1.0)))
+                                                    :weight (:colbert weights 1.0)))]
 
-        ;; Prepare batches for RRF
-        ;; Each batch should be [{:uri :score} ...]
-        graph-batch (when (seq graph-results)
-                      (mapv (fn [{:keys [uri score]}]
-                              {:uri uri :score (* (:graph weights 1.0) score)})
-                            graph-results))
+    ;; RRF-fuse the three signals + enrich (shared with hybrid-search-batch).
+    (fuse-and-enrich {:graph-results graph-results
+                      :embedding-results embedding-results
+                      :colbert-results colbert-results
+                      :weights weights
+                      :limit limit
+                      :signals signals})))
 
-        embedding-batch (when (seq embedding-results)
-                          (mapv (fn [{:keys [uri similarity]}]
-                                  {:uri uri :score (* (:embedding weights 1.0) similarity)})
-                                embedding-results))
+(defn hybrid-search-batch
+  "Batched hybrid-search over MANY query-texts. The ColBERT signal is computed in ONE
+   batched pass (index loaded ONCE, one bridge round-trip); embedding + graph stay
+   per-query (in-JVM, no subprocess). Returns a vector of per-query result-maps, each
+   shaped EXACTLY like hybrid-search's output, aligned to `:query-texts`.
 
-        ;; ColBERT batch is already formatted with :uri :score
-        colbert-batch (when (seq colbert-results)
-                        colbert-results)
+   Use this instead of mapping hybrid-search per query over a whole transcript: it
+   collapses N ColBERT round-trips (and N index loads) into one, with no per-search
+   reload, while keeping the embedding+ColBERT RRF fusion substance-identical to the
+   single-query path.
 
-        ;; Build batch vector for RRF (filter out empty batches)
-        batches (filterv seq [graph-batch embedding-batch colbert-batch])
-
-        ;; Merge with RRF
-        merged (when (seq batches)
-                 (graph/merge-batches batches :method "rrf"))
-
-        ;; Build position indexes for transparency
-        graph-ranks (when graph-batch
-                      (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)])
-                                            graph-batch)))
-        embedding-ranks (when embedding-batch
-                          (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)])
-                                                embedding-batch)))
-        colbert-ranks (when colbert-batch
-                        (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)])
-                                              colbert-batch)))
-
-        ;; Enrich final results with metadata and ranks
-        enriched-results (->> merged
-                              (take limit)
-                              (mapv (fn [{:keys [uri score]}]
-                                      (let [concept (static/get-concept-by-uri uri)]
-                                        {:uri uri
-                                         :score score
-                                         :graph-rank (get graph-ranks uri)
-                                         :embedding-rank (get embedding-ranks uri)
-                                         :colbert-rank (get colbert-ranks uri)
-                                         :label (:label concept)
-                                         :description (:description concept)
-                                         :scope (:scope concept)}))))]
-
-    {:results enriched-results
-     :graph-results (vec graph-results)
-     :embedding-results (vec embedding-results)
-     :colbert-results (vec colbert-results)
-     :method "rrf"
-     :signals-enabled signals
-     :batches-used (cond-> []
-                     (seq graph-batch) (conj :graph)
-                     (seq embedding-batch) (conj :embedding)
-                     (seq colbert-batch) (conj :colbert))}))
+   Args:
+     ctx - Context map containing :event-store
+     opts - same as hybrid-search, except:
+       :query-texts - Vector of natural-language queries (instead of :query-text)
+       :seed-uris   - shared graph seeds applied to every query (usually nil)"
+  [ctx {:keys [query-texts seed-uris scope ontology-id ontology-ids limit min-similarity
+               max-depth decay colbert-index-id weights signals]
+        :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
+             weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
+             signals #{:graph :embedding :colbert}}}]
+  (let [graph-enabled? (contains? signals :graph)
+        embedding-enabled? (contains? signals :embedding)
+        colbert-enabled? (contains? signals :colbert)
+        query-texts (vec query-texts)
+        ;; ColBERT — ONE batched pass for ALL queries (index loaded once, reused).
+        colbert-batches (when (and colbert-enabled? (seq query-texts) colbert-index-id)
+                          (colbert-search-concepts-batch ctx query-texts
+                                                         :colbert-index-id colbert-index-id
+                                                         :limit (* 2 limit)
+                                                         :weight (:colbert weights 1.0)))]
+    (mapv (fn [i query-text]
+            (let [graph-results (when (and graph-enabled? (seq seed-uris))
+                                  (->> (expand-concept-neighborhood seed-uris
+                                                                    :max-depth max-depth
+                                                                    :decay decay)
+                                       (take (* 2 limit))))
+                  embedding-results (when (and embedding-enabled? query-text)
+                                      (semantic-search-concepts ctx query-text
+                                                                 :scope scope
+                                                                 :ontology-id ontology-id
+                                                                 :ontology-ids ontology-ids
+                                                                 :limit (* 2 limit)
+                                                                 :min-similarity min-similarity))
+                  colbert-results (when colbert-batches (nth colbert-batches i nil))]
+              (fuse-and-enrich {:graph-results graph-results
+                                :embedding-results embedding-results
+                                :colbert-results colbert-results
+                                :weights weights
+                                :limit limit
+                                :signals signals})))
+          (range)
+          query-texts)))
 
 (defn hybrid-search-failures
   "Search failure concepts using hybrid graph + embedding + ColBERT search.
@@ -1227,13 +1322,21 @@
 (defn- format-rich-pattern
   "Format a pattern with its conditions and actions for LLM injection.
 
-   Produces actionable rules like:
-   - When battery=15, position far from home: return-home to [0 0 0] (90% success)
+   Produces multi-line entries when the pattern carries rich tree-design
+   context (a tree-DSL snippet in :action-taken.target plus a :reason
+   and an :expected-outcome at the top level). Lower-fidelity patterns
+   fall back to the single-line label format.
 
-   Falls back to label-based format if rich context not available.
-   Works for any domain (drone, legal, sales, construction, etc.)."
+   For RLM tree-design principles, the multi-line form surfaces:
+     - the named pattern (Action),
+     - the WHY behind the rule (Why, from :action-taken.reason),
+     - what success looks like (Expected outcome, from :expected-outcome),
+     - the tree-DSL snippet rendered as a Clojure code block.
+
+   Works for any domain (drone, legal, sales, construction, RLM tree-design)."
   [pattern]
-  (let [{:keys [label context-conditions action-taken confidence avg-score count evidence-episodes]} pattern
+  (let [{:keys [label context-conditions action-taken confidence avg-score
+                count evidence-episodes expected-outcome]} pattern
 
         ;; Format conditions as readable string
         conditions-str (when (and context-conditions (seq context-conditions))
@@ -1250,14 +1353,22 @@
                                        (str field-name "=" value-str))))
                               (str/join ", ")))
 
-        ;; Format action as readable string
-        action-str (when action-taken
-                     (let [{:keys [type target reason]} action-taken
-                           target-str (when target
-                                        (if (coll? target)
-                                          (str "[" (str/join " " (map #(if (float? %) (format "%.1f" %) %) target)) "]")
-                                          (str target)))]
-                       (str type (when target-str (str " to " target-str)))))
+        ;; Extract action subfields without lossy stringification — we want
+        ;; the :target rendered separately (often a long DSL snippet best
+        ;; shown as a code block) and the :reason preserved for the multi-line
+        ;; output.
+        {action-type :type
+         action-target :target
+         action-reason :reason} action-taken
+
+        target-str (when action-target
+                     (if (coll? action-target)
+                       (str "[" (str/join " " (map #(if (float? %) (format "%.1f" %) %) action-target)) "]")
+                       (str action-target)))
+
+        ;; Single-line summary for the rule header line
+        action-summary (when action-type
+                         (str action-type (when target-str " (see code block below)")))
 
         ;; Calculate display score (prefer avg-score, fallback to confidence)
         score (or avg-score confidence 0.8)
@@ -1265,14 +1376,38 @@
         ;; Use evidence-episodes from deduplication, fallback to count
         episode-count (or evidence-episodes count)]
 
-    (if (and conditions-str action-str)
-      ;; Rich format with conditions and actions
-      (str "- When " conditions-str ": " action-str
+    (cond
+      ;; Rich multi-line form: we have both conditions AND an action AND
+      ;; at least one of (reason, expected-outcome, target). This is the
+      ;; shape RLM tree-design principles take.
+      (and conditions-str
+           action-type
+           (or action-reason expected-outcome target-str))
+      (let [header (str "- **" (or action-type label) "** — when " conditions-str
+                        (format " (%.0f%% confidence" (* 100 score))
+                        (when (and episode-count (pos? episode-count))
+                          (str ", " episode-count " episode" (when (> episode-count 1) "s")))
+                        ")")
+            target-block (when target-str
+                           (str "\n  - Action:\n    ```clojure\n    " target-str "\n    ```"))
+            reason-line (when action-reason
+                          (str "\n  - Why: " action-reason))
+            outcome-line (when expected-outcome
+                           (str "\n  - Expected outcome: " expected-outcome))]
+        (str header target-block reason-line outcome-line))
+
+      ;; Original single-line format — preserved for legacy patterns whose
+      ;; :action-taken has only :type/:target without :reason/:expected-outcome.
+      (and conditions-str action-summary)
+      (str "- When " conditions-str ": " action-type
+           (when target-str (str " to " target-str))
            (format " (%.0f%% success" (* 100 score))
            (when (and episode-count (pos? episode-count))
              (str ", " episode-count " episodes"))
            ")")
+
       ;; Fallback to simple label format
+      :else
       (str "- **" label "**"
            (format " (%.0f%% confidence" (* 100 (or confidence 0.8)))
            (when (and episode-count (pos? episode-count))
