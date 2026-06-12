@@ -268,9 +268,25 @@
    :ontology/relationship-created
    [:map
     [:relationship-id :uuid]
+    ;; S06 — `:ontology-id` is OPTIONAL on the schema so legacy events
+    ;; (written before S06) still validate; the section-keyed projection's
+    ;; handler falls back to the find-where-endpoints-live scan when the
+    ;; field is absent. The command-side handler always supplies it on
+    ;; new writes — the optionality is a back-compat affordance only.
+    [:ontology-id {:optional true} :uuid]
     [:source-uri :string]
     [:target-uri :string]
     [:predicate :string]                  ;; "skos:broader", "skos:related", "owl:causes"
+    ;; S06 — named metadata fields, all optional, promoted out of the
+    ;; legacy open `:properties` bag (which stays for arbitrary extras
+    ;; and is now ALSO serialized).
+    [:confidence-class {:optional true} [:enum :extracted :inferred :ambiguous]]
+    [:evidence {:optional true} [:vector [:map
+                                          [:source :string]
+                                          [:quote :string]]]]
+    [:valid-from {:optional true} :string]  ;; xsd:dateTime literal
+    [:valid-to   {:optional true} :string]  ;; xsd:dateTime literal
+    [:superseded-by {:optional true} :uuid] ;; relationship-id of superseding edge
     [:properties {:optional true} [:map-of :keyword :any]]
     [:created-at :string]]
 
@@ -854,9 +870,26 @@
 
    :ontology/create-relationship
    [:map
+    ;; S06 — `:ontology-id` is recommended on new writes (the section-
+    ;; keyed projection routes in O(1) when present) but marked optional
+    ;; on the command schema so callers written before S06 (S02/S07
+    ;; tests, etc.) continue to compile. When absent, the section-keyed
+    ;; projection's handler falls back to the legacy
+    ;; find-where-endpoints-live scan.
+    [:ontology-id {:optional true} :uuid]
     [:source-uri :string]
     [:target-uri :string]
-    [:predicate :string]]
+    [:predicate :string]
+    ;; S06 — named metadata fields (all optional). The legacy open
+    ;; `:properties` bag is preserved for arbitrary extras.
+    [:confidence-class {:optional true} [:enum :extracted :inferred :ambiguous]]
+    [:evidence {:optional true} [:vector [:map
+                                          [:source :string]
+                                          [:quote :string]]]]
+    [:valid-from {:optional true} :string]
+    [:valid-to   {:optional true} :string]
+    [:superseded-by {:optional true} :uuid]
+    [:properties {:optional true} [:map-of :keyword :any]]]
 
    :ontology/initialize-static-ontology
    [:map

@@ -295,6 +295,117 @@
            (str "  dcterms:creator " (plain-literal creator) " ;\n"))
          "  .\n")))
 
+;; =============================================================================
+;; S06 — Reified-on-demand edge metadata serialization
+;; =============================================================================
+;;
+;; Prototype verdict (parser-support evidence in commit body):
+;; reified-on-demand WINS over RDF-star. rdflib 7.5.0 (the parser reachable
+;; on the dev classpath) REJECTS RDF-star with BadSyntax at `<<`; it parses
+;; reified rdf:Statement blocks cleanly and SPARQL-queries the metadata.
+;; Choosing reified preserves S09's G1 round-trip gate against ANY plain
+;; Turtle parser, and forecloses the S11 external-validator risk.
+;;
+;; Shape:
+;;   <s> <p> <o> .                          ;; plain triple — BFS traverses
+;;   _:rel_<id> a rdf:Statement ;
+;;     rdf:subject <s> ; rdf:predicate <p> ; rdf:object <o> ;
+;;     orc:confidenceClass "extracted" ;
+;;     orc:evidence [ a orc:Evidence ; orc:source <doc> ; orc:quote "..." ] ;
+;;     orc:validFrom "..."^^xsd:dateTime ;
+;;     orc:validTo   "..."^^xsd:dateTime ;
+;;     orc:supersededBy <urn:rel:<other-uuid>> ;
+;;     orc:<prop-key> "<prop-val>" ;       ;; from :properties open bag
+;;     .
+;;
+;; The reified block is emitted ONLY when the edge carries metadata.
+;; Bare-extracted edges with no metadata fields emit nothing here —
+;; the plain triple is already on the source concept's :related set
+;; (concepts->turtle handles that).
+
+(defn- uri-token
+  "Render a URI as a prefixed token (`prefix:LocalName`) for inline use
+   in Turtle. Falls back to `ex:LocalName` when no prefix is recognized.
+   Sanitizes the local name so syntactically-illegal Turtle characters
+   never reach the serializer."
+  [uri]
+  (let [p (or (uri->prefix uri) "ex")
+        n (sanitize-local-name (uri->local-name uri))]
+    (str p ":" n)))
+
+(defn- evidence-blank-node
+  "Render one evidence entry as an inline blank node: `[ a orc:Evidence ;
+   orc:source <iri> ; orc:quote \"...\" ]`."
+  [{:keys [source quote]}]
+  (str "[ a orc:Evidence"
+       (when source
+         (str " ; orc:source <" source ">"))
+       (when quote
+         (str " ; orc:quote \"" (escape-turtle-string quote) "\""))
+       " ]"))
+
+(defn- property-value->turtle
+  "Render a value from the :properties open bag as a Turtle term. Keeps
+   the rendering simple — keywords as quoted names, numbers raw, strings
+   quoted, anything else stringified. Sufficient for the silent-drop
+   failure mode under test; richer typing is the typed-attributes
+   pathway (S05)."
+  [v]
+  (cond
+    (keyword? v) (str "\"" (escape-turtle-string (name v)) "\"")
+    (number? v)  (str v)
+    (string? v)  (str "\"" (escape-turtle-string v) "\"")
+    :else        (str "\"" (escape-turtle-string (str v)) "\"")))
+
+(defn- reified-statement->turtle
+  "S06 — serialize one relationship-with-metadata as a reified
+   rdf:Statement. Returns nil when the edge has NO metadata to reify
+   (the reify-on-demand discipline — bare edges stay bare)."
+  [{:keys [relationship-id source-uri target-uri predicate
+           confidence-class evidence valid-from valid-to superseded-by
+           properties]}]
+  (let [has-metadata? (or confidence-class (seq evidence)
+                          valid-from valid-to superseded-by
+                          (seq properties))]
+    (when has-metadata?
+      (let [stmt-id (str "_:rel_" (str/replace (str relationship-id) "-" "_"))]
+        (str stmt-id " a rdf:Statement ;\n"
+             "  rdf:subject " (uri-token source-uri) " ;\n"
+             "  rdf:predicate " predicate " ;\n"
+             "  rdf:object " (uri-token target-uri) " ;\n"
+             (when confidence-class
+               (str "  orc:confidenceClass \""
+                    (name confidence-class) "\" ;\n"))
+             (when (seq evidence)
+               (str/join "" (map #(str "  orc:evidence " (evidence-blank-node %) " ;\n")
+                                 evidence)))
+             (when valid-from
+               (str "  orc:validFrom \"" valid-from "\"^^xsd:dateTime ;\n"))
+             (when valid-to
+               (str "  orc:validTo \"" valid-to "\"^^xsd:dateTime ;\n"))
+             (when superseded-by
+               (str "  orc:supersededBy <urn:rel:" superseded-by "> ;\n"))
+             (when (seq properties)
+               (str/join "" (map (fn [[k v]]
+                                   (str "  orc:" (name k) " "
+                                        (property-value->turtle v) " ;\n"))
+                                 properties)))
+             "  .\n")))))
+
+(defn relationships->turtle
+  "S06 — serialize a seq of projected relationship records into reified
+   rdf:Statement blocks. Each block is emitted ONLY when the edge has
+   metadata; bare edges produce nothing here (their plain triple is
+   already on the concept-side projection's :related set).
+
+   Use from `full-export` to append the edge-metadata section after
+   the concepts block."
+  [relationships]
+  (let [blocks (keep reified-statement->turtle relationships)]
+    (when (seq blocks)
+      (str "\n# Edge Metadata (reified-on-demand)\n"
+           (str/join "\n" blocks)))))
+
 (defn concepts->turtle
   "Serialize a collection of concepts to SKOS Turtle format.
 
@@ -683,11 +794,19 @@
         axioms-ttl (when include-axioms?
                      (let [all-axioms (rmp/project ctx :ontology/axioms)]
                        (when-let [block (axioms->turtle all-axioms)]
-                         (str "\n\n# === AXIOMS ===\n\n" block))))]
+                         (str "\n\n# === AXIOMS ===\n\n" block))))
+
+        ;; S06 — edge-metadata section (reified-on-demand). Walks the
+        ;; relationships projection so the section iterates EDGES, not
+        ;; concepts; bare edges (no metadata) emit nothing.
+        all-relationships (vals (rmp/project ctx :ontology/relationships))
+        edges-meta-ttl (when-let [block (relationships->turtle all-relationships)]
+                         (str "\n\n# === EDGE METADATA ===\n" block))]
     (str concepts-ttl
          (or profiles-ttl "")
          (or experiences-ttl "")
-         (or axioms-ttl ""))))
+         (or axioms-ttl "")
+         (or edges-meta-ttl ""))))
 
 ;; =============================================================================
 ;; Utility Functions

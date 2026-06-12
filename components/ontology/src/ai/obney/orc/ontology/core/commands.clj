@@ -80,12 +80,16 @@
                                           :created-at now}})))
                              concepts)
 
-        ;; Create relationship events
+        ;; Create relationship events. S06 — supply `:ontology-id` in the
+        ;; event body so the section-keyed projection routes in O(1) (it
+        ;; was already on the tag for retrieval-by-tag, but the projection
+        ;; reads from body).
         relationship-events (mapv (fn [rel]
                                     (->event
                                      {:type :ontology/relationship-created
                                       :tags #{[:ontology ontology-id]}
                                       :body {:relationship-id (generate-uuid)
+                                             :ontology-id ontology-id
                                              :source-uri (:source rel)
                                              :target-uri (:target rel)
                                              :predicate (:predicate rel)
@@ -418,20 +422,38 @@
    (S07 will add the transitive-marker auto-closure mechanism); S05
    establishes only the convention so callers can start writing
    sequences today."
-  [{{:keys [source-uri target-uri predicate properties]} :command
+  [{{:keys [ontology-id source-uri target-uri predicate properties
+            confidence-class evidence valid-from valid-to superseded-by]} :command
     :keys [event-store]}]
   (let [relationship-id (generate-uuid)
         now (now-str)]
     {:command-result/events
      [(->event
        {:type :ontology/relationship-created
-        :tags #{[:relationship relationship-id]}  ;; Only UUID-based tags allowed
-        :body {:relationship-id relationship-id
-               :source-uri source-uri
-               :target-uri target-uri
-               :predicate predicate
-               :properties properties
-               :created-at now}})]}))
+        ;; S06 — when an `:ontology-id` is supplied, ALSO tag the event
+        ;; by it so per-ontology event queries can locate relationships
+        ;; without scanning. When not supplied (legacy callers), only the
+        ;; [:relationship id] tag is emitted — the projection still works
+        ;; via the find-where-endpoints-live fallback.
+        :tags (cond-> #{[:relationship relationship-id]}
+                ontology-id (conj [:ontology ontology-id]))
+        :body (cond-> {:relationship-id relationship-id
+                       :source-uri source-uri
+                       :target-uri target-uri
+                       :predicate predicate
+                       :created-at now}
+                ;; S06 — only include each metadata field when supplied.
+                ;; Absent fields stay absent — the projection can
+                ;; distinguish "no metadata" from "metadata was empty",
+                ;; and the serializer skips reified emission entirely
+                ;; for bare edges (reify-on-demand).
+                ontology-id      (assoc :ontology-id ontology-id)
+                confidence-class (assoc :confidence-class confidence-class)
+                (seq evidence)   (assoc :evidence (vec evidence))
+                valid-from       (assoc :valid-from valid-from)
+                valid-to         (assoc :valid-to valid-to)
+                superseded-by    (assoc :superseded-by superseded-by)
+                (seq properties) (assoc :properties properties))})]}))
 
 ;; =============================================================================
 ;; Discovery Commands

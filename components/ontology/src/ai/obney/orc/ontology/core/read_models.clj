@@ -108,22 +108,56 @@
     (update state (:uri concept) merge (:changes event))
     state))
 
+(defn- edge-metadata
+  "S06 — Extract the metadata sub-map from a relationship-created event.
+   Returns nil when no metadata fields are present so callers can skip
+   the typed-edges-meta annotation entirely for bare edges."
+  [event]
+  (let [m (cond-> {}
+            (:confidence-class event) (assoc :confidence-class (:confidence-class event))
+            (seq (:evidence event))   (assoc :evidence (:evidence event))
+            (:valid-from event)       (assoc :valid-from (:valid-from event))
+            (:valid-to event)         (assoc :valid-to (:valid-to event))
+            (:superseded-by event)    (assoc :superseded-by (:superseded-by event))
+            (seq (:properties event)) (assoc :properties (:properties event)))]
+    (when (seq m)
+      (assoc m :relationship-id (:relationship-id event)))))
+
+(defn- with-edge-meta
+  "S06 — Attach edge metadata (if any) onto the source concept's
+   :typed-edges-meta map. Shape:
+   {:typed-edges-meta {<predicate> {<target-uri> #{<meta-map> ...}}}}
+   Multiple metadata records can land on the same (predicate, target) pair
+   (multi-write edges, supersession chains). Returns state unchanged when
+   the event has no metadata to attach."
+  [state source-uri predicate target-uri event]
+  (if-let [m (edge-metadata event)]
+    (update-in state [source-uri :typed-edges-meta predicate target-uri]
+               (fnil conj #{}) m)
+    state))
+
 (defmethod concepts* :ontology/relationship-created
   [state event]
-  (let [{:keys [source-uri target-uri predicate]} event]
+  (let [{:keys [source-uri target-uri predicate]} event
+        ;; S06 — attach edge metadata regardless of predicate type. The
+        ;; metadata is queryable in the same shape across all predicates,
+        ;; so downstream consumers (review queue, TTL exporter) consult
+        ;; a single :typed-edges-meta map rather than branching on which
+        ;; bucket the edge landed in.
+        state' (with-edge-meta state source-uri predicate target-uri event)]
     (case predicate
       "skos:broader"
-      (-> state
+      (-> state'
           (update-in [source-uri :broader] (fnil conj #{}) target-uri)
           (update-in [target-uri :narrower] (fnil conj #{}) source-uri))
 
       "skos:narrower"
-      (-> state
+      (-> state'
           (update-in [source-uri :narrower] (fnil conj #{}) target-uri)
           (update-in [target-uri :broader] (fnil conj #{}) source-uri))
 
       "skos:related"
-      (-> state
+      (-> state'
           (update-in [source-uri :related] (fnil conj #{}) target-uri)
           (update-in [target-uri :related] (fnil conj #{}) source-uri))
 
@@ -134,7 +168,7 @@
       ;; classify-behaviors traverses these edges when narrowing
       ;; candidates by structural-context.
       "behavior:composes-into"
-      (-> state
+      (-> state'
           (update-in [source-uri :composes-into] (fnil conj #{}) target-uri)
           (update-in [target-uri :composed-by] (fnil conj #{}) source-uri))
 
@@ -149,7 +183,7 @@
       ;;    name — can identify transitive-marked predicates exactly.
       ;;    Without this typed view, the predicate name is erased into
       ;;    the :related bucket and the axiom filter has no key to match.
-      (-> state
+      (-> state'
           (update-in [source-uri :related] (fnil conj #{}) target-uri)
           (update-in [source-uri :typed-edges predicate]
                      (fnil conj #{}) target-uri)))))
@@ -304,68 +338,93 @@
                  state state)
       state)))
 
+(defn- update-by-section-with-edge-meta
+  "S06 — Attach edge metadata onto the section-keyed concept's
+   :typed-edges-meta map. Same shape as the URI-keyed projection's
+   helper; only the storage layout differs (state is keyed by
+   [ontology-id uri] here)."
+  [state ontology-id source-uri predicate target-uri event]
+  (if-let [m (edge-metadata event)]
+    (update-by-section state ontology-id source-uri
+                       (fn [c]
+                         (update-in c [:typed-edges-meta predicate target-uri]
+                                    (fnil conj #{}) m)))
+    state))
+
+(defn- apply-section-edge
+  "S06 — Helper that applies a single relationship-created event to ONE
+   specific section. Extracted out of the legacy multi-section reduce so
+   the direct (ontology-id present) path and the legacy
+   (find-endpoints-fallback) path can both call it without code
+   duplication."
+  [state ont-id event]
+  (let [{:keys [source-uri target-uri predicate]} event
+        state' (update-by-section-with-edge-meta state ont-id source-uri
+                                                 predicate target-uri event)]
+    (case predicate
+      "skos:broader"
+      (-> state'
+          (update-by-section ont-id source-uri
+                             (fn [c] (update c :broader (fnil conj #{}) target-uri)))
+          (update-by-section ont-id target-uri
+                             (fn [c] (update c :narrower (fnil conj #{}) source-uri))))
+
+      "skos:narrower"
+      (-> state'
+          (update-by-section ont-id source-uri
+                             (fn [c] (update c :narrower (fnil conj #{}) target-uri)))
+          (update-by-section ont-id target-uri
+                             (fn [c] (update c :broader (fnil conj #{}) source-uri))))
+
+      "skos:related"
+      (-> state'
+          (update-by-section ont-id source-uri
+                             (fn [c] (update c :related (fnil conj #{}) target-uri)))
+          (update-by-section ont-id target-uri
+                             (fn [c] (update c :related (fnil conj #{}) source-uri))))
+
+      "behavior:composes-into"
+      (-> state'
+          (update-by-section ont-id source-uri
+                             (fn [c] (update c :composes-into (fnil conj #{}) target-uri)))
+          (update-by-section ont-id target-uri
+                             (fn [c] (update c :composed-by (fnil conj #{}) source-uri))))
+
+      ;; Other predicates (incl. S05 sequence-convention predicates
+      ;; "immediately-follows" / "follows", plus any custom predicate,
+      ;; including S07 axiom-driven predicates) → land in BOTH :related
+      ;; AND :typed-edges. Symmetric with the URI-keyed projection's
+      ;; default branch.
+      (-> state'
+          (update-by-section ont-id source-uri
+                             (fn [c] (update c :related (fnil conj #{}) target-uri)))
+          (update-by-section ont-id source-uri
+                             (fn [c] (update-in c [:typed-edges predicate]
+                                                (fnil conj #{}) target-uri)))))))
+
 (defmethod concepts-by-section* :ontology/relationship-created
   [state event]
-  ;; relationship-created has no ontology-id field in its body. Apply
-  ;; the SAME-ontology-only rule: if both endpoints exist within the
-  ;; SAME section, add edges there. If they're in different sections,
-  ;; do nothing for THIS projection (the cross-section edge is preserved
-  ;; in the URI-keyed projection above for callers that explicitly widen).
-  (let [{:keys [source-uri target-uri predicate]} event
-        ;; Find which sections each URI lives in (could be multiple due to collision).
-        endpoint-sections (fn [uri]
-                            (->> state
-                                 (filter (fn [[_ by-uri]] (contains? by-uri uri)))
-                                 (map first)
-                                 set))
-        src-sections (endpoint-sections source-uri)
-        tgt-sections (endpoint-sections target-uri)
-        shared (set/intersection src-sections tgt-sections)]
-    (reduce (fn [acc ont-id]
-              (case predicate
-                "skos:broader"
-                (-> acc
-                    (update-by-section ont-id source-uri
-                                       (fn [c] (update c :broader (fnil conj #{}) target-uri)))
-                    (update-by-section ont-id target-uri
-                                       (fn [c] (update c :narrower (fnil conj #{}) source-uri))))
-
-                "skos:narrower"
-                (-> acc
-                    (update-by-section ont-id source-uri
-                                       (fn [c] (update c :narrower (fnil conj #{}) target-uri)))
-                    (update-by-section ont-id target-uri
-                                       (fn [c] (update c :broader (fnil conj #{}) source-uri))))
-
-                "skos:related"
-                (-> acc
-                    (update-by-section ont-id source-uri
-                                       (fn [c] (update c :related (fnil conj #{}) target-uri)))
-                    (update-by-section ont-id target-uri
-                                       (fn [c] (update c :related (fnil conj #{}) source-uri))))
-
-                "behavior:composes-into"
-                (-> acc
-                    (update-by-section ont-id source-uri
-                                       (fn [c] (update c :composes-into (fnil conj #{}) target-uri)))
-                    (update-by-section ont-id target-uri
-                                       (fn [c] (update c :composed-by (fnil conj #{}) source-uri))))
-
-                ;; Other predicates (incl. S05 sequence-convention
-                ;; predicates "immediately-follows" / "follows", plus
-                ;; any custom predicate the caller uses, including S07
-                ;; axiom-driven predicates) → land in BOTH :related (so
-                ;; default BFS still traverses) AND :typed-edges (so
-                ;; S07's axiom-aware BFS can filter by predicate name).
-                ;; Symmetric with the URI-keyed projection's default
-                ;; branch — keeps the two projections shape-consistent.
-                (-> acc
-                    (update-by-section ont-id source-uri
-                                       (fn [c] (update c :related (fnil conj #{}) target-uri)))
-                    (update-by-section ont-id source-uri
-                                       (fn [c] (update-in c [:typed-edges predicate]
-                                                          (fnil conj #{}) target-uri))))))
-            state shared)))
+  ;; S06 — when the event carries `:ontology-id` (the recommended new
+  ;; write shape), route the edge to THAT section in O(1) — no scan.
+  ;; Legacy events written before S06 (no `:ontology-id`) take the
+  ;; fallback path: scan to find sections containing both endpoints and
+  ;; apply the edge to each. The fallback preserves back-compat for
+  ;; replays of older event streams.
+  (if-let [ont-id (:ontology-id event)]
+    ;; Direct path — O(1) section routing.
+    (apply-section-edge state ont-id event)
+    ;; Legacy fallback — find sections that contain both endpoints.
+    (let [{:keys [source-uri target-uri]} event
+          endpoint-sections (fn [uri]
+                              (->> state
+                                   (filter (fn [[_ by-uri]] (contains? by-uri uri)))
+                                   (map first)
+                                   set))
+          src-sections (endpoint-sections source-uri)
+          tgt-sections (endpoint-sections target-uri)
+          shared (set/intersection src-sections tgt-sections)]
+      (reduce (fn [acc ont-id] (apply-section-edge acc ont-id event))
+              state shared))))
 
 (defmethod concepts-by-section* :evolutionary/concepts-extracted
   [state event]
@@ -433,6 +492,87 @@
 (defreadmodel :ontology concepts-by-section
   {:events concept-events, :version 1}
   [state event] (concepts-by-section* state event))
+
+;; =============================================================================
+;; S06 — Relationships projection (per-edge metadata accessor)
+;; =============================================================================
+;;
+;; Keyed by relationship-id. Each entry carries the full edge record —
+;; source-uri, target-uri, predicate, plus the named metadata fields and
+;; the `:properties` open bag. Distinct from the URI-keyed
+;; :ontology/concepts projection (which is concept-centric) so that
+;; downstream consumers can iterate edges as first-class — the HITL
+;; ambiguous-edge review queue, the TTL exporter (which needs to walk
+;; relationships not concepts to know which to reify), the C5 lint
+;; surfaces that operate on edge-level invariants.
+;;
+;; Append-only — back-compat with legacy events that lack the named
+;; metadata is preserved (those fields are simply omitted from the
+;; projected record).
+
+(def relationship-events
+  "Events that affect the per-edge relationships read model."
+  #{:ontology/relationship-created})
+
+(defmulti relationships*
+  "Apply event to relationships read model.
+   State: {relationship-id -> relationship-map}"
+  (fn [_state event] (:event/type event)))
+
+(defmethod relationships* :ontology/relationship-created
+  [state event]
+  (let [{:keys [relationship-id source-uri target-uri predicate ontology-id
+                confidence-class evidence valid-from valid-to superseded-by
+                properties created-at]} event]
+    (assoc state relationship-id
+           (cond-> {:relationship-id relationship-id
+                    :source-uri source-uri
+                    :target-uri target-uri
+                    :predicate predicate
+                    :created-at created-at}
+             ontology-id      (assoc :ontology-id ontology-id)
+             confidence-class (assoc :confidence-class confidence-class)
+             (seq evidence)   (assoc :evidence (vec evidence))
+             valid-from       (assoc :valid-from valid-from)
+             valid-to         (assoc :valid-to valid-to)
+             superseded-by    (assoc :superseded-by superseded-by)
+             (seq properties) (assoc :properties properties)))))
+
+(defmethod relationships* :default [state _] state)
+
+(defn relationships
+  "Build the relationships state from events."
+  [initial-state events]
+  (reduce relationships* initial-state events))
+
+(defreadmodel :ontology relationships
+  {:events relationship-events, :version 1}
+  [state event] (relationships* state event))
+
+(defn get-relationship
+  "Return the projected relationship-record for a given relationship-id,
+   or nil when no such edge has been created. S06."
+  [ctx relationship-id]
+  (get (rmp/project ctx :ontology/relationships) relationship-id))
+
+(defn get-relationships
+  "Return all projected relationship records as a seq. Use to iterate the
+   edge corpus (TTL export, HITL review queues, lint surfaces)."
+  [ctx]
+  (vals (rmp/project ctx :ontology/relationships)))
+
+(defn get-edges-by-confidence-class
+  "S06 — Return all edges with the given confidence-class
+   (:extracted / :inferred / :ambiguous). C5's HITL review queue read
+   path. Linear scan over the relationships projection — fine for the
+   review-queue workload (small N, batched UI).
+
+   Edges that have NO `:confidence-class` field set are NEVER returned
+   (i.e. legacy edges and bare-extracted edges with the field omitted are
+   excluded). Callers wanting 'all edges' should use `get-relationships`."
+  [ctx confidence-class]
+  (filterv (fn [rel] (= confidence-class (:confidence-class rel)))
+           (vals (rmp/project ctx :ontology/relationships))))
 
 ;; =============================================================================
 ;; S04 — Ontology-level metadata projection
