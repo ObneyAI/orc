@@ -205,3 +205,107 @@ classification or an external Protégé/reasoner workflow).
 The PDF reading **does not change** the Q6 triage's tier assignments — it
 reinforces the WITH-REBUILD arc and confirms why B-bucket items belong
 there.
+
+---
+
+## Appendix 2 — Class 2: Semantic Web course (RDF/SPARQL/RDFS/OWL/SHACL/LOT)
+
+Added 2026-06-12. Second course fed in: Semantic Web stack end-to-end —
+linked data principles, RDF/Turtle mechanics, SPARQL (all four query
+types), RDFS, OWL property semantics in practice (chains, functional
+dangers, alignment), **SHACL** (closed-world validation + advanced-feature
+rules), and the **LOT methodology** (ORSD requirements documents,
+competency-question formalization, ontology reuse, publishing). Concrete
+artifacts read: `film_shacl_rules.ttl` (sh:TripleRule + sh:condition +
+sh:SPARQLFunction vocabulary), `solution-tbox.ttl` (RDFS domain/range +
+multilingual labels + seeAlso/isDefinedBy). LOT paper PDF + ORSD
+solution + glossary/cheatsheets pending-confirmatory (tool outage;
+transcript covers their substance).
+
+### Major reinforcements
+
+**Q3/B5 (axioms-as-lints, no reasoner) — VINDICATED BY THE FIELD ITSELF.**
+The course's own arc lands exactly where round 2 did: RDFS domain/range
+"are by no means constraints" (they *infer* classes onto subjects/objects
+— the hasBrother example types Christopher Nolan as Person *in addition
+to* Director rather than erroring); OWL functional properties under OWA
+silently infer `sameAs` between the Wachowski sisters instead of flagging
+the double assignment; the instructor's stated fix for ALL of it is
+**SHACL — closed-world validation with severity levels**. Our
+"deterministic :code lints, no DL reasoner" decision is the same
+conclusion practitioners reached after getting burned by OWA.
+
+**B1/B2 (CQs + goal/scope) — FORMALIZED BY LOT/ORSD.** The Linked Open
+Terms methodology's Ontology Requirements Specification Document is the
+canonical container for exactly what we adopted: purpose, scope,
+implementation language, intended users, intended uses, **functional
+requirements as competency questions + natural-language statements +
+tabular concept/relation/attribute info**, non-functional requirements,
+glossary. And LOT's evaluation step = "validate the CQs via SPARQL
+queries against the built ontology" — our CQ → hybrid-search + judge
+evaluation is the same move with LLM-era tooling.
+
+**Data-first discovery posture — VALIDATED.** The instructor's personal
+workflow: build an **exemplary ABox first** ("I do not focus on how the
+Tbox is structured... I only focus on which data need to be in the
+ontology"), then find reusable ontologies, then fill gaps with a new
+TBox. Our evolutionary builder is data-first by construction — formal
+methodology agrees.
+
+**Event-sourced edges sidestep reification — ARCHITECTURAL ADVANTAGE to
+state explicitly.** The course's treatment of statements-about-statements
+(reification = complex + slow; RDF-star = better but OWL-incompatible;
+"or use a property graph") is a problem we simply don't have: our
+relationships are events carrying arbitrary metadata natively, so edge
+confidence (C5), statement provenance (B7), and temporal validity (C6)
+need no reification machinery. Goes in the ARCHITECTURE doc's "what the
+substrate is NOT / advantages" section.
+
+**Dedup verdict outputs need an equivalence-kind distinction.** Course
+rule: `owl:sameAs` is for individuals ONLY; class-level identity uses
+`owl:equivalentClass` (sameAs on classes causes unintentional inheritance
+merging). Our dedup cascade verdicts (C3/C4) should record WHICH
+equivalence kind they assert — concept-as-class merges vs
+individual-instance merges are different events with different downstream
+semantics.
+
+**B15 (language tags) sharpened with a trap-lint.** Same literal with
+different language tags = different values (the release-year@en vs @de
+trap). Lint: language tags on non-linguistic values (numbers, dates,
+codes) are extraction errors.
+
+### New candidates (D-bucket)
+
+| # | Candidate | Source | Gap addressed |
+|---|-----------|--------|---------------|
+| **D1** | **SHACL as the lint interchange format.** The A3 validation library's rules (B4 disjointness, B6 naming, B13 universal-without-existential, B3 roles-vs-classes, functional-double-value, language-tag misuse) compile to **SHACL shapes** as an export artifact alongside TTL: `sh:NodeShape`/`sh:PropertyShape` with `sh:severity` (Info/Warning/Violation), `sh:message`, `sh:deactivated`. Internal representation stays `:code`; SHACL is the standards-track interchange so any consumer can re-validate with pySHACL/GraphDB without ORC in the loop. | SHACL chapter + film_shacl.ttl artifacts | Lints today would be ORC-internal only; consumers get no portable validation contract |
+| **D2** | **Derived-edge materialization (property-chain shortcuts).** OWL property chains (actsIn ∘ hasActor → collaboratedWith; recipe-step chains propagating usesIngredient up to the recipe) exist precisely to make queries cheap — the instructor: chains "make defining the Sparql queries much easier." Our version: deterministic, event-sourced derived edges (SHACL-TripleRule-shaped: subject/predicate/object + condition) materialized at write time or as a projection, so graph-BFS retrieval doesn't re-traverse chains. Extends round-2 C10's property hierarchies. | OWL property-chain lessons + sh:TripleRule in film_shacl_rules.ttl | Retrieval pays traversal cost for relationship patterns that could be precomputed |
+| **D3** | **Alignment sections (link sets).** Keep cross-ontology equivalence statements (`equivalentClass`/`equivalentProperty`/`sameAs`) in a SEPARATE ontology section rather than polluting either aligned section — the course's alignment-ontology best practice mapped to our ontology-id scoping. Both sections stay clean; the alignment section is independently loadable/droppable. | Ontology-matching lesson | Cross-section links today would land inside one section, muddying both |
+| **D4** | **Reuse pass in discovery (check-before-mint).** Before minting a new concept, the builder checks candidates against (a) other ontology sections in the same deployment (B9's shared mid-level) and (b) optionally, well-known external vocabularies (schema.org, QUDT for quantities/units, Time, FOAF, SKOS) — recording an equivalence into the alignment section (D3) instead of re-minting. The course's "always look for reusable ontologies first" discipline, automated. QUDT's quantity-value pattern is specifically relevant: extracted quantities should carry value + unit as a structured node, not a bare literal with implicit units. | Reuse lesson + recipe-project solution | Builder currently discovers everything from scratch; quantities lose their units |
+| **D5** | **ORSD-shaped build spec.** B1+B2's optional build params formalized as an ORSD-shaped map: `{:purpose :scope :intended-uses :competency-questions :natural-language-statements :non-functional ...}` — stored with the ontology (persistent contract, extending round-2's B1 decision), injected into discovery, and usable later for auto-generated ontology documentation (Widoco-style). | LOT/ORSD lessons | Our params were ad-hoc; ORSD is the canonical container the field already converged on |
+| **D6** | **Ordered-sequence extraction pattern.** Sequences in sources (steps, episodes, stages) get the graph-native pattern: `immediatelyFollows` (direct) + `follows` (transitive) object properties — NOT RDF list vocabulary (rdf:first/rest blank-node chains, which the course shows and immediately disclaims as painful). Discovery prompt guidance + a seed pattern. | RDF collections lesson + recipe solution's allotrope follows pattern | Extracted sequences today have no canonical representation |
+| **D7** | **Model-guidance annotations on concepts.** The instructor mints a custom annotation property `ChatGPT_explanation` — LLM-facing guidance stored IN the ontology, surfaced when an AI consumes it. That's the Living-Descriptions insight arrived at from the opposite direction. Substrate-level: an optional `model-guidance` annotation field on any concept, included in retrieval payloads. Cheap, converges two traditions. | Annotation-properties lesson | Concept bodies carry definitions for humans; nothing standard carries guidance-for-models at substrate level |
+| **D8** | **SPARQL interop posture: export-to-triplestore.** We do NOT build a SPARQL endpoint; consumers with SPARQL workloads export TTL (which must therefore be complete — reinforces B14) into GraphDB/any triplestore. Document the mapping: our BFS expansion ≈ DESCRIBE, projections ≈ CONSTRUCT views, existence checks ≈ ASK, stats fns ≈ aggregates. | SPARQL chapters | Heads off "build SPARQL into ORC" scope creep with a deliberate documented answer |
+| **D9** | **Publishing pipeline.** For ontologies meant for external reuse: TBox/ABox file separation in export, Widoco-style doc generation (feeds from D5's ORSD + B14's annotations), w3id permanent identifiers, prefix-collision check (prefix.cc), HTTP-URI base mapping for 4-star linked-data compliance. | Publishing lessons + linked-data 5 stars | RECORDED — no consumer publishes yet, but export schema should not preclude it |
+
+### Tier placement (D-bucket)
+
+- **D1 SHACL lint export** → WITH-REBUILD (it's the A3 library's export
+  face; designing lints SHACL-shaped from day one costs nothing extra)
+- **D2 derived edges** → NEXT (needs the rebuilt write path stable;
+  design alongside C10)
+- **D3 alignment sections** → WITH-REBUILD (schema + scoping conventions
+  land with the rebuild; trivially small)
+- **D4 reuse pass** → WITH-REBUILD for cross-section check-before-mint
+  (rides the dedup cascade); NEXT for external-vocabulary matching;
+  QUDT-style quantity+unit structure WITH-REBUILD (extraction schema)
+- **D5 ORSD build spec** → WITH-REBUILD (it's the final shape of B1+B2)
+- **D6 sequence pattern** → WITH-REBUILD (discovery guidance + seed)
+- **D7 model-guidance annotation** → WITH-REBUILD (one optional field)
+- **D8 SPARQL posture** → documentation row in ARCHITECTURE doc revision
+- **D9 publishing** → RECORDED
+
+Class 2 also does not move any existing tier — it thickens WITH-REBUILD
+and hands us standards-track vocabulary (SHACL severity/message/
+deactivated; ORSD sections; alignment link sets) instead of inventing our
+own.
