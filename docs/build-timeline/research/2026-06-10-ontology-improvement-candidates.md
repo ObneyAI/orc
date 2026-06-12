@@ -309,3 +309,58 @@ Class 2 also does not move any existing tier — it thickens WITH-REBUILD
 and hands us standards-track vocabulary (SHACL severity/message/
 deactivated; ORSD sections; alignment link sets) instead of inventing our
 own.
+
+---
+
+## Round-3 resolutions (2026-06-12 grill — see grill-sessions/2026-06-12-ontology-class-deep-dive-round-3.md)
+
+**Forks resolved:**
+- **D1 → b′ (EDN-SHACL bridge).** Shapes authored as SHACL-shaped EDN
+  (source of truth, Malli-validated, in-JVM interpreted,
+  consumer-authorable), exported as real SHACL TTL; TTL-shape ingestion
+  deferred; `:code` predicate escape hatch for naming + roles-vs-classes
+  lints; unified lint registry; `:ontology/lint-violation` events.
+- **D2 → three-way split.** Transitive hierarchy = traversal-time
+  (status quo); binary chains = query-time post-BFS synthesis into the
+  RRF pool; audited learned rules = event-time
+  `:ontology/derived-edge-created` w/ `:source-edges` cascade retraction.
+  Chain definitions stored as axiom events. No eager projection-time
+  materialization.
+- **D5/B1 attachment → descriptions pattern, zero new machinery.**
+  `record-ontology-spec` + `record-cq-evaluation`; check-before-mint (D4)
+  hooks the builder's graph-merge phase, emitting equivalence events into
+  the alignment section (D3) instead of re-minting.
+- **CQ/negation posture →** judge-as-closed-world-evaluator over fetched
+  neighborhoods (primary) + `filter-by-label-pattern` /
+  `absent-in-graph?` / `exists?` helpers + triplestore escape hatch (D8).
+  Principle: we don't rebuild SPARQL; retrieval assembles honest
+  evidence, the judge does query-language work. Retrieval primacy:
+  BFS+embeddings+ColBERT IS the stack.
+
+**New candidates:**
+
+| # | Candidate | Tier |
+|---|-----------|------|
+| **D10** | **TTL round-trip adapter.** TTL ingestion as a first-class write adapter decomposing into the standard event vocabulary; re-projection reproduces a semantically equal TTL (triple-set equivalence). Executable gate: `ingest(ttl) → events → export ≍ ttl`. Brownfield path = TTL→events, precisely. | **WITH-REBUILD** (it IS the Q4 bundle's gate) |
+| **D11** | **Ontology tools for repl-researchers.** Retrieval surface as sandbox primitives (graph-search, neighborhood, get-concept, exists?, absent-in-graph?, filter-by-label-pattern, classify-*). Builder's recursive-RLM discovery uses them; CQ evaluation can itself be a recursive-RLM task; consumer repl-researchers get "query the ontology" as a capability. | WITH-REBUILD (builder-facing subset); NEXT (general sandbox exposure) |
+| **D12** | **Graph orientation card** — the large-document-preview equivalent for graphs, injected when D11 tools are granted. Four layers: identity (ORSD + metadata + section/alignment registry), T-Box digest (scopes/classes/predicates/characteristics/axioms), content sample (top-N by degree/evidence + neighborhoods), tool affordances. Deterministic skeleton + optional budget-knobbed LLM prose layer; cached; refreshed on reindex. | WITH-REBUILD (skeleton); prose layer rides Tier-2 mechanism |
+
+**Tier moves:**
+- **Gap-matrix row #2 (ontology-id scoping) → HIGH.** Absorbs the
+  agent-verified BFS scoping bug (BFS unscoped while embedding/ColBERT
+  filter → isolation leak + cross-section RRF loss). Fix: uniform
+  scoping across all three signals; `:ontology-ids` opt-in widens all
+  three together; alignment-section registry drives auto-widening.
+- **C7 (communities + per-community summaries) RECORDED → NEXT.** First
+  concrete consumer identified: D12's content-sample layer at scale.
+- **Q4 representation bundle confirmed as ONE WITH-REBUILD package**
+  (8 parts: multi-language labels, datatyped attributes, quantity+unit,
+  sequences, schema'd+serialized edge metadata, axioms-as-data,
+  equivalence-with-kind, annotations incl. model-guidance + ontology
+  metadata), gated by D10's round-trip test — the Cat-5 gaps are
+  blockers for the invariant, not polish.
+
+**Corpus status:** ready for `/to-prd` on the user's go. PRD inputs:
+ARCHITECTURE-ONTOLOGY.md, three grill records (2026-06-10 ×2,
+2026-06-12), this synthesis (A-D buckets + appendices + resolutions),
+and the deep-dive findings doc.
