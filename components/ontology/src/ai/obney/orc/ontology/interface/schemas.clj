@@ -842,7 +842,43 @@
    [:map
     [:primary-ontology-id   :uuid]
     [:alignment-ontology-id :uuid]
-    [:deregistered-at       :string]]})
+    [:deregistered-at       :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S08 — Equivalence events with :kind discriminator
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; A dedicated equivalence event carrying a kind discriminator. The
+   ;; kind is REQUIRED — no default — because the three OWL equivalence
+   ;; predicates are NOT interchangeable:
+   ;;
+   ;;   :same-as             → owl:sameAs            (individuals only)
+   ;;   :equivalent-class    → owl:equivalentClass   (classes only)
+   ;;   :equivalent-property → owl:equivalentProperty (properties only)
+   ;;
+   ;; CRITICAL semantic note (course-verified, grill round 2): owl:sameAs
+   ;; on classes silently MERGES property assertions across the
+   ;; equivalence in downstream OWL DL reasoners — an inheritance-merging
+   ;; hazard. The discriminator exists to PREVENT a class-level
+   ;; equivalence from being expressed as sameAs.
+   ;;
+   ;; Tagging: the event tags to the ALIGNMENT section's :ontology-id —
+   ;; the endpoints live in OTHER sections, but the equivalence itself
+   ;; belongs to the alignment. The primary sections' event streams stay
+   ;; clean (no equivalence events leak in under their tags). The S08
+   ;; prototype's Path B verdict: the equivalence rides as a per-edge
+   ;; record in a section-keyed :ontology/equivalences projection — NOT
+   ;; as a proxy-concept in the alignment section (that path corrupts the
+   ;; URI-keyed concept projection via last-write-wins collapse).
+   :ontology/equivalence-recorded
+   [:map
+    [:equivalence-id :uuid]
+    [:ontology-id    :uuid]    ;; alignment section the event tags to
+    [:source-uri     :string]
+    [:target-uri     :string]
+    [:kind           [:enum :same-as :equivalent-class :equivalent-property]]
+    [:evidence       {:optional true} [:vector :string]]
+    [:recorded-at    :string]]})
 
 ;; =============================================================================
 ;; Command Schemas
@@ -1384,7 +1420,28 @@
    :ontology/deregister-alignment-section
    [:map
     [:primary-ontology-id   :uuid]
-    [:alignment-ontology-id :uuid]]})
+    [:alignment-ontology-id :uuid]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S08 — Record an equivalence event
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; `:kind` is REQUIRED — no default. The enum bounds the allowed
+   ;; values; an unknown kind is rejected at the pre-handler gate with
+   ;; ::anom/incorrect. No silent kind defaulting — forcing the assertion
+   ;; to be deliberate per the slice's acceptance criteria.
+   ;;
+   ;; The `:ontology-id` is the ALIGNMENT section's id (NOT either
+   ;; endpoint's primary section). The endpoints' URIs may reference
+   ;; concepts in any sections — the equivalence belongs to the
+   ;; alignment.
+   :ontology/record-equivalence
+   [:map
+    [:ontology-id :uuid]
+    [:source-uri  :string]
+    [:target-uri  :string]
+    [:kind        [:enum :same-as :equivalent-class :equivalent-property]]
+    [:evidence    {:optional true} [:vector :string]]]})
 
 ;; =============================================================================
 ;; Query Schemas

@@ -206,6 +206,33 @@
   [ctx primary-ontology-id]
   (rm/get-alignment-registry-history ctx primary-ontology-id))
 
+(defn get-equivalences
+  "S08: return the per-kind equivalences map recorded against the given
+   alignment section's ontology-id, or nil when none are recorded. Shape:
+   `{:same-as #{#{a b} ...} :equivalent-class #{...} :equivalent-property
+   #{...}}`. Each pair is a 2-element Clojure set (insertion-order-
+   independent — equivalence is symmetric)."
+  [ctx ontology-id]
+  (rm/get-equivalences ctx ontology-id))
+
+(defn surface-equivalents
+  "S08: walk the given ontology-id(s) (typically a widened set from
+   `widen-ontology-ids`) and collect equivalence partners for `uri`.
+
+   Returns a vector of `{:partner <other-uri> :kind <kind-keyword>
+   :ontology-id <alignment-id>}` maps — one entry per (kind, section)
+   tuple a partner appears under. Empty vector when no equivalences
+   reference `uri` in any of the sections.
+
+   The kind is PRESERVED end-to-end: callers reading the result can
+   distinguish a `:same-as` partner (individual) from an
+   `:equivalent-class` partner (class) without going back to the
+   projection. This is the AC3 composability with S03 — auto-widened
+   queries surface the equivalent concept from the OTHER section with
+   the equivalence kind visible in the result."
+  [ctx ontology-id-or-ids uri]
+  (rm/surface-equivalents ctx ontology-id-or-ids uri))
+
 (defn widen-ontology-ids
   "S03: expand the given primary ontology-id(s) through the alignment-
    section registry, returning the widened set (input ids + any of

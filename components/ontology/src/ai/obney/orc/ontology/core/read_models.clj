@@ -869,6 +869,117 @@
             #{} ids)))
 
 ;; =============================================================================
+;; S08 — Per-ontology equivalences projection
+;; =============================================================================
+;;
+;; Records equivalence assertions tagged to an ALIGNMENT section. The
+;; projection is keyed by the alignment section's `:ontology-id` and
+;; bucketed by kind, so retrieval and TTL export consult one lookup per
+;; section:
+;;
+;;   {<alignment-id>
+;;    {:same-as             #{#{<uri-a> <uri-b>} ...}     ; sorted-pair sets
+;;     :equivalent-class    #{#{<uri-a> <uri-b>} ...}
+;;     :equivalent-property #{#{<uri-a> <uri-b>} ...}}}
+;;
+;; Sorted-pair canonical form (Clojure set #{a b}) makes the projection
+;; idempotent under re-assertion of the same pair under the same kind —
+;; set semantics give us the de-dup for free.
+;;
+;; CRITICAL non-goal: this projection NEVER mutates concept state, NEVER
+;; auto-rewrites edges, NEVER silently dedups across kinds. A pair
+;; asserted under TWO kinds (e.g. accidentally as both :same-as AND
+;; :equivalent-class) lands in BOTH buckets and the lint slice catches
+;; it AT VALIDATION TIME — the same axioms-as-data discipline S07
+;; established.
+
+(def equivalence-events
+  "Single event type drives the per-ontology equivalences projection.
+   Appending an equivalence-recorded event is purely additive — never
+   mutates concept/relationship state, never alters other kind buckets."
+  #{:ontology/equivalence-recorded})
+
+(defmulti equivalences*
+  "Apply event to per-ontology equivalences projection.
+   State: {ontology-id -> {:same-as #{#{a b} ...}
+                            :equivalent-class #{...}
+                            :equivalent-property #{...}}}"
+  (fn [_state event] (:event/type event)))
+
+(defmethod equivalences* :default [state _] state)
+
+(defmethod equivalences* :ontology/equivalence-recorded
+  [state event]
+  (let [ontology-id (:ontology-id event)
+        source (:source-uri event)
+        target (:target-uri event)
+        kind (:kind event)
+        ;; Sorted-pair set form: #{a b} regardless of which side was
+        ;; passed as source — natural Clojure set semantics dedupe
+        ;; re-assertion. We use a 2-element set rather than a sorted
+        ;; vector because Clojure sets compare equal regardless of
+        ;; insertion order, which is exactly the semantic we want for
+        ;; "equivalence is symmetric".
+        pair #{source target}]
+    (update-in state [ontology-id kind] (fnil conj #{}) pair)))
+
+(defn equivalences
+  "Build the per-ontology equivalences state from a seq of events."
+  [initial-state events]
+  (reduce equivalences* initial-state events))
+
+(defreadmodel :ontology equivalences
+  {:events equivalence-events, :version 1}
+  [state event] (equivalences* state event))
+
+(defn get-equivalences
+  "Return the per-kind equivalences map for an alignment section, or
+   nil when no equivalences have been recorded under that section.
+   Shape: {:same-as #{#{a b} ...} :equivalent-class #{...}
+           :equivalent-property #{...}}. Absent kind buckets are simply
+   missing (NOT empty sets) — callers should use (get ... #{}) when
+   iterating."
+  [ctx ontology-id]
+  (get (rmp/project ctx :ontology/equivalences) ontology-id))
+
+(defn surface-equivalents
+  "Walk the given ontology-id(s) (typically a widened set from
+   `widen-ontology-ids`) and collect equivalence partners for `uri`.
+
+   Returns a vector of `{:partner <other-uri> :kind <kind-keyword>
+   :ontology-id <alignment-id>}` maps — one entry per (kind, section)
+   tuple a partner appears under. Empty vector when no equivalences
+   reference `uri` in any of the sections (NEVER nil — callers can
+   safely iterate).
+
+   The kind is PRESERVED end-to-end: callers reading the result can
+   distinguish a :same-as partner (individual) from an :equivalent-class
+   partner (class) without going back to the projection.
+
+   This is the seam the auto-widen path consults to make the equivalent
+   visible in retrieval results. The S03 widening surfaces the
+   neighbour concept via the cross-section BFS; this accessor surfaces
+   the equivalence-kind annotation on top of that."
+  [ctx ontology-id-or-ids uri]
+  (let [equiv-state (rmp/project ctx :ontology/equivalences)
+        ids (cond
+              (coll? ontology-id-or-ids) (set ontology-id-or-ids)
+              (some? ontology-id-or-ids) #{ontology-id-or-ids}
+              :else #{})]
+    (vec
+     (for [id ids
+           :let [by-kind (get equiv-state id)]
+           :when by-kind
+           [kind pairs] by-kind
+           pair pairs
+           :when (contains? pair uri)
+           :let [partner (first (disj pair uri))]
+           :when partner]                ; guard against self-loop pairs
+       {:partner partner
+        :kind kind
+        :ontology-id id}))))
+
+;; =============================================================================
 ;; S14 — Ontology Specs (ORSD) Projection
 ;; =============================================================================
 ;;

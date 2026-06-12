@@ -688,6 +688,75 @@
                    (str/join " " (map uri->turtle-ref chain))
                    " ) ."))))
 
+;; =============================================================================
+;; S08 — Equivalence Serialization (OWL)
+;; =============================================================================
+;;
+;; Each kind emits the CORRECT OWL predicate — no kind is silently
+;; collapsed into another. The course-verified failure mode under test:
+;; an :equivalent-class pair exported as owl:sameAs would unintentionally
+;; merge property assertions across the equivalence in any downstream
+;; OWL DL reasoner (the inheritance-merge hazard).
+;;
+;; Each pair emits as a SINGLE directional triple. The pair-set is
+;; symmetric (set semantics in the projection), so we sort the two URIs
+;; for stable output — same canonicalization as S07 disjointness.
+
+(def ^:private equivalence-kind->predicate
+  "Mapping from the kind discriminator to the OWL predicate string."
+  {:same-as             "owl:sameAs"
+   :equivalent-class    "owl:equivalentClass"
+   :equivalent-property "owl:equivalentProperty"})
+
+(defn- equivalences->turtle
+  "Render a per-ontology equivalences map ({:same-as #{#{a b} ...}
+   :equivalent-class #{...} :equivalent-property #{...}}) as OWL Turtle.
+
+   Each pair emits as ONE triple in a stable direction (URIs sorted).
+   Each kind uses its own OWL predicate — never collapsed across kinds.
+
+   When the input is the full {ontology-id -> equivalences-map} shape,
+   all alignment sections collapse into one block; sets dedupe so the
+   same pair under the same kind across two sections emits once."
+  [equivalences-input]
+  (let [;; Accept either a per-section equivalences map or the
+        ;; {ontology-id -> equivalences-map} shape (mirrors
+        ;; axioms->turtle's polymorphism for parallelism).
+        section-maps (if (some #{:same-as :equivalent-class :equivalent-property}
+                               (keys equivalences-input))
+                       [equivalences-input]
+                       (vals equivalences-input))
+        merged (reduce (fn [acc m]
+                         (-> acc
+                             (update :same-as (fnil into #{}) (:same-as m))
+                             (update :equivalent-class (fnil into #{})
+                                     (:equivalent-class m))
+                             (update :equivalent-property (fnil into #{})
+                                     (:equivalent-property m))))
+                       {} section-maps)
+        ;; Emit each pair-set under each kind as one stable-direction
+        ;; triple. We sort the pair so the same pair always emits the
+        ;; same direction across runs (canonical output).
+        emit-pair (fn [kind pair]
+                    (let [predicate (get equivalence-kind->predicate kind)
+                          [a b] (sort pair)]
+                      (str (uri->turtle-ref a)
+                           " " predicate " "
+                           (uri->turtle-ref b)
+                           " .")))
+        kind-block (fn [kind]
+                     (when-let [pairs (seq (get merged kind))]
+                       (str/join "\n" (map #(emit-pair kind %) pairs))))
+        sections [(when-let [b (kind-block :same-as)]
+                    (str "# Same-As (individuals)\n" b))
+                  (when-let [b (kind-block :equivalent-class)]
+                    (str "# Equivalent Class (classes)\n" b))
+                  (when-let [b (kind-block :equivalent-property)]
+                    (str "# Equivalent Property (properties)\n" b))]
+        present (remove nil? sections)]
+    (when (seq present)
+      (str/join "\n\n" present))))
+
 (defn axioms->turtle
   "S07 — serialize the per-ontology axiom projection ({:disjointness ...
    :characteristics ... :inverse-of ... :sub-property-of ... :chains ...})
@@ -796,6 +865,17 @@
                        (when-let [block (axioms->turtle all-axioms)]
                          (str "\n\n# === AXIOMS ===\n\n" block))))
 
+        ;; S08 — equivalences section. Each :kind emits as its own OWL
+        ;; predicate — :same-as → owl:sameAs, :equivalent-class →
+        ;; owl:equivalentClass, :equivalent-property → owl:equivalentProperty.
+        ;; Kinds are NEVER collapsed into one another; the slice's
+        ;; load-bearing adversarial test asserts an :equivalent-class
+        ;; pair does NOT emit as owl:sameAs (the inheritance-merge
+        ;; hazard the kind discriminator exists to prevent).
+        all-equivalences (rmp/project ctx :ontology/equivalences)
+        equivalences-ttl (when-let [block (equivalences->turtle all-equivalences)]
+                           (str "\n\n# === EQUIVALENCES ===\n\n" block))
+
         ;; S06 — edge-metadata section (reified-on-demand). Walks the
         ;; relationships projection so the section iterates EDGES, not
         ;; concepts; bare edges (no metadata) emit nothing.
@@ -806,6 +886,7 @@
          (or profiles-ttl "")
          (or experiences-ttl "")
          (or axioms-ttl "")
+         (or equivalences-ttl "")
          (or edges-meta-ttl ""))))
 
 ;; =============================================================================

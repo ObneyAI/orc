@@ -1386,3 +1386,62 @@
       :body {:primary-ontology-id primary-ontology-id
              :alignment-ontology-id alignment-ontology-id
              :deregistered-at (now-str)}})]})
+
+;; =============================================================================
+;; S08 — Equivalence-event command
+;; =============================================================================
+;;
+;; A dedicated equivalence event with a REQUIRED `:kind` discriminator —
+;; `:same-as` / `:equivalent-class` / `:equivalent-property`. The kind
+;; is load-bearing: owl:sameAs ≠ owl:equivalentClass ≠ owl:equivalentProperty
+;; under OWL DL semantics, and conflating them (most dangerously, sameAs
+;; on classes) merges property assertions across the equivalence — the
+;; inheritance-merge hazard documented in the round-2 grill. The pre-
+;; handler Malli enum gate rejects unknown / missing kinds with
+;; ::anom/incorrect; no silent kind defaulting.
+;;
+;; Tagging: the event tags to the ALIGNMENT section's :ontology-id
+;; (NOT either endpoint's primary section). The prototype's Path B
+;; verdict drove this: tagging to a primary would corrupt the URI-keyed
+;; concept projection via last-write-wins collapse when the alignment
+;; mints "proxy" concepts at the same URI. Path B keeps real concepts
+;; intact and surfaces the equivalence via a parallel per-section
+;; :ontology/equivalences projection.
+
+(defcommand :ontology record-equivalence
+  "S08: record an equivalence assertion between two URIs in an
+   alignment section, with the kind discriminator carrying the OWL
+   semantics. `:kind` is REQUIRED (no default — forcing the assertion
+   to be deliberate per the slice's acceptance criteria):
+
+     :same-as             → owl:sameAs            (individuals only)
+     :equivalent-class    → owl:equivalentClass   (classes only)
+     :equivalent-property → owl:equivalentProperty (properties only)
+
+   Tagging: the event tags ONLY to the ALIGNMENT section's :ontology-id.
+   Primary sections' event streams stay clean — no equivalence events
+   leak into either primary's stream under its [:ontology <primary-id>]
+   tag. The S08 prototype's Path B verdict.
+
+   Idempotency: re-recording the same (kind, URI-pair) is benign — the
+   projection canonicalizes endpoints as a sorted-pair set so re-
+   assertion is a set no-op."
+  [{{:keys [ontology-id source-uri target-uri kind evidence]} :command}]
+  (let [equivalence-id (generate-uuid)
+        now (now-str)]
+    {:command-result/events
+     [(->event
+       {:type :ontology/equivalence-recorded
+        ;; Tag the event with the alignment-section's :ontology-id AND
+        ;; an equivalence-id (UUID tag for direct lookup if ever needed).
+        ;; NOT tagged with either endpoint's primary section — that's
+        ;; the slice's load-bearing cleanliness property.
+        :tags #{[:ontology ontology-id]
+                [:equivalence equivalence-id]}
+        :body (cond-> {:equivalence-id equivalence-id
+                       :ontology-id ontology-id
+                       :source-uri source-uri
+                       :target-uri target-uri
+                       :kind kind
+                       :recorded-at now}
+                (seq evidence) (assoc :evidence (vec evidence)))})]}))
