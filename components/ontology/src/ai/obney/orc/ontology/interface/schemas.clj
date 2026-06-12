@@ -178,6 +178,27 @@
     [:scope ontology-scope]
     [:broader {:optional true} [:vector :string]]  ;; Parent URIs
     [:indicators {:optional true} [:vector :string]]  ;; Text patterns
+    ;; S04 — representation bundle additions, ALL optional. Existing
+    ;; concept-created events validate unchanged. The shipped serializer
+    ;; consumes only the structured shapes — `:label`/`:description`
+    ;; remain the back-compat single-value path.
+    ;;
+    ;; Language-tagged multi-labels: vector of {:value :string :lang :string}
+    ;; entries. Same shape applies to multi-comments.
+    [:labels   {:optional true} [:vector [:map [:value :string] [:lang :string]]]]
+    [:comments {:optional true} [:vector [:map [:value :string] [:lang :string]]]]
+    ;; Annotations: comment (rdfs:comment — distinct from skos:definition);
+    ;; see-also (vector of URIs); is-defined-by (single URI);
+    ;; model-guidance (LLM-facing usage hint).
+    [:comment        {:optional true} :string]
+    [:see-also       {:optional true} [:vector :string]]
+    [:is-defined-by  {:optional true} :string]
+    [:model-guidance {:optional true} :string]
+    ;; Datatyped attributes — each value may be either a bare value or
+    ;; the structured {:value :datatype} shape. Map-of keyword :any
+    ;; keeps the bare-value back-compat path open; the projection +
+    ;; serializer branch on shape.
+    [:attributes     {:optional true} [:map-of :keyword :any]]
     [:created-at :string]]
 
    :ontology/concept-updated
@@ -185,6 +206,20 @@
     [:concept-id :uuid]
     [:changes [:map-of :keyword :any]]
     [:updated-at :string]]
+
+   ;; S04 — Ontology-level metadata for the export header.
+   ;; Per-ontology-id, NOT per-concept. All annotation fields optional;
+   ;; the projection retains only the supplied fields so the serializer
+   ;; never emits empty-string artefacts (the "defaulted-empty" failure
+   ;; mode).
+   :ontology/ontology-metadata-recorded
+   [:map
+    [:ontology-id :uuid]
+    [:title       {:optional true} :string]
+    [:version     {:optional true} :string]
+    [:license     {:optional true} :string]
+    [:creator     {:optional true} :string]
+    [:recorded-at :string]]
 
    :ontology/relationship-created
    [:map
@@ -622,7 +657,27 @@
     [:description :string]
     [:scope ontology-scope]
     [:broader {:optional true} [:vector :string]]
-    [:indicators {:optional true} [:vector :string]]]
+    [:indicators {:optional true} [:vector :string]]
+    ;; S04 — representation bundle additions. Mirror the event schema;
+    ;; the defcommand forwards these to the emitted concept-created body.
+    [:labels         {:optional true} [:vector [:map [:value :string] [:lang :string]]]]
+    [:comments       {:optional true} [:vector [:map [:value :string] [:lang :string]]]]
+    [:comment        {:optional true} :string]
+    [:see-also       {:optional true} [:vector :string]]
+    [:is-defined-by  {:optional true} :string]
+    [:model-guidance {:optional true} :string]
+    [:attributes     {:optional true} [:map-of :keyword :any]]]
+
+   ;; S04 — record (or replace) the ontology-level metadata header.
+   ;; Each invocation REPLACES the prior metadata (latest-wins); no
+   ;; history beyond the event log itself.
+   :ontology/record-ontology-metadata
+   [:map
+    [:ontology-id :uuid]
+    [:title       {:optional true} :string]
+    [:version     {:optional true} :string]
+    [:license     {:optional true} :string]
+    [:creator     {:optional true} :string]]
 
    :ontology/create-relationship
    [:map

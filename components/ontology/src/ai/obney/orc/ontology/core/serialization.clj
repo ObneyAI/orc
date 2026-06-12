@@ -62,7 +62,11 @@
    "owl" "http://www.w3.org/2002/07/owl#"
    "xsd" "http://www.w3.org/2001/XMLSchema#"
    "skos" "http://www.w3.org/2004/02/skos/core#"
-   "dcterms" "http://purl.org/dc/terms/"})
+   "dcterms" "http://purl.org/dc/terms/"
+   ;; S04 — `orc:` carries ORC-native annotations that have no
+   ;; standard RDF predicate (model-guidance is an LLM-facing usage
+   ;; hint with no W3C equivalent).
+   "orc" "http://obney.ai/workshop/ontology/orc#"})
 
 (def domain-prefixes
   "Prefixes for ontology domain namespaces."
@@ -89,23 +93,95 @@
 ;; Concept Serialization (SKOS)
 ;; =============================================================================
 
+;; =============================================================================
+;; S04 — Plain-literal helpers (no hardcoded language tag)
+;; =============================================================================
+
+(defn- plain-literal
+  "Emit a plain Turtle string literal (no language tag, no datatype).
+   Used wherever the source text has no documented language origin —
+   the prior `@en` hardcoding is removed here per S04."
+  [s]
+  (str "\"" (escape-turtle-string s) "\""))
+
+(defn- lang-literal
+  "Emit a language-tagged Turtle literal: `\"value\"@lang`."
+  [value lang]
+  (str "\"" (escape-turtle-string value) "\"@" lang))
+
+(defn- typed-literal
+  "Emit a datatype-tagged Turtle literal: `\"value\"^^xsd:type`.
+   The :datatype keyword's namespace is the Turtle prefix; the name is
+   the local part. e.g., `:xsd/integer` → `^^xsd:integer`."
+  [value datatype]
+  (let [ns (namespace datatype)
+        nm (name datatype)
+        prefix (or ns "xsd")]
+    (str "\"" value "\"^^" prefix ":" nm)))
+
+(defn- attribute-value->turtle
+  "Serialize a single concept-attribute value. The bare-value back-compat
+   path emits a plain literal; the structured `{:value :datatype}` form
+   emits a typed literal."
+  [v]
+  (cond
+    (and (map? v) (contains? v :datatype) (contains? v :value))
+    (typed-literal (:value v) (:datatype v))
+
+    :else
+    (plain-literal (str v))))
+
 (defn- concept->turtle
   "Serialize a single concept to Turtle triples.
-   Returns a string of Turtle statements."
-  [{:keys [uri label description scope broader narrower related indicators]}]
+   Returns a string of Turtle statements.
+
+   S04 representation bundle additions:
+     :labels         → emits one rdfs:label per (value, lang) entry, language-tagged
+     :comments       → emits one rdfs:comment per (value, lang) entry, language-tagged
+     :comment        → emits rdfs:comment (single, plain — DISTINCT from skos:definition)
+     :see-also       → emits rdfs:seeAlso (URIs)
+     :is-defined-by  → emits rdfs:isDefinedBy (URI)
+     :model-guidance → emits orc:modelGuidance (plain literal)
+     :attributes     → emits orc:<key> with typed literal where the value
+                        is `{:value :datatype}`, plain literal otherwise
+
+   The legacy single-value `:label` keeps emitting `skos:prefLabel` —
+   but plainly (no `@en` tag) unless the concept also carries a
+   `:labels` entry that lifts it to a tagged label. This is the slice's
+   adversarial requirement: a single-label legacy concept exports with
+   NO language tag at all."
+  [{:keys [uri label description scope broader narrower related indicators
+           labels comments comment see-also is-defined-by model-guidance
+           attributes]}]
   (let [prefix (or (uri->prefix uri) "ex")
         local-name (uri->local-name uri)]
     (str
      ;; Type declaration
      prefix ":" local-name " a skos:Concept ;\n"
-     ;; Label
-     "  skos:prefLabel \"" (escape-turtle-string label) "\"@en ;\n"
-     ;; Definition
+     ;; Legacy single-label — plain (NO language tag). Per S04: the
+     ;; convention-only `@en` is removed; tagged labels come via :labels.
+     "  skos:prefLabel " (plain-literal label) " ;\n"
+     ;; S04 — language-tagged multi-labels emit as rdfs:label per entry.
+     (when (seq labels)
+       (str/join ""
+                 (map #(str "  rdfs:label " (lang-literal (:value %) (:lang %)) " ;\n")
+                      labels)))
+     ;; Definition — skos:definition is DISTINCT from rdfs:comment per
+     ;; S04. Plain literal (no hardcoded language tag).
      (when (seq description)
-       (str "  skos:definition \"" (escape-turtle-string description) "\"@en ;\n"))
-     ;; Scope note
+       (str "  skos:definition " (plain-literal description) " ;\n"))
+     ;; S04 — :comment is rdfs:comment, DISTINCT from skos:definition.
+     ;; Plain (single-string form).
+     (when comment
+       (str "  rdfs:comment " (plain-literal comment) " ;\n"))
+     ;; S04 — multi-language comments emit as rdfs:comment per entry.
+     (when (seq comments)
+       (str/join ""
+                 (map #(str "  rdfs:comment " (lang-literal (:value %) (:lang %)) " ;\n")
+                      comments)))
+     ;; Scope note — plain (no hardcoded language tag).
      (when scope
-       (str "  skos:scopeNote \"" (name scope) "\"@en ;\n"))
+       (str "  skos:scopeNote " (plain-literal (name scope)) " ;\n"))
      ;; Broader relationships
      (when (seq broader)
        (str "  skos:broader "
@@ -130,13 +206,56 @@
                                    (str p ":" n))
                                  related))
             " ;\n"))
-     ;; Indicators as hidden labels (searchable synonyms)
+     ;; S04 — see-also (vector of URIs).
+     (when (seq see-also)
+       (str "  rdfs:seeAlso "
+            (str/join " , " (map #(let [p (or (uri->prefix %) "ex")
+                                        n (uri->local-name %)]
+                                   (str p ":" n))
+                                 see-also))
+            " ;\n"))
+     ;; S04 — is-defined-by (URI; preserved verbatim as an IRI inside <>).
+     (when is-defined-by
+       (str "  rdfs:isDefinedBy <" is-defined-by "> ;\n"))
+     ;; S04 — model-guidance (LLM-facing usage hint; plain literal).
+     (when model-guidance
+       (str "  orc:modelGuidance " (plain-literal model-guidance) " ;\n"))
+     ;; S04 — datatyped (or bare) attributes. Emit one triple per key.
+     (when (seq attributes)
+       (str/join ""
+                 (map (fn [[k v]]
+                        (str "  orc:" (name k) " " (attribute-value->turtle v) " ;\n"))
+                      attributes)))
+     ;; Indicators as hidden labels — plain literal per S04. (Indicators
+     ;; are searchable text snippets — no inherent language assumption.)
      (when (seq indicators)
        (str/join ""
-                 (map #(str "  skos:hiddenLabel \"" (escape-turtle-string %) "\"@en ;\n")
+                 (map #(str "  skos:hiddenLabel " (plain-literal %) " ;\n")
                       indicators)))
      ;; Close the statement
      "  .\n")))
+
+(defn- ontology-metadata->turtle
+  "S04 — serialize the ontology-level metadata header block.
+   Per-ontology-id; only the fields actually supplied appear (the
+   defaulted-empty-string failure mode is impossible because the
+   projection only stores what was recorded).
+
+   Emits an `owl:Ontology` block keyed by the base-uri. Each metadata
+   record from the read-model adds dcterms:title / owl:versionInfo /
+   dcterms:license / dcterms:creator triples — but ONLY when present."
+  [base-uri metadata-record]
+  (let [{:keys [title version license creator]} metadata-record]
+    (str "<" base-uri "> a owl:Ontology ;\n"
+         (when title
+           (str "  dcterms:title " (plain-literal title) " ;\n"))
+         (when version
+           (str "  owl:versionInfo " (plain-literal version) " ;\n"))
+         (when license
+           (str "  dcterms:license <" license "> ;\n"))
+         (when creator
+           (str "  dcterms:creator " (plain-literal creator) " ;\n"))
+         "  .\n")))
 
 (defn concepts->turtle
   "Serialize a collection of concepts to SKOS Turtle format.
@@ -145,21 +264,40 @@
    - concepts: Map of URI -> concept-map (from concepts read model)
    - opts: Options map with:
      - :base-uri - Base URI for the ontology
-     - :include-scheme? - Whether to include ConceptScheme (default true)"
-  [concepts & [{:keys [base-uri include-scheme?]
+     - :include-scheme? - Whether to include ConceptScheme (default true)
+     - :ontology-metadata - S04: optional per-ontology metadata record
+                           from the :ontology/ontology-metadata read-model.
+                           When provided, the owl:Ontology header block is
+                           emitted with only the fields the record carries."
+  [concepts & [{:keys [base-uri include-scheme? ontology-metadata]
                 :or {base-uri "http://obney.ai/workshop/ontology/"
                      include-scheme? true}}]]
   (let [concept-list (if (map? concepts) (vals concepts) concepts)
         prefixes-str (format-prefixes (all-prefixes))
+        ;; S04 — Ontology header. Emitted when EITHER the legacy
+        ;; ConceptScheme block is enabled OR explicit metadata was
+        ;; recorded. The ConceptScheme half preserves today's behavior
+        ;; (without the hardcoded @en); the owl:Ontology half is
+        ;; data-driven from the metadata record.
         scheme-str (when include-scheme?
                      (str "\n# Concept Scheme\n"
                           "<" base-uri "scheme> a skos:ConceptScheme ;\n"
-                          "  skos:prefLabel \"ObneyAI Workshop Ontology\"@en ;\n"
-                          "  dcterms:description \"Three-layer ontology: Failure, Success, Problem Domain\"@en ;\n"
+                          ;; Plain literals — the convention-only @en
+                          ;; is removed per S04. Multi-language titles
+                          ;; for the scheme can be added later via the
+                          ;; same labels-vector machinery if needed.
+                          "  skos:prefLabel " (plain-literal "ObneyAI Workshop Ontology") " ;\n"
+                          "  dcterms:description " (plain-literal "Three-layer ontology: Failure, Success, Problem Domain") " ;\n"
                           "  .\n"))
+        metadata-str (when ontology-metadata
+                       (str "\n# Ontology Header\n"
+                            (ontology-metadata->turtle base-uri ontology-metadata)))
         concepts-str (str "\n# Concepts\n"
                           (str/join "\n" (map concept->turtle concept-list)))]
-    (str prefixes-str "\n" (or scheme-str "") concepts-str)))
+    (str prefixes-str "\n"
+         (or scheme-str "")
+         (or metadata-str "")
+         concepts-str)))
 
 ;; =============================================================================
 ;; Tree Profile Serialization (OWL)
@@ -320,7 +458,13 @@
      - :scope - Filter concepts by scope (:failure, :success, :problem)
      - :include-profiles? - Include tree profiles (default true)
      - :include-experiences? - Include node experiences (default true)
-     - :base-uri - Base URI for the ontology"
+     - :base-uri - Base URI for the ontology
+
+   S04 — when an :ontology/ontology-metadata-recorded event has been
+   emitted for any ontology-id, its title/version/license/creator are
+   surfaced on the exported header (owl:Ontology block). When no such
+   event exists, the legacy ConceptScheme block alone forms the header
+   (its hardcoded @en is removed per S04)."
   [ctx & [{:keys [scope include-profiles? include-experiences? base-uri]
            :or {include-profiles? true
                 include-experiences? true
@@ -329,7 +473,18 @@
         filtered-concepts (if scope
                             (into {} (filter (fn [[_ c]] (= scope (:scope c))) concept-graph))
                             concept-graph)
-        concepts-ttl (concepts->turtle filtered-concepts {:base-uri base-uri})
+        ;; S04 — pull the (first) recorded ontology-metadata to drive
+        ;; the owl:Ontology header. Most consumers record one metadata
+        ;; record per export; if multiple have been recorded against
+        ;; different ontology-ids, the FIRST is surfaced — operators
+        ;; with multi-ontology exports can call concepts->turtle
+        ;; directly with the metadata they want.
+        all-metadata (rmp/project ctx :ontology/ontology-metadata)
+        primary-metadata (some-> all-metadata vals first)
+        concepts-ttl (concepts->turtle filtered-concepts
+                                       (cond-> {:base-uri base-uri}
+                                         primary-metadata
+                                         (assoc :ontology-metadata primary-metadata)))
 
         profiles-ttl (when include-profiles?
                        (let [profiles (rmp/project ctx :ontology/tree-profiles)]

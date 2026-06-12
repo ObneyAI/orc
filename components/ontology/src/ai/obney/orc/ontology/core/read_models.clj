@@ -79,17 +79,28 @@
 (defmethod concepts* :ontology/concept-created
   [state event]
   (assoc state (:uri event)
-         {:uri (:uri event)
-          :id (:concept-id event)
-          :ontology-id (:ontology-id event)
-          :label (:label event)
-          :description (:description event)
-          :scope (:scope event)
-          :broader (set (or (:broader event) []))
-          :narrower #{}
-          :related #{}
-          :indicators (or (:indicators event) [])
-          :created-at (str (:created-at event))}))
+         (cond-> {:uri (:uri event)
+                  :id (:concept-id event)
+                  :ontology-id (:ontology-id event)
+                  :label (:label event)
+                  :description (:description event)
+                  :scope (:scope event)
+                  :broader (set (or (:broader event) []))
+                  :narrower #{}
+                  :related #{}
+                  :indicators (or (:indicators event) [])
+                  :created-at (str (:created-at event))}
+           ;; S04 — representation bundle. Only attach when present so
+           ;; legacy concepts have no phantom nil entries (the test
+           ;; suite explicitly checks `(nil? (:model-guidance c))` etc.
+           ;; on legacy fixtures).
+           (seq (:labels event))      (assoc :labels (vec (:labels event)))
+           (seq (:comments event))    (assoc :comments (vec (:comments event)))
+           (:comment event)           (assoc :comment (:comment event))
+           (seq (:see-also event))    (assoc :see-also (vec (:see-also event)))
+           (:is-defined-by event)     (assoc :is-defined-by (:is-defined-by event))
+           (:model-guidance event)    (assoc :model-guidance (:model-guidance event))
+           (seq (:attributes event))  (assoc :attributes (:attributes event)))))
 
 (defmethod concepts* :ontology/concept-updated
   [state event]
@@ -242,17 +253,28 @@
 (defmethod concepts-by-section* :ontology/concept-created
   [state event]
   (assoc-by-section state (:ontology-id event) (:uri event)
-                    {:uri (:uri event)
-                     :id (:concept-id event)
-                     :ontology-id (:ontology-id event)
-                     :label (:label event)
-                     :description (:description event)
-                     :scope (:scope event)
-                     :broader (set (or (:broader event) []))
-                     :narrower #{}
-                     :related #{}
-                     :indicators (or (:indicators event) [])
-                     :created-at (str (:created-at event))}))
+                    (cond-> {:uri (:uri event)
+                             :id (:concept-id event)
+                             :ontology-id (:ontology-id event)
+                             :label (:label event)
+                             :description (:description event)
+                             :scope (:scope event)
+                             :broader (set (or (:broader event) []))
+                             :narrower #{}
+                             :related #{}
+                             :indicators (or (:indicators event) [])
+                             :created-at (str (:created-at event))}
+                      ;; S04 — ADDITIVE to S02's section-keyed projection.
+                      ;; Same shape as the URI-keyed projection above so
+                      ;; downstream consumers see the same enriched fields
+                      ;; regardless of which projection they consulted.
+                      (seq (:labels event))      (assoc :labels (vec (:labels event)))
+                      (seq (:comments event))    (assoc :comments (vec (:comments event)))
+                      (:comment event)           (assoc :comment (:comment event))
+                      (seq (:see-also event))    (assoc :see-also (vec (:see-also event)))
+                      (:is-defined-by event)     (assoc :is-defined-by (:is-defined-by event))
+                      (:model-guidance event)    (assoc :model-guidance (:model-guidance event))
+                      (seq (:attributes event))  (assoc :attributes (:attributes event)))))
 
 (defmethod concepts-by-section* :ontology/concept-updated
   [state event]
@@ -388,6 +410,60 @@
 (defreadmodel :ontology concepts-by-section
   {:events concept-events, :version 1}
   [state event] (concepts-by-section* state event))
+
+;; =============================================================================
+;; S04 — Ontology-level metadata projection
+;; =============================================================================
+;;
+;; Per-ontology-id metadata header (title / version / license / creator)
+;; that the TTL exporter emits on the `owl:Ontology` block. Each
+;; :ontology/ontology-metadata-recorded event REPLACES the prior state
+;; for that ontology-id (latest-wins). Only the fields the command
+;; supplied land here — the projection NEVER substitutes empty defaults
+;; for absent fields, so the serializer can never accidentally emit
+;; `dcterms:creator ""` from a partial command.
+
+(def ontology-metadata-events
+  "Events that affect the ontology-level metadata read model."
+  #{:ontology/ontology-metadata-recorded})
+
+(defmulti ontology-metadata*
+  "Apply event to ontology-metadata read model.
+   State: {ontology-id -> {:title ... :version ... :license ... :creator ...}}
+   Only the keys present in the event land in the projected map."
+  (fn [_state event] (:event/type event)))
+
+(defmethod ontology-metadata* :default [state _] state)
+
+(defmethod ontology-metadata* :ontology/ontology-metadata-recorded
+  [state event]
+  (assoc state (:ontology-id event)
+         (cond-> {:ontology-id (:ontology-id event)
+                  :recorded-at (str (:recorded-at event))}
+           (:title event)   (assoc :title (:title event))
+           (:version event) (assoc :version (:version event))
+           (:license event) (assoc :license (:license event))
+           (:creator event) (assoc :creator (:creator event)))))
+
+(defn ontology-metadata
+  "Build the ontology-metadata state from a seq of events."
+  [initial-state events]
+  (reduce ontology-metadata* initial-state events))
+
+(defreadmodel :ontology ontology-metadata
+  {:events ontology-metadata-events, :version 1}
+  [state event] (ontology-metadata* state event))
+
+(defn get-ontology-metadata
+  "Return the metadata record for a given ontology-id, or nil if no
+   :ontology/ontology-metadata-recorded event has been emitted for it."
+  [ctx ontology-id]
+  (get (rmp/project ctx :ontology/ontology-metadata) ontology-id))
+
+(defn get-all-ontology-metadata
+  "Return the full {ontology-id -> metadata} map across all ontologies."
+  [ctx]
+  (rmp/project ctx :ontology/ontology-metadata))
 
 ;; =============================================================================
 ;; Tree Profiles Projection

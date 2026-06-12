@@ -299,8 +299,17 @@
 ;; =============================================================================
 
 (defcommand :ontology create-concept
-  "Create a new concept in the ontology."
-  [{{:keys [ontology-id uri label description scope broader indicators]} :command
+  "Create a new concept in the ontology.
+
+   S04 — the optional representation bundle fields (labels, comments,
+   comment, see-also, is-defined-by, model-guidance, attributes) are
+   ADDITIVE and forwarded verbatim. The classic :label / :description
+   single-value path stays the back-compat default; the structured
+   forms enrich the concept when present."
+  [{{:keys [ontology-id uri label description scope broader indicators
+            ;; S04 representation bundle additions
+            labels comments comment see-also is-defined-by model-guidance
+            attributes]} :command
     :keys [event-store]}]
   (let [concept-id (generate-uuid)
         now (now-str)
@@ -310,15 +319,49 @@
        {:type :ontology/concept-created
         :tags #{[:ontology ontology-id]
                 [:concept concept-id]}  ;; Only UUID-based tags allowed
-        :body {:ontology-id ontology-id
-               :concept-id concept-id
-               :uri uri
-               :label label
-               :description description
-               :scope scope-kw
-               :broader (vec (or broader []))
-               :indicators (vec (or indicators []))
-               :created-at now}})]}))
+        :body (cond-> {:ontology-id ontology-id
+                       :concept-id concept-id
+                       :uri uri
+                       :label label
+                       :description description
+                       :scope scope-kw
+                       :broader (vec (or broader []))
+                       :indicators (vec (or indicators []))
+                       :created-at now}
+                ;; Only attach the S04 fields when supplied — preserves
+                ;; today's emitted event-body shape for callers that
+                ;; don't use the bundle.
+                (seq labels)        (assoc :labels (vec labels))
+                (seq comments)      (assoc :comments (vec comments))
+                comment             (assoc :comment comment)
+                (seq see-also)      (assoc :see-also (vec see-also))
+                is-defined-by       (assoc :is-defined-by is-defined-by)
+                model-guidance      (assoc :model-guidance model-guidance)
+                (seq attributes)    (assoc :attributes attributes))})]}))
+
+;; S04 — Ontology-level metadata for the export header.
+;; Per-ontology-id, NOT per-concept. Every annotation field is
+;; OPTIONAL; only the fields the caller supplied land on the event
+;; body so the projection (and downstream serializer) carry only what
+;; was recorded — no defaulted-empty-string artefacts.
+(defcommand :ontology record-ontology-metadata
+  "S04: record (or replace) the ontology-level metadata that appears on
+   the exported TTL's `owl:Ontology` header — title, version, license,
+   creator. Per-ontology-id; the projection retains the latest values
+   per ontology-id. Any field omitted from the command is omitted from
+   the event body."
+  [{{:keys [ontology-id title version license creator]} :command
+    :keys [event-store]}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/ontology-metadata-recorded
+      :tags #{[:ontology ontology-id]}
+      :body (cond-> {:ontology-id ontology-id
+                     :recorded-at (now-str)}
+              title   (assoc :title title)
+              version (assoc :version version)
+              license (assoc :license license)
+              creator (assoc :creator creator))})]})
 
 (defcommand :ontology create-relationship
   "Create a relationship between two concepts."
