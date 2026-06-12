@@ -417,7 +417,7 @@
    - :ai executor uses DSCloj with optional model selection
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
-  [{{:keys [sheet-id node-id executor model fn tools options]} :command
+  [{{:keys [sheet-id node-id executor model fn tools options tool-caller-fn]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)]
     (cond
@@ -446,6 +446,7 @@
                   fn (assoc :fn fn)
                   tools (assoc :tools (vec tools))
                   options (assoc :options options)
+                  tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
                   (:executor node) (assoc :previous-executor (:executor node))
                   (:model node) (assoc :previous-model (:model node))
                   (:fn node) (assoc :previous-fn (:fn node))
