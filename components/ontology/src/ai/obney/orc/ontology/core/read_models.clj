@@ -466,6 +466,74 @@
   (rmp/project ctx :ontology/ontology-metadata))
 
 ;; =============================================================================
+;; S14 — Ontology Specs (ORSD) Projection
+;; =============================================================================
+;;
+;; Per-ontology-id event-sourced contract — purpose, scope, intended-uses,
+;; competency-questions, natural-language-statements, non-functional. The
+;; projection mirrors the Living Descriptions shape exactly: each
+;; :ontology/ontology-spec-recorded event REPLACES :current with the new
+;; body AND APPENDS a versioned history entry. The full revision history
+;; is queryable; revisions never destroy history.
+;;
+;; State shape:
+;;   {<ontology-id> {:current <latest-body>
+;;                   :history [{:body <body> :recorded-at <ts>
+;;                              :event-id <eid>} ...chronological]}}
+
+(def ontology-spec-events
+  "Events that affect the ontology-specs read model. Single event type,
+   append-only — mirrors the descriptions-events idiom."
+  #{:ontology/ontology-spec-recorded})
+
+(defmulti ontology-specs*
+  "Apply an event to the ORSD spec read-model state."
+  (fn [_state event] (:event/type event)))
+
+(defmethod ontology-specs* :default [state _] state)
+
+(defmethod ontology-specs* :ontology/ontology-spec-recorded
+  [state event]
+  (let [ontology-id (:ontology-id event)
+        body (:body event)
+        recorded-at (:recorded-at event)
+        history-entry {:body body
+                       :recorded-at recorded-at
+                       :event-id (:event/id event)}]
+    (-> state
+        (assoc-in [ontology-id :current] body)
+        (update-in [ontology-id :history] (fnil conj []) history-entry))))
+
+(defn ontology-specs
+  "Build the ORSD spec state from a seq of events."
+  [initial-state events]
+  (reduce ontology-specs* initial-state events))
+
+(defreadmodel :ontology ontology-specs
+  {:events ontology-spec-events, :version 1}
+  [state event] (ontology-specs* state event))
+
+(defn get-ontology-spec
+  "Return the CURRENT ORSD spec body for the given ontology-id, or
+   nil if no :ontology/ontology-spec-recorded event has been emitted
+   for it. The body shape is `ontology-spec-body` — every field is
+   optional, so the returned map is whatever the recording caller
+   provided (no defaulted fields)."
+  [ctx ontology-id]
+  (get-in (rmp/project ctx :ontology/ontology-specs)
+          [ontology-id :current]))
+
+(defn get-ontology-spec-history
+  "Return the chronological vector of all ORSD spec revisions ever
+   recorded for the given ontology-id. Each entry carries
+   `{:body :recorded-at :event-id}`. Empty vector when no revisions
+   recorded — never nil, so callers can safely iterate."
+  [ctx ontology-id]
+  (or (get-in (rmp/project ctx :ontology/ontology-specs)
+              [ontology-id :history])
+      []))
+
+;; =============================================================================
 ;; Tree Profiles Projection
 ;; =============================================================================
 ;; Builds per-tree profiles with strengths, weaknesses, problem mappings

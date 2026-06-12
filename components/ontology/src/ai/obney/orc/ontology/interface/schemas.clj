@@ -118,6 +118,32 @@
   [:tuple :uuid :uuid])
 
 ;; =============================================================================
+;; S14 — ORSD (Ontology Requirements Specification Document) body
+;; =============================================================================
+;;
+;; The ontology's requirements contract — purpose, scope, intended-uses,
+;; competency-questions, natural-language-statements, non-functional. All
+;; six fields are OPTIONAL: a spec may start as just CQs (the minimum the
+;; CQ evaluator needs to do anything) and grow as the contract sharpens.
+;;
+;; The map is `{:closed true}` — unknown top-level keys are REJECTED loudly
+;; by the Grain command-processor's Malli gate. This is the contract
+;; discipline call from the grill: no silent garbage in the spec. If a
+;; consumer wants to extend the contract, they widen this schema in a
+;; reviewable change; they don't sneak keys past it via an open-map.
+
+(def ontology-spec-body
+  "S14 — the ORSD body. Mirrors the grill's spec shape verbatim. All
+   fields optional; closed against unknown top-level keys."
+  [:map {:closed true}
+   [:purpose                     {:optional true} :string]
+   [:scope                       {:optional true} :string]
+   [:intended-uses               {:optional true} [:vector :string]]
+   [:competency-questions        {:optional true} [:vector :string]]
+   [:natural-language-statements {:optional true} [:vector :string]]
+   [:non-functional              {:optional true} [:map-of :keyword :any]]])
+
+;; =============================================================================
 ;; C-2b-2 — Reranker output shape
 ;; =============================================================================
 
@@ -219,6 +245,19 @@
     [:version     {:optional true} :string]
     [:license     {:optional true} :string]
     [:creator     {:optional true} :string]
+    [:recorded-at :string]]
+
+   ;; S14 — ORSD spec recorded for an ontology-id. Mirrors the
+   ;; descriptions-event pattern: append-only, projection holds
+   ;; :current + :history per ontology-id, every revision is
+   ;; retrievable. `:body` is the closed-map ontology-spec-body —
+   ;; the event-store's append-time validator rejects unknown
+   ;; keys here too (defense in depth: the command-processor's
+   ;; pre-handler gate is the primary catch).
+   :ontology/ontology-spec-recorded
+   [:map
+    [:ontology-id :uuid]
+    [:body        ontology-spec-body]
     [:recorded-at :string]]
 
    :ontology/relationship-created
@@ -732,6 +771,20 @@
     [:version     {:optional true} :string]
     [:license     {:optional true} :string]
     [:creator     {:optional true} :string]]
+
+   ;; S14 — record an ORSD spec revision for an ontology-id.
+   ;; Append-only — every revision is preserved in the projection's
+   ;; :history vector while :current tracks the latest body. The spec
+   ;; itself is carried as :body — same descriptions-pattern shape as
+   ;; :ontology/record-tree-description. All ORSD fields inside :body
+   ;; are optional (a spec can start as just CQs and grow); unknown
+   ;; keys inside :body are REJECTED by `ontology-spec-body`'s
+   ;; `{:closed true}` (no silent garbage in the contract — the
+   ;; grill's discipline call).
+   :ontology/record-ontology-spec
+   [:map
+    [:ontology-id :uuid]
+    [:body        ontology-spec-body]]
 
    :ontology/create-relationship
    [:map

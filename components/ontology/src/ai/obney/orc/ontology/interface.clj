@@ -166,6 +166,25 @@
   [ctx granularity target-id]
   (rm/get-description-history ctx granularity target-id))
 
+(defn get-ontology-spec
+  "S14: return the CURRENT ORSD spec body for the given ontology-id,
+   or nil if no `:ontology/record-ontology-spec` has been dispatched
+   for it. The body shape is `ontology-spec-body` from schemas — every
+   field optional, no defaulted-empty artefacts. Used by the S15 CQ
+   evaluator runner (and S18's discovery-context assembler) to read
+   the spec from projection rather than re-pass it as a parameter."
+  [ctx ontology-id]
+  (rm/get-ontology-spec ctx ontology-id))
+
+(defn get-ontology-spec-history
+  "S14: return the chronological history of every ORSD spec revision
+   recorded for the given ontology-id. Each entry is
+   `{:body :recorded-at :event-id}`. Empty vector when none recorded
+   — never nil, so callers can safely iterate. Append-only — every
+   revision is preserved (revisions never destroy history)."
+  [ctx ontology-id]
+  (rm/get-ontology-spec-history ctx ontology-id))
+
 (defn seed-baseline-corpus!
   "C-Baseline: emit the baseline seed corpus that ships with the ontology
    component (~45 hand-authored descriptions covering common node-types,

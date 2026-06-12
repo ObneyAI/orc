@@ -339,6 +339,33 @@
                 model-guidance      (assoc :model-guidance model-guidance)
                 (seq attributes)    (assoc :attributes attributes))})]}))
 
+;; S14 — record an ORSD spec revision for an ontology-id. Append-only,
+;; mirroring the descriptions-event pattern:
+;;   command (with body)
+;;     → :ontology/ontology-spec-recorded event tagged [:ontology id]
+;;     → ontology-specs projection holds :current + :history per id.
+;; The :body schema (`ontology-spec-body`) is closed against unknown
+;; top-level keys; the Grain command-processor's pre-handler Malli gate
+;; rejects garbage shapes with ::anom/incorrect before this handler
+;; ever runs (no defensive parsing here).
+(defcommand :ontology record-ontology-spec
+  "S14: record an ORSD spec revision for the given ontology-id. The
+   spec is the ontology's requirements contract — purpose, scope,
+   intended-uses, competency-questions, natural-language-statements,
+   non-functional. All fields are optional (a spec can start as just
+   CQs and grow); unknown extra keys in `:body` are rejected by the
+   command schema's closed-map. Every invocation APPENDS — the
+   ontology-specs projection retains the latest body as :current and
+   the full chronological revision history as :history."
+  [{{:keys [ontology-id body]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/ontology-spec-recorded
+      :tags #{[:ontology ontology-id]}
+      :body {:ontology-id ontology-id
+             :body body
+             :recorded-at (now-str)}})]})
+
 ;; S04 — Ontology-level metadata for the export header.
 ;; Per-ontology-id, NOT per-concept. Every annotation field is
 ;; OPTIONAL; only the fields the caller supplied land on the event
