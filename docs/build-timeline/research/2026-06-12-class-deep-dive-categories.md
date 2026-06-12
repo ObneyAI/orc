@@ -140,3 +140,99 @@ value filtering, existence checks, optional joins, union).
 - ORSD exact field-set distillation (Cat 3) from the LOT lessons
 - SHACL fork recommendation shaping (Cat 1) for the grill
 - Sequence/QUDT prompt-guidance wording (Cat 5) for discovery seeds
+
+---
+
+# Agent Findings (2026-06-12, five parallel digs)
+
+## Cat 1 — SHACL: agent recommends fork (b), source-of-truth interpreted internally
+
+- Construct catalog from the four TTL artifacts: NodeShape/targetClass,
+  PropertyShape (path, min/maxCount, maxExclusive), severity/message/
+  deactivated, sh:not, qualifiedValueShape+qualifiedMinCount, sh:sparql
+  (+HAVING aggregates), sh:TripleRule + sh:condition, sh:SPARQLFunction.
+- Lint expressibility: 3/8 clean (disjointness, functional-double,
+  dangling endpoints), 3/8 via sh:sparql (universal-without-existential,
+  language-tag misuse, closure presence), 2/8 inexpressible in standard
+  SHACL (naming conventions, roles-vs-classes) — those remain :code-only.
+- Overlap audit: Malli validates EVENT SHAPE at write time; SHACL-style
+  lints validate GRAPH SEMANTICS; anti-recency validates description-body
+  evolution. Three orthogonal layers, confirmed non-overlapping.
+- Agent's fork verdict: **(b)** — interpret a core subset internally
+  (~500-1000 LOC) so consumers can author their own shapes our builder
+  runs; phase the subset (counts/severity/message/deactivated/not →
+  qualified shapes → sh:sparql).
+- **Main-session refinement for the grill:** an EDN-SHACL bridge —
+  shapes authored as SHACL-shaped EDN (Malli-validatable, trivially
+  interpretable in-JVM, no TTL parser dependency), exported as real SHACL
+  TTL; TTL-shape ingestion later. Bridges (a) and (b).
+
+## Cat 2 — Derived edges: per-edge-class verdict
+
+- concepts* projection is stateless between events; full transitivity at
+  projection time would need a pending-chain index + breaks
+  watermark-incrementality under out-of-order arrivals.
+- BFS already does traversal-time closure (bidirectional edge mirroring,
+  decay-bounded) — transitive hierarchy is FREE at retrieval.
+- Verdict: **transitive hierarchy → traversal-time (status quo); binary
+  chains (P∘Q→R) → query-time synthesis in a post-BFS step; audited
+  learned rules → event-time `:ontology/derived-edge-created` carrying
+  `:source-edges` for cascade retraction.** Lazy projection-time
+  materialization only if/when invalidation cost demands it.
+
+## Cat 3+4 — ORSD/CQ + alignment: one critical discovery
+
+- **ORSD/CQ: zero new machinery.** `record-ontology-spec` +
+  `record-cq-evaluation` mirror the descriptions pattern exactly
+  (command → tagged event → current+history projection). Schemas slot
+  into interface/schemas.clj alongside existing description events.
+- **CRITICAL — cross-section scoping is inconsistent across retrieval
+  signals (NEW HIGH GAP ROW):** the embedding + ColBERT stages filter by
+  ontology-id, but **graph BFS does not** — `expand-concept-neighborhood`
+  walks the merged concepts graph across ALL sections. Two consequences:
+  (1) multi-tenant isolation leak — section A's BFS can wander into
+  section B; (2) cross-section results from BFS lose RRF fusion because
+  the other signals filtered them out. Alignment sections (D3) are
+  feasible TODAY only by explicitly passing `:ontology-ids
+  [primary alignment]`; discovery ("what is this equivalent to?") needs
+  either that convention or a `query-with-alignments` wrapper. The BFS
+  scoping fix is load-bearing regardless of alignment work.
+- Check-before-mint hook located: evolutionary_builder.clj graph-merge
+  phase (post entity-resolution, ~line 730) — equivalence check against
+  `{:ontology-ids all-section-ids}` then either reuse canonical URI +
+  emit alignment event, or mint.
+- **QUDT gap confirmed concretely:** column/value extraction detects only
+  :integer/:number/:boolean/:string; units appear nowhere (sql sheet even
+  regexes a FIELD NAME "unitid"); serialization emits bare xsd types.
+
+## Cat 5 — Representation gap table (schema additions bundle)
+
+| Need | Status today |
+|---|---|
+| Language-tagged, multiple labels | CONVENTION-ONLY (single :label string; export hardcodes @en) |
+| Datatyped literals on concept attributes | PARTIAL (metrics typed; no general attribute datatypes) |
+| Quantity + unit (QUDT-style) | ABSENT |
+| Ordered sequences (follows/immediatelyFollows) | ABSENT (no order field; pattern-only fix possible) |
+| Edge-level metadata | PARTIAL-NATIVE (`:properties` open map EXISTS on relationship events — but is never serialized to TTL, and confidence/temporal aren't schema'd fields) |
+| Annotations (comment vs definition, seeAlso, isDefinedBy, ontology-level metadata) | CONVENTION-ONLY/ABSENT |
+| Disjointness + property characteristics as axioms | ABSENT |
+| sameAs/equivalentClass assertions | ABSENT (canonical-uri-assigned is adjacent, not equivalent) |
+| Nested anonymous substructures | HAVE (inlined maps — and event-sourced edges sidestep reification entirely) |
+
+Export round-trip is the weak face: `:properties` never serialized,
+no language tags, no axioms, scheme metadata hardcoded.
+
+## Cat 6 — SPARQL↔retrieval capability map
+
+- HAVE: triple match, UNION (RRF/set union), VALUES, DISTINCT/LIMIT/
+  OFFSET/ORDER, aggregates + GROUP BY/HAVING (clojure-side), composition,
+  DESCRIBE (BFS neighborhood), CONSTRUCT (graph/TTL export).
+- PARTIAL: FILTER (no regex helper), OPTIONAL (procedural), property
+  paths (BFS + predicate enumeration, no syntax), ASK (no dedicated fn).
+- **MISSING: closed-world negation (NOT EXISTS)** — blocks CQ shapes like
+  "vegan recipes" / "trees with no documented weaknesses".
+- Posture for CQ evaluation: **push negation + complex joins to the LLM
+  judge over fetched neighborhoods** (the judge IS our closed-world
+  evaluator), add two lightweight helpers (`filter-by-label-pattern`,
+  `absent-in-graph?`), and keep export-to-triplestore (D8) for genuinely
+  heavy transitive-negation workloads.
