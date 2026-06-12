@@ -840,20 +840,34 @@
   "Fuse graph/embedding/colbert result-lists via RRF and enrich the top `limit` with
    concept metadata + per-signal ranks. The shared fusion core of hybrid-search (one
    query) and hybrid-search-batch (per query). Input result maps carry their native
-   score keys: graph/colbert use :score, embedding uses :similarity."
-  [{:keys [graph-results embedding-results colbert-results weights limit signals]
+   score keys: graph/colbert use :score, embedding uses :similarity.
+
+   S01 (per-source cap): if `:per-source-cap` is provided, each signal's batch is
+   truncated to AT MOST that many candidates BEFORE RRF runs. The cap is a fusion
+   concern only — its purpose is to prevent one over-expanding signal (typically
+   graph BFS) from crowding the fused candidate pool. Defensively re-applied here
+   even though the call sites already constrain their per-signal fetches: a future
+   signal-source could over-return, and the defense-in-depth keeps the property
+   load-bearing at the fusion seam."
+  [{:keys [graph-results embedding-results colbert-results weights limit signals
+           per-source-cap]
     :or {weights {:graph 1.0 :embedding 1.0 :colbert 1.0} limit 10}}]
-  (let [;; Prepare batches for RRF — each batch is [{:uri :score} ...]
+  (let [cap-fn (if per-source-cap
+                 (fn [coll] (vec (take per-source-cap coll)))
+                 identity)
+        ;; Prepare batches for RRF — each batch is [{:uri :score} ...]
         graph-batch (when (seq graph-results)
-                      (mapv (fn [{:keys [uri score]}]
-                              {:uri uri :score (* (:graph weights 1.0) score)})
-                            graph-results))
+                      (cap-fn
+                       (mapv (fn [{:keys [uri score]}]
+                               {:uri uri :score (* (:graph weights 1.0) score)})
+                             graph-results)))
         embedding-batch (when (seq embedding-results)
-                          (mapv (fn [{:keys [uri similarity]}]
-                                  {:uri uri :score (* (:embedding weights 1.0) similarity)})
-                                embedding-results))
+                          (cap-fn
+                           (mapv (fn [{:keys [uri similarity]}]
+                                   {:uri uri :score (* (:embedding weights 1.0) similarity)})
+                                 embedding-results)))
         ;; ColBERT batch is already formatted with :uri :score
-        colbert-batch (when (seq colbert-results) colbert-results)
+        colbert-batch (when (seq colbert-results) (cap-fn colbert-results))
         batches (filterv seq [graph-batch embedding-batch colbert-batch])
         merged (when (seq batches)
                  (graph/merge-batches batches :method "rrf"))
@@ -886,6 +900,20 @@
                      (seq embedding-batch) (conj :embedding)
                      (seq colbert-batch) (conj :colbert))}))
 
+(def default-per-source-cap-factor
+  "Default per-signal candidate cap factor. The effective cap is
+   (* default-per-source-cap-factor limit), so a call with the default
+   limit=10 gets a per-signal cap of 20 — preserving the implicit
+   `(* 2 limit)` clamp the code had pre-S01. Override via the
+   `:per-source-cap` option per query.
+
+   The cap controls how many candidates EACH signal contributes to the
+   fused candidate pool BEFORE RRF runs. Without it, an over-expanding
+   signal (typically graph BFS, which can fan out cheaply) can crowd
+   the fused pool with low-rank candidates that bury embedding/ColBERT
+   single-signal top hits."
+  2)
+
 (defn hybrid-search
   "Hybrid search combining graph-based BFS, embedding similarity, and ColBERT via RRF.
 
@@ -915,6 +943,15 @@
                   (default {:graph 1.0 :embedding 1.0 :colbert 1.0})
        :signals - Set of enabled signals #{:graph :embedding :colbert}
                   (default: all signals enabled)
+       :per-source-cap - S01: max candidates each signal contributes
+                         to the fused pool BEFORE RRF runs. Default is
+                         (* default-per-source-cap-factor limit) = 2*limit,
+                         which preserves pre-S01 implicit-clamp behavior.
+                         Lower the cap to prevent one over-expanding
+                         signal (typically graph BFS) from drowning the
+                         other signals' top hits. The cap has no effect
+                         on single-signal queries — fusion has no peers
+                         to balance against.
 
    Returns:
      {:results [{:uri :score :graph-rank :embedding-rank :colbert-rank :label :description}]
@@ -924,7 +961,7 @@
       :method \"rrf\"
       :batches-used [:graph :embedding :colbert]}"
   [ctx {:keys [seed-uris query-text scope ontology-id ontology-ids limit min-similarity max-depth decay
-                       colbert-index-id weights signals]
+                       colbert-index-id weights signals per-source-cap]
                 :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
                      weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
                      signals #{:graph :embedding :colbert}}}]
@@ -932,6 +969,31 @@
         graph-enabled? (contains? signals :graph)
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
+
+        ;; S01: count the signals that would actually contribute. The cap
+        ;; is a fusion concern only — when ≤1 signal can contribute, fusion
+        ;; has no peers to balance, so the cap is a no-op (use the back-compat
+        ;; 2*limit fetch size and skip the defensive cap in fuse-and-enrich).
+        active-signal-count (cond-> 0
+                              (and graph-enabled? (seq seed-uris)) inc
+                              (and embedding-enabled? query-text) inc
+                              (and colbert-enabled? query-text colbert-index-id) inc)
+        multi-signal? (> active-signal-count 1)
+
+        ;; S01: resolve the per-signal cap (default = 2 * limit, matching
+        ;; the pre-S01 implicit clamp). This becomes the upstream fetch size
+        ;; for each signal, so we don't request more than fusion can use.
+        ;; fuse-and-enrich re-applies it as a defensive secondary cap (also
+        ;; only when multi-signal — single-signal queries are byte-identical
+        ;; to pre-S01 regardless of :per-source-cap value).
+        default-cap (* default-per-source-cap-factor limit)
+        cap (if multi-signal?
+              (or per-source-cap default-cap)
+              ;; Single-signal: pretend no cap was set (use back-compat fetch
+              ;; size 2*limit). The :per-source-cap option is a fusion
+              ;; concern; it must not change fetch sizes when there's
+              ;; nothing to fuse against.
+              default-cap)
 
         ;; Graph-based BFS results (when enabled and seeds provided).
         ;; S02: when ontology-id(s) provided + ctx has event-store, the
@@ -945,7 +1007,7 @@
                                                           :ctx ctx
                                                           :ontology-id ontology-id
                                                           :ontology-ids ontology-ids)
-                             (take (* 2 limit))))  ;; Get more for fusion
+                             (take cap)))
 
         ;; Embedding-based results (when enabled and query provided)
         embedding-results (when (and embedding-enabled? query-text)
@@ -953,7 +1015,7 @@
                                                        :scope scope
                                                        :ontology-id ontology-id
                                                        :ontology-ids ontology-ids
-                                                       :limit (* 2 limit)
+                                                       :limit cap
                                                        :min-similarity min-similarity))
 
         ;; ColBERT results (when enabled, query provided, and index available).
@@ -964,16 +1026,21 @@
         colbert-results (when (and colbert-enabled? query-text colbert-index-id)
                           (colbert-search-concepts ctx query-text
                                                     :colbert-index-id colbert-index-id
-                                                    :limit (* 2 limit)
+                                                    :limit cap
                                                     :weight (:colbert weights 1.0)))]
 
     ;; RRF-fuse the three signals + enrich (shared with hybrid-search-batch).
+    ;; Pass per-source-cap only when multi-signal — single-signal fusion
+    ;; (degenerate; there is no fusion to do) sees no cap. The defensive
+    ;; cap in fuse-and-enrich is the safety net if a future signal source
+    ;; ever over-returns past the upstream fetch limit.
     (fuse-and-enrich {:graph-results graph-results
                       :embedding-results embedding-results
                       :colbert-results colbert-results
                       :weights weights
                       :limit limit
-                      :signals signals})))
+                      :signals signals
+                      :per-source-cap (when multi-signal? cap)})))
 
 (defn hybrid-search-batch
   "Batched hybrid-search over MANY query-texts. The ColBERT signal is computed in ONE
@@ -992,7 +1059,7 @@
        :query-texts - Vector of natural-language queries (instead of :query-text)
        :seed-uris   - shared graph seeds applied to every query (usually nil)"
   [ctx {:keys [query-texts seed-uris scope ontology-id ontology-ids limit min-similarity
-               max-depth decay colbert-index-id weights signals]
+               max-depth decay colbert-index-id weights signals per-source-cap]
         :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
              weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
              signals #{:graph :embedding :colbert}}}]
@@ -1000,11 +1067,26 @@
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
         query-texts (vec query-texts)
+        ;; S01: same multi-signal detection + cap resolution as the
+        ;; single-query path. The graph signal's contribution-eligibility
+        ;; depends only on seed-uris (same for every query); the embedding
+        ;; signal contributes when query-text is truthy (every batched
+        ;; query has one); ColBERT contributes when its index-id is
+        ;; provided. Same conditional cap semantics.
+        active-signal-count (cond-> 0
+                              (and graph-enabled? (seq seed-uris)) inc
+                              embedding-enabled? inc
+                              (and colbert-enabled? colbert-index-id) inc)
+        multi-signal? (> active-signal-count 1)
+        default-cap (* default-per-source-cap-factor limit)
+        cap (if multi-signal?
+              (or per-source-cap default-cap)
+              default-cap)
         ;; ColBERT — ONE batched pass for ALL queries (index loaded once, reused).
         colbert-batches (when (and colbert-enabled? (seq query-texts) colbert-index-id)
                           (colbert-search-concepts-batch ctx query-texts
                                                          :colbert-index-id colbert-index-id
-                                                         :limit (* 2 limit)
+                                                         :limit cap
                                                          :weight (:colbert weights 1.0)))]
     (mapv (fn [i query-text]
             (let [graph-results (when (and graph-enabled? (seq seed-uris))
@@ -1014,13 +1096,13 @@
                                                                     :ctx ctx
                                                                     :ontology-id ontology-id
                                                                     :ontology-ids ontology-ids)
-                                       (take (* 2 limit))))
+                                       (take cap)))
                   embedding-results (when (and embedding-enabled? query-text)
                                       (semantic-search-concepts ctx query-text
                                                                  :scope scope
                                                                  :ontology-id ontology-id
                                                                  :ontology-ids ontology-ids
-                                                                 :limit (* 2 limit)
+                                                                 :limit cap
                                                                  :min-similarity min-similarity))
                   colbert-results (when colbert-batches (nth colbert-batches i nil))]
               (fuse-and-enrich {:graph-results graph-results
@@ -1028,7 +1110,8 @@
                                 :colbert-results colbert-results
                                 :weights weights
                                 :limit limit
-                                :signals signals})))
+                                :signals signals
+                                :per-source-cap (when multi-signal? cap)})))
           (range)
           query-texts)))
 

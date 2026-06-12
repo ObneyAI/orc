@@ -29,6 +29,10 @@
             [ai.obney.orc.ontology.core.commands] ;; Register defcommand handlers for tree profiles
             [ai.obney.orc.ontology.core.evolutionary-commands] ;; Register defcommand handlers for evolutionary builder
             [ai.obney.orc.ontology.core.todo-processors :as todo-processors] ;; Register todo processors for auto-learning
+            ;; S10 — lint registry + EDN-SHACL interpreter
+            [ai.obney.orc.ontology.core.lints.read-models] ;; Register lint read-models
+            [ai.obney.orc.ontology.core.lints.commands]    ;; Register register-shape + run-validation
+            [ai.obney.orc.ontology.core.lints.queries]     ;; Register lint queries
             [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.ontology.core.task-classifier :as task-classifier]
             [ai.obney.orc.ontology.core.seeds :as seeds]
@@ -1125,6 +1129,13 @@
                            IS the ColBERT-signal's scope)
        :weights          - {:graph N :embedding N :colbert N} for RRF
        :signals          - Set of signals to enable (default all three)
+       :per-source-cap   - S01: max candidates each signal contributes to
+                           the fused pool BEFORE RRF runs. Default is
+                           (* 2 limit) — preserves the pre-S01 implicit
+                           clamp. Lower the cap to prevent one
+                           over-expanding signal (typically graph BFS)
+                           from drowning the other signals' top hits.
+                           No effect on single-signal queries.
 
    S02: when scoping is set, the graph signal expands an event-store-backed
    graph restricted to the requested section(s) — closing the BFS isolation
