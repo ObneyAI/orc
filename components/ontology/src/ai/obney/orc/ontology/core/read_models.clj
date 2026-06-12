@@ -339,9 +339,17 @@
                     (update-by-section ont-id target-uri
                                        (fn [c] (update c :composed-by (fnil conj #{}) source-uri))))
 
-                ;; Other predicates → store as related on source side
-                (update-by-section ont-id source-uri
-                                   (fn [c] (update c :related (fnil conj #{}) target-uri)))))
+                ;; Other predicates (incl. S05 sequence-convention
+                ;; predicates "immediately-follows" / "follows", plus
+                ;; any custom predicate the caller uses) → store as
+                ;; related on the source side, with both endpoints
+                ;; bidirectionally edged at graph-build time by
+                ;; `concepts->graph`. This is the same default the
+                ;; URI-keyed projection applies — keeps the two
+                ;; projections shape-consistent for unknown predicates.
+                (-> acc
+                    (update-by-section ont-id source-uri
+                                       (fn [c] (update c :related (fnil conj #{}) target-uri))))))
             state shared)))
 
 (defmethod concepts-by-section* :evolutionary/concepts-extracted

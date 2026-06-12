@@ -66,7 +66,17 @@
    ;; S04 — `orc:` carries ORC-native annotations that have no
    ;; standard RDF predicate (model-guidance is an LLM-facing usage
    ;; hint with no W3C equivalent).
-   "orc" "http://obney.ai/workshop/ontology/orc#"})
+   "orc" "http://obney.ai/workshop/ontology/orc#"
+   ;; S05 — QUDT for quantity+unit values. Emitted as a blank-node
+   ;; pattern: `[ a qudt:QuantityValue ; qudt:numericValue v ;
+   ;; qudt:unit "u" ]`. We render the unit as a plain string literal
+   ;; on `qudt:unit` rather than a QUDT unit-IRI; canonical QUDT uses
+   ;; `unit:KiloGM` style IRIs, but that requires a unit registry
+   ;; consumers don't have yet. The slice's requirement is just that
+   ;; the unit appears adjacent to the value with a clear QUDT
+   ;; vocabulary — string literals satisfy that without forcing a
+   ;; registry decision.
+   "qudt" "http://qudt.org/schema/qudt/"})
 
 (def domain-prefixes
   "Prefixes for ontology domain namespaces."
@@ -119,12 +129,38 @@
         prefix (or ns "xsd")]
     (str "\"" value "\"^^" prefix ":" nm)))
 
+(defn- qudt-quantity->turtle
+  "S05 — emit the QUDT blank-node block for a `{:value :unit}` (or
+   `{:value :unit :datatype}`) attribute value. Compact one-line form
+   so multiple per-concept quantity attributes stay readable.
+
+   The numeric value uses the supplied `:datatype` when present
+   (typed literal `\"v\"^^xsd:<t>`), otherwise emits the raw value
+   without quoting — Turtle accepts unquoted numerics directly.
+   This matches how typical QUDT datasets render the predicate."
+  [{:keys [value unit datatype]}]
+  (let [val-lit (if datatype
+                  (typed-literal value datatype)
+                  (str value))]
+    (str "[ a qudt:QuantityValue ; "
+         "qudt:numericValue " val-lit " ; "
+         "qudt:unit " (plain-literal unit) " ]")))
+
 (defn- attribute-value->turtle
-  "Serialize a single concept-attribute value. The bare-value back-compat
-   path emits a plain literal; the structured `{:value :datatype}` form
-   emits a typed literal."
+  "Serialize a single concept-attribute value.
+
+   The branch order is load-bearing — a value carrying BOTH `:unit`
+   AND `:datatype` must route through the S05 QUDT path (not the S04
+   typed-literal path), so the quantity check runs FIRST:
+
+   - `{:value :unit (:datatype?)}`  → S05 qudt:QuantityValue blank node
+   - `{:value :datatype}` (no :unit)→ S04 typed literal
+   - bare scalar                    → plain literal"
   [v]
   (cond
+    (and (map? v) (:unit v) (contains? v :value))
+    (qudt-quantity->turtle v)
+
     (and (map? v) (contains? v :datatype) (contains? v :value))
     (typed-literal (:value v) (:datatype v))
 
@@ -142,8 +178,10 @@
      :see-also       → emits rdfs:seeAlso (URIs)
      :is-defined-by  → emits rdfs:isDefinedBy (URI)
      :model-guidance → emits orc:modelGuidance (plain literal)
-     :attributes     → emits orc:<key> with typed literal where the value
-                        is `{:value :datatype}`, plain literal otherwise
+     :attributes     → emits orc:<key> with:
+                        - QUDT blank node when value is `{:value :unit (:datatype?)}`  (S05)
+                        - typed literal  when value is `{:value :datatype}` (no :unit) (S04)
+                        - plain literal  for bare scalars                              (back-compat)
 
    The legacy single-value `:label` keeps emitting `skos:prefLabel` —
    but plainly (no `@en` tag) unless the concept also carries a

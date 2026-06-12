@@ -220,10 +220,15 @@
     [:see-also       {:optional true} [:vector :string]]
     [:is-defined-by  {:optional true} :string]
     [:model-guidance {:optional true} :string]
-    ;; Datatyped attributes — each value may be either a bare value or
-    ;; the structured {:value :datatype} shape. Map-of keyword :any
-    ;; keeps the bare-value back-compat path open; the projection +
-    ;; serializer branch on shape.
+    ;; Datatyped + quantity attributes. Each value may be a bare value,
+    ;; the S04 `{:value :datatype}` typed shape, OR the S05
+    ;; `{:value :unit (:datatype?)}` quantity shape (unit is a string;
+    ;; datatype is optional and rides through to the QUDT
+    ;; numericValue literal when present). Map-of keyword :any keeps
+    ;; the bare-value back-compat path open; the projection +
+    ;; serializer branch on shape — presence of :unit triggers the
+    ;; QUDT export branch, presence of :datatype alone (no :unit)
+    ;; triggers the typed-literal branch, otherwise plain literal.
     [:attributes     {:optional true} [:map-of :keyword :any]]
     [:created-at :string]]
 

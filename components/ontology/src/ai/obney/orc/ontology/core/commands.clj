@@ -305,7 +305,14 @@
    comment, see-also, is-defined-by, model-guidance, attributes) are
    ADDITIVE and forwarded verbatim. The classic :label / :description
    single-value path stays the back-compat default; the structured
-   forms enrich the concept when present."
+   forms enrich the concept when present.
+
+   S05 — `:attributes` values may carry the new quantity+unit shape
+   `{:value v :unit \"u\"}` (with optional `:datatype dt` riding
+   alongside). The presence of `:unit` on an attribute value selects
+   the QUDT-style serialization path on export. Bare scalars and
+   S04 `{:value :datatype}` typed values continue to flow through
+   unchanged."
   [{{:keys [ontology-id uri label description scope broader indicators
             ;; S04 representation bundle additions
             labels comments comment see-also is-defined-by model-guidance
@@ -391,7 +398,26 @@
               creator (assoc :creator creator))})]})
 
 (defcommand :ontology create-relationship
-  "Create a relationship between two concepts."
+  "Create a relationship between two concepts.
+
+   The `:predicate` is an open string — standard SKOS predicates
+   (`\"skos:broader\"` / `\"skos:narrower\"` / `\"skos:related\"`)
+   take the typed-edge paths in the projections; behavioral predicates
+   (`\"behavior:composes-into\"`) take the bridge path; ANY OTHER
+   predicate is stored as a `:related`-shaped edge on the source side
+   and bidirectionally followed by the graph builder at expansion
+   time.
+
+   S05 — ordered-sequence convention. Order-dependent knowledge
+   (recipe steps, procedure stages, narrative arcs) is encoded by
+   emitting one `:ontology/create-relationship` per consecutive pair
+   with predicate `\"immediately-follows\"`. Multi-hop \"X follows Y\"
+   answers via the standard BFS expansion: an `immediately-follows`
+   chain of length N is traversable from the head at BFS depth N.
+   The transitive `\"follows\"` predicate is the planned extension
+   (S07 will add the transitive-marker auto-closure mechanism); S05
+   establishes only the convention so callers can start writing
+   sequences today."
   [{{:keys [source-uri target-uri predicate properties]} :command
     :keys [event-store]}]
   (let [relationship-id (generate-uuid)
