@@ -487,6 +487,140 @@
 ;; Full Export
 ;; =============================================================================
 
+;; =============================================================================
+;; S07 — Axiom Serialization (OWL)
+;; =============================================================================
+;;
+;; Emit each of the four axiom families as the correct OWL construct.
+;; The projection is per-ontology — so the emitted TTL is keyed off the
+;; collapsed axiom-map (across all ontology-ids).
+;;
+;; CRITICAL non-goal reminder: this code emits axiom triples AS-IS. It
+;; does NOT consult concept state, does NOT cross-check for OWL DL
+;; consistency, does NOT silently rewrite anything. Lints (S11) catch
+;; inconsistencies at validation time.
+
+(defn- uri->turtle-ref
+  "Render a URI as a Turtle prefixed-name. Falls back to `ex:` prefix
+   when the URI has no recognizable prefix."
+  [uri]
+  (let [p (or (uri->prefix uri) "ex")
+        n (uri->local-name uri)]
+    (str p ":" n)))
+
+(defn- disjointness->turtle
+  "Emit one block per class with the OTHERS as `owl:disjointWith` targets.
+   The projection is already symmetric, so each class carries the full
+   set; the emit dedups same-direction triples by walking the URIs and
+   emitting only when the source URI sorts BEFORE the target. (Symmetric
+   semantics: A disjointWith B implies B disjointWith A — but a single
+   directed triple suffices in TTL.)"
+  [disjointness-map]
+  (str/join "\n"
+            (for [[src others] disjointness-map
+                  target others
+                  :when (neg? (compare src target))]
+              (str (uri->turtle-ref src)
+                   " owl:disjointWith "
+                   (uri->turtle-ref target)
+                   " ."))))
+
+(defn- characteristics->turtle
+  "Emit each predicate's characteristic flags as type declarations."
+  [characteristics-map inverse-of-map]
+  (let [char->owl {:functional "owl:FunctionalProperty"
+                  :transitive "owl:TransitiveProperty"
+                  :symmetric  "owl:SymmetricProperty"}
+        ;; Each predicate may carry multiple flags AND/OR an inverse-of
+        ;; pairing. We emit one block per predicate with all relevant
+        ;; triples coalesced.
+        all-preds (set (concat (keys characteristics-map) (keys inverse-of-map)))]
+    (str/join "\n"
+              (for [pred all-preds
+                    :let [flags (get characteristics-map pred #{})
+                          inv (get inverse-of-map pred)
+                          type-decls (keep char->owl flags)
+                          ;; Build one block per predicate.
+                          ;; rdf:type triples collapse onto one line
+                          ;; via the Turtle `,` shortcut when flags are
+                          ;; > 1; we keep it simple and emit one type
+                          ;; line per declaration.
+                          lines (cond-> []
+                                  (seq type-decls)
+                                  (into (map #(str (uri->turtle-ref pred) " a " % " .")
+                                             type-decls))
+                                  inv
+                                  (conj (str (uri->turtle-ref pred)
+                                             " owl:inverseOf "
+                                             (uri->turtle-ref inv) " .")))]
+                    :when (seq lines)]
+                (str/join "\n" lines)))))
+
+(defn- sub-property-of->turtle
+  "Emit `rdfs:subPropertyOf` triples — one per sub→super mapping."
+  [sub-property-of-map]
+  (str/join "\n"
+            (for [[sub super] sub-property-of-map]
+              (str (uri->turtle-ref sub)
+                   " rdfs:subPropertyOf "
+                   (uri->turtle-ref super)
+                   " ."))))
+
+(defn- chain->turtle
+  "Emit one `owl:propertyChainAxiom` triple per derived predicate, with
+   the chain rendered as a Turtle list `( P Q ... )`."
+  [chains-map]
+  (str/join "\n"
+            (for [[derived chain] chains-map]
+              (str (uri->turtle-ref derived)
+                   " owl:propertyChainAxiom ( "
+                   (str/join " " (map uri->turtle-ref chain))
+                   " ) ."))))
+
+(defn axioms->turtle
+  "S07 — serialize the per-ontology axiom projection ({:disjointness ...
+   :characteristics ... :inverse-of ... :sub-property-of ... :chains ...})
+   into OWL Turtle. Each axiom family emits as the correct OWL construct.
+
+   When the input is the full {ontology-id -> axiom-map}, all ontologies
+   are collapsed into one TTL block (consumers wanting per-ontology
+   separation should call this with a single ontology's axiom-map)."
+  [axioms-input]
+  (let [;; Accept either a per-ontology axiom map or the full
+        ;; {ontology-id -> axiom-map} shape.
+        ;; Detect by looking for the expected keys at the top level.
+        ontology-axioms (if (some #{:disjointness :characteristics
+                                    :inverse-of :sub-property-of :chains}
+                                  (keys axioms-input))
+                          [axioms-input]
+                          (vals axioms-input))
+        merged (reduce (fn [acc m]
+                         (-> acc
+                             (update :disjointness (fnil merge {}) (:disjointness m))
+                             (update :characteristics (fnil merge {}) (:characteristics m))
+                             (update :inverse-of (fnil merge {}) (:inverse-of m))
+                             (update :sub-property-of (fnil merge {}) (:sub-property-of m))
+                             (update :chains (fnil merge {}) (:chains m))))
+                       {}
+                       ontology-axioms)
+        sections [(when (seq (:disjointness merged))
+                    (str "# Disjointness\n"
+                         (disjointness->turtle (:disjointness merged))))
+                  (when (or (seq (:characteristics merged))
+                            (seq (:inverse-of merged)))
+                    (str "# Property Characteristics\n"
+                         (characteristics->turtle (:characteristics merged)
+                                                   (:inverse-of merged))))
+                  (when (seq (:sub-property-of merged))
+                    (str "# Sub-Property-Of\n"
+                         (sub-property-of->turtle (:sub-property-of merged))))
+                  (when (seq (:chains merged))
+                    (str "# Chain Axioms\n"
+                         (chain->turtle (:chains merged))))]
+        present (remove nil? sections)]
+    (when (seq present)
+      (str/join "\n\n" present))))
+
 (defn full-export
   "Export the complete ontology including concepts, tree profiles, and node experiences.
 
@@ -496,16 +630,25 @@
      - :scope - Filter concepts by scope (:failure, :success, :problem)
      - :include-profiles? - Include tree profiles (default true)
      - :include-experiences? - Include node experiences (default true)
+     - :include-axioms? - Include axioms (default true)
      - :base-uri - Base URI for the ontology
 
    S04 — when an :ontology/ontology-metadata-recorded event has been
    emitted for any ontology-id, its title/version/license/creator are
    surfaced on the exported header (owl:Ontology block). When no such
    event exists, the legacy ConceptScheme block alone forms the header
-   (its hardcoded @en is removed per S04)."
-  [ctx & [{:keys [scope include-profiles? include-experiences? base-uri]
+   (its hardcoded @en is removed per S04).
+
+   S07 — when any axiom event has been emitted, the axiom projection
+   is rendered into OWL constructs (`owl:disjointWith`,
+   `owl:FunctionalProperty`/`owl:TransitiveProperty`/`owl:SymmetricProperty`,
+   `owl:inverseOf`, `rdfs:subPropertyOf`, `owl:propertyChainAxiom`) and
+   appended after the concepts block. When no axiom events exist, the
+   axioms section is OMITTED entirely (no defaulted-empty triples)."
+  [ctx & [{:keys [scope include-profiles? include-experiences? include-axioms? base-uri]
            :or {include-profiles? true
                 include-experiences? true
+                include-axioms? true
                 base-uri "http://obney.ai/workshop/ontology/"}}]]
   (let [concept-graph (rmp/project ctx :ontology/concepts)
         filtered-concepts (if scope
@@ -534,10 +677,17 @@
                           (let [experiences (rmp/project ctx :ontology/node-experiences)]
                             (when (seq experiences)
                               (str "\n\n# === NODE EXPERIENCES ===\n\n"
-                                   (node-experiences->turtle experiences)))))]
+                                   (node-experiences->turtle experiences)))))
+
+        ;; S07 — axioms section
+        axioms-ttl (when include-axioms?
+                     (let [all-axioms (rmp/project ctx :ontology/axioms)]
+                       (when-let [block (axioms->turtle all-axioms)]
+                         (str "\n\n# === AXIOMS ===\n\n" block))))]
     (str concepts-ttl
          (or profiles-ttl "")
-         (or experiences-ttl ""))))
+         (or experiences-ttl "")
+         (or axioms-ttl ""))))
 
 ;; =============================================================================
 ;; Utility Functions

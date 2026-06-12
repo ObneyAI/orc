@@ -1219,3 +1219,90 @@
                    :learned-at now}})]
          :command-result/data {:domain domain
                                :pattern-type pattern-type-kw}}))))
+
+;; =============================================================================
+;; S07 — Axiom-as-data commands
+;; =============================================================================
+;;
+;; Four axiom families, each emitted as a distinct event type, projected
+;; per-ontology-id into :ontology/axioms, exported as proper OWL.
+;;
+;; CRITICAL non-goal: these commands do NOT trigger inference. Asserting
+;; that two classes are disjoint NEVER causes the projection to remove a
+;; concept's class membership. Asserting a predicate functional NEVER
+;; causes the projection to dedup existing values. Lint slices (S11) catch
+;; violations AT VALIDATION TIME from the projected axiom data.
+
+(defcommand :ontology assert-disjointness
+  "Record that the given set of class URIs is mutually disjoint
+   (`owl:disjointWith`). The Malli schema rejects singleton sets at the
+   pre-handler gate.
+
+   The projection treats this SYMMETRICALLY: each URI in the set maps to
+   the OTHERS as its disjoint siblings. Re-asserting on the same set is
+   idempotent at the projection layer (set semantics)."
+  [{{:keys [ontology-id class-uris]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/disjointness-asserted
+      :tags #{[:ontology ontology-id]}
+      :body {:ontology-id ontology-id
+             :class-uris (vec class-uris)
+             :asserted-at (now-str)}})]})
+
+(defcommand :ontology assert-property-characteristic
+  "Record one or more OWL property characteristics (`owl:FunctionalProperty`,
+   `owl:TransitiveProperty`, `owl:SymmetricProperty`) and/or an `owl:inverseOf`
+   pairing for a predicate.
+
+   `:characteristic` may be empty when the only declaration is an inverse-of
+   pairing. The Malli schema's enum bounds the allowed flags; unknown
+   values are rejected at the pre-handler gate.
+
+   When a transitive characteristic is asserted, the predicate becomes
+   followable by axiom-aware BFS (`retrieval/expand-concept-neighborhood`
+   with `:transitive-only? true`) — closure mechanism unchanged; the
+   marker simply lands in the predicate filter."
+  [{{:keys [ontology-id predicate characteristic inverse-of]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/property-characteristic-asserted
+      :tags #{[:ontology ontology-id]}
+      :body (cond-> {:ontology-id ontology-id
+                     :predicate predicate
+                     :characteristic (vec (or characteristic []))
+                     :asserted-at (now-str)}
+              inverse-of (assoc :inverse-of inverse-of))})]})
+
+(defcommand :ontology assert-sub-property
+  "Record an `rdfs:subPropertyOf` relationship between two predicates.
+   The sub-predicate is the more specific predicate; the super-predicate
+   is the broader predicate (e.g. hasMother sub-property-of hasParent).
+   Stored as a per-ontology map; lint slices consult it for property
+   hierarchy reasoning IF the consumer chooses; this slice ONLY records."
+  [{{:keys [ontology-id sub-predicate super-predicate]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/sub-property-asserted
+      :tags #{[:ontology ontology-id]}
+      :body {:ontology-id ontology-id
+             :sub-predicate sub-predicate
+             :super-predicate super-predicate
+             :asserted-at (now-str)}})]})
+
+(defcommand :ontology assert-chain-axiom
+  "Record a chain definition P∘Q→R (`owl:propertyChainAxiom`).
+
+   DEFINITIONS only — query-time synthesis arrives in a later NEXT-tail
+   slice. The chain is a vector of predicates (must have at least 2
+   elements per the Malli schema); the derived predicate is the rule
+   head."
+  [{{:keys [ontology-id chain derived-predicate]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/chain-axiom-asserted
+      :tags #{[:ontology ontology-id]}
+      :body {:ontology-id ontology-id
+             :chain (vec chain)
+             :derived-predicate derived-predicate
+             :asserted-at (now-str)}})]})

@@ -74,7 +74,19 @@
      concepts: Map of URI -> concept-map from concepts read model
 
    Returns:
-     {:nodes #{uri...} :edges {uri [{:to uri :predicate pred :weight w}...]}}"
+     {:nodes #{uri...} :edges {uri [{:to uri :predicate pred :weight w}...]}}
+
+   S07 — `:typed-edges` is consulted in addition to the SKOS buckets.
+   When the concept carries a `:typed-edges` map (predicate-string
+   → set-of-target-uris) populated by the read-model's default branch
+   for non-SKOS predicates (e.g. `\"follows\"`, `\"immediately-follows\"`,
+   `\"owl:causes\"`), each entry emits an edge with the ORIGINAL predicate
+   name preserved. This is what makes axiom-aware BFS — which filters by
+   predicate name — able to honor transitively-marked predicates without
+   collapsing them into `:related`. The same edges are ALSO present in
+   the `:related` bucket (the read-model populates both views), so the
+   default unfiltered BFS still reaches them — preserves the S05
+   immediately-follows back-compat path."
   [concepts]
   (let [nodes (atom (set (keys concepts)))
         edges (atom {})]
@@ -99,7 +111,21 @@
         (swap! edges update uri (fnil conj [])
                {:to related-uri :predicate "skos:related" :weight 0.7})
         (swap! edges update related-uri (fnil conj [])
-               {:to uri :predicate "skos:related" :weight 0.7 :reverse true})))
+               {:to uri :predicate "skos:related" :weight 0.7 :reverse true}))
+      ;; S07 — typed-edges: preserve the original predicate name on each
+      ;; non-SKOS edge so axiom-aware BFS can filter by predicate. The
+      ;; default-weight branch handles unknown predicates; SKOS preds
+      ;; already had their edges added above (no double-add since they
+      ;; don't appear in :typed-edges).
+      (doseq [[predicate target-set] (:typed-edges concept)]
+        (let [w (get default-edge-weights predicate
+                     (get default-edge-weights :default))]
+          (doseq [target-uri target-set]
+            (swap! nodes conj target-uri)
+            (swap! edges update uri (fnil conj [])
+                   {:to target-uri :predicate predicate :weight w})
+            (swap! edges update target-uri (fnil conj [])
+                   {:to uri :predicate predicate :weight w :reverse true})))))
     {:nodes @nodes
      :edges @edges
      :node-count (count @nodes)}))

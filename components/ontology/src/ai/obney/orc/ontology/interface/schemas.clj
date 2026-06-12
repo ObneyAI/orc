@@ -733,7 +733,68 @@
     [:shape-id       :keyword]
     [:reason         [:enum :deactivated]]
     [:run-id         :uuid]
-    [:detected-at    :string]]})
+    [:detected-at    :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S07 — Axioms-as-data events (formality ceiling: data + lint inputs +
+   ;; traversal hints, NEVER an inference engine)
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Four axiom families, each as a SEPARATE event type, projected into a
+   ;; per-ontology axiom view, consumed by lints (S11) and BFS traversal
+   ;; (transitive-only? mode), exported as proper OWL.
+   ;;
+   ;; CRITICAL non-goal: the projection NEVER auto-reclassifies a concept,
+   ;; NEVER auto-emits inconsistency events, NEVER silently dedups. A
+   ;; concept asserted under two later-disjoint classes RETAINS both
+   ;; assertions in its broader set; the disjointness axiom is recorded
+   ;; in parallel as data. The lint slice catches it AT VALIDATION TIME.
+
+   ;; (1) Disjointness sets — "these sibling classes are mutually disjoint".
+   ;; The projection treats this symmetrically: each URI in the set maps
+   ;; to the OTHER URIs. Minimum 2 URIs (singleton 'disjointness' is
+   ;; meaningless — schema-rejected at the command-processor's pre-handler
+   ;; gate).
+   :ontology/disjointness-asserted
+   [:map
+    [:ontology-id :uuid]
+    [:class-uris  [:and [:vector :string] [:fn {:error/message "need at least 2 class-uris"}
+                                           #(>= (count %) 2)]]]
+    [:asserted-at :string]]
+
+   ;; (2) Property characteristics — functional / transitive / symmetric /
+   ;; inverse-of. The :characteristic vector may be empty when the only
+   ;; declaration is inverse-of (a paired predicate with no scalar flag).
+   ;; :inverse-of carries the OTHER predicate; the projection records the
+   ;; pairing in both directions.
+   :ontology/property-characteristic-asserted
+   [:map
+    [:ontology-id    :uuid]
+    [:predicate      :string]
+    [:characteristic [:vector [:enum :functional :transitive :symmetric]]]
+    [:inverse-of     {:optional true} :string]
+    [:asserted-at    :string]]
+
+   ;; (3) Property hierarchies — rdfs:subPropertyOf. The sub is the more
+   ;; specific predicate; the super is the broader predicate (e.g.
+   ;; hasMother sub-property-of hasParent).
+   :ontology/sub-property-asserted
+   [:map
+    [:ontology-id     :uuid]
+    [:sub-predicate   :string]
+    [:super-predicate :string]
+    [:asserted-at     :string]]
+
+   ;; (4) Chain definitions — P∘Q→R rules. Stored as DEFINITIONS now;
+   ;; query-time synthesis arrives in a later NEXT-tail slice. The chain
+   ;; is a vector of predicates; the derived predicate is the rule head.
+   :ontology/chain-axiom-asserted
+   [:map
+    [:ontology-id        :uuid]
+    [:chain              [:and [:vector :string] [:fn {:error/message "chain needs at least 2 predicates"}
+                                                  #(>= (count %) 2)]]]
+    [:derived-predicate  :string]
+    [:asserted-at        :string]]})
 
 ;; =============================================================================
 ;; Command Schemas
@@ -1201,7 +1262,43 @@
 
    :ontology/run-validation
    [:map
-    [:ontology-id :uuid]]})
+    [:ontology-id :uuid]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S07 — Axiom-assertion commands
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Mirror the event shapes; the defcommand stamps :asserted-at.
+   ;; Adversarial-rejection rules are baked into the schemas (min-count
+   ;; on class-uris/chain; bounded enum on characteristic flags) so the
+   ;; Grain command-processor's pre-handler Malli gate catches garbage
+   ;; before the handler runs.
+
+   :ontology/assert-disjointness
+   [:map
+    [:ontology-id :uuid]
+    [:class-uris  [:and [:vector :string] [:fn {:error/message "need at least 2 class-uris"}
+                                           #(>= (count %) 2)]]]]
+
+   :ontology/assert-property-characteristic
+   [:map
+    [:ontology-id    :uuid]
+    [:predicate      :string]
+    [:characteristic [:vector [:enum :functional :transitive :symmetric]]]
+    [:inverse-of     {:optional true} :string]]
+
+   :ontology/assert-sub-property
+   [:map
+    [:ontology-id     :uuid]
+    [:sub-predicate   :string]
+    [:super-predicate :string]]
+
+   :ontology/assert-chain-axiom
+   [:map
+    [:ontology-id        :uuid]
+    [:chain              [:and [:vector :string] [:fn {:error/message "chain needs at least 2 predicates"}
+                                                  #(>= (count %) 2)]]]
+    [:derived-predicate  :string]]})
 
 ;; =============================================================================
 ;; Query Schemas

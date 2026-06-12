@@ -138,9 +138,21 @@
           (update-in [source-uri :composes-into] (fnil conj #{}) target-uri)
           (update-in [target-uri :composed-by] (fnil conj #{}) source-uri))
 
-      ;; Other predicates (owl:causes, etc.) - store as related
+      ;; Other predicates (owl:causes, follows, immediately-follows,
+      ;; etc.) — preserve TWO views:
+      ;; 1. ALSO landed in :related on the source so the default BFS
+      ;;    closure (which iterates :broader/:narrower/:related buckets)
+      ;;    continues to traverse them — preserves S05's
+      ;;    immediately-follows reach.
+      ;; 2. ALSO landed in :typed-edges keyed by the original predicate
+      ;;    string so S07's axiom-aware BFS — which filters by predicate
+      ;;    name — can identify transitive-marked predicates exactly.
+      ;;    Without this typed view, the predicate name is erased into
+      ;;    the :related bucket and the axiom filter has no key to match.
       (-> state
-          (update-in [source-uri :related] (fnil conj #{}) target-uri)))))
+          (update-in [source-uri :related] (fnil conj #{}) target-uri)
+          (update-in [source-uri :typed-edges predicate]
+                     (fnil conj #{}) target-uri)))))
 
 ;; -----------------------------------------------------------------------------
 ;; Evolutionary Event Handlers
@@ -341,15 +353,18 @@
 
                 ;; Other predicates (incl. S05 sequence-convention
                 ;; predicates "immediately-follows" / "follows", plus
-                ;; any custom predicate the caller uses) → store as
-                ;; related on the source side, with both endpoints
-                ;; bidirectionally edged at graph-build time by
-                ;; `concepts->graph`. This is the same default the
-                ;; URI-keyed projection applies — keeps the two
-                ;; projections shape-consistent for unknown predicates.
+                ;; any custom predicate the caller uses, including S07
+                ;; axiom-driven predicates) → land in BOTH :related (so
+                ;; default BFS still traverses) AND :typed-edges (so
+                ;; S07's axiom-aware BFS can filter by predicate name).
+                ;; Symmetric with the URI-keyed projection's default
+                ;; branch — keeps the two projections shape-consistent.
                 (-> acc
                     (update-by-section ont-id source-uri
-                                       (fn [c] (update c :related (fnil conj #{}) target-uri))))))
+                                       (fn [c] (update c :related (fnil conj #{}) target-uri)))
+                    (update-by-section ont-id source-uri
+                                       (fn [c] (update-in c [:typed-edges predicate]
+                                                          (fnil conj #{}) target-uri))))))
             state shared)))
 
 (defmethod concepts-by-section* :evolutionary/concepts-extracted
@@ -472,6 +487,127 @@
   "Return the full {ontology-id -> metadata} map across all ontologies."
   [ctx]
   (rmp/project ctx :ontology/ontology-metadata))
+
+;; =============================================================================
+;; S07 — Axioms-as-data projection (per-ontology)
+;; =============================================================================
+;;
+;; Four axiom families collapsed into ONE per-ontology projection map so
+;; downstream consumers (lints, axiom-aware BFS, OWL serializer) need
+;; exactly one lookup per ontology-id. Shape:
+;;
+;;   {<ontology-id>
+;;    {:disjointness     {<class-uri> #{<disjoint-sibling-uri> ...}}    ; symmetric
+;;     :characteristics  {<predicate>  #{:functional :transitive :symmetric}}
+;;     :inverse-of       {<predicate>  <inverse-predicate>}              ; bidirectional
+;;     :sub-property-of  {<sub-pred>   <super-pred>}
+;;     :chains           {<derived-pred> [<chain-pred-1> <chain-pred-2> ...]}}}
+;;
+;; CRITICAL non-goal: this projection does NOT inspect concept state and
+;; does NOT mutate the :ontology/concepts projection. A concept whose
+;; class membership would be inconsistent under OWL DL given a recorded
+;; disjointness axiom REMAINS unchanged in the concept projection. Lints
+;; (S11) catch the inconsistency AT VALIDATION TIME by JOINING the two
+;; projections — this slice records the DATA only.
+
+(def axiom-events
+  "Events that affect the per-ontology axiom projection. Four event
+   types, all additive — appending an axiom event NEVER mutates concept
+   or relationship state (no inference). Disjointness uses set semantics
+   so re-assertion is idempotent; the other three are last-write-wins
+   on their key shapes."
+  #{:ontology/disjointness-asserted
+    :ontology/property-characteristic-asserted
+    :ontology/sub-property-asserted
+    :ontology/chain-axiom-asserted})
+
+(defmulti axioms*
+  "Apply event to per-ontology axiom projection.
+   State: {ontology-id -> {:disjointness ... :characteristics ...
+                            :inverse-of ... :sub-property-of ...
+                            :chains ...}}.
+   Each event updates the matching submap under its ontology-id."
+  (fn [_state event] (:event/type event)))
+
+(defmethod axioms* :default [state _] state)
+
+(defmethod axioms* :ontology/disjointness-asserted
+  [state event]
+  ;; Symmetric projection: every URI in the set carries the OTHERS.
+  ;; Set semantics make re-assertion of the same set a no-op.
+  (let [ontology-id (:ontology-id event)
+        uris (:class-uris event)
+        pairs (for [a uris, b uris :when (not= a b)] [a b])]
+    (reduce (fn [acc [a b]]
+              (update-in acc [ontology-id :disjointness a]
+                         (fnil conj #{}) b))
+            state pairs)))
+
+(defmethod axioms* :ontology/property-characteristic-asserted
+  [state event]
+  ;; Characteristics accumulate into a per-predicate set; inverse-of is
+  ;; recorded bidirectionally so consumers reading either side find the
+  ;; pairing. No defensive merge — re-assertion of the same flag is a
+  ;; set no-op.
+  (let [ontology-id (:ontology-id event)
+        predicate (:predicate event)
+        flags (set (:characteristic event))
+        inverse-of (:inverse-of event)]
+    (cond-> state
+      (seq flags)
+      (update-in [ontology-id :characteristics predicate]
+                 (fnil into #{}) flags)
+      inverse-of
+      (-> (assoc-in [ontology-id :inverse-of predicate] inverse-of)
+          (assoc-in [ontology-id :inverse-of inverse-of] predicate)))))
+
+(defmethod axioms* :ontology/sub-property-asserted
+  [state event]
+  ;; Each sub maps to its super (last-write-wins on conflict — multiple
+  ;; supers are NOT supported in this slice's shape; the consumer can
+  ;; widen if needed).
+  (let [ontology-id (:ontology-id event)
+        sub (:sub-predicate event)
+        super (:super-predicate event)]
+    (assoc-in state [ontology-id :sub-property-of sub] super)))
+
+(defmethod axioms* :ontology/chain-axiom-asserted
+  [state event]
+  ;; Derived predicate keys the entry; the chain value is the ordered
+  ;; vector. Last-write-wins on conflict (a derived predicate has ONE
+  ;; chain definition).
+  (let [ontology-id (:ontology-id event)
+        chain (:chain event)
+        derived (:derived-predicate event)]
+    (assoc-in state [ontology-id :chains derived] (vec chain))))
+
+(defn axioms
+  "Build the per-ontology axiom projection state from a seq of events."
+  [initial-state events]
+  (reduce axioms* initial-state events))
+
+(defreadmodel :ontology axioms
+  {:events axiom-events, :version 1}
+  [state event] (axioms* state event))
+
+(defn get-axioms
+  "Return the full axiom map (:disjointness / :characteristics /
+   :inverse-of / :sub-property-of / :chains) for an ontology-id, or
+   nil if no axioms have been asserted for it."
+  [ctx ontology-id]
+  (get (rmp/project ctx :ontology/axioms) ontology-id))
+
+(defn transitive-predicates
+  "Return the SET of predicates marked transitive for the given
+   ontology-id. Used by axiom-aware BFS to restrict closure to
+   transitively-marked edges. Empty set when no characteristics
+   have been recorded."
+  [ctx ontology-id]
+  (let [chars (get-in (rmp/project ctx :ontology/axioms)
+                      [ontology-id :characteristics])]
+    (set (keep (fn [[pred flags]]
+                 (when (contains? flags :transitive) pred))
+               chars))))
 
 ;; =============================================================================
 ;; S14 — Ontology Specs (ORSD) Projection

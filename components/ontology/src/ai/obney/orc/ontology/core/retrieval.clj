@@ -153,12 +153,21 @@
    Args (positional):
      seed-uris: Collection of starting concept URIs
    Args (kw options):
-     :max-depth    - BFS depth (default 2)
-     :decay        - Per-hop activation decay (default 0.6)
-     :graph        - Pre-built graph; if provided, used as-is
-     :ctx          - Context with :event-store; required for event-store-backed BFS
-     :ontology-id  - S02 single-section scope
-     :ontology-ids - S02 multi-section scope (coll)
+     :max-depth         - BFS depth (default 2)
+     :decay             - Per-hop activation decay (default 0.6)
+     :graph             - Pre-built graph; if provided, used as-is
+     :ctx               - Context with :event-store; required for event-store-backed BFS
+     :ontology-id       - S02 single-section scope
+     :ontology-ids      - S02 multi-section scope (coll)
+     :transitive-only?  - S07 axiom-aware mode (default false). When true,
+                          the BFS closure is RESTRICTED to predicates marked
+                          transitive in the :ontology/axioms projection for
+                          the active ontology-id (plus the canonical SKOS
+                          hierarchy edges `skos:broader` and `skos:narrower`,
+                          which are inherently transitive). Without any
+                          transitive-marked predicates, the closure visits
+                          only the seeds — exactly what the adversarial
+                          pair test demands. Requires :ctx + :ontology-id.
 
    Routing:
      - If :graph is passed, it is used verbatim (callers retain control).
@@ -171,8 +180,9 @@
 
    Returns:
      Vector of {:uri :score :path :depth} sorted by score"
-  [seed-uris & {:keys [max-depth decay graph ctx ontology-id ontology-ids]
-                :or {max-depth 2 decay 0.6}}]
+  [seed-uris & {:keys [max-depth decay graph ctx ontology-id ontology-ids
+                       transitive-only?]
+                :or {max-depth 2 decay 0.6 transitive-only? false}}]
   (let [scoping-requested? (or ontology-id (seq ontology-ids))
         g (cond
             graph graph
@@ -180,11 +190,24 @@
             (build-concept-graph ctx (cond-> {}
                                        ontology-id (assoc :ontology-id ontology-id)
                                        (seq ontology-ids) (assoc :ontology-ids ontology-ids)))
-            :else (build-static-concept-graph))]
+            :else (build-static-concept-graph))
+        ;; S07 — predicate filter for axiom-aware traversal. The set is
+        ;; the union of (a) explicitly-marked transitive predicates from
+        ;; the axiom projection and (b) the canonical SKOS hierarchy
+        ;; preds `skos:broader` / `skos:narrower` which are inherently
+        ;; transitive without needing an axiom record. When the caller
+        ;; opted into transitive-only? AND no predicates qualify, the
+        ;; filter rejects every edge — BFS visits seeds only (the
+        ;; adversarial-pair semantic). Without :transitive-only?, the
+        ;; filter is nil and ALL edges traverse (today's behavior).
+        predicates (when (and transitive-only? ctx ontology-id)
+                     (into #{"skos:broader" "skos:narrower"}
+                           (rm/transitive-predicates ctx ontology-id)))]
     (graph/bfs-spreading-activation g seed-uris
-                                    {:max-depth max-depth
-                                     :decay decay
-                                     :min-activation 0.01})))
+                                    (cond-> {:max-depth max-depth
+                                             :decay decay
+                                             :min-activation 0.01}
+                                      predicates (assoc :predicates predicates)))))
 
 (defn expand-from-problem-type
   "Expand concept neighborhood starting from a problem type URI.
