@@ -635,7 +635,61 @@
     [:pattern-type [:enum :navigation :search :extraction :bot-bypass :pagination]]
     [:pattern-data [:map-of :keyword :any]]  ;; Site-specific tactics
     [:confidence :double]
-    [:learned-at :string]]})
+    [:learned-at :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S10 — Lint registry + EDN-SHACL interpreter events
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; A unified validation layer built on the b' grill decision (EDN-SHACL
+   ;; bridge): shapes are SHACL-shaped EDN, source-of-truth, Malli-validated
+   ;; at registration, interpreted in-JVM, exportable as real SHACL TTL
+   ;; (S11). The phase-1 interpreter subset supported by S10:
+   ;;   :target-class, :property [:path :min-count :max-count :not], :code,
+   ;;   :severity, :message, :deactivated.
+   ;; Each violation surfaces as one :ontology/lint-violation event, each
+   ;; deactivated shape surfaces as one :ontology/lint-shape-skipped event.
+   ;; The validation-report read-model projects current+history per
+   ;; ontology-id and shape-id.
+   ;;
+   ;; :code escape-hatch is supported two ways at registration:
+   ;;   - in-process shape with a literal fn under :code (NOT persisted to
+   ;;     the event-store because fns aren't EDN-serializable)
+   ;;   - persisted shape with a fully-qualified symbol under :code-symbol
+   ;;     that requiring-resolve loads at run-time
+   ;; The shape-body event field stores the shape sans :code (the symbol
+   ;; path is the canonical persisted form).
+
+   :ontology/shape-registered
+   [:map
+    [:ontology-id   :uuid]
+    [:shape-id      :keyword]
+    [:shape-body    :map]            ;; the EDN shape (without :code fn)
+    [:code-symbol   {:optional true} :symbol]
+    [:registered-at :string]]
+
+   :ontology/lint-violation
+   [:map
+    [:violation-id   :uuid]
+    [:ontology-id    :uuid]
+    [:shape-id       :keyword]
+    [:severity       [:enum :info :warning :violation]]
+    [:message        :string]
+    [:offending-uri  :string]
+    [:reason         [:enum :min-count-violated :max-count-violated
+                      :not-constraint-violated :code-predicate-rejected]]
+    [:detail         :string]
+    [:run-id         :uuid]
+    [:detected-at    :string]]
+
+   :ontology/lint-shape-skipped
+   [:map
+    [:skip-id        :uuid]
+    [:ontology-id    :uuid]
+    [:shape-id       :keyword]
+    [:reason         [:enum :deactivated]]
+    [:run-id         :uuid]
+    [:detected-at    :string]]})
 
 ;; =============================================================================
 ;; Command Schemas
@@ -1036,7 +1090,60 @@
     [:domain :string]
     [:pattern-type [:enum :navigation :search :extraction :bot-bypass :pagination]]
     [:pattern-data [:map-of :keyword :any]]
-    [:confidence {:optional true} :double]]})
+    [:confidence {:optional true} :double]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S10 — Lint registry commands
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; The :shape sub-schema is the SHACL-shaped EDN format from the grill
+   ;; b' decision. Phase-1 supported components:
+   ;;   :shape/id (keyword PK)
+   ;;   :shape/type (currently only :node-shape)
+   ;;   :target-class (keyword scope | URI prefix | exact URI | nil-for-all)
+   ;;   :severity (:info | :warning | :violation)
+   ;;   :message (string)
+   ;;   :deactivated (boolean)
+   ;;   :property (vector of property-shapes — :path :min-count :max-count :not)
+   ;;   :code (in-process fn) OR :code-symbol (persisted symbol resolved at run-time)
+   ;;
+   ;; Adversarial requirement: a shape with NEITHER :property NOR
+   ;; (:code OR :code-symbol) silently passes everything — Malli rejects
+   ;; this shape at registration. The validator uses [:fn ...] guard.
+
+   :ontology/register-shape
+   [:and
+    [:map
+     [:ontology-id  :uuid]
+     [:shape        [:map
+                     [:shape/id        :keyword]
+                     [:shape/type      [:enum :node-shape]]
+                     [:target-class    [:or :keyword :string :nil]]
+                     [:severity        [:enum :info :warning :violation]]
+                     [:message         :string]
+                     [:deactivated     {:optional true} :boolean]
+                     [:property        {:optional true}
+                      [:vector
+                       [:map
+                        [:path        [:or :string :keyword]]
+                        [:min-count   {:optional true} :int]
+                        [:max-count   {:optional true} :int]
+                        [:not         {:optional true}
+                         [:map
+                          [:object-exists? {:optional true} :boolean]]]]]]
+                     ;; :code is a fn — not Malli-validatable in
+                     ;; structure, only by predicate. Optional.
+                     [:code           {:optional true} fn?]
+                     [:code-symbol    {:optional true} :symbol]]]]
+    [:fn {:error/message "shape must declare at least one of :property, :code, :code-symbol"}
+     (fn [{:keys [shape]}]
+       (boolean (or (seq (:property shape))
+                    (:code shape)
+                    (:code-symbol shape))))]]
+
+   :ontology/run-validation
+   [:map
+    [:ontology-id :uuid]]})
 
 ;; =============================================================================
 ;; Query Schemas
@@ -1120,7 +1227,26 @@
    :site/get-site-patterns
    [:map
     [:domain :string]
-    [:pattern-type {:optional true} [:enum :navigation :search :extraction :bot-bypass :pagination]]]})
+    [:pattern-type {:optional true} [:enum :navigation :search :extraction :bot-bypass :pagination]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S10 — Lint registry queries
+   ;; -------------------------------------------------------------------------
+
+   :ontology/get-validation-report
+   [:map
+    [:ontology-id :uuid]]
+
+   :ontology/get-violation-history
+   [:map
+    [:ontology-id :uuid]
+    [:shape-id    {:optional true} :keyword]
+    [:since       {:optional true} :string]   ;; RFC-3339 lower-bound
+    [:until       {:optional true} :string]]  ;; RFC-3339 upper-bound
+
+   :ontology/get-registered-shapes
+   [:map
+    [:ontology-id :uuid]]})
 
 ;; =============================================================================
 ;; Evolutionary Ontology Builder - Shared Domain Schemas
