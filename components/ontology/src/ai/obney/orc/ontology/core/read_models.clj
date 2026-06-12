@@ -199,6 +199,197 @@
   [state event] (concepts* state event))
 
 ;; =============================================================================
+;; S02 — Section-keyed parallel concepts projection
+;; =============================================================================
+;;
+;; The URI-keyed :ontology/concepts projection above silently overwrites
+;; when two sections mint the same URI. That collapse makes per-section
+;; lookup of a colliding URI impossible after-the-fact (no amount of
+;; downstream filtering can recover the OTHER section's concept once
+;; the URI key has been overwritten).
+;;
+;; This parallel projection is keyed by [ontology-id uri] — same events,
+;; different key shape. Scoped accessors consult it for collision-correct
+;; lookups; the URI-keyed projection above is preserved for back-compat
+;; with single-tenant callers and as the canonical "URI-keyed view" the
+;; merge-projection callers (graph builder, etc.) consume.
+;;
+;; No new event types are introduced; this is purely a read-side
+;; re-projection of the same events.
+
+(defn- assoc-by-section
+  "Add a concept under its [ontology-id uri] key in the section-keyed
+   state map. The state shape is {ontology-id {uri concept-map}}."
+  [state ontology-id uri concept]
+  (assoc-in state [ontology-id uri] concept))
+
+(defn- update-by-section
+  "Apply f to the concept at [ontology-id uri] in the section-keyed
+   state map (no-op when no such concept yet exists)."
+  [state ontology-id uri f]
+  (if (get-in state [ontology-id uri])
+    (update-in state [ontology-id uri] f)
+    state))
+
+(defmulti concepts-by-section*
+  "Apply event to the section-keyed concepts read model.
+   State: {ontology-id {uri -> concept-map}}.
+
+   For per-section concept lookup that survives URI collisions across
+   sections. Reduces over the same events as :ontology/concepts."
+  (fn [_state event] (:event/type event)))
+
+(defmethod concepts-by-section* :ontology/concept-created
+  [state event]
+  (assoc-by-section state (:ontology-id event) (:uri event)
+                    {:uri (:uri event)
+                     :id (:concept-id event)
+                     :ontology-id (:ontology-id event)
+                     :label (:label event)
+                     :description (:description event)
+                     :scope (:scope event)
+                     :broader (set (or (:broader event) []))
+                     :narrower #{}
+                     :related #{}
+                     :indicators (or (:indicators event) [])
+                     :created-at (str (:created-at event))}))
+
+(defmethod concepts-by-section* :ontology/concept-updated
+  [state event]
+  ;; concept-updated doesn't carry ontology-id directly; find by concept-id
+  ;; via a scan. Scanning is fine here — this projection is only consulted
+  ;; for scoped accessors, not in hot retrieval paths.
+  (let [cid (some-> event :concept-id str)]
+    (if cid
+      (reduce-kv (fn [acc ont-id by-uri]
+                   (reduce-kv (fn [a uri concept]
+                                (if (= cid (some-> concept :id str))
+                                  (assoc-in a [ont-id uri] (merge concept (:changes event)))
+                                  a))
+                              acc by-uri))
+                 state state)
+      state)))
+
+(defmethod concepts-by-section* :ontology/relationship-created
+  [state event]
+  ;; relationship-created has no ontology-id field in its body. Apply
+  ;; the SAME-ontology-only rule: if both endpoints exist within the
+  ;; SAME section, add edges there. If they're in different sections,
+  ;; do nothing for THIS projection (the cross-section edge is preserved
+  ;; in the URI-keyed projection above for callers that explicitly widen).
+  (let [{:keys [source-uri target-uri predicate]} event
+        ;; Find which sections each URI lives in (could be multiple due to collision).
+        endpoint-sections (fn [uri]
+                            (->> state
+                                 (filter (fn [[_ by-uri]] (contains? by-uri uri)))
+                                 (map first)
+                                 set))
+        src-sections (endpoint-sections source-uri)
+        tgt-sections (endpoint-sections target-uri)
+        shared (set/intersection src-sections tgt-sections)]
+    (reduce (fn [acc ont-id]
+              (case predicate
+                "skos:broader"
+                (-> acc
+                    (update-by-section ont-id source-uri
+                                       (fn [c] (update c :broader (fnil conj #{}) target-uri)))
+                    (update-by-section ont-id target-uri
+                                       (fn [c] (update c :narrower (fnil conj #{}) source-uri))))
+
+                "skos:narrower"
+                (-> acc
+                    (update-by-section ont-id source-uri
+                                       (fn [c] (update c :narrower (fnil conj #{}) target-uri)))
+                    (update-by-section ont-id target-uri
+                                       (fn [c] (update c :broader (fnil conj #{}) source-uri))))
+
+                "skos:related"
+                (-> acc
+                    (update-by-section ont-id source-uri
+                                       (fn [c] (update c :related (fnil conj #{}) target-uri)))
+                    (update-by-section ont-id target-uri
+                                       (fn [c] (update c :related (fnil conj #{}) source-uri))))
+
+                "behavior:composes-into"
+                (-> acc
+                    (update-by-section ont-id source-uri
+                                       (fn [c] (update c :composes-into (fnil conj #{}) target-uri)))
+                    (update-by-section ont-id target-uri
+                                       (fn [c] (update c :composed-by (fnil conj #{}) source-uri))))
+
+                ;; Other predicates → store as related on source side
+                (update-by-section ont-id source-uri
+                                   (fn [c] (update c :related (fnil conj #{}) target-uri)))))
+            state shared)))
+
+(defmethod concepts-by-section* :evolutionary/concepts-extracted
+  [state event]
+  (let [ontology-id (:ontology-id event)]
+    (reduce (fn [acc concept]
+              (let [uri (:uri concept)]
+                (assoc-by-section acc ontology-id uri
+                                  {:uri uri
+                                   :id nil
+                                   :ontology-id ontology-id
+                                   :label (:label concept)
+                                   :description (or (:definition concept) "")
+                                   :scope (keyword (or (:entity-type concept) "entity"))
+                                   :broader #{}
+                                   :narrower #{}
+                                   :related #{}
+                                   :indicators []
+                                   :alt-labels (or (:alt-labels concept) [])
+                                   :confidence (:confidence concept 1.0)
+                                   :source-id (:source-id concept)
+                                   :created-at (:extracted-at event)})))
+            state
+            (:concepts event))))
+
+(defmethod concepts-by-section* :evolutionary/relationships-extracted
+  [state event]
+  ;; Evolutionary relationship events ARE ontology-id-tagged at the event
+  ;; level — apply edges only within that section.
+  (let [ontology-id (:ontology-id event)]
+    (reduce (fn [acc {:keys [subject predicate object]}]
+              (case predicate
+                "skos:broader"
+                (-> acc
+                    (update-by-section ontology-id subject
+                                       (fn [c] (update c :broader (fnil conj #{}) object)))
+                    (update-by-section ontology-id object
+                                       (fn [c] (update c :narrower (fnil conj #{}) subject))))
+
+                "skos:narrower"
+                (-> acc
+                    (update-by-section ontology-id subject
+                                       (fn [c] (update c :narrower (fnil conj #{}) object)))
+                    (update-by-section ontology-id object
+                                       (fn [c] (update c :broader (fnil conj #{}) subject))))
+
+                "skos:related"
+                (-> acc
+                    (update-by-section ontology-id subject
+                                       (fn [c] (update c :related (fnil conj #{}) object)))
+                    (update-by-section ontology-id object
+                                       (fn [c] (update c :related (fnil conj #{}) subject))))
+
+                (update-by-section ontology-id subject
+                                   (fn [c] (update c :related (fnil conj #{}) object)))))
+            state
+            (:relationships event))))
+
+(defmethod concepts-by-section* :default [state _] state)
+
+(defn concepts-by-section
+  "Build the section-keyed concepts state from events."
+  [initial-state events]
+  (reduce concepts-by-section* initial-state events))
+
+(defreadmodel :ontology concepts-by-section
+  {:events concept-events, :version 1}
+  [state event] (concepts-by-section* state event))
+
+;; =============================================================================
 ;; Tree Profiles Projection
 ;; =============================================================================
 ;; Builds per-tree profiles with strengths, weaknesses, problem mappings
@@ -804,25 +995,66 @@
   "Get all concepts, optionally filtered by scope and/or ontology-id.
 
    Options:
-     :scope       - Filter by concept scope
-     :broader-uri - Filter by concepts with this URI in their broader set
-     :ontology-id - Filter by single ontology-id
-     :ontology-ids - Filter by multiple ontology-ids (returns union)"
+     :scope        - Filter by concept scope
+     :broader-uri  - Filter by concepts with this URI in their broader set
+     :ontology-id  - Filter by single ontology-id (S02 scoping)
+     :ontology-ids - Filter by multiple ontology-ids (returns union, S02 scoping)
+
+   S02: when an :ontology-id or :ontology-ids is passed, the section-keyed
+   :ontology/concepts-by-section projection is consulted instead of the
+   URI-keyed projection. This defeats the silent-collision failure mode
+   where two sections minting the same URI would have ONE silently
+   overwrite the other in the URI-keyed projection. Without scoping
+   (no :ontology-id / :ontology-ids), today's URI-keyed projection
+   behavior is preserved — back-compat for single-tenant consumers."
   [ctx & [{:keys [scope broader-uri ontology-id ontology-ids]}]]
-  (let [all-concepts (vals (rmp/project ctx :ontology/concepts))
-        ont-id-set (cond
+  (let [ont-id-set (cond
                      ontology-ids (set ontology-ids)
                      ontology-id #{ontology-id}
-                     :else nil)]
+                     :else nil)
+        all-concepts (if ont-id-set
+                       ;; Scoped: union the per-section maps' values so
+                       ;; collision-bearing URIs surface both copies.
+                       (mapcat vals
+                               (vals (select-keys
+                                      (rmp/project ctx :ontology/concepts-by-section)
+                                      ont-id-set)))
+                       ;; Unscoped: today's URI-keyed projection
+                       (vals (rmp/project ctx :ontology/concepts)))]
     (cond->> all-concepts
       scope (filter #(= scope (:scope %)))
-      broader-uri (filter #(contains? (:broader %) broader-uri))
-      ont-id-set (filter #(contains? ont-id-set (:ontology-id %))))))
+      broader-uri (filter #(contains? (:broader %) broader-uri)))))
 
 (defn get-concept-by-uri
-  "Get a single concept by URI."
-  [ctx uri]
-  (get (rmp/project ctx :ontology/concepts) uri))
+  "Get a single concept by URI.
+
+   S02: accepts an optional `opts` map with `:ontology-id` or
+   `:ontology-ids` for section-scoped lookup. When scoped, consults
+   the section-keyed `:ontology/concepts-by-section` projection so
+   URI collisions across sections resolve to the correct concept;
+   the unscoped 2-arity preserves today's URI-keyed behavior (the
+   projection's last-writer-wins shape) for back-compat with single-
+   tenant callers.
+
+   When `:ontology-ids` (a coll) is passed, returns the FIRST matching
+   concept in input order (callers needing all matches should use
+   `get-concepts` with the scoping coll)."
+  ([ctx uri]
+   (get (rmp/project ctx :ontology/concepts) uri))
+  ([ctx uri {:keys [ontology-id ontology-ids]}]
+   (cond
+     ontology-id
+     (get-in (rmp/project ctx :ontology/concepts-by-section)
+             [ontology-id uri])
+
+     (seq ontology-ids)
+     (some (fn [oid]
+             (get-in (rmp/project ctx :ontology/concepts-by-section)
+                     [oid uri]))
+           ontology-ids)
+
+     :else
+     (get (rmp/project ctx :ontology/concepts) uri))))
 
 (defn get-tree-profile
   "Get profile for a specific tree."
@@ -863,27 +1095,85 @@
                    (some #(= failure-uri (:failure %)) (:weaknesses p)))))))
 
 (defn get-narrower-concepts
-  "Get all concepts that are narrower than the given URI."
-  [ctx uri]
-  (get-in (rmp/project ctx :ontology/concepts) [uri :narrower] #{}))
+  "Get all concepts that are narrower than the given URI.
+
+   S02: accepts an optional `opts` map with `:ontology-id` or
+   `:ontology-ids`. When scoped, consults the section-keyed projection
+   so URI collisions resolve correctly; the unscoped 2-arity preserves
+   today's URI-keyed behavior (back-compat)."
+  ([ctx uri]
+   (get-in (rmp/project ctx :ontology/concepts) [uri :narrower] #{}))
+  ([ctx uri {:keys [ontology-id ontology-ids]}]
+   (cond
+     ontology-id
+     (get-in (rmp/project ctx :ontology/concepts-by-section)
+             [ontology-id uri :narrower] #{})
+
+     (seq ontology-ids)
+     (reduce (fn [acc oid]
+               (into acc
+                     (get-in (rmp/project ctx :ontology/concepts-by-section)
+                             [oid uri :narrower] #{})))
+             #{} ontology-ids)
+
+     :else
+     (get-in (rmp/project ctx :ontology/concepts) [uri :narrower] #{}))))
 
 (defn get-broader-concepts
-  "Get all concepts that are broader than the given URI."
-  [ctx uri]
-  (get-in (rmp/project ctx :ontology/concepts) [uri :broader] #{}))
+  "Get all concepts that are broader than the given URI.
+
+   S02: accepts an optional `opts` map with `:ontology-id` or
+   `:ontology-ids`. When scoped, consults the section-keyed projection."
+  ([ctx uri]
+   (get-in (rmp/project ctx :ontology/concepts) [uri :broader] #{}))
+  ([ctx uri {:keys [ontology-id ontology-ids]}]
+   (cond
+     ontology-id
+     (get-in (rmp/project ctx :ontology/concepts-by-section)
+             [ontology-id uri :broader] #{})
+
+     (seq ontology-ids)
+     (reduce (fn [acc oid]
+               (into acc
+                     (get-in (rmp/project ctx :ontology/concepts-by-section)
+                             [oid uri :broader] #{})))
+             #{} ontology-ids)
+
+     :else
+     (get-in (rmp/project ctx :ontology/concepts) [uri :broader] #{}))))
 
 ;; =============================================================================
 ;; Statistics
 ;; =============================================================================
 
 (defn concept-statistics
-  "Get statistics about the concept graph."
-  [ctx]
-  (let [concept-graph (rmp/project ctx :ontology/concepts)
-        by-scope (group-by :scope (vals concept-graph))]
-    {:total-concepts (count concept-graph)
-     :by-scope (into {} (map (fn [[k v]] [k (count v)]) by-scope))
-     :with-indicators (count (filter #(seq (:indicators %)) (vals concept-graph)))}))
+  "Get statistics about the concept graph.
+
+   S02: accepts an optional `opts` map with `:ontology-id` or
+   `:ontology-ids`. When scoped, statistics reflect only the requested
+   sections (so URI collisions across sections aren't undercounted by
+   the URI-keyed projection's last-writer-wins shape); the unscoped
+   1-arity preserves today's behavior."
+  ([ctx]
+   (let [concept-graph (rmp/project ctx :ontology/concepts)
+         by-scope (group-by :scope (vals concept-graph))]
+     {:total-concepts (count concept-graph)
+      :by-scope (into {} (map (fn [[k v]] [k (count v)]) by-scope))
+      :with-indicators (count (filter #(seq (:indicators %)) (vals concept-graph)))}))
+  ([ctx {:keys [ontology-id ontology-ids]}]
+   (let [by-section (rmp/project ctx :ontology/concepts-by-section)
+         scope-set (cond
+                     ontology-ids (set ontology-ids)
+                     ontology-id #{ontology-id}
+                     :else nil)
+         concepts (if scope-set
+                    (mapcat vals (vals (select-keys by-section scope-set)))
+                    ;; No scope passed → equivalent to URI-keyed projection
+                    (vals (rmp/project ctx :ontology/concepts)))
+         by-scope (group-by :scope concepts)]
+     {:total-concepts (count concepts)
+      :by-scope (into {} (map (fn [[k v]] [k (count v)]) by-scope))
+      :with-indicators (count (filter #(seq (:indicators %)) concepts))})))
 
 (defn tree-profile-statistics
   "Get statistics about tree profiles."

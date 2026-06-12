@@ -74,31 +74,64 @@
 
 (defn get-concepts
   "Get concepts from the event-sourced concept graph.
+
    Options:
-   - :scope - Filter by scope
-   - :broader-uri - Filter by parent concept"
+   - :scope        - Filter by concept scope keyword (e.g. :failure)
+   - :broader-uri  - Filter by concepts whose :broader set contains this URI
+   - :ontology-id  - Restrict results to a single ontology section
+   - :ontology-ids - Restrict results to a coll of ontology sections (union)
+
+   S02: when an :ontology-id (or :ontology-ids coll) is provided, the
+   section-keyed projection is consulted so URI collisions across
+   sections resolve to each section's own concept. Without scoping,
+   today's URI-keyed projection behavior is preserved (back-compat
+   for single-tenant consumers)."
   [ctx & [opts]]
   (rm/get-concepts ctx opts))
 
 (defn get-concept-by-uri
-  "Get a single concept by URI from the event-sourced graph."
-  [ctx uri]
-  (rm/get-concept-by-uri ctx uri))
+  "Get a single concept by URI from the event-sourced graph.
+
+   S02: accepts an optional `opts` map carrying `:ontology-id` or
+   `:ontology-ids`. When scoped, returns the concept from the requested
+   section even if another section overwrote the same URI in the
+   URI-keyed projection. The unscoped 2-arity preserves today's
+   last-writer-wins behavior for single-tenant consumers."
+  ([ctx uri]
+   (rm/get-concept-by-uri ctx uri))
+  ([ctx uri opts]
+   (rm/get-concept-by-uri ctx uri opts)))
 
 (defn get-narrower-concepts
-  "Get all concepts narrower than (children of) the given URI."
-  [ctx uri]
-  (rm/get-narrower-concepts ctx uri))
+  "Get all concepts narrower than (children of) the given URI.
+
+   S02: accepts an optional `opts` map with `:ontology-id` or
+   `:ontology-ids` for section-scoped lookup."
+  ([ctx uri]
+   (rm/get-narrower-concepts ctx uri))
+  ([ctx uri opts]
+   (rm/get-narrower-concepts ctx uri opts)))
 
 (defn get-broader-concepts
-  "Get all concepts broader than (parents of) the given URI."
-  [ctx uri]
-  (rm/get-broader-concepts ctx uri))
+  "Get all concepts broader than (parents of) the given URI.
+
+   S02: accepts an optional `opts` map with `:ontology-id` or
+   `:ontology-ids` for section-scoped lookup."
+  ([ctx uri]
+   (rm/get-broader-concepts ctx uri))
+  ([ctx uri opts]
+   (rm/get-broader-concepts ctx uri opts)))
 
 (defn concept-statistics
-  "Get statistics about the concept graph."
-  [ctx]
-  (rm/concept-statistics ctx))
+  "Get statistics about the concept graph.
+
+   S02: accepts an optional `opts` map carrying `:ontology-id` /
+   `:ontology-ids`. When scoped, statistics reflect ONLY the requested
+   sections (so URI collisions across sections aren't undercounted)."
+  ([ctx]
+   (rm/concept-statistics ctx))
+  ([ctx opts]
+   (rm/concept-statistics ctx opts)))
 
 ;; =============================================================================
 ;; Tree Profile Queries
@@ -643,16 +676,31 @@
 
    Args:
      seed-uris: Collection of starting concept URIs
-     opts: {:max-depth N :decay N :graph graph}
+     opts (kw):
+       :max-depth    - BFS depth (default 2)
+       :decay        - Per-hop activation decay (default 0.6)
+       :graph        - Pre-built graph; used verbatim if provided
+       :ctx          - Context with :event-store; required for event-store
+                       backed BFS (otherwise falls back to STATIC corpus)
+       :ontology-id  - S02 single-section scope
+       :ontology-ids - S02 multi-section scope (coll)
+
+   S02 scoping: when :ontology-id (or :ontology-ids) is passed AND :ctx
+   has an event-store, BFS runs on a graph scoped to those sections —
+   the cross-section isolation leak is closed. With no scoping and no
+   :graph, falls back to today's static seed-corpus BFS.
 
    Returns:
      Vector of {:uri :score :path :depth} sorted by score"
-  [seed-uris & {:keys [max-depth decay graph]
+  [seed-uris & {:keys [max-depth decay graph ctx ontology-id ontology-ids]
                 :or {max-depth 2 decay 0.6}}]
   (retrieval/expand-concept-neighborhood seed-uris
                                          :max-depth max-depth
                                          :decay decay
-                                         :graph graph))
+                                         :graph graph
+                                         :ctx ctx
+                                         :ontology-id ontology-id
+                                         :ontology-ids ontology-ids))
 
 (defn find-similar-trees
   "Find trees similar to a given problem type and/or pattern requirements.
@@ -1050,34 +1098,48 @@
 ;; =============================================================================
 
 (defn hybrid-search
-  "Hybrid search combining graph-based BFS with embedding similarity via RRF.
+  "Hybrid search combining graph BFS + embedding similarity + ColBERT via RRF.
 
-   This is the primary search function that leverages both:
-   1. Graph structure - BFS spreading activation from seed concepts
+   Up to three signals:
+   1. Graph structure   - BFS spreading activation from seed concepts
    2. Semantic similarity - Embedding-based similarity to query text
+   3. ColBERT late-interaction - Token-level retrieval (when index provided)
 
-   RRF (Reciprocal Rank Fusion) merges both ranked lists to produce
-   results that capture both structural relationships AND semantic meaning.
+   RRF (Reciprocal Rank Fusion) merges all ranked lists.
 
    Args:
-     event-store: Grain event store
+     ctx (event-store + cache, threaded through projections)
      opts:
-       :seed-uris - Collection of starting concept URIs for graph expansion
-       :query-text - Natural language query for embedding search
-       :scope - Filter to specific ontology scope
-       :ontology-id - Filter by single ontology-id
-       :ontology-ids - Filter by multiple ontology-ids (returns union)
-       :limit - Maximum results (default 10)
-       :min-similarity - Minimum embedding similarity (default 0.3)
-       :max-depth - BFS expansion depth (default 2)
-       :decay - BFS decay factor (default 0.6)
-       :weights - {:graph N :embedding N} weights for RRF
+       :seed-uris        - Seed URIs for graph expansion
+       :query-text       - Natural-language query for embedding/ColBERT
+       :scope            - Filter to a concept scope keyword
+       :ontology-id      - S02 single-section scope (applied to ALL signals)
+       :ontology-ids     - S02 multi-section scope (coll, widens ALL signals
+                           together; this is the seam for S03's alignment-
+                           section registry auto-widening)
+       :limit            - Max results (default 10)
+       :min-similarity   - Min embedding similarity (default 0.3)
+       :max-depth        - BFS expansion depth (default 2)
+       :decay            - BFS decay factor (default 0.6)
+       :colbert-index-id - ColBERT index UUID (per-ontology; the index-id
+                           IS the ColBERT-signal's scope)
+       :weights          - {:graph N :embedding N :colbert N} for RRF
+       :signals          - Set of signals to enable (default all three)
+
+   S02: when scoping is set, the graph signal expands an event-store-backed
+   graph restricted to the requested section(s) — closing the BFS isolation
+   leak. The embedding signal already honored these params; ColBERT
+   scoping is implicit (per-ontology index). Multi-section queries thus
+   retain RRF fusion across all three signals consistently.
 
    Returns:
-     {:results [{:uri :score :graph-rank :embedding-rank :label :description}]
+     {:results [{:uri :score :graph-rank :embedding-rank :colbert-rank
+                 :label :description}]
       :graph-results [...]
       :embedding-results [...]
-      :method \"rrf\"}"
+      :colbert-results [...]
+      :method \"rrf\"
+      :batches-used [:graph :embedding :colbert]}"
   [event-store opts]
   (retrieval/hybrid-search event-store opts))
 

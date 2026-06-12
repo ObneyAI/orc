@@ -47,26 +47,60 @@
 
    Args:
      ctx: Context with :event-store and :tenant-id (optional, uses static if nil)
+     opts (optional):
+       :ontology-id  - Restrict the graph to a single section (S02)
+       :ontology-ids - Restrict the graph to a coll of sections (S02)
 
    Returns:
-     Graph map with :nodes and :edges suitable for graph algorithms"
-  [{:keys [event-store] :as ctx}]
-  (let [;; Get concepts from event store or use static
-        concepts (if event-store
-                   (rmp/project ctx :ontology/concepts)
-                   ;; Build from static ontology
-                   (reduce (fn [acc concept]
-                             (assoc acc (:uri concept)
-                                    {:uri (:uri concept)
-                                     :label (:label concept)
-                                     :scope (:scope concept)
-                                     :broader (set (or (:broader concept) []))
-                                     :narrower #{}
-                                     :related #{}}))
-                           {}
-                           (static/get-all-static-concepts)))]
-    ;; Convert to graph format
-    (graph/concepts->graph concepts)))
+     Graph map with :nodes and :edges suitable for graph algorithms.
+
+   S02 scoping: when an ontology-id (or coll) is passed AND the ctx has
+   an event-store, the section-keyed :ontology/concepts-by-section
+   projection is consulted instead of the URI-keyed :ontology/concepts,
+   so the resulting graph is restricted to the requested section(s).
+   This closes the cross-section leak the prior unscoped build had
+   when an event-store concept in section A had a cross-section :related
+   edge pointing into section B.
+
+   Back-compat: no opts (or opts without :ontology-id/:ontology-ids) =
+   today's behavior (URI-keyed projection / static-corpus fallback)."
+  ([{:keys [event-store] :as ctx}]
+   (build-concept-graph ctx nil))
+  ([{:keys [event-store] :as ctx} {:keys [ontology-id ontology-ids] :as _opts}]
+   (let [scope-set (cond
+                     ontology-ids (set ontology-ids)
+                     ontology-id #{ontology-id}
+                     :else nil)
+         concepts (cond
+                    ;; Scoped + event-store: per-section projection union
+                    (and event-store scope-set)
+                    (let [by-section (rmp/project ctx :ontology/concepts-by-section)]
+                      ;; Merge the requested sections into a single
+                      ;; {uri -> concept} map. URI collisions across
+                      ;; included sections do collapse here — but the
+                      ;; caller asked for those sections together, so
+                      ;; the collapse is intentional (multi-section
+                      ;; widening). If they wanted them separated they
+                      ;; would have made independent scoped calls.
+                      (reduce merge {} (vals (select-keys by-section scope-set))))
+
+                    ;; Unscoped + event-store: today's URI-keyed view
+                    event-store
+                    (rmp/project ctx :ontology/concepts)
+
+                    ;; No event-store: static corpus fallback (unchanged)
+                    :else
+                    (reduce (fn [acc concept]
+                              (assoc acc (:uri concept)
+                                     {:uri (:uri concept)
+                                      :label (:label concept)
+                                      :scope (:scope concept)
+                                      :broader (set (or (:broader concept) []))
+                                      :narrower #{}
+                                      :related #{}}))
+                            {}
+                            (static/get-all-static-concepts)))]
+     (graph/concepts->graph concepts))))
 
 (defn build-static-concept-graph
   "Build concept graph from static ontology only (no event store required)."
@@ -116,15 +150,37 @@
 (defn expand-concept-neighborhood
   "Expand from seed concept URIs using BFS spreading activation.
 
-   Args:
+   Args (positional):
      seed-uris: Collection of starting concept URIs
-     opts: {:max-depth N :decay N :graph graph} - optional graph, otherwise uses static
+   Args (kw options):
+     :max-depth    - BFS depth (default 2)
+     :decay        - Per-hop activation decay (default 0.6)
+     :graph        - Pre-built graph; if provided, used as-is
+     :ctx          - Context with :event-store; required for event-store-backed BFS
+     :ontology-id  - S02 single-section scope
+     :ontology-ids - S02 multi-section scope (coll)
+
+   Routing:
+     - If :graph is passed, it is used verbatim (callers retain control).
+     - Else if :ctx AND (:ontology-id or :ontology-ids), build an
+       event-store-backed graph scoped to those sections. This is the
+       leak-free path — BFS sees only same-section concepts and edges.
+     - Else fall back to the STATIC concept graph (today's behavior),
+       preserving back-compat for the seed-corpus retrieval surface
+       (failure/success/problem taxonomy) that is a single-section corpus.
 
    Returns:
      Vector of {:uri :score :path :depth} sorted by score"
-  [seed-uris & {:keys [max-depth decay graph]
+  [seed-uris & {:keys [max-depth decay graph ctx ontology-id ontology-ids]
                 :or {max-depth 2 decay 0.6}}]
-  (let [g (or graph (build-static-concept-graph))]
+  (let [scoping-requested? (or ontology-id (seq ontology-ids))
+        g (cond
+            graph graph
+            (and ctx scoping-requested?)
+            (build-concept-graph ctx (cond-> {}
+                                       ontology-id (assoc :ontology-id ontology-id)
+                                       (seq ontology-ids) (assoc :ontology-ids ontology-ids)))
+            :else (build-static-concept-graph))]
     (graph/bfs-spreading-activation g seed-uris
                                     {:max-depth max-depth
                                      :decay decay
@@ -877,11 +933,18 @@
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
 
-        ;; Graph-based BFS results (when enabled and seeds provided)
+        ;; Graph-based BFS results (when enabled and seeds provided).
+        ;; S02: when ontology-id(s) provided + ctx has event-store, the
+        ;; graph is scoped to the requested section(s). Without scoping,
+        ;; falls back to today's static-corpus BFS (preserves existing
+        ;; single-tenant call sites — e.g., orc-service's R-Inject loop).
         graph-results (when (and graph-enabled? (seq seed-uris))
                         (->> (expand-concept-neighborhood seed-uris
                                                           :max-depth max-depth
-                                                          :decay decay)
+                                                          :decay decay
+                                                          :ctx ctx
+                                                          :ontology-id ontology-id
+                                                          :ontology-ids ontology-ids)
                              (take (* 2 limit))))  ;; Get more for fusion
 
         ;; Embedding-based results (when enabled and query provided)
@@ -893,7 +956,11 @@
                                                        :limit (* 2 limit)
                                                        :min-similarity min-similarity))
 
-        ;; ColBERT results (when enabled, query provided, and index available)
+        ;; ColBERT results (when enabled, query provided, and index available).
+        ;; ColBERT scoping is implicit: each ontology has its OWN
+        ;; :colbert-index-id, so passing the right index-id IS the scope.
+        ;; The :ontology-id / :ontology-ids params are accepted for API
+        ;; symmetry but don't post-filter the ColBERT signal.
         colbert-results (when (and colbert-enabled? query-text colbert-index-id)
                           (colbert-search-concepts ctx query-text
                                                     :colbert-index-id colbert-index-id
@@ -943,7 +1010,10 @@
             (let [graph-results (when (and graph-enabled? (seq seed-uris))
                                   (->> (expand-concept-neighborhood seed-uris
                                                                     :max-depth max-depth
-                                                                    :decay decay)
+                                                                    :decay decay
+                                                                    :ctx ctx
+                                                                    :ontology-id ontology-id
+                                                                    :ontology-ids ontology-ids)
                                        (take (* 2 limit))))
                   embedding-results (when (and embedding-enabled? query-text)
                                       (semantic-search-concepts ctx query-text

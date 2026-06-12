@@ -19,30 +19,44 @@
 ;; =============================================================================
 
 (defquery :ontology get-concepts
-  "Get concepts from the ontology, optionally filtered by scope or broader URI."
-  [{{:keys [scope broader-uri include-narrower?]} :query
+  "Get concepts from the ontology, optionally filtered by scope, broader-uri
+   and (S02) ontology-id / ontology-ids."
+  [{{:keys [scope broader-uri include-narrower? ontology-id ontology-ids]} :query
     :keys [event-store] :as ctx}]
-  (let [concepts (rm/get-concepts ctx {:scope scope :broader-uri broader-uri})
+  (let [scope-opts (cond-> {:scope scope :broader-uri broader-uri}
+                     ontology-id (assoc :ontology-id ontology-id)
+                     (seq ontology-ids) (assoc :ontology-ids ontology-ids))
+        concepts (rm/get-concepts ctx scope-opts)
+        narrower-opts (cond-> {}
+                        ontology-id (assoc :ontology-id ontology-id)
+                        (seq ontology-ids) (assoc :ontology-ids ontology-ids))
         ;; Optionally include narrower concepts for each
         result (if include-narrower?
                  (mapv (fn [c]
                          (assoc c :narrower-concepts
-                                (rm/get-narrower-concepts ctx (:uri c))))
+                                (rm/get-narrower-concepts ctx (:uri c) narrower-opts)))
                        concepts)
                  concepts)]
     {:query/result result}))
 
 (defquery :ontology get-concept
-  "Get a single concept by URI."
-  [{{:keys [uri]} :query
+  "Get a single concept by URI. S02: accepts optional :ontology-id /
+   :ontology-ids for section-scoped lookup."
+  [{{:keys [uri ontology-id ontology-ids]} :query
     :keys [event-store] :as ctx}]
-  (if-let [concept (rm/get-concept-by-uri ctx uri)]
-    {:query/result concept}
-    ;; Fall back to static ontology
-    (if-let [static-concept (static/get-concept-by-uri uri)]
-      {:query/result static-concept}
-      {::anom/category ::anom/not-found
-       ::anom/message (str "Concept not found: " uri)})))
+  (let [opts (cond-> {}
+               ontology-id (assoc :ontology-id ontology-id)
+               (seq ontology-ids) (assoc :ontology-ids ontology-ids))
+        concept (if (seq opts)
+                  (rm/get-concept-by-uri ctx uri opts)
+                  (rm/get-concept-by-uri ctx uri))]
+    (if concept
+      {:query/result concept}
+      ;; Fall back to static ontology (unscoped — static is a single corpus)
+      (if-let [static-concept (static/get-concept-by-uri uri)]
+        {:query/result static-concept}
+        {::anom/category ::anom/not-found
+         ::anom/message (str "Concept not found: " uri)}))))
 
 (defquery :ontology get-static-concepts
   "Get concepts from the static ontology definitions."
@@ -53,10 +67,16 @@
     {:query/result concepts}))
 
 (defquery :ontology concept-statistics
-  "Get statistics about the concept graph."
-  [{{:keys []} :query
+  "Get statistics about the concept graph. S02: accepts optional
+   :ontology-id / :ontology-ids for section-scoped statistics."
+  [{{:keys [ontology-id ontology-ids]} :query
     :keys [event-store] :as ctx}]
-  {:query/result (rm/concept-statistics ctx)})
+  (let [opts (cond-> {}
+               ontology-id (assoc :ontology-id ontology-id)
+               (seq ontology-ids) (assoc :ontology-ids ontology-ids))]
+    {:query/result (if (seq opts)
+                     (rm/concept-statistics ctx opts)
+                     (rm/concept-statistics ctx))}))
 
 ;; =============================================================================
 ;; Tree Profile Queries
