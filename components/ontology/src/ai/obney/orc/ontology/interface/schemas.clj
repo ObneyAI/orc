@@ -810,7 +810,39 @@
     [:chain              [:and [:vector :string] [:fn {:error/message "chain needs at least 2 predicates"}
                                                   #(>= (count %) 2)]]]
     [:derived-predicate  :string]
-    [:asserted-at        :string]]})
+    [:asserted-at        :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S03 — Alignment-section registry events
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; The registry records which alignment sections serve which primary
+   ;; sections. Queries scoped to a primary auto-widen through the
+   ;; registry: graph BFS + embedding + ColBERT-index expansion include
+   ;; the registered alignment sections (the S02 multi-section widening
+   ;; mechanism takes the EXPANDED ontology-id list and does the rest).
+   ;;
+   ;; Shape decisions (from the S03 prototype):
+   ;;   - SINGLE-HOP widening. Registering P->A1 and A1->A2 widens P to
+   ;;     {P, A1} (NOT {P, A1, A2}). Consumers wanting chain reach must
+   ;;     register that chain explicitly.
+   ;;   - CYCLE-TOLERANT registration. Registering P->A1 and A1->P is
+   ;;     accepted (no error at registration time); widening terminates
+   ;;     and dedupes via set semantics.
+   ;;   - Registry projection state shape: {primary-id #{alignment-id ...}}
+   ;;     plus a chronological history vector per primary for audit.
+
+   :ontology/alignment-section-registered
+   [:map
+    [:primary-ontology-id   :uuid]
+    [:alignment-ontology-id :uuid]
+    [:registered-at         :string]]
+
+   :ontology/alignment-section-deregistered
+   [:map
+    [:primary-ontology-id   :uuid]
+    [:alignment-ontology-id :uuid]
+    [:deregistered-at       :string]]})
 
 ;; =============================================================================
 ;; Command Schemas
@@ -1331,7 +1363,28 @@
     [:ontology-id        :uuid]
     [:chain              [:and [:vector :string] [:fn {:error/message "chain needs at least 2 predicates"}
                                                   #(>= (count %) 2)]]]
-    [:derived-predicate  :string]]})
+    [:derived-predicate  :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S03 — Alignment-section registry commands
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; The :primary-ontology-id is the section whose scoped queries should
+   ;; auto-widen. The :alignment-ontology-id is the section to fold in.
+   ;; Both REQUIRED — there is no "default" alignment. The Grain command-
+   ;; processor's pre-handler Malli gate rejects malformed commands
+   ;; (missing field, non-uuid id) with `::anom/incorrect` before the
+   ;; handler runs (no defensive parsing in the handler).
+
+   :ontology/register-alignment-section
+   [:map
+    [:primary-ontology-id   :uuid]
+    [:alignment-ontology-id :uuid]]
+
+   :ontology/deregister-alignment-section
+   [:map
+    [:primary-ontology-id   :uuid]
+    [:alignment-ontology-id :uuid]]})
 
 ;; =============================================================================
 ;; Query Schemas

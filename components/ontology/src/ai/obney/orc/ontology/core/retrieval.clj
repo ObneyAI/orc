@@ -957,6 +957,14 @@
        :scope - Filter to specific ontology scope
        :ontology-id - Filter by single ontology-id
        :ontology-ids - Filter by multiple ontology-ids (returns union)
+       :auto-widen-alignments? - S03 default-on. When the caller passes
+                                 :ontology-id (or :ontology-ids), expand
+                                 the scope through the alignment-section
+                                 registry before passing it down to the
+                                 three signals. Pass `false` to enforce
+                                 strict single-section behavior even
+                                 with alignments registered. No effect
+                                 when no scoping was set.
        :limit - Maximum results (default 10)
        :min-similarity - Minimum embedding similarity (default 0.3)
        :max-depth - BFS expansion depth (default 2)
@@ -984,11 +992,37 @@
       :method \"rrf\"
       :batches-used [:graph :embedding :colbert]}"
   [ctx {:keys [seed-uris query-text scope ontology-id ontology-ids limit min-similarity max-depth decay
-                       colbert-index-id weights signals per-source-cap]
+                       colbert-index-id weights signals per-source-cap
+                       auto-widen-alignments?]
                 :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
                      weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
-                     signals #{:graph :embedding :colbert}}}]
-  (let [;; Check which signals are enabled
+                     signals #{:graph :embedding :colbert}
+                     auto-widen-alignments? true}}]
+  (let [;; S03 — auto-widen the caller's ontology-id(s) through the
+        ;; registry BEFORE passing them down to the three signals. The
+        ;; widened set rides via :ontology-ids (the S02 multi-section
+        ;; path). When the caller passed no scoping, widening is a
+        ;; no-op (empty input → empty set → falls through to the
+        ;; unscoped path). When the caller passed
+        ;; :auto-widen-alignments? false, we skip the widen call
+        ;; entirely so single-section strict isolation holds even with
+        ;; an alignment registered (the per-query override semantics).
+        widened-ids (when (and auto-widen-alignments?
+                               (or ontology-id (seq ontology-ids)))
+                      (rm/widen-ontology-ids
+                       ctx
+                       (cond
+                         (seq ontology-ids) ontology-ids
+                         ontology-id        ontology-id)))
+        ;; If widening expanded the scope, route everything through
+        ;; :ontology-ids (the unified path) and clear :ontology-id so
+        ;; downstream signals don't double-scope. If widening produced
+        ;; the same set (no alignments registered, or just one id), the
+        ;; result is byte-identical to the no-widen path.
+        ontology-id (if widened-ids nil ontology-id)
+        ontology-ids (if widened-ids (vec widened-ids) ontology-ids)
+
+        ;; Check which signals are enabled
         graph-enabled? (contains? signals :graph)
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
@@ -1082,11 +1116,25 @@
        :query-texts - Vector of natural-language queries (instead of :query-text)
        :seed-uris   - shared graph seeds applied to every query (usually nil)"
   [ctx {:keys [query-texts seed-uris scope ontology-id ontology-ids limit min-similarity
-               max-depth decay colbert-index-id weights signals per-source-cap]
+               max-depth decay colbert-index-id weights signals per-source-cap
+               auto-widen-alignments?]
         :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
              weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
-             signals #{:graph :embedding :colbert}}}]
-  (let [graph-enabled? (contains? signals :graph)
+             signals #{:graph :embedding :colbert}
+             auto-widen-alignments? true}}]
+  (let [;; S03 — same alignment-section auto-widen hook as the
+        ;; single-query path. Default-on; the per-query override
+        ;; (auto-widen-alignments? false) disables widening here too.
+        widened-ids (when (and auto-widen-alignments?
+                               (or ontology-id (seq ontology-ids)))
+                      (rm/widen-ontology-ids
+                       ctx
+                       (cond
+                         (seq ontology-ids) ontology-ids
+                         ontology-id        ontology-id)))
+        ontology-id (if widened-ids nil ontology-id)
+        ontology-ids (if widened-ids (vec widened-ids) ontology-ids)
+        graph-enabled? (contains? signals :graph)
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
         query-texts (vec query-texts)

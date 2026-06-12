@@ -1328,3 +1328,61 @@
              :chain (vec chain)
              :derived-predicate derived-predicate
              :asserted-at (now-str)}})]})
+
+;; =============================================================================
+;; S03 — Alignment-section registry commands
+;; =============================================================================
+;;
+;; Two commands record the registry: register-alignment-section adds a
+;; (primary-id, alignment-id) pair, deregister-alignment-section removes
+;; it. The events are tagged BOTH on the primary AND the alignment
+;; ontology — the primary is the lookup key the auto-widen path
+;; consults, but tagging both keeps audit queries against either side
+;; cheap. Registration is cycle-tolerant (the prototype's verdict): the
+;; per-pair record carries no global invariant, so a registered cycle
+;; P->A1, A1->P is accepted and the single-hop widening naturally
+;; dedupes via set semantics.
+
+(defcommand :ontology register-alignment-section
+  "S03: register an alignment-section relationship — primary-ontology-id
+   gains alignment-ontology-id as a registered alignment. Scoped queries
+   against the primary section auto-widen to include the alignment via
+   the existing S02 multi-section widening mechanism (the registry
+   expands the caller's :ontology-id into a wider :ontology-ids list
+   that is then passed down to all three retrieval signals).
+
+   Cycle-tolerant: registering P->A1 and A1->P is accepted. The widen
+   path is single-hop and dedupes via set semantics so neither widening
+   loops nor returns a surprising fanout.
+
+   Tagging: BOTH the primary and the alignment carry the event's
+   :ontology tags so audit queries scoped to either side find it."
+  [{{:keys [primary-ontology-id alignment-ontology-id]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/alignment-section-registered
+      :tags #{[:ontology primary-ontology-id]
+              [:ontology alignment-ontology-id]}
+      :body {:primary-ontology-id primary-ontology-id
+             :alignment-ontology-id alignment-ontology-id
+             :registered-at (now-str)}})]})
+
+(defcommand :ontology deregister-alignment-section
+  "S03: deregister an alignment-section relationship — primary-ontology-
+   id NO LONGER has alignment-ontology-id as a registered alignment.
+
+   Idempotent on the CURRENT projection view (deregistering a pair that
+   was never registered just leaves :current empty), but the event IS
+   emitted regardless so the audit history records the action. The
+   acceptance test asserts the very-next scoped query against the
+   primary does NOT surface concepts from the now-deregistered
+   alignment — no read-side stale-cache leak."
+  [{{:keys [primary-ontology-id alignment-ontology-id]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/alignment-section-deregistered
+      :tags #{[:ontology primary-ontology-id]
+              [:ontology alignment-ontology-id]}
+      :body {:primary-ontology-id primary-ontology-id
+             :alignment-ontology-id alignment-ontology-id
+             :deregistered-at (now-str)}})]})

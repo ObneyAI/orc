@@ -185,6 +185,41 @@
   [ctx ontology-id]
   (rm/get-ontology-spec-history ctx ontology-id))
 
+;; =============================================================================
+;; S03 — Alignment-section registry (public surface)
+;; =============================================================================
+
+(defn get-alignment-sections
+  "S03: return the SET of currently-registered alignment-section ids for
+   the given primary-ontology-id. Empty set when nothing is registered
+   (never nil — callers can iterate without a nil guard). The live
+   view; history is retrievable via `get-alignment-registry-history`."
+  [ctx primary-ontology-id]
+  (rm/get-alignment-sections ctx primary-ontology-id))
+
+(defn get-alignment-registry-history
+  "S03: return the chronological history of every register/deregister
+   action recorded for the given primary-ontology-id. Each entry is
+   `{:action :registered|:deregistered :alignment-ontology-id <id>
+     :at <ts> :event-id <eid>}`. Empty vector when none recorded
+   — never nil."
+  [ctx primary-ontology-id]
+  (rm/get-alignment-registry-history ctx primary-ontology-id))
+
+(defn widen-ontology-ids
+  "S03: expand the given primary ontology-id(s) through the alignment-
+   section registry, returning the widened set (input ids + any of
+   their registered alignment sections). SINGLE-HOP — registering
+   P->A1 and A1->A2 widens P to {P, A1} (NOT {P, A1, A2}). Accepts a
+   single id OR a coll of ids; output is always a set, never nil.
+
+   Internally used by the auto-widen path of `hybrid-search` /
+   `hybrid-search-batch` (default-on, suppressible per-query with
+   `:auto-widen-alignments? false`). Exposed publicly so consumers
+   that build their own scoping pipelines can use the same expansion."
+  [ctx ontology-id-or-ids]
+  (rm/widen-ontology-ids ctx ontology-id-or-ids))
+
 (defn seed-baseline-corpus!
   "C-Baseline: emit the baseline seed corpus that ships with the ontology
    component (~45 hand-authored descriptions covering common node-types,
@@ -1140,6 +1175,12 @@
        :ontology-ids     - S02 multi-section scope (coll, widens ALL signals
                            together; this is the seam for S03's alignment-
                            section registry auto-widening)
+       :auto-widen-alignments? - S03 default-on. When scoping is set, the
+                           caller's :ontology-id (or :ontology-ids) is
+                           expanded through the alignment-section
+                           registry BEFORE the three signals run. Pass
+                           `false` to enforce strict single-section
+                           behavior even with alignments registered.
        :limit            - Max results (default 10)
        :min-similarity   - Min embedding similarity (default 0.3)
        :max-depth        - BFS expansion depth (default 2)

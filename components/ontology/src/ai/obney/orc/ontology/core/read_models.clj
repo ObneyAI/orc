@@ -750,6 +750,125 @@
                chars))))
 
 ;; =============================================================================
+;; S03 — Alignment-section registry projection
+;; =============================================================================
+;;
+;; Records which alignment sections serve which primary sections. The
+;; projection state shape is:
+;;
+;;   {<primary-id>
+;;    {:current  #{<alignment-id> ...}                ; live registrations
+;;     :history  [{:action :registered|:deregistered
+;;                 :alignment-ontology-id <id>
+;;                 :at <ts>
+;;                 :event-id <eid>} ...chronological]}}
+;;
+;; Cycle-tolerant: a registration cycle (P->A, A->P) is recorded as two
+;; independent entries — no global invariant check at projection time.
+;; Single-hop widening (see `widen-ontology-ids` below) naturally
+;; dedupes via set semantics so cycles never produce infinite loops nor
+;; surprising fanout.
+
+(def alignment-registry-events
+  "Two event types feed the alignment-section registry projection."
+  #{:ontology/alignment-section-registered
+    :ontology/alignment-section-deregistered})
+
+(defmulti alignment-registry*
+  "Apply event to the alignment-registry projection.
+   State: {primary-id -> {:current #{alignment-id ...} :history [...]}}"
+  (fn [_state event] (:event/type event)))
+
+(defmethod alignment-registry* :default [state _] state)
+
+(defmethod alignment-registry* :ontology/alignment-section-registered
+  [state event]
+  (let [primary (:primary-ontology-id event)
+        alignment (:alignment-ontology-id event)
+        history-entry {:action :registered
+                       :alignment-ontology-id alignment
+                       :at (:registered-at event)
+                       :event-id (:event/id event)}]
+    (-> state
+        (update-in [primary :current] (fnil conj #{}) alignment)
+        (update-in [primary :history] (fnil conj []) history-entry))))
+
+(defmethod alignment-registry* :ontology/alignment-section-deregistered
+  [state event]
+  (let [primary (:primary-ontology-id event)
+        alignment (:alignment-ontology-id event)
+        history-entry {:action :deregistered
+                       :alignment-ontology-id alignment
+                       :at (:deregistered-at event)
+                       :event-id (:event/id event)}]
+    (-> state
+        ;; disj from a possibly-nil set: defensive fnil because a
+        ;; deregister of a never-registered pair MUST be a no-op on
+        ;; :current (idempotent), but the history entry below STILL
+        ;; lands so audit records the action.
+        (update-in [primary :current] (fnil disj #{}) alignment)
+        (update-in [primary :history] (fnil conj []) history-entry))))
+
+(defn alignment-registry
+  "Build the alignment-registry state from a seq of events."
+  [initial-state events]
+  (reduce alignment-registry* initial-state events))
+
+(defreadmodel :ontology alignment-registry
+  {:events alignment-registry-events, :version 1}
+  [state event] (alignment-registry* state event))
+
+(defn get-alignment-sections
+  "Return the SET of currently-registered alignment-section ids for the
+   given primary-ontology-id. Empty set when nothing is registered (NOT
+   nil — callers can iterate safely).
+
+   This is the live view; the audit history is retrievable separately
+   via `get-alignment-registry-history`."
+  [ctx primary-ontology-id]
+  (or (get-in (rmp/project ctx :ontology/alignment-registry)
+              [primary-ontology-id :current])
+      #{}))
+
+(defn get-alignment-registry-history
+  "Return the chronological history of every register/deregister action
+   recorded for the given primary-ontology-id. Each entry is
+   `{:action :registered|:deregistered :alignment-ontology-id <id>
+     :at <ts> :event-id <eid>}`. Empty vector when none recorded — never
+   nil so callers can safely iterate."
+  [ctx primary-ontology-id]
+  (or (get-in (rmp/project ctx :ontology/alignment-registry)
+              [primary-ontology-id :history])
+      []))
+
+(defn widen-ontology-ids
+  "Expand the given primary ontology-id(s) through the alignment-section
+   registry. SINGLE-HOP: registering P->A1 and A1->A2 widens P to
+   {P, A1} (NOT {P, A1, A2}). Consumers wanting chain reach must
+   register the chain explicitly.
+
+   Accepts either a single id (returns the widened set including the
+   id itself) or a collection of ids (returns the UNION of each id's
+   widened set). The output is always a set, never nil — empty registry
+   returns just the input ids as a set.
+
+   This is the seam the retrieval auto-widen path calls just before
+   passing the (expanded) :ontology-ids list down to the three signals
+   (BFS + embedding + ColBERT). The S02 multi-section widening
+   mechanism takes it from there."
+  [ctx ontology-id-or-ids]
+  (let [registry (rmp/project ctx :ontology/alignment-registry)
+        ids (cond
+              (coll? ontology-id-or-ids) (set ontology-id-or-ids)
+              (some? ontology-id-or-ids) #{ontology-id-or-ids}
+              :else #{})]
+    (reduce (fn [acc id]
+              (-> acc
+                  (conj id)
+                  (into (or (get-in registry [id :current]) #{}))))
+            #{} ids)))
+
+;; =============================================================================
 ;; S14 — Ontology Specs (ORSD) Projection
 ;; =============================================================================
 ;;
