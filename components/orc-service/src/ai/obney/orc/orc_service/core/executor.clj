@@ -30,7 +30,8 @@
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
-            [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]))
+            [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
+            [ai.obney.orc.orc-service.core.orientation-card :as orientation-card]))
 
 ;; Forward declarations
 (declare execute-repl-researcher-rlm)
@@ -1509,8 +1510,18 @@
 
    U9: When (:rlm node) is a map containing :available-code-nodes (string), that
    catalog is surfaced as an extra dscloj input field so the model can use
-   the listed functions inside emit-tree! :code nodes."
-  [node inputs-preview history blackboard sandbox-vars-map var-creation-times]
+   the listed functions inside emit-tree! :code nodes.
+
+   S20: When `orientation-card` (a string) is supplied via the optional
+   7th arg, it is injected at the top of the recursive-mode section so
+   the model orients on the granted ontology graph before deciding
+   which tool to call. The 6-arg arity preserves back-compat for existing
+   call-sites (and tests) that do not have a card to inject."
+  ([node inputs-preview history blackboard sandbox-vars-map var-creation-times]
+   (build-rlm-code-generation-module
+    node inputs-preview history blackboard sandbox-vars-map var-creation-times nil))
+  ([node inputs-preview history blackboard sandbox-vars-map var-creation-times
+    orientation-card]
   (let [rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
         available-code-nodes (get rlm-config :available-code-nodes)
         base-inputs [{:name :task
@@ -1659,6 +1670,16 @@
                       "- **Vision over multiple images**: :map-each over an image vector with :llm reading individual image keys.\n\n"
                       "The pattern is always: break into bounded sub-problems → sub-LLM per piece → :code or :aggregate.\n"
                       "Previews adapt to data type: text samples for documents, T-box/A-box summaries for graphs.\n\n"
+                      ;; S20 — orientation card. Injected when an ontology-id
+                      ;; grant is present + an event-store is reachable (the
+                      ;; orientation-card arg is precomputed by the caller via
+                      ;; the orientation-card namespace, cached + reindex-
+                      ;; refreshed). Without a grant, this is nil/empty and
+                      ;; no card is included — information-leak safe. The
+                      ;; card lives ABOVE the ontology-examples-section so
+                      ;; the model orients on the graph first, before
+                      ;; reading any few-shot examples that may reference it.
+                      (or orientation-card "")
                       ;; Include ontology examples if available
                       (or (build-ontology-examples-section node) "")
                       ;; Descriptive recursive-mode section.
@@ -1960,7 +1981,7 @@
                       ;; at the end of the prompt so the model knows to read
                       ;; it before designing emit-tree! :code nodes.
                       (when available-code-nodes
-                        "\n\nA catalog of pre-built code-node functions is provided in the :available-code-nodes input above. Use them via [:code {:fn \"...\"}] in your emit-tree! tree when their semantics match what you need. Their input/output shapes are documented there.\n\n"))}))
+                        "\n\nA catalog of pre-built code-node functions is provided in the :available-code-nodes input above. Use them via [:code {:fn \"...\"}] in your emit-tree! tree when their semantics match what you need. Their input/output shapes are documented there.\n\n"))})))
 
 (defn execute-repl-researcher-rlm
   "Execute a repl-researcher node in RLM mode.
@@ -2070,8 +2091,24 @@
 
           :else
           ;; Generate code using LLM
-          (let [module (build-rlm-code-generation-module node inputs-preview history
-                                                          blackboard @sandbox-vars @var-creation-times)
+          (let [;; S20 — compute the orientation card now (or pull from
+                ;; the per-process cache). The card namespace's `card-for`
+                ;; is grant-gated: nil ontology-id → nil card; the
+                ;; downstream prompt-builder treats nil as "do not inject".
+                ;; Multi-grant nodes orient on the first granted-ontology-id
+                ;; (the prose layer planned for the NEXT-tail will surface
+                ;; multi-section orientation more explicitly).
+                primary-grant (or (get rlm-config :granted-ontology-id)
+                                  (first (get rlm-config :granted-ontology-ids)))
+                orientation-card (when (and (:event-store context) primary-grant)
+                                   (orientation-card/card-for
+                                    (cond-> {:event-store (:event-store context)}
+                                      (:tenant-id context) (assoc :tenant-id (:tenant-id context))
+                                      (:cache context)     (assoc :cache (:cache context)))
+                                    primary-grant))
+                module (build-rlm-code-generation-module node inputs-preview history
+                                                          blackboard @sandbox-vars @var-creation-times
+                                                          orientation-card)
                 inputs {:task (:instruction node)
                         :inputs-info (pr-str inputs-preview)
                         :history (or (build-iteration-history history) "None")}

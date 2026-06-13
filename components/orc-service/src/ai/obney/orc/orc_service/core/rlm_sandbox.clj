@@ -35,6 +35,7 @@
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.sandbox-tools :as sandbox-tools]
+            [ai.obney.orc.orc-service.core.orientation-card :as orientation-card]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
 
@@ -322,7 +323,18 @@
      (graph-search, neighborhood, get-concept, exists?, absent-in-graph?,
      filter-by-label-pattern, classify-task, classify-behaviors). The grant
      is the AUTHORITATIVE scope — any :ontology-id the model passes in is
-     ignored. Without these keys, the tools are NOT exposed."
+     ignored. Without these keys, the tools are NOT exposed.
+
+   Returns a map with keys:
+   - :sci-ctx          the SCI evaluator context
+   - :final-output     the atom that captures (final! ...) output
+   - :sandbox-vars     the atom backing (store!) / (get-var)
+   - :usage-tracker    the atom aggregating sub-LLM token usage
+   - :orientation-card S20. A string (the deterministic four-layer
+                       orientation card) when an ontology-id grant
+                       was supplied with an :event-store; nil otherwise.
+                       The executor prepends this above the recursive-RLM
+                       prompt's tool-affordances explanation."
   [{:keys [provider blackboard declared-writes parent-trace-id
            call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
            recursive? event-store tenant-id cache
@@ -764,6 +776,24 @@
                                   :granted-ontology-id granted-ontology-id
                                   :granted-ontology-ids granted-ontology-ids})
 
+        ;; S20 — orientation card. Computed (or cache-hit) when an
+        ;; ontology-id grant is supplied AND an event-store is available
+        ;; to project against. Without those, nil — the executor's
+        ;; prompt-builder skips injection cleanly. The card is a derived
+        ;; view of projections (read-side only) so it can be safely
+        ;; produced inside the sandbox-build hot path without altering
+        ;; state. A multi-grant call uses the first granted-ontology-id
+        ;; (or the first of granted-ontology-ids); the prose layer
+        ;; planned for the NEXT-tail will surface multi-section
+        ;; orientation more explicitly.
+        primary-grant (or granted-ontology-id (first granted-ontology-ids))
+        orientation-card (when (and event-store primary-grant)
+                           (orientation-card/card-for
+                            (cond-> {:event-store event-store}
+                              tenant-id (assoc :tenant-id tenant-id)
+                              cache     (assoc :cache cache))
+                            primary-grant))
+
         ;; RLM bindings - these are the key primitives
         rlm-bindings (merge {'llm llm-fn
                              'final! final!-fn
@@ -806,7 +836,12 @@
     {:sci-ctx sci-ctx
      :final-output final-output
      :sandbox-vars sandbox-vars
-     :usage-tracker usage-tracker}))
+     :usage-tracker usage-tracker
+     ;; S20 — the orientation card (or nil when no grant). The executor
+     ;; reads this when assembling the recursive-RLM prompt instructions
+     ;; and prepends it above the tool-affordances explanation so the
+     ;; model sees the card before deciding which tool to call.
+     :orientation-card orientation-card}))
 
 (defn execute-rlm-code
   "Execute Clojure code in the RLM sandbox.
