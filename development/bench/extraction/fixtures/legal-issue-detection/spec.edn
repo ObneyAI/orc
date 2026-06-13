@@ -1,0 +1,15 @@
+{:purpose
+ "Extract distinct legal issues from a short employment agreement. The
+  output shape is a SEQUENCE of issue concepts — one per concern. CQs
+  include both deterministic Layer-1 (concept existence) and an
+  adversarial Layer-1-fail (Severance Provision the source omits)."
+
+ :competency-questions
+ ["Is there an Unfettered Bonus Discretion concept?"
+  "Is there an Overbroad Non-Compete concept?"
+  "Is there an Excessive Non-Solicitation concept?"
+  "Is there a Perpetual Confidentiality concept?"
+  "Is there a Draconian Termination Trigger concept?"
+  ;; Adversarial: severance is NOT modeled — this is the
+  ;; 'missing standard protection' the bench flagged.
+  "Is there a Severance Provision concept?"]}

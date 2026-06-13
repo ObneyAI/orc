@@ -1,0 +1,35 @@
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
+@prefix ex:    <http://example.org/risk-analysis#> .
+
+# Risk-analysis fixture — derived from
+# development/bench/risk_analysis.clj + the captured penalty / obligation
+# clauses in generalization-results/risk-analysis_*.edn. Exercises
+# substrate extraction of risk-bearing concepts + characteristic axioms
+# typical of risk-modeling ontologies.
+
+ex:LatePaymentInterest a skos:Concept ;
+  skos:prefLabel "Late Payment Interest"@en ;
+  rdfs:comment "Interest of 2% per month compounded monthly on late remittances."@en .
+
+ex:RevenueUnderstatementPenalty a skos:Concept ;
+  skos:prefLabel "Revenue Understatement Penalty"@en ;
+  rdfs:comment "Audit-cost reimbursement when gross revenue is understated by 1% or more."@en .
+
+ex:ForceMajeureLabourExclusion a skos:Concept ;
+  skos:prefLabel "Force Majeure Labour Exclusion"@en ;
+  rdfs:comment "Labour disruptions are excluded from force majeure relief — contractor remains liable."@en .
+
+ex:IrrevocableLetterOfCredit a skos:Concept ;
+  skos:prefLabel "Irrevocable Letter of Credit"@en ;
+  rdfs:comment "5% security mechanism the VAA may draw against to compensate default."@en .
+
+ex:NonCompetitionRestriction a skos:Concept ;
+  skos:prefLabel "Non-Competition Restriction"@en ;
+  rdfs:comment "10km exclusion zone with pre-consented injunctive relief upon breach."@en .
+
+# A penalty is a risk vector that, structurally, is distinct from a
+# security mechanism — useful S07 axiom anchor for the substrate.
+ex:LatePaymentInterest owl:disjointWith ex:IrrevocableLetterOfCredit .

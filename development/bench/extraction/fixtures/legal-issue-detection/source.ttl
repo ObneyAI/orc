@@ -1,0 +1,38 @@
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
+@prefix ex:    <http://example.org/legal-issue-detection#> .
+
+# Legal-issue-detection fixture — derived from
+# development/bench/legal_issue_detection.clj + the issue list captured
+# in generalization-results/legal-issue-detection_2026-06-09_172808.edn.
+# The bench task scanned an employment agreement and surfaced 7 distinct
+# legal concerns. This fixture mirrors a representative subset as
+# substrate concepts, exercising the small-doc / sequence-shaped output
+# pattern the bench validated.
+
+ex:UnfetteredBonusDiscretion a skos:Concept ;
+  skos:prefLabel "Unfettered Bonus Discretion"@en ;
+  rdfs:comment "Performance bonus is entirely discretionary; employer can withhold despite met targets."@en .
+
+ex:OverbroadNonCompete a skos:Concept ;
+  skos:prefLabel "Overbroad Non-Compete"@en ;
+  rdfs:comment "12-month non-compete across two metropolitan regions — potentially unenforceable in British Columbia."@en .
+
+ex:ExcessiveNonSolicitation a skos:Concept ;
+  skos:prefLabel "Excessive Non-Solicitation"@en ;
+  rdfs:comment "18-month non-solicitation period exceeds reasonable protection for the role."@en .
+
+ex:PerpetualConfidentiality a skos:Concept ;
+  skos:prefLabel "Perpetual Confidentiality"@en ;
+  rdfs:comment "Non-disclosure obligations lack a sunset clause, potentially lifelong burden."@en .
+
+ex:DraconianTerminationTrigger a skos:Concept ;
+  skos:prefLabel "Draconian Termination Trigger"@en ;
+  rdfs:comment "Termination on 'material misrepresentation' could encompass clerical errors in personal data."@en .
+
+# Disjointness — a discretionary clause (employer choice) and a
+# restrictive clause (employee limitation) are structurally distinct
+# legal risk vectors.
+ex:UnfetteredBonusDiscretion owl:disjointWith ex:OverbroadNonCompete .

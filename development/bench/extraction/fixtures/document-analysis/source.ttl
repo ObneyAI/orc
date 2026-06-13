@@ -1,0 +1,32 @@
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
+@prefix ex:    <http://example.org/document-analysis#> .
+
+# Document-analysis fixture — derived from
+# development/bench/document_analysis.clj + the captured RFP entities
+# in generalization-results/document-analysis_*.edn. The Victoria
+# Airport Authority RFP surfaces a buyer, a counter-party, a subject
+# of contract, and a defined-term concept. This fixture exercises
+# the substrate's CONCEPT extraction with broader-edges and a
+# disjointness axiom.
+
+ex:VictoriaAirportAuthority a skos:Concept ;
+  skos:prefLabel "Victoria Airport Authority"@en ;
+  rdfs:comment "Buyer / acquirer party issuing the RFP."@en .
+
+ex:Contractor a skos:Concept ;
+  skos:prefLabel "Contractor"@en ;
+  rdfs:comment "Counter-party that responds to the RFP and operates the parking management service."@en .
+
+ex:ParkingManagementServices a skos:Concept ;
+  skos:prefLabel "Parking Management Services"@en ;
+  rdfs:comment "Subject of the contract — the service the Contractor delivers."@en .
+
+ex:Monies a skos:Concept ;
+  skos:prefLabel "Monies"@en ;
+  rdfs:comment "Defined term: all revenue (cash, credit, digital) collected at the airport parking facility."@en .
+
+# Two parties to a contract are distinct legal entities — S07 axiom.
+ex:Contractor owl:disjointWith ex:VictoriaAirportAuthority .

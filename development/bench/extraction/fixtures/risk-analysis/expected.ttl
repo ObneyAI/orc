@@ -1,0 +1,47 @@
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix ex:    <http://example.org/risk-analysis#> .
+
+# Expected graph — uses the same export convention as the
+# document-analysis fixture: prefLabel as plain literal (lang tag
+# stripped by concepts->turtle), rdfs:comment retains @en, scopeNote
+# "custom" lands per concept.
+
+ex:scheme a skos:ConceptScheme ;
+  skos:prefLabel "ObneyAI Workshop Ontology" ;
+  dcterms:description "Three-layer ontology: Failure, Success, Problem Domain" .
+
+ex:LatePaymentInterest a skos:Concept ;
+  skos:prefLabel "Late Payment Interest" ;
+  rdfs:comment "Interest of 2% per month compounded monthly on late remittances."@en ;
+  skos:scopeNote "custom" .
+
+ex:RevenueUnderstatementPenalty a skos:Concept ;
+  skos:prefLabel "Revenue Understatement Penalty" ;
+  rdfs:comment "Audit-cost reimbursement when gross revenue is understated by 1% or more."@en ;
+  skos:scopeNote "custom" .
+
+ex:ForceMajeureLabourExclusion a skos:Concept ;
+  skos:prefLabel "Force Majeure Labour Exclusion" ;
+  rdfs:comment "Labour disruptions are excluded from force majeure relief — contractor remains liable."@en ;
+  skos:scopeNote "custom" .
+
+ex:IrrevocableLetterOfCredit a skos:Concept ;
+  skos:prefLabel "Irrevocable Letter of Credit" ;
+  rdfs:comment "5% security mechanism the VAA may draw against to compensate default."@en ;
+  skos:scopeNote "custom" .
+
+ex:NonCompetitionRestriction a skos:Concept ;
+  skos:prefLabel "Non-Competition Restriction" ;
+  rdfs:comment "10km exclusion zone with pre-consented injunctive relief upon breach."@en ;
+  skos:scopeNote "custom" .
+
+# Canonical endpoint order (URI-sorted) — the serializer emits the
+# directed triple with src < target lexicographically (disjointWith is
+# symmetric, so a single directed triple suffices). Source has the
+# pair declared the other way; the substrate normalizes to canonical
+# order during projection.
+ex:IrrevocableLetterOfCredit owl:disjointWith ex:LatePaymentInterest .

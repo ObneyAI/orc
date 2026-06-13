@@ -1,0 +1,47 @@
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix ex:    <http://example.org/document-analysis#> .
+
+# Expected graph for the document-analysis fixture. The substrate
+# emits prefLabel as a PLAIN literal (lang tag stripped by the
+# concepts->turtle projection); rdfs:comment retains the @en lang
+# tag from the source. scopeNote "custom" lands per concept because
+# the default scope is :custom on TTL ingest.
+#
+# This expected graph is the high-recall G2 target — every triple
+# below MUST land in the skeleton's full-export. Extras the skeleton
+# emits beyond this set (e.g., the ConceptScheme block) are tolerated.
+
+# Concept Scheme — the skeleton's full-export wraps concepts in a
+# scheme block; including the scheme triples in the expected graph
+# proves the scheme survives round-trip.
+ex:scheme a skos:ConceptScheme ;
+  skos:prefLabel "ObneyAI Workshop Ontology" ;
+  dcterms:description "Three-layer ontology: Failure, Success, Problem Domain" .
+
+# Concepts
+ex:VictoriaAirportAuthority a skos:Concept ;
+  skos:prefLabel "Victoria Airport Authority" ;
+  rdfs:comment "Buyer / acquirer party issuing the RFP."@en ;
+  skos:scopeNote "custom" .
+
+ex:Contractor a skos:Concept ;
+  skos:prefLabel "Contractor" ;
+  rdfs:comment "Counter-party that responds to the RFP and operates the parking management service."@en ;
+  skos:scopeNote "custom" .
+
+ex:ParkingManagementServices a skos:Concept ;
+  skos:prefLabel "Parking Management Services" ;
+  rdfs:comment "Subject of the contract — the service the Contractor delivers."@en ;
+  skos:scopeNote "custom" .
+
+ex:Monies a skos:Concept ;
+  skos:prefLabel "Monies" ;
+  rdfs:comment "Defined term: all revenue (cash, credit, digital) collected at the airport parking facility."@en ;
+  skos:scopeNote "custom" .
+
+# S07 axiom — parties to the contract are distinct legal entities.
+ex:Contractor owl:disjointWith ex:VictoriaAirportAuthority .

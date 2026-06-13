@@ -1,0 +1,14 @@
+{:purpose
+ "Extract risk-bearing concepts + characteristic disjointness axioms
+  from VAA RFP penalty/obligation clauses. Adversarial CQ probes
+  whether the substrate avoids fabricating a non-existent
+  'cap-on-liability' concept the source doesn't define."
+
+ :competency-questions
+ ["Is there a Late Payment Interest concept?"
+  "Is there a Revenue Understatement Penalty concept?"
+  "Is there a Force Majeure Labour Exclusion concept?"
+  "Is there an Irrevocable Letter of Credit concept?"
+  "Is there a Non-Competition Restriction concept?"
+  ;; Adversarial Layer-1 — concept NOT in fixture, must fail.
+  "Is there a Liability Cap concept?"]}

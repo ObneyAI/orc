@@ -1,0 +1,15 @@
+{:purpose
+ "Extract concepts + relationships + disjointness axioms from the
+  Victoria Airport Authority RFP (Layer-3 extraction CQs included to
+  show the unknown-rate metric works against adversarial questions
+  the substrate cannot answer)."
+
+ :competency-questions
+ ;; Layer-1 deterministic — answerable from concept-existence projection.
+ ["Is there a Victoria Airport Authority concept?"
+  "Is there a Contractor concept?"
+  "Is there a Parking Management Services concept?"
+  "Is there a Monies concept?"
+  ;; Layer-3 adversarial — fixture deliberately does NOT extract these
+  ;; so the unknown-rate metric surfaces a real signal.
+  "Is there a Sub-Contractor concept?"]}

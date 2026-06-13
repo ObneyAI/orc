@@ -1,0 +1,39 @@
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix skos:  <http://www.w3.org/2004/02/skos/core#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix ex:    <http://example.org/legal-issue-detection#> .
+
+ex:scheme a skos:ConceptScheme ;
+  skos:prefLabel "ObneyAI Workshop Ontology" ;
+  dcterms:description "Three-layer ontology: Failure, Success, Problem Domain" .
+
+ex:UnfetteredBonusDiscretion a skos:Concept ;
+  skos:prefLabel "Unfettered Bonus Discretion" ;
+  rdfs:comment "Performance bonus is entirely discretionary; employer can withhold despite met targets."@en ;
+  skos:scopeNote "custom" .
+
+ex:OverbroadNonCompete a skos:Concept ;
+  skos:prefLabel "Overbroad Non-Compete" ;
+  rdfs:comment "12-month non-compete across two metropolitan regions — potentially unenforceable in British Columbia."@en ;
+  skos:scopeNote "custom" .
+
+ex:ExcessiveNonSolicitation a skos:Concept ;
+  skos:prefLabel "Excessive Non-Solicitation" ;
+  rdfs:comment "18-month non-solicitation period exceeds reasonable protection for the role."@en ;
+  skos:scopeNote "custom" .
+
+ex:PerpetualConfidentiality a skos:Concept ;
+  skos:prefLabel "Perpetual Confidentiality" ;
+  rdfs:comment "Non-disclosure obligations lack a sunset clause, potentially lifelong burden."@en ;
+  skos:scopeNote "custom" .
+
+ex:DraconianTerminationTrigger a skos:Concept ;
+  skos:prefLabel "Draconian Termination Trigger" ;
+  rdfs:comment "Termination on 'material misrepresentation' could encompass clerical errors in personal data."@en ;
+  skos:scopeNote "custom" .
+
+# Canonical endpoint order (URI-sorted) — see disjointness->turtle
+# in serialization.clj. The serializer emits src < target.
+ex:OverbroadNonCompete owl:disjointWith ex:UnfetteredBonusDiscretion .
