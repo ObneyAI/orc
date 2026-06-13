@@ -885,6 +885,46 @@
     [:target-uri     :string]
     [:kind           [:enum :same-as :equivalent-class :equivalent-property]]
     [:evidence       {:optional true} [:vector :string]]
+    [:recorded-at    :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S12 — Dedup cascade verdict events
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Two write-only events emitted by the dedup cascade:
+   ;;
+   ;; 1. :ontology/dedup-distinct-recorded — the cascade decided two
+   ;;    candidate URIs are DISTINCT. The :tier records which cascade
+   ;;    tier produced the verdict; the :reason carries the structured
+   ;;    reason (:number-difference / :negation-difference /
+   ;;    :disjointness-guard / :type-mismatch / :below-band / :entity /
+   ;;    LLM-supplied keywords). The :evidence is the cascade's detail
+   ;;    string (number tokens, polarity-flip, JW score, etc.) — useful
+   ;;    for the co-occurrence trail without forcing the consumer to
+   ;;    re-derive it.
+   ;; 2. :ontology/concept-pair-co-occurrence — write-only stream of pairs
+   ;;    the cascade considered (the C1 co-occurrence trail). Context-
+   ;;    aware disambiguation activates in a later slice once data
+   ;;    accumulates. Shape carries the sorted-pair set, the
+   ;;    :context-source (the tier that closed the verdict), and the
+   ;;    :verdict (:merge / :distinct / :skip / :requires-review).
+   :ontology/dedup-distinct-recorded
+   [:map
+    [:ontology-id :uuid]      ;; section the candidates were drawn from
+    [:source-uri  :string]
+    [:target-uri  :string]
+    [:tier        :keyword]   ;; which cascade tier produced the verdict
+    [:reason      :keyword]   ;; structured reason (see comment above)
+    [:evidence    {:optional true} :string]
+    [:recorded-at :string]]
+
+   :ontology/concept-pair-co-occurrence
+   [:map
+    [:ontology-id    :uuid]
+    [:source-uri     :string]
+    [:target-uri     :string]
+    [:context-source :keyword] ;; the tier that closed the verdict
+    [:verdict        [:enum :merge :distinct :skip :requires-review]]
     [:recorded-at    :string]]})
 
 ;; =============================================================================
@@ -1466,7 +1506,49 @@
     [:source-uri  :string]
     [:target-uri  :string]
     [:kind        [:enum :same-as :equivalent-class :equivalent-property]]
-    [:evidence    {:optional true} [:vector :string]]]})
+    [:evidence    {:optional true} [:vector :string]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S12 — Dedup-cascade verdict command
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; ONE command runs the full tiered cascade for a candidate pair and
+   ;; emits whichever events the verdict requires:
+   ;;
+   ;;   :verdict :merge              → :ontology/equivalence-recorded
+   ;;                                  + :ontology/concept-pair-co-occurrence
+   ;;   :verdict :distinct           → :ontology/dedup-distinct-recorded
+   ;;                                  + :ontology/concept-pair-co-occurrence
+   ;;   :verdict :skip               → :ontology/concept-pair-co-occurrence ONLY
+   ;;   :verdict :requires-review    → :ontology/concept-pair-co-occurrence ONLY
+   ;;
+   ;; `:ontology-id` is the PRIMARY section the pair was drawn from.
+   ;; `:alignment-ontology-id` (optional) is the alignment section equivalence
+   ;; events get tagged to — REQUIRED when the verdict is :merge.
+   ;; The Malli `:and` enforces this at the pre-handler gate.
+   :ontology/run-dedup-cascade
+   [:and
+    [:map
+     [:ontology-id           :uuid]
+     [:alignment-ontology-id {:optional true} :uuid]
+     [:a [:map
+          [:uri :string]
+          [:label :string]
+          [:description {:optional true} :string]
+          [:type {:optional true} [:enum :class :property :individual]]
+          [:broader {:optional true} [:vector :string]]
+          [:kind-hint {:optional true} [:enum :same-as :equivalent-class :equivalent-property]]]]
+     [:b [:map
+          [:uri :string]
+          [:label :string]
+          [:description {:optional true} :string]
+          [:type {:optional true} [:enum :class :property :individual]]
+          [:broader {:optional true} [:vector :string]]
+          [:kind-hint {:optional true} [:enum :same-as :equivalent-class :equivalent-property]]]]
+     [:llm-budget   {:optional true} [:int {:min 0}]]
+     [:string-merge-threshold {:optional true} :double]
+     [:string-ambiguity-lo    {:optional true} :double]
+     [:lsh-jaccard-min        {:optional true} :double]]]})
 
 ;; =============================================================================
 ;; Query Schemas

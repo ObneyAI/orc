@@ -16,8 +16,10 @@
             [ai.obney.orc.ontology.core.embedding :as embedding]
             [ai.obney.orc.ontology.core.discovery :as discovery]
             [ai.obney.orc.ontology.core.rule-extraction :as rule-extraction]
+            [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [ai.obney.grain.time.interface :as time]
             [cognitect.anomalies :as anom]))
 
@@ -1445,3 +1447,123 @@
                        :kind kind
                        :recorded-at now}
                 (seq evidence) (assoc :evidence (vec evidence)))})]}))
+
+;; =============================================================================
+;; S12 — Dedup-cascade command
+;; =============================================================================
+;;
+;; Runs the tiered cheapest-first cascade for a candidate pair and emits the
+;; events the verdict requires:
+;;
+;;   :verdict :merge              → :ontology/equivalence-recorded
+;;                                  + :ontology/concept-pair-co-occurrence
+;;   :verdict :distinct           → :ontology/dedup-distinct-recorded
+;;                                  + :ontology/concept-pair-co-occurrence
+;;   :verdict :skip               → :ontology/concept-pair-co-occurrence ONLY
+;;   :verdict :requires-review    → :ontology/concept-pair-co-occurrence ONLY
+;;
+;; The T1 disjointness guard reads the S07 :ontology/axioms projection;
+;; the merge case emits an equivalence event tagged to the alignment-
+;; ontology-id (S08); the co-occurrence event is the C1 trail.
+;;
+;; LLM tier: unconditional functionality (NOT R-Inject-gated), but
+;; :llm-budget knobbed. When the budget is exhausted, T9 surfaces
+;; :requires-review — NEVER silently :merge, NEVER silently :skip.
+
+(defcommand :ontology run-dedup-cascade
+  "S12: run the tiered dedup cascade for a candidate URI pair.
+
+   Emits the events the verdict requires (see ns doc). The verdict map
+   itself rides on `:command-result/data` under :verdict for the caller's
+   immediate inspection (the events carry the persistent record).
+
+   When `:verdict :merge`, an `:alignment-ontology-id` MUST be supplied —
+   the equivalence event tags to it. The Malli :and gate rejects the
+   command up-front if the merge case is reached without one (handled
+   by the handler: when merge verdict + no alignment, the handler returns
+   a `::anom/incorrect` anomaly rather than silently downgrading the
+   verdict)."
+  [{{:keys [ontology-id alignment-ontology-id a b
+            llm-budget string-merge-threshold string-ambiguity-lo lsh-jaccard-min]} :command
+    :as ctx}]
+  (let [;; Pull the S07 axioms projection ONCE for the cascade's T1 guard.
+        all-axioms (rmp/project ctx :ontology/axioms)
+        ;; Per-section disjointness map. Empty {} when no axioms recorded
+        ;; (the guard then no-ops cleanly).
+        disjointness (or (get-in all-axioms [ontology-id :disjointness]) {})
+        ;; The guard's fn closes over the broader vectors on both candidates
+        ;; AND the per-section disjointness map. The cascade tests this
+        ;; FIRST — zero LLM calls if it fires.
+        disjoint-pair-fn (fn [_a-uri _b-uri]
+                           (dedup/disjoint-under-axioms?
+                            disjointness
+                            (:broader a [])
+                            (:broader b [])))
+        opts (cond-> {:a a :b b :disjoint-pair-fn disjoint-pair-fn}
+               string-merge-threshold (assoc :string-merge-threshold string-merge-threshold)
+               string-ambiguity-lo    (assoc :string-ambiguity-lo string-ambiguity-lo)
+               lsh-jaccard-min        (assoc :lsh-jaccard-min lsh-jaccard-min)
+               llm-budget             (assoc :llm-budget llm-budget
+                                             :llm-counter (atom 0))
+               (:llm-fn ctx)          (assoc :llm-fn (:llm-fn ctx)))
+        verdict (dedup/run-cascade opts)
+        now (now-str)
+        a-uri (:uri a) b-uri (:uri b)
+        co-occurrence-event
+        (->event
+         {:type :ontology/concept-pair-co-occurrence
+          :tags #{[:ontology ontology-id]}
+          :body {:ontology-id ontology-id
+                 :source-uri a-uri
+                 :target-uri b-uri
+                 :context-source (:tier verdict)
+                 :verdict (:verdict verdict)
+                 :recorded-at now}})]
+    (case (:verdict verdict)
+      :merge
+      (if-not alignment-ontology-id
+        ;; Merge requires an alignment section. No silent downgrade — refuse.
+        {::anom/category ::anom/incorrect
+         ::anom/message "run-dedup-cascade: :merge verdict requires :alignment-ontology-id"
+         :command-result/data {:verdict verdict}}
+        (let [equivalence-id (generate-uuid)
+              evidence-vec (vec (remove nil?
+                                        [(when-let [d (:detail verdict)] d)
+                                         (when-let [r (:reason verdict)] (str r))
+                                         (str (:tier verdict))]))]
+          {:command-result/data {:verdict verdict}
+           :command-result/events
+           [(->event
+             {:type :ontology/equivalence-recorded
+              :tags #{[:ontology alignment-ontology-id]
+                      [:equivalence equivalence-id]}
+              :body {:equivalence-id equivalence-id
+                     :ontology-id alignment-ontology-id
+                     :source-uri a-uri
+                     :target-uri b-uri
+                     :kind (:kind verdict)
+                     :evidence evidence-vec
+                     :recorded-at now}})
+            co-occurrence-event]}))
+
+      :distinct
+      {:command-result/data {:verdict verdict}
+       :command-result/events
+       [(->event
+         {:type :ontology/dedup-distinct-recorded
+          :tags #{[:ontology ontology-id]}
+          :body (cond-> {:ontology-id ontology-id
+                         :source-uri a-uri
+                         :target-uri b-uri
+                         :tier (:tier verdict)
+                         :reason (:reason verdict)
+                         :recorded-at now}
+                  (:detail verdict) (assoc :evidence (:detail verdict)))})
+        co-occurrence-event]}
+
+      ;; :skip and :requires-review emit ONLY the co-occurrence event.
+      ;; Neither carries an equivalence event (no merge claim) nor a
+      ;; dedup-distinct event (the cascade declined to decide).
+      (:skip :requires-review)
+      {:command-result/data {:verdict verdict}
+       :command-result/events [co-occurrence-event]})))
