@@ -17,7 +17,16 @@
             [cheshire.core :as json]
             [clojure.string :as str]
             [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.ontology.interface :as ontology]
+            ;; NB: require core/read-models directly, NOT the umbrella
+            ;; ai.obney.orc.ontology.interface. The interface fans out to this
+            ;; (and ~16 other) core namespaces; requiring it back up from a
+            ;; core namespace forms a load-order back-edge that, under some
+            ;; consumer load orders, re-enters the interface mid-load and leaves
+            ;; it partially realized (its trailing defns undefined). The
+            ;; classify-* / search-descriptions vars that genuinely live only in
+            ;; the interface are reached via requiring-resolve below, which
+            ;; defers resolution past load.
+            [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -751,7 +760,7 @@
   "The actual consolidation body — split out so the public consolidate!
    can do a clean budget-gate check before kicking off the LLM workflow."
   [context target-type target-id]
-  (let [current-description (ontology/get-description context target-type target-id)
+  (let [current-description (rm/get-description context target-type target-id)
         recent-events (gather-recent-events context target-type target-id)
         aggregate-metrics (gather-aggregate-metrics context target-type target-id)
         recent-vs-historical-delta (compute-delta aggregate-metrics recent-events)
@@ -892,8 +901,8 @@
    Validation failure: logs and aborts cleanly (no event emitted)."
   [context target-type target-id]
   (u/log ::consolidate-start :target-type target-type :target-id target-id)
-  (let [budget (ontology/get-consolidation-budget context target-type)
-        recent-count (ontology/get-recent-consolidation-count context target-type)]
+  (let [budget (rm/get-consolidation-budget context target-type)
+        recent-count (rm/get-recent-consolidation-count context target-type)]
     (if (>= recent-count budget)
       (u/log ::consolidate-budget-exceeded
              :target-type target-type
