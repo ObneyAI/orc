@@ -3,16 +3,24 @@
    as EDN resources alongside the ontology component.
 
    Resource layout (under `components/ontology/resources/seeds/`):
-     node-types.edn          — 10 node-type seed bodies
-     tree-classes.edn        — 23 structural tree-class seed bodies
-                                (each dual-emitted under :tree-fingerprint
-                                AND :tree-class scopes)
-     behavioral-subtrees.edn — 12 behavioral-subtree seed bodies
+     node-types.edn                   — 10 node-type seed bodies
+     tree-classes.edn                 — 23 structural tree-class seed bodies
+                                         (each dual-emitted under
+                                         :tree-fingerprint AND :tree-class
+                                         scopes)
+     behavioral-subtrees.edn          — 12 behavioral-subtree seed bodies
+     ontology-discovery-patterns.edn  — 5 ontology-discovery patterns
+                                         (S18 — AFK-derived from bench
+                                         RESULTS; :hitl-status flagged
+                                         per entry; behavioral-subtree
+                                         scope so classify-behaviors
+                                         surfaces them)
 
    The EDN files are generated from `development/src/seed_descriptions.clj`
-   via `components/ontology/scripts/regen-seeds.clj`. Editing the EDN by
-   hand is supported but the source of truth is the dev Clojure file —
-   re-run the regen script to refresh.
+   via `components/ontology/scripts/regen-seeds.clj` — except for
+   `ontology-discovery-patterns.edn`, which is hand-curated against the
+   bench RESULTS and reviewed under the HITL extension surface
+   (`components/ontology/resources/seeds/ONTOLOGY-DISCOVERY-HITL.md`).
 
    Each entry: `{:target-id <uuid-or-keyword-or-string> :body <body-map>}`."
   (:require [clojure.edn :as edn]
@@ -68,13 +76,20 @@
   [ctx]
   (let [node-types (read-seeds "seeds/node-types.edn")
         tree-classes (read-seeds "seeds/tree-classes.edn")
-        behaviorals (read-seeds "seeds/behavioral-subtrees.edn")]
+        behaviorals (read-seeds "seeds/behavioral-subtrees.edn")
+        discovery (read-seeds "seeds/ontology-discovery-patterns.edn")]
     (vec
       (concat
         (mapv #(emit-seed! ctx :node-type %) node-types)
         (mapv #(emit-seed! ctx :tree-fingerprint %) tree-classes)
         (mapv #(emit-seed! ctx :tree-class %) tree-classes)
-        (mapv #(emit-seed! ctx :tree-fingerprint %) behaviorals)))))
+        (mapv #(emit-seed! ctx :tree-fingerprint %) behaviorals)
+        ;; S18 — ontology-discovery patterns route through the
+        ;; tree-description command (granularity :tree-fingerprint) so
+        ;; classify-behaviors surfaces them. Each body carries
+        ;; :scope :behavioral-subtree :discovery-pattern? true and
+        ;; :hitl-status :auto-derived (until reviewed per HITL surface).
+        (mapv #(emit-seed! ctx :tree-fingerprint %) discovery)))))
 
 (defn baseline-seeds
   "Pure-data query: return the loaded seed catalog as a map of
@@ -86,4 +101,28 @@
   []
   {:node-types (read-seeds "seeds/node-types.edn")
    :tree-classes (read-seeds "seeds/tree-classes.edn")
-   :behavioral-subtrees (read-seeds "seeds/behavioral-subtrees.edn")})
+   :behavioral-subtrees (read-seeds "seeds/behavioral-subtrees.edn")
+   :ontology-discovery-patterns (read-seeds "seeds/ontology-discovery-patterns.edn")})
+
+(defn ontology-discovery-patterns
+  "S18 — return only the ontology-discovery seeds (pre-filtered by
+   `:hitl-status` when `require-hitl-reviewed?` is true).
+
+   Used by `run-discovery!` to retrieve discovery-pattern bodies for
+   inclusion in the recursive-RLM session's classify-behaviors surface.
+
+   When `require-hitl-reviewed?` is true, AFK-derived seeds
+   (`:hitl-status :auto-derived`) are excluded — only entries
+   explicitly marked `:hitl-reviewed` are returned. Default behavior
+   (when `nil` or `false`): return ALL patterns.
+
+   Returns a vector of seed entries. Empty vector when nothing meets
+   the filter — the caller is responsible for surfacing that case
+   in the rlm-trace (the session proceeds with no patterns; this is
+   not a crash)."
+  ([] (ontology-discovery-patterns false))
+  ([require-hitl-reviewed?]
+   (let [all (read-seeds "seeds/ontology-discovery-patterns.edn")]
+     (if require-hitl-reviewed?
+       (filterv #(= :hitl-reviewed (get-in % [:body :hitl-status])) all)
+       (vec all)))))

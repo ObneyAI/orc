@@ -1,0 +1,276 @@
+;; S18 — Ontology-discovery patterns (5 AFK-derived seeds).
+;;
+;; Each pattern is a behavioral subtree specialized for the work of
+;; extracting concepts + relationships + axioms from a source document.
+;; Patterns are derived from the 5 distinct tree shapes the recursive-RLM
+;; model designed in the development/bench RLM generalization study —
+;; chosen because each shape genuinely solves a different size/shape
+;; tradeoff (no tree on tiny; pipeline on medium; chunked-parallel on
+;; large; specialized synthesis when output shapes diverge).
+;;
+;; Body convention:
+;;   :scope                 :behavioral-subtree
+;;   :discovery-pattern?    true   ; flag the recursive-RLM session reads
+;;   :hitl-status           :auto-derived | :hitl-reviewed
+;;   :provenance            free-text — origin of the body content
+;;
+;; The bodies retrieve through classify-behaviors when the recursive-RLM
+;; ontology-discovery session asks "what patterns fit this discovery
+;; task?". Each :recommended-pattern snippet inside :strengths is verbatim
+;; from the bench capture (never truncated) so the model can adapt it
+;; without lossy paraphrase.
+
+[{:target-id #uuid "00000000-d150-4001-b001-d0c0a0a0a0a1",
+  :body
+  {:capabilities
+   ["extract concepts + relationships + axioms from a SMALL source document (<10K chars) without decomposition"
+    "single-shot natural for sources whose content fits comfortably in a single context window"
+    "outputs land directly as drafts the deterministic skeleton ingests via :inline-concepts / :inline-relationships"],
+   :strengths
+   [{:trait
+     "direct single-LLM extraction for small sources avoids unnecessary decomposition overhead",
+     :good-when
+     "source content is <10K chars AND fits in a single context window AND the model can produce the full concept+relationship draft in one shot",
+     :recommended-pattern
+     "[:llm {:reads [:source] :writes [:concept-drafts :relationship-drafts] :instruction \"Extract every distinct entity as a concept-draft {:uri ... :label ... :description ...}. Extract every stated factual link as a relationship-draft {:source-uri ... :target-uri ... :predicate ... :evidence [{:source ... :quote ...}]}. Ground EVERY claim in a verbatim quote from :source.\"}]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "single-shot extraction degrades when the source exceeds ~10K chars — the model truncates or skips later sections",
+     :avoid-when
+     "source content is >10K chars OR has multiple structural sections where extraction needs to be exhaustive",
+     :recommended-alternative
+     "switch to ChunkedSynthesisDiscovery (chunk + map-each + aggregate) once the source is too large for single-shot",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :representative-uses
+   ["extracting concepts from a small employment agreement (~7K chars)"
+    "extracting entities from a single-page policy document"
+    "extracting the inventory of terms in a short glossary file"],
+   :avoid-when
+   ["source content exceeds the context window — use chunked patterns instead"
+    "extraction must produce verbatim provenance quotes for every assertion AND the model cannot cite reliably in a single shot — split into a per-section pass"],
+   :summary
+   "Direct single-LLM extraction is the right shape when the source is small enough that decomposition adds overhead with no benefit. The model reads the source once, emits concept-drafts AND relationship-drafts with grounded quotes, and returns. Use when the source is <10K chars and fits in one context. Outputs are inline drafts the deterministic skeleton ingests directly.",
+   :version 1,
+   :consolidated-from-event-count 0,
+   :scope :behavioral-subtree,
+   :discovery-pattern? true,
+   :hitl-status :auto-derived,
+   :provenance "Derived from development/bench/RESULTS.md Pattern A (legal-issue-detection task, ~7K employment agreement). The bench model declined emit-tree! entirely and produced a direct grounded answer in one LLM call. Adapted to ontology discovery: same single-shot shape, but the LLM's writes target :concept-drafts and :relationship-drafts rather than analytical outputs.",
+   :composes-into [#uuid "00000000-c1c1-4001-b005-d0c0a0a0a0a5"]}}
+
+ {:target-id #uuid "00000000-d150-4001-b002-d0c0a0a0a0a2",
+  :body
+  {:capabilities
+   ["extract concepts + relationships + axioms from MID-SIZE sources (one to two documents, ~50K-150K chars combined)"
+    "sequential pipeline: survey-structure → extract-entities → cross-link → emit-axioms → consolidate"
+    "natural fit when source(s) fit in context but warrant staged analysis for cross-section coherence"],
+   :strengths
+   [{:trait
+     "staged pipeline lets each LLM stage build on prior structural understanding without re-reading the full source",
+     :good-when
+     "source(s) total ~50K-150K chars AND fit in a single context window AND extraction benefits from explicit document-structure orientation before entity emission",
+     :recommended-pattern
+     "[:sequence [:llm {:reads [:source] :writes [:document-survey] :instruction \"Outline the source's structural sections. List section names + char ranges.\"}] [:llm {:reads [:source :document-survey] :writes [:concept-drafts] :instruction \"Per section, list every distinct entity as a concept-draft {:uri ... :label ... :description ...}. Include the source-section the entity appears in.\"}] [:llm {:reads [:source :concept-drafts] :writes [:relationship-drafts] :instruction \"For every pair of concepts that appear together, emit a relationship-draft {:source-uri ... :target-uri ... :predicate ... :evidence [{:source ... :quote ...}]}. The predicate must be a verb phrase grounded in the source.\"}] [:llm {:reads [:source :concept-drafts :relationship-drafts] :writes [:axiom-drafts] :instruction \"Identify enumeration-shaped sections — when a section enumerates a complete set, emit a closure-axiom. Identify exclusive sets — emit disjointness axioms. Identify role-vs-class distinctions.\"}] [:final {:keys [:concept-drafts :relationship-drafts :axiom-drafts]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "pipeline stages can drift away from source-grounding if intermediate outputs are paraphrased rather than quoted",
+     :avoid-when
+     "the consolidate stage reads ONLY prior LLM outputs and not the original source — drift compounds across stages",
+     :recommended-alternative
+     "always include the original source in the :reads of the final consolidate stage so adversarial cross-reference can catch ungrounded claims (the bench's Pattern C did this explicitly)",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}
+    {:trait
+     "sequential pipeline burns wall-time when stages could legitimately run in parallel",
+     :avoid-when
+     "concept extraction and axiom extraction are genuinely independent (no concept-drafts consumed by axiom-drafts) AND wall-time matters",
+     :recommended-alternative
+     "split independent stages into [:parallel ...] children of the sequence; keep stages that legitimately depend on prior output sequential",
+     :confidence 0.9,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :representative-uses
+   ["extracting concepts + relationships from a single ~100K contract"
+    "comparing two related documents and emitting concept + relationship drafts grounded in both"
+    "extracting the entity inventory of a policy bundle (5-10 sections)"],
+   :avoid-when
+   ["source content is very small (<10K chars) — DirectExtractionDiscovery is simpler"
+    "source content is very large (>200K chars) — single-context pipeline will exceed token budget; use ChunkedSynthesisDiscovery instead"],
+   :summary
+   "Sequential pipeline discovery extracts concepts + relationships + axioms in stages: structural survey, entity extraction, relationship extraction, axiom extraction, final consolidation. Use when sources total ~50K-150K chars and fit in context. The pipeline gives each stage a focused prompt and prior context. Always include the original source in the :reads of the final consolidate stage to keep claims grounded.",
+   :version 1,
+   :consolidated-from-event-count 0,
+   :scope :behavioral-subtree,
+   :discovery-pattern? true,
+   :hitl-status :auto-derived,
+   :provenance "Derived from development/bench/RESULTS.md Pattern B (contract-comparison task, 105K combined contracts). The bench model produced a 5-stage sequence: document-survey → section-diffs → major-changes → impact-analysis → executive-summary. Adapted to ontology discovery by mapping the analytical stages to concept-draft → relationship-draft → axiom-draft.",
+   :composes-into [#uuid "00000000-c1c1-4001-b005-d0c0a0a0a0a5"]}}
+
+ {:target-id #uuid "00000000-d150-4001-b003-d0c0a0a0a0a3",
+  :body
+  {:capabilities
+   ["extract concepts + relationships + axioms with ADVERSARIAL GROUNDING — the final stage re-reads the source(s) to remove any claim not directly supported by source text"
+    "natural fit when extraction quality matters more than wall-time and the ontology needs every claim grounded"
+    "implements 'verify-then-finalize' as a data-flow dependency: the final stage's :reads includes BOTH the prior drafts AND the original source"],
+   :strengths
+   [{:trait
+     "final-stage cross-reference against source text catches paraphrased / inferred / hallucinated claims before they land in the graph",
+     :good-when
+     "extraction quality > wall-time AND the ontology consumer relies on grounded provenance for every emitted concept/relationship/axiom",
+     :recommended-pattern
+     "[:sequence [:llm {:reads [:source] :writes [:document-survey] :instruction \"Outline the source's structural sections.\"}] [:llm {:reads [:source] :writes [:raw-drafts] :instruction \"Extract concept-drafts + relationship-drafts. Be adversarial: only report what is explicitly visible in the source text. Quote the supporting span verbatim in :evidence.\"}] [:llm {:reads [:raw-drafts :source] :writes [:concept-drafts :relationship-drafts :axiom-drafts] :instruction \"ADVERSARIAL CLEARANCE: For every draft in :raw-drafts, locate the verbatim supporting span in :source. Remove any draft whose claim cannot be directly grounded. Re-emit grounded drafts plus any axioms (closure / disjointness / partition) the source enumerates exhaustively.\"}] [:final {:keys [:concept-drafts :relationship-drafts :axiom-drafts]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "the source-cross-reference stage doubles the source-token consumption of the discovery task",
+     :avoid-when
+     "the source is very large (>200K chars) AND the budget cannot afford two passes through it — switch to ChunkedSynthesisDiscovery, which grounds at chunk-boundary instead",
+     :recommended-alternative
+     "for large sources, do chunked extraction (each chunk-LLM has access to its chunk for grounding) and skip the global re-read pass",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :representative-uses
+   ["extracting an ontology from a contract where downstream uses depend on legally-defensible provenance"
+    "rebuilding a grounded ontology from a source where the prior extraction was suspected of hallucinations"
+    "discovery on a source where the ORSD spec lists 'every claim must cite source span' as a competency requirement"],
+   :avoid-when
+   ["the discovery task does not require grounded provenance and the simpler sequential pipeline suffices"
+    "wall-time budget is tight and a single-pass extraction is acceptable"],
+   :summary
+   "Adversarial-grounding discovery extracts drafts and then RE-READS the original source in the final stage to verify every claim survives verbatim cross-reference. Use when grounded provenance matters more than wall-time. The pattern is implemented as data flow: the final stage's :reads list contains BOTH the prior draft outputs AND the original source. Hallucinated or paraphrased claims are removed before they emit as events.",
+   :version 1,
+   :consolidated-from-event-count 0,
+   :scope :behavioral-subtree,
+   :discovery-pattern? true,
+   :hitl-status :auto-derived,
+   :provenance "Derived from development/bench/RESULTS.md Pattern C (contract-comparison-validated task). The bench model produced a 4-stage sequence whose third stage's :reads included BOTH the raw-diffs output AND the original :contract_v2 and :contract_v3 sources, implementing 'adversarial clearance' as a data dependency. Adapted to ontology discovery directly: the final stage re-reads source to ground the concept / relationship / axiom drafts.",
+   :composes-into [#uuid "00000000-c1c1-4001-b005-d0c0a0a0a0a5"]}}
+
+ {:target-id #uuid "00000000-d150-4001-b004-d0c0a0a0a0a4",
+  :body
+  {:capabilities
+   ["extract concepts + relationships + axioms from LARGE sources (>200K chars) via chunk + map-each + aggregate + unified synthesis"
+    "natural fit when the source exceeds single-context capacity AND the synthesis produces a SINGLE-shape unified output"
+    "outputs land as inline-concept / inline-relationship drafts after a final synthesis pass that consolidates per-chunk findings"],
+   :strengths
+   [{:trait
+     "chunk + map-each with bounded :max-concurrency reliably extracts entities from large sources without single-LLM truncation",
+     :good-when
+     "source content is >200K chars AND extraction is uniform across the source AND the final synthesis can produce a single unified output shape",
+     :recommended-pattern
+     "[:sequence [:chunk-document {:from :source :size 12000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracted-data :max-concurrency 5} [:llm {:reads [:chunk] :writes [:analysis] :instruction \"Extract every concept (each entity, named role, named thing) as {:uri ... :label ... :description ... :source-quote ...}. Extract every relationship {:source-uri ... :target-uri ... :predicate ... :evidence [{:source ... :quote ...}]}. Stay strictly within this chunk; do NOT speculate about other chunks.\"}]] [:aggregate {:from :extracted-data :writes [:combined-analysis]}] [:llm {:reads [:combined-analysis] :writes [:concept-drafts :relationship-drafts :axiom-drafts] :instruction \"Consolidate the per-chunk findings. Deduplicate concepts by :label + :description. Merge relationship-drafts with the same (source-uri, target-uri, predicate). Identify enumeration sections and emit closure-axioms. Identify exclusive sets and emit disjointness axioms.\"}] [:final {:keys [:concept-drafts :relationship-drafts :axiom-drafts]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "unbounded :max-concurrency on per-chunk LLM calls exhausts rate limits on sources with many chunks",
+     :avoid-when
+     "source has >6 chunks AND :max-concurrency on the :map-each is unset",
+     :recommended-alternative
+     "always set :max-concurrency to 3-5 on the :map-each parent; use 3 when sub-LLMs are expensive and 5 when cheaper",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}
+    {:trait
+     "single unified synthesis can saturate the consolidation LLM's output budget when per-chunk extracted data is large",
+     :avoid-when
+     "the aggregated extracted-data exceeds the synthesis LLM's input budget AND the consolidate stage tries to produce all three output shapes at once",
+     :recommended-alternative
+     "split the synthesis into multiple specialized :llm nodes (one for :concept-drafts, one for :relationship-drafts, one for :axiom-drafts) per the SpecializedSynthesisDiscovery pattern",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :representative-uses
+   ["extracting concepts and relationships from a 280K RFP for ontology construction"
+    "building a glossary from a large multi-section technical manual"
+    "extracting the entity inventory from a long legal corpus"],
+   :avoid-when
+   ["source content is small enough for DirectExtractionDiscovery or SequentialDiscoveryPipeline"
+    "extraction needs cross-chunk reasoning the per-chunk LLM cannot perform (the per-chunk LLM has only its chunk in context)"],
+   :summary
+   "Chunked-synthesis discovery handles large sources via chunk + map-each + aggregate + single-shot synthesis. Use when source exceeds ~150K-200K chars. Per-chunk LLM stays strictly within its chunk to preserve grounding. The final synthesis consolidates and deduplicates. Always bound :max-concurrency on the :map-each (3 for expensive sub-LLMs, 5 when cheaper). When the unified synthesis saturates, split into SpecializedSynthesisDiscovery (separate :llm per output shape).",
+   :version 1,
+   :consolidated-from-event-count 0,
+   :scope :behavioral-subtree,
+   :discovery-pattern? true,
+   :hitl-status :auto-derived,
+   :provenance "Derived from development/bench/RESULTS.md Pattern D (risk-analysis task, 280K RFP). The bench model produced chunk-document → map-each(:max-concurrency 5) → aggregate → :llm consolidation. Adapted to ontology discovery by mapping the per-chunk analytical extraction to concept-draft + relationship-draft emission and the consolidate stage to triple-output (concept + relationship + axiom drafts).",
+   :composes-into [#uuid "00000000-c1c1-4001-b005-d0c0a0a0a0a5"]}}
+
+ {:target-id #uuid "00000000-d150-4001-b005-d0c0a0a0a0a5",
+  :body
+  {:capabilities
+   ["extract concepts + relationships + axioms from LARGE sources where the three output shapes diverge enough to warrant separate specialized syntheses"
+    "chunk + map-each + aggregate + THREE parallel-or-sequential specialized LLMs for the structurally different outputs"
+    "outputs land as concept-drafts, relationship-drafts, and axiom-drafts emitted by their own specialized synthesis"],
+   :strengths
+   [{:trait
+     "specialized syntheses produce higher-quality structured output when the three target shapes differ structurally (concepts are entity-like, relationships are tuple-like, axioms are logical-form-like)",
+     :good-when
+     "source is large AND the three output shapes have meaningfully different structure AND a single unified synthesis would saturate the LLM's output budget",
+     :recommended-pattern
+     "[:sequence [:chunk-document {:from :source :size 12000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :extracted-data :max-concurrency 5} [:llm {:reads [:chunk] :writes [:per-chunk-info] :instruction \"Extract concepts, relationships, and axioms. Output {:concepts [...] :relationships [...] :axiom-hints [...]}.\"}]] [:aggregate {:from :extracted-data :writes [:combined-info]}] [:sequence [:llm {:reads [:combined-info] :writes [:concept-drafts] :instruction \"Consolidate the concept-list. Deduplicate by :label + :description. Output {:concept-drafts [{:uri ... :label ... :description ... :source-quote ...} ...]}.\"}] [:llm {:reads [:combined-info :concept-drafts] :writes [:relationship-drafts] :instruction \"For every relationship-tuple, produce {:source-uri ... :target-uri ... :predicate ... :evidence [...]}. Reference :concept-drafts for canonical URIs.\"}] [:llm {:reads [:combined-info :concept-drafts] :writes [:axiom-drafts] :instruction \"Identify closure axioms (sections that enumerate a complete set), disjointness axioms (exclusive sets), partitions (mutually-exclusive and jointly-exhaustive). Output {:axiom-drafts [{:type ... :body ... :evidence ...} ...]}.\"}]] [:final {:keys [:concept-drafts :relationship-drafts :axiom-drafts]}]]",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :weaknesses
+   [{:trait
+     "splitting synthesis into three specialized LLMs adds wall-time relative to a single unified synthesis",
+     :avoid-when
+     "the unified synthesis fits comfortably within the LLM's output budget AND the three output shapes are similar enough that one LLM can produce all three cleanly",
+     :recommended-alternative
+     "use ChunkedSynthesisDiscovery (unified synthesis) when the budget allows; split only when budget saturates or output shapes diverge structurally",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}
+    {:trait
+     "relationship and axiom syntheses depend on concept-drafts having canonical URIs — if the concept-draft stage doesn't emit stable URIs, downstream stages emit URIs that don't link to anything",
+     :avoid-when
+     "concept-draft generation lets the model improvise URI strings without a stable convention",
+     :recommended-alternative
+     "in the concept-draft synthesis prompt, MANDATE a URI shape (e.g. 'concept:domain/<slug>') and instruct downstream syntheses to reuse the URIs from :concept-drafts verbatim",
+     :confidence 1.0,
+     :evidence-count 1,
+     :first-observed-at "2026-06-13T00:00:00Z",
+     :last-reinforced-at "2026-06-13T00:00:00Z"}],
+   :representative-uses
+   ["extracting a rich ontology from a large multi-domain RFP where concepts, relationships, and axioms differ structurally"
+    "building an ontology from a large legal corpus where axiom emission needs its own focused stage"
+    "discovery on sources where the consumer needs a clean split between T-Box (axioms), entity inventory (concepts), and assertional links (relationships)"],
+   :avoid-when
+   ["source is small enough for DirectExtractionDiscovery or SequentialDiscoveryPipeline"
+    "the unified synthesis budget is sufficient — ChunkedSynthesisDiscovery is simpler"],
+   :summary
+   "Specialized-synthesis discovery handles large sources whose concept / relationship / axiom outputs differ structurally enough to warrant separate synthesis LLMs. Per-chunk extraction is the same as ChunkedSynthesisDiscovery, but the final stage splits into three specialized syntheses — one each for concepts, relationships, axioms — chained sequentially so later stages can reference the concept-drafts' canonical URIs. Use when the unified synthesis would saturate the LLM's output budget or when the three output shapes diverge enough that one prompt struggles to produce all three cleanly.",
+   :version 1,
+   :consolidated-from-event-count 0,
+   :scope :behavioral-subtree,
+   :discovery-pattern? true,
+   :hitl-status :auto-derived,
+   :provenance "Derived from development/bench/RESULTS.md Pattern E (document-analysis task, 280K). The bench model produced chunk → map-each(5) → aggregate → THREE specialized LLMs (one each for :summary, :key-dates, :entities). Adapted to ontology discovery by mapping the three structurally-different downstream outputs to concept-drafts, relationship-drafts, and axiom-drafts — the three structurally-different shapes the ontology pipeline needs.",
+   :composes-into [#uuid "00000000-c1c1-4001-b005-d0c0a0a0a0a5"]}}]

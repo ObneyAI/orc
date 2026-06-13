@@ -36,6 +36,10 @@
             [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.ontology.core.task-classifier :as task-classifier]
             [ai.obney.orc.ontology.core.seeds :as seeds]
+            ;; S18 — recursive-RLM discovery wiring + :rlm-discovery
+            ;; source adapter. Lazy-resolves orc-service.core.executor
+            ;; at call time so compile-time deps stay clean.
+            [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
             ;; S15 — CQ runner (registers the :ontology/record-cq-evaluation
             ;; command + the :ontology/cq-evaluations read-model on require).
             [ai.obney.orc.ontology.core.cq-runner :as cq-runner]
@@ -412,13 +416,65 @@
 
 (defn baseline-seeds
   "Pure-data inspection: return the loaded baseline seed catalog as
-   `{:node-types <vec> :tree-classes <vec> :behavioral-subtrees <vec>}`.
+   `{:node-types <vec> :tree-classes <vec> :behavioral-subtrees <vec>
+     :ontology-discovery-patterns <vec>}`.
 
    For consumers and tests that want to walk the corpus without
    dispatching commands (e.g., asserting invariants over seed bodies,
    diffing against an app-specific extension)."
   []
   (seeds/baseline-seeds))
+
+(defn ontology-discovery-patterns
+  "S18 — return the ontology-discovery seed entries used by
+   `run-discovery!`.
+
+   When `require-hitl-reviewed?` is truthy, return only entries whose
+   body carries `:hitl-status :hitl-reviewed`. Default (no arg / false):
+   return all entries — including `:hitl-status :auto-derived` patterns
+   shipped with the component.
+
+   Returns a vector of `{:target-id ... :body ...}` entries — same
+   shape every other seed catalog returns. Empty vector is a legal
+   return; the caller surfaces that case explicitly in its rlm-trace."
+  ([] (seeds/ontology-discovery-patterns false))
+  ([require-hitl-reviewed?]
+   (seeds/ontology-discovery-patterns require-hitl-reviewed?)))
+
+;; =============================================================================
+;; S18 — Recursive-RLM Discovery
+;; =============================================================================
+
+(def run-discovery!
+  "S18 — Run a recursive-RLM discovery session that designs and
+   executes a behavior tree to extract concepts + relationships +
+   axioms from supplied sources.
+
+   See `ai.obney.orc.ontology.core.rlm-discovery/run-discovery!` for
+   the full contract. Required params: `:ontology-id` (granted scope)
+   + `:sources`. Optional: `:discovery-prompt` `:model` `:budget`
+   `:auto-classify?` `:require-hitl-reviewed-patterns?` `:debug?`.
+
+   Returns `{:status :emitted-drafts | :no-output | :failed-at-session
+             :emitted-concepts :emitted-relationships :emitted-axioms
+             :rlm-trace :patterns-offered ...}`."
+  rlm-discovery/run-discovery!)
+
+(def compile-discovery-source!
+  "S18 — Adapter: translate a `run-discovery!` output into events
+   ingestible by S17's `deterministic-skeleton/build!`. Emits the
+   draft concepts + relationships through the existing ontology
+   commands and returns a 'source stub' the skeleton can ingest.
+
+   See `ai.obney.orc.ontology.core.rlm-discovery/compile-discovery-source!`
+   for the contract."
+  rlm-discovery/compile-discovery-source!)
+
+(def discover-and-build!
+  "S18 — Convenience: chains `run-discovery!` +
+   `compile-discovery-source!` + S17's `build!` into a single call.
+   Returns the S17 build result augmented with `:discovery-provenance`."
+  rlm-discovery/discover-and-build!)
 
 (defn get-consolidation-threshold
   "C-2a-3a: return the configured consolidation threshold for a

@@ -59,9 +59,12 @@
 ;; both :tree-fingerprint and :tree-class scopes (see :tree-class lookup
 ;; path used by the R-Inject prepend assembler). Behavioral-subtree seeds
 ;; route through the tree-description command path with :scope
-;; :behavioral-subtree in the body — one dispatch each.
+;; :behavioral-subtree in the body — one dispatch each. S18 adds 5
+;; ontology-discovery seeds that ride the same :tree-fingerprint
+;; granularity (their body's :scope :behavioral-subtree routes them so
+;; classify-behaviors surfaces them in discovery sessions).
 ;;
-;;   10 node-type + 23 tree-fp + 23 tree-class + 12 behavioral = 68
+;;   10 node-type + 23 tree-fp + 23 tree-class + 12 behavioral + 5 discovery = 73
 ;;
 ;; If these counts change because someone added a seed, the literal here
 ;; updates alongside the EDN file content and both tests track the new
@@ -71,11 +74,13 @@
 (def ^:private expected-node-type-count 10)
 (def ^:private expected-tree-class-count 23)
 (def ^:private expected-behavioral-count 12)
+(def ^:private expected-discovery-count 5)
 (def ^:private expected-total-dispatches
   (+ expected-node-type-count
      expected-tree-class-count   ;; :tree-fingerprint scope
      expected-tree-class-count   ;; :tree-class scope (dual-emit)
-     expected-behavioral-count))
+     expected-behavioral-count
+     expected-discovery-count))   ;; S18 — ontology-discovery patterns
 
 (deftest seed-baseline-corpus-exists-and-dispatches-every-seed
   (testing "C-Baseline: the public ontology/seed-baseline-corpus! fn dispatches the right number of seed commands"
@@ -88,7 +93,8 @@
                  " command-results (" expected-node-type-count " node-type + "
                  expected-tree-class-count " tree-fingerprint + "
                  expected-tree-class-count " tree-class dual-emit + "
-                 expected-behavioral-count " behavioral-subtree). Got "
+                 expected-behavioral-count " behavioral-subtree + "
+                 expected-discovery-count " ontology-discovery). Got "
                  (count results)))))))
 
 (deftest seeded-bodies-round-trip-via-public-get-description
@@ -98,7 +104,8 @@
       ;; Give read-model projection a moment to land — same approach the
       ;; existing seed-all-emits-everything-and-each-is-queryable test uses.
       (Thread/sleep 200)
-      (let [{:keys [node-types tree-classes behavioral-subtrees]}
+      (let [{:keys [node-types tree-classes behavioral-subtrees
+                    ontology-discovery-patterns]}
             (ontology/baseline-seeds)]
         (doseq [{:keys [target-id body]} node-types]
           (is (= body (ontology/get-description ctx :node-type target-id))
@@ -114,7 +121,11 @@
         (doseq [{:keys [target-id body]} behavioral-subtrees]
           (is (= body (ontology/get-description ctx :tree-fingerprint target-id))
               (str "Behavioral-subtree seed " (pr-str target-id)
-                   " should round-trip verbatim — body :scope :behavioral-subtree routes it to the behavioral-subtree projector")))))))
+                   " should round-trip verbatim — body :scope :behavioral-subtree routes it to the behavioral-subtree projector")))
+        (doseq [{:keys [target-id body]} ontology-discovery-patterns]
+          (is (= body (ontology/get-description ctx :tree-fingerprint target-id))
+              (str "Ontology-discovery seed " (pr-str target-id)
+                   " should round-trip verbatim under :tree-fingerprint — same retrieval surface as behavioral subtrees, marked :discovery-pattern? true in the body")))))))
 
 (deftest seed-baseline-corpus-is-idempotent
   (testing "C-Baseline: re-running seed-baseline-corpus! is safe — the latest body wins as :current and the history grows by one entry per target"

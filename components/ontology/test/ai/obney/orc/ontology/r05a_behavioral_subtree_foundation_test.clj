@@ -549,9 +549,9 @@
         (is (= 23 (count (get by-scope :tree-class)))
             "R02 stays unchanged — 23 tree-class concepts after seed-all!"))
 
-      (testing "12 behavioral-subtree concepts created (R05a's 11 + R07 Investigation)"
-        (is (= 12 (count (get by-scope :behavioral-subtree)))
-            "12 behavioral-subtree concepts — R05a's 11 top-level competencies + R07's Investigation"))
+      (testing "17 behavioral-subtree concepts created (R05a's 11 + R07 Investigation + S18's 5 ontology-discovery patterns)"
+        (is (= 17 (count (get by-scope :behavioral-subtree)))
+            "17 behavioral-subtree concepts — R05a's 11 top-level competencies + R07's Investigation + S18's 5 ontology-discovery patterns (DirectExtraction, SequentialPipeline, AdversarialGrounding, ChunkedSynthesis, SpecializedSynthesis)"))
 
       (testing "behavior:composes-into edges exist on every behavioral seed"
         (require 'seed-descriptions)

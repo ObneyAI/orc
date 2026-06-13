@@ -16,6 +16,7 @@ against.
 | `node-types.edn` | 10 | `:node-type` | One per primitive: `:llm` `:code` `:map-each` `:parallel` `:sequence` `:fallback` `:condition` `:chunk-document` `:aggregate` `:final` |
 | `tree-classes.edn` | 23 | `:tree-fingerprint` + `:tree-class` | Structural patterns — task-specific (legal-issue-detection, risk-analysis, contract-comparison, document-analysis, chunked-extraction) + generic patterns (ChunkedExtraction, SequentialPipeline, ParallelIndependent, ValidationLoop, FallbackRecovery, MapReduce, ResearchThenSynthesize) + R02 children (etl-pipeline, scheduling, producer-validator, draft-critique, primary-backup, model-cascade, parallel-sum, parallel-classify-aggregate, briefing-generation, comparative-summary, iterative-refinement) |
 | `behavioral-subtrees.edn` | 12 | `:tree-fingerprint` (body carries `:scope :behavioral-subtree`) | Accomplishment-shaped behaviors — Research, Extraction, Analysis, Synthesis, Ideation, Design, Critique, Validation, Code-building, Transformation, Classification, Investigation |
+| `ontology-discovery-patterns.edn` | 5 | `:tree-fingerprint` (body carries `:scope :behavioral-subtree` + `:discovery-pattern? true`) | S18 — ontology-discovery patterns derived from bench RESULTS. Five shapes: DirectExtractionDiscovery (small sources), SequentialDiscoveryPipeline (mid-size with stages), AdversarialGroundingDiscovery (re-read source for grounding), ChunkedSynthesisDiscovery (large sources), SpecializedSynthesisDiscovery (large sources with divergent output shapes). Each entry marked `:hitl-status :auto-derived` until reviewed — see `ONTOLOGY-DISCOVERY-HITL.md` for the review surface. |
 
 Each entry is `{:target-id <uuid-or-keyword-or-string> :body <description-body>}`.
 The body schema is defined in
@@ -31,7 +32,7 @@ fixes + representative-uses + a prose summary.
 
 (let [ctx (your-grain-ctx)]
   (ontology/seed-baseline-corpus! ctx))
-;; => vec of command-results, one per dispatch (68 total — see below)
+;; => vec of command-results, one per dispatch (73 total — see below)
 ```
 
 `seed-baseline-corpus!` dispatches the appropriate `:ontology/record-*-description`
@@ -40,7 +41,8 @@ command per seed. The 23 tree-class seeds are dual-emitted under both
 assembler's body-fetch hits from bootstrap onward. Total dispatches:
 
 ```
-10 node-type + 23 tree-fingerprint + 23 tree-class + 12 behavioral = 68
+10 node-type + 23 tree-fingerprint + 23 tree-class + 12 behavioral
+  + 5 ontology-discovery (S18) = 73
 ```
 
 The call is idempotent — re-running appends new
@@ -107,7 +109,7 @@ for the architecture detail.
   growing its `:strengths` does NOT change the target-id. Downstream
   consumers that reference these UUIDs by literal value keep working
   across ORC upgrades.
-- **The 10 + 23 + 12 = 45 named seeds are part of the public surface.**
+- **The 10 + 23 + 12 + 5 = 50 named seeds are part of the public surface.**
   Removing a seed would be a breaking change for consumers relying on
   it; doing so requires a major version bump and migration notes.
 - **Body shape may evolve additively.** New optional fields can be added

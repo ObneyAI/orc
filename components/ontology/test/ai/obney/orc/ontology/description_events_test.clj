@@ -402,6 +402,12 @@
     (with-test-ctx [ctx]
       (let [results (seeds/seed-all! ctx)
             tree-fp-count (count seeds/all-tree-fingerprint-seeds)
+            ;; S18 adds 5 ontology-discovery patterns via the EDN seed
+            ;; corpus. They're not in the dev-shim `all-*-seeds` vecs
+            ;; (those mirror the hand-authored corpus only); their count
+            ;; is sourced from `ontology/ontology-discovery-patterns`
+            ;; which reads the EDN ship corpus directly.
+            discovery-count (count (ontology/ontology-discovery-patterns))
             expected (+ (count seeds/all-node-type-seeds)
                         tree-fp-count
                         ;; C-Loop-1: each tree-fingerprint seed is also
@@ -410,10 +416,12 @@
                         ;; consolidator has a non-nil current-description
                         ;; on its first cycle.
                         tree-fp-count
-                        (count seeds/all-behavioral-subtree-seeds))]
+                        (count seeds/all-behavioral-subtree-seeds)
+                        discovery-count)]
         (is (= expected (count results))
             (str "seed-all! should emit " expected
-                 " commands (10 node-type + 23 tree-fingerprint + 23 tree-class duplicates + 12 behavioral-subtree). Got "
+                 " commands (10 node-type + 23 tree-fingerprint + 23 tree-class duplicates + 12 behavioral-subtree + "
+                 discovery-count " ontology-discovery). Got "
                  (count results))))
       (Thread/sleep 200)
       (doseq [{:keys [target-id body]} seeds/all-node-type-seeds]
