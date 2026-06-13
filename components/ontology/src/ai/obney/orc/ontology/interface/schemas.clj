@@ -736,8 +736,15 @@
     [:severity       [:enum :info :warning :violation]]
     [:message        :string]
     [:offending-uri  :string]
+    ;; S10 reasons: :min-count-violated :max-count-violated
+    ;;              :not-constraint-violated :code-predicate-rejected
+    ;; S11 adds :qualified-min-count-violated (qualified-value-shape).
+    ;; The 8 new built-in lints REUSE :code-predicate-rejected since
+    ;; they're :code-shape implementations — the lint-specific shape-id
+    ;; carries the distinguishing identity (e.g. :ontology.lint/disjointness-violation).
     [:reason         [:enum :min-count-violated :max-count-violated
-                      :not-constraint-violated :code-predicate-rejected]]
+                      :not-constraint-violated :code-predicate-rejected
+                      :qualified-min-count-violated]]
     [:detail         :string]
     [:run-id         :uuid]
     [:detected-at    :string]]
@@ -1348,9 +1355,27 @@
                         [:path        [:or :string :keyword]]
                         [:min-count   {:optional true} :int]
                         [:max-count   {:optional true} :int]
+                        ;; S11 — :not vocabulary expanded. Inner predicate
+                        ;; is exactly ONE of :object-exists? (v1) /
+                        ;; :datatype (v2) / :pattern (v2). Each carries
+                        ;; an optional match? flag for the negated form
+                        ;; (default true). The interpreter THROWS on any
+                        ;; other inner predicate key (false-green guard).
                         [:not         {:optional true}
                          [:map
-                          [:object-exists? {:optional true} :boolean]]]]]]
+                          [:object-exists?  {:optional true} :boolean]
+                          [:datatype        {:optional true} [:or :keyword :string]]
+                          [:datatype-match? {:optional true} :boolean]
+                          [:pattern         {:optional true} [:or :string [:fn (fn [x] (instance? java.util.regex.Pattern x))]]]
+                          [:pattern-match?  {:optional true} :boolean]]]
+                        ;; S11 — qualified-value-shape. The nested shape
+                        ;; is treated as a NodeShape; its :property +
+                        ;; :code constraints are evaluated against each
+                        ;; resolved value of :path. The :qualified-min-
+                        ;; count is the floor; FEWER conforming values
+                        ;; emit :qualified-min-count-violated.
+                        [:qualified-value-shape {:optional true} :map]
+                        [:qualified-min-count   {:optional true} :int]]]]
                      ;; :code is a fn — not Malli-validatable in
                      ;; structure, only by predicate. Optional.
                      [:code           {:optional true} fn?]

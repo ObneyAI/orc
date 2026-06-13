@@ -238,11 +238,15 @@
                              :not {:object-exists? false}}]}]
       (is (empty? (:violations (interp/run-shape g shape))))))
   (testing "unsupported :not inner predicate THROWS (no silent skip)"
+    ;; S11 added :datatype + :pattern to the supported set. This case
+    ;; uses an UNSUPPORTED predicate keyword so the throw discipline
+    ;; (S10 §4 — false-green prevention) still holds: any not-yet-
+    ;; supported inner predicate surfaces immediately, not silently.
     (let [g (graph (mk-concept "a" :related #{"b"}) (mk-concept "b"))
           shape {:shape/id :p :shape/type :node-shape :target-class nil
                  :severity :violation :message "x"
                  :property [{:path "skos:related"
-                             :not {:datatype "xsd:string"}}]}]
+                             :not {:never-going-to-be-supported true}}]}]
       (is (thrown? Exception (interp/run-shape g shape))
           "unsupported :not inner predicate must THROW, not silently pass"))))
 

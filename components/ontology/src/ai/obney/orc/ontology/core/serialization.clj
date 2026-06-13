@@ -924,6 +924,228 @@
          (or edges-meta-ttl ""))))
 
 ;; =============================================================================
+;; S11 — SHACL TTL export of the lint registry
+;; =============================================================================
+;;
+;; A registered shape (built-in OR consumer-authored) exports as a
+;; standard `sh:NodeShape` block. Phase-2 supported export:
+;;   - sh:targetClass (resolved against the same prefixes the ontology
+;;     emits — keyword scopes get `ex:` mangled URIs since they're an
+;;     internal-only label; URI-prefix scoping or exact-URI scoping pass
+;;     through unchanged)
+;;   - sh:property — emits ONE blank-node block per property-shape
+;;     entry, with sh:path / sh:minCount / sh:maxCount and
+;;     sh:qualifiedValueShape + sh:qualifiedMinCount
+;;   - sh:not — emits an inner blank-node. The standard
+;;     `{:object-exists? false}` case maps to a marker description
+;;     ("dangling-endpoint check"), since pySHACL has no first-class
+;;     'object must exist in the data graph' constraint
+;;   - sh:severity / sh:message
+;;   - sh:deactivated (true only — false elides per SHACL convention)
+;;   - sh:description marker on shapes that carry :code OR :code-symbol,
+;;     explicitly stating ORC-EXTENDED. External validators can locate
+;;     the marker and skip the shape OR honor it as a custom constraint
+;;     component (their choice).
+;;
+;; Adversarial: a :code shape STILL serializes — we don't silently drop
+;; ORC-extended shapes; instead, we emit the shape WITH the description
+;; marker so the marker is visible to inspection.
+
+(def ^:private shacl-prefixes
+  "SHACL-specific prefixes needed for the export."
+  {"sh"  "http://www.w3.org/ns/shacl#"
+   "ex"  "http://example.org/"})
+
+(defn- shape-id-uri
+  "Convert a `:shape/id` keyword like `:ontology.lint/disjointness-
+   violation` into a stable URI token `ex:ontology-lint--disjointness-
+   violation`. We deliberately don't try to round-trip the keyword's
+   slash + dots into native URI grammar — the export's purpose is
+   external-validator INTEROP, not symmetric load-back-into-Clojure."
+  [shape-id]
+  (let [s (if (keyword? shape-id) (subs (str shape-id) 1) (str shape-id))
+        sanitized (-> s
+                      (str/replace "/" "--")
+                      (str/replace "." "-"))]
+    (str "ex:" sanitized)))
+
+(defn- target-class-clause
+  "Emit `sh:targetClass <uri> ;` from the shape's :target-class.
+   - keyword scope → `ex:<scope-name>` (internal label; consumers can
+     remap)
+   - URI prefix (string ending `:`) → `<prefix:>` token
+   - exact URI string → token unchanged
+   - nil → emits nothing (the shape targets all nodes; SHACL semantics
+     handle this when no targetClass appears)."
+  [target-class]
+  (cond
+    (keyword? target-class)
+    (str "  sh:targetClass ex:" (name target-class) " ;\n")
+
+    (and (string? target-class) (str/ends-with? target-class ":"))
+    (str "  sh:targetClass <" target-class "> ;\n")
+
+    (string? target-class)
+    (str "  sh:targetClass " target-class " ;\n")
+
+    :else
+    ""))
+
+(defn- severity-uri [sev]
+  (case sev
+    :info      "sh:Info"
+    :warning   "sh:Warning"
+    :violation "sh:Violation"
+    "sh:Violation"))
+
+(defn- escape-shacl-message [s]
+  (when s (escape-turtle-string (str s))))
+
+(defn- not-clause-turtle
+  "Emit a `sh:not` inner blank-node for the lint's :not predicate
+   vocabulary. Unknown shapes get a descriptive label so external
+   readers see they're ORC-extended."
+  [not-shape]
+  (cond
+    (contains? not-shape :object-exists?)
+    (str "      sh:not [ sh:description \"ORC-EXTENDED: :object-exists? "
+         (boolean (:object-exists? not-shape)) "\" ] ;\n")
+
+    (contains? not-shape :datatype)
+    (let [t (:datatype not-shape)
+          t-name (if (keyword? t) (name t) (str t))]
+      (str "      sh:not [ sh:datatype xsd:" t-name " ] ;\n"))
+
+    (contains? not-shape :pattern)
+    (let [p (str (:pattern not-shape))]
+      (str "      sh:not [ sh:pattern \"" (escape-turtle-string p) "\" ] ;\n"))
+
+    :else
+    ""))
+
+(defn- qualified-value-shape-clause
+  "Emit `sh:qualifiedValueShape` + `sh:qualifiedMinCount` from the
+   nested shape map. The nested shape body is emitted INLINE as a
+   blank-node containing its own :property clauses (targetClass
+   is dropped in the nested form per SHACL convention — a qualified-
+   value-shape applies to the resolved values regardless of class)."
+  [qvs qmc]
+  (let [inner-props (when (seq (:property qvs))
+                      (apply str
+                             (for [p (:property qvs)]
+                               (str "        sh:property [\n"
+                                    "          sh:path "
+                                    (if (string? (:path p))
+                                      (str "<" (:path p) ">")
+                                      (str "<urn:keyword:" (name (:path p)) ">"))
+                                    " ;\n"
+                                    (when (:min-count p)
+                                      (str "          sh:minCount " (:min-count p) " ;\n"))
+                                    (when (:max-count p)
+                                      (str "          sh:maxCount " (:max-count p) " ;\n"))
+                                    "        ] ;\n"))))]
+    (str "      sh:qualifiedValueShape [\n"
+         (or inner-props "")
+         "      ] ;\n"
+         "      sh:qualifiedMinCount " (or qmc 1) " ;\n")))
+
+(defn- property-shape-turtle
+  "Emit ONE sh:property blank-node for one entry in the shape's
+   :property vector."
+  [{:keys [path min-count max-count not
+           qualified-value-shape qualified-min-count]
+    :as _prop}]
+  (let [path-token (if (string? path)
+                     (if (re-find #"^[a-z][a-z\-]*:" (str path))
+                       (str path)            ; e.g. skos:related — prefix form
+                       (str "<" path ">"))
+                     (str "<urn:keyword:" (name path) ">"))]
+    (str "  sh:property [\n"
+         "      sh:path " path-token " ;\n"
+         (when min-count (str "      sh:minCount " min-count " ;\n"))
+         (when max-count (str "      sh:maxCount " max-count " ;\n"))
+         (when not (not-clause-turtle not))
+         (when qualified-value-shape
+           (qualified-value-shape-clause qualified-value-shape
+                                         qualified-min-count))
+         "    ] ;\n")))
+
+(defn shape->shacl-turtle
+  "Emit ONE EDN-shape as a SHACL NodeShape TTL block. Returns the block
+   (terminating period included). :code / :code-symbol shapes are NOT
+   silently dropped — they're emitted WITH a `sh:description` marker
+   stating they're ORC-extended."
+  [{:keys [target-class severity message deactivated property
+           code code-symbol]
+    shape-id :shape/id}]
+  (let [uri (shape-id-uri shape-id)
+        orc-extended? (boolean (or code code-symbol))
+        header (str uri " a sh:NodeShape ;\n")
+        target (target-class-clause target-class)
+        sev (str "  sh:severity " (severity-uri severity) " ;\n")
+        msg (str "  sh:message \"" (escape-shacl-message message) "\" ;\n")
+        deact (when deactivated "  sh:deactivated true ;\n")
+        props (apply str (for [p (or property [])]
+                           (property-shape-turtle p)))
+        ;; The ORC-extended marker MUST be present (not absent — the
+        ;; absence-mode would be silently-dropped). Carries the shape-id
+        ;; AND the persisted symbol when available so external readers
+        ;; can locate the original predicate.
+        orc-desc (when orc-extended?
+                   (str "  sh:description \"ORC-EXTENDED: this shape uses a :code"
+                        (when code-symbol
+                          (str " (code-symbol=" code-symbol ")"))
+                        " predicate not natively expressible in standard SHACL."
+                        " External validators should skip this shape OR honor it"
+                        " as a custom constraint component. shape-id=" shape-id "\" ;\n"))]
+    (str header
+         target
+         sev
+         msg
+         (or deact "")
+         (or props "")
+         (or orc-desc "")
+         "  rdfs:label \"" (escape-shacl-message (str shape-id)) "\" .\n")))
+
+(defn shapes->shacl-turtle
+  "Emit a complete SHACL TTL document for a collection of shapes
+   (registered EDN shapes). Each shape becomes a NodeShape; the
+   prefix-declarations needed for SHACL+xsd are emitted at the top.
+
+   :code shapes are emitted WITH an ORC-extended `sh:description`
+   marker — they are NEVER silently dropped from the export."
+  [shapes]
+  (let [prefixes (merge standard-prefixes domain-prefixes shacl-prefixes)
+        prefix-block (format-prefixes prefixes)
+        body (apply str (for [s shapes] (str (shape->shacl-turtle s) "\n")))]
+    (str prefix-block "\n\n" body)))
+
+(defn registry->shacl-turtle
+  "Hydrate the {shape-id -> {:shape-body :code-symbol}} registry entry
+   (the projection shape) into a SHACL TTL document. The shape-body
+   carries the EDN shape sans the in-process :code fn; the :code-symbol
+   (when present) is re-attached so the export's ORC-extended marker
+   can name it."
+  [registry-for-ontology]
+  (let [shapes (mapv (fn [{:keys [shape-body code-symbol]}]
+                       (cond-> shape-body
+                         code-symbol (assoc :code-symbol code-symbol)))
+                     (vals registry-for-ontology))]
+    (shapes->shacl-turtle shapes)))
+
+(defn export-shacl-shapes
+  "Public entry: load the shape-registry projection for an `ontology-id`
+   and return a SHACL TTL document.
+
+   Returns nil when no shapes are registered for the ontology-id (no
+   defaulted-empty document — the caller can branch on emptiness)."
+  [ctx ontology-id]
+  (let [reg (rmp/project ctx :ontology/shape-registry)
+        per-ontology (get reg ontology-id)]
+    (when (seq per-ontology)
+      (registry->shacl-turtle per-ontology))))
+
+;; =============================================================================
 ;; Utility Functions
 ;; =============================================================================
 

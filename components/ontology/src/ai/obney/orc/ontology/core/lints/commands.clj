@@ -111,6 +111,23 @@
          (filter #(= ontology-id (:ontology-id %)))
          (reduce (fn [acc c] (assoc acc (:uri c) c)) {}))))
 
+(defn- relationships-for-ontology
+  "Return the seq of relationship records belonging to `ontology-id`.
+   S11 axiom-consuming lints (functional double-value) read this to
+   count edges per (source-uri, predicate)."
+  [ctx ontology-id]
+  (let [all (rmp/project ctx :ontology/relationships)]
+    (->> all
+         vals
+         (filter #(= ontology-id (:ontology-id %))))))
+
+(defn- axioms-for-ontology
+  "Return the axiom submap for `ontology-id` (the union of disjointness,
+   characteristics, inverse-of, sub-property-of, chains) or nil when
+   no axioms have been asserted."
+  [ctx ontology-id]
+  (get (rmp/project ctx :ontology/axioms) ontology-id))
+
 (defcommand :ontology run-validation
   "Run all registered shapes for the ontology-id against the projected
    concept graph; emit one event per violation OR skip.
@@ -125,7 +142,12 @@
       {::anom/category ::anom/not-found
        ::anom/message (str "No shapes registered for ontology-id " ontology-id)}
       (let [graph (concepts-for-ontology ctx ontology-id)
-            {:keys [violations skips]} (interpreter/run-registry graph shapes)
+            axioms (axioms-for-ontology ctx ontology-id)
+            relationships (relationships-for-ontology ctx ontology-id)
+            interp-ctx {:graph graph
+                        :axioms axioms
+                        :relationships relationships}
+            {:keys [violations skips]} (interpreter/run-registry interp-ctx shapes)
             run-id (generate-uuid)
             now (now-str)
             violation-events
