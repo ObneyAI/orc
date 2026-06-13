@@ -925,7 +925,38 @@
     [:target-uri     :string]
     [:context-source :keyword] ;; the tier that closed the verdict
     [:verdict        [:enum :merge :distinct :skip :requires-review]]
-    [:recorded-at    :string]]})
+    [:recorded-at    :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; S15 — Competency-question evaluation events
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; The CQ runner produces one :ontology/cq-evaluated event per CQ
+   ;; per run. The event records the three-layer verdict
+   ;; (:pass / :fail / :unknown) — the unknown verdict is a REAL outcome,
+   ;; not a fallback. The judge layer (Layer 2 or 3) is recorded via
+   ;; :judged-by? = true so the projection can derive deterministic vs
+   ;; judge-based ratios.
+   ;;
+   ;; The graph-health metric is DERIVED from these events — pass-rate
+   ;; AND unknown-rate are surfaced as separate first-class signals
+   ;; (NOT folded into fail-rate).
+   :ontology/cq-evaluated
+   [:map
+    [:ontology-id   :uuid]
+    [:cq-index      :int]
+    [:cq-text       :string]
+    [:verdict       [:enum :pass :fail :unknown]]
+    [:reasoning     :string]
+    [:evidence-uris [:vector :string]]
+    [:judged-by?    :boolean]
+    ;; The routing layer the runner used to decide the verdict.
+    [:layer         [:enum :layer-1-structural :layer-2-semantic-exists :layer-3-explicit-unknown]]
+    ;; :gaps surfaces the SPECIFIC kind of fact the judge said was
+    ;; missing when verdict is :unknown — actionable for the next grow
+    ;; cycle (binding round-3 explicit-unknown posture).
+    [:gaps          {:optional true} [:vector :string]]
+    [:evaluated-at  :string]]})
 
 ;; =============================================================================
 ;; Command Schemas
@@ -1548,7 +1579,25 @@
      [:llm-budget   {:optional true} [:int {:min 0}]]
      [:string-merge-threshold {:optional true} :double]
      [:string-ambiguity-lo    {:optional true} :double]
-     [:lsh-jaccard-min        {:optional true} :double]]]})
+     [:lsh-jaccard-min        {:optional true} :double]]]
+
+   ;; S15 — record a single competency-question evaluation result for an
+   ;; ontology. The CQ runner emits ONE command per CQ per evaluation
+   ;; run; each command emits one :ontology/cq-evaluated event. The
+   ;; ledger projection then aggregates per ontology-id so the
+   ;; graph-health metric (pass-rate / unknown-rate / fail-rate) can be
+   ;; derived from the projected state on demand.
+   :ontology/record-cq-evaluation
+   [:map
+    [:ontology-id   :uuid]
+    [:cq-index      :int]
+    [:cq-text       :string]
+    [:verdict       [:enum :pass :fail :unknown]]
+    [:reasoning     :string]
+    [:evidence-uris [:vector :string]]
+    [:judged-by?    :boolean]
+    [:layer         [:enum :layer-1-structural :layer-2-semantic-exists :layer-3-explicit-unknown]]
+    [:gaps          {:optional true} [:vector :string]]]})
 
 ;; =============================================================================
 ;; Query Schemas

@@ -36,6 +36,9 @@
             [ai.obney.orc.ontology.core.reranker :as reranker]
             [ai.obney.orc.ontology.core.task-classifier :as task-classifier]
             [ai.obney.orc.ontology.core.seeds :as seeds]
+            ;; S15 — CQ runner (registers the :ontology/record-cq-evaluation
+            ;; command + the :ontology/cq-evaluations read-model on require).
+            [ai.obney.orc.ontology.core.cq-runner :as cq-runner]
             [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.grain.event-store-v3.interface :as event-store]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
@@ -184,6 +187,105 @@
    revision is preserved (revisions never destroy history)."
   [ctx ontology-id]
   (rm/get-ontology-spec-history ctx ontology-id))
+
+;; =============================================================================
+;; S15 — Competency-question runner + graph-health metric
+;; =============================================================================
+
+(defn get-cq-evaluations
+  "S15: return the full chronological history of CQ evaluations for the
+   given ontology-id. Each entry is `{:cq-index :cq-text :verdict
+   :reasoning :evidence-uris :judged-by? :layer :evaluated-at :event-id
+   (:gaps)}`. Empty vector when none recorded — never nil."
+  [ctx ontology-id]
+  (rm/get-cq-evaluations ctx ontology-id))
+
+(defn get-cq-evaluation-latest
+  "S15: return ONE entry per cq-index — the LATEST evaluation per CQ.
+   This is the basis the graph-health metric derives from. Empty vector
+   when nothing recorded for the ontology-id."
+  [ctx ontology-id]
+  (rm/get-cq-evaluation-latest ctx ontology-id))
+
+(defn get-graph-health
+  "S15: derive the graph-health metric for an ontology-id from the
+   LATEST verdict per CQ.
+
+   Returned shape (or nil when no CQs have been evaluated):
+     {:ontology-id <id>
+      :total-cqs <int>
+      :pass-count :unknown-count :fail-count <int>
+      :pass-rate :unknown-rate :fail-rate <float [0,1]>
+      :last-evaluation-ts <iso-string or nil>
+      :layer-counts {<layer-keyword> <int>}
+      :judge-share <float [0,1]>}
+
+   Unknown-rate is a FIRST-CLASS metric — NOT folded into fail-rate.
+   It surfaces the 'what does the graph not know yet' signal (binding
+   round-3 explicit-unknown posture)."
+  [ctx ontology-id]
+  (rm/get-graph-health ctx ontology-id))
+
+(defn evaluate-cqs!
+  "S15: run the CQ-runner pass for the given ontology-id against its
+   stored ORSD spec. Each CQ is routed through the three-layer negation
+   posture:
+
+     Layer 1 (deterministic, NO LLM) — structural EXISTENCE shapes
+     ('Is there a X concept?'). Resolved via the concepts projection.
+
+     Layer 2 (judge over retrieved evidence) — semantic exists.
+     Resolved via hybrid-search + the supplied judge fn. The judge
+     decides :pass / :fail / :unknown over closed-world evidence.
+
+     Layer 3 (explicit unknown) — same retrieve-then-judge mechanism;
+     the verdict :layer is recorded as :layer-3-explicit-unknown when
+     the judge returns :unknown. This makes the 'graph lacks this
+     fact-kind' outcome a first-class verdict, not a fallback.
+
+   One :ontology/record-cq-evaluation command per CQ flows through
+   `cp/process-command` (schema-validated); the cq-evaluations
+   projection accumulates the events; the graph-health metric is
+   derived on demand.
+
+   `opts` keys:
+     :ontology-id  — REQUIRED.
+     :judge-fn     — REQUIRED for any spec containing CQs that aren't
+                     Layer-1-shaped. Protocol:
+                       (fn [{:keys [question evidence]}]
+                         {:verdict <:pass/:fail/:unknown>
+                          :reasoning <str>
+                          :evidence-uris <vector of str>
+                          :gaps <vector of str>})
+                     Production wires a real LLM judge via
+                     dscloj/predict (callers should render
+                     `cq-runner/judge-prompt-template`); tests inject
+                     a controlled judge.
+     :ctx          — REQUIRED. Grain context with :event-store +
+                     :command-registry.
+
+   Returns `{:ontology-id :evaluated [verdict ...] :graph-health <map>}`.
+   When no spec / no CQs: `{:evaluated [] :graph-health nil
+   :reason :no-spec or :no-cqs-in-spec}`."
+  [{:keys [ctx ontology-id judge-fn]}]
+  (cq-runner/evaluate-cqs!
+   {:ctx                  ctx
+    :ontology-id          ontology-id
+    :judge-fn             judge-fn
+    :get-ontology-spec-fn rm/get-ontology-spec
+    :get-graph-health-fn  rm/get-graph-health
+    :hybrid-search-fn     retrieval/hybrid-search
+    :get-concepts-fn      (fn [opts] (rm/get-concepts ctx opts))
+    :get-relationships-fn rm/get-relationships}))
+
+(def cq-runner-judge-prompt-template
+  "S15: the production three-way (`:pass` / `:fail` / `:unknown`) judge
+   prompt template. Callers wiring a real LLM call (`dscloj/predict`)
+   render this against `{question}` + `{evidence}` placeholders via
+   `cq-runner/render-judge-prompt`. Exposing this string here lets
+   downstream callers re-use the EXACT production prompt without
+   importing the core ns."
+  cq-runner/judge-prompt-template)
 
 ;; =============================================================================
 ;; S03 — Alignment-section registry (public surface)

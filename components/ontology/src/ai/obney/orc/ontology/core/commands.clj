@@ -1567,3 +1567,40 @@
       (:skip :requires-review)
       {:command-result/data {:verdict verdict}
        :command-result/events [co-occurrence-event]})))
+
+;; =============================================================================
+;; S15 — Record CQ evaluation result (per-CQ per-run)
+;; =============================================================================
+;;
+;; The CQ runner dispatches ONE :ontology/record-cq-evaluation command
+;; per CQ per evaluation run. Each command emits a single
+;; :ontology/cq-evaluated event tagged by ontology-id. The
+;; cq-evaluations projection accumulates the events; the graph-health
+;; derivation walks the latest-run-per-CQ to compute pass-rate,
+;; unknown-rate, and fail-rate.
+;;
+;; The :verdict field is ONE of :pass / :fail / :unknown. The :unknown
+;; verdict is a FIRST-CLASS outcome (round-3 three-layer negation
+;; posture) — never a fallback. The projection surfaces unknown-rate as
+;; its own metric, NOT folded into fail-rate.
+(defcommand :ontology record-cq-evaluation
+  "S15: record a single CQ verdict from the runner against an
+   ontology's stored ORSD spec. One command per CQ per run; the
+   cq-evaluations projection aggregates per ontology-id and the
+   graph-health derivation computes pass / unknown / fail rates."
+  [{{:keys [ontology-id cq-index cq-text verdict reasoning
+            evidence-uris judged-by? layer gaps]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/cq-evaluated
+      :tags #{[:ontology ontology-id]}
+      :body (cond-> {:ontology-id   ontology-id
+                     :cq-index      cq-index
+                     :cq-text       cq-text
+                     :verdict       verdict
+                     :reasoning     reasoning
+                     :evidence-uris (vec evidence-uris)
+                     :judged-by?    judged-by?
+                     :layer         layer
+                     :evaluated-at  (now-str)}
+              (seq gaps) (assoc :gaps (vec gaps)))})]})

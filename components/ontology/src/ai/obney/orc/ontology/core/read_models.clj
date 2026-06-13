@@ -2368,3 +2368,126 @@
                         (/ (reduce + (map :trust-score sites))
                            (count sites)))
      :sites-with-extractions (count (filter #(> (:extraction-count % 0) 0) sites))}))
+
+;; =============================================================================
+;; S15 — CQ Evaluations projection + Graph-health derivation
+;; =============================================================================
+;;
+;; Aggregates :ontology/cq-evaluated events per ontology-id. The graph-
+;; health metric (pass-rate / unknown-rate / fail-rate + last-evaluation-ts)
+;; is DERIVED from the LATEST-run-per-CQ to give the headline metric
+;; the round-3 grill specified.
+;;
+;; State shape (per ontology-id):
+;;   {<ontology-id>
+;;    {:by-cq-index {<int> [{:verdict :evidence-uris :judged-by? :layer
+;;                           :reasoning :evaluated-at (:gaps)
+;;                           :event-id} ...history]}
+;;     :history     [{:cq-index :verdict ...} ...chronological]}}
+;;
+;; The :by-cq-index map indexes the FULL history per CQ — the
+;; graph-health derivation reads the LATEST entry per CQ, so an
+;; improvement run after grow-cycle replaces the prior verdict in
+;; the metric without losing the audit trail.
+
+(def cq-evaluation-events
+  "Single event type. Append-only — the latest per (ontology-id, cq-index)
+   drives the headline metric; the full history is preserved."
+  #{:ontology/cq-evaluated})
+
+(defmulti cq-evaluations*
+  (fn [_state event] (:event/type event)))
+
+(defmethod cq-evaluations* :default [state _] state)
+
+(defmethod cq-evaluations* :ontology/cq-evaluated
+  [state event]
+  (let [ontology-id (:ontology-id event)
+        cq-index (:cq-index event)
+        entry (cond-> {:cq-index      cq-index
+                       :cq-text       (:cq-text event)
+                       :verdict       (:verdict event)
+                       :reasoning     (:reasoning event)
+                       :evidence-uris (:evidence-uris event)
+                       :judged-by?    (:judged-by? event)
+                       :layer         (:layer event)
+                       :evaluated-at  (:evaluated-at event)
+                       :event-id      (:event/id event)}
+                (:gaps event) (assoc :gaps (:gaps event)))]
+    (-> state
+        (update-in [ontology-id :by-cq-index cq-index]
+                   (fnil conj []) entry)
+        (update-in [ontology-id :history]
+                   (fnil conj []) entry))))
+
+(defn cq-evaluations
+  "Build the S15 CQ-evaluations state from a seq of events."
+  [initial-state events]
+  (reduce cq-evaluations* initial-state events))
+
+(defreadmodel :ontology cq-evaluations
+  {:events cq-evaluation-events, :version 1}
+  [state event] (cq-evaluations* state event))
+
+(defn get-cq-evaluations
+  "Return the full chronological history of CQ evaluations recorded for
+   the given ontology-id. Each entry is `{:cq-index :cq-text :verdict
+   :reasoning :evidence-uris :judged-by? :layer :evaluated-at :event-id
+   (:gaps)}`. Empty vector when none recorded — never nil."
+  [ctx ontology-id]
+  (or (get-in (rmp/project ctx :ontology/cq-evaluations)
+              [ontology-id :history])
+      []))
+
+(defn get-cq-evaluation-latest
+  "Return ONE entry per cq-index — the LATEST evaluation for that CQ.
+   This is the basis the graph-health metric derives from. Empty vector
+   when nothing recorded."
+  [ctx ontology-id]
+  (let [by-index (get-in (rmp/project ctx :ontology/cq-evaluations)
+                         [ontology-id :by-cq-index])]
+    (vec
+     (for [[_cq-idx versions] (sort-by key by-index)
+           :let [latest (last versions)]]
+       latest))))
+
+(defn get-graph-health
+  "S15: derive the graph-health metric for an ontology-id.
+
+   Pass-rate is the headline. Unknown-rate is the 'what does the graph
+   not know yet' signal (binding round-3 Q7 explicit-unknown posture)
+   and is reported AS ITS OWN METRIC — NOT folded into fail-rate.
+
+   Returned shape:
+     {:ontology-id <id>
+      :total-cqs   <int>
+      :pass-count :unknown-count :fail-count <int>
+      :pass-rate :unknown-rate :fail-rate <float [0,1]>
+      :last-evaluation-ts <iso-string or nil>
+      :layer-counts {:layer-1-structural <int> ...}
+      :judge-share <float [0,1]>}        ;; share of latest verdicts that came from a judge
+
+   Returns nil when no CQs have ever been evaluated for the ontology-id."
+  [ctx ontology-id]
+  (let [latest (get-cq-evaluation-latest ctx ontology-id)
+        total (count latest)]
+    (when (pos? total)
+      (let [counts (frequencies (map :verdict latest))
+            pass-c (get counts :pass 0)
+            unknown-c (get counts :unknown 0)
+            fail-c (get counts :fail 0)
+            ratio (fn [n] (double (/ n total)))
+            last-ts (->> latest (keep :evaluated-at) sort last)
+            layer-counts (frequencies (map :layer latest))
+            judge-c (count (filter :judged-by? latest))]
+        {:ontology-id        ontology-id
+         :total-cqs          total
+         :pass-count         pass-c
+         :unknown-count      unknown-c
+         :fail-count         fail-c
+         :pass-rate          (ratio pass-c)
+         :unknown-rate       (ratio unknown-c)
+         :fail-rate          (ratio fail-c)
+         :last-evaluation-ts last-ts
+         :layer-counts       layer-counts
+         :judge-share        (ratio judge-c)}))))
