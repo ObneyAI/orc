@@ -2190,7 +2190,17 @@
                              :command-registry (:command-registry context)
                              :cache (:cache context)
                              :sheet-id (:sheet-id context)
-                             :tick-id (:tick-id context)})
+                             :tick-id (:tick-id context)
+                             ;; S19: thread the node's ontology scope grant
+                             ;; through to the sandbox-tools layer. The
+                             ;; node opts INTO the ontology tools by setting
+                             ;; :rlm {:granted-ontology-id <uuid>} or
+                             ;; :rlm {:granted-ontology-ids [<uuid> ...]}.
+                             ;; Without these keys the sandbox does NOT
+                             ;; expose the seven ontology tools (safe
+                             ;; default — no implicit unscoped surface).
+                             :granted-ontology-id (get rlm-config :granted-ontology-id)
+                             :granted-ontology-ids (get rlm-config :granted-ontology-ids)})
                     exec-result (rlm-sandbox/execute-rlm-code rlm-ctx code)
                     ;; Track new variables created in this iteration
                     vars-after (set (keys @sandbox-vars))

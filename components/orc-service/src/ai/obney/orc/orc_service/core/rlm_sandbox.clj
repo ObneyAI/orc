@@ -34,6 +34,7 @@
             [ai.obney.orc.orc-service.core.sci-sandbox :as base-sandbox]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
+            [ai.obney.orc.orc-service.core.sandbox-tools :as sandbox-tools]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
 
@@ -315,11 +316,18 @@
    - :usage-tracker - Optional atom for aggregating sub-LLM token usage
    - :recursive? - When true, enables R-2 drill-down primitives (tree-detail, etc.)
    - :event-store - Required when :recursive? true. Used by drill-down primitives.
-   - :tenant-id - Optional; passed through to the event-store read"
+   - :tenant-id - Optional; passed through to the event-store read
+   - :granted-ontology-id / :granted-ontology-ids - S19. When supplied with
+     :event-store, exposes the seven ontology tools as SCI bindings
+     (graph-search, neighborhood, get-concept, exists?, absent-in-graph?,
+     filter-by-label-pattern, classify-task, classify-behaviors). The grant
+     is the AUTHORITATIVE scope — any :ontology-id the model passes in is
+     ignored. Without these keys, the tools are NOT exposed."
   [{:keys [provider blackboard declared-writes parent-trace-id
            call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
            recursive? event-store tenant-id cache
-           sheet-id tick-id command-registry]}]
+           sheet-id tick-id command-registry
+           granted-ontology-id granted-ontology-ids]}]
   (let [;; Atom to capture final! output
         final-output (atom nil)
 
@@ -744,6 +752,18 @@
                           'node-output node-output-fn
                           'node-input-profile node-input-profile-fn})
 
+        ;; S19 — ontology tool bindings. Exposed only when both an
+        ;; event-store AND a grant are passed (build-ontology-tool-bindings
+        ;; returns nil otherwise). The grant is the authoritative scope;
+        ;; model-supplied :ontology-id arguments are silently ignored
+        ;; inside the tools.
+        ontology-tool-bindings (sandbox-tools/build-ontology-tool-bindings
+                                 {:event-store event-store
+                                  :tenant-id tenant-id
+                                  :cache cache
+                                  :granted-ontology-id granted-ontology-id
+                                  :granted-ontology-ids granted-ontology-ids})
+
         ;; RLM bindings - these are the key primitives
         rlm-bindings (merge {'llm llm-fn
                              'final! final!-fn
@@ -768,7 +788,10 @@
                              ;; minted/seeded target so the agent can verify
                              ;; its own mints + inspect existing seeds.
                              'get-description get-description-fn}
-                            drill-bindings)
+                            drill-bindings
+                            ;; S19 — only present when both event-store + grant
+                            ;; were supplied; otherwise nil and merge is a no-op.
+                            ontology-tool-bindings)
 
         ;; Combine all bindings
         all-bindings (merge rlm-bindings)
