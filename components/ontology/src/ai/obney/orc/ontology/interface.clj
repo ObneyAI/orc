@@ -189,6 +189,45 @@
   (rm/get-ontology-spec-history ctx ontology-id))
 
 ;; =============================================================================
+;; S13 — Evidence Tier-1 (deterministic, always-on)
+;; =============================================================================
+
+(defn get-concept-evidence
+  "S13: return the per-fact provenance ledger for a concept URI.
+
+   Shape:
+     {:evidence-score        double           ;; ∈ [0.0, 1.0]
+      :tier-contributions    {tier-kw int}
+      :sources-count         int
+      :source-refs           [str ...]
+      :dedup-decisions-count int
+      :equivalence-history   [{:kind kw ...}]
+      :contradictions        [{:field kw ...}]
+      :last-reinforced-at    iso-string | nil
+      :computed-at           iso-string | nil}
+
+   When no compare-to-existing run has touched the URI yet, returns a
+   structured ZERO record — never nil, never throws. The evidence is
+   maintained AUTOMATICALLY by the cascade — consumers don't need to
+   call any extra command to get evidence tracking; running S12's
+   `run-dedup-cascade` populates this ledger for free."
+  [ctx uri]
+  (rm/get-concept-evidence ctx uri))
+
+(defn get-contradictions
+  "S13: return all recorded field-value contradiction markers for an
+   ontology-id as a vector. Each entry carries `{:concept-uri :field
+   :existing-value :incoming-value :existing-source :incoming-source
+   :recorded-at}`. Empty vector when none recorded — never nil.
+
+   This is the review-surface read path: contradictions are MARKED
+   (visible, queryable), the stored field value is NEVER silently
+   replaced. The Tier-2 LLM consolidation slice (separate, future
+   work) reads from this surface to propose resolutions."
+  [ctx ontology-id]
+  (rm/get-contradictions ctx ontology-id))
+
+;; =============================================================================
 ;; S15 — Competency-question runner + graph-health metric
 ;; =============================================================================
 

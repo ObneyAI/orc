@@ -1048,6 +1048,149 @@
       []))
 
 ;; =============================================================================
+;; S13 — Concept Evidence Tier-1 projection
+;; =============================================================================
+;;
+;; Aggregates `:ontology/concept-evidence-aggregated` events (emitted
+;; from EVERY S12 cascade run — always-on, NOT R-Inject-gated) AND
+;; `:ontology/concept-contradiction-recorded` events into a single per-
+;; URI ledger entry.
+;;
+;; State shape:
+;;   {<concept-uri>
+;;    {:tier-contributions    {<tier-keyword> int}
+;;     :sources-count         int
+;;     :source-refs           #{<source-ref> ...}
+;;     :dedup-decisions-count int
+;;     :equivalence-history   [{:kind kw :alignment-ontology-id uuid
+;;                              :recorded-at iso-string} ...]
+;;     :contradictions        [{:field kw :existing-value v
+;;                              :incoming-value v :existing-source s
+;;                              :incoming-source s :recorded-at iso-string
+;;                              :ontology-id uuid} ...]
+;;     :evidence-score        double
+;;     :last-reinforced-at    iso-string
+;;     :computed-at           iso-string}}
+;;
+;; The projection has TWO event types:
+;;   - :ontology/concept-evidence-aggregated  → bumps tier-contributions,
+;;                                              decisions-count, sources,
+;;                                              equivalence-history, score
+;;   - :ontology/concept-contradiction-recorded → appends to :contradictions
+;;
+;; Replay-determinism: any two reductions over the same event sequence
+;; produce identical state (binding S13 acceptance criterion d).
+
+(def concept-evidence-events
+  "Events that drive the per-concept evidence ledger projection."
+  #{:ontology/concept-evidence-aggregated
+    :ontology/concept-contradiction-recorded})
+
+(defmulti concept-evidence*
+  (fn [_state event] (:event/type event)))
+
+(defmethod concept-evidence* :default [state _] state)
+
+(defmethod concept-evidence* :ontology/concept-evidence-aggregated
+  [state event]
+  (let [uri (:concept-uri event)
+        ;; The event body is the CUMULATIVE aggregate computed by the
+        ;; command from prior state + this verdict — so the projection
+        ;; simply STORES the latest body. This keeps the projection
+        ;; replay-deterministic without needing to re-derive the
+        ;; aggregate inside the projection (which would couple it to
+        ;; the command's logic). Trade-off: the projection is THIN —
+        ;; the command does the math; the projection records the
+        ;; result. This is the same pattern S08's equivalences
+        ;; projection uses: events carry decided shapes, projections
+        ;; record them.
+        prior (get state uri {})]
+    (assoc state uri
+           (merge prior
+                  {:tier-contributions    (:tier-contributions event)
+                   :sources-count         (:sources-count event)
+                   :dedup-decisions-count (:dedup-decisions-count event)
+                   :evidence-score        (:evidence-score event)
+                   :last-reinforced-at    (:computed-at event)
+                   :computed-at           (:computed-at event)}
+                  ;; Optional fields the cascade-side helper may include
+                  ;; on the event body when source-ref / equivalence /
+                  ;; contradiction-tracking is wired up upstream.
+                  (when-let [refs (:source-refs event)]
+                    {:source-refs (set refs)})
+                  (when-let [eh (:equivalence-history event)]
+                    {:equivalence-history (vec eh)})))))
+
+(defmethod concept-evidence* :ontology/concept-contradiction-recorded
+  [state event]
+  (let [uri (:concept-uri event)
+        c   {:field           (:field event)
+             :existing-value  (:existing-value event)
+             :incoming-value  (:incoming-value event)
+             :existing-source (:existing-source event)
+             :incoming-source (:incoming-source event)
+             :ontology-id     (:ontology-id event)
+             :recorded-at     (:recorded-at event)}]
+    (update-in state [uri :contradictions] (fnil conj []) c)))
+
+(defn concept-evidence
+  "Build the per-URI evidence ledger from a seq of events."
+  [initial-state events]
+  (reduce concept-evidence* initial-state events))
+
+(defreadmodel :ontology concept-evidence
+  {:events concept-evidence-events, :version 1}
+  [state event] (concept-evidence* state event))
+
+(defn get-concept-evidence
+  "Return the structured evidence ledger for a concept URI:
+
+     {:evidence-score        double           ;; ∈ [0.0, 1.0]
+      :tier-contributions    {tier-kw int}
+      :sources-count         int
+      :source-refs           [str ...]        ;; vector for ordering
+      :dedup-decisions-count int
+      :equivalence-history   [{:kind kw ...}]
+      :contradictions        [{:field kw ...}]
+      :last-reinforced-at    iso-string | nil
+      :computed-at           iso-string | nil}
+
+   When no compare-to-existing run has touched the URI yet, returns a
+   structured ZERO record — never nil, never throws. The slice's
+   adversarial check explicitly asserts this default.
+
+   This is the public read surface for S13's per-fact provenance
+   ledger. Consumers (S17 deterministic-skeleton builder, S18 RLM
+   discovery, the review queue UI) call this — they never reach into
+   the projection directly."
+  [ctx uri]
+  (let [entry (get (rmp/project ctx :ontology/concept-evidence) uri {})]
+    {:evidence-score        (get entry :evidence-score 0.0)
+     :tier-contributions    (get entry :tier-contributions {})
+     :sources-count         (get entry :sources-count 0)
+     :source-refs           (vec (get entry :source-refs []))
+     :dedup-decisions-count (get entry :dedup-decisions-count 0)
+     :equivalence-history   (vec (get entry :equivalence-history []))
+     :contradictions        (vec (get entry :contradictions []))
+     :last-reinforced-at    (get entry :last-reinforced-at)
+     :computed-at           (get entry :computed-at)}))
+
+(defn get-contradictions
+  "Return all contradiction markers for an ontology-id as a vector.
+
+   Each entry carries {:concept-uri :field :existing-value :incoming-value
+   :existing-source :incoming-source :recorded-at}. Empty vector when
+   none recorded — never nil. The review-surface read path the slice's
+   binding criterion (c) requires."
+  [ctx ontology-id]
+  (let [state (rmp/project ctx :ontology/concept-evidence)]
+    (vec
+     (for [[uri entry] state
+           c (get entry :contradictions [])
+           :when (= ontology-id (:ontology-id c))]
+       (assoc c :concept-uri uri)))))
+
+;; =============================================================================
 ;; Tree Profiles Projection
 ;; =============================================================================
 ;; Builds per-tree profiles with strengths, weaknesses, problem mappings

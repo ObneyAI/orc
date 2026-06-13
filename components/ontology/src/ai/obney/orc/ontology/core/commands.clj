@@ -17,6 +17,7 @@
             [ai.obney.orc.ontology.core.discovery :as discovery]
             [ai.obney.orc.ontology.core.rule-extraction :as rule-extraction]
             [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
+            [ai.obney.orc.ontology.core.evidence :as evidence]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
@@ -1484,7 +1485,8 @@
    a `::anom/incorrect` anomaly rather than silently downgrading the
    verdict)."
   [{{:keys [ontology-id alignment-ontology-id a b
-            llm-budget string-merge-threshold string-ambiguity-lo lsh-jaccard-min]} :command
+            llm-budget string-merge-threshold string-ambiguity-lo lsh-jaccard-min
+            a-source-ref b-source-ref]} :command
     :as ctx}]
   (let [;; Pull the S07 axioms projection ONCE for the cascade's T1 guard.
         all-axioms (rmp/project ctx :ontology/axioms)
@@ -1518,11 +1520,62 @@
                  :target-uri b-uri
                  :context-source (:tier verdict)
                  :verdict (:verdict verdict)
-                 :recorded-at now}})]
+                 :recorded-at now}})
+        ;; --------------------------------------------------------
+        ;; S13 — always-on evidence aggregation for BOTH sides.
+        ;; --------------------------------------------------------
+        ;; Pull the existing evidence projection ONCE and derive each
+        ;; side's aggregate via the pure `evidence/aggregate-from-
+        ;; cascade` helper. The same helper produces both events so
+        ;; the math lives in ONE place (binding: any weight tweak
+        ;; happens in `evidence.clj`, never inline here).
+        ;;
+        ;; Not R-Inject-gated — mechanism-level functionality. Every
+        ;; cascade invocation emits one of these per side.
+        existing-evidence (rmp/project ctx :ontology/concept-evidence)
+        a-agg (evidence/aggregate-from-cascade
+               {:existing     (get existing-evidence a-uri {})
+                :verdict      verdict
+                :source-ref   a-source-ref
+                :computed-at  now
+                :alignment-id (when (= :merge (:verdict verdict))
+                                alignment-ontology-id)})
+        b-agg (evidence/aggregate-from-cascade
+               {:existing     (get existing-evidence b-uri {})
+                :verdict      verdict
+                :source-ref   b-source-ref
+                :computed-at  now
+                :alignment-id (when (= :merge (:verdict verdict))
+                                alignment-ontology-id)})
+        evidence-event
+        (fn [uri agg]
+          (->event
+           {:type :ontology/concept-evidence-aggregated
+            :tags #{[:ontology ontology-id]}
+            :body (cond->
+                    {:ontology-id           ontology-id
+                     :concept-uri           uri
+                     :tier                  (or (:tier verdict) :unknown-tier)
+                     :verdict               (:verdict verdict)
+                     :tier-contributions    (:tier-contributions agg)
+                     :sources-count         (:sources-count agg)
+                     :dedup-decisions-count (:dedup-decisions-count agg)
+                     :evidence-score        (:evidence-score agg)
+                     :computed-at           (:computed-at agg)}
+                    (seq (:source-refs agg))
+                    (assoc :source-refs (vec (:source-refs agg)))
+                    (seq (:equivalence-history agg))
+                    (assoc :equivalence-history (vec (:equivalence-history agg))))}))
+        a-evidence-event (evidence-event a-uri a-agg)
+        b-evidence-event (evidence-event b-uri b-agg)
+        evidence-events [a-evidence-event b-evidence-event]]
     (case (:verdict verdict)
       :merge
       (if-not alignment-ontology-id
         ;; Merge requires an alignment section. No silent downgrade — refuse.
+        ;; Evidence aggregation is also DEFERRED here: emitting evidence
+        ;; events alongside an anomaly would commit half-state. The
+        ;; caller fixes the input and retries.
         {::anom/category ::anom/incorrect
          ::anom/message "run-dedup-cascade: :merge verdict requires :alignment-ontology-id"
          :command-result/data {:verdict verdict}}
@@ -1533,40 +1586,94 @@
                                          (str (:tier verdict))]))]
           {:command-result/data {:verdict verdict}
            :command-result/events
-           [(->event
-             {:type :ontology/equivalence-recorded
-              :tags #{[:ontology alignment-ontology-id]
-                      [:equivalence equivalence-id]}
-              :body {:equivalence-id equivalence-id
-                     :ontology-id alignment-ontology-id
-                     :source-uri a-uri
-                     :target-uri b-uri
-                     :kind (:kind verdict)
-                     :evidence evidence-vec
-                     :recorded-at now}})
-            co-occurrence-event]}))
+           (into
+            [(->event
+              {:type :ontology/equivalence-recorded
+               :tags #{[:ontology alignment-ontology-id]
+                       [:equivalence equivalence-id]}
+               :body {:equivalence-id equivalence-id
+                      :ontology-id alignment-ontology-id
+                      :source-uri a-uri
+                      :target-uri b-uri
+                      :kind (:kind verdict)
+                      :evidence evidence-vec
+                      :recorded-at now}})
+             co-occurrence-event]
+            evidence-events)}))
 
       :distinct
       {:command-result/data {:verdict verdict}
        :command-result/events
-       [(->event
-         {:type :ontology/dedup-distinct-recorded
-          :tags #{[:ontology ontology-id]}
-          :body (cond-> {:ontology-id ontology-id
-                         :source-uri a-uri
-                         :target-uri b-uri
-                         :tier (:tier verdict)
-                         :reason (:reason verdict)
-                         :recorded-at now}
-                  (:detail verdict) (assoc :evidence (:detail verdict)))})
-        co-occurrence-event]}
+       (into
+        [(->event
+          {:type :ontology/dedup-distinct-recorded
+           :tags #{[:ontology ontology-id]}
+           :body (cond-> {:ontology-id ontology-id
+                          :source-uri a-uri
+                          :target-uri b-uri
+                          :tier (:tier verdict)
+                          :reason (:reason verdict)
+                          :recorded-at now}
+                   (:detail verdict) (assoc :evidence (:detail verdict)))})
+         co-occurrence-event]
+        evidence-events)}
 
-      ;; :skip and :requires-review emit ONLY the co-occurrence event.
-      ;; Neither carries an equivalence event (no merge claim) nor a
-      ;; dedup-distinct event (the cascade declined to decide).
+      ;; :skip and :requires-review emit the co-occurrence event PLUS
+      ;; the evidence-aggregated events (every cascade run counts as
+      ;; evidence — even an undecided one tells us something about the
+      ;; concept's neighborhood). Neither carries an equivalence event
+      ;; (no merge claim) nor a dedup-distinct event (the cascade
+      ;; declined to decide).
       (:skip :requires-review)
       {:command-result/data {:verdict verdict}
-       :command-result/events [co-occurrence-event]})))
+       :command-result/events (into [co-occurrence-event] evidence-events)})))
+
+;; =============================================================================
+;; S13 — Concept contradiction recording
+;; =============================================================================
+;;
+;; The builder calls this when it detects a field-value conflict between
+;; an EXISTING concept's stored attribute and an INCOMING value from a
+;; new source. The slice's load-bearing rule: the existing value is
+;; NEVER silently overwritten — a contradiction marker is recorded and
+;; queryable through the review surface. The decision to merge / refine
+;; / refuse the conflict is the LATER Tier-2 LLM step's job; Tier-1's
+;; job is to MAKE THE CONFLICT VISIBLE.
+;;
+;; This command emits ONLY the contradiction marker event. It does NOT
+;; emit :ontology/concept-updated — silent overwrite is the adversarial
+;; failure mode the slice test guards against.
+
+(defcommand :ontology record-concept-contradiction
+  "S13: record a field-value conflict between an EXISTING and an
+   INCOMING source. The contradiction is MARKED and queryable; the
+   stored field value is NEVER silently replaced. Tier-2 LLM
+   consolidation (a separate slice) will eventually choose how to
+   resolve them.
+
+   Inputs:
+   - :ontology-id     — the section the concept lives in
+   - :concept-uri     — the concept whose field conflicts
+   - :field           — :label / :description / etc.
+   - :existing-value  — the value currently stored
+   - :incoming-value  — the conflicting value from the new source
+   - :existing-source — string ref identifying the existing value's source
+   - :incoming-source — string ref identifying the incoming value's source"
+  [{{:keys [ontology-id concept-uri field
+            existing-value incoming-value
+            existing-source incoming-source]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/concept-contradiction-recorded
+      :tags #{[:ontology ontology-id]}
+      :body {:ontology-id     ontology-id
+             :concept-uri     concept-uri
+             :field           field
+             :existing-value  existing-value
+             :incoming-value  incoming-value
+             :existing-source existing-source
+             :incoming-source incoming-source
+             :recorded-at     (now-str)}})]})
 
 ;; =============================================================================
 ;; S15 — Record CQ evaluation result (per-CQ per-run)

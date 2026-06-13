@@ -928,6 +928,53 @@
     [:recorded-at    :string]]
 
    ;; -------------------------------------------------------------------------
+   ;; S13 — Evidence Tier-1 (deterministic, always-on)
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Two event types ride the compare-to-existing path (S12's cascade)
+   ;; for free:
+   ;;
+   ;; 1. :ontology/concept-evidence-aggregated — emitted by
+   ;;    `run-dedup-cascade` for EACH side of the candidate pair on
+   ;;    every invocation. Mechanism-level functionality, NOT R-Inject-
+   ;;    gated. Carries the per-URI tier-contributions tally, the
+   ;;    sources-count, the dedup-decisions-count, and the
+   ;;    deterministic evidence-score computed from those aggregates.
+   ;;
+   ;; 2. :ontology/concept-contradiction-recorded — emitted by
+   ;;    `record-concept-contradiction` when the builder detects a
+   ;;    field-value conflict. Carries BOTH existing + incoming values
+   ;;    AND BOTH source-refs. The contradiction is visible and
+   ;;    queryable as a marker — the stored field value is NEVER
+   ;;    silently overwritten (the slice's load-bearing failure mode
+   ;;    under test).
+   :ontology/concept-evidence-aggregated
+   [:map
+    [:ontology-id           :uuid]
+    [:concept-uri           :string]
+    ;; The cascade tier that closed THIS aggregation's verdict.
+    [:tier                  :keyword]
+    [:verdict               [:enum :merge :distinct :skip :requires-review]]
+    ;; Cumulative tier counts. Map from tier-keyword → count.
+    [:tier-contributions    [:map-of :keyword :int]]
+    [:sources-count         :int]
+    [:dedup-decisions-count :int]
+    ;; Deterministic score in [0.0, 1.0].
+    [:evidence-score        :double]
+    [:computed-at           :string]]
+
+   :ontology/concept-contradiction-recorded
+   [:map
+    [:ontology-id     :uuid]
+    [:concept-uri     :string]
+    [:field           :keyword] ;; :label / :description / :comment / ...
+    [:existing-value  [:or :string :int :double :boolean :keyword]]
+    [:incoming-value  [:or :string :int :double :boolean :keyword]]
+    [:existing-source :string]
+    [:incoming-source :string]
+    [:recorded-at     :string]]
+
+   ;; -------------------------------------------------------------------------
    ;; S15 — Competency-question evaluation events
    ;; -------------------------------------------------------------------------
    ;;
@@ -1579,7 +1626,28 @@
      [:llm-budget   {:optional true} [:int {:min 0}]]
      [:string-merge-threshold {:optional true} :double]
      [:string-ambiguity-lo    {:optional true} :double]
-     [:lsh-jaccard-min        {:optional true} :double]]]
+     [:lsh-jaccard-min        {:optional true} :double]
+     ;; S13 — optional source-refs the candidates were drawn from.
+     ;; When supplied, the evidence aggregator counts these toward
+     ;; the URI's :sources-count + :distinct-sources. When omitted,
+     ;; the aggregation still fires (deciding cascade events still
+     ;; count as evidence) — source-refs simply don't accumulate.
+     [:a-source-ref {:optional true} :string]
+     [:b-source-ref {:optional true} :string]]]
+
+   ;; S13 — record a field-value contradiction the builder detected.
+   ;; The contradiction is MARKED (visible, queryable) — the stored
+   ;; field value is NEVER silently overwritten. The slice's
+   ;; load-bearing failure mode under test is the overwrite path.
+   :ontology/record-concept-contradiction
+   [:map
+    [:ontology-id     :uuid]
+    [:concept-uri     :string]
+    [:field           :keyword]
+    [:existing-value  [:or :string :int :double :boolean :keyword]]
+    [:incoming-value  [:or :string :int :double :boolean :keyword]]
+    [:existing-source :string]
+    [:incoming-source :string]]
 
    ;; S15 — record a single competency-question evaluation result for an
    ;; ontology. The CQ runner emits ONE command per CQ per evaluation
