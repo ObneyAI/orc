@@ -187,10 +187,21 @@
    but plainly (no `@en` tag) unless the concept also carries a
    `:labels` entry that lifts it to a tagged label. This is the slice's
    adversarial requirement: a single-label legacy concept exports with
-   NO language tag at all."
+   NO language tag at all.
+
+   S09 — non-SKOS-predicate suppression. The `:typed-edges` map (when
+   present on the concept) records (predicate -> #{target-uri}) for
+   relationships whose original predicate is NOT one of skos:related /
+   skos:broader / skos:narrower. The round-trip gate exposed that
+   emitting them ALL as `skos:related` discards the original
+   predicate name on export — a real serializer-level loss surfaced by
+   G1. The fix: render each typed-edges (predicate, target) pair as
+   its own plain triple via the original predicate, AND subtract those
+   targets from the `:related` emit so they don't double up as
+   `skos:related`."
   [{:keys [uri label description scope broader narrower related indicators
            labels comments comment see-also is-defined-by model-guidance
-           attributes]}]
+           attributes typed-edges]}]
   (let [prefix (or (uri->prefix uri) "ex")
         local-name (uri->local-name uri)]
     (str
@@ -236,14 +247,37 @@
                                    (str p ":" n))
                                  narrower))
             " ;\n"))
-     ;; Related relationships
-     (when (seq related)
-       (str "  skos:related "
-            (str/join " , " (map #(let [p (or (uri->prefix %) "ex")
-                                        n (uri->local-name %)]
-                                   (str p ":" n))
-                                 related))
-            " ;\n"))
+     ;; Related relationships. S09 — subtract any targets that the
+     ;; relationships projection records under a NON-SKOS predicate
+     ;; (so the round-trip preserves the original predicate name
+     ;; instead of collapsing every typed edge into skos:related).
+     (let [typed-targets (set (apply concat
+                                     (vals (or typed-edges {}))))
+           related-skos (remove typed-targets related)]
+       (when (seq related-skos)
+         (str "  skos:related "
+              (str/join " , " (map #(let [p (or (uri->prefix %) "ex")
+                                          n (uri->local-name %)]
+                                     (str p ":" n))
+                                   related-skos))
+              " ;\n")))
+     ;; S09 — emit the typed-edges projection so non-SKOS predicates
+     ;; (e.g. `<.../immediately-follows>`) round-trip with their actual
+     ;; predicate name instead of being aliased to skos:related.
+     ;; Each (predicate -> #{target-uri ...}) entry renders as one
+     ;; triple per target.
+     (when (seq typed-edges)
+       (str/join ""
+                 (for [[pred targets] typed-edges
+                       target targets
+                       :let [t (cond
+                                 ;; Full IRI in angle brackets
+                                 (str/starts-with? pred "<") pred
+                                 :else pred)
+                             tgt (let [p (or (uri->prefix target) "ex")
+                                       n (uri->local-name target)]
+                                   (str p ":" n))]]
+                   (str "  " t " " tgt " ;\n"))))
      ;; S04 — see-also (vector of URIs).
      (when (seq see-also)
        (str "  rdfs:seeAlso "
