@@ -932,9 +932,21 @@
    graph BFS) from crowding the fused candidate pool. Defensively re-applied here
    even though the call sites already constrain their per-signal fetches: a future
    signal-source could over-return, and the defense-in-depth keeps the property
-   load-bearing at the fusion seam."
+   load-bearing at the fusion seam.
+
+   V15 (enrichment source): result :label / :description / :scope are resolved
+   from the EVENT-SOURCED concepts projection when a `:ctx` carrying an
+   event-store is provided — so hits reached by the graph / embedding / ColBERT
+   signals (which, unlike the lexical signal, don't carry their own labels)
+   come back named on a graph built via the command path. The resolution order
+   is: event-sourced projection → static corpus → the lexical hit's own carried
+   value. Without an event-store on the ctx, the projection lookup is skipped
+   entirely and the prior static-backed behavior is preserved byte-for-byte.
+   The projection is read ONCE (scoped) per call, not per hit — no per-hit
+   round-trip. The `:scope` / `:ontology-id` / `:ontology-ids` keys scope that
+   single read to match the signals' scoping."
   [{:keys [graph-results embedding-results colbert-results lexical-results weights limit signals
-           per-source-cap]
+           per-source-cap ctx scope ontology-id ontology-ids]
     :or {weights {:graph 1.0 :embedding 1.0 :colbert 1.0 :lexical 1.0} limit 10}}]
   (let [cap-fn (if per-source-cap
                  (fn [coll] (vec (take per-source-cap coll)))
@@ -974,10 +986,30 @@
         ;; event-sourced concepts (no static counterpart) still carry
         ;; their names in :results (S21).
         lexical-by-uri (into {} (map (juxt :uri identity) lexical-results))
+        ;; V15 — event-sourced enrichment source. Read the scoped concepts
+        ;; projection ONCE (only when the ctx carries an event-store), keyed
+        ;; by URI, restricted to the URIs we'll actually enrich (the fused
+        ;; top-`limit`). This is the SAME projection the rest of the substrate
+        ;; reads for concept state (`rm/get-concepts`), so labels created via
+        ;; the command path ride back on the result map directly — closing the
+        ;; V02 `:label nil` gap. No event-store on the ctx → nil map → static
+        ;; fallback (byte-identical to pre-V15 behavior).
+        es-by-uri (when (:event-store ctx)
+                    (let [wanted (->> merged (take limit) (map :uri) set)]
+                      (->> (rm/get-concepts ctx (cond-> {}
+                                                  scope (assoc :scope scope)
+                                                  ontology-id (assoc :ontology-id ontology-id)
+                                                  (seq ontology-ids) (assoc :ontology-ids ontology-ids)))
+                           (filter #(contains? wanted (:uri %)))
+                           (map (juxt :uri identity))
+                           (into {}))))
         enriched-results (->> merged
                               (take limit)
                               (mapv (fn [{:keys [uri score]}]
-                                      (let [concept (static/get-concept-by-uri uri)
+                                      ;; Resolution order: event-sourced projection
+                                      ;; → static corpus → lexical hit's carried value.
+                                      (let [es-concept (get es-by-uri uri)
+                                            concept (static/get-concept-by-uri uri)
                                             lex (get lexical-by-uri uri)]
                                         {:uri uri
                                          :score score
@@ -985,9 +1017,9 @@
                                          :embedding-rank (get embedding-ranks uri)
                                          :colbert-rank (get colbert-ranks uri)
                                          :lexical-rank (get lexical-ranks uri)
-                                         :label (or (:label concept) (:label lex))
-                                         :description (or (:description concept) (:description lex))
-                                         :scope (or (:scope concept) (:scope lex))}))))]
+                                         :label (or (:label es-concept) (:label concept) (:label lex))
+                                         :description (or (:description es-concept) (:description concept) (:description lex))
+                                         :scope (or (:scope es-concept) (:scope concept) (:scope lex))}))))]
     {:results enriched-results
      :graph-results (vec graph-results)
      :embedding-results (vec embedding-results)
@@ -1198,7 +1230,14 @@
                       :weights weights
                       :limit limit
                       :signals signals
-                      :per-source-cap (when multi-signal? cap)})))
+                      :per-source-cap (when multi-signal? cap)
+                      ;; V15 — event-sourced enrichment source (scoped to
+                      ;; match the signals' scope). ctx may have no
+                      ;; event-store; fuse-and-enrich guards on that.
+                      :ctx ctx
+                      :scope scope
+                      :ontology-id ontology-id
+                      :ontology-ids ontology-ids})))
 
 (defn hybrid-search-batch
   "Batched hybrid-search over MANY query-texts. The ColBERT signal is computed in ONE
@@ -1283,7 +1322,13 @@
                                 :weights weights
                                 :limit limit
                                 :signals signals
-                                :per-source-cap (when multi-signal? cap)})))
+                                :per-source-cap (when multi-signal? cap)
+                                ;; V15 — event-sourced enrichment source,
+                                ;; scoped to match the per-query signals.
+                                :ctx ctx
+                                :scope scope
+                                :ontology-id ontology-id
+                                :ontology-ids ontology-ids})))
           (range)
           query-texts)))
 
