@@ -71,6 +71,9 @@
             [ai.obney.orc.ontology.core.lints.queries :as lint-q]
             [ai.obney.orc.ontology.core.ttl-ingest :as ttl-ingest]
             [ai.obney.orc.ontology.core.serialization :as serialization]
+            [ai.obney.orc.ontology.core.field-analyzer :as field-analyzer]
+            [ai.obney.orc.ontology.core.colbert-indexer :as colbert-indexer]
+            [ai.obney.orc.ontology.core.embedding :as embedding]
             [ai.obney.grain.event-store-v3.interface :as es]
             [clojure.set :as set]
             [clojure.string :as str]))
@@ -359,35 +362,219 @@
                :run-id (get-in val-cmd-result [:command-result/value :run-id])
                :stage-duration-ms (ms-since start)})))))))
 
-(defn- embed-stage
-  "Invoke the caller-supplied embedding fn. The fn protocol is
-   `(fn [ctx concepts] {:embedded-count int ...})`. Default behavior
-   when no fn is supplied: skip with `:skipped? true`.
+(defn- scoped-concepts
+  "The ontology's concepts from the URI-keyed projection, scoped to
+   `ontology-id`. Shared by the embed + index defaults."
+  [ctx ontology-id]
+  (filterv #(= ontology-id (:ontology-id %)) (rm/get-concepts ctx {})))
 
-   Embedding is deliberately wrapped (not inlined) so the production
-   `embedding/embed-concepts-batch!` call can be supplied via :embed-fn
-   and tests can supply a no-op. Same for the index stage."
-  [ctx {:keys [ontology-id embed-fn]}]
-  (let [start (System/currentTimeMillis)]
-    (if (nil? embed-fn)
-      {:status :ok
-       :skipped? true
-       :stage-duration-ms (ms-since start)}
-      (let [concepts (filter #(= ontology-id (:ontology-id %))
-                             (rm/get-concepts ctx {}))
-            result (embed-fn ctx concepts)]
+(defn- auto-embed!
+  "V01 default-embed: DETECT the embeddable fields for the ontology's
+   concepts, then embed each concept on the DETECTED fields via the
+   public `:ontology/embed-concept` command — which emits
+   `:ontology/concept-embedded` events so the embeddings project into the
+   concept-embeddings read model and become retrievable via hybrid-search.
+
+   Field detection uses the existing `field-analyzer/detect-embedding-fields`
+   capability — V01 wires it in, it does NOT reinvent it. The DEFAULT is the
+   HEURISTIC detector (schema/data-shape scan, no LLM): it is deterministic
+   and non-blocking, so the skeleton's default build never stalls on an LLM
+   call. Callers that want the LLM-driven analyzer opt in with
+   `:embed-field-detect :llm` (the analyzer needs the configured LLM — e.g.
+   an OpenRouter key — and is exercised by the live-verify path).
+
+   HONEST EMPTY (Disciplines #4): a concept whose detected-field text is
+   blank carries nothing to embed; we skip it deterministically (using the
+   SAME text builder the command uses) so no event is emitted and
+   `:embedded-count` is 0 — no fabricated vectors, no false error.
+
+   Returns `{:embedded-count int :fields-used [...] :detected-fields [...]}`."
+  [ctx ontology-id concepts detect-mode]
+  (let [detection (if (= detect-mode :llm)
+                    (field-analyzer/detect-embedding-fields ctx concepts)
+                    (field-analyzer/detect-embedding-fields concepts))
+        ;; The embed-concept command's text builder + schema understand only
+        ;; these four concept fields. Intersect the detector's choices with
+        ;; that enum so an exotic detected field (e.g. a free-form semantic
+        ;; string column) doesn't blow the command's schema — and fall back
+        ;; to the canonical pair when the intersection is empty so a concept
+        ;; with only a label/description is still embedded.
+        embeddable-enum #{:label :description :indicators :triggers}
+        detected (set (:embedding-fields detection))
+        fields-set (let [hit (set/intersection detected embeddable-enum)]
+                     (if (seq hit) hit #{:label :description}))
+        fields (vec fields-set)
+        ;; HONEST EMPTY decision is made HERE, deterministically: a concept
+        ;; whose detected-field text is blank carries nothing to embed, so we
+        ;; do NOT call the command for it (the command would fault on a nil
+        ;; embedding, conflating "no content" with "model error"). This uses
+        ;; the SAME text builder the command uses, so the skip decision is
+        ;; faithful — no fabricated vectors, no false error.
+        embeddable (filterv #(seq (embedding/concept->embedding-text % fields-set))
+                            concepts)
+        embedded
+        (reduce
+         (fn [acc concept]
+           (let [result (cp/process-command
+                         (assoc ctx :command
+                                {:command/name :ontology/embed-concept
+                                 :command/id (random-uuid)
+                                 :command/timestamp (time/now)
+                                 :uri (:uri concept)
+                                 :fields fields-set}))]
+             ;; Disciplines #5 — no silent fallback. Any anomaly here is a
+             ;; GENUINE fault (model load failure, concept vanished mid-build)
+             ;; — raise with the root cause attached rather than mask it.
+             (when (:cognitect.anomalies/category result)
+               (throw (ex-info "auto-embed!: embed-concept command returned anomaly"
+                               {:anomaly result :uri (:uri concept)})))
+             (cond-> acc
+               (pos? (or (get-in result [:command-result/data :dimensions]) 0))
+               inc)))
+         0
+         embeddable)]
+    {:embedded-count embedded
+     :fields-used fields
+     :detected-fields fields
+     :detection-method (:method detection)}))
+
+(defn- embed-stage
+  "Embed the ontology's concepts.
+
+   Caller override: when `:embed-fn` is supplied
+   (`(fn [ctx concepts] ...)`), it runs INSTEAD of the default — existing
+   callers and tests are unaffected.
+
+   DEFAULT (V01): detect-then-embed. The skeleton detects which concept
+   fields carry semantic content and embeds them automatically (closing
+   Pillar 2), so a graph built through the skeleton is semantically
+   searchable WITHOUT the caller wiring embeddings by hand.
+   `:embed-field-detect` selects the detector: `:heuristic` (default,
+   deterministic) or `:llm` (opt-in, needs the configured LLM)."
+  [ctx {:keys [ontology-id embed-fn embed-field-detect]
+        :or {embed-field-detect :heuristic}}]
+  (let [start (System/currentTimeMillis)
+        concepts (scoped-concepts ctx ontology-id)]
+    (if (some? embed-fn)
+      (let [result (embed-fn ctx concepts)]
         {:status :ok
          :embed-result result
+         :stage-duration-ms (ms-since start)})
+      (let [result (auto-embed! ctx ontology-id concepts embed-field-detect)]
+        {:status :ok
+         :embed-result result
+         :embedded-count (:embedded-count result)
          :stage-duration-ms (ms-since start)}))))
 
+(defn- colbert-corpus-too-small?
+  "True iff the throwable is ColBERT/FAISS's specific 'too few training
+   points to train k-means centroids' error — the well-understood
+   minimum-corpus boundary of the PLAID indexer. Matched on the FAISS
+   message text (which is the only signal the bridge surfaces). NOT a
+   catch-all — every other failure is left for the caller to re-throw."
+  [^Throwable t]
+  (let [msg (str (.getMessage t)
+                 " " (some-> t .getCause .getMessage))]
+    (boolean
+     (or (re-find #"Number of training points" msg)
+         (re-find #"nx >= static_cast" msg)))))
+
+(defn- register-colbert-index!
+  "Resolve the bare index-id UUID from `index-concepts!`'s result and
+   register it via the public `record-colbert-index` command.
+
+   `index-concepts!` returns its `:index-id` as the FULL create-index!
+   result map (whose own `:index-id` key holds the actual UUID). The
+   `record-colbert-index` command needs the bare UUID, so we resolve it
+   explicitly — accepting either shape (raw UUID, or the nested result
+   map) so this stays correct regardless of which form the indexer
+   returns. Returns the auto-index! result map."
+  [ctx ontology-id result]
+  (let [raw-id (:index-id result)
+        index-id (if (map? raw-id) (:index-id raw-id) raw-id)]
+    (if (and (pos? (or (:document-count result) 0)) (uuid? index-id))
+      (let [emit-r (colbert-indexer/emit-colbert-indexed-event!
+                    ctx {:ontology-id ontology-id
+                         :index-id index-id
+                         :index-name (:index-name result)
+                         :document-count (:document-count result)
+                         :colbert-fields (:colbert-fields result)})]
+        ;; Disciplines #5 — surface a genuine command rejection as the
+        ;; root cause rather than silently leaving the index unregistered.
+        (when (:cognitect.anomalies/category emit-r)
+          (throw (ex-info "auto-index!: record-colbert-index command returned anomaly"
+                          {:anomaly emit-r :ontology-id ontology-id :index-id index-id})))
+        {:indexed? true
+         :index-id index-id
+         :index-name (:index-name result)
+         :document-count (:document-count result)
+         :colbert-fields (:colbert-fields result)})
+      ;; Index-concepts dropped every document as blank — honest empty.
+      {:indexed? false :reason :no-document-content})))
+
+(defn- auto-index!
+  "V01 default-index: ColBERT-index the ontology's concepts on
+   auto-detected fields via the existing `colbert-indexer/index-concepts!`
+   capability, then register the index for the ontology via the public
+   `:ontology/record-colbert-index` command (so `get-colbert-index-for-
+   ontology` resolves and the hybrid-search ColBERT signal can use it).
+
+   HONEST EMPTY (Disciplines #4): when the embed default produced zero
+   embeddings (no semantic content), there is nothing to index — return
+   `:indexed? false` and register NO phantom index. `index-concepts!`
+   itself drops blank documents, so an index is only registered when real
+   document content exists.
+
+   COLBERT CORPUS MINIMUM (Disciplines #4/#5): ColBERT's PLAID/FAISS
+   indexer trains k-means centroids and REQUIRES at least k training
+   points (token-passages) — small corpora (a handful of short concepts)
+   are genuinely below that floor and FAISS raises 'Number of training
+   points ... at least as large as number of clusters'. That is a real
+   capability boundary of ColBERT, not a bug to mask: we recognize ONLY
+   that specific condition and surface it as a structured, NON-fatal
+   `:reason :corpus-below-colbert-minimum`. The embeddings still landed and
+   remain retrievable via the embedding signal, so the build is not failed
+   by it. EVERY OTHER error propagates verbatim (no blanket swallow) — the
+   skeleton never hides an unexpected fault.
+
+   Returns `{:indexed? bool :index-id uuid :document-count int
+             :colbert-fields [...]}`."
+  [ctx ontology-id concepts embedded-count]
+  (if (or (empty? concepts) (zero? (or embedded-count 0)))
+    {:indexed? false :reason :no-embeddable-content}
+    (let [result (try
+                   (colbert-indexer/index-concepts!
+                    ctx concepts
+                    {:auto-detect-colbert-fields true})
+                   (catch Exception e
+                     ;; Recognize ONLY ColBERT's training-points floor; any
+                     ;; other failure re-throws untouched.
+                     (if (colbert-corpus-too-small? e)
+                       ::corpus-too-small
+                       (throw e))))]
+      (if (= result ::corpus-too-small)
+        {:indexed? false :reason :corpus-below-colbert-minimum}
+        (register-colbert-index! ctx ontology-id result)))))
+
 (defn- index-stage
-  "Invoke the caller-supplied ColBERT reindex fn (or skip)."
-  [_ctx {:keys [reindex-fn]}]
+  "ColBERT-index the ontology's concepts.
+
+   Caller override: when `:reindex-fn` is supplied (`(fn [] ...)`), it runs
+   INSTEAD of the default — existing callers and tests are unaffected.
+
+   DEFAULT (V01): detect-then-index. The skeleton builds a ColBERT index
+   over auto-detected fields when the embed stage produced embeddings."
+  [ctx {:keys [ontology-id reindex-fn]} embed-r]
   (let [start (System/currentTimeMillis)]
-    (if (nil? reindex-fn)
-      {:status :ok :skipped? true :stage-duration-ms (ms-since start)}
+    (if (some? reindex-fn)
       (let [result (reindex-fn)]
-        {:status :ok :reindex-result result :stage-duration-ms (ms-since start)}))))
+        {:status :ok :reindex-result result :stage-duration-ms (ms-since start)})
+      (let [concepts (scoped-concepts ctx ontology-id)
+            result (auto-index! ctx ontology-id concepts
+                                (:embedded-count embed-r))]
+        {:status :ok
+         :index-result result
+         :stage-duration-ms (ms-since start)}))))
 
 (def default-exit-criterion
   "Default CQ gate per S15's handoff: pass-rate >= 0.8 AND
@@ -575,7 +762,7 @@
                     (if (= :failed (:status embed-r))
                       (failure-result ontology-id @stages-run @timings :embed embed-r)
 
-                      (let [idx-r (index-stage ctx params)
+                      (let [idx-r (index-stage ctx params embed-r)
                             _ (record! :index idx-r)]
                         (if (= :failed (:status idx-r))
                           (failure-result ontology-id @stages-run @timings :index idx-r)
