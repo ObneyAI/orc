@@ -51,23 +51,60 @@
 (def default-llm-model "google/gemini-3-flash-preview")
 
 (def adversarial-cqs
-  "Mirrors the S15 unit-test corpus exactly so verdicts can be hand-
-   reviewed against the prototype's ground truth."
-  [{:cq "Is there a Director concept?"            :expected :pass :layer 1}
-   {:cq "Is there a Wombat concept?"              :expected :fail :layer 1}
-   {:cq "Is there an Oscar concept?"              :expected :pass :layer 1}
-   {:cq "Is there a Mira Sun concept?"            :expected :pass :layer 1}
-   {:cq "Which directors won an Oscar?"           :expected :pass :layer 2}
-   {:cq "Which directors directed a horror film?" :expected :fail :layer 2}
-   {:cq "Are there any drama films in the graph?" :expected :pass :layer 2}
-   {:cq "Which films are documentaries?"          :expected :fail :layer 2}
-   {:cq "Which directors have a director role?"   :expected :pass :layer 2}
-   {:cq "Did director Leo Bird retire?"           :expected :unknown :layer 3}
-   {:cq "Did director Mira Sun retire?"           :expected :unknown :layer 3}
-   {:cq "Has Jane Roe won more Oscars than John Doe?" :expected :unknown :layer 3}
-   {:cq "What is Leo Bird's birth year?"          :expected :unknown :layer 3}
-   {:cq "Which directors have collaborated with each other?" :expected :unknown :layer 3}
-   {:cq "Has Mira Sun directed any feature film?" :expected :unknown :layer 3}])
+  "Adversarial CQ corpus under the OPEN-WORLD posture. Each case carries a
+   `:why` naming what it PROVES, so the live review is adversarial (does the
+   three-way distinction hold under pressure?) not just completion-checking.
+
+   The keystone is the disjointness pair: 'Does Mira Sun have the actor role?'
+   vs '...the producer role?' — SAME shape, but the first is :fail (an EXPLICIT
+   director⊥actor disjointness signal makes the absence meaningful) and the
+   second is :unknown (no closure signal → open-world). That pair proves the
+   open-world judge is grounded, not merely permissive."
+  [;; Layer 1 — structural, deterministic, zero-LLM
+   {:cq "Is there a Director concept?"            :expected :pass :layer 1
+    :why "Layer-1 structural existence (zero-LLM)"}
+   {:cq "Is there a Wombat concept?"              :expected :fail :layer 1
+    :why "Layer-1 structural non-existence — closed-world NO is correct here"}
+   {:cq "Is there an Oscar concept?"              :expected :pass :layer 1
+    :why "Layer-1 structural existence"}
+   {:cq "Is there a Mira Sun concept?"            :expected :pass :layer 1
+    :why "Layer-1 structural existence"}
+   ;; Layer 2 — positive evidence → :pass MUST still fire
+   {:cq "Which directors won an Oscar?"           :expected :pass :layer 2
+    :why ":pass on positive evidence (3 won-oscar edges)"}
+   {:cq "Are there any drama films in the graph?" :expected :pass :layer 2
+    :why ":pass on positive evidence (2 drama films)"}
+   {:cq "Which directors have a director role?"   :expected :pass :layer 2
+    :why ":pass on positive evidence (5 has-role edges)"}
+   ;; Direct negating/affirming edge → :pass (graph DOES speak)
+   {:cq "Did Sam Wei retire?"                     :expected :pass :layer 2
+    :why "Direct affirming edge (sam-wei retired 2020) → :pass, NOT :unknown"}
+   ;; OPEN-WORLD flips: absence with NO closure signal → :unknown (was :fail
+   ;; under the old closed-world posture)
+   {:cq "Which directors directed a horror film?" :expected :unknown :layer 3
+    :why "Open-world: no horror facts + no closure assertion → :unknown (was :fail)"}
+   {:cq "Which films are documentaries?"          :expected :unknown :layer 3
+    :why "Open-world: no documentary facts + no closure → :unknown (was :fail)"}
+   ;; Genuine knowledge gaps → :unknown
+   {:cq "Did director Leo Bird retire?"           :expected :unknown :layer 3
+    :why "Gap: no retirement edge for leo-bird, no closure → :unknown"}
+   {:cq "Did director Mira Sun retire?"           :expected :unknown :layer 3
+    :why "Gap: no retirement edge for mira-sun, sam-wei's edge is NOT a closure signal"}
+   {:cq "Has Jane Roe won more Oscars than John Doe?" :expected :unknown :layer 3
+    :why "Gap: no award-count attributes → :unknown"}
+   {:cq "What is Leo Bird's birth year?"          :expected :unknown :layer 3
+    :why "Gap: no birth-year attributes → :unknown"}
+   {:cq "Has Mira Sun directed any feature film?" :expected :unknown :layer 3
+    :why "Gap: no directed edge for mira-sun, no closure → :unknown (the calibration case)"}
+   ;; KEYSTONE disjointness pair — same shape, verdict differs ONLY by the
+   ;; presence of an explicit disjointness signal in the completeness block.
+   {:cq "Does Mira Sun have the actor role?"      :expected :fail :layer 3
+    :why "KEYSTONE :fail — director⊥actor asserted + mira-sun is a director → grounded NO"}
+   {:cq "Does Mira Sun have the producer role?"   :expected :unknown :layer 3
+    :why "KEYSTONE contrast — no producer disjointness → open-world :unknown"}
+   ;; BAIT — superficially-related positive evidence must NOT yield a false :pass
+   {:cq "Did Jane Roe win a Nobel Prize?"         :expected :unknown :layer 3
+    :why "Bait: graph has 'jane-roe won oscar'; a naive judge false-:passes. Correct = :unknown"}])
 
 (def test-ontology-id #uuid "5e0e5e0e-5e0e-5e0e-5e0e-5e0e5e0e5e0e")
 
@@ -153,6 +190,19 @@
              :ontology-id test-ontology-id
              :source-uri s :predicate p :target-uri t
              :confidence-class :extracted :properties {}})))
+  ;; S07 disjointness — the EXPLICIT closure signal that lets the open-world
+  ;; judge conclude :fail on an absent fact. director ⊥ actor means a director
+  ;; cannot also be an actor; combined with mira-sun's has-role director edge,
+  ;; "Does Mira Sun have the actor role?" becomes a grounded :fail. No producer
+  ;; disjointness is asserted, so "...producer role?" stays :unknown — the
+  ;; keystone contrast proving the judge is grounded, not merely permissive.
+  (cp/process-command
+   (assoc ctx :command
+          {:command/name :ontology/assert-disjointness
+           :command/id (random-uuid)
+           :command/timestamp (time/now)
+           :ontology-id test-ontology-id
+           :class-uris ["concept:role/director" "concept:role/actor"]}))
   (Thread/sleep 200))
 
 (defn record-spec! [ctx]
@@ -259,18 +309,21 @@
              (println (format "\n=== %d/%d hits in %dms ===\n" hits total dt))
              (doseq [{:keys [cq-text verdict reasoning evidence-uris layer judged-by?]}
                      (:evaluated result)]
-               (let [exp (:expected (first (filter #(= cq-text (:cq %)) adversarial-cqs)))]
-                 (println (format "%-58s expect=%-8s got=%-8s judge=%s layer=%s"
-                                  (subs cq-text 0 (min 58 (count cq-text)))
+               (let [entry (first (filter #(= cq-text (:cq %)) adversarial-cqs))
+                     exp (:expected entry)
+                     hit? (= verdict exp)]
+                 (println (format "%-46s expect=%-8s got=%-8s %s judge=%s"
+                                  (subs cq-text 0 (min 46 (count cq-text)))
                                   (name (or exp :?))
                                   (name (or verdict :?))
-                                  (if judged-by? "Y" "N")
-                                  (name (or layer :?))))
-                 (when (not= verdict exp)
-                   (println (format "  MISS reason: %s"
+                                  (if hit? "OK  " "MISS")
+                                  (if judged-by? "Y" "N")))
+                 (println (format "    proves: %s" (:why entry)))
+                 (when (not hit?)
+                   (println (format "    >>> reasoning: %s"
                                     (subs (str reasoning) 0
-                                          (min 180 (count (str reasoning))))))
-                   (println (format "  evidence: %s" (vec (take 3 evidence-uris)))))))
+                                          (min 220 (count (str reasoning))))))
+                   (println (format "    >>> evidence: %s" (vec (take 3 evidence-uris)))))))
              (println "\nGraph-health:")
              (prn (:graph-health result))
              result)))

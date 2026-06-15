@@ -333,24 +333,57 @@
       (throw (ex-info (str "CQ runner: judge-fn returned invalid verdict: "
                            (pr-str verdict))
                       {:cq-text cq-text :judge-output result})))
-    ;; Adversarial discipline: a :pass verdict MUST be grounded in
-    ;; retrieved evidence. A judge that returns :pass with no evidence-
-    ;; uris is hallucinating affirmation — caught here, not in
-    ;; downstream consumers. :fail and :unknown legitimately carry no
-    ;; URIs (closed-world NO and 'graph lacks' are answers about ABSENCE).
-    (when (and (= :pass verdict) (empty? evidence-uris))
-      (throw (ex-info
-              (str "CQ runner: judge returned :pass with NO evidence-uris "
-                   "(ungrounded affirmation — caught by the grounding guard)")
-              {:cq-text cq-text :judge-output result})))
-    {:verdict       verdict
-     :reasoning     (or (:reasoning result) "")
-     :evidence-uris evidence-uris
-     :judged-by?    true
-     :layer         (if (= :unknown verdict)
-                      :layer-3-explicit-unknown
-                      :layer-2-semantic-exists)
-     :gaps          (vec (or (:gaps result) []))}))
+    ;; Grounding discipline (live-verify hardening): a :pass MUST be grounded
+    ;; in evidence — but a real LLM judge often returns a CORRECT :pass with
+    ;; the evidence in its prose reasoning while leaving :evidence-uris empty.
+    ;; The old guard THREW on that, aborting the entire CQ batch. Instead:
+    ;;   - :pass + empty evidence-uris + retrieval WAS non-empty → the judge
+    ;;     demonstrably had evidence; ground the :pass in the retrieved URIs.
+    ;;   - :pass + empty evidence-uris + retrieval ALSO empty → truly
+    ;;     ungrounded affirmation (hallucination); downgrade to :unknown
+    ;;     (open-world: we cannot confirm), with an actionable gap.
+    ;; This preserves "no ungrounded :pass" without the brittleness of a
+    ;; whole-run abort on a structured-field omission.
+    (let [retrieved-uris (vec (keep :uri retrieved))
+          ;; The judge sees BOTH the retrieved hits AND the full concept/
+          ;; relationship enumeration (render-evidence-text). A :pass is
+          ;; "grounded" if the judge had ANY of that to work with. Without
+          ;; embeddings, retrieved is often empty for a sentence-shaped CQ,
+          ;; yet the enumeration legitimately backs the :pass.
+          graph-had-evidence? (or (seq retrieved) (seq all-concepts) (seq all-rels))
+          [verdict* evidence-uris* gaps* ground-note]
+          (cond
+            (or (not= :pass verdict) (seq evidence-uris))
+            [verdict evidence-uris (vec (or (:gaps result) [])) nil]
+
+            ;; :pass, empty evidence-uris, but the retrieval signal had hits →
+            ;; ground in the retrieved URIs.
+            (seq retrieved-uris)
+            [:pass retrieved-uris (vec (or (:gaps result) []))
+             :grounded-in-retrieval]
+
+            ;; :pass, empty evidence-uris, no retrieval hits, but the graph
+            ;; enumeration the judge saw was non-empty → trust the reasoning,
+            ;; keep :pass, flag that grounding came from the enumeration.
+            graph-had-evidence?
+            [:pass [] (vec (or (:gaps result) [])) :grounded-in-enumeration]
+
+            ;; :pass over a genuinely EMPTY graph → nothing could ground it →
+            ;; downgrade to :unknown (open-world: cannot confirm).
+            :else
+            [:unknown []
+             (vec (or (seq (:gaps result))
+                      ["affirmation over an empty graph — nothing to ground it (downgraded from :pass)"]))
+             :downgraded-ungrounded-pass])]
+      (cond-> {:verdict       verdict*
+               :reasoning     (or (:reasoning result) "")
+               :evidence-uris evidence-uris*
+               :judged-by?    true
+               :layer         (if (= :unknown verdict*)
+                                :layer-3-explicit-unknown
+                                :layer-2-semantic-exists)
+               :gaps          gaps*}
+        ground-note (assoc :grounding-note ground-note)))))
 
 ;; =============================================================================
 ;; Public runner

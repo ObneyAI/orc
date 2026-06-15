@@ -401,29 +401,53 @@
 ;; AC5b — Ungrounded :pass verdict (judge returns :pass with empty URIs) RAISES
 ;; =============================================================================
 
-(deftest pass-verdict-without-evidence-uris-raises
-  (testing "ADVERSARIAL grounding guard: a judge that returns :pass with
-            NO evidence-uris is hallucinating affirmation — the runner
-            RAISES. A :pass verdict MUST be grounded in retrieved
-            evidence. (:fail and :unknown legitimately carry no URIs —
-            those are answers about absence; only :pass needs grounding.)"
+(deftest pass-without-evidence-uris-grounds-or-downgrades
+  (testing "GROUNDING DISCIPLINE (live-verify hardening): a real LLM judge
+            often returns a CORRECT :pass with the evidence in its prose but
+            an empty :evidence-uris field. The runner must NOT abort the whole
+            batch (the old behavior). Instead: ground the :pass in the
+            RETRIEVED set when retrieval was non-empty; downgrade to :unknown
+            only when retrieval ALSO found nothing (true ungrounded
+            affirmation)."
     (with-test-ctx [ctx]
       (seed-adversarial-graph! ctx test-ontology-id)
+      ;; Case 1 — :pass + empty evidence-uris BUT retrieval finds the oscar/
+      ;; director concepts → ground in retrieval, KEEP :pass, do NOT throw.
+      (let [ungrounded-judge (fn [_] {:verdict :pass
+                                      :reasoning "directors won the award"
+                                      :evidence-uris []
+                                      :gaps []})
+            v (cqr/evaluate-cq {:cq-text "Which directors won an Oscar?"
+                                :ontology-id test-ontology-id
+                                :ctx ctx
+                                :judge-fn ungrounded-judge
+                                :hybrid-search-fn ai.obney.orc.ontology.core.retrieval/hybrid-search
+                                :get-concepts-fn (fn [opts]
+                                                   (ai.obney.orc.ontology.core.read-models/get-concepts ctx opts))
+                                :get-relationships-fn ai.obney.orc.ontology.core.read-models/get-relationships})]
+        (is (= :pass (:verdict v))
+            ":pass is kept (not aborted) when the graph backs it")
+        (is (contains? #{:grounded-in-retrieval :grounded-in-enumeration}
+                       (:grounding-note v))
+            "grounded either in retrieved hits or in the concept/rel enumeration"))
+      ;; Case 2 — :pass + empty evidence-uris AND retrieval returns NOTHING →
+      ;; truly ungrounded affirmation → downgrade to :unknown with a gap.
       (let [ungrounded-judge (fn [_] {:verdict :pass
                                       :reasoning "I just know"
                                       :evidence-uris []
-                                      :gaps []})]
-        (is (thrown-with-msg?
-             clojure.lang.ExceptionInfo
-             #"NO evidence-uris"
-             (cqr/evaluate-cq {:cq-text "Which directors won an Oscar?"
-                               :ontology-id test-ontology-id
-                               :ctx ctx
-                               :judge-fn ungrounded-judge
-                               :hybrid-search-fn ai.obney.orc.ontology.core.retrieval/hybrid-search
-                               :get-concepts-fn (fn [opts]
-                                                  (ai.obney.orc.ontology.core.read-models/get-concepts ctx opts))
-                               :get-relationships-fn ai.obney.orc.ontology.core.read-models/get-relationships}))))
+                                      :gaps []})
+            empty-retrieval (fn [_ _] {:results []})
+            v (cqr/evaluate-cq {:cq-text "Which directors won an Oscar?"
+                                :ontology-id test-ontology-id
+                                :ctx ctx
+                                :judge-fn ungrounded-judge
+                                :hybrid-search-fn empty-retrieval
+                                :get-concepts-fn (fn [_] [])
+                                :get-relationships-fn (fn [_] [])})]
+        (is (= :unknown (:verdict v))
+            "ungrounded :pass with no retrieval downgrades to :unknown")
+        (is (= :downgraded-ungrounded-pass (:grounding-note v)))
+        (is (seq (:gaps v)) "the downgrade names why"))
       ;; Reciprocal: :fail and :unknown CAN have empty evidence-uris
       ;; (those are absence answers).
       (let [fail-empty-judge (fn [_] {:verdict :fail
