@@ -156,6 +156,31 @@
             "Should return fault anomaly when the bridge call fails")))))
 
 ;; =============================================================================
+;; Create Index Command Tests (V16 — no silent drop on timeout)
+;; =============================================================================
+
+(deftest create-index-timeout-surfaces-anomaly-test
+  (testing "an over-budget index creation surfaces an anomaly — never a silent success"
+    ;; V16: if index creation exceeds even the scaled timeout, the bridge throws
+    ;; a TimeoutException. The command MUST convert that into an ::anom/fault the
+    ;; caller can see — it must NOT swallow it and let hybrid-search quietly run
+    ;; RRF on the remaining 2 signals (the V02 silent-under-retrieval failure).
+    (with-redefs [operations/create-index!
+                  (fn [& _]
+                    (throw (java.util.concurrent.TimeoutException.
+                            "Bridge call timed out after 600000ms for method :create_index")))]
+      (let [result (tu/process-command! *ctx*
+                     {:command/name :colbert/create-index
+                      :collection ["doc 1" "doc 2"]
+                      :index-name "over-budget-index"})]
+        (is (= ::anom/fault (::anom/category result))
+            "index-creation timeout must surface as a fault anomaly, not a silent success")
+        (is (re-find #"(?i)timed out" (::anom/message result))
+            "the surfaced anomaly must carry the timeout reason so the caller knows the index is missing")
+        (is (not (tu/event-of-type? result :colbert/index-created))
+            "a timed-out index creation must NOT emit an index-created event (no false green)")))))
+
+;; =============================================================================
 ;; Regenerate Index Command Tests
 ;; =============================================================================
 

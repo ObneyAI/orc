@@ -56,7 +56,55 @@
       ;; Fallback to system python
       ["python" "-u" bridge-script-path])))
 
-(def ^:private default-timeout-ms 60000)
+;; Default request timeout for QUERY-class methods (search, rerank, ping,
+;; model load/unload). Tuned for query latency — deliberately short. Do NOT
+;; raise this to accommodate index creation: that would regress every query's
+;; failure-detection latency. Index creation is scaled separately (see
+;; `index-timeout-ms`).
+(def default-timeout-ms 60000)
+
+;; Index creation (`:create_index`) is O(corpus size): it encodes every
+;; document with a 110M-param model and builds a PLAID index. At ~2,509 docs
+;; the 60s query default timed out (V02 live verify), silently dropping the
+;; ColBERT signal from hybrid-search. These knobs give index creation a
+;; scale-appropriate budget that is distinct from the query default.
+;;
+;; - floor: fixed startup costs (model load, PLAID setup, faiss/torch warmup)
+;;   already exceed 60s regardless of corpus size, so a tiny corpus still needs
+;;   a multi-minute floor.
+;; - per-doc budget: the timeout grows with document count so a large corpus
+;;   (the full multi-source graph B will exceed 2.5K) gets proportionally more
+;;   room rather than a single fixed constant.
+(def index-timeout-floor-ms
+  (or (some-> (System/getProperty "colbert.index.timeout.floor.ms") Long/parseLong)
+      (* 10 60 1000)))  ; 10-minute floor
+
+(def index-timeout-per-doc-ms
+  (or (some-> (System/getProperty "colbert.index.timeout.per-doc.ms") Long/parseLong)
+      200))  ; ~0.2s/doc; 25K docs -> ~83 min, far above the floor
+
+(defn index-timeout-ms
+  "Compute the request timeout (ms) for an index-creation call.
+
+   Scale-appropriate and corpus-size-aware:
+     max(floor, per-doc-ms * doc-count)
+
+   This is deliberately NOT the query `default-timeout-ms` — index creation is
+   O(corpus size) and legitimately takes far longer than a query.
+
+   Args:
+     doc-count - number of documents being indexed
+     opts      - optional {:timeout-ms n} explicit override (wins outright),
+                 plus {:floor-ms n :per-doc-ms n} per-call knobs.
+
+   An explicit :timeout-ms lets an operator pin an exact budget (e.g. for a
+   known-huge build) while the default scales automatically."
+  ([doc-count] (index-timeout-ms doc-count nil))
+  ([doc-count {:keys [timeout-ms floor-ms per-doc-ms]}]
+   (or timeout-ms
+       (let [floor (or floor-ms index-timeout-floor-ms)
+             per-doc (or per-doc-ms index-timeout-per-doc-ms)]
+         (max floor (* per-doc (max 0 (long (or doc-count 0)))))))))
 
 ;; =============================================================================
 ;; Subprocess Management
@@ -238,11 +286,20 @@
        :split-documents?   - Auto-split long docs (default: true)
        :max-document-length - Chunk size in tokens (default: 256)
        :use-faiss?         - Use FAISS instead of PLAID (default: false)
+       :timeout-ms         - Explicit request-timeout override (default: scaled
+                             by corpus size via `index-timeout-ms`)
+
+   The request timeout is scaled to corpus size (`index-timeout-ms`) — index
+   creation is O(corpus size) and the 60s query default times out at real
+   scale. If even the scaled budget is exceeded, the underlying `call-bridge`
+   throws a TimeoutException; callers must surface it (the :colbert/create-index
+   command converts it to an anomaly) rather than degrade silently.
 
    Returns:
      {:index_path \"...\" :index_name \"...\" :num_passages int}"
   [alias {:keys [collection document-ids document-metadatas
-                 index-name split-documents? max-document-length use-faiss?]
+                 index-name split-documents? max-document-length use-faiss?
+                 timeout-ms]
           :or {split-documents? true
                max-document-length 256
                use-faiss? false}}]
@@ -254,7 +311,9 @@
                 :index_name index-name
                 :split_documents split-documents?
                 :max_document_length max-document-length
-                :use_faiss use-faiss?}))
+                :use_faiss use-faiss?}
+               :timeout-ms (index-timeout-ms (count collection)
+                                             {:timeout-ms timeout-ms})))
 
 (defn add-to-index!
   "Add documents to an existing index.
