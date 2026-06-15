@@ -30,6 +30,16 @@ binding **Core Disciplines** block (standard 7 + verification-phase additions
 | V11 | Old exploration re-run live (daryls-area51 explorers over A2) | HITL | M3 | A2 available |
 | V12 | New exploration (5 vertical framings over B) | AFK | M3 | V09 |
 | V13 | Head-to-head report (per-vertical side-by-side + verdict) | HITL | M3 | V10,V11,V12 |
+| V14 | TTL ingest: brownfield concept-type recognition + no-false-green | AFK | M3 | — (gates A2/Mode-A) |
+| V15 | hybrid-search result label enrichment (event-sourced projection) | AFK | M3 | — (gates V12) |
+| V16 | ColBERT index-creation timeout scaling (+ LMDB map-size note) | AFK | M3 | — (gates V09) |
+
+**Fix-slices V14–V16** were surfaced by the V02 Mode-A early read — real,
+root-caused bugs the verification phase was designed to expose. Routed as focused
+fix-slices ahead of their dependents (the chosen "fix-slices before dependents"
+posture). They touch three non-overlapping files (`ttl_ingest.clj`,
+`retrieval.clj`, `colbert/core/bridge.clj`) so they run as a parallel fix-wave.
+Evidence: `docs/build-timeline/live-verify/V02-mode-a-early-read.md`.
 
 ## Dependency graph
 
@@ -39,9 +49,11 @@ M2:  V03 ┐
      V04 ├─> V06 ──┐
      V05 ┘         │
      V07 ──────────┤
-M3:  V01,V06,V07 ─> V09 ─┐
+M3:  V16 ─> V09 (ColBERT scale before build)
+     V01,V06,V07 ─> V09 ─┐
      (sources) ──> V08 ──┼─> V10 ─┐
-                  A2 ──> V11 ──────┤
+     V14 ──> A2 ──> V11 ──────────┤   (V14 unblocks brownfield A2 ingest)
+                  V15 ─> V12       │   (V15 = labeled hits before exploration)
                   V09 ─> V12 ──────┴─> V13 (verdict, HITL)
 ```
 
