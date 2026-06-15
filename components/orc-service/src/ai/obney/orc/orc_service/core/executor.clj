@@ -2244,7 +2244,14 @@
                              ;; expose the seven ontology tools (safe
                              ;; default — no implicit unscoped surface).
                              :granted-ontology-id (get rlm-config :granted-ontology-id)
-                             :granted-ontology-ids (get rlm-config :granted-ontology-ids)})
+                             :granted-ontology-ids (get rlm-config :granted-ontology-ids)
+                             ;; V06: thread the node's raw-structured-source
+                             ;; grant through to the source-tool registry. The
+                             ;; node opts INTO the per-format source-access tools
+                             ;; by setting :rlm {:granted-source {:format <kw>
+                             ;; :path <str>}}. Without this key the sandbox does
+                             ;; NOT expose source tools (safe default).
+                             :granted-source (get rlm-config :granted-source)})
                     exec-result (rlm-sandbox/execute-rlm-code rlm-ctx code)
                     ;; Track new variables created in this iteration
                     vars-after (set (keys @sandbox-vars))

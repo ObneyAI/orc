@@ -116,6 +116,179 @@
    "a verbatim quote in :evidence. Drafts without quotes are dropped during ingest. "
    "Do NOT speculate beyond what the source text states."))
 
+;; =============================================================================
+;; V06 — format-aware source exploration
+;; =============================================================================
+;; A discovery source can be a RAW STRUCTURED SOURCE (a CSV / SQLite / Excel
+;; file path) rather than inline text content. For these, the session is
+;; granted the per-format SOURCE-ACCESS tools (V03/04/05) via the rlm-config's
+;; :granted-source seam, and the prompt is augmented with format-specific
+;; EXPLORATION guidance so the model samples the source by its shape WITHOUT
+;; loading it, and mints SHAREABLE code-system URIs so the graph CONNECTS
+;; across sources (the keystone of the format-aware-ingestion ADR).
+
+(def ^:private structured-formats
+  "The structured source formats that route to per-format source tools. A
+   source whose :type is one of these is explored via the granted tools and
+   carries a :path; anything else is treated as inline text content."
+  #{:csv :sql :excel})
+
+(defn- structured-source?
+  "True when a discovery source is a raw structured source (has a structured
+   :type and a :path) rather than inline text."
+  [source]
+  (and (contains? structured-formats (:type source))
+       (string? (:path source))
+       (seq (:path source))))
+
+(def ^:private cross-source-linking-rule
+  "The load-bearing instruction (validated in the V06 prototype): mint concepts
+   with STABLE, SHAREABLE code-system URIs so other sources keyed on the same
+   codes resolve to the SAME concept — the graph CONNECTS rather than forming
+   per-source piles."
+  (str
+   "CROSS-SOURCE LINKING (CRITICAL — this is why the graph must CONNECT): when a "
+   "column / field is a CODE or KEY that ALSO identifies an entity appearing in "
+   "OTHER sources (e.g. a CIP code, a SOC code, an institution UNITID), mint each "
+   "distinct code value as a concept whose :uri is derived from the CODE SYSTEM and "
+   "the code value — a STABLE, SHAREABLE uri (e.g. \"cip:01.0000\", \"soc:19-1011\", "
+   "\"unitid:100654\") — NOT a row-local or file-local id. Use the SAME uri scheme a "
+   "DIFFERENT source would use for the same code, so concepts MERGE by shared uri. "
+   "Then emit the relationships those rows encode as :relationship-drafts between "
+   "those shareable uris (a crosswalk row CIP->SOC becomes an edge linking "
+   "\"cip:<code>\" to \"soc:<code>\"). This is how a crosswalk CONNECTS the CIP and "
+   "SOC concepts that other sources contribute."))
+
+(defmulti ^:private format-exploration-guidance
+  "Per-format EXPLORATION guidance prepended to the discovery prompt for a
+   structured source. Dispatches on the source :type."
+  (fn [source] (:type source)))
+
+(defmethod format-exploration-guidance :csv
+  [_]
+  (str
+   "SOURCE FORMAT: CSV. You have these source-access tools (sample, never dump):\n"
+   "  (peek-columns)            — FIRST CALL. Header columns, an inferred type per "
+   "column, which columns look like foreign keys, and :relationship-hints (two code "
+   "columns = a crosswalk that should become an EDGE).\n"
+   "  (sample-rows N)           — at most N real data rows as maps keyed by header.\n"
+   "  (profile-column \"<col>\")  — distinct-count / cardinality of one column over a "
+   "bounded scan (low ratio = a category/class candidate; ~1.0 = a key).\n"
+   "Explore by SAMPLING — you need NOT read every row (the file may be large). "
+   "Columns -> properties; label columns -> classes; rows -> individuals; adjacent "
+   "code columns -> relationships.\n\n"
+   cross-source-linking-rule))
+
+(defmethod format-exploration-guidance :sql
+  [_]
+  (str
+   "SOURCE FORMAT: SQLite. You have these source-access tools (read-only, bounded):\n"
+   "  (list-tables)                       — every table (each table = a class candidate).\n"
+   "  (table-schema \"<table>\")            — columns + types + primary key (columns = "
+   "property candidates; pk = the individual's identity column).\n"
+   "  (foreign-keys \"<table>\")            — declared FK edges (= relationship "
+   "candidates). NOTE: some DBs declare NO FKs and link by SHARED KEY COLUMNS "
+   "(e.g. UNITID, CIPCODE in many tables) — when this returns [], look across "
+   "table-schema for repeated id/code columns and confirm with sample-rows.\n"
+   "  (sample-rows \"<table>\" {:limit N})  — a bounded sample of rows (never the whole "
+   "table).\n"
+   "  (query \"SELECT ...\")                — a read-only, bounded SELECT for joins / "
+   "distinct scans the fixed tools don't cover.\n"
+   "Explore by SCHEMA + SAMPLING — never dump a table. Pick the FEW tables that "
+   "carry the entities + codes you care about (don't profile all 59) and finalize.\n\n"
+   "WORKED PATTERN you can adapt directly (e.g. a CIPCodes table with a CIPCode + "
+   "CIPTitle column — mint one shareable cip: concept per row, the SAME cip: scheme "
+   "a crosswalk uses, so the graph CONNECTS).\n"
+   "IMPORTANT: the SQL `sample-rows` returns a VECTOR of row maps DIRECTLY (NOT "
+   "wrapped in `{:rows ...}`), and the row keys are KEYWORDS matching the column "
+   "names (e.g. `(:CIPCode r)`, `(:CIPTitle r)`) — do NOT use `(:rows ...)` and do "
+   "NOT use string keys here:\n"
+   "  (let [rows (sample-rows \"CIPCodes\" {:limit 40})\n"
+   "        concepts (distinct (map (fn [r] {:uri (str \"cip:\" (:CIPCode r))\n"
+   "                                          :label (:CIPTitle r)\n"
+   "                                          :evidence [{:source \"CIPCode\" :quote (str (:CIPCode r))}]})\n"
+   "                                rows))]\n"
+   "    (final! {:concept-drafts (vec concepts)\n"
+   "             :relationship-drafts []\n"
+   "             :axiom-drafts []\n"
+   "             :rlm-trace [\"sampled CIPCodes; minted shareable cip: uris\"]}))\n\n"
+   cross-source-linking-rule))
+
+(defmethod format-exploration-guidance :excel
+  [source]
+  (str
+   "SOURCE FORMAT: Excel (.xlsx). You have these source-access tools (stream, never "
+   "load):\n"
+   "  (list-sheets \"" (:path source) "\")            — every worksheet, in order.\n"
+   "  (sheet-columns \"" (:path source) "\" <sheet>)  — header + per-column types for one "
+   "sheet. The header is NOT necessarily row 1 (Census/PSEO sheets put title/note "
+   "rows first) — this detects the header row and returns its index + the raw "
+   "scanned rows so you can override.\n"
+   "  (sample-rows \"" (:path source) "\" <sheet> N)  — a bounded sample of rows from one "
+   "sheet (a 119 MB sheet is sampled in ms, never loaded).\n"
+   "Pass the file path as the first argument to every Excel tool; <sheet> is a name "
+   "string or a 0-based index. Explore by SAMPLING — never load a whole sheet.\n\n"
+   cross-source-linking-rule))
+
+(defmethod format-exploration-guidance :default
+  [_]
+  cross-source-linking-rule)
+
+(defn- structured-discovery-prompt
+  "Augment the base discovery prompt with per-format exploration guidance for
+   the (single) structured source being explored. The base prompt's OUTPUT
+   SHAPE + grounding discipline still apply; we PREPEND the format guidance so
+   the model orients on how to explore THIS source before designing extraction."
+  [base-prompt source]
+  (str (format-exploration-guidance source)
+       "\n\n"
+       "HOW TO EXPLORE (important — read carefully):\n"
+       "  - The source-access tools are bound DIRECTLY in your environment. Call "
+       "them as BARE top-level expressions in the code you write each iteration — "
+       "e.g. just `(peek-columns)` on its own line, then `(sample-rows 8)` — and the "
+       "returned value is printed back to you. You may bind them: "
+       "`(def cols (peek-columns)) (def rows (sample-rows 8)) [cols rows]`.\n"
+       "  - Do NOT wrap a tool call in `(code ...)` — `(code ...)` is a tree-DSL node "
+       "builder, not an eval helper, and will error on a bare value.\n"
+       "  - Do NOT use `emit-tree!` to sample a source. A whole-tree sub-tick is slow "
+       "and unnecessary for sampling; reserve trees for genuine multi-step pipelines. "
+       "Sampling a CSV/table is just a couple of direct tool calls.\n"
+       "  - A typical discovery pass is exactly two iterations: (1) call the tools "
+       "directly to see the shape + a few rows, (2) `(final! {...})` with the drafts "
+       "you designed from what you saw. Keep it to a few quick tool calls.\n"
+       "  - DO NOT CALL `emit-tree!` FOR THIS TASK. A tree sub-tick is far too slow "
+       "for sampling and WILL exhaust your budget. Just call the tools directly and "
+       "then `(final! ...)`.\n"
+       "  - KEEP THE FINAL TRANSFORM SIMPLE. You are in a restricted sandbox: only "
+       "`clojure.core`, `clojure.string`, and `clojure.set` are available — NO Java "
+       "interop (no `java.net.URLEncoder`, no `.foo` method calls), and helpers like "
+       "`distinct-by` do NOT exist (use `(vals (group-by :uri xs))` then `(map first)`, "
+       "or just `distinct` over the maps). Build the drafts with plain `map` / `for` / "
+       "`mapcat` / `distinct` over the sampled rows. Do not invent intermediate "
+       "concepts (e.g. a separate node per title) — emit one concept per distinct "
+       "CODE with the title as its :label, and one relationship per crosswalk row. "
+       "When making a uri from a value, just `(str \"cip:\" code)` — do not URL-encode.\n"
+       "  - WORKED PATTERN you can adapt directly (for a CIP/SOC crosswalk):\n"
+       "      (let [rows (:rows (sample-rows 30))\n"
+       "            cips (distinct (map (fn [r] {:uri (str \"cip:\" (get r \"CIP_Code\"))\n"
+       "                                          :label (get r \"CIP_Title\")\n"
+       "                                          :evidence [{:source \"CIP_Code\" :quote (get r \"CIP_Code\")}]}) rows))\n"
+       "            socs (distinct (map (fn [r] {:uri (str \"soc:\" (get r \"SOC_Code\"))\n"
+       "                                          :label (get r \"SOC_Title\")\n"
+       "                                          :evidence [{:source \"SOC_Code\" :quote (get r \"SOC_Code\")}]}) rows))\n"
+       "            edges (distinct (map (fn [r] {:source-uri (str \"cip:\" (get r \"CIP_Code\"))\n"
+       "                                           :target-uri (str \"soc:\" (get r \"SOC_Code\"))\n"
+       "                                           :predicate \"cipMapsToSoc\" :confidence-class \"extracted\"\n"
+       "                                           :evidence [{:source \"row\" :quote (get r \"SOC_Code\")}]}) rows))]\n"
+       "        (final! {:concept-drafts (vec (concat cips socs))\n"
+       "                 :relationship-drafts (vec edges)\n"
+       "                 :axiom-drafts []\n"
+       "                 :rlm-trace [\"sampled crosswalk; minted shareable cip:/soc: uris + edges\"]}))\n\n"
+       "Note on evidence quotes: every :evidence :quote must be a LITERAL value you "
+       "read from the source (a cell value, a column name, a code) — never a tool "
+       "result map or a paraphrase.\n\n"
+       base-prompt))
+
 (defn- build-rlm-config
   "Construct the `:rlm` map for the synthetic repl-researcher node.
 
@@ -126,25 +299,41 @@
      be retrieved); callable can suppress with `:auto-classify? false`.
    - `:debug?` propagates if set so the session emits diagnostic
      output during live verify."
-  [{:keys [granted-ontology-id auto-classify? debug?]
+  [{:keys [granted-ontology-id auto-classify? debug? granted-source]
     :or {auto-classify? true}}]
   (cond-> {:recursive? true
            :granted-ontology-id granted-ontology-id
            :auto-classify? auto-classify?}
-    debug? (assoc :debug? true)))
+    debug? (assoc :debug? true)
+    ;; V06 — grant the per-format source-access tools when the source being
+    ;; explored is a raw structured source. The executor threads this to
+    ;; build-rlm-context, which dispatches by format to the right tool leg.
+    granted-source (assoc :granted-source granted-source)))
 
 (defn- sources->blackboard
   "Convert the discovery sources into the blackboard shape the
    recursive-RLM session expects. Each source contributes one entry
-   keyed by its :name (or auto-assigned `:source-N`). Value is the
-   source's content string. Reads-declared keys mirror the keys here."
+   keyed by its :name (or auto-assigned `:source-N`).
+
+   For an inline TEXT source the value is its :content string. For a raw
+   STRUCTURED source (V06 — csv / sql / excel with a :path) there is NO
+   inline content to hand the model — the source-access tools are granted
+   instead, so the value is a short DESCRIPTOR string telling the model the
+   format + path and that it must explore via the granted tools (it must NOT
+   expect the content inline). Reads-declared keys mirror the keys here."
   [sources]
   (reduce-kv
    (fn [acc i source]
-     (let [k (or (:name source) (keyword (str "source-" (inc i))))]
+     (let [k (or (:name source) (keyword (str "source-" (inc i))))
+           v (if (structured-source? source)
+               (str "RAW STRUCTURED SOURCE — format " (name (:type source))
+                    ", path " (:path source)
+                    ". This source is NOT provided inline; explore it via the "
+                    "granted source-access tools (sample, never dump).")
+               (or (:content source) ""))]
        (assoc acc k {:key k
                      :schema :string
-                     :value (or (:content source) "")
+                     :value v
                      :version 1})))
    {}
    (vec sources)))
@@ -235,13 +424,29 @@
                            (seeds/ontology-discovery-patterns
                              require-hitl-reviewed-patterns?))
 
+        ;; V06 — a raw STRUCTURED source (csv / sql / excel with a :path)
+        ;; routes the discovery session through the per-format source-access
+        ;; tools. A single discovery session explores ONE source's format, so
+        ;; we grant the first structured source's tools and augment the prompt
+        ;; with that format's exploration guidance. (Mixed-format corpora are
+        ;; discovered one source per session by the build harness.) When the
+        ;; caller passes multiple structured sources of different formats, the
+        ;; first one's format is granted — discovery is one-source-per-session.
+        structured (first (filter structured-source? sources))
+        granted-source (when structured
+                         {:format (:type structured) :path (:path structured)})
+        effective-prompt (if structured
+                           (structured-discovery-prompt discovery-prompt structured)
+                           discovery-prompt)
+
         ;; Synthetic repl-researcher node. The shape mirrors
         ;; orc-service.core.dsl/repl-researcher — built inline because
         ;; we don't have a parent sheet, just a one-shot session.
         rlm-config (build-rlm-config
                      {:granted-ontology-id ontology-id
                       :auto-classify? auto-classify?
-                      :debug? debug?})
+                      :debug? debug?
+                      :granted-source granted-source})
 
         ;; Source-keys become declared :reads so the model sees the
         ;; source content in its inputs-preview.
@@ -253,7 +458,7 @@
         node {:node-type :repl-researcher
               :name :ontology-discovery
               :model model
-              :instruction discovery-prompt
+              :instruction effective-prompt
               :reads (vec source-keys)
               :writes [:concept-drafts :relationship-drafts
                        :axiom-drafts :rlm-trace]
@@ -348,19 +553,53 @@
 ;; this fn raises a clear anomaly; it does NOT silently drop
 ;; entries.
 
-(defn- validate-concept-draft! [c]
-  (when-not (and (map? c) (:uri c) (:label c))
-    (throw (ex-info "compile-discovery-source!: malformed concept-draft (missing :uri or :label)"
-                    {:draft c
-                     :reason :missing-required-field})))
-  c)
+(defn- normalize-concept-draft
+  "Accept the well-defined field synonyms the discovery model reaches for as
+   readily as the canonical names — `:name` / `:title` for `:label` (the model
+   gravitates to `:name` for a labelled entity). This is the SAME normalization
+   discipline the axiom-type / scope / confidence-class paths use (an exact
+   alias map, NOT fuzzy phrase matching): a deterministic synonym for the same
+   field, not a fabricated value. The canonical `:label` always wins when both
+   are present."
+  [c]
+  (cond-> c
+    (and (map? c) (not (:label c)) (or (:name c) (:title c)))
+    (assoc :label (or (:name c) (:title c)))))
 
-(defn- validate-relationship-draft! [r]
-  (when-not (and (map? r) (:source-uri r) (:target-uri r) (:predicate r))
-    (throw (ex-info "compile-discovery-source!: malformed relationship-draft (missing :source-uri/:target-uri/:predicate)"
-                    {:draft r
-                     :reason :missing-required-field})))
-  r)
+(defn- normalize-relationship-draft
+  "Accept the OWL/graph-standard endpoint + predicate synonyms the model reaches
+   for: `:from-uri` / `:from` for `:source-uri`, `:to-uri` / `:to` for
+   `:target-uri`, and `:via` / `:type` / `:relation` for `:predicate` (the model
+   labels the edge kind with whichever of these it picks). Canonical names win
+   when present. Same deterministic-synonym discipline as the concept-draft
+   normalization — an exact alias set, not fuzzy matching. The predicate synonym
+   is coerced to a string (the create-relationship command takes a string
+   predicate; the model often supplies a keyword like `:crosswalk`)."
+  [r]
+  (let [pred-syn (or (:via r) (:type r) (:relation r))]
+    (cond-> r
+      (and (map? r) (not (:source-uri r)) (or (:from-uri r) (:from r)))
+      (assoc :source-uri (or (:from-uri r) (:from r)))
+      (and (map? r) (not (:target-uri r)) (or (:to-uri r) (:to r)))
+      (assoc :target-uri (or (:to-uri r) (:to r)))
+      (and (map? r) (not (:predicate r)) pred-syn)
+      (assoc :predicate (if (keyword? pred-syn) (name pred-syn) (str pred-syn))))))
+
+(defn- validate-concept-draft! [c0]
+  (let [c (normalize-concept-draft c0)]
+    (when-not (and (map? c) (:uri c) (:label c))
+      (throw (ex-info "compile-discovery-source!: malformed concept-draft (missing :uri or :label)"
+                      {:draft c0
+                       :reason :missing-required-field})))
+    c))
+
+(defn- validate-relationship-draft! [r0]
+  (let [r (normalize-relationship-draft r0)]
+    (when-not (and (map? r) (:source-uri r) (:target-uri r) (:predicate r))
+      (throw (ex-info "compile-discovery-source!: malformed relationship-draft (missing :source-uri/:target-uri/:predicate)"
+                      {:draft r0
+                       :reason :missing-required-field})))
+    r))
 
 (def ^:private valid-concept-scopes
   "The ontology-scope enum (interface/schemas). A discovery session is
@@ -421,6 +660,30 @@
      :broader (vec (or (:broader draft) []))
      :indicators (vec (or (:indicators draft) []))}))
 
+(defn- normalize-evidence
+  "Coerce a draft's :evidence into the S06 relationship-evidence schema shape —
+   `[:vector [:map [:source :string] [:quote :string]]]`. The discovery model
+   supplies evidence in several near-shapes (a single map instead of a vector;
+   `{:type :quote :value X}`; `{:quote X :field Y}` with no :source). Each entry
+   is normalized to `{:source <str> :quote <str>}`:
+     - :quote  ← :quote, else :value, else \"\"
+     - :source ← :source, else :field, else \"source\"
+   An entry that carries NO usable quote is dropped (an empty-quote evidence is
+   not evidence). This is deterministic field-synonym normalization, not
+   fabrication — the values are the model's own, just keyed canonically."
+  [evidence]
+  (let [entries (cond (sequential? evidence) evidence
+                      (map? evidence)        [evidence]
+                      :else                  [])]
+    (->> entries
+         (keep (fn [e]
+                 (when (map? e)
+                   (let [q (or (:quote e) (:value e))
+                         s (or (:source e) (:field e) "source")]
+                     (when (and q (seq (str q)))
+                       {:source (str s) :quote (str q)})))))
+         vec)))
+
 (defn- relationship-draft->command [ontology-id draft]
   {:command/name :ontology/create-relationship
    :command/id (random-uuid)
@@ -430,7 +693,7 @@
    :target-uri (:target-uri draft)
    :predicate (:predicate draft)
    :confidence-class (coerce-confidence-class (:confidence-class draft))
-   :evidence (vec (or (:evidence draft) []))
+   :evidence (normalize-evidence (:evidence draft))
    :properties (or (:properties draft) {})})
 
 ;; =============================================================================

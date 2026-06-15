@@ -35,6 +35,7 @@
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.sandbox-tools :as sandbox-tools]
+            [ai.obney.orc.orc-service.core.source-tools :as source-tools]
             [ai.obney.orc.orc-service.core.orientation-card :as orientation-card]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
@@ -324,6 +325,15 @@
      filter-by-label-pattern, classify-task, classify-behaviors). The grant
      is the AUTHORITATIVE scope — any :ontology-id the model passes in is
      ignored. Without these keys, the tools are NOT exposed.
+   - :granted-source - V06. `{:format <:csv|:sql|:excel|:text> :path <str>}`.
+     When supplied, the per-format SOURCE-ACCESS tools (V03 csv / V04 sql /
+     V05 excel) for the detected format are merged into the sandbox bindings,
+     so the discovery RLM can EXPLORE a raw structured source (sampling, never
+     dumping) WITHOUT loading it. Dispatch selects exactly one per-format leg
+     (never a merge — the csv+excel `sample-rows` collision is resolved by
+     selection). A :text source grants no source tools. An unknown format or a
+     structured format with no :path fails loudly. Without this key, no source
+     tools are exposed.
 
    Returns a map with keys:
    - :sci-ctx          the SCI evaluator context
@@ -339,7 +349,8 @@
            call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
            recursive? event-store tenant-id cache
            sheet-id tick-id command-registry
-           granted-ontology-id granted-ontology-ids]}]
+           granted-ontology-id granted-ontology-ids
+           granted-source]}]
   (let [;; Atom to capture final! output
         final-output (atom nil)
 
@@ -776,6 +787,18 @@
                                   :granted-ontology-id granted-ontology-id
                                   :granted-ontology-ids granted-ontology-ids})
 
+        ;; V06 — per-format SOURCE-ACCESS tool bindings. The discovery RLM opts
+        ;; in by setting :rlm {:granted-source {:format <kw> :path <str>}} on the
+        ;; node; the executor threads that here. `source-tools-for` dispatches by
+        ;; format to exactly ONE per-format leg (csv / sql / excel) and NEVER
+        ;; merges across formats (the csv+excel `sample-rows` arity collision is
+        ;; resolved by selecting the format's set). A :text source (or no grant)
+        ;; yields nil and the merge is a no-op — text discovery uses the
+        ;; blackboard :content path. An unknown format / a structured format with
+        ;; no path fails LOUDLY inside source-tools-for (no silent skip).
+        source-tool-bindings (when granted-source
+                               (source-tools/source-tools-for granted-source))
+
         ;; S20 — orientation card. Computed (or cache-hit) when an
         ;; ontology-id grant is supplied AND an event-store is available
         ;; to project against. Without those, nil — the executor's
@@ -821,7 +844,11 @@
                             drill-bindings
                             ;; S19 — only present when both event-store + grant
                             ;; were supplied; otherwise nil and merge is a no-op.
-                            ontology-tool-bindings)
+                            ontology-tool-bindings
+                            ;; V06 — per-format source-access tools, present only
+                            ;; when a :granted-source descriptor was supplied;
+                            ;; otherwise nil and the merge is a no-op.
+                            source-tool-bindings)
 
         ;; Combine all bindings
         all-bindings (merge rlm-bindings)

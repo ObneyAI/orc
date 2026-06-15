@@ -145,6 +145,81 @@
                    :ontology-id ontology-id
                    :counts {:relationship (count (:relationships source))}})
 
+                ;; V06 — RAW STRUCTURED SOURCE route. The deterministic skeleton
+                ;; WRAPS the LLM discovery here (Discipline #10): given a source
+                ;; descriptor for a csv / sql / excel file (and the discovery
+                ;; ontology-id + any model/budget knobs), it runs the
+                ;; RLM-controlled, format-dispatched exploration, then emits the
+                ;; resulting concept/relationship/axiom drafts as events through
+                ;; the existing ontology commands — feeding the SAME substrate as
+                ;; the :inline-* seams. run-discovery! + compile-discovery-source!
+                ;; are lazy-resolved (they live in the discovery namespace, which
+                ;; requiring-resolves back into this skeleton — a static require
+                ;; would be circular).
+                ;;
+                ;; Source shape:
+                ;;   {:type :rlm-discovery
+                ;;    :source-descriptor {:name <kw> :type :csv|:sql|:excel
+                ;;                        :path <str>}     ; OR a :text source
+                ;;    :discovery {:model <str> :budget <map>
+                ;;                :auto-classify? <bool>
+                ;;                :require-hitl-reviewed-patterns? <bool>
+                ;;                :discovery-prompt <str> :debug? <bool>}}  ; opts
+                ;;
+                ;; A discovery session that fails (:failed-at-session) or yields
+                ;; no drafts (:no-output) does NOT fabricate a graph — the failure
+                ;; surfaces as a parse-stage anomaly (no false green).
+                :rlm-discovery
+                (let [run-discovery!
+                      (requiring-resolve
+                        'ai.obney.orc.ontology.core.rlm-discovery/run-discovery!)
+                      compile-discovery-source!
+                      (requiring-resolve
+                        'ai.obney.orc.ontology.core.rlm-discovery/compile-discovery-source!)
+                      descriptor (:source-descriptor source)
+                      _ (when-not (map? descriptor)
+                          (throw (ex-info (str ":rlm-discovery source requires a "
+                                               ":source-descriptor map (the structured "
+                                               "source to explore); got "
+                                               (pr-str descriptor))
+                                          {:source source})))
+                      disc-opts (:discovery source)
+                      disc-out (run-discovery!
+                                 ctx
+                                 (merge {:ontology-id ontology-id
+                                         :sources [descriptor]}
+                                        disc-opts))]
+                  (case (:status disc-out)
+                    :emitted-drafts
+                    (let [stub (compile-discovery-source! ctx ontology-id disc-out)]
+                      {:ingested? true
+                       :ontology-id ontology-id
+                       :discovery-provenance (:discovery-provenance stub)
+                       :counts (select-keys (:discovery-provenance stub)
+                                            [:concepts-emitted
+                                             :relationships-emitted
+                                             :axioms-emitted])})
+
+                    ;; No drafts produced — surface honestly (NOT a fabricated
+                    ;; graph). The build proceeds with zero new events from this
+                    ;; source; the provenance records the zero-yield + trace.
+                    :no-output
+                    {:ingested? true
+                     :ontology-id ontology-id
+                     :discovery-provenance {:status :no-output
+                                            :concepts-emitted 0
+                                            :relationships-emitted 0
+                                            :axioms-emitted 0
+                                            :rlm-trace (:rlm-trace disc-out)}
+                     :counts {:concept 0 :relationship 0}}
+
+                    ;; Session failure — root cause surfaces as a parse anomaly.
+                    {:cognitect.anomalies/category :cognitect.anomalies/fault
+                     :anomaly/message (str "rlm-discovery source failed at session: "
+                                           (:error disc-out))
+                     :discovery-output disc-out
+                     :source source}))
+
                 ;; Unknown source type — explicit failure, NO silent skip
                 {:cognitect.anomalies/category :cognitect.anomalies/incorrect
                  :anomaly/message (str "Unknown source type: " (:type source))
