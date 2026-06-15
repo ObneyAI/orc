@@ -180,23 +180,42 @@
 ;; =============================================================================
 
 (defn- collect-labels
-  "Group `rdfs:label` literals by `{:value :lang}` pair (S04 multi-lang
-   labels). Plain literals without a lang tag stay as-is."
+  "Collect the LANGUAGE-TAGGED `rdfs:label` literals (the S04 multi-lang
+   bundle) as `{:value :lang}` entries. The `:labels` event field's
+   schema requires BOTH `:value` and `:lang`, so a plain (untagged)
+   `rdfs:label` does NOT belong here — including it produces a
+   schema-invalid concept-created event that silently fails to persist
+   (the V14 brownfield faithfulness defect). Plain `rdfs:label`s are
+   instead routed to the single `:label` field by `ingest-concept!`."
   [pmap]
   (vec (for [term (get pmap "rdfs:label" [])
              :let [parsed (parse-object term)]
-             :when (= :literal (:kind parsed))]
-         (cond-> {:value (:value parsed)}
-           (:lang parsed) (assoc :lang (:lang parsed))))))
+             :when (and (= :literal (:kind parsed)) (:lang parsed))]
+         {:value (:value parsed) :lang (:lang parsed)})))
+
+(defn- first-plain-rdfs-label
+  "The first untagged `rdfs:label` literal on the subject (used as the
+   back-compat single `:label` when there is no `skos:prefLabel` — the
+   common brownfield shape). Returns nil when every `rdfs:label` is
+   language-tagged (those flow into `:labels`)."
+  [pmap]
+  (some (fn [term]
+          (let [parsed (parse-object term)]
+            (when (and (= :literal (:kind parsed)) (not (:lang parsed)))
+              (:value parsed))))
+        (get pmap "rdfs:label" [])))
 
 (defn- collect-comments
-  "Multi-language rdfs:comment entries; same shape as labels."
+  "Language-TAGGED rdfs:comment entries (same `{:value :lang}` shape and
+   same schema constraint as `collect-labels`). A plain untagged
+   `rdfs:comment` is routed to the single `:comment` field by
+   `ingest-concept!`, not here — including it would make the
+   concept-created event schema-invalid and silently un-persistable."
   [pmap]
   (vec (for [term (get pmap "rdfs:comment" [])
              :let [parsed (parse-object term)]
-             :when (= :literal (:kind parsed))]
-         (cond-> {:value (:value parsed)}
-           (:lang parsed) (assoc :lang (:lang parsed))))))
+             :when (and (= :literal (:kind parsed)) (:lang parsed))]
+         {:value (:value parsed) :lang (:lang parsed)})))
 
 (defn- collect-attributes
   "Walk every `orc:<key>` triple on the concept; produce an
@@ -382,6 +401,80 @@
 ;; Top-level subject classification
 ;; =============================================================================
 
+(def ^:private owl-meta-types
+  "Structural / OWL-meta `rdf:type` values that DECLARE the schema rather
+   than instantiate a domain concept. A subject whose ONLY types are
+   drawn from this set is never recognized as a concept by the broadened
+   default recognizer (V14). `owl:Ontology` is handled by the dedicated
+   ontology-header ingester; the property/class declarations feed the
+   axiom/characteristic ingesters. These are PREFIXED forms — the owl /
+   rdf / rdfs namespaces are always in `known-prefixes`, so an
+   `a owl:Class` triple resolves to the literal `\"owl:Class\"` regardless
+   of the source's domain prefixes.
+
+   Property-CHARACTERISTIC declarations (`owl:FunctionalProperty` /
+   `owl:TransitiveProperty` / `owl:SymmetricProperty`) are also structural
+   meta — they declare a predicate's characteristic and feed
+   `ingest-characteristics!`, NOT a domain concept. They are included here
+   so a property-declaration subject is never misread as a concept (the
+   S09 bundle's `ex:hasManager` / `ex:reports-to` / `ex:colleague-of`
+   property declarations are the regression guard for this)."
+  #{"owl:Ontology" "owl:Class" "owl:DatatypeProperty" "owl:ObjectProperty"
+    "owl:AnnotationProperty" "rdf:Property" "rdfs:Class"
+    "owl:FunctionalProperty" "owl:TransitiveProperty" "owl:SymmetricProperty"})
+
+(defn- type-local-name
+  "The local name of a (prefixed-or-raw) `rdf:type` string — the segment
+   after the last `#`, `/`, or `:`. `\"edu:EducationalProgram\"` and the
+   raw `\"<http://example.org/education#EducationalProgram>\"` both reduce
+   to `\"EducationalProgram\"`. Used so a caller-supplied :concept-types
+   set expressed in prefixed form still matches types the parser left in
+   raw `<full-iri>` form (the production example.org namespaces are not in
+   `known-prefixes`)."
+  [^String t]
+  (let [bare (strip-uri-brackets t)
+        idx (max (.lastIndexOf bare "#")
+                 (.lastIndexOf bare "/")
+                 (.lastIndexOf bare ":"))]
+    (if (neg? idx) bare (subs bare (inc idx)))))
+
+(defn- caller-concept-type?
+  "True when the subject's type-set `ts` matches the caller-supplied
+   `concept-types` set. Matches either EXACTLY (the type string equals a
+   set entry) OR by local name (so a prefixed entry like
+   `\"edu:EducationalProgram\"` matches a raw
+   `\"<http://example.org/education#EducationalProgram>\"` type). The
+   local-name match is structural (IRI-segment equality), NOT label
+   string-matching."
+  [ts concept-types]
+  (let [type-locals (into #{} (map type-local-name) concept-types)]
+    (boolean
+     (some (fn [t]
+             (or (contains? concept-types t)
+                 (contains? type-locals (type-local-name t))))
+           ts))))
+
+(defn- concept-subject?
+  "Decide whether a subject (given its `rdf:type` set `ts`) is a concept
+   (V14 brownfield recognition). STRUCTURAL — type-set membership only;
+   never label string-matching.
+
+   Resolution order:
+   1. When the caller supplies `concept-types`, a subject is a concept iff
+      one of its types matches that set (exact OR local-name; see
+      `caller-concept-type?`). Explicit override — takes precedence over
+      every default rule.
+   2. Otherwise a subject is a concept iff it is typed `skos:Concept`
+      (preserves the pre-V14 behavior) OR it carries at least one type
+      that is NOT an OWL-meta type. A subject whose only types are
+      structural meta (owl:Class / owl:Ontology / property declarations)
+      is NOT a concept."
+  [ts concept-types]
+  (if (seq concept-types)
+    (caller-concept-type? ts concept-types)
+    (or (contains? ts "skos:Concept")
+        (boolean (some (complement owl-meta-types) ts)))))
+
 (def ^:private skos-relationship-predicates
   "SKOS hierarchy/related predicates that decompose into plain
    relationships when present directly on a concept subject (no
@@ -526,7 +619,14 @@
                      (collect-attributes non-mg bnodes))
         body (cond-> {:ontology-id ontology-id
                       :uri subject-iri
-                      :label (or pref-label subject-iri)
+                      ;; Brownfield concepts often carry only a plain
+                      ;; (untagged) rdfs:label and no skos:prefLabel — use
+                      ;; it as the single :label so the concept is
+                      ;; legible, falling back to the URI only when there
+                      ;; is no usable label at all.
+                      :label (or pref-label
+                                 (first-plain-rdfs-label pmap)
+                                 subject-iri)
                       :description (or description "")
                       :scope (or scope :custom)}
                (seq labels)        (assoc :labels labels)
@@ -704,8 +804,21 @@
    caller can detect failure via the `::anom/category` key.
 
    `opts`:
-     :ontology-id  — UUID to scope all events under. Generated if absent."
-  [ctx ttl-string & [{:keys [ontology-id] :as opts}]]
+     :ontology-id   — UUID to scope all events under. Generated if absent.
+     :concept-types — optional set of prefixed `rdf:type` strings (e.g.
+                      `#{\"edu:EducationalProgram\" \"cip:CIPCode\"}`). When
+                      present, ONLY subjects typed with one of these are
+                      treated as concepts (takes precedence over the
+                      broadened default recognizer). When absent, a subject
+                      is a concept when it is typed `skos:Concept` OR typed
+                      with any non-OWL-meta domain class (V14 brownfield
+                      recognition).
+
+   No false green (V14): when the graph has N typed non-meta subjects but
+   the recognizer matched 0 of them, the report carries `:recognized 0`,
+   `:typed-subjects N`, and an `:anomaly` string — so a consumer checking
+   `:ingested?` alone cannot mistake a total zero-ingest for success."
+  [ctx ttl-string & [{:keys [ontology-id concept-types] :as opts}]]
   (let [canonical (ttlc/canonicalize-ttl ttl-string)]
     (if (map? canonical)
       canonical
@@ -724,10 +837,19 @@
             ;; rdf:type lookups
             sub-types (into {} (for [[s pmap] subj->pmap]
                                  [s (types-of pmap)]))
-            ;; Concepts: types include skos:Concept
+            ;; Concepts (V14): skos:Concept OR any non-OWL-meta domain
+            ;; class, with a caller-supplied :concept-types set overriding.
             concept-subjects (vec (for [[s ts] sub-types
-                                        :when (contains? ts "skos:Concept")]
+                                        :when (concept-subject? ts concept-types)]
                                     s))
+            ;; No-false-green accounting: how many subjects carry at least
+            ;; one non-OWL-meta type (i.e. are candidates for being a
+            ;; concept), independent of whether the recognizer matched
+            ;; them. A graph full of these but with 0 recognized is the
+            ;; silent-zero-ingest the report must NOT hide.
+            typed-subjects (count (filter (fn [[_ ts]]
+                                            (some (complement owl-meta-types) ts))
+                                          sub-types))
             ;; Ontology header: types include owl:Ontology
             ontology-subjects (vec (for [[s ts] sub-types
                                          :when (contains? ts "owl:Ontology")]
@@ -799,10 +921,24 @@
             _ (apply-all char-results)
             _ (apply-all subp-results)
             _ (apply-all chain-results)
-            _ (apply-all equiv-results)]
+            _ (apply-all equiv-results)
+            recognized (count concept-results)
+            ;; No false green (V14): N typed candidate subjects exist but
+            ;; the recognizer matched zero. Surface it explicitly so a
+            ;; consumer cannot read `:ingested? true` as success.
+            zero-of-n? (and (pos? typed-subjects) (zero? recognized))
+            anomaly (when zero-of-n?
+                      (str "Recognized 0 concepts of " typed-subjects
+                           " typed non-meta subjects — possible silent"
+                           " zero-ingest. Check the source's rdf:type"
+                           " classes against the recognizer (supply"
+                           " :concept-types to be explicit)."))]
         {:ingested? true
          :ontology-id oid
          :triples-parsed (count triples)
+         :recognized recognized
+         :typed-subjects typed-subjects
+         :anomaly anomaly
          :counts {:concept (count concept-results)
                   :ontology-metadata (count metadata-results)
                   :relationship (+ (count reified-results)
