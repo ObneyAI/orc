@@ -84,14 +84,23 @@
 ;; The live RLM prompt
 ;; =============================================================================
 
+(def tool-affordances-block
+  "The exact tool docstrings, rendered into the prompt — this is what the S20
+   orientation card injects into a repl-researcher's context in production.
+   Without it, the model GUESSES call shapes and result keys (S21 run #5)."
+  (str
+    "TOOLS — each with PURPOSE / EXAMPLE / RETURNS. Call them like any Clojure fn:\n\n"
+    (->> ['graph-search 'neighborhood 'get-concept 'exists? 'absent-in-graph?
+          'find-edges 'filter-by-label-pattern 'classify-task 'classify-behaviors]
+         (map (fn [sym] (str "### " sym "\n" (get st/ontology-tool-docs sym) "\n")))
+         (clojure.string/join "\n"))))
+
 (def live-task-prompt
   (str
     "You are a recursive RLM researcher with access to ONLY a small ontology graph "
-    "scoped to a single section of an ontology. You have these tools available "
-    "(call them like any Clojure fn):\n\n"
-    "  graph-search, neighborhood, get-concept, exists?, absent-in-graph?, "
-    "filter-by-label-pattern, classify-task, classify-behaviors\n\n"
-    "(meta graph-search) etc. returns the tool's docstring.\n\n"
+    "scoped to a single section of an ontology.\n\n"
+    tool-affordances-block
+    "\n\n"
     "Your task: find all DIRECTORS (concepts whose label or alt-label mentions "
     "director-like names, OR who have a \"directed\" edge to a film) who have "
     "NOT retired. You must use AT LEAST FOUR of the tools above to do this — "

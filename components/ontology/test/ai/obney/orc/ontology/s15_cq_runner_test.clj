@@ -210,9 +210,10 @@
       ;; closed-world rendering (this catches a bug where the runner
       ;; passes empty evidence to the judge).
       (assert (and (string? evidence)
-                   (or (clojure.string/includes? evidence "ALL CONCEPTS IN SCOPE")
-                       (clojure.string/includes? evidence "ALL RELATIONSHIPS IN SCOPE")))
-              (str "judge received non-closed-world evidence: "
+                   (or (clojure.string/includes? evidence "ALL CONCEPTS CURRENTLY IN SCOPE")
+                       (clojure.string/includes? evidence "ALL RELATIONSHIPS CURRENTLY IN SCOPE")
+                       (clojure.string/includes? evidence "COMPLETENESS / CLOSURE")))
+              (str "judge received non-enumerated evidence: "
                    (subs (str evidence) 0 (min 200 (count (str evidence))))))
       {:verdict v
        :reasoning (str "Controlled judge verdict for: " question)
@@ -463,24 +464,59 @@
 ;; AC6 — Production prompt: three-way distinction language present
 ;; =============================================================================
 
-(deftest production-judge-prompt-encodes-three-way-distinction
-  (testing "The production prompt explicitly distinguishes the closed-
-            world NO (:fail) from the gap (:unknown). NOT a test-only
-            string — the EXACT text that ships in production is what
-            this assertion reads. Catches a 'tests passed but prod
-            prompt is lazy' regression."
+(deftest open-world-evidence-framing-and-completeness-block
+  (testing "render-evidence-text frames enumerations as open-world (NOT
+            asserted complete) and surfaces an explicit completeness/closure
+            block — the grounded basis the judge needs to justify a :fail on
+            absence."
+    (let [concepts [{:uri "concept:dir/jane-roe" :label "Jane Roe" :ontology-id (random-uuid)}]
+          rels [{:source-uri "concept:dir/jane-roe" :predicate "directed"
+                 :target-uri "concept:film/red-dawn"}]]
+      (testing "no closure signals → block states OPEN-WORLD (absence ⇒ unknown)"
+        (let [txt (cqr/render-evidence-text {:retrieved [] :concepts concepts
+                                             :relationships rels
+                                             :axioms nil :closed-concepts []})]
+          (is (clojure.string/includes? txt "open-world"))
+          (is (clojure.string/includes? txt "OPEN-WORLD"))
+          (is (re-find #"(?i)absence of a fact\s*\n?\s*means :unknown" txt)
+              "completeness block tells the judge absence ⇒ :unknown when no closure")))
+      (testing "disjointness axiom present → surfaced as an explicit signal"
+        (let [txt (cqr/render-evidence-text
+                   {:retrieved [] :concepts concepts :relationships rels
+                    :axioms {:disjointness #{#{"class:Person" "class:Robot"}}}
+                    :closed-concepts []})]
+          (is (clojure.string/includes? txt "disjoint"))
+          (is (or (clojure.string/includes? txt "class:Person")
+                  (clojure.string/includes? txt "class:Robot")))))
+      (testing ":closed? concept marker → surfaced as a closed-set signal"
+        (let [txt (cqr/render-evidence-text
+                   {:retrieved [] :concepts concepts :relationships rels
+                    :axioms nil
+                    :closed-concepts [{:uri "concept:set/genres" :label "Genres" :closed? true}]})]
+          (is (clojure.string/includes? txt "closed-set"))
+          (is (clojure.string/includes? txt "concept:set/genres")))))))
+
+(deftest production-judge-prompt-encodes-open-world-three-way-distinction
+  (testing "The production prompt encodes the OPEN-WORLD three-way distinction:
+            absence ⇒ :unknown by default; :fail requires an EXPLICIT negating
+            or closure signal. NOT a test-only string — the EXACT text that
+            ships in production is what this assertion reads."
     (let [p cqr/judge-prompt-template]
       (is (re-find #"(?i):pass" p))
       (is (re-find #"(?i):fail" p))
       (is (re-find #"(?i):unknown" p))
-      (is (re-find #"(?i)closed-world|closed world" p)
-          "Prompt names the closed-world distinction")
-      (is (re-find #"(?i)not a default|not a fallback" p)
-          "Prompt EXPLICITLY refuses :unknown as a default")
-      (is (re-find #"(?i)comforting middle" p)
-          "Prompt EXPLICITLY names the comforting-middle failure mode")
-      (is (re-find #"(?i)graph LACKS|lacks the" p)
-          "Prompt distinguishes 'lacks the fact' as the :unknown signal")
+      (is (re-find #"(?i)open-world" p)
+          "Prompt names the open-world posture")
+      (is (re-find #"(?i)not extracted yet|incomplete" p)
+          "Prompt frames absence as incompleteness, not falsehood")
+      (is (re-find #"(?i)closure|completeness|disjoint" p)
+          "Prompt requires an explicit closure/completeness signal for :fail")
+      ;; The load-bearing Mira-Sun fix: an enumeration for OTHER subjects is
+      ;; NOT a completeness assertion.
+      (is (re-find #"(?i)NOT a completeness assertion|enumeration for OTHERS" p)
+          "Prompt explicitly rejects inferring completeness from an enumeration")
+      (is (re-find #"(?i)bug" p)
+          "Prompt names inferring :fail from absence as a bug")
       (is (re-find #"(?i):gaps|specific kind of fact" p)
           "Prompt asks the judge to name the missing fact-kind")
       (is (= p ontology/cq-runner-judge-prompt-template)

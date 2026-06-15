@@ -319,7 +319,10 @@
     :get-graph-health-fn  rm/get-graph-health
     :hybrid-search-fn     retrieval/hybrid-search
     :get-concepts-fn      (fn [opts] (rm/get-concepts ctx opts))
-    :get-relationships-fn rm/get-relationships}))
+    :get-relationships-fn rm/get-relationships
+    ;; S15 open-world: the grounded closure signal (S07 disjointness + S11
+    ;; :closed? markers) the judge uses to justify a :fail on an absent fact.
+    :get-axioms-fn        rm/get-axioms}))
 
 (def cq-runner-judge-prompt-template
   "S15: the production three-way (`:pass` / `:fail` / `:unknown`) judge

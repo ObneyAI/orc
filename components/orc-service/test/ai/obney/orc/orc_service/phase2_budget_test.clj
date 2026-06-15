@@ -25,6 +25,24 @@
       (is (= 25000 (:remaining-ms result)))
       (is (false? (:exhausted? result))))))
 
+(deftest node-options-timeout-is-honored
+  (testing "a budget set under (:options :timeout-ms) — the rlm-discovery
+            wiring path — is honored, NOT silently dropped to the hardcoded
+            15-min fallback (S18 budget-wiring fix)"
+    (let [result (executor/resolve-phase2-budget
+                   {:node {:options {:timeout-ms 180000}}
+                    :parent-timeout-ms nil
+                    :phase1-elapsed-ms 5000})]
+      (is (= :node (:source result)))
+      (is (= 180000 (:total-budget-ms result)))
+      (is (= 175000 (:remaining-ms result)))
+      (is (false? (:exhausted? result)))))
+  (testing "top-level :timeout-ms still wins over :options when both present"
+    (let [result (executor/resolve-phase2-budget
+                   {:node {:timeout-ms 30000 :options {:timeout-ms 180000}}
+                    :phase1-elapsed-ms 0})]
+      (is (= 30000 (:total-budget-ms result))))))
+
 (deftest tick-fallback-when-no-node-timeout
   (testing "uses parent-timeout-ms when node has no :timeout-ms"
     (let [result (executor/resolve-phase2-budget

@@ -859,8 +859,69 @@
 ;; Hybrid Search (Graph + Embeddings + ColBERT via RRF)
 ;; =============================================================================
 
+(defn- lexical-score
+  "Rank a single label string against the query text. Higher = better.
+
+   Tiers (case-insensitive): exact (1.0) > prefix (0.8) > whole-word
+   (0.6) > substring (0.4) > none (0.0). Deterministic, no LLM. This is
+   the signal that lets a bare text query find a concept BY NAME on a
+   graph that has no embeddings/index yet — the S19 keystone fix."
+  [label query]
+  (let [l (str/lower-case (str label))
+        q (str/lower-case (str/trim (str query)))]
+    (cond
+      (str/blank? q)           0.0
+      (= l q)                  1.0
+      (str/starts-with? l q)   0.8
+      (re-find (re-pattern (str "(?i)\\b" (java.util.regex.Pattern/quote q) "\\b")) l) 0.6
+      (str/includes? l q)      0.4
+      :else                    0.0)))
+
+(defn- concept-label-strings
+  "Every label-shaped string on a concept: the primary :label plus each
+   S04 :labels entry (string or {:value ...} map)."
+  [c]
+  (->> (cons (:label c)
+             (map (fn [l] (if (map? l) (:value l) l)) (:labels c)))
+       (remove nil?)))
+
+(defn lexical-search-concepts
+  "Lexical (label-match) signal over the EVENT-SOURCED concepts projection.
+
+   Scans the scoped concepts for label matches to `query-text`, ranked by
+   `lexical-score` (exact > prefix > whole-word > substring), tie-broken by
+   shorter label (a more specific match). Returns
+   [{:uri :score :label :description :scope} ...] sorted best-first.
+
+   Reads from `rm/get-concepts` (the event-sourced projection), NOT the
+   static corpus — so it finds concepts the moment they're created by
+   commands, before any embed/index stage runs. Honors S02 scoping via
+   :ontology-id / :ontology-ids and S03's already-widened set (the caller
+   passes the widened ids)."
+  [ctx query-text & {:keys [scope ontology-id ontology-ids limit]
+                      :or {limit 20}}]
+  (when (and ctx query-text (not (str/blank? (str query-text))))
+    (let [concepts (rm/get-concepts ctx (cond-> {}
+                                          scope (assoc :scope scope)
+                                          ontology-id (assoc :ontology-id ontology-id)
+                                          (seq ontology-ids) (assoc :ontology-ids ontology-ids)))]
+      (->> concepts
+           (keep (fn [c]
+                   (let [best (apply max 0.0 (map #(lexical-score % query-text)
+                                                  (concept-label-strings c)))]
+                     (when (pos? best)
+                       {:uri (:uri c)
+                        :score best
+                        :label (:label c)
+                        :description (:description c)
+                        :scope (:scope c)
+                        ::len (count (str (:label c)))}))))
+           (sort-by (juxt (comp - :score) ::len))
+           (map #(dissoc % ::len))
+           (take limit)))))
+
 (defn- fuse-and-enrich
-  "Fuse graph/embedding/colbert result-lists via RRF and enrich the top `limit` with
+  "Fuse graph/embedding/colbert/lexical result-lists via RRF and enrich the top `limit` with
    concept metadata + per-signal ranks. The shared fusion core of hybrid-search (one
    query) and hybrid-search-batch (per query). Input result maps carry their native
    score keys: graph/colbert use :score, embedding uses :similarity.
@@ -872,9 +933,9 @@
    even though the call sites already constrain their per-signal fetches: a future
    signal-source could over-return, and the defense-in-depth keeps the property
    load-bearing at the fusion seam."
-  [{:keys [graph-results embedding-results colbert-results weights limit signals
+  [{:keys [graph-results embedding-results colbert-results lexical-results weights limit signals
            per-source-cap]
-    :or {weights {:graph 1.0 :embedding 1.0 :colbert 1.0} limit 10}}]
+    :or {weights {:graph 1.0 :embedding 1.0 :colbert 1.0 :lexical 1.0} limit 10}}]
   (let [cap-fn (if per-source-cap
                  (fn [coll] (vec (take per-source-cap coll)))
                  identity)
@@ -891,7 +952,13 @@
                                  embedding-results)))
         ;; ColBERT batch is already formatted with :uri :score
         colbert-batch (when (seq colbert-results) (cap-fn colbert-results))
-        batches (filterv seq [graph-batch embedding-batch colbert-batch])
+        ;; Lexical batch — :score is the lexical-score tier (S21).
+        lexical-batch (when (seq lexical-results)
+                        (cap-fn
+                         (mapv (fn [{:keys [uri score]}]
+                                 {:uri uri :score (* (:lexical weights 1.0) score)})
+                               lexical-results)))
+        batches (filterv seq [graph-batch embedding-batch colbert-batch lexical-batch])
         merged (when (seq batches)
                  (graph/merge-batches batches :method "rrf"))
         graph-ranks (when graph-batch
@@ -900,28 +967,39 @@
                           (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)]) embedding-batch)))
         colbert-ranks (when colbert-batch
                         (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)]) colbert-batch)))
+        lexical-ranks (when lexical-batch
+                        (into {} (map-indexed (fn [i {:keys [uri]}] [uri (inc i)]) lexical-batch)))
+        ;; Enrichment falls back to the event-sourced lexical hit's own
+        ;; label/description when the static corpus has no entry — so
+        ;; event-sourced concepts (no static counterpart) still carry
+        ;; their names in :results (S21).
+        lexical-by-uri (into {} (map (juxt :uri identity) lexical-results))
         enriched-results (->> merged
                               (take limit)
                               (mapv (fn [{:keys [uri score]}]
-                                      (let [concept (static/get-concept-by-uri uri)]
+                                      (let [concept (static/get-concept-by-uri uri)
+                                            lex (get lexical-by-uri uri)]
                                         {:uri uri
                                          :score score
                                          :graph-rank (get graph-ranks uri)
                                          :embedding-rank (get embedding-ranks uri)
                                          :colbert-rank (get colbert-ranks uri)
-                                         :label (:label concept)
-                                         :description (:description concept)
-                                         :scope (:scope concept)}))))]
+                                         :lexical-rank (get lexical-ranks uri)
+                                         :label (or (:label concept) (:label lex))
+                                         :description (or (:description concept) (:description lex))
+                                         :scope (or (:scope concept) (:scope lex))}))))]
     {:results enriched-results
      :graph-results (vec graph-results)
      :embedding-results (vec embedding-results)
      :colbert-results (vec colbert-results)
+     :lexical-results (vec lexical-results)
      :method "rrf"
      :signals-enabled signals
      :batches-used (cond-> []
                      (seq graph-batch) (conj :graph)
                      (seq embedding-batch) (conj :embedding)
-                     (seq colbert-batch) (conj :colbert))}))
+                     (seq colbert-batch) (conj :colbert)
+                     (seq lexical-batch) (conj :lexical))}))
 
 (def default-per-source-cap-factor
   "Default per-signal candidate cap factor. The effective cap is
@@ -995,8 +1073,8 @@
                        colbert-index-id weights signals per-source-cap
                        auto-widen-alignments?]
                 :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
-                     weights {:graph 1.0 :embedding 1.0 :colbert 1.0}
-                     signals #{:graph :embedding :colbert}
+                     weights {:graph 1.0 :embedding 1.0 :colbert 1.0 :lexical 1.0}
+                     signals #{:graph :embedding :colbert :lexical}
                      auto-widen-alignments? true}}]
   (let [;; S03 — auto-widen the caller's ontology-id(s) through the
         ;; registry BEFORE passing them down to the three signals. The
@@ -1026,15 +1104,37 @@
         graph-enabled? (contains? signals :graph)
         embedding-enabled? (contains? signals :embedding)
         colbert-enabled? (contains? signals :colbert)
+        lexical-enabled? (contains? signals :lexical)
+
+        ;; S21: lexical signal — scan the scoped event-sourced concepts for
+        ;; label matches to the query text. Computed early because its hits
+        ;; ALSO bootstrap the graph BFS when the caller gave no seed-uris.
+        ;; Fetch a generous 2*limit; the per-source cap (below) re-clamps at
+        ;; the fusion seam when multi-signal.
+        lexical-results (when (and lexical-enabled? query-text)
+                          (lexical-search-concepts ctx query-text
+                                                   :scope scope
+                                                   :ontology-id ontology-id
+                                                   :ontology-ids ontology-ids
+                                                   :limit (* default-per-source-cap-factor limit)))
+
+        ;; S21: effective seeds for the graph BFS. Caller-supplied seeds win;
+        ;; otherwise the top lexical hits bootstrap the graph signal so a bare
+        ;; text query can still spread activation. nil when neither exists.
+        effective-seed-uris (cond
+                              (seq seed-uris)        seed-uris
+                              (seq lexical-results)  (mapv :uri lexical-results)
+                              :else                  nil)
 
         ;; S01: count the signals that would actually contribute. The cap
         ;; is a fusion concern only — when ≤1 signal can contribute, fusion
         ;; has no peers to balance, so the cap is a no-op (use the back-compat
         ;; 2*limit fetch size and skip the defensive cap in fuse-and-enrich).
         active-signal-count (cond-> 0
-                              (and graph-enabled? (seq seed-uris)) inc
+                              (and graph-enabled? (seq effective-seed-uris)) inc
                               (and embedding-enabled? query-text) inc
-                              (and colbert-enabled? query-text colbert-index-id) inc)
+                              (and colbert-enabled? query-text colbert-index-id) inc
+                              (and lexical-enabled? (seq lexical-results)) inc)
         multi-signal? (> active-signal-count 1)
 
         ;; S01: resolve the per-signal cap (default = 2 * limit, matching
@@ -1057,8 +1157,8 @@
         ;; graph is scoped to the requested section(s). Without scoping,
         ;; falls back to today's static-corpus BFS (preserves existing
         ;; single-tenant call sites — e.g., orc-service's R-Inject loop).
-        graph-results (when (and graph-enabled? (seq seed-uris))
-                        (->> (expand-concept-neighborhood seed-uris
+        graph-results (when (and graph-enabled? (seq effective-seed-uris))
+                        (->> (expand-concept-neighborhood effective-seed-uris
                                                           :max-depth max-depth
                                                           :decay decay
                                                           :ctx ctx
@@ -1094,6 +1194,7 @@
     (fuse-and-enrich {:graph-results graph-results
                       :embedding-results embedding-results
                       :colbert-results colbert-results
+                      :lexical-results lexical-results
                       :weights weights
                       :limit limit
                       :signals signals

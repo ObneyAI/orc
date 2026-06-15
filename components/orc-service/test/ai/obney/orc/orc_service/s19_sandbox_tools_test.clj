@@ -519,3 +519,120 @@
             r (exec s "(get-concept \"concept:any\")")]
         (is (some? (:error r))
             "Without a grant, get-concept is not bound — referencing it errors")))))
+
+;; =============================================================================
+;; AC9 — Agent-ergonomics (S21 live-verify findings).
+;;
+;; The S19 live re-run proved a capable model's natural mental model:
+;;   - filter-by-label-pattern is reached for as a SEARCH primitive (pattern
+;;     only, no URI list) — the model never supplies a uris vector first.
+;;   - graph-search is reached for with a MAP triple-pattern {:predicate ...}.
+;; The tools must MEET the model where it is (real capability), and raise a
+;; TEACHING error (not a cryptic arity/cast error) when truly misused so the
+;; model self-corrects on the next iteration.
+;; =============================================================================
+
+(deftest filter-by-label-pattern-one-arg-is-a-scoped-label-search
+  (testing "Called with a single pattern arg, filter-by-label-pattern searches
+            ALL scoped concepts by that pattern (the label-search primitive the
+            agent repeatedly reaches for)."
+    (h/with-test-context [ctx]
+      (seed-two-sections! ctx)
+      (let [s (build-sandbox-granted-A ctx)]
+        (testing "regex single-arg finds the Director concept"
+          (let [r (exec s "(filter-by-label-pattern #\"(?i)director\")")]
+            (is (nil? (:error r)) (str "error: " (:error r)))
+            (is (contains? (set (mapv :uri (:raw-result r))) "concept:role/director"))))
+        (testing "string single-arg finds by substring"
+          (let [r (exec s "(filter-by-label-pattern \"Roe\")")]
+            (is (nil? (:error r)))
+            (is (contains? (set (mapv :uri (:raw-result r))) "concept:dir/jane-roe"))))
+        (testing "single-arg label search HONORS scope — section B never leaks"
+          (let [r (exec s "(filter-by-label-pattern \"\")")]
+            (is (nil? (:error r)))
+            (is (not (contains? (set (mapv :uri (:raw-result r))) "concept:scholarship/dean"))
+                "section B concept leaked through an A-granted single-arg search")))))))
+
+(deftest filter-by-label-pattern-string-first-arg-dispatches-to-search
+  (testing "When the FIRST arg is a string/regex (not a uris collection), the
+            call is a label search regardless of a spurious second arg — this is
+            exactly the shape the live model produced: (f pattern :label)."
+    (h/with-test-context [ctx]
+      (seed-two-sections! ctx)
+      (let [s (build-sandbox-granted-A ctx)
+            ;; plain substring (case-insensitive default) + a spurious :label
+            ;; field hint — the exact 2-arg, pattern-first shape the live
+            ;; model produced. Must dispatch to SEARCH, not error.
+            r (exec s "(filter-by-label-pattern \"director\" :label)")]
+        (is (nil? (:error r))
+            (str "string-first dispatch should not error, got: " (:error r)))
+        (is (contains? (set (mapv :uri (:raw-result r))) "concept:role/director"))))))
+
+(deftest filter-by-label-pattern-uris-first-still-post-filters
+  (testing "Back-compat: a uris collection first arg keeps the post-filter
+            contract intact."
+    (h/with-test-context [ctx]
+      (seed-two-sections! ctx)
+      (let [s (build-sandbox-granted-A ctx)
+            r (exec s "(filter-by-label-pattern [\"concept:dir/jane-roe\" \"concept:dir/john-doe\"] \"Jane\")")]
+        (is (nil? (:error r)))
+        (is (= ["concept:dir/jane-roe"] (mapv :uri (:raw-result r))))))))
+
+(deftest graph-search-map-arg-raises-teaching-error
+  (testing "Called with a map (the model's triple-pattern mental model),
+            graph-search raises a CLEAR teaching error naming the string
+            contract — not a cryptic ISeq/cast exception."
+    (h/with-test-context [ctx]
+      (seed-two-sections! ctx)
+      (let [s (build-sandbox-granted-A ctx)
+            r (exec s "(graph-search {:predicate \"directed\"})")]
+        (is (some? (:error r)) "a map query must error")
+        (is (re-find #"(?i)natural-language|string|text" (str (:error r)))
+            (str "error should teach the string contract, got: " (:error r)))))))
+
+(deftest find-edges-queries-by-predicate
+  (testing "find-edges returns scoped edges matching a triple pattern — the
+            'which subjects have predicate P' primitive the live model
+            repeatedly reached for (via graph-search {:predicate} and
+            neighborhood on a predicate). Without it, relationship-shaped
+            tasks ('find directors who directed something') are unanswerable."
+    (h/with-test-context [ctx]
+      (seed-two-sections! ctx)
+      (let [s (build-sandbox-granted-A ctx)]
+        (testing "by predicate — returns triple-shaped maps; read :subject back (run-#4 symmetry)"
+          (let [r (exec s "(find-edges {:predicate \"directed\"})")
+                edges (:raw-result r)]
+            (is (nil? (:error r)) (str "error: " (:error r)))
+            ;; The model reads :subject / :object off the result — these MUST
+            ;; mirror the query vocabulary, not the projection's source/target.
+            (is (= #{"concept:dir/jane-roe"} (set (map :subject edges))))
+            (is (= #{"concept:film/red-dawn"} (set (map :object edges))))))
+        (testing "by subject — finds all of jane-roe's outgoing edges"
+          (let [r (exec s "(find-edges {:subject \"concept:dir/jane-roe\"})")
+                preds (set (map :predicate (:raw-result r)))]
+            (is (nil? (:error r)))
+            (is (contains? preds "directed"))
+            (is (contains? preds "collaborated-with")
+                "ambiguous-confidence edge still surfaces (it IS in the graph)")))
+        (testing "scope honored — a B-section predicate query yields no A leak and vice versa"
+          (let [r (exec s "(find-edges {:predicate \"directed\" :object \"concept:film/red-dawn\"})")
+                edges (:raw-result r)]
+            (is (nil? (:error r)))
+            (is (= 1 (count edges)))
+            (is (= "concept:dir/jane-roe" (:subject (first edges))))))
+        (testing "empty pattern match returns empty vec, not an exception"
+          (let [r (exec s "(find-edges {:predicate \"no-such-predicate\"})")]
+            (is (nil? (:error r)))
+            (is (= [] (:raw-result r)))))))))
+
+(deftest classify-task-tolerates-bare-string
+  (testing "A bare string is accepted as the task-signature (the natural shape);
+            it must not reject with 'Invalid classify-task opts'."
+    (h/with-test-context [ctx]
+      (seed-two-sections! ctx)
+      (let [s (build-sandbox-granted-A ctx)
+            r (exec s "(classify-task \"find directors and their retirement status\")")]
+        ;; classify-task may legitimately return a result or hit a transient
+        ;; reranker error, but it must NOT be the shape-rejection error.
+        (is (not (re-find #"Invalid classify-task opts" (str (:error r))))
+            (str "bare string should be coerced, not shape-rejected, got: " (:error r)))))))

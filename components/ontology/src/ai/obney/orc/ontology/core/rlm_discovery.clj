@@ -354,6 +354,39 @@
                      :reason :missing-required-field})))
   r)
 
+(def ^:private valid-concept-scopes
+  "The ontology-scope enum (interface/schemas). A discovery session is
+   general-purpose extraction, so the model often invents a domain-specific
+   scope (e.g. :policy, :hr) that isn't in the enum. Those coerce to :custom —
+   the general-purpose bucket — rather than failing the create-concept command."
+  #{:failure :success :problem :node-type :custom :tree-class :behavioral-subtree})
+
+(defn- ->kw
+  "JSON has no keywords, so the structured-output parse leaves keyword-typed
+   fields as STRINGS (e.g. \"extracted\", \"employment\"). Coerce string→keyword;
+   pass keywords through; nil otherwise."
+  [x]
+  (cond (keyword? x) x
+        (string? x)  (keyword x)
+        :else        nil))
+
+(defn- coerce-scope
+  "Map a draft scope to a valid ontology-scope; unknown/absent → :custom.
+   Handles the model's string scopes (\"custom\" → :custom, \"failure\" →
+   :failure, invented \"employment\" → :custom)."
+  [scope]
+  (let [k (->kw scope)]
+    (if (contains? valid-concept-scopes k) k :custom)))
+
+(def ^:private valid-confidence-classes #{:extracted :inferred :ambiguous})
+
+(defn- coerce-confidence-class
+  "Coerce a draft :confidence-class (often the string \"extracted\" from the
+   JSON round-trip) to the keyword enum; unknown/absent → :extracted."
+  [cc]
+  (let [k (->kw cc)]
+    (if (contains? valid-confidence-classes k) k :extracted)))
+
 (defn- concept-draft->command [ontology-id draft]
   (let [;; Strip evidence — it lives on relationships per the S06 schema,
         ;; not on concepts. Concepts carry quotes via :comments / :see-also
@@ -376,7 +409,7 @@
      :uri (:uri draft)
      :label (:label draft)
      :description desc
-     :scope (or (:scope draft) :custom)
+     :scope (coerce-scope (:scope draft))
      :broader (vec (or (:broader draft) []))
      :indicators (vec (or (:indicators draft) []))}))
 
@@ -388,7 +421,7 @@
    :source-uri (:source-uri draft)
    :target-uri (:target-uri draft)
    :predicate (:predicate draft)
-   :confidence-class (or (:confidence-class draft) :extracted)
+   :confidence-class (coerce-confidence-class (:confidence-class draft))
    :evidence (vec (or (:evidence draft) []))
    :properties (or (:properties draft) {})})
 

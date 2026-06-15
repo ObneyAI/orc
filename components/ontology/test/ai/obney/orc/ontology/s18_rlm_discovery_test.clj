@@ -267,6 +267,45 @@
           (is (= 2 (count concepts))
               "Two concept events landed in the event store"))))))
 
+(deftest compile-discovery-source-coerces-invalid-scope
+  (testing "A discovery session (general-purpose extraction) often invents a
+            domain :scope the ontology-scope enum doesn't include (e.g.
+            :policy). The adapter coerces unknown scopes to :custom rather than
+            failing the create-concept command — the S18 live-verify ingest
+            finding."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out {:status :emitted-drafts
+                 :emitted-concepts
+                 [{:uri "concept:policy/employee" :label "Employee"
+                   :description "A person hired under this policy."
+                   :scope :policy          ;; NOT a valid ontology-scope
+                   :evidence [{:source "policy" :quote "'Employee' means a person hired"}]}
+                  {:uri "concept:policy/manager" :label "Manager"
+                   :description "An employee with direct reports."
+                   ;; no :scope at all → also coerces to :custom
+                   :evidence [{:source "policy" :quote "'Manager' means an Employee with"}]}]
+                 ;; JSON round-trip leaves keyword fields as STRINGS — the
+                 ;; relationship's confidence-class arrives as "extracted",
+                 ;; and the scope as "employment". Both must coerce.
+                 :emitted-relationships
+                 [{:source-uri "concept:policy/manager" :target-uri "concept:policy/employee"
+                   :predicate "supervises"
+                   :confidence-class "extracted"   ;; STRING, not :extracted
+                   :evidence [{:source "policy" :quote "Every Manager supervises"}]}]
+                 :emitted-axioms []
+                 :rlm-trace []
+                 :patterns-offered 5}
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 2 (get-in stub [:discovery-provenance :concepts-emitted]))
+            "Both concepts ingested despite the invalid/absent scope")
+        (is (= 1 (get-in stub [:discovery-provenance :relationships-emitted]))
+            "Relationship ingested despite the string confidence-class")
+        (let [concepts (filter #(= oid (:ontology-id %)) (rm/get-concepts ctx {}))]
+          (is (= 2 (count concepts)))
+          (is (every? #(= :custom (:scope %)) concepts)
+              "Invalid :policy scope and absent scope both coerced to :custom"))))))
+
 (deftest compile-discovery-source-emits-relationship-events
   (testing "The adapter emits relationship events through
             :ontology/create-relationship with evidence preserved."

@@ -62,8 +62,15 @@
       :source :node | :tick | :hardcoded
       :exhausted? boolean}        ;; true iff remaining <= 0"
   [{:keys [node parent-timeout-ms phase1-elapsed-ms]}]
-  (let [[total source] (cond
-                         (:timeout-ms node) [(:timeout-ms node) :node]
+  (let [;; A repl-researcher node may carry its Phase-2 budget either at the
+        ;; top level (:timeout-ms) or under :options (:timeout-ms) — the
+        ;; rlm-discovery wiring uses the :options path. Honor both so a
+        ;; caller's explicit budget is never silently dropped in favor of the
+        ;; 15-min hardcoded fallback.
+        node-timeout (or (:timeout-ms node)
+                         (get-in node [:options :timeout-ms]))
+        [total source] (cond
+                         node-timeout       [node-timeout :node]
                          parent-timeout-ms  [parent-timeout-ms :tick]
                          :else              [phase2-default-budget-ms :hardcoded])
         remaining-raw (- total phase1-elapsed-ms)

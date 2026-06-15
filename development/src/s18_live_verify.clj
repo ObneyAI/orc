@@ -35,6 +35,16 @@
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
+            ;; The orc-service todo-processors must be LOADED so they self-
+            ;; register in tp/processor-registry*, and STARTED on the pubsub so
+            ;; Phase-2 child ticks (emit-tree! execution) are actually driven
+            ;; and their completion promises delivered. Without this the
+            ;; discovery session designs a tree, dispatches :sheet/tick-tree,
+            ;; and then hangs forever waiting for a completion nothing fires —
+            ;; the S18 root cause. The bench runner + recursive-rlm tests do
+            ;; this same tp/start wiring.
+            [ai.obney.orc.orc-service.core.todo-processors]
+            [ai.obney.grain.todo-processor-v2.interface :as tp]
             [clojure.string :as str]
             [clojure.pprint :as pp]))
 
@@ -43,16 +53,32 @@
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
         dir (str "/tmp/s18-live-" (random-uuid))
-        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir dir :db-name "test"}))]
-    {:event-store store
-     :cache cache
-     :tenant-id (random-uuid)
-     :command-registry (cp/global-command-registry)
-     :query-registry (qp/global-query-registry)
-     :event-pubsub ps
-     ::cache-dir dir}))
+        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir dir :db-name "test"}))
+        base-ctx {:event-store store
+                  :cache cache
+                  :tenant-id (random-uuid)
+                  ;; Required so the tick-driving processors can execute the
+                  ;; Phase-2 tree's :llm leaves against the real provider.
+                  :dscloj-provider :openrouter
+                  :command-registry (cp/global-command-registry)
+                  :query-registry (qp/global-query-registry)
+                  :event-pubsub ps
+                  ::cache-dir dir}
+        ;; Start every registered todo processor on this pubsub — this is the
+        ;; engine that drives child ticks and delivers tree-completion promises.
+        processors (reduce-kv
+                    (fn [acc proc-name {:keys [handler-fn topics]}]
+                      (assoc acc proc-name
+                             (tp/start {:event-pubsub ps
+                                        :topics topics
+                                        :handler-fn handler-fn
+                                        :context base-ctx})))
+                    {}
+                    @tp/processor-registry*)]
+    (assoc base-ctx :processors processors)))
 
 (defn- stop-ctx [ctx]
+  (doseq [[_ processor] (:processors ctx)] (tp/stop processor))
   (rmp/l1-clear!)
   (when-let [ps (:event-pubsub ctx)] (pubsub/stop ps))
   (when-let [c (:cache ctx)] (kv/stop c))

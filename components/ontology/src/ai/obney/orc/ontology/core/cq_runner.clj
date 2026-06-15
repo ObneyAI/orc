@@ -84,31 +84,40 @@
    code (not lazily in tests)."
   (str
    "You are evaluating a competency question against a KNOWLEDGE GRAPH that "
-   "has been retrieved for you. Your job is to decide one of THREE outcomes:\n"
+   "has been retrieved for you. The graph is an EVOLVING, CONTINUOUSLY-GROWING "
+   "ontology — it is OPEN-WORLD and assumed INCOMPLETE by default. Absence of "
+   "a fact almost always means 'not extracted yet', NOT 'false'. Decide one of "
+   "THREE outcomes:\n"
    "\n"
    "  :pass    — the retrieved evidence CONTAINS information that answers the\n"
    "            question affirmatively (the answer is YES, and the evidence\n"
    "            shows it).\n"
    "\n"
-   "  :fail    — the retrieved evidence CONTRADICTS or DENIES the question\n"
-   "            within the closed-world bounds of the graph. The graph DOES\n"
-   "            speak to the topic and says NO. Example: the question asks\n"
-   "            for X-category items, the evidence contains the full category\n"
-   "            enumeration, and X is absent from that enumeration.\n"
+   "  :fail    — the graph EXPLICITLY says NO. This requires a POSITIVE\n"
+   "            negative-or-closure signal in the evidence, not mere absence:\n"
+   "              * a direct negating edge/attribute (e.g. subject :status\n"
+   "                \"retired\", X owl:disjointWith Y where the subject is an X), OR\n"
+   "              * an EXPLICIT completeness/closure assertion over the relevant\n"
+   "                set (a closure axiom, owl:oneOf, or a :closed? marker —\n"
+   "                surfaced in the COMPLETENESS / CLOSURE block) AND the target\n"
+   "                is absent from that closed set.\n"
+   "            Without such a signal you may NOT conclude :fail.\n"
    "\n"
-   "  :unknown — the retrieved evidence is SILENT on what the question asks.\n"
-   "            The graph LACKS the kind of facts needed to answer. This is\n"
-   "            NOT a default; it is a real verdict. The distinction:\n"
-   "              * If the graph enumerates the relevant category AND the\n"
-   "                target is absent from that enumeration  ->  :fail\n"
-   "              * If the graph is silent on the category itself  ->  :unknown\n"
-   "              * If the graph has SOME facts about the subject but NONE\n"
-   "                of the kind the question asks for  ->  :unknown\n"
+   "  :unknown — the graph is SILENT on what the question asks, and there is NO\n"
+   "            explicit completeness/closure assertion making that silence\n"
+   "            meaningful. This is a real, named verdict — the correct answer\n"
+   "            for an incomplete graph. Specifically:\n"
+   "              * the graph records the relation for SOME subjects but is\n"
+   "                silent for THIS subject, with no closure assertion -> :unknown\n"
+   "                (the presence of an enumeration for OTHERS is NOT a\n"
+   "                completeness assertion — do not treat it as one), AND\n"
+   "              * the graph has no facts of the kind the question asks for,\n"
+   "                with no closure assertion  ->  :unknown.\n"
    "\n"
-   "CRITICAL: do NOT default to :unknown when the evidence clearly answers,\n"
-   "and do NOT default to :fail when the evidence is genuinely silent. The\n"
-   "three-way distinction is the product. A comforting middle verdict on a\n"
-   "clear question is a bug.\n"
+   "CRITICAL: do NOT default to :unknown when the evidence clearly answers (a\n"
+   "positive :pass or an explicit-signal :fail). But when the graph is merely\n"
+   "silent and nothing asserts completeness, :unknown is REQUIRED — inferring\n"
+   ":fail from the absence of a fact in an open-world graph is a bug.\n"
    "\n"
    "Cite evidence-uris from the retrieved set that drove your verdict. If\n"
    "verdict is :unknown, name the SPECIFIC kind of fact that would be needed\n"
@@ -205,14 +214,37 @@
 ;; Layer 2/3: retrieve then judge
 ;; =============================================================================
 
-(defn render-evidence-text
-  "Serialize the retrieved hits + the full closed-world concept and
-   relationship enumeration for the judge.
+(defn render-completeness-block
+  "Render the EXPLICIT completeness/closure signals the judge may use to
+   ground a :fail on absence. Built from S07 axioms (disjointness — a
+   subject typed under a class disjoint with the asked class is an explicit
+   NO) and any concept `:closed?` markers (S11 closure convention). When
+   nothing explicit is present, the block states the graph is open-world so
+   the judge defaults absence to :unknown — NOT :fail."
+  [{:keys [axioms closed-concepts]}]
+  (let [disjoint (:disjointness axioms)
+        disjoint-lines (when (seq disjoint)
+                         (mapv (fn [pair] (str "  disjoint: " (pr-str pair))) disjoint))
+        closed-lines (when (seq closed-concepts)
+                       (mapv (fn [c] (str "  closed-set: " (:uri c)
+                                          " [" (or (:label c) "?") "]"))
+                             closed-concepts))
+        lines (vec (concat disjoint-lines closed-lines))]
+    (if (seq lines)
+      (str/join "\n" lines)
+      (str "  (none — the graph is OPEN-WORLD / incomplete: absence of a fact\n"
+           "   means :unknown, NOT :fail, unless a direct negating edge is present)"))))
 
-   The closed-world enumeration is critical: it's what lets the judge
-   distinguish :fail (graph enumerates a category and the target is
-   absent) from :unknown (graph silent on the category)."
-  [{:keys [retrieved concepts relationships]}]
+(defn render-evidence-text
+  "Serialize the retrieved hits + the graph's CURRENT concept and
+   relationship contents (OPEN-WORLD — not asserted complete) + the
+   explicit completeness/closure signals for the judge.
+
+   The completeness block is what lets the judge distinguish a grounded
+   :fail (a direct negating edge, or an explicit closure assertion with the
+   target absent) from :unknown (the graph is merely silent). Mere presence
+   of an enumeration for OTHER subjects is NOT completeness."
+  [{:keys [retrieved concepts relationships axioms closed-concepts]}]
   (let [retrieved-block
         (if (seq retrieved)
           (str/join "\n"
@@ -241,10 +273,13 @@
           "  (no relationships in scope)")]
     (str "TOP RETRIEVED HITS (best-match for the question):\n"
          retrieved-block
-         "\n\nALL CONCEPTS IN SCOPE (closed-world enumeration):\n"
+         "\n\nALL CONCEPTS CURRENTLY IN SCOPE (open-world — NOT asserted complete):\n"
          concepts-block
-         "\n\nALL RELATIONSHIPS IN SCOPE (closed-world edges):\n"
-         edges-block)))
+         "\n\nALL RELATIONSHIPS CURRENTLY IN SCOPE (open-world — NOT asserted complete):\n"
+         edges-block
+         "\n\nEXPLICIT COMPLETENESS / CLOSURE / DISJOINTNESS SIGNALS\n"
+         "(the ONLY basis for concluding :fail on an absent fact):\n"
+         (render-completeness-block {:axioms axioms :closed-concepts closed-concepts}))))
 
 (defn layer-2-or-3-verdict
   "Retrieve evidence, build the closed-world text block, and dispatch
@@ -261,7 +296,7 @@
    runner RAISES — there is NO silent fallback to :unknown. round-3 Q7's
    explicit-unknown is a JUDGE OUTPUT, not a runner default."
   [{:keys [ontology-id cq-text judge-fn
-           hybrid-search-fn get-concepts-fn get-relationships-fn ctx]}]
+           hybrid-search-fn get-concepts-fn get-relationships-fn get-axioms-fn ctx]}]
   (let [search-result (hybrid-search-fn
                        (cond-> {:event-store (:event-store ctx)}
                          (:tenant-id ctx) (assoc :tenant-id (:tenant-id ctx))
@@ -278,10 +313,19 @@
                             (or (nil? (:ontology-id r))
                                 (= ontology-id (:ontology-id r))))
                           (get-relationships-fn ctx))
+        ;; S15 open-world: surface EXPLICIT closure signals so the judge can
+        ;; ground a :fail on absence (S07 disjointness axioms + S11 :closed?
+        ;; markers). get-axioms-fn is optional/back-compat — without it the
+        ;; completeness block is empty and the prompt's open-world default
+        ;; (absence ⇒ :unknown) still holds.
+        axioms (when get-axioms-fn (get-axioms-fn ctx ontology-id))
+        closed-concepts (filterv :closed? all-concepts)
         evidence-text (render-evidence-text
                        {:retrieved     retrieved
                         :concepts      all-concepts
-                        :relationships all-rels})
+                        :relationships all-rels
+                        :axioms        axioms
+                        :closed-concepts closed-concepts})
         result (judge-fn {:question cq-text :evidence evidence-text})
         verdict (:verdict result)
         evidence-uris (vec (or (:evidence-uris result) []))]

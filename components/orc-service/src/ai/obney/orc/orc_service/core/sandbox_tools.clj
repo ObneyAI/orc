@@ -8,7 +8,7 @@
    docstring (purpose + worked example + return shape), and ISOLATION
    that's enforced INSIDE the tool rather than trusted to the model.
 
-   The seven tools, in the order they appear here:
+   The eight tools, in the order they appear here:
 
    - graph-search           — scoped hybrid retrieval (BFS + embedding
                               + ColBERT via RRF) honoring S02 scoping +
@@ -126,6 +126,19 @@
       ([query-text]
        (graph-search query-text {}))
       ([query-text opts]
+       ;; Teaching guard (S21 live-verify finding): models reach for
+       ;; graph-search with a triple-pattern map {:predicate ...}. It is a
+       ;; NATURAL-LANGUAGE text retriever — fail with a clear contract
+       ;; message rather than a cryptic ISeq/cast error so the model
+       ;; self-corrects on the next iteration.
+       (when-not (string? query-text)
+         (throw (ex-info
+                 (str "graph-search takes a natural-language query STRING, e.g. "
+                      "(graph-search \"directors who retired\"). To query by a "
+                      "specific predicate use absent-in-graph? or neighborhood; "
+                      "to find concepts by name use filter-by-label-pattern. "
+                      "Got: " (pr-str (type query-text)))
+                 {:query-text query-text})))
        (let [clean (strip-model-scope (or opts {}))
              ;; Grant wins. We pass the bare granted ids — hybrid-search's
              ;; built-in auto-widen path (default-on) will then expand
@@ -152,6 +165,10 @@
      ;;     :embedding-results [...]
      ;;     :colbert-results [...]
      ;;     :method \"rrf\"}
+
+     ;; The query MUST be a natural-language STRING. To query a specific
+     ;; predicate, use absent-in-graph? / neighborhood; to find concepts
+     ;; by name, use filter-by-label-pattern. A map query is rejected.
 
      ;; Optional second arg accepts: :limit, :min-similarity,
      ;; :max-depth, :decay, :seed-uris, :signals. NOT :ontology-id —
@@ -363,6 +380,91 @@
    present (ambiguity is metadata; the edge IS in the graph).")
 
 ;; =============================================================================
+;; Tool: find-edges  (triple-pattern relationship query)
+;; =============================================================================
+
+(defn- make-find-edges-fn
+  [{:keys [event-store tenant-id cache] :as cfg}]
+  (let [granted (:ontology-ids (resolve-granted-scope cfg))
+        get-relationships (ont-fn 'ai.obney.orc.ontology.core.read-models/get-relationships)
+        ctx (cond-> {:event-store event-store}
+              tenant-id (assoc :tenant-id tenant-id)
+              cache     (assoc :cache cache))]
+    (fn find-edges [& args]
+      ;; Accept EITHER a single triple-pattern map — (find-edges {:predicate
+      ;; "directed"}) — OR kwargs — (find-edges :predicate "directed"). Both
+      ;; are shapes the live model naturally produced (S21 run #5); meeting
+      ;; both removes a guess-and-retry cycle. A teaching error covers the
+      ;; remaining (positional) misuse.
+      (let [pattern (cond
+                      (and (= 1 (count args)) (map? (first args))) (first args)
+                      (and (seq args) (even? (count args)) (keyword? (first args)))
+                      (apply hash-map args)
+                      :else
+                      (throw (ex-info
+                              (str "find-edges takes a triple-pattern MAP "
+                                   "(find-edges {:predicate \"directed\"}) or "
+                                   "kwargs (find-edges :predicate \"directed\") "
+                                   "with any of :subject / :predicate / :object. "
+                                   "Got args: " (pr-str args))
+                              {:args args})))
+            {:keys [subject predicate object]} pattern
+            pred-str (when predicate
+                       (if (keyword? predicate) (name predicate) (str predicate)))
+            effective (widen-scope ctx granted)
+            all (get-relationships ctx)
+            in-scope (filter (fn [r]
+                               (let [oid (:ontology-id r)]
+                                 (or (nil? oid) (contains? effective oid))))
+                             all)]
+        (->> in-scope
+             (filter (fn [r]
+                       (and (or (nil? subject)   (= subject (:source-uri r)))
+                            (or (nil? pred-str)
+                                (= pred-str (let [p (:predicate r)]
+                                              (if (keyword? p) (name p) (str p)))))
+                            (or (nil? object)    (= object (:target-uri r))))))
+             ;; Return triple-shaped maps using the SAME :subject/:predicate/
+             ;; :object vocabulary as the input pattern — symmetry the model
+             ;; relies on (S21 live-verify run #4: the model read :subject back
+             ;; off the result). Keep :source-uri/:target-uri too for any
+             ;; caller that prefers the projection's native key names.
+             (mapv (fn [r]
+                     (assoc r
+                            :subject (:source-uri r)
+                            :object (:target-uri r))))
+             vec)))))
+
+(def find-edges-doc
+  "PURPOSE — Find relationship EDGES by triple pattern: \"which subjects have
+   predicate P\", \"what does subject S point to\", \"who points at object O\".
+   The list-form complement to absent-in-graph? (which is a yes/no). Use this
+   for relationship-shaped questions like \"find everyone who directed a film\".
+
+   EXAMPLE
+     ;; All 'directed' edges in scope (find the directors):
+     (find-edges {:predicate \"directed\"})
+     ;; => [{:subject \"concept:dir/jane-roe\" :predicate \"directed\"
+     ;;      :object \"concept:film/red-dawn\" :properties {...}}]
+     ;; Read the directors back with (map :subject ...).
+
+     ;; Everything a subject points to:
+     (find-edges {:subject \"concept:dir/jane-roe\"})
+
+     ;; A fully-specified triple (existence as a list):
+     (find-edges {:subject \"concept:dir/jane-roe\" :predicate \"directed\"
+                  :object \"concept:film/red-dawn\"})
+
+   RETURNS — vector of edge maps using the SAME triple vocabulary as the
+   query: {:subject :predicate :object :properties ...} (the projection's
+   native :source-uri / :target-uri are also present). Empty vector when
+   nothing matches — never an exception. Ambiguous-confidence edges ARE
+   included (the edge IS in the graph).
+
+   SCOPE — closed-world over your granted ontology section(s); the grant is
+   authoritative and the query never crosses into ungranted sections.")
+
+;; =============================================================================
 ;; Tool: filter-by-label-pattern
 ;; =============================================================================
 
@@ -410,55 +512,101 @@
     (vec (distinct (cond-> from-labels
                      (:label c) (concat [(:label c)]))))))
 
+(defn- pattern-arg?
+  "True when x is a usable label pattern: a regex or a string."
+  [x]
+  (or (string? x) (instance? java.util.regex.Pattern x)))
+
 (defn- make-filter-by-label-pattern-fn
   [{:keys [event-store tenant-id cache] :as cfg}]
   (let [granted (:ontology-ids (resolve-granted-scope cfg))
         get-by-uri (ont-fn 'ai.obney.orc.ontology.interface/get-concept-by-uri)
+        get-concepts (ont-fn 'ai.obney.orc.ontology.core.read-models/get-concepts)
         ctx (cond-> {:event-store event-store}
               tenant-id (assoc :tenant-id tenant-id)
               cache     (assoc :cache cache))]
-    (fn filter-by-label-pattern
-      ([uris pattern]
-       (filter-by-label-pattern uris pattern {}))
-      ([uris pattern opts]
-       (let [case-sensitive? (boolean (:case-sensitive? opts))
-             matches? (compile-pattern pattern case-sensitive?)
-             effective (widen-scope ctx granted)
-             concepts (->> (or uris [])
-                           (keep (fn [u]
-                                   (get-by-uri ctx u
-                                               {:ontology-ids effective}))))]
-         (vec
-          (filter (fn [c]
-                    (some matches? (concept-labels c)))
-                  concepts)))))))
+    (letfn [(filter-concepts [concepts pattern opts]
+              (let [matches? (compile-pattern pattern (boolean (:case-sensitive? opts)))]
+                (vec (filter (fn [c] (some matches? (concept-labels c))) concepts))))
+            ;; Label SEARCH over ALL scoped concepts — the primitive a model
+            ;; reaches for ("find concepts whose label matches X"). S21
+            ;; live-verify finding: the agent calls this with a pattern only,
+            ;; never a pre-fetched URI list.
+            (label-search [pattern opts]
+              (let [effective (widen-scope ctx granted)
+                    concepts (get-concepts ctx {:ontology-ids effective})]
+                (filter-concepts concepts pattern opts)))
+            ;; Post-FILTER a caller-supplied URI list (the original contract).
+            (post-filter [uris pattern opts]
+              (let [effective (widen-scope ctx granted)
+                    concepts (->> (or uris [])
+                                  (keep (fn [u] (get-by-uri ctx u {:ontology-ids effective}))))]
+                (filter-concepts concepts pattern opts)))]
+      (fn filter-by-label-pattern
+        ;; Dispatch on the FIRST arg's type — a pattern (string/regex) means
+        ;; SEARCH; a collection means POST-FILTER. This meets the model's
+        ;; observed call shapes without ambiguity (URIs are always a coll,
+        ;; patterns always a string/regex).
+        ([a]
+         (if (pattern-arg? a)
+           (label-search a {})
+           (throw (ex-info
+                   (str "filter-by-label-pattern with one argument expects a "
+                        "PATTERN (string or regex) to search all concept labels "
+                        "in scope, e.g. (filter-by-label-pattern \"director\"). "
+                        "To post-filter a known URI list pass it first: "
+                        "(filter-by-label-pattern uris pattern). Got: "
+                        (pr-str (type a)))
+                   {:arg a}))))
+        ([a b]
+         (cond
+           ;; pattern-first → SEARCH; a trailing map is opts, anything else
+           ;; (e.g. a stray :label field hint the model added) is ignored.
+           (pattern-arg? a) (label-search a (if (map? b) b {}))
+           ;; collection-first → POST-FILTER (back-compat contract)
+           (sequential? a) (post-filter a b {})
+           :else (throw (ex-info
+                         (str "filter-by-label-pattern: first arg must be a "
+                              "pattern (string/regex, to search) or a URI "
+                              "collection (to post-filter). Got: " (pr-str (type a)))
+                         {:arg a}))))
+        ([a b c]
+         (cond
+           (pattern-arg? a) (label-search a (if (map? c) c {}))
+           (sequential? a)  (post-filter a b (if (map? c) c {}))
+           :else (throw (ex-info
+                         (str "filter-by-label-pattern: first arg must be a "
+                              "pattern or a URI collection. Got: " (pr-str (type a)))
+                         {:arg a}))))))))
 
 (def filter-by-label-pattern-doc
-  "PURPOSE — Filter a seq of URIs to those whose concept-labels match
-   a regex or substring pattern. Use after retrieval when the result
-   pool is too broad and you want a deterministic, free name-shaped
-   filter without a second LLM call.
+  "PURPOSE — Find concepts by NAME via a regex or substring over labels.
+   Deterministic and free (no LLM). Two shapes: SEARCH (one pattern arg,
+   scans every concept in scope) and POST-FILTER (a URI collection first,
+   then the pattern, narrows a pool you already have).
+
+   A bare string matches as a SUBSTRING (case-insensitive by default); for
+   regex semantics pass a regex literal #\"...\".
 
    EXAMPLE
+     ;; SEARCH — find every concept whose label matches, no URI list needed:
+     (filter-by-label-pattern \"director\")        ; substring
+     (filter-by-label-pattern #\"(?i)^Jane\")       ; regex literal
+     ;; => [{:uri \"concept:role/director\" :label \"Director\" ...}]
+
+     ;; POST-FILTER — narrow a pool you already retrieved:
      (filter-by-label-pattern
-       [\"concept:dir/jane-roe\" \"concept:dir/john-doe\" \"concept:film/red-dawn\"]
-       #\"^Jane\")
+       [\"concept:dir/jane-roe\" \"concept:film/red-dawn\"] #\"^Jane\")
      ;; => [{:uri \"concept:dir/jane-roe\" :label \"Jane Roe\" ...}]
 
-     ;; Substring (case-insensitive by default):
-     (filter-by-label-pattern uris \"dawn\")
-     ;; => [{:uri \"concept:film/red-dawn\" :label \"Red Dawn\" ...}]
+     ;; Case-sensitive opt (either shape), passed last:
+     (filter-by-label-pattern \"Red\" {:case-sensitive? true})
 
-     ;; Case-sensitive opt:
-     (filter-by-label-pattern uris \"Red\" {:case-sensitive? true})
+   RETURNS — vector of FULL concept maps (same shape as get-concept) whose
+   labels matched. Empty vector on a clean miss — NEVER an exception.
 
-   RETURNS — vector of FULL concept maps (same shape as get-concept)
-   for URIs whose labels matched. Empty vector when nothing matches —
-   NEVER an exception on a clean miss.
-
-   SCOPE — automatically scoped to your granted ontology section(s).
-   URIs in `uris` that resolve to nothing in your scope are silently
-   dropped (no error, just absent from results).")
+   SCOPE — automatically scoped to your granted ontology section(s). The
+   grant is authoritative; the search never crosses into ungranted sections.")
 
 ;; =============================================================================
 ;; Tool: classify-task / classify-behaviors
@@ -468,6 +616,21 @@
 ;; descriptions index globally — that's its design, not a leak), so
 ;; the granted scope is informational only here.
 
+(defn- coerce-classify-opts
+  "Meet the model's natural call shapes (S21 live-verify finding):
+   - a bare STRING is the task-signature
+   - a leading non-map arg (e.g. a URI seq) is ignored; the map wins
+   - :threshold defaults so a signature-only call isn't shape-rejected
+   The core classify-* contract stays strict; this tolerance lives only at
+   the agent-facing tool boundary."
+  [opts]
+  (let [m (cond
+            (string? opts) {:task-signature opts}
+            (map? opts)    opts
+            :else          {})]
+    (cond-> m
+      (not (contains? m :threshold)) (assoc :threshold 0.6))))
+
 (defn- make-classify-task-fn
   [{:keys [event-store tenant-id cache]}]
   (let [classify (ont-fn 'ai.obney.orc.ontology.interface/classify-task)
@@ -475,8 +638,10 @@
               tenant-id (assoc :tenant-id tenant-id)
               cache     (assoc :cache cache))]
     (fn classify-task-tool
-      ([opts]
-       (classify ctx (or opts {}))))))
+      ([opts] (classify ctx (coerce-classify-opts opts)))
+      ;; Tolerate a leading non-map arg (the model sometimes prepends a URI
+      ;; seq); the second arg carries the real opts.
+      ([_ opts] (classify ctx (coerce-classify-opts opts))))))
 
 (def classify-task-doc
   "PURPOSE — Run task classification against the corpus of recorded
@@ -507,8 +672,8 @@
               tenant-id (assoc :tenant-id tenant-id)
               cache     (assoc :cache cache))]
     (fn classify-behaviors-tool
-      ([opts]
-       (classify ctx (or opts {}))))))
+      ([opts] (classify ctx (coerce-classify-opts opts)))
+      ([_ opts] (classify ctx (coerce-classify-opts opts))))))
 
 (def classify-behaviors-doc
   "PURPOSE — Find the top-N behavioral-subtree examples whose recorded
@@ -532,7 +697,7 @@
 ;; =============================================================================
 
 (defn build-ontology-tool-bindings
-  "Return the SCI {symbol -> fn} map for the seven S19 ontology tools.
+  "Return the SCI {symbol -> fn} map for the eight S19 ontology tools (the original seven plus find-edges).
 
    cfg keys:
      :event-store              REQUIRED. Grain event-store-v3 handle.
@@ -565,6 +730,7 @@
        'get-concept            (with-doc (make-get-concept-fn cfg) get-concept-doc)
        'exists?                (with-doc (make-exists-fn cfg) exists-doc)
        'absent-in-graph?       (with-doc (make-absent-in-graph-fn cfg) absent-in-graph-doc)
+       'find-edges             (with-doc (make-find-edges-fn cfg) find-edges-doc)
        'filter-by-label-pattern (with-doc (make-filter-by-label-pattern-fn cfg) filter-by-label-pattern-doc)
        'classify-task          (with-doc (make-classify-task-fn cfg) classify-task-doc)
        'classify-behaviors     (with-doc (make-classify-behaviors-fn cfg) classify-behaviors-doc)})))
@@ -580,6 +746,7 @@
    'get-concept             get-concept-doc
    'exists?                 exists-doc
    'absent-in-graph?        absent-in-graph-doc
+   'find-edges              find-edges-doc
    'filter-by-label-pattern filter-by-label-pattern-doc
    'classify-task           classify-task-doc
    'classify-behaviors      classify-behaviors-doc})
