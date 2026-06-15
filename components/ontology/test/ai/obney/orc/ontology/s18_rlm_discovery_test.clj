@@ -260,7 +260,7 @@
         (is (= :ingested (get-in stub [:discovery-provenance :status])))
         (is (= 2 (get-in stub [:discovery-provenance :concepts-emitted])))
         (is (= 1 (get-in stub [:discovery-provenance :relationships-emitted])))
-        (is (= 0 (get-in stub [:discovery-provenance :axioms-skipped])))
+        (is (= 0 (get-in stub [:discovery-provenance :axioms-emitted])))
         ;; Verify the concept events actually landed.
         (let [concepts (filter #(= oid (:ontology-id %))
                                (rm/get-concepts ctx {}))]
@@ -368,17 +368,254 @@
               #":status :emitted-drafts"
               (ontology/compile-discovery-source! ctx oid failed)))))))
 
-(deftest compile-discovery-source-preserves-axioms-as-skipped
-  (testing "Axiom-drafts are preserved in the discovery-provenance
-            but not emitted (S07 integration is a known gap, NOT a
-            silent drop)."
+;; =============================================================================
+;; V07 — Axiom-draft ingest
+;; =============================================================================
+;; Discovery EXTRACTS axiom drafts; V07 routes them to the S07 axiom
+;; commands instead of recording them as `:axioms-skipped`. Same
+;; JSON-string→keyword coercion discipline the scope / confidence-class
+;; paths already use, applied here to axiom-type + characteristic enums.
+;;
+;; Axiom-draft shape: {:axiom-type <kw|str> :body <map> :evidence [...]}.
+;; The :body carries exactly the S07 command's payload fields per type:
+;;   :disjointness            {:class-uris [<str> <str> ...]}
+;;   :property-characteristic {:predicate <str>
+;;                             :characteristic [<kw|str> ...]
+;;                             :inverse-of <str?>}
+;;   :sub-property            {:sub-predicate <str> :super-predicate <str>}
+;;   :chain                   {:chain [<str> <str> ...] :derived-predicate <str>}
+
+(deftest compile-discovery-source-ingests-disjointness-axiom
+  (testing "A :disjointness axiom-draft routes to :ontology/assert-disjointness
+            and lands in the :ontology/axioms projection (NOT skipped)."
     (with-ctx [ctx]
       (let [oid (random-uuid)
-            with-axioms (assoc sample-discovery-output
-                               :emitted-axioms
-                               [{:axiom-type :closure
-                                 :body {:set [:a :b]}
-                                 :evidence []}])
-            stub (ontology/compile-discovery-source! ctx oid with-axioms)]
-        (is (= 1 (get-in stub [:discovery-provenance :axioms-skipped]))
-            "Axiom-drafts counted under :axioms-skipped, not silently dropped")))))
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type :disjointness
+                         :body {:class-uris ["concept:legal/agreement"
+                                             "concept:legal/employee"]}
+                         :evidence [{:source "doc-1"
+                                     :quote "An Agreement is not an Employee."}]}])
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 1 (get-in stub [:discovery-provenance :axioms-emitted]))
+            "Provenance reports one axiom EMITTED")
+        (is (not (contains? (:discovery-provenance stub) :axioms-skipped))
+            "The old :axioms-skipped key is gone — axioms are no longer skipped")
+        (let [axioms (rm/get-axioms ctx oid)]
+          (is (some? axioms) "Axiom projection populated for the ontology-id")
+          (is (= #{"concept:legal/employee"}
+                 (get-in axioms [:disjointness "concept:legal/agreement"]))
+              "Disjointness recorded symmetrically in the S07 projection"))))))
+
+(deftest compile-discovery-source-ingests-property-characteristic-axiom
+  (testing "A :property-characteristic axiom-draft routes to
+            :ontology/assert-property-characteristic and lands in the
+            projection."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type :property-characteristic
+                         :body {:predicate "supervises"
+                                :characteristic [:transitive]
+                                :inverse-of "supervised-by"}
+                         :evidence [{:source "doc-1" :quote "supervises chain"}]}])
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 1 (get-in stub [:discovery-provenance :axioms-emitted])))
+        (let [axioms (rm/get-axioms ctx oid)]
+          (is (contains? (get-in axioms [:characteristics "supervises"]) :transitive)
+              "Transitive flag recorded")
+          (is (= "supervised-by" (get-in axioms [:inverse-of "supervises"]))
+              "Inverse-of recorded bidirectionally"))))))
+
+(deftest compile-discovery-source-ingests-sub-property-axiom
+  (testing "A :sub-property axiom-draft routes to :ontology/assert-sub-property."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type :sub-property
+                         :body {:sub-predicate "supervises"
+                                :super-predicate "manages"}
+                         :evidence []}])
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 1 (get-in stub [:discovery-provenance :axioms-emitted])))
+        (let [axioms (rm/get-axioms ctx oid)]
+          (is (= "manages" (get-in axioms [:sub-property-of "supervises"]))
+              "Sub-property recorded"))))))
+
+(deftest compile-discovery-source-ingests-chain-axiom
+  (testing "A :chain axiom-draft routes to :ontology/assert-chain-axiom."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type :chain
+                         :body {:chain ["supervises" "supervises"]
+                                :derived-predicate "indirectly-supervises"}
+                         :evidence []}])
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 1 (get-in stub [:discovery-provenance :axioms-emitted])))
+        (let [axioms (rm/get-axioms ctx oid)]
+          (is (= ["supervises" "supervises"]
+                 (get-in axioms [:chains "indirectly-supervises"]))
+              "Chain definition recorded"))))))
+
+(deftest compile-discovery-source-coerces-string-axiom-type-and-characteristic
+  (testing "JSON round-trip leaves :axiom-type and characteristic enum values
+            as STRINGS. Both must coerce to the keyword enums (same discipline
+            as scope / confidence-class)."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type "property-characteristic"  ;; STRING type
+                         :body {:predicate "supervises"
+                                :characteristic ["functional" "transitive"]  ;; STRING flags
+                                :inverse-of "supervised-by"}
+                         :evidence []}
+                        {:axiom-type "disjointness"  ;; STRING type
+                         :body {:class-uris ["concept:legal/agreement"
+                                             "concept:legal/employee"]}
+                         :evidence []}])
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 2 (get-in stub [:discovery-provenance :axioms-emitted]))
+            "Both string-typed axioms ingested")
+        (let [axioms (rm/get-axioms ctx oid)]
+          (is (= #{:functional :transitive}
+                 (get-in axioms [:characteristics "supervises"]))
+              "String characteristic flags coerced to keyword enum")
+          (is (some? (get-in axioms [:disjointness "concept:legal/agreement"]))
+              "String axiom-type coerced + routed"))))))
+
+(deftest compile-discovery-source-accepts-owl-standard-axiom-vocab
+  (testing "The discovery model gravitates to OWL/RDF-standard term
+            names. These shapes are VERBATIM from a real live discovery
+            run: axiom-type \"disjointClasses\" with body {:classes ...},
+            and \"transitiveProperty\" with body {:property ...} and NO
+            explicit :characteristic (the flag is encoded in the term).
+            Both must route + land."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type "disjointClasses"
+                         :body {:classes ["policy:Employee" "policy:Onboarding"]}
+                         :evidence [{:source "Section 4"
+                                     :quote "mutually exclusive categories"}]}
+                        {:axiom-type "transitiveProperty"
+                         :body {:property "supervises"}
+                         :evidence [{:source "Section 4"
+                                     :quote "Supervision is transitive"}]}])
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 2 (get-in stub [:discovery-provenance :axioms-emitted]))
+            "Both OWL-vocab axioms ingested")
+        (let [axioms (rm/get-axioms ctx oid)]
+          (is (= #{"policy:Onboarding"}
+                 (get-in axioms [:disjointness "policy:Employee"]))
+              "disjointClasses → disjointness via :classes synonym")
+          (is (contains? (get-in axioms [:characteristics "supervises"]) :transitive)
+              "transitiveProperty term → :transitive flag on :property predicate"))))))
+
+(deftest compile-discovery-source-accepts-owl-subproperty-and-chain-vocab
+  (testing "OWL-standard subPropertyOf + propertyChainAxiom term names
+            and their body-field synonyms route correctly."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type "subPropertyOf"
+                         :body {:sub "supervises" :super "manages"}
+                         :evidence []}
+                        {:axiom-type "propertyChainAxiom"
+                         :body {:properties ["supervises" "supervises"]
+                                :derived "indirectly-supervises"}
+                         :evidence []}])
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 2 (get-in stub [:discovery-provenance :axioms-emitted])))
+        (let [axioms (rm/get-axioms ctx oid)]
+          (is (= "manages" (get-in axioms [:sub-property-of "supervises"])))
+          (is (= ["supervises" "supervises"]
+                 (get-in axioms [:chains "indirectly-supervises"]))))))))
+
+(deftest compile-discovery-source-rejects-unknown-axiom-type-loudly
+  (testing "Adversarial: an axiom-type with no S07 command routing target
+            must fail LOUDLY — no silent drop, no fabricated axiom
+            (Disciplines #5)."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type :closure          ;; not a real axiom family
+                         :body {:set [:a :b]}
+                         :evidence []}])]
+        (is (thrown-with-msg?
+              clojure.lang.ExceptionInfo
+              #"unknown axiom-type"
+              (ontology/compile-discovery-source! ctx oid out)))
+        ;; Nothing fabricated: no axioms landed for the ontology-id.
+        (is (nil? (rm/get-axioms ctx oid))
+            "No partial / fabricated axiom landed after the loud failure")))))
+
+(deftest compile-discovery-source-rejects-unknown-characteristic-loudly
+  (testing "Adversarial: a characteristic flag outside the
+            [:functional :transitive :symmetric] enum must fail LOUDLY —
+            never coerced to a default, never dropped."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type :property-characteristic
+                         :body {:predicate "supervises"
+                                :characteristic ["reflexive"]}  ;; not in the enum
+                         :evidence []}])]
+        (is (thrown-with-msg?
+              clojure.lang.ExceptionInfo
+              #"unknown characteristic"
+              (ontology/compile-discovery-source! ctx oid out)))))))
+
+(deftest compile-discovery-source-rejects-malformed-axiom-draft-loudly
+  (testing "Adversarial: an axiom-draft missing :axiom-type or :body raises
+            ex-info — NO silent skip (Disciplines #5)."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            no-type (assoc sample-discovery-output
+                           :emitted-axioms
+                           [{:body {:class-uris ["a" "b"]}}])
+            no-body (assoc sample-discovery-output
+                           :emitted-axioms
+                           [{:axiom-type :disjointness}])]
+        (is (thrown-with-msg?
+              clojure.lang.ExceptionInfo
+              #"malformed axiom-draft"
+              (ontology/compile-discovery-source! ctx oid no-type)))
+        (is (thrown-with-msg?
+              clojure.lang.ExceptionInfo
+              #"malformed axiom-draft"
+              (ontology/compile-discovery-source! ctx oid no-body)))))))
+
+(deftest compile-discovery-source-surfaces-command-anomaly-loudly
+  (testing "Adversarial: if the routed S07 command itself rejects the body
+            (e.g. a singleton class-uris set the Malli gate refuses), the
+            adapter raises rather than swallowing — root cause visible."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out (assoc sample-discovery-output
+                       :emitted-axioms
+                       [{:axiom-type :disjointness
+                         :body {:class-uris ["only-one"]}  ;; singleton — schema rejects
+                         :evidence []}])]
+        (is (thrown-with-msg?
+              clojure.lang.ExceptionInfo
+              #"axiom emission anomaly"
+              (ontology/compile-discovery-source! ctx oid out)))))))
+
+(deftest compile-discovery-source-zero-axioms-reports-zero-emitted
+  (testing "With no axiom-drafts, provenance reports zero emitted (and the
+            old :axioms-skipped key is gone)."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            stub (ontology/compile-discovery-source! ctx oid sample-discovery-output)]
+        (is (= 0 (get-in stub [:discovery-provenance :axioms-emitted])))
+        (is (not (contains? (:discovery-provenance stub) :axioms-skipped)))))))

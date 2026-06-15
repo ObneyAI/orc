@@ -100,8 +100,16 @@
    "   :relationship-drafts [{:source-uri <str> :target-uri <str> :predicate <str> "
    "                          :confidence-class :extracted "
    "                          :evidence [{:source <str> :quote <str>}]} ...]\n"
-   "   :axiom-drafts [{:axiom-type <kw> :body <map> "
-   "                   :evidence [{:source <str> :quote <str>}]} ...]\n"
+   "   :axiom-drafts [{:axiom-type <one of \"disjointness\" / "
+   "\"property-characteristic\" / \"sub-property\" / \"chain\"> "
+   ":body <map> :evidence [{:source <str> :quote <str>}]} ...]\n"
+   "     — axiom :body shapes by :axiom-type:\n"
+   "         \"disjointness\"            {:class-uris [<concept-uri> <concept-uri> ...]}  (>=2 URIs)\n"
+   "         \"property-characteristic\" {:predicate <str> :characteristic [<one or more of "
+   "\"functional\" \"transitive\" \"symmetric\">] :inverse-of <str, optional>}\n"
+   "         \"sub-property\"            {:sub-predicate <str> :super-predicate <str>}\n"
+   "         \"chain\"                   {:chain [<predicate> <predicate> ...] (>=2) :derived-predicate <str>}\n"
+   "     Only emit an axiom the source TEXT supports; do NOT invent OWL structure.\n"
    "   :rlm-trace [<your iteration summaries — what you classified, what tree "
    "               you emitted, what failures you recovered from>]}\n\n"
    "GROUNDING DISCIPLINE: every :concept-drafts / :relationship-drafts entry MUST carry "
@@ -425,6 +433,201 @@
    :evidence (vec (or (:evidence draft) []))
    :properties (or (:properties draft) {})})
 
+;; =============================================================================
+;; V07 — Axiom-draft ingest
+;; =============================================================================
+;; Discovery EXTRACTS axiom drafts (`{:axiom-type <kw|str> :body <map>
+;; :evidence [...]}`). V07 routes them to the S07 axiom commands instead
+;; of recording them as `:axioms-skipped`. Same JSON-string→keyword
+;; coercion discipline `coerce-scope` / `coerce-confidence-class` use,
+;; applied here to the axiom-type discriminator and the property-
+;; characteristic enum flags.
+;;
+;; The :body carries exactly the S07 command's payload fields per type:
+;;   :disjointness            {:class-uris [<str> <str> ...]}
+;;   :property-characteristic {:predicate <str>
+;;                             :characteristic [<kw|str> ...]
+;;                             :inverse-of <str?>}
+;;   :sub-property            {:sub-predicate <str> :super-predicate <str>}
+;;   :chain                   {:chain [<str> <str> ...] :derived-predicate <str>}
+;;
+;; Adversarial discipline (Disciplines #5):
+;;   - Unknown axiom-type → loud failure (no silent drop, no fabricated
+;;     axiom). UNLIKE scope/confidence-class — those coerce-to-default
+;;     because the create-concept/relationship command accepts the
+;;     bucket; an unrouteable axiom-type has NO command target, so a
+;;     default would FABRICATE an axiom the model didn't author.
+;;   - Unknown characteristic flag → loud failure for the same reason
+;;     (the S07 enum is [:functional :transitive :symmetric]; coercing a
+;;     :reflexive to a default flag would mis-state the model's claim).
+;;   - Malformed axiom-draft (missing :axiom-type / :body) → loud failure.
+;;   - A routed S07 command that itself rejects the body (e.g. a singleton
+;;     class-uris set the Malli gate refuses) surfaces as a loud anomaly,
+;;     not a swallowed skip.
+
+(def ^:private valid-characteristics
+  "The S07 property-characteristic enum. A characteristic flag outside
+   this set is a LOUD failure — never coerced to a default, since that
+   would mis-state the model's axiom claim."
+  #{:functional :transitive :symmetric})
+
+(def ^:private axiom-type-aliases
+  "Canonical-vocabulary normalization for the axiom-type discriminator.
+   The discovery model reaches for OWL/RDF-standard term names
+   (`disjointClasses`, `transitiveProperty`, `subPropertyOf`,
+   `propertyChainAxiom`) as readily as the project's short forms; these
+   are WELL-DEFINED synonyms for the same four S07 axiom families, so the
+   adapter normalizes them deterministically (the same discipline as the
+   scope / confidence-class enum normalization — NOT fuzzy phrase matching:
+   each key is an exact, lower-cased OWL term mapped to its family).
+
+   Matching is case-insensitive on the bare term (any `owl:` / `rdfs:`
+   prefix and separators are stripped first). Anything NOT in this table
+   is unknown → loud failure (no fabricated axiom)."
+  {;; (1) Disjointness
+   "disjointness"            :disjointness
+   "disjoint"                :disjointness
+   "disjointwith"            :disjointness
+   "disjointclasses"         :disjointness
+   "alldisjointclasses"      :disjointness
+   ;; (2) Property characteristic (functional / transitive / symmetric / inverse-of)
+   "propertycharacteristic"  :property-characteristic
+   "characteristic"          :property-characteristic
+   "functionalproperty"      :property-characteristic
+   "transitiveproperty"      :property-characteristic
+   "symmetricproperty"       :property-characteristic
+   "inverseof"               :property-characteristic
+   "inverseproperty"         :property-characteristic
+   ;; (3) Sub-property
+   "subproperty"             :sub-property
+   "subpropertyof"           :sub-property
+   ;; (4) Chain
+   "chain"                   :chain
+   "chainaxiom"              :chain
+   "propertychainaxiom"      :chain
+   "propertychain"           :chain})
+
+(defn- normalize-vocab-term
+  "Lower-case a vocabulary term and strip any `owl:` / `rdfs:` namespace
+   prefix plus `-` / `_` / `:` separators so OWL-standard names compare
+   uniformly. \"owl:disjointClasses\" → \"disjointclasses\";
+   \"sub-property\" → \"subproperty\"."
+  [x]
+  (when (some? x)
+    (-> (name x)
+        (str/replace #"^(?i)(owl|rdfs|rdf):" "")
+        (str/replace #"[-_: ]" "")
+        str/lower-case)))
+
+(defn- coerce-axiom-type
+  "Coerce a draft :axiom-type to one of the four S07 family keywords.
+   Accepts the project short forms (`:disjointness`) AND the OWL/RDF
+   standard term names the model gravitates to (`\"disjointClasses\"`)
+   via `axiom-type-aliases`. Returns nil for an unrecognized term — the
+   routing site turns that into a LOUD failure (never a fabricated axiom)."
+  [axiom-type]
+  (get axiom-type-aliases (normalize-vocab-term axiom-type)))
+
+(def ^:private characteristic-aliases
+  "Canonical normalization for the property-characteristic enum flags.
+   The model emits `\"functionalProperty\"` / `\"transitive\"` etc.;
+   these map to the S07 enum [:functional :transitive :symmetric].
+   Unknown → loud failure."
+  {"functional"          :functional
+   "functionalproperty"  :functional
+   "transitive"          :transitive
+   "transitiveproperty"  :transitive
+   "symmetric"           :symmetric
+   "symmetricproperty"   :symmetric})
+
+(defn- coerce-characteristic-flag!
+  "Coerce one characteristic flag (string or keyword) to the S07 enum,
+   accepting the OWL term names (`\"transitiveProperty\"`) via the alias
+   table. An unknown flag fails LOUDLY — no silent drop, no default."
+  [draft flag]
+  (let [k (get characteristic-aliases (normalize-vocab-term flag))]
+    (when-not (contains? valid-characteristics k)
+      (throw (ex-info (str "compile-discovery-source!: unknown characteristic flag " (pr-str flag)
+                           "; valid: " valid-characteristics)
+                      {:flag flag
+                       :draft draft
+                       :reason :unknown-characteristic})))
+    k))
+
+(defn- characteristic-from-axiom-type
+  "When the model encodes the characteristic IN the axiom-type term
+   (`\"transitiveProperty\"`, `\"functionalProperty\"`,
+   `\"symmetricProperty\"`) and omits an explicit body :characteristic,
+   recover the flag from the term. Returns nil for inverse-of /
+   generic `propertyCharacteristic` (no scalar flag implied)."
+  [axiom-type]
+  (get characteristic-aliases (normalize-vocab-term axiom-type)))
+
+(defn- axiom-draft->command
+  "Route an axiom-draft to its S07 axiom command, coercing the
+   axiom-type discriminator and any enum-valued body fields from JSON
+   strings to keywords. Returns a command map ready for cp/process-command.
+
+   Unknown axiom-type / characteristic / malformed draft → loud ex-info."
+  [ontology-id draft]
+  (when-not (and (map? draft) (:axiom-type draft) (map? (:body draft)))
+    (throw (ex-info "compile-discovery-source!: malformed axiom-draft (missing :axiom-type or :body)"
+                    {:draft draft
+                     :reason :missing-required-field})))
+  (let [axiom-type (coerce-axiom-type (:axiom-type draft))
+        body (:body draft)
+        base {:command/id (random-uuid)
+              :command/timestamp (time/now)
+              :ontology-id ontology-id}]
+    (case axiom-type
+      :disjointness
+      ;; Accept the OWL-standard `:classes` body key as a synonym for the
+      ;; S07 `:class-uris` field.
+      (assoc base
+             :command/name :ontology/assert-disjointness
+             :class-uris (vec (or (:class-uris body) (:classes body))))
+
+      :property-characteristic
+      ;; The flag may live in the body (:characteristic) OR be encoded in
+      ;; the axiom-type term (`transitiveProperty`). Accept `:property` as
+      ;; an OWL-standard synonym for the S07 `:predicate` field.
+      (let [body-flags (mapv #(coerce-characteristic-flag! draft %)
+                             (or (:characteristic body) []))
+            term-flag (characteristic-from-axiom-type (:axiom-type draft))
+            flags (vec (distinct (cond-> body-flags
+                                   (and (some? term-flag)
+                                        (not (some #{term-flag} body-flags)))
+                                   (conj term-flag))))
+            inverse-of (or (:inverse-of body) (:inverse body))]
+        (cond-> (assoc base
+                       :command/name :ontology/assert-property-characteristic
+                       :predicate (or (:predicate body) (:property body))
+                       :characteristic flags)
+          inverse-of (assoc :inverse-of inverse-of)))
+
+      :sub-property
+      (assoc base
+             :command/name :ontology/assert-sub-property
+             :sub-predicate (or (:sub-predicate body) (:sub-property body) (:sub body))
+             :super-predicate (or (:super-predicate body) (:super-property body) (:super body)))
+
+      :chain
+      (assoc base
+             :command/name :ontology/assert-chain-axiom
+             :chain (vec (or (:chain body) (:properties body)))
+             :derived-predicate (or (:derived-predicate body) (:derived body)
+                                    (:predicate body) (:property body)))
+
+      ;; No command target — a default would FABRICATE an axiom the
+      ;; model never authored. Fail loudly (Disciplines #5).
+      (throw (ex-info (str "compile-discovery-source!: unknown axiom-type " (pr-str (:axiom-type draft))
+                           "; valid: #{:disjointness :property-characteristic :sub-property :chain}"
+                           " (OWL-standard term names also accepted)")
+                      {:axiom-type (:axiom-type draft)
+                       :coerced axiom-type
+                       :draft draft
+                       :reason :unknown-axiom-type})))))
+
 (defn compile-discovery-source!
   "Adapter from a `run-discovery!` output to S17-ingestible events.
 
@@ -449,15 +652,18 @@
       :discovery-provenance {:status :ingested
                              :concepts-emitted <int>
                              :relationships-emitted <int>
-                             :axioms-skipped <int>
+                             :axioms-emitted <int>
                              :rlm-trace <vec>}}
 
-   Why axioms are flagged `:axioms-skipped`: the S07 axiom event path
-   has its own command surface that this adapter does NOT yet dispatch
-   into — axiom-drafts are preserved in the provenance for future
-   S07-integration work but do NOT emit events here. This is a
-   KNOWN GAP recorded explicitly in the provenance rather than a
-   silent drop."
+   V07 — axiom-drafts are now ROUTED to the S07 axiom commands
+   (`assert-disjointness` / `assert-property-characteristic` /
+   `assert-sub-property` / `assert-chain-axiom`) per their
+   `:axiom-type` discriminator, applying the same JSON-string→keyword
+   coercion the scope / confidence-class paths use. The provenance
+   count reports `:axioms-emitted` (the prior `:axioms-skipped` gap is
+   closed). An unknown axiom-type / characteristic, a malformed draft,
+   or an S07 command rejection all fail LOUDLY — no silent drop, no
+   fabricated axiom."
   [ctx ontology-id discovery-output]
   (when-not (= :emitted-drafts (:status discovery-output))
     (throw (ex-info "compile-discovery-source!: discovery output must have :status :emitted-drafts"
@@ -485,12 +691,24 @@
           (throw (ex-info "compile-discovery-source!: relationship emission anomaly"
                           {:draft r :anomaly result})))))
 
+    ;; V07 — route axiom-drafts to their S07 axiom commands. The
+    ;; axiom-draft->command transform coerces axiom-type + characteristic
+    ;; enums from JSON strings and fails loudly on anything unrouteable
+    ;; (no silent drop, no fabricated axiom). A command-level rejection
+    ;; (e.g. singleton class-uris) surfaces as a loud anomaly too.
+    (doseq [a (or axioms [])]
+      (let [result (cp/process-command
+                     (assoc ctx :command (axiom-draft->command ontology-id a)))]
+        (when (:cognitect.anomalies/category result)
+          (throw (ex-info "compile-discovery-source!: axiom emission anomaly"
+                          {:draft a :anomaly result})))))
+
     {:type :inline-concepts
      :concepts []
      :discovery-provenance {:status :ingested
                             :concepts-emitted (count concepts)
                             :relationships-emitted (count relationships)
-                            :axioms-skipped (count (or axioms []))
+                            :axioms-emitted (count (or axioms []))
                             :rlm-trace rlm-trace}}))
 
 ;; =============================================================================

@@ -45,8 +45,27 @@
             ;; this same tp/start wiring.
             [ai.obney.orc.orc-service.core.todo-processors]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
+            ;; The litellm router must have the :openrouter provider registered
+            ;; with the api-key BEFORE the discovery session calls dscloj/predict.
+            ;; Without it dscloj returns no completion and the executor reports
+            ;; "LLM did not generate code" (0 prompt tokens) — the S18-driver
+            ;; root cause when run outside the bench runner that registers it.
+            [litellm.router :as litellm-router]
             [clojure.string :as str]
             [clojure.pprint :as pp]))
+
+(defn- register-openrouter!
+  "Register the :openrouter provider (and the model-suffixed alias) with the
+   litellm router, sourcing the key from the OPENROUTER_API_KEY env var ONLY."
+  [model]
+  (let [api-key (or (System/getenv "OPENROUTER_API_KEY")
+                    (throw (ex-info "OPENROUTER_API_KEY not set (env var only)" {})))
+        base-config {:provider :openrouter
+                     :model model
+                     :config {:api-base "https://openrouter.ai/api/v1"
+                              :api-key api-key}}]
+    (litellm-router/register! :openrouter base-config)
+    (litellm-router/register! (keyword (str "openrouter/" model)) base-config)))
 
 (defn- make-ctx []
   (rmp/l1-clear!)
@@ -103,7 +122,10 @@
    "  - Every Manager supervises one or more Employees.\n\n"
    "Section 3. Onboarding.\n"
    "  - Each Employee completes Onboarding before assuming full duties.\n"
-   "  - The Manager assigned at hire conducts weekly reviews during Onboarding.\n"))
+   "  - The Manager assigned at hire conducts weekly reviews during Onboarding.\n\n"
+   "Section 4. Constraints.\n"
+   "  - An Onboarding period is never itself an Employee; the two are mutually exclusive categories.\n"
+   "  - Supervision is transitive: if A supervises B and B supervises C, then A supervises C.\n"))
 
 (defn run-once!
   "Run the S18 live verify ONCE. Returns the discovery output + build
@@ -116,6 +138,10 @@
   (let [ctx (make-ctx)
         oid (random-uuid)]
     (try
+      ;; Register the OpenRouter provider with the litellm router (key from
+      ;; the env var only). Without this the discovery session's dscloj/predict
+      ;; returns no completion.
+      (register-openrouter! model)
       ;; Bootstrap the corpus so classify-behaviors has the 5 discovery
       ;; patterns to retrieve.
       (ontology/seed-baseline-corpus! ctx)
@@ -152,11 +178,22 @@
           (println "----")
           (println r))
 
+        (println "\n=== AXIOM DRAFTS (V07) ===")
+        (pp/pprint (:emitted-axioms discovery-out))
+
         (when (= :emitted-drafts (:status discovery-out))
           (println "\n>>> Compiling discovery output → S17 source stub...")
           (let [stub (ontology/compile-discovery-source! ctx oid discovery-out)]
             (println "Stub:")
             (pp/pprint stub)
+            (println "\n=== V07 AXIOM INGEST ===")
+            (println "Axioms emitted (provenance):"
+                     (get-in stub [:discovery-provenance :axioms-emitted]))
+            ;; Read the S07 :ontology/axioms projection back to PROVE the
+            ;; discovered axioms actually landed in the graph.
+            (let [axioms (ai.obney.orc.ontology.core.read-models/get-axioms ctx oid)]
+              (println "Axiom projection for ontology-id:")
+              (pp/pprint axioms))
 
             (println "\n>>> Triggering deterministic skeleton build! to ingest...")
             (let [build-fn (requiring-resolve
@@ -171,6 +208,7 @@
               (println "Relationships in graph:" (:relationships-count build-result))
               {:discovery discovery-out
                :stub stub
+               :axioms (ai.obney.orc.ontology.core.read-models/get-axioms ctx oid)
                :build build-result})))
 
         (println "=== END S18 LIVE VERIFY ===")
