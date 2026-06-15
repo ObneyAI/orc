@@ -90,23 +90,43 @@
    Returns {:lines [...] :more? bool} where :more? indicates at least one
    line existed BEYOND the `n` we took (so callers can flag :capped? /
    :scan-capped? honestly). Returns {:error ...} when the file is missing
-   or unreadable — honest data, not a thrown exception."
-  [path n]
-  (try
-    (if (and path (.exists (io/file path)))
-      (with-open [rdr (io/reader path)]
-        ;; Take n+1 so we can tell whether MORE lines existed beyond n,
-        ;; without realizing the rest of the file.
-        (let [taken (vec (take (inc n) (line-seq rdr)))
-              more? (> (count taken) n)
-              lines (vec (take n taken))]
-          (reset! *last-lines-read* (count taken))
-          {:lines lines :more? more?}))
-      (do (reset! *last-lines-read* 0)
-          {:error (str "CSV source not found or unreadable: " path)}))
-    (catch Exception e
-      (reset! *last-lines-read* 0)
-      {:error (str "Failed to read CSV source " path ": " (.getMessage e))})))
+   or unreadable — honest data, not a thrown exception.
+
+   `data-offset` (default 0) skips that many DATA lines (after the header line)
+   before taking — so a caller can sample a window DEEPER in the file (the data
+   at the top of a large sorted file may not overlap the keys other sources
+   carry). The header line is always preserved as the first returned line; the
+   skipped data lines are streamed-and-dropped (never realized)."
+  ([path n] (read-lines-bounded path n 0))
+  ([path n data-offset]
+   (try
+     (if (and path (.exists (io/file path)))
+       (with-open [rdr (io/reader path)]
+         (let [skip (max 0 (or data-offset 0))]
+           (if (zero? skip)
+             ;; Take n+1 so we can tell whether MORE lines existed beyond n,
+             ;; without realizing the rest of the file.
+             (let [taken (vec (take (inc n) (line-seq rdr)))
+                   more? (> (count taken) n)
+                   lines (vec (take n taken))]
+               (reset! *last-lines-read* (count taken))
+               {:lines lines :more? more?})
+             ;; Offset: keep the header (first physical line), then drop `skip`
+             ;; data lines and take the next n (plus 1 to detect :more?).
+             (let [ls (line-seq rdr)
+                   header (first ls)
+                   after (drop (inc skip) ls)
+                   taken (vec (take (inc n) after))
+                   more? (> (count taken) n)
+                   data (vec (take n taken))
+                   lines (vec (cons header data))]
+               (reset! *last-lines-read* (inc (count taken)))
+               {:lines lines :more? more?}))))
+       (do (reset! *last-lines-read* 0)
+           {:error (str "CSV source not found or unreadable: " path)}))
+     (catch Exception e
+       (reset! *last-lines-read* 0)
+       {:error (str "Failed to read CSV source " path ": " (.getMessage e))}))))
 
 ;; =============================================================================
 ;; Minimal RFC4180-ish single-line parser
@@ -314,10 +334,15 @@
   [{:keys [csv-path]}]
   (fn sample-rows
     ([] (sample-rows 10))
-    ([n]
-     (let [requested (if (and (integer? n) (pos? n)) n 10)
+    ([n-or-opts]
+     (let [opts? (map? n-or-opts)
+           n (cond (integer? n-or-opts) n-or-opts
+                   opts? (or (:limit n-or-opts) (:n n-or-opts) 10)
+                   :else 10)
+           offset (if opts? (or (:offset n-or-opts) 0) 0)
+           requested (if (and (integer? n) (pos? n)) n 10)
            capped-n (min requested max-sample-rows)
-           {:keys [lines more? error]} (read-lines-bounded csv-path (inc capped-n))]
+           {:keys [lines more? error]} (read-lines-bounded csv-path (inc capped-n) offset)]
        (cond
          error {:rows [] :capped? false :error error}
          (empty? lines) {:rows [] :capped? false}
@@ -329,6 +354,7 @@
            {:rows rows
             :returned (count rows)
             :requested requested
+            :offset offset
             ;; capped? when more data rows existed beyond what we returned
             ;; (whether because of the hard cap or just a bigger file).
             :capped? (boolean more?)}))))))
@@ -348,7 +374,14 @@
      ;;             \"SOC_Code\" \"15-1252\"}]
      ;;     :returned 3 :requested 3 :capped? true}
 
-   RETURNS — {:rows [{header->value} ...] :returned :requested :capped?}.
+   OFFSET — the arg may instead be a map {:limit <int> :offset <int>} to skip
+   the first :offset DATA rows and sample a window DEEPER in the file. Use this
+   when the top of a large (often sorted) file does not overlap the codes other
+   sources carry, so the bridge they form would otherwise miss:
+     (sample-rows {:limit 40 :offset 2000})  ; header + rows 2001..2040
+   The header is always returned; skipped rows are streamed-and-dropped.
+
+   RETURNS — {:rows [{header->value} ...] :returned :requested :offset :capped?}.
    :capped? is true when more data rows existed beyond what was returned.
    N is hard-capped (an absurd N is clamped) so this can never dump the
    file; with no data rows :rows is [] and :capped? is false (honest empty).

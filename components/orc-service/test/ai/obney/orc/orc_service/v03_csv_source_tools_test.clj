@@ -139,6 +139,37 @@
           (is (= 3 (count (:rows r))) "only 3 data rows exist")
           (is (false? (:capped? r))))))))
 
+(deftest sample-rows-offset-samples-deeper-rows
+  (testing "An {:limit N :offset K} opts map keeps the header but skips the
+            first K DATA rows, sampling a window deeper in the file — the
+            connectivity fix for large sorted sources whose top rows don't
+            overlap the keys other sources carry (surfaced by V09 graph-B)."
+    ;; 6 data rows: r0..r5 distinguishable by SOC_Code suffix.
+    (let [content (str "CIP_Code,CIP_Title,SOC_Code,credits\n"
+                       "01.0000,A,19-0000,1\n"
+                       "01.0000,A,19-0001,1\n"
+                       "01.0000,A,19-0002,1\n"
+                       "11.0701,B,15-0003,1\n"
+                       "11.0701,B,15-0004,1\n"
+                       "11.0701,B,15-0005,1\n")
+          path (write-tmp-csv! content)
+          sample (tool path 'sample-rows)]
+      (testing "no offset starts at the first data row"
+        (let [r (sample {:limit 2})]
+          (is (= "19-0000" (get (first (:rows r)) "SOC_Code")))
+          (is (= 0 (:offset r)))))
+      (testing "offset skips that many data rows, header still keyed"
+        (let [r (sample {:limit 2 :offset 3})]
+          (is (= "15-0003" (get (first (:rows r)) "SOC_Code"))
+              "offset 3 -> first returned row is data row index 3")
+          (is (= "15-0004" (get (second (:rows r)) "SOC_Code")))
+          (is (= 3 (:offset r)))
+          (is (every? #(contains? % "CIP_Code") (:rows r))
+              "rows still keyed by the header despite the offset")))
+      (testing ":n is accepted as a synonym for :limit"
+        (let [r (sample {:n 1 :offset 5})]
+          (is (= "15-0005" (get (first (:rows r)) "SOC_Code"))))))))
+
 (deftest sample-rows-is-hard-capped
   (testing "sample-rows enforces an internal hard cap so a model asking for
             a huge N cannot dump the file."

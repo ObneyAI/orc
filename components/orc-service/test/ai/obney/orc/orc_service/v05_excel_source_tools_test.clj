@@ -228,6 +228,44 @@
       (is (true? (:capped? r)) "capped flag set — more data exists than sampled"))))
 
 ;; =============================================================================
+;; AC6 — sample-rows :offset reaches data PAST a large leading block
+;; =============================================================================
+;; Surfaced by the V09 graph-B build: PSEO's first ~3500 rows are state-level
+;; aggregates, beyond the 500-row sampling ceiling, so the real per-program
+;; earnings rows were unreachable. An :offset skips the leading block (stream-
+;; and-discard, no load) so a discovery session can sample real data deeper in
+;; the sheet.
+
+(deftest sample-rows-offset-reaches-deeper-rows
+  (testing "An {:limit N :offset K} opts map skips K leading rows and samples
+            real data past them — the overcap fixture's col0 equals the row
+            index, so an offset must surface rows whose col0 >= the offset."
+    (let [f (make-overcap-xlsx! (temp-file ".xlsx") 5000)
+          tools (ex/excel-source-tools)
+          ;; Without offset, the first sampled row is row 0 (col0 = 0).
+          top ((get tools 'sample-rows) (.getAbsolutePath f) "Big" {:limit 3})
+          ;; With offset 1000, the first sampled row is row 1000 (col0 = 1000) —
+          ;; rows the default top-sample (capped at 500) could never reach.
+          deep ((get tools 'sample-rows) (.getAbsolutePath f) "Big" {:limit 3 :offset 1000})]
+      (is (= 0.0 (Double/parseDouble (str (ffirst (:rows top)))))
+          "no offset → first row is the sheet's first row (col0 = 0)")
+      (is (= 3 (:row-count deep)) "offset still honors the requested limit")
+      (is (= 1000 (:offset deep)) "the offset is echoed back")
+      (is (= 1000.0 (Double/parseDouble (str (ffirst (:rows deep)))))
+          "offset 1000 → first sampled row is row 1000, past the 500-row ceiling")
+      (is (= 1002.0 (Double/parseDouble (str (first (nth (:rows deep) 2)))))
+          "subsequent rows continue sequentially from the offset"))))
+
+(deftest sample-rows-offset-via-keyword-n-key
+  (testing "The opts map accepts :n as a synonym for :limit (defensive — the
+            model reaches for either)."
+    (let [f (make-overcap-xlsx! (temp-file ".xlsx") 5000)
+          tools (ex/excel-source-tools)
+          r ((get tools 'sample-rows) (.getAbsolutePath f) "Big" {:n 2 :offset 50})]
+      (is (= 2 (:row-count r)))
+      (is (= 50.0 (Double/parseDouble (str (ffirst (:rows r)))))))))
+
+;; =============================================================================
 ;; AC6 — REAL 119 MB PSEO sheet: sample under a tight heap; no full load
 ;; =============================================================================
 

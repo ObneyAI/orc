@@ -96,7 +96,15 @@
    "size and shape, adapt it, or design a fresh tree if none fit.\n\n"
    "OUTPUT SHAPE (via (final! ...)):\n"
    "  {:concept-drafts [{:uri <str> :label <str> :description <str> :scope <kw> "
+   "                     :attributes {<key> <value> ...} "
    "                     :evidence [{:source <str> :quote <str>}]} ...]\n"
+   "     — :attributes is an OPTIONAL map of QUERYABLE facts about the concept. "
+   "Put any NUMERIC OUTCOME or grounding value here (e.g. earnings/wage figures, "
+   "tuition / net-cost, employment counts, growth rates, percentiles) keyed by a "
+   "short name, with the value kept as its native type (a NUMBER stays a number — "
+   "do NOT stringify it). These attributes are how a downstream query reads the "
+   "outcome back, so a program/occupation concept that has an earnings or wage "
+   "figure MUST carry it in :attributes (not only in prose).\n"
    "   :relationship-drafts [{:source-uri <str> :target-uri <str> :predicate <str> "
    "                          :confidence-class :extracted "
    "                          :evidence [{:source <str> :quote <str>}]} ...]\n"
@@ -464,9 +472,16 @@
                        :axiom-drafts :rlm-trace]
               :rlm rlm-config
               :max-iterations (or (:max-iterations budget) 8)
+              ;; V09 — thread the existing executor `:max-retries` primitive
+              ;; (executor honors it for a cold-start empty/nil completion) so a
+              ;; large multi-source build doesn't fail a source on a single
+              ;; transient empty completion. We reuse the existing primitive
+              ;; rather than inventing retry here.
               :options (cond-> {}
                          (:total-budget-ms budget)
-                         (assoc :timeout-ms (:total-budget-ms budget)))}
+                         (assoc :timeout-ms (:total-budget-ms budget))
+                         (:max-retries budget)
+                         (assoc :max-retries (:max-retries budget)))}
 
         blackboard (sources->blackboard sources)
         provider (or (:provider ctx) :openrouter)
@@ -634,6 +649,27 @@
   (let [k (->kw cc)]
     (if (contains? valid-confidence-classes k) k :extracted)))
 
+(defn- normalize-attributes
+  "Coerce a draft's `:attributes` into the `:ontology/create-concept`
+   `[:map-of :keyword :any]` shape. The discovery model emits attribute keys
+   as STRINGS (JSON has no keywords — e.g. \"earnings-y5\", \"median-wage\"),
+   so string keys are coerced to keywords; keyword keys pass through. The
+   VALUES are passed verbatim (a number stays a number — earnings/wages must
+   stay queryable as the numeric outcome, not stringified). A non-map
+   `:attributes` is dropped (returns nil → the cond-> below omits the field).
+
+   This is the V02 acceptance-critical carrier: numeric outcomes (earnings
+   Y1/Y5/Y10, wages, tuition / net-cost) the discovery session attaches to a
+   program/occupation concept land as QUERYABLE concept attributes here rather
+   than being silently dropped (which is exactly the gap that failed V02's
+   outcome vertical)."
+  [attributes]
+  (when (map? attributes)
+    (not-empty
+     (reduce-kv (fn [acc k v]
+                  (assoc acc (->kw k) v))
+                {} attributes))))
+
 (defn- concept-draft->command [ontology-id draft]
   (let [;; Strip evidence — it lives on relationships per the S06 schema,
         ;; not on concepts. Concepts carry quotes via :comments / :see-also
@@ -648,17 +684,23 @@
                       (map (fn [e]
                              (str "- " (:source e "?") ": \""
                                   (:quote e "") "\""))
-                           evidence))))]
-    {:command/name :ontology/create-concept
-     :command/id (random-uuid)
-     :command/timestamp (time/now)
-     :ontology-id ontology-id
-     :uri (:uri draft)
-     :label (:label draft)
-     :description desc
-     :scope (coerce-scope (:scope draft))
-     :broader (vec (or (:broader draft) []))
-     :indicators (vec (or (:indicators draft) []))}))
+                           evidence))))
+        ;; V09 — forward numeric / outcome attributes verbatim so they land as
+        ;; QUERYABLE concept attributes (the :ontology/create-concept command
+        ;; already supports `:attributes`; the prior draft→command path dropped
+        ;; them, which is the V02 outcome-vertical failure root cause).
+        attributes (normalize-attributes (:attributes draft))]
+    (cond-> {:command/name :ontology/create-concept
+             :command/id (random-uuid)
+             :command/timestamp (time/now)
+             :ontology-id ontology-id
+             :uri (:uri draft)
+             :label (:label draft)
+             :description desc
+             :scope (coerce-scope (:scope draft))
+             :broader (vec (or (:broader draft) []))
+             :indicators (vec (or (:indicators draft) []))}
+      attributes (assoc :attributes attributes))))
 
 (defn- normalize-evidence
   "Coerce a draft's :evidence into the S06 relationship-evidence schema shape —

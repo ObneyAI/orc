@@ -306,6 +306,52 @@
           (is (every? #(= :custom (:scope %)) concepts)
               "Invalid :policy scope and absent scope both coerced to :custom"))))))
 
+(deftest compile-discovery-source-forwards-numeric-attributes
+  (testing "V09 — a concept-draft's :attributes (numeric outcomes the model
+            attaches, e.g. earnings/wages) land as QUERYABLE concept
+            attributes on the projection, with values kept as their native
+            type. String attribute keys (the JSON round-trip leaves them as
+            strings) coerce to keywords; numeric values are NOT stringified.
+            This is the V02 acceptance-critical earnings carrier — the prior
+            draft->command path dropped :attributes entirely."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            out {:status :emitted-drafts
+                 :emitted-concepts
+                 [{:uri "cip:42.0101" :label "Psychology, General."
+                   :description "Psychology program."
+                   :scope :custom
+                   ;; String keys + numeric values — exactly the JSON
+                   ;; round-trip shape from a real discovery session.
+                   :attributes {"earnings-y1" 38500
+                                "earnings-y5" 52547
+                                "earnings-y10" 61200}
+                   :evidence [{:source "PSEO" :quote "52547"}]}
+                  {:uri "soc:19-3033" :label "Clinical Psychologists"
+                   :description "Occupation."
+                   :scope :custom
+                   ;; keyword key already (pass-through) + a string key
+                   :attributes {:median-wage 89000 "growth-pct" 6.0}
+                   :evidence [{:source "wages" :quote "89000"}]}]
+                 :emitted-relationships []
+                 :emitted-axioms []
+                 :rlm-trace []
+                 :patterns-offered 5}
+            stub (ontology/compile-discovery-source! ctx oid out)]
+        (is (= 2 (get-in stub [:discovery-provenance :concepts-emitted])))
+        (let [concepts (filter #(= oid (:ontology-id %)) (rm/get-concepts ctx {}))
+              by-uri (into {} (map (juxt :uri identity)) concepts)
+              prog (get by-uri "cip:42.0101")
+              occ (get by-uri "soc:19-3033")]
+          (is (= 2 (count concepts)))
+          (is (= {:earnings-y1 38500 :earnings-y5 52547 :earnings-y10 61200}
+                 (:attributes prog))
+              "Earnings forwarded as keyword-keyed numeric attributes (queryable)")
+          (is (number? (get-in prog [:attributes :earnings-y5]))
+              "Earnings value kept as a NUMBER, not stringified")
+          (is (= {:median-wage 89000 :growth-pct 6.0} (:attributes occ))
+              "Mixed keyword/string keys both coerce; wage stays numeric"))))))
+
 (deftest compile-discovery-source-emits-relationship-events
   (testing "The adapter emits relationship events through
             :ontology/create-relationship with evidence preserved."

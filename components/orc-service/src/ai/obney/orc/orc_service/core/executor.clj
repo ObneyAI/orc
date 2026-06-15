@@ -2140,11 +2140,33 @@
                 _ (dbg "inputs :task =" (:task inputs))
                 _ (dbg "inputs :inputs-info =" (:inputs-info inputs))
                 _ (dbg "calling dscloj/predict...")
-                llm-result (try
-                             (dscloj/predict effective-provider module inputs dscloj-options)
-                             (catch Exception e
-                               (dbg "dscloj/predict EXCEPTION:" (.getMessage e))
-                               {:code nil :error (.getMessage e)}))
+                ;; Retry on a BLANK code-gen completion (the cold-start
+                ;; empty-completion failure mode — the model occasionally
+                ;; returns an empty/whitespace completion on the first
+                ;; iteration, which the loop below turns into a hard
+                ;; ":status :failure / LLM did not generate code"). Reuse the
+                ;; same `:max-retries` option the LLM-node path honors rather
+                ;; than inventing a new retry knob; default 1 retry preserves
+                ;; prior behavior for callers that don't set it.
+                code-blank? (fn [r]
+                              (let [c (or (:code r) (get-in r [:outputs :code]))]
+                                (or (nil? c)
+                                    (and (string? c) (str/blank? c)))))
+                rr-max-retries (get options :max-retries 1)
+                rr-retry-delay-ms (get options :retry-delay-ms 500)
+                llm-result (loop [attempt 0]
+                             (let [r (try
+                                       (dscloj/predict effective-provider module inputs dscloj-options)
+                                       (catch Exception e
+                                         (dbg "dscloj/predict EXCEPTION:" (.getMessage e))
+                                         {:code nil :error (.getMessage e)}))]
+                               (if (and (code-blank? r) (< attempt rr-max-retries))
+                                 (do (dbg "blank code-gen completion; retrying"
+                                          {:attempt (inc attempt) :max-attempts (inc rr-max-retries)})
+                                     (when (pos? rr-retry-delay-ms)
+                                       (Thread/sleep rr-retry-delay-ms))
+                                     (recur (inc attempt)))
+                                 r)))
                 _ (dbg "dscloj/predict returned")
                 _ (dbg "llm-result keys:" (keys llm-result))
                 _ (when (and debug? (:usage llm-result))

@@ -200,9 +200,19 @@
    dense vector of length max-col (nil for missing cells). String cells (t=\"s\")
    are resolved through `shared`; inline strings (t=\"inlineStr\"/\"str\") and
    numbers are taken verbatim. The stream is closed the instant the row budget
-   is hit — the rest of the (possibly 100s-of-MB) part is never parsed."
-  [^ZipFile zf target shared n]
+   is hit — the rest of the (possibly 100s-of-MB) part is never parsed.
+
+   `offset` (default 0) SKIPS that many leading worksheet rows before
+   collecting begins — so a caller can sample PAST a large leading block
+   (title/note rows, or thousands of aggregate rows) to reach the real data
+   without ever loading the sheet. Skipped rows are streamed-and-discarded
+   (never accumulated), so the sampling guarantee holds; the stream still
+   stops the instant `budget` collected rows is hit."
+  ([^ZipFile zf target shared n] (stream-rows zf target shared n 0))
+  ([^ZipFile zf target shared n offset]
   (let [budget (min (max 0 n) max-rows-hard-cap)
+        skip (max 0 (or offset 0))
+        seen (volatile! 0)
         e (or (.getEntry zf target)
               (throw (ex-info (str "Excel source tool: worksheet entry missing: " target)
                               {:target target})))]
@@ -247,14 +257,19 @@
                     "t" (when (and @in-inline @cell-idx)
                           (vswap! cur assoc! @cell-idx (.toString sb)))
                     "c" (do (vreset! cell-idx nil) (vreset! cell-t nil))
-                    "row" (conj! rows (persistent! @cur))
+                    ;; Skip the first `skip` completed rows (stream-and-discard
+                    ;; so we can reach data past a large leading block without
+                    ;; accumulating it); collect once past the offset.
+                    "row" (let [seen-now (vswap! seen inc)]
+                            (when (> seen-now skip)
+                              (conj! rows (persistent! @cur))))
                     nil))
                 (recur))))
           (finally (.close r)))
         (let [width (inc @maxcol)
               dense (mapv (fn [m] (mapv #(get m %) (range width)))
                           (persistent! rows))]
-          {:rows dense :max-col width})))))
+          {:rows dense :max-col width}))))))
 
 ;; =============================================================================
 ;; Header detection + type inference
@@ -330,19 +345,29 @@
        :scanned-rows (vec rows)})))
 
 (defn- do-sample-rows
+  "Sample up to `n` rows from a worksheet. The optional final arg may be an
+   integer `n` OR an opts map `{:limit <int> :offset <int>}`. `:offset` SKIPS
+   that many leading worksheet rows before sampling — so a caller can reach
+   real data that sits past a large leading block (title/note rows, or
+   thousands of aggregate/subtotal rows) without ever loading the sheet."
   ([path selector] (do-sample-rows path selector 20))
-  ([path selector n]
+  ([path selector n-or-opts]
    (assert-xlsx! path)
-   (with-open [zf (ZipFile. (str path))]
-     (let [target (sheet-target-for zf selector)
-           shared (shared-strings zf)
-           req (if (integer? n) n 20)
-           {:keys [rows max-col]} (stream-rows zf target shared req)]
-       {:sheet (if (string? selector) selector selector)
-        :rows rows
-        :row-count (count rows)
-        :column-count max-col
-        :capped? (>= (count rows) max-rows-hard-cap)}))))
+   (let [n (cond (integer? n-or-opts) n-or-opts
+                 (map? n-or-opts) (or (:limit n-or-opts) (:n n-or-opts) 20)
+                 :else 20)
+         offset (if (map? n-or-opts) (or (:offset n-or-opts) 0) 0)]
+     (with-open [zf (ZipFile. (str path))]
+       (let [target (sheet-target-for zf selector)
+             shared (shared-strings zf)
+             req (if (integer? n) n 20)
+             {:keys [rows max-col]} (stream-rows zf target shared req offset)]
+         {:sheet (if (string? selector) selector selector)
+          :rows rows
+          :row-count (count rows)
+          :offset offset
+          :column-count max-col
+          :capped? (>= (count rows) max-rows-hard-cap)})))))
 
 (defn- do-excel-dir-sheets [dir]
   (let [d (File. (str dir))]
@@ -418,8 +443,18 @@
      ;; n defaults to 20 and is hard-capped (these tools SAMPLE, never load):
      (sample-rows \"/data/pseo_la.xlsx\" 0)   ; first 20 rows of sheet index 0
 
-   RETURNS — {:sheet :rows :row-count :column-count :capped?}. :rows is a
-   vector of dense cell vectors (nil for absent cells). :capped? is true when
+   OFFSET — the third arg may instead be a map {:limit <int> :offset <int>} to
+   SKIP a large leading block and sample real data deeper in the sheet. This is
+   essential for sheets whose first thousands of rows are subtotal/aggregate
+   rows (e.g. PSEO's leading 'All Programs / All Degree Fields' state-level
+   aggregates) before the real per-row data begins:
+     (sample-rows \"/data/pseo_la.xlsx\" \"Earnings\" {:limit 30 :offset 4000})
+     ;; => skips the first 4000 worksheet rows, then samples up to 30. The
+     ;;    skipped rows are streamed-and-discarded (never loaded), so the
+     ;;    sampling guarantee holds.
+
+   RETURNS — {:sheet :rows :row-count :offset :column-count :capped?}. :rows is
+   a vector of dense cell vectors (nil for absent cells). :capped? is true when
    the hard row cap was reached (there is more data than was sampled).")
 
 (def excel-dir-sheets-doc
