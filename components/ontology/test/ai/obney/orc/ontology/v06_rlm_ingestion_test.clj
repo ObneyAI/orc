@@ -134,18 +134,22 @@
           sql (source-tools/source-tools-for {:path "/x/a.db"})
           xl  (source-tools/source-tools-for {:path "/x/a.xlsx"})
           txt (source-tools/source-tools-for {:path "/x/notes.txt"})]
-      (is (= #{'peek-columns 'sample-rows 'profile-column} (set (keys csv)))
-          "csv format → the three CSV tools")
-      (is (= #{'list-tables 'table-schema 'foreign-keys 'sample-rows 'query}
+      (is (= #{'peek-columns 'sample-rows 'profile-column 'count-rows 'stream-all}
+             (set (keys csv)))
+          "csv format → the CSV tools incl. V19 count-rows + stream-all")
+      (is (= #{'list-tables 'table-schema 'foreign-keys 'sample-rows 'query
+               'count-rows 'stream-all}
              (set (keys sql)))
-          "sql format → the five SQL tools")
-      (is (= #{'list-sheets 'sheet-columns 'sample-rows 'excel-dir-sheets}
+          "sql format → the SQL tools incl. V19 count-rows + stream-all")
+      (is (= #{'list-sheets 'sheet-columns 'sample-rows 'excel-dir-sheets
+               'count-rows 'stream-all}
              (set (keys xl)))
-          "excel format → the four Excel tools")
+          "excel format → the Excel tools incl. V19 count-rows + stream-all")
       (is (nil? txt)
           "text format → no source tools (text uses the blackboard content path)")))
   (testing "an explicit :format wins over the path extension"
-    (is (= #{'list-tables 'table-schema 'foreign-keys 'sample-rows 'query}
+    (is (= #{'list-tables 'table-schema 'foreign-keys 'sample-rows 'query
+             'count-rows 'stream-all}
            (set (keys (source-tools/source-tools-for
                         {:format :sql :path "/x/whatever.bin"}))))
         "explicit :sql forces the SQL tools regardless of extension")))
