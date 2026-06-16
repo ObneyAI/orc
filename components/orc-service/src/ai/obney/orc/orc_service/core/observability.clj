@@ -222,6 +222,23 @@
          :reason reason
          :trace-id trace-id))
 
+(defn log-unparseable-output!
+  "Log an LLM response that parsed to nil for declared writes.
+
+   Carries the FULL raw response (verbatim, no truncation) so the parse
+   failure is diagnosable from the trace alone — without this the model's
+   actual output is unrecoverable once the node completes."
+  [{:keys [node-id node-name model nil-keys raw-length raw-response trace-id]}]
+  (u/log ::unparseable-output
+         :level :warn
+         :node-id node-id
+         :node-name node-name
+         :model model
+         :nil-keys nil-keys
+         :raw-length raw-length
+         :raw-response raw-response
+         :trace-id trace-id))
+
 ;; =============================================================================
 ;; Logging Helpers - Composite Nodes
 ;; =============================================================================

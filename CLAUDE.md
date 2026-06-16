@@ -111,6 +111,18 @@ The `:repl-researcher` node type provides a two-phase execution pattern. See [`d
 
 In recursive mode, after Phase 2 completes (any status), the tree's outputs are merged into sandbox-vars, a lightweight summary entry is appended to `:tree-results`, and control returns to the Phase 1 loop. The model can run follow-up `(llm ...)` / `(code ...)`, drill into prior trees via `(tree-detail)` / `(tree-failures)` / etc. when the summary isn't enough, emit another tree, or call `(final! ...)` to terminate. Existing callers using `:rlm true` are unaffected — terminal behavior is preserved.
 
+## Live Streaming
+
+Executions can be observed live via an ephemeral, in-process stream — node lifecycle, progress, incremental node results, RLM phase activity — without changing the durable event-sourced model. See [`docs/STREAMING.md`](docs/STREAMING.md).
+
+```clojure
+(let [{:keys [events-ch result]} (orc/execute-stream ctx sheet-id inputs)]
+  ...)                                   ;; or orc/subscribe-execution + own dispatch
+(orc/cancel! ctx tick-id)                ;; best-effort cancellation, cascades to child ticks
+```
+
+Hub: `orc-service/core/streaming.clj`. Envelope schemas: `interface/stream_schemas.clj` (`:orc.stream/type`-dispatched, monotonic `:seq`, sliding-buffer loss model with event-store reconciliation). Tests: `streaming_test.clj`. Live demo consumer: `development/src/streaming_live_verify.clj`.
+
 ## Self-Improving Loop
 
 > **Alpha-stage.** The components below all work end-to-end. The aggregate behavior on workflows that align with the shipped seed corpus is reliable; the behavior on workflows far outside the corpus shows force-fit classifications (high-confidence shape-matches that miss domain semantics) and rare mint events. See `docs/SELF-IMPROVING-LOOP.md#current-capabilities-and-known-limitations` for an honest current-state breakdown grounded in a 21-task OOD evidence sweep. Active investigation in `development/bench/ood-stress-results/HANDOFF.md`.

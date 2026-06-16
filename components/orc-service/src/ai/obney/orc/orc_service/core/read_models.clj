@@ -527,13 +527,18 @@
           (assoc-in [tick-id :status] :running))
       ;; New tick
       (assoc state tick-id
-             {:id tick-id
-              :sheet-id (:sheet-id event)
-              :status :running
-              :iteration iteration
-              :started-at (str (:event/timestamp event))
-              :completed-at nil
-              :root-status nil}))))
+             (cond-> {:id tick-id
+                      :sheet-id (:sheet-id event)
+                      :status :running
+                      :iteration iteration
+                      :started-at (str (:event/timestamp event))
+                      :completed-at nil
+                      :root-status nil}
+               ;; Lineage: lets cancellation checks walk to ancestors so a
+               ;; child tick spawned around the moment its parent was
+               ;; cancelled still self-terminates.
+               (:parent-tick-id event)
+               (assoc :parent-tick-id (:parent-tick-id event)))))))
 
 (defmethod ticks* :sheet/tree-tick-completed
   [state event]
@@ -702,6 +707,21 @@
   [ctx tick-id]
   (let [tick (get-tick ctx tick-id)]
     (= :cancelled (:status tick))))
+
+(defn is-tick-or-ancestor-cancelled?
+  "Check if a tick — or any ancestor tick in its :parent-tick-id chain — has
+   been cancelled. Catches child ticks (RLM Phase 2, delegate) spawned in
+   the window where the parent's cancellation hadn't reached them; depth
+   capped defensively."
+  [ctx tick-id]
+  (loop [t tick-id
+         depth 0]
+    (if (and t (< depth 16))
+      (let [tick (get-tick ctx t)]
+        (if (= :cancelled (:status tick))
+          true
+          (recur (:parent-tick-id tick) (inc depth))))
+      false)))
 
 (defn get-ticks-for-sheet
   "Get all ticks for a sheet"

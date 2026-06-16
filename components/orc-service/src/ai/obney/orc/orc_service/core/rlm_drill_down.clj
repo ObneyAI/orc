@@ -117,12 +117,22 @@
 
 (defn node-output-from-events
   "Return the :writes map of the specified node's :sheet/node-execution-completed
-   event. Returns nil when no matching event exists."
+   event. Returns nil when no matching event exists.
+
+   For parse-failure completions the event carries :raw-response (the
+   verbatim LLM text that could not be parsed into declared writes). In
+   that case the return shape is {:writes <map> :raw-response <string>
+   :error <string>} — the raw text IS the node's output as far as
+   diagnosis is concerned, untruncated."
   [events node-id]
   (some (fn [e]
           (when (and (= :sheet/node-execution-completed (:event/type e))
                      (= node-id (:node-id e)))
-            (:writes e)))
+            (if (:raw-response e)
+              (cond-> {:writes (:writes e)
+                       :raw-response (:raw-response e)}
+                (:error e) (assoc :error (:error e)))
+              (:writes e))))
         events))
 
 (defn node-input-profile-from-events

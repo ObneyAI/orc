@@ -162,7 +162,11 @@
                 :history history-text}
 
         provider :openrouter
-        dscloj-options {:model "openrouter/google/gemini-3-flash-preview"
+        ;; :model is a per-request override routed through the :openrouter
+        ;; provider — it must be the bare OpenRouter model id (no
+        ;; "openrouter/" prefix). The prefixed form was silently ignored
+        ;; by the old router; the fixed router would send it verbatim.
+        dscloj-options {:model "google/gemini-3-flash-preview"
                         :max-tokens 4096
                         :temperature 0.2}
 

@@ -779,6 +779,19 @@ Per the Grain methodology — every event is monitorable.
 
 Judges in future work can subscribe to any of these for granular signal.
 
+### Live streaming (ephemeral)
+
+In addition to the durable events above, a live subscription
+(`orc/subscribe-execution` / `orc/execute-stream`, see
+[`docs/STREAMING.md`](STREAMING.md)) receives **ephemeral** RLM events that
+are never persisted: `:rlm-iteration-started`, `:rlm-code-generated`
+(capped), `:rlm-sandbox-completed` per Phase 1 iteration, and
+`:rlm-phase2-started` / `:rlm-phase2-completed` around each Phase 2 child
+tick. Phase 2 child ticks carry `:parent-tick-id` lineage on their
+`:sheet/tree-tick-started` events, and the subscription automatically
+covers the whole child-tick cascade. `orc/cancel!` cancels a tick plus its
+known children (best-effort; in-flight LLM calls complete).
+
 ## Result shape
 
 When you call `orc/execute`, the result delivered to your caller has:

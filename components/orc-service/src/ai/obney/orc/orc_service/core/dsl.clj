@@ -52,6 +52,8 @@
   (:require [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.grain.time.interface :as time]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.anomalies.interface :as anomalies]
             [clojure.java.io :as io]
             [clojure.pprint :as pprint]
             [clojure.string])
@@ -424,6 +426,51 @@
 ;; Build Functions
 ;; =============================================================================
 
+(defn run-build-command!
+  "Run a single build command through the real command processor and CHECK the
+   result. If the command returns an anomaly, throw — a failed build must be
+   loud, never a silently-swallowed half-build.
+
+   This replaces the deprecated `h/run-and-apply!` (which returned the command
+   result unchecked) on the production `build-workflow!` path. The command
+   processor stores events for a successful result; on an anomaly it returns a
+   map carrying `::anom/category`, which we surface here as an ex-info."
+  [ctx command]
+  (let [result (cp/process-command (assoc ctx :command command))]
+    (if (anomalies/anomaly? result)
+      (throw (ex-info (str "build-workflow! command failed: "
+                           (:cognitect.anomalies/message result))
+                      {:command (:command/name command)
+                       :anomaly result}))
+      result)))
+
+;; ---------------------------------------------------------------------------
+;; Per-sheet build serialization
+;; ---------------------------------------------------------------------------
+;;
+;; The structural replacement of a changed sheet (clear-sheet-content! then
+;; build-sheet-content!) is several independently-validated commands. Two
+;; concurrent rebuilds of the SAME deterministic sheet-id (the hash-mismatch
+;; teardown window) would otherwise interleave delete/declare commands and leave
+;; an observable half-built sheet ("still in use" / "not declared" /
+;; "already declared" / "Node not found"). We serialize the structural mutation
+;; per sheet-id so two rebuilds of one sheet run sequentially rather than
+;; interleaving — the cheapest fix that fits the command/event model and is
+;; store-agnostic (reproduced on in-memory AND grain SQLite).
+;;
+;; Locks are interned per sheet-id (deterministic UUID), so distinct sheets
+;; never contend with each other; only rebuilds of the same identity serialize.
+
+(defonce ^:private build-locks (java.util.concurrent.ConcurrentHashMap.))
+
+(defn- build-lock-for
+  "Return the canonical lock object for a sheet-id, interning a fresh one the
+   first time a given sheet-id is seen."
+  [sheet-id]
+  (.computeIfAbsent build-locks sheet-id
+                    (reify java.util.function.Function
+                      (apply [_ _] (Object.)))))
+
 (defn- build-node!
   "Recursively build a node and its children. Returns the node-id.
    Node ID is deterministic based on sheet-id and node name (v5 UUID)."
@@ -433,7 +480,7 @@
         ;; Calculate deterministic node-id from name
         node-id (when node-name (node-id-for-name sheet-id node-name))
         ;; Create the node with explicit ID
-        create-result (h/run-and-apply! ctx
+        create-result (run-build-command! ctx
                         (h/make-create-node-command sheet-id node-type
                           :node-id node-id
                           :parent-id parent-id
@@ -441,48 +488,48 @@
 
     ;; Set name
     (when node-name
-      (h/run-and-apply! ctx (h/make-set-node-name-command sheet-id node-id node-name)))
+      (run-build-command! ctx (h/make-set-node-name-command sheet-id node-id node-name)))
 
     ;; Configure based on node type
     (case node-type
       :leaf
       (do
         ;; Set executor
-        (h/run-and-apply! ctx
+        (run-build-command! ctx
           (h/make-set-node-executor-command sheet-id node-id (:executor node)
             :model (:model node)
             :fn (:fn node)
             :options (:options node)))
         ;; Set instruction if AI node
         (when (:instruction node)
-          (h/run-and-apply! ctx
+          (run-build-command! ctx
             (h/make-set-node-instruction-command sheet-id node-id (:instruction node))))
         ;; Set IO
-        (h/run-and-apply! ctx
+        (run-build-command! ctx
           (h/make-set-node-io-command sheet-id node-id (:reads node) (:writes node)))
         ;; Set retry if configured
         (when-let [retry (:retry node)]
-          (h/run-and-apply! ctx
+          (run-build-command! ctx
             (h/make-set-node-retry-command sheet-id node-id
               (:max-attempts retry) (:backoff-ms retry))))
         ;; Set judges if configured
         (when-let [judges (:judges node)]
-          (h/run-and-apply! ctx
+          (run-build-command! ctx
             (h/make-set-node-judges-command sheet-id node-id judges)))
         ;; Set ontology context if configured (for self-learning injection)
         (when-let [context (:context node)]
-          (h/run-and-apply! ctx
+          (run-build-command! ctx
             (h/make-set-node-context-command sheet-id node-id context))))
 
       :condition
       (when-let [check (:check node)]
-        (h/run-and-apply! ctx
+        (run-build-command! ctx
           (h/make-set-node-check-command sheet-id node-id check)))
 
       :llm-condition
       (do
         ;; Set llm-condition config
-        (h/run-and-apply! ctx
+        (run-build-command! ctx
           (h/make-set-llm-condition-config-command sheet-id node-id
             (:instruction node) (:reads node)
             :model (:model node))))
@@ -490,7 +537,7 @@
       :repl-researcher
       (do
         ;; Set repl-researcher config
-        (h/run-and-apply! ctx
+        (run-build-command! ctx
           (h/make-set-repl-researcher-config-command sheet-id node-id
             (:instruction node) (:reads node) (:writes node) (:mcp-tools node)
             :model (:model node)
@@ -505,13 +552,13 @@
         ;; generic across node types; this build-workflow emit wires the
         ;; pipeline through for :repl-researcher.
         (when-let [context (:context node)]
-          (h/run-and-apply! ctx
+          (run-build-command! ctx
             (h/make-set-node-context-command sheet-id node-id context))))
 
       :delegate
       (do
         ;; Set delegate config
-        (h/run-and-apply! ctx
+        (run-build-command! ctx
           (h/make-set-delegate-config-command sheet-id node-id
             (:target-sheet-id node)
             :reads (:reads node)
@@ -521,7 +568,7 @@
 
       :parallel
       (do
-        (h/run-and-apply! ctx
+        (run-build-command! ctx
           (h/make-set-parallel-config-command sheet-id node-id
             :success-policy (:success-policy node)
             :failure-policy (:failure-policy node)))
@@ -531,7 +578,7 @@
 
       :map-each
       (do
-        (h/run-and-apply! ctx
+        (run-build-command! ctx
           (h/make-set-map-each-config-command sheet-id node-id
             (:source-key node) (:item-key node) (:output-key node)
             :max-concurrency (:max-concurrency node)))
@@ -554,7 +601,7 @@
       (doseq [child-id (:children-ids node)]
         (delete-node-tree! ctx sheet-id child-id))
       ;; Now delete this node (no children left)
-      (h/run-and-apply! ctx (h/make-delete-node-command sheet-id node-id)))))
+      (run-build-command! ctx (h/make-delete-node-command sheet-id node-id)))))
 
 (defn- clear-sheet-content!
   "Clear all nodes and blackboard keys from a sheet, preparing it for rebuild."
@@ -569,19 +616,19 @@
 
     ;; Delete all blackboard keys
     (doseq [bb-entry bb-keys]
-      (h/run-and-apply! ctx (h/make-delete-key-command sheet-id (:key bb-entry))))))
+      (run-build-command! ctx (h/make-delete-key-command sheet-id (:key bb-entry))))))
 
 (defn- build-sheet-content!
   "Build blackboard, judges, and node tree for a sheet from workflow definition."
   [ctx sheet-id {:keys [blackboard-schema judges-schema root-node]}]
   ;; Declare blackboard keys
   (doseq [[key-name schema] blackboard-schema]
-    (h/run-and-apply! ctx
+    (run-build-command! ctx
       (h/make-declare-key-command sheet-id key-name schema)))
 
   ;; Declare judges
   (doseq [[judge-name judge-config] judges-schema]
-    (h/run-and-apply! ctx
+    (run-build-command! ctx
       (h/make-declare-judge-command sheet-id (name judge-name) judge-config)))
 
   ;; Build the tree
@@ -606,33 +653,53 @@
      ctx - Context with :event-store
      workflow-def - Workflow definition from (workflow ...)
 
+   Concurrency: the hot path (hash match → zero events) is lock-free. Any
+   structural mutation (create, or clear+rebuild of a changed sheet) is
+   serialized per sheet-id, so two concurrent rebuilds of the SAME sheet run
+   sequentially rather than interleaving their delete/declare commands — there
+   is no observable half-built sheet. Distinct sheets never contend.
+
    Returns the sheet-id (deterministic, based on workflow name)."
   [ctx workflow-def]
   (let [{:keys [workflow-name]} workflow-def
         ;; Deterministic sheet-id from workflow name
         sheet-id (sheet-id-for-name workflow-name)
-        existing (rm/get-sheet-by-name ctx workflow-name)
         new-hash (workflow-content-hash workflow-def)]
 
-    (if existing
-      (if (= (:content-hash existing) new-hash)
-        ;; No-op: nothing changed
-        sheet-id
-        ;; Update existing sheet - clear and rebuild content
-        (do
-          (clear-sheet-content! ctx sheet-id)
-          (build-sheet-content! ctx sheet-id workflow-def)
-          (h/run-and-apply! ctx (h/make-set-content-hash-command sheet-id new-hash))
-          sheet-id))
+    ;; Hot path: if the content hash already matches, this is a true no-op
+    ;; (zero events). Kept OUTSIDE the lock so unchanged startup builds stay
+    ;; lock-free and don't contend.
+    (if (= (:content-hash (rm/get-sheet-by-name ctx workflow-name)) new-hash)
+      sheet-id
 
-      ;; Create new sheet with deterministic ID
-      (do
-        (h/run-and-apply! ctx (h/make-create-sheet-command
-                                :name workflow-name
-                                :sheet-id sheet-id))
-        (build-sheet-content! ctx sheet-id workflow-def)
-        (h/run-and-apply! ctx (h/make-set-content-hash-command sheet-id new-hash))
-        sheet-id))))
+      ;; Structural mutation: serialize per sheet-id so concurrent rebuilds of
+      ;; the same identity can't interleave clear/rebuild commands.
+      (locking (build-lock-for sheet-id)
+        ;; Double-checked: re-read state inside the lock. Another builder may
+        ;; have created/rebuilt this sheet to our target hash while we waited.
+        (let [existing (rm/get-sheet-by-name ctx workflow-name)]
+          (cond
+            ;; Already at the desired hash — nothing to do.
+            (= (:content-hash existing) new-hash)
+            sheet-id
+
+            ;; Existing sheet at a different hash — clear and rebuild in place.
+            existing
+            (do
+              (clear-sheet-content! ctx sheet-id)
+              (build-sheet-content! ctx sheet-id workflow-def)
+              (run-build-command! ctx (h/make-set-content-hash-command sheet-id new-hash))
+              sheet-id)
+
+            ;; No sheet yet — create with deterministic ID, then build.
+            :else
+            (do
+              (run-build-command! ctx (h/make-create-sheet-command
+                                       :name workflow-name
+                                       :sheet-id sheet-id))
+              (build-sheet-content! ctx sheet-id workflow-def)
+              (run-build-command! ctx (h/make-set-content-hash-command sheet-id new-hash))
+              sheet-id)))))))
 
 (defn build-workflow!!
   "DEPRECATED: Use build-workflow! instead, which is now idempotent by default.

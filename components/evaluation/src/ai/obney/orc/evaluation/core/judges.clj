@@ -189,10 +189,13 @@
   (let [module (build-judge-module prompt output-fields)
         ;; DSCloj needs inputs as a keyword map
         inputs {:evaluation_request "Please evaluate according to the rubric above."}
-        ;; Make the LLM call
+        ;; Make the LLM call — :model rides through dscloj into the
+        ;; litellm router as a per-request override, so the judge model
+        ;; actually applies instead of the provider registration's default.
         result (dscloj/predict provider module inputs
                                {:with-metadata? false
-                                :validate? false})]
+                                :validate? false
+                                :model model})]
     ;; Result is already a map of keyword -> value
     (or (:outputs result) result)))
 

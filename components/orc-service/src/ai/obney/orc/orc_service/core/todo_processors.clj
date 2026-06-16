@@ -10,6 +10,7 @@
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
+            [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
@@ -864,7 +865,21 @@
             ;; Extract execution context for correlation
             exec-context (extract-execution-context event-inputs)
             ;; Check LLM budget ONLY for AI executor types (not code)
-            is-llm-call? (and (= :ai executor-type) provider)]
+            is-llm-call? (and (= :ai executor-type) provider)
+            ;; Stage 2 token streaming: only built when a live subscriber
+            ;; opted into deltas for this tick. execute-ai falls back to
+            ;; blocking predict when nil (or when DSCloj lacks
+            ;; predict-stream-v2).
+            stream-cfg (when is-llm-call?
+                         (when-let [cfg (streaming/delta-config tick-id)]
+                           (cond-> (assoc cfg
+                                          :tick-id tick-id
+                                          :sheet-id sheet-id
+                                          :node-id node-id)
+                             (and (::map-each-index exec-context)
+                                  (::map-each-parent exec-context))
+                             (assoc :map-each {:parent (::map-each-parent exec-context)
+                                               :index (::map-each-index exec-context)}))))]
         ;; Check budget before execution (only if budget set and this is an LLM call)
         (if-let [exceeded (and is-llm-call? (check-llm-budget context tick-id))]
           ;; Budget exceeded - fail immediately
@@ -887,6 +902,20 @@
                        :thread (.getName (Thread/currentThread)))))
             (future
             (try
+              (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
+                ;; Cancellation guard: the tick was cancelled between event
+                ;; emission and this future starting (or while queued). Fail
+                ;; fast instead of spending an LLM call on a dead tick.
+                (cp/process-command
+                  (assoc context :command
+                         {:command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :command/name :sheet/fail-node-execution
+                          :sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :error "tick cancelled"}))
+                (do
               ;; Increment LLM count before making the call (if applicable)
               (when is-llm-call? (increment-llm-count! tick-id))
               (let [start-ms (System/currentTimeMillis)
@@ -907,11 +936,12 @@
                              ;; AI executor with provider
                              provider
                              (executor/execute-leaf node blackboard provider
-                                                    :context context)
+                                                    :context context
+                                                    :stream stream-cfg)
                              ;; No provider - use mock
                              :else
                              (executor/execute-leaf-mock node blackboard))
-                  {:keys [status outputs error duration-ms usage]} result
+                  {:keys [status outputs error duration-ms usage raw-response]} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
                              :node-id node-id
@@ -933,6 +963,11 @@
                                 :writes (normalize-output-keys (or outputs {}))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
+                         ;; Verbatim raw LLM response on parse failures —
+                         ;; persisted on the completion event so (node-output
+                         ;; <node-id>) can retrieve the full text for diagnosis.
+                         (and (= :failure status) raw-response)
+                         (assoc :raw-response raw-response)
                          (seq exec-context) (assoc :inputs exec-context)
                          (seq usage) (assoc :usage usage))))
               ;; ALSO emit the RLM-specific learning-signal event when an LLM
@@ -958,7 +993,7 @@
                                     :node-path node-path
                                     :usage usage}
                              (seq input-profile)
-                             (assoc :input-profile input-profile)))))))
+                             (assoc :input-profile input-profile)))))))))
             (catch Exception e
               ;; Use process-command to emit failure event
               (cp/process-command
@@ -1022,7 +1057,11 @@
             ;; mint call is lost.
             (let [enriched-context (assoc context
                                           :sheet-id sheet-id
-                                          :tick-id tick-id)
+                                          :tick-id tick-id
+                                          ;; node-id rides along so RLM stream
+                                          ;; events (iteration/phase2) carry the
+                                          ;; hosting repl-researcher node.
+                                          :node-id node-id)
                   result (if provider
                            (executor/execute-repl-researcher node blackboard provider enriched-context)
                            {:status :failure :error "No DSCloj provider configured"})
@@ -1168,9 +1207,16 @@
         (future
           (try
             (let [start-time (System/currentTimeMillis)
+                  ;; Lineage: delegate sub-workflows run as child ticks. Link
+                  ;; BEFORE dispatch so stream subscribers on the parent tick
+                  ;; see the whole cascade.
+                  child-tick-id (random-uuid)
+                  _ (streaming/link-child! tick-id child-tick-id)
                   result (runtime/execute context target-sheet-id
                                           target-inputs
-                                          :timeout-ms timeout-ms)
+                                          :timeout-ms timeout-ms
+                                          :tick-id child-tick-id
+                                          :parent-tick-id tick-id)
                   duration-ms (- (System/currentTimeMillis) start-time)
                   status (:status result)
 
@@ -2177,10 +2223,15 @@
         root-node-id (:root-node-id tick-ctx)
         ;; Per-execution override from options, else global dynamic default
         max-ticks (or (get-in tick-ctx [:options :max-ticks]) *max-tick-iterations*)
-        ;; Get current tick to check iteration count and cancellation
+        ;; Get current tick to check iteration count and cancellation.
+        ;; Ancestor-aware: a child tick (RLM Phase 2 / delegate) spawned in
+        ;; the window where its parent was being cancelled self-terminates
+        ;; here instead of running to its own timeout.
         tick (rm/get-tick context tick-id)
         current-iteration (or (:iteration tick) 1)
-        cancelled? (= :cancelled (:status tick))]
+        cancelled? (or (= :cancelled (:status tick))
+                       (and (:parent-tick-id tick)
+                            (rm/is-tick-or-ancestor-cancelled? context (:parent-tick-id tick))))]
     (when (= node-id root-node-id)
       (cond
         ;; Tick was cancelled - don't re-tick
@@ -2424,6 +2475,22 @@
             (seq node-trace) (assoc :node-trace node-trace)))))
     ;; No events to emit
     nil))
+
+(defn deliver-cancellation
+  "When a tick is cancelled, unblock any caller waiting on runtime/execute
+   immediately instead of letting it hang until its timeout. The status
+   stays :failure (existing callers switch on :status); :cancelled? true is
+   the additive discriminator. Idempotent with the eventual terminal
+   delivery: whichever fires first wins the promise, the other no-ops."
+  [{:keys [event]}]
+  (let [tick-id (:tick-id event)]
+    (runtime/deliver-completion! tick-id
+      {:status :failure
+       :error "tick cancelled"
+       :cancelled? true
+       :outputs {}
+       :trace-id tick-id}))
+  nil)
 
 ;; =============================================================================
 ;; Trace Assembly (Post-hoc from events)
@@ -2854,6 +2921,12 @@
   "Deliver execution result to waiting promises (bridges async to sync)."
   [context]
   (deliver-execution-result context))
+
+(defprocessor :sheet deliver-cancellation
+  {:topics #{:sheet/tick-cancelled}}
+  "Unblock callers waiting on a cancelled tick."
+  [context]
+  (deliver-cancellation context))
 
 (defprocessor :sheet assemble-execution-trace
   {:topics #{:sheet/tree-tick-completed}}

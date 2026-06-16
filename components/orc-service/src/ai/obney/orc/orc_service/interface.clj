@@ -13,6 +13,9 @@
             [ai.obney.orc.orc-service.interface.read-models :as rm]
             ;; Runtime for synchronous execution
             [ai.obney.orc.orc-service.core.runtime :as runtime]
+            ;; Live execution streaming
+            [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [ai.obney.orc.orc-service.interface.stream-schemas :as stream-schemas]
             ;; DSL for workflow building
             [ai.obney.orc.orc-service.core.dsl :as dsl]))
 
@@ -96,6 +99,50 @@
      (sheet/execute ctx sheet-id {\"student-id\" student-id} :timeout-ms 60000)
      (sheet/execute ctx sheet-id inputs :use-version 2)  ;; Execute specific version"
   runtime/execute)
+
+;; =============================================================================
+;; Live Streaming (ephemeral observation layer — see docs/STREAMING.md)
+;; =============================================================================
+
+(def subscribe-execution
+  "Subscribe to the live event stream for a tick-id and every child tick
+   spawned under it (RLM Phase 2 trees, delegate nodes). Call BEFORE
+   dispatching the tick (tick-id is caller-suppliable on execute).
+
+   (subscribe-execution context tick-id & {:keys [include-values? buffer ttl-ms]})
+   => {:events-ch <chan of :orc.stream/* envelopes> :tick-id uuid :close! fn}
+
+   Envelopes carry a strictly monotonic :seq per subscription; a gap means
+   the consumer fell behind the sliding buffer and lost events (everything
+   durable is recoverable from the event store by [:tick tick-id]).
+   See interface.stream-schemas/stream-envelope for the full taxonomy."
+  streaming/subscribe-execution)
+
+(def execute-stream
+  "Non-blocking streamed execution: subscribe + dispatch in one call.
+
+   (execute-stream context sheet-id inputs & opts)
+   => {:tick-id uuid
+       :events-ch <chan of envelopes, closes after :stream-closed>
+       :close!   (fn [])
+       :result   <promise of the exact `execute` return map>}
+
+   Accepts every `execute` option plus :include-values? :buffer :ttl-ms."
+  streaming/execute-stream)
+
+(def cancel!
+  "Cancel a running tick and any known child ticks. Best-effort: the engine
+   stops progressing but in-flight LLM HTTP calls run to completion.
+   Blocking callers unblock with {:status :failure :cancelled? true}; live
+   streams end with :tick-cancelled then :stream-closed {:reason :cancelled}.
+
+   (cancel! context tick-id) => {:cancelled [tick-ids]} | anomaly map"
+  streaming/cancel!)
+
+(def stream-envelope-schema
+  "Malli schema (multi-dispatch on :orc.stream/type) for every envelope a
+   subscription can deliver. For consumer-side validation/codegen."
+  stream-schemas/stream-envelope)
 
 ;; =============================================================================
 ;; Workflow DSL

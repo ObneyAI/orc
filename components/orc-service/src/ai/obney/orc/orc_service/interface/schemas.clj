@@ -481,6 +481,9 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id {:optional true} :uuid]
+    ;; Lineage: tick that spawned this one (RLM Phase 2 trees, delegate
+    ;; nodes). Lets observers correlate a child-tick cascade to its root.
+    [:parent-tick-id {:optional true} :uuid]
     ;; Fields for async execution with isolated blackboard
     [:inputs {:optional true} :map]
     [:use-version {:optional true} :int]
@@ -509,6 +512,11 @@
     [:writes [:map-of :keyword :any]]
     [:duration-ms {:optional true} :int]
     [:inputs {:optional true} [:map-of :keyword :any]]
+    ;; Verbatim raw LLM response text, present only on parse-failure
+    ;; completions (the model answered but no value could be extracted
+    ;; for declared writes). Persisted so (node-output <node-id>) can
+    ;; retrieve the full text post-hoc.
+    [:raw-response {:optional true} :string]
     ;; Gap-7: carry through to the event body. See :completion-kind on
     ;; :sheet/node-execution-completed.
     [:completion-kind {:optional true} [:enum :tree-iteration :terminal]]
@@ -924,6 +932,9 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
+    ;; Lineage: tick that spawned this one (RLM Phase 2 trees, delegate
+    ;; nodes). Absent for root ticks and on events from older versions.
+    [:parent-tick-id {:optional true} :uuid]
     [:iteration {:optional true} :int]
     ;; Fields for async execution with isolated blackboard
     [:inputs {:optional true} :map]
@@ -947,6 +958,10 @@
     [:writes {:optional true} [:map-of :keyword :any]]
     [:duration-ms {:optional true} :int]
     [:inputs {:optional true} [:map-of :keyword :any]]
+    ;; Verbatim raw LLM response text, present only on parse-failure
+    ;; completions. Source for the (node-output <node-id>) drill-down
+    ;; when a failed LLM leaf has no successful writes to show.
+    [:raw-response {:optional true} :string]
     ;; Optional per-node token usage when the node was an LLM call.
     [:usage {:optional true}
      [:map

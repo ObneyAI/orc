@@ -928,7 +928,7 @@
   "Start a tree tick (execute from root).
    When inputs are provided, builds a full execution snapshot for
    independent async execution with tick-scoped blackboard isolation."
-  [{{:keys [sheet-id tick-id inputs use-version force-draft options]} :command
+  [{{:keys [sheet-id tick-id parent-tick-id inputs use-version force-draft options]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))]
     (if inputs
@@ -953,6 +953,7 @@
                              :tick-id new-tick-id
                              :inputs inputs
                              :execution-snapshot snapshot}
+                      parent-tick-id (assoc :parent-tick-id parent-tick-id)
                       (:version-number snapshot) (assoc :version-number (:version-number snapshot))
                       options (assoc :options options))})]}))
       ;; Legacy UI tick: no snapshot, reads live sheet state
@@ -976,8 +977,9 @@
              {:type :sheet/tree-tick-started
               :tags #{[:sheet sheet-id]
                       [:tick new-tick-id]}
-              :body {:sheet-id sheet-id
-                     :tick-id new-tick-id}})]})))))
+              :body (cond-> {:sheet-id sheet-id
+                             :tick-id new-tick-id}
+                      parent-tick-id (assoc :parent-tick-id parent-tick-id))})]})))))
 (defcommand :sheet tick-node
   {:authorized? authenticated?}
   "Start a single node tick (for testing or manual execution)."
@@ -1031,7 +1033,7 @@
 
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage
-            node-type completion-kind]} :command
+            node-type completion-kind raw-response]} :command
     :as ctx}]
   (let [;; Gap-7: when the dispatch site didn't explicitly set
         ;; :completion-kind but the node is a recursive repl-researcher,
@@ -1057,6 +1059,10 @@
                                     (seq writes) (assoc :writes writes)
                                     duration-ms (assoc :duration-ms duration-ms)
                                     error (assoc :error error)
+                                    ;; Verbatim raw LLM response for parse
+                                    ;; failures — retrievable post-hoc via the
+                                    ;; (node-output <node-id>) drill-down.
+                                    raw-response (assoc :raw-response raw-response)
                                     (seq inputs) (assoc :inputs inputs)
                                     (seq usage) (assoc :usage usage)
                                     ;; C-2a-2: propagate :node-type so the

@@ -2,7 +2,7 @@
  :deps {cheshire/cheshire {:mvn/version "5.13.0"}
         ;; DSCloj for LLM judge calls
         io.github.ObneyAI/DSCloj {:git/url "https://github.com/ObneyAI/DSCloj.git"
-                                  :git/sha "8b3a1a20d5aa96df85bccb282a66c64dcf26c0fd"}
+                                  :git/sha "7948a27c367c8928d167750f0da285cec8c87215"}
         ;; ORC service for evaluation workflow sheets
         orc/orc-service {:local/root "../orc-service"}}
  :aliases {:test {:extra-paths ["test"]

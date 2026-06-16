@@ -323,17 +323,10 @@
                      :model (:model config)
                      :config {:api-base "https://openrouter.ai/api/v1"
                               :api-key api-key}}]
-    (litellm-router/register! :openrouter base-config)
-    (litellm-router/register! (keyword (str "openrouter/" (:model config)))
-                              (assoc base-config :model (:model config)))
-    ;; Pre-register the default sub-model (if configured) so the Phase-2
-    ;; leaf executor's get-provider-with-model can resolve it without
-    ;; on-demand registration overhead. Per-task overrides not in config
-    ;; get registered on-demand at first use.
-    (when-let [sm (:sub-model config)]
-      (when (string? sm)
-        (litellm-router/register! (keyword (str "openrouter/" sm))
-                                  (assoc base-config :model sm)))))
+    ;; Node :model values ride through dscloj into the litellm router as
+    ;; per-request overrides, so only the base provider registration is
+    ;; needed (no synthetic per-model providers).
+    (litellm-router/register! :openrouter base-config))
   (reset! system-state (create-context))
   (println "\n" (apply str (repeat 60 "=")) "\n")
   (println "  predict-rlm Comparison Runner started")

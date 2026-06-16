@@ -26,7 +26,6 @@
             [clojure.string :as str]
             [clojure.set]
             [dscloj.core :as dscloj]
-            [litellm.router :as litellm-router]
             [malli.core :as m]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -129,20 +128,6 @@
 ;; LLM Primitive Execution
 ;; =============================================================================
 
-(defn- get-provider-with-model
-  "Get or create a provider config with the specified model."
-  [provider model-override]
-  (if (and model-override (keyword? provider))
-    (let [model-provider-name (keyword (str (name provider) "/" model-override))
-          existing (litellm-router/get-config model-provider-name)]
-      (when-not existing
-        (let [base-config (litellm-router/get-config provider)]
-          (when base-config
-            (litellm-router/register! model-provider-name
-                                      (assoc base-config :model model-override)))))
-      model-provider-name)
-    provider))
-
 (defn- schema-field-type
   "Extract :field-type from a Malli schema's properties map, if present.
    Mirrors the same helper in executor.clj's build-field — kept inline here
@@ -204,14 +189,16 @@
                                   :description (str "Output: " (clojure.core/name k))})
                                writes)
                 :instructions instruction}
-        ;; Get effective provider
-        effective-provider (get-provider-with-model provider model)]
+        ;; The :model rides through dscloj into the litellm router as a
+        ;; per-request override.
+        dscloj-options (cond-> {:validate? false :with-metadata? true}
+                         model (assoc :model model))]
 
     (u/trace ::rlm-llm-primitive
       {:name name :writes writes :model model}
       (try
         ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
-        (let [result (dscloj/predict effective-provider module inputs {:validate? false :with-metadata? true})
+        (let [result (dscloj/predict provider module inputs dscloj-options)
               outputs (or (:outputs result) result)
               usage (:usage result)
               ;; Aggregate usage into tracker if provided

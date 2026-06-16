@@ -2,7 +2,7 @@
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
 
         obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
-                               :git/sha "9e86f130f278351d4e4ac1f06acdf1e6b934abaf"
+                               :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
                                :deps/root "projects/grain-core-v2"}
 
         orc/orc-service       {:local/root "../../components/orc-service"}
@@ -15,11 +15,11 @@
 
         ;; LLM Providers
         litellm/bedrock       {:git/url "https://github.com/ObneyAI/litellm-clj.git"
-                               :git/sha "cf68d55f9a19a6b485220a8cb3af4c12896355a6"
+                               :git/sha "8875a044c2f023d6e3901216243444a793c00087"
                                :deps/root "contrib/bedrock"}}
 
  :aliases {:test {:extra-paths []
                   :extra-deps {orc/grain-test-utils {:local/root "../../components/grain-test-utils"}
                                obneyai/grain-control-plane {:git/url "https://github.com/ObneyAI/grain.git"
-                                                            :git/sha "9e86f130f278351d4e4ac1f06acdf1e6b934abaf"
+                                                            :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
                                                             :deps/root "projects/grain-control-plane"}}}}}

@@ -233,6 +233,8 @@
      :store-trace? - Store trace in event store (default true, passed via options)
      :max-ticks - Override re-tick budget for this execution (defaults to *max-tick-iterations*)
      :tick-id - Optional caller-supplied execution id for correlating live progress
+     :parent-tick-id - Optional lineage marker when this execution is a child of
+                       another tick (RLM Phase 2 trees, delegate nodes)
      :llm-call-budget - Max LLM calls before failing (opt-in only, NO default)
 
    Returns:
@@ -243,7 +245,7 @@
       :executed-version ...}     ;; Version number if published version was used"
   [context sheet-id inputs & {:keys [timeout-ms use-version force-draft
                                       trace? langfuse-client store-trace?
-                                      max-ticks llm-call-budget tick-id]
+                                      max-ticks llm-call-budget tick-id parent-tick-id]
                                :or {timeout-ms 300000 store-trace? true}}]
   (let [tick-id (or tick-id (random-uuid))
         p (register-completion! tick-id)
@@ -262,6 +264,7 @@
                                                  langfuse-client (assoc :langfuse-client langfuse-client)
                                                  max-ticks (assoc :max-ticks max-ticks)
                                                  llm-call-budget (assoc :llm-call-budget llm-call-budget))}
+                              parent-tick-id (assoc :parent-tick-id parent-tick-id)
                               use-version (assoc :use-version use-version)
                               force-draft (assoc :force-draft force-draft))))]
     (if (:cognitect.anomalies/category cmd-result)

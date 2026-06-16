@@ -17,7 +17,6 @@
    - Blackboard values → DSCloj input values
    - DSCloj output values → Blackboard writes"
   (:require [dscloj.core :as dscloj]
-            [litellm.router :as litellm-router]
             [clojure.string :as str]
             [clojure.set]
             [clojure.walk :as walk]
@@ -31,7 +30,9 @@
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
-            [ai.obney.orc.orc-service.core.orientation-card :as orientation-card]))
+            [ai.obney.orc.orc-service.core.orientation-card :as orientation-card]
+            [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [clojure.core.async :as async]))
 
 ;; Forward declarations
 (declare execute-repl-researcher-rlm)
@@ -280,6 +281,81 @@
         (dissoc :generated-tree)
         (merge outputs-to-merge)
         (assoc :tree-results (conj prior-results summary)))))
+
+(defn surviving-vars-from-events
+  "Successful intermediate blackboard writes inside a Phase 2 tree.
+
+   A failed tree usually contains nodes that SUCCEEDED before the failure
+   (e.g. 12 batch extractions feeding a synthesis node that died). Their
+   writes land as :sheet/execution-value-written events but were never
+   merged into sandbox-vars — so recovery trees re-paid for work that was
+   already done. This collects those writes so the recursive recur can
+   merge them.
+
+   exclude-keys: the tree's declared output writes (merged separately by
+   merge-tree-result-into-sandbox), the researcher's own input reads, and
+   reserved sandbox keys. Later writes of the same key win."
+  [tick-events exclude-keys]
+  (let [excluded (set exclude-keys)]
+    (into {}
+          (comp (filter #(= :sheet/execution-value-written (:event/type %)))
+                (map (juxt :key :value))
+                (remove (fn [[k _]] (contains? excluded k))))
+          tick-events)))
+
+(defn render-tree-outcome
+  "Render a :tree-results summary entry into the compact text block that is
+   PUSHED into the next iteration's history (stored as :tree-outcome on the
+   iteration entry).
+
+   This is the push channel for tree results. Before it existed, the only
+   outcome signal in history was :vars-created — key-presence-based and
+   nil-blind — so a tree could write nils under :status :success and the
+   model's default view said the data existed. Status, nil-writes,
+   failed-leaf errors (which carry raw-response previews), and surviving
+   vars now reach the model without requiring a (get-var :tree-results)
+   probe.
+
+   Excludes :tree-raw — the model already sees its own emit-tree! code in
+   the same history entry."
+  [summary]
+  (let [{:keys [status elapsed-ms nodes-succeeded nodes-failed nodes-total
+                outputs-keys outputs-previews nil-writes failed-leaves
+                failure-indices failure-reasons surviving-vars]} summary
+        preview-str (fn [k]
+                      (let [p (get outputs-previews k)]
+                        (if (string? p) p (pr-str p))))
+        nil-set (set nil-writes)
+        ok-keys (vec (remove nil-set outputs-keys))]
+    (str "Tree executed — status: " status
+         " | nodes: " nodes-succeeded "/" nodes-total " succeeded"
+         (when (and nodes-failed (pos? nodes-failed))
+           (str ", " nodes-failed " failed"))
+         (when elapsed-ms (str " | " elapsed-ms " ms"))
+         (when (seq ok-keys)
+           (str "\nOutputs merged (readable via get-var):\n"
+                (str/join "\n" (map (fn [k] (str "  " k " = " (preview-str k)))
+                                    ok-keys))))
+         (when (seq nil-writes)
+           (str "\nNIL/EMPTY WRITES: " (str/join ", " (map str nil-writes))
+                " — these declared writes did NOT land; (get-var ...) returns"
+                " nil/empty for them. Decide whether empty is the correct"
+                " answer for your task, or recover before calling final!."))
+         (when (seq failed-leaves)
+           (str "\nFailed leaves:\n"
+                (str/join "\n" (map (fn [{:keys [node-id error]}]
+                                      (str "  - node " node-id ": " error))
+                                    failed-leaves))))
+         (when (seq failure-indices)
+           (str "\nMap-each failures at indices " (vec failure-indices)
+                (when (seq failure-reasons)
+                  (str ":\n"
+                       (str/join "\n" (map (fn [[i r]] (str "  " i " → " r))
+                                           failure-reasons))))))
+         (when (seq surviving-vars)
+           (str "\nSurviving intermediate vars (successful work inside this"
+                " tree, readable via get-var — do NOT recompute): "
+                (str/join ", " (map str surviving-vars)))))))
 
 ;; =============================================================================
 ;; Levenshtein Distance and Variable Suggestions
@@ -857,42 +933,6 @@
 ;; AI Execution
 ;; =============================================================================
 
-(defn- get-provider-with-model
-  "Get or create a provider config with the specified model.
-
-   litellm-clj's router ignores :model in request options when using a registered
-   provider keyword. To work around this, when a model override is specified,
-   we dynamically register a model-specific provider if it doesn't exist.
-
-   The litellm config structure must be:
-   {:provider :provider-name :model \"model-name\" :config {:api-key ... :base-url ...}}
-
-   Returns the provider keyword to use (either original or model-specific)."
-  [provider model-override]
-  (if (and model-override (keyword? provider))
-    ;; Create a model-specific provider name
-    (let [model-provider-name (keyword (str (name provider) "/" model-override))
-          existing (litellm-router/get-config model-provider-name)]
-      (when-not existing
-        ;; Register the model-specific provider
-        (let [base-config (litellm-router/get-config provider)]
-          (when base-config
-            ;; Build the correct config structure for litellm
-            ;; If base-config already has :provider/:model/:config structure, use it
-            ;; Otherwise, assume it's a flat config and wrap it
-            (let [structured-config
-                  (if (and (:provider base-config) (:config base-config))
-                    ;; Already structured, just update the model
-                    (assoc base-config :model model-override)
-                    ;; Flat config - wrap it in the correct structure
-                    {:provider provider
-                     :model model-override
-                     :config (dissoc base-config :provider :model)})]
-              (litellm-router/register! model-provider-name structured-config)))))
-      model-provider-name)
-    ;; No override needed, use provider as-is
-    provider))
-
 (defn- outputs-have-nil?
   "Check if any output values are nil, including nested maps where all values are nil."
   [outputs]
@@ -922,36 +962,98 @@
    This function flattens nested :map schemas into separate output fields
    (matching Python DSPy's approach), then reassembles them back into
    nested structure for the blackboard."
-  [node blackboard provider & {:keys [options] :or {options {}}}]
+  [node blackboard provider & {:keys [options stream] :or {options {}}}]
   (let [start-time (System/currentTimeMillis)
         module (build-module node blackboard)
         inputs (gather-inputs node blackboard)
         output-mapping (:output-mapping module)
         ;; Remove the mapping from module before passing to DSCloj
         dscloj-module (dissoc module :output-mapping)
-        ;; Build effective provider config with model override if specified
-        effective-provider (get-provider-with-model provider (:model node))
         ;; Request metadata for usage tracking via :with-metadata? true.
         ;; Disable validation since we serialize complex inputs to JSON strings.
         ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
         ;; but preserve an explicit caller/node :use-function-calling? override
         ;; for models where tool-backed structured output is more reliable.
+        ;; The node's :model rides through as a per-request override —
+        ;; litellm-clj's router honors :model in the request options.
         dscloj-options (merge {:validate? false
                                :with-metadata? true
                                :use-function-calling? false}
-                              options)
+                              options
+                              (when (:model node) {:model (:model node)}))
         ;; Retry config - defaults to 1 retry with 500ms delay
         max-retries (get options :max-retries 1)
         retry-delay-ms (get options :retry-delay-ms 500)
 
+        ;; Token streaming (Stage 2). Active only when ALL of: a subscriber
+        ;; asked for deltas on this tick (`stream` config threaded from the
+        ;; todo processor), the loaded DSCloj has predict-stream-v2
+        ;; (capability detection — older pins fall back to blocking), and
+        ;; the node isn't using function-calling (no text stream to parse).
+        predict-stream-v2 (when (and stream
+                                     (or (:fields? stream) (:raw? stream))
+                                     (not (:use-function-calling? dscloj-options)))
+                            (some-> (resolve 'dscloj.core/predict-stream-v2) deref))
+        emit-delta! (when predict-stream-v2
+                      (let [base (cond-> (select-keys stream [:sheet-id :node-id])
+                                   (:map-each stream) (assoc :map-each (:map-each stream)))]
+                        ;; :attempt lets consumers detect a retry restart and
+                        ;; reset their per-node delta accumulation.
+                        (fn [attempt m]
+                          (streaming/emit! (:tick-id stream)
+                                           (merge base {:attempt attempt} m)))))
+
+        ;; Single streaming attempt: consume the typed-event channel,
+        ;; forwarding deltas/field-snapshots to the stream hub, and return
+        ;; the EXACT shape try-once returns so retry/budget/event emission
+        ;; are identical to the blocking path.
+        try-once-streaming
+        (fn [attempt]
+          (let [ch (predict-stream-v2 provider dscloj-module inputs dscloj-options)]
+            (loop [terminal nil]
+              (if-let [ev (async/<!! ch)]
+                (case (:dscloj/event ev)
+                  :delta (do (when (:raw? stream)
+                               (emit-delta! attempt
+                                            {:orc.stream/type :llm-raw-delta
+                                             :text (:text ev)}))
+                             (recur terminal))
+                  :fields (do (when (:fields? stream)
+                                (emit-delta! attempt
+                                             {:orc.stream/type :llm-fields
+                                              :fields (reassemble-flattened-outputs
+                                                       (:fields ev) output-mapping)}))
+                              (recur terminal))
+                  :error (recur {:error (str "LLM stream error: " (pr-str (:error ev)))})
+                  :final (let [outputs (reassemble-flattened-outputs (:outputs ev) output-mapping)]
+                           (when (:fields? stream)
+                             (emit-delta! attempt
+                                          {:orc.stream/type :llm-fields
+                                           :fields outputs
+                                           :final? true}))
+                           (recur {:outputs outputs
+                                   :usage (normalize-usage (:usage ev))
+                                   :model (or (:model ev) (:model node))
+                                   :raw-response (:raw-response ev)}))
+                  (recur terminal))
+                (or terminal {:error "LLM stream ended without a final result"})))))
+
         ;; Single attempt function
-        try-once (fn []
-                   (let [result (dscloj/predict effective-provider dscloj-module inputs dscloj-options)
-                         ;; DSCloj returns outputs directly as a flat map, not wrapped in {:outputs ...}
-                         raw-outputs (or (:outputs result) result)
-                         ;; Reassemble flattened outputs back into nested structure
-                         outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
-                     {:outputs outputs :usage (normalize-usage (:usage result)) :model (or (:model result) (:model node))}))
+        try-once (fn [attempt]
+                   (if predict-stream-v2
+                     (try-once-streaming attempt)
+                     (let [result (dscloj/predict provider dscloj-module inputs dscloj-options)
+                           ;; DSCloj returns outputs directly as a flat map, not wrapped in {:outputs ...}
+                           raw-outputs (or (:outputs result) result)
+                           ;; Reassemble flattened outputs back into nested structure
+                           outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
+                       {:outputs outputs
+                        :usage (normalize-usage (:usage result))
+                        :model (or (:model result) (:model node))
+                        ;; Verbatim completion text from DSCloj (:with-metadata? true).
+                        ;; Carried so a nil-parse failure can show WHAT the model
+                        ;; actually returned instead of discarding it.
+                        :raw-response (:raw-response result)})))
 
         ;; Compute backoff delay for a given attempt
         backoff-for (fn [attempt]
@@ -960,9 +1062,9 @@
                         retry-delay-ms))]
 
     (loop [attempt 0]
-      (let [{:keys [outputs usage model error]}
+      (let [{:keys [outputs usage model error raw-response]}
             (try
-              (try-once)
+              (try-once attempt)
               (catch Exception e
                 {:error (.getMessage e)}))]
         (cond
@@ -985,16 +1087,54 @@
                :status :failure :usage nil :trace-id nil :error error})
             result)
 
-          ;; Nil outputs — retry with backoff (LLM returned empty/unparseable response)
-          (and (outputs-have-nil? outputs) (< attempt max-retries))
-          (do (obs/log-retry!
-                {:node-id (:id node) :node-name (:name node)
-                 :attempt (inc attempt) :max-attempts (inc max-retries)
-                 :reason "nil outputs" :trace-id nil})
-              (Thread/sleep (backoff-for attempt))
-              (recur (inc attempt)))
+          ;; Nil outputs — the model answered but no value could be extracted
+          ;; for one or more declared writes (e.g. missing [[ ## field ## ]]
+          ;; markers that DSCloj's single-string-field whole-text fallback
+          ;; can't cover, such as structured/multi-write nodes). This is a
+          ;; FAILURE, not a success: returning :success with nil writes
+          ;; silently corrupts downstream state (a tree can finish "green"
+          ;; with empty deliverables). It is also NOT retried here — rerunning
+          ;; a semantic failure is the node-level :retry primitive's job
+          ;; (execute-with-retry retries any non-:success result). The internal
+          ;; retry above stays reserved for transport errors. The verbatim raw
+          ;; response is carried on the result and logged in full so the parse
+          ;; failure is diagnosable.
+          (outputs-have-nil? outputs)
+          (let [nil-keys (vec (for [[k v] outputs
+                                    :when (or (nil? v)
+                                              (and (map? v) (every? nil? (vals v))))]
+                                k))
+                raw-len (count (str raw-response))
+                preview (when raw-response
+                          (subs raw-response 0 (min 1000 (count raw-response))))
+                error-msg (str "LLM output unparseable for keys " nil-keys
+                               " — no value could be extracted for these declared writes."
+                               (if raw-response
+                                 (str " Raw response captured (" raw-len " chars; full text"
+                                      " retrievable via (node-output <node-id>) using this"
+                                      " node's id from :failed-leaves)."
+                                      "\n--- raw response preview (first "
+                                      (min 1000 raw-len) " of " raw-len " chars) ---\n"
+                                      preview)
+                                 " No raw response text was returned by the provider."))
+                result {:status :failure :error error-msg
+                        :raw-response raw-response
+                        :outputs outputs
+                        :duration-ms (- (System/currentTimeMillis) start-time)
+                        ;; Usage is preserved — these tokens were really spent
+                        ;; and must not vanish from Phase-2 accounting.
+                        :usage usage :model model}]
+            (obs/log-unparseable-output!
+              {:node-id (:id node) :node-name (:name node) :model model
+               :nil-keys nil-keys :raw-length raw-len
+               :raw-response raw-response :trace-id nil})
+            (obs/log-ai-execution!
+              {:node-id (:id node) :node-name (:name node) :model model
+               :executor :ai :duration-ms (:duration-ms result)
+               :status :failure :usage usage :trace-id nil :error error-msg})
+            result)
 
-          ;; Success (or retries exhausted with nil outputs)
+          ;; Success
           :else
           (let [result {:status :success :outputs outputs
                         :duration-ms (- (System/currentTimeMillis) start-time)
@@ -1044,13 +1184,13 @@
                                  :let [entry (get blackboard key-name)]
                                  :when entry]
                              [key-name (:value entry)]))
-        ;; Build effective provider config with model override if specified
-        effective-provider (get-provider-with-model provider (:model node))
         ;; Request metadata for usage tracking
         ;; Disable validation since inputs may be JSON serialized
-        dscloj-options (assoc options :validate? false)]
+        ;; The node's :model rides through as a per-request override.
+        dscloj-options (cond-> (assoc options :validate? false)
+                         (:model node) (assoc :model (:model node)))]
     (try
-      (let [response (dscloj/predict effective-provider module input-values dscloj-options)
+      (let [response (dscloj/predict provider module input-values dscloj-options)
             ;; Response now has {:outputs {...} :usage {...} :model "..."}
             bool-result (get-in response [:outputs :result])
             duration-ms (- (System/currentTimeMillis) start-time)]
@@ -1181,13 +1321,20 @@
     (str "\n\n## Previous Iterations\n"
          (str/join "\n\n"
                    (map-indexed
-                    (fn [idx {:keys [code result stdout error vars-created]}]
+                    (fn [idx {:keys [code result stdout error vars-created tree-outcome]}]
                       (str "### Iteration " (inc idx) "\n"
                            "Code:\n```clojure\n" code "\n```\n"
                            (when (seq stdout) (str "Output:\n" stdout "\n"))
-                           (if error
-                             (format-error-with-context code error)
-                             (str "Result: " result))
+                           (cond
+                             error (format-error-with-context code error)
+                             ;; Tree iterations: the eval result is just the
+                             ;; compiled tree object (the model already sees
+                             ;; its own emit-tree! code above) — show the
+                             ;; tree's OUTCOME instead: status, merged outputs
+                             ;; with previews, nil-writes, failed-leaf errors,
+                             ;; surviving vars.
+                             tree-outcome (str "Result: " tree-outcome)
+                             :else (str "Result: " result))
                            (when (seq vars-created)
                              (str "\nVariables created: " (str/join ", " (map str vars-created))))))
                     history)))))
@@ -1299,9 +1446,6 @@
         ;; Build blackboard metadata (types only, no values)
         bb-metadata (build-blackboard-metadata node blackboard)
 
-        ;; Build effective provider config with model override if specified
-        effective-provider (get-provider-with-model provider (:model node))
-
         ;; Track usage across iterations
         total-usage (atom {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0})]
 
@@ -1339,13 +1483,12 @@
                         :context bb-metadata
                         :history (or (build-iteration-history history) "None")
                         :tools (str/join ", " all-tools)}
-                ;; Note: Don't pass :model in dscloj-options - effective-provider already has it
-                ;; Passing :model causes response parsing issues in dscloj
                 ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
-                dscloj-options (assoc execution-options :validate? false :with-metadata? true)
+                ;; The node's :model rides through as a per-request override.
+                dscloj-options (cond-> (assoc execution-options :validate? false :with-metadata? true)
+                                 (:model node) (assoc :model (:model node)))
 
-                ;; Generate code - use effective-provider for correct model override
-                llm-result (dscloj/predict effective-provider module inputs dscloj-options)
+                llm-result (dscloj/predict provider module inputs dscloj-options)
                 ;; Extract code from LLM result
                 ;; With :with-metadata? true, dscloj returns {:outputs {:code "..."} :usage {...}}
                 ;; Code may be a string or a parsed Clojure form (if function calling mode parsed it)
@@ -1724,6 +1867,13 @@
                              "to `:tree-results`, and control returns to you. The loop "
                              "ends only when you call `(final! {...})` or you exceed "
                              ":max-iterations.\n\n"
+                             "Your iteration history shows the tree's OUTCOME directly: "
+                             "status, node counts, merged outputs with value previews, "
+                             "any NIL/EMPTY WRITES (declared writes whose values did not "
+                             "land — `(get-var ...)` returns nil/empty for those), failed "
+                             "leaves with their error text, and surviving intermediate "
+                             "vars. READ IT before deciding your next step — `Variables "
+                             "created:` lists only writes whose values actually landed.\n\n"
                              "### Accessing prior tree outputs — use `get-var`, NOT `get-input`\n"
                              "When you call `(emit-tree! ...)`, the tree's `:writes`-declared keys "
                              "land in your sandbox variables. Subsequent iterations access them via "
@@ -1749,9 +1899,15 @@
                              "  - `:failure` — the tree did not produce useful outputs\n"
                              "  - `:timeout` — the tree was cancelled before completion (budget exhausted)\n\n"
                              "Other fields per entry: `:elapsed-ms`, `:outputs-keys` (what was merged), "
-                             "`:nodes-succeeded`, `:nodes-failed`, `:nodes-total`. On `:partial` or "
-                             "`:failure` you also get `:failure-indices` + `:failure-reasons` "
-                             "(verbatim error strings).\n\n"
+                             "`:nodes-succeeded`, `:nodes-failed`, `:nodes-total`, `:surviving-vars` "
+                             "(successful intermediate writes preserved from inside the tree). On "
+                             "`:partial` or `:failure` you also get `:failure-indices` + "
+                             "`:failure-reasons` (verbatim error strings).\n\n"
+                             "An `:llm` leaf whose response could not be parsed into its declared "
+                             "writes FAILS (after its node-level retries) — its `:failed-leaves` "
+                             "error names the unparseable keys and includes a preview of the raw "
+                             "response text; `(node-output node-id)` returns the full verbatim "
+                             "raw text so you can see exactly what the sub-model wrote.\n\n"
                              "### Interpretation depends on your task\n"
                              "For some tasks `:partial` is acceptable (e.g., document summarization "
                              "with 22 of 24 chunks succeeded is usually fine). For others it requires "
@@ -1788,14 +1944,18 @@
                              ;;
                              ;; Sentinel: ':nil-writes' (pinned by unit test).
                              "ALSO trigger recovery when `:status :success` but `:nil-writes` "
-                             "is non-empty on the most-recent `:tree-results` entry. `:nil-writes` "
+                             "is non-empty on the most-recent `:tree-results` entry — this same "
+                             "signal appears as the `NIL/EMPTY WRITES:` line in your iteration "
+                             "history's tree outcome. `:nil-writes` "
                              "lists declared writes that came back as `nil`, empty string, empty "
                              "vector/map/seq/set — i.e. nil/empty values for keys the tree was "
                              "contracted to produce. The run did not fail; the values are just "
                              "missing or empty. Decide whether that is the CORRECT answer for "
                              "your task (some tasks legitimately return empty results) or whether "
                              "downstream nodes (often aggregator `:code` fns) silently produced "
-                             "nothing useful and you need to recover. If recovery is needed, the "
+                             "nothing useful and you need to recover. NEVER pass a nil-written "
+                             "key's `(get-var ...)` value into `(final! ...)` without making "
+                             "that decision explicitly. If recovery is needed, the "
                              "same flow below applies — investigate, inventory surviving vars, "
                              "and design a smaller resume tree.\n\n"
                              "Recovery flow:\n"
@@ -1805,10 +1965,13 @@
                              "keys on a `:status :success` entry whose declared writes came back "
                              "nil/empty. If those fields aren't specific enough, drill in with "
                              "`(tree-failures)` / `(tree-detail tick-id)` / `(node-output node-id)`.\n"
-                             "  2. **Inventory surviving vars**: check `(list-vars)` or `:outputs-keys` "
-                             "from the same `:tree-results` entry to see EXACTLY what data already "
-                             "exists in your sandbox. Often the failure is downstream of work that "
-                             "produced perfectly usable intermediate outputs.\n"
+                             "  2. **Inventory surviving vars**: check `:surviving-vars` and "
+                             "`:outputs-keys` on the same `:tree-results` entry (also listed in "
+                             "your iteration history's tree outcome), or `(list-vars)`, to see "
+                             "EXACTLY what data already exists in your sandbox. Successful "
+                             "intermediate writes from a failed tree ARE preserved — often the "
+                             "failure is downstream of work that produced perfectly usable "
+                             "intermediate outputs.\n"
                              "  3. **Design a smaller resume tree** that reads the surviving vars via "
                              "`(get-var ...)` and ONLY runs the nodes needed to finish the work the "
                              "failed tree didn't complete. Do not include nodes that recompute data "
@@ -1850,7 +2013,10 @@
                              "log of what happened inside the tree\n"
                              "  - `(tree-failures)` — failure entries with errors + per-failure input profiles "
                              "(joins direct leaf failures with map-each `:partial-summary` failure indices)\n"
-                             "  - `(node-output node-id)` — writes map of a specific completed node\n"
+                             "  - `(node-output node-id)` — writes map of a specific completed node; "
+                             "for a parse-failed `:llm` leaf this includes `:raw-response`, the full "
+                             "verbatim text the sub-model wrote (use it to see WHY parsing failed "
+                             "and decide how to rephrase the node's instruction)\n"
                              "  - `(node-input-profile node-id)` — input profile (chunk shape, etc.) of a specific node\n\n"
                              "These return potentially large data — prefer the `:tree-results` summary first and only "
                              "drill down when you genuinely need the extra detail to make a decision.\n\n"
@@ -2119,21 +2285,27 @@
                 inputs {:task (:instruction node)
                         :inputs-info (pr-str inputs-preview)
                         :history (or (build-iteration-history history) "None")}
-                ;; Note: Don't pass :model in dscloj-options - effective-provider already has it
-                ;; Passing :model causes response parsing issues in dscloj
                 ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
                 ;; but preserve an explicit caller/node :use-function-calling? override.
                 ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
+                ;; The node's :model rides through as a per-request override.
                 dscloj-options (merge {:validate? false
                                        :use-function-calling? false
                                        :with-metadata? true}
-                                      options)
-                effective-provider (get-provider-with-model provider (:model node))
+                                      options
+                                      (when (:model node) {:model (:model node)}))
+
+                ;; Live-stream visibility: ephemeral, no-op without subscribers.
+                _ (streaming/emit! (:tick-id context)
+                                   (cond-> {:orc.stream/type :rlm-iteration-started
+                                            :iteration (inc iteration)
+                                            :max-iterations max-iterations}
+                                     (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                     (:node-id context) (assoc :node-id (:node-id context))))
 
                 _ (dbg "\n========== ITERATION" (inc (count history)) "==========")
                 _ (dbg "node :model =" (:model node))
                 _ (dbg "provider =" provider)
-                _ (dbg "effective-provider =" effective-provider)
                 _ (dbg "dscloj-options =" dscloj-options)
                 _ (dbg "module :outputs =" (:outputs module))
                 _ (dbg "module :instructions length =" (count (:instructions module)))
@@ -2148,6 +2320,10 @@
                 ;; same `:max-retries` option the LLM-node path honors rather
                 ;; than inventing a new retry knob; default 1 retry preserves
                 ;; prior behavior for callers that don't set it.
+                ;; MERGE NOTE: sits ATOP origin/main's predict (provider +
+                ;; per-request dscloj-options); main's nil-parse loud-fail +
+                ;; recovery (d6d42434) handles a leaf that still fails after the
+                ;; retries are exhausted — the two are complementary.
                 code-blank? (fn [r]
                               (let [c (or (:code r) (get-in r [:outputs :code]))]
                                 (or (nil? c)
@@ -2156,7 +2332,7 @@
                 rr-retry-delay-ms (get options :retry-delay-ms 500)
                 llm-result (loop [attempt 0]
                              (let [r (try
-                                       (dscloj/predict effective-provider module inputs dscloj-options)
+                                       (dscloj/predict provider module inputs dscloj-options)
                                        (catch Exception e
                                          (dbg "dscloj/predict EXCEPTION:" (.getMessage e))
                                          {:code nil :error (.getMessage e)}))]
@@ -2214,6 +2390,15 @@
                 _ (when (string? reasoning)
                     (swap! sandbox-vars update :iteration-reasonings
                            (fnil conj []) reasoning))
+
+                _ (when (and (string? code) (not (str/blank? code)))
+                    (streaming/emit! (:tick-id context)
+                                     (cond-> {:orc.stream/type :rlm-code-generated
+                                              :iteration (inc iteration)
+                                              :code (streaming/truncate-value code)}
+                                       (string? reasoning) (assoc :reasoning (streaming/truncate-value reasoning))
+                                       (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                       (:node-id context) (assoc :node-id (:node-id context)))))
 
                 ;; Update usage tracking (normalize handles snake_case -> kebab-case)
                 _ (when-let [u (normalize-usage (:usage llm-result))]
@@ -2287,6 +2472,20 @@
                                        :error (:error exec-result)
                                        :vars-created (vec new-vars)})
                     final-output (:final-output exec-result)
+                    _ (streaming/emit! (:tick-id context)
+                                       (cond-> {:orc.stream/type :rlm-sandbox-completed
+                                                :iteration (inc iteration)
+                                                :final? (some? final-output)}
+                                         (some? (:result exec-result))
+                                         (assoc :result (streaming/truncate-value (:result exec-result)))
+                                         (:stdout exec-result)
+                                         (assoc :stdout (streaming/truncate-value (:stdout exec-result)))
+                                         (:error exec-result)
+                                         (assoc :error (str (:error exec-result)))
+                                         (seq new-vars)
+                                         (assoc :vars-created (vec new-vars))
+                                         (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                         (:node-id context) (assoc :node-id (:node-id context))))
                     ;; Aggregate sub-LLM usage into total usage
                     sub-llm-usage (:sub-llm-usage exec-result)
                     _ (when (and sub-llm-usage (pos? (:total-tokens sub-llm-usage 0)))
@@ -2360,9 +2559,9 @@
                         ;; (:sub-model node) is set, walk the canonical tree
                         ;; and inject :model sub-model into each (sheet/llm ...)
                         ;; form that lacks an explicit :model. The Phase-2 leaf
-                        ;; executor's get-provider-with-model then routes those
-                        ;; calls through the sub-model. Backward compatible —
-                        ;; nil sub-model is a no-op.
+                        ;; executor passes that :model through as a per-request
+                        ;; override. Backward compatible — nil sub-model is a
+                        ;; no-op.
                         sub-model (or (get rlm-config :sub-model)
                                       (:sub-model node))
                         generated-tree (inject-sub-model
@@ -2482,13 +2681,35 @@
                               (assoc :phase2-elapsed-ms (or (:duration-ms phase2-result)
                                                             (:remaining-ms budget))
                                      :budget-remaining-ms 0))
-                            summary (compute-tree-result-summary
-                                      {:phase2-result phase2-result+budget
-                                       :tick-events tick-events
-                                       :tree-raw generated-tree-raw
-                                       :writes declared-writes})
+                            base-summary (compute-tree-result-summary
+                                           {:phase2-result phase2-result+budget
+                                            :tick-events tick-events
+                                            :tree-raw generated-tree-raw
+                                            :writes declared-writes})
+                            ;; Successful intermediate writes inside the tree
+                            ;; (work that completed even if the tree failed).
+                            ;; Merged into sandbox-vars so a recovery tree can
+                            ;; resume from them instead of recomputing — the
+                            ;; behavior the focused-failure-recovery section
+                            ;; describes.
+                            surviving (surviving-vars-from-events
+                                        tick-events
+                                        (concat declared-writes
+                                                (:reads node)
+                                                [:tree-results :generated-tree
+                                                 :generated-tree-raw
+                                                 :iteration-reasonings]))
+                            summary (cond-> base-summary
+                                      (seq surviving)
+                                      (assoc :surviving-vars
+                                             (vec (sort (keys surviving)))))
                             _ (swap! sandbox-vars merge-tree-result-into-sandbox
                                      phase2-result+budget declared-writes summary)
+                            ;; Newest tree's intermediate values win over any
+                            ;; stale same-named vars from earlier iterations.
+                            _ (when (seq surviving)
+                                (swap! sandbox-vars
+                                       (fn [sv] (merge sv surviving))))
                             _ (swap! cumulative-tree-ms + (or (:duration-ms phase2-result) 0))
                             ;; Aggregate Phase 2 sub-LLM usage into the
                             ;; tick-level total-usage. Without this the
@@ -2518,27 +2739,33 @@
                                    "summary status:" (:status summary))
                             ;; R-5: After the recursive-mode merge, update the
                             ;; LAST iteration history entry so its :vars-created
-                            ;; reflects the tree's :writes-declared output keys
-                            ;; (which the merge just added to sandbox-vars), not
-                            ;; just the transient :generated-tree / :generated-
-                            ;; tree-raw markers. This is what surfaces to the
-                            ;; next iteration's prompt so the model sees what
-                            ;; data is now available via (get-var ...) and
-                            ;; doesn't redundantly re-emit a tree that recomputes
-                            ;; data it already has.
-                            tree-output-keys (vec (:outputs-keys summary))
-                            new-history (if (seq tree-output-keys)
-                                          (update new-history
-                                                  (dec (count new-history))
-                                                  (fn [entry]
-                                                    (let [prior-vars (or (:vars-created entry) [])
-                                                          ;; Drop the markers; surface the actual
-                                                          ;; tree writes instead.
-                                                          marker-syms #{:generated-tree :generated-tree-raw}
-                                                          kept (remove marker-syms prior-vars)]
-                                                      (assoc entry :vars-created
-                                                             (vec (distinct (concat kept tree-output-keys)))))))
-                                          new-history)]
+                            ;; reflects the tree's writes that ACTUALLY LANDED
+                            ;; (non-nil values), not just the transient
+                            ;; :generated-tree / :generated-tree-raw markers.
+                            ;; Nil/empty declared writes are deliberately
+                            ;; EXCLUDED — listing them as "created" is what
+                            ;; misled the model into finalizing nils. They
+                            ;; surface loudly in :tree-outcome instead.
+                            nil-write-set (set (:nil-writes summary))
+                            tree-output-keys (vec (remove nil-write-set
+                                                          (:outputs-keys summary)))
+                            ;; Push channel: render the summary into a
+                            ;; :tree-outcome block on the same history entry.
+                            ;; build-iteration-history prints it in place of
+                            ;; the (useless) compiled-tree Result string.
+                            outcome (render-tree-outcome summary)
+                            new-history (update new-history
+                                                (dec (count new-history))
+                                                (fn [entry]
+                                                  (let [prior-vars (or (:vars-created entry) [])
+                                                        ;; Drop the markers; surface the actual
+                                                        ;; tree writes instead.
+                                                        marker-syms #{:generated-tree :generated-tree-raw}
+                                                        kept (remove marker-syms prior-vars)]
+                                                    (-> entry
+                                                        (assoc :vars-created
+                                                               (vec (distinct (concat kept tree-output-keys))))
+                                                        (assoc :tree-outcome outcome)))))]
                         (recur (inc iteration) new-history))
                       ;; Non-recursive (current behavior, preserved) — merge results and return.
                       (let [p1-usage @total-usage
@@ -2619,19 +2846,27 @@
    Args:
      execute-fn - Zero-arg function that returns {:status :success/:failure ...}
      retry-config - {:max-attempts n :backoff-ms [100 500 2000]}
+     node - (optional) the node map, for retry-attempt observability
 
    Returns the result of execute-fn, retrying on failure up to max-attempts."
-  [execute-fn retry-config]
-  (let [max-attempts (or (:max-attempts retry-config) 1)]
-    (loop [attempt 0]
-      (let [result (execute-fn)]
-        (if (or (= :success (:status result))
-                (>= (inc attempt) max-attempts))
-          result
-          (do
-            (when-let [backoff (get-backoff retry-config attempt)]
-              (Thread/sleep backoff))
-            (recur (inc attempt))))))))
+  ([execute-fn retry-config]
+   (execute-with-retry execute-fn retry-config nil))
+  ([execute-fn retry-config node]
+   (let [max-attempts (or (:max-attempts retry-config) 1)]
+     (loop [attempt 0]
+       (let [result (execute-fn)]
+         (if (or (= :success (:status result))
+                 (>= (inc attempt) max-attempts))
+           result
+           (do
+             (obs/log-retry!
+               {:node-id (:id node) :node-name (:name node)
+                :attempt (inc attempt) :max-attempts max-attempts
+                :reason (or (:error result) (str "status " (:status result)))
+                :trace-id nil})
+             (when-let [backoff (get-backoff retry-config attempt)]
+               (Thread/sleep backoff))
+             (recur (inc attempt)))))))))
 
 ;; =============================================================================
 ;; Main Execution Entry Point
@@ -2656,21 +2891,21 @@
       :outputs {string-key value}
       :error string?
       :duration-ms int}"
-  [node blackboard provider & {:keys [context options] :or {context {} options {}}}]
+  [node blackboard provider & {:keys [context options stream] :or {context {} options {}}}]
   (let [executor-type (or (:executor node) :ai)
         retry-config (:retry node)
         execution-options (merge options (:options node))
         execute-fn (fn []
                      (case executor-type
-                       :ai (execute-ai node blackboard provider :options execution-options)
+                       :ai (execute-ai node blackboard provider :options execution-options :stream stream)
                        :code (execute-code node blackboard context)
                        :tool {:status :failure
                               :error "Tool executor not yet implemented"
                               :duration-ms 0}
                        ;; Default to AI
-                       (execute-ai node blackboard provider :options execution-options)))]
+                       (execute-ai node blackboard provider :options execution-options :stream stream)))]
     (if retry-config
-      (execute-with-retry execute-fn retry-config)
+      (execute-with-retry execute-fn retry-config node)
       (execute-fn))))
 
 ;; =============================================================================

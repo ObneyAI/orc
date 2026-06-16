@@ -15,6 +15,7 @@
    inline tree execution rather than referencing an existing sheet."
   (:require [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.commands] ;; Load command handlers
+            [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -604,6 +605,17 @@
           ;; Pass sandbox-vars as inputs - they'll be seeded into the blackboard
           tick-id (random-uuid)
           _ (println "[DEBUG Tree] Starting tick:" tick-id)
+          ;; Lineage: the hosting repl-researcher's tick (enriched onto context
+          ;; by execute-repl-researcher-node). Link BEFORE dispatch so stream
+          ;; subscribers on the parent miss none of the child's events.
+          parent-tick-id (:tick-id context)
+          _ (when parent-tick-id
+              (streaming/link-child! parent-tick-id tick-id)
+              (streaming/emit! parent-tick-id
+                               (cond-> {:orc.stream/type :rlm-phase2-started
+                                        :child-tick-id tick-id}
+                                 (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                 (:node-id context) (assoc :node-id (:node-id context)))))
           p (runtime/register-completion! tick-id)
           ;; QP-1: capture the dispatch result so a command-processor anomaly
           ;; (e.g. :sheet/tick-tree schema rejection, sheet-not-found) surfaces
@@ -612,13 +624,14 @@
           ;; timeout budget before returning a misleading {:status :timeout}.
           tick-cmd-result (cp/process-command
                             (assoc context :command
-                                   {:command/id (random-uuid)
-                                    :command/timestamp (time/now)
-                                    :command/name :sheet/tick-tree
-                                    :sheet-id sheet-id
-                                    :tick-id tick-id
-                                    :inputs (merge blackboard sandbox-vars)
-                                    :options {:timeout-ms timeout-ms}}))
+                                   (cond-> {:command/id (random-uuid)
+                                            :command/timestamp (time/now)
+                                            :command/name :sheet/tick-tree
+                                            :sheet-id sheet-id
+                                            :tick-id tick-id
+                                            :inputs (merge blackboard sandbox-vars)
+                                            :options {:timeout-ms timeout-ms}}
+                                     parent-tick-id (assoc :parent-tick-id parent-tick-id))))
           tick-anomaly (:cognitect.anomalies/category tick-cmd-result)
           ;; If the command was rejected, short-circuit: deregister the pending
           ;; completion so the caller doesn't deref a promise that will never
@@ -649,6 +662,15 @@
                                         :sheet-id sheet-id
                                         :trace-id tick-id}))
           duration-ms (- (System/currentTimeMillis) start-time)
+          _ (when parent-tick-id
+              (streaming/emit! parent-tick-id
+                               (cond-> {:orc.stream/type :rlm-phase2-completed
+                                        :child-tick-id tick-id
+                                        :status (:status result)
+                                        :duration-ms duration-ms}
+                                 (:sheet-id context) (assoc :sheet-id (:sheet-id context))
+                                 (:node-id context) (assoc :node-id (:node-id context))
+                                 (:error result) (assoc :error (:error result)))))
           _ (println "[DEBUG Tree] Tick completed. Status:" (:status result))
           _ (when (:error result) (println "[DEBUG Tree] Error:" (:error result)))
           _ (println "[DEBUG Tree] Output keys:" (keys (:outputs result)))]

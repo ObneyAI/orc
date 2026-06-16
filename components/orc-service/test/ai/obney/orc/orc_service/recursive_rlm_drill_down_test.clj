@@ -234,6 +234,26 @@
           events [(mk-node-completed tick-id (random-uuid) :success)]]
       (is (nil? (drill/node-output-from-events events (random-uuid)))))))
 
+(deftest node-output-surfaces-raw-response-for-parse-failures
+  (testing "A parse-failure completion carrying :raw-response returns the
+            verbatim raw text alongside the (nil-filled) writes and error"
+    (let [tick-id #uuid "00000000-0000-0000-0000-000000000d03"
+          failed-leaf (random-uuid)
+          ok-leaf (random-uuid)
+          raw "# Briefing Report\n\nFree-form markdown with no field markers..."
+          events [(-> (mk-node-completed tick-id failed-leaf :failure
+                                         :writes {:report nil})
+                      (assoc :raw-response raw
+                             :error "LLM output unparseable for keys [:report]"))
+                  (mk-node-completed tick-id ok-leaf :success
+                                     :writes {:summary "fine"})]
+          result (drill/node-output-from-events events failed-leaf)]
+      (is (= raw (:raw-response result)) "full verbatim raw response, untruncated")
+      (is (= {:report nil} (:writes result)))
+      (is (= "LLM output unparseable for keys [:report]" (:error result)))
+      ;; success-node shape is unchanged
+      (is (= {:summary "fine"} (drill/node-output-from-events events ok-leaf))))))
+
 ;; =============================================================================
 ;; node-input-profile-from-events
 ;; =============================================================================

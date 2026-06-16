@@ -101,7 +101,10 @@
                                             :items [:vector :map]
                                             :flag :boolean
                                             :result :any
-                                            :score :int})
+                                            :score :int
+                                            :item :map
+                                            :item-result :any
+                                            :results [:vector :any]})
                            (dsl/sequence "main"
                              ;; LLM node
                              (dsl/llm "ai-step"
@@ -189,7 +192,7 @@
   (testing "building same workflow twice returns same sheet-id"
     (h/with-test-context [ctx]
       (let [workflow-def (dsl/workflow "idempotent-workflow"
-                           (dsl/blackboard {:input :string})
+                           (dsl/blackboard {:input :string :output :string})
                            (dsl/sequence "main"
                              (dsl/llm "step"
                                :model "google/gemini-2.5-flash"
@@ -205,7 +208,7 @@
   (testing "modifying workflow and rebuilding preserves sheet-id"
     (h/with-test-context [ctx]
       (let [workflow-v1 (dsl/workflow "evolving-workflow"
-                          (dsl/blackboard {:input :string})
+                          (dsl/blackboard {:input :string :output :string})
                           (dsl/sequence "main"
                             (dsl/llm "step-1"
                               :model "google/gemini-2.5-flash"
@@ -213,7 +216,8 @@
                               :reads [:input]
                               :writes [:output])))
             workflow-v2 (dsl/workflow "evolving-workflow"
-                          (dsl/blackboard {:input :string :extra :int})
+                          (dsl/blackboard {:input :string :output :string
+                                           :final :string :extra :int})
                           (dsl/sequence "main"
                             (dsl/llm "step-1"
                               :model "google/gemini-2.5-flash"
@@ -256,7 +260,7 @@
   (testing "export -> modify -> import preserves sheet identity"
     (h/with-test-context [ctx]
       (let [original-def (dsl/workflow "roundtrip-identity"
-                           (dsl/blackboard {:data :string})
+                           (dsl/blackboard {:data :string :result :any})
                            (dsl/sequence "main"
                              (dsl/llm "process"
                                :model "google/gemini-2.5-flash"
@@ -283,7 +287,7 @@
   (testing "same node names produce same node IDs across rebuilds"
     (h/with-test-context [ctx]
       (let [workflow-def (dsl/workflow "deterministic-nodes"
-                           (dsl/blackboard {:x :int})
+                           (dsl/blackboard {:x :int :y :int :z :int})
                            (dsl/sequence "main"
                              (dsl/llm "step-a"
                                :model "google/gemini-2.5-flash"
