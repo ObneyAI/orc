@@ -1,6 +1,6 @@
 {:paths ["src" "resources"]
  :deps {io.github.ObneyAI/DSCloj {:git/url "https://github.com/ObneyAI/DSCloj.git"
-                                  :git/sha "7948a27c367c8928d167750f0da285cec8c87215"}
+                                  :git/sha "41ef3e20b9bab6e0939ce5486aca38c9b329c18a"}
         com.brunobonacci/mulog {:mvn/version "0.9.0"}
         org.babashka/sci {:mvn/version "0.8.43"}}
  :aliases {:test {:extra-paths ["test"]
