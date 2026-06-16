@@ -625,20 +625,28 @@
      Vector of {:uri :similarity :label :description} sorted by similarity
 
    Requires concept embeddings to be generated first via ontology/embed-concepts-batch."
-  [ctx query-text & {:keys [scope ontology-id ontology-ids limit min-similarity model-id]
+  [ctx query-text & {:keys [scope ontology-id ontology-ids limit min-similarity model-id
+                            concept-embeddings]
                       :or {limit 10 min-similarity 0.5}}]
   (when (and ctx query-text)
     (let [;; Generate query embedding
           query-embedding (embedding/embed-text query-text
                                                  (when model-id {:model-id model-id}))
 
-          ;; Get stored concept embeddings (filtered by scope and/or ontology-id)
+          ;; Get stored concept embeddings (filtered by scope and/or ontology-id).
+          ;; PERF: a caller (e.g. hybrid-search-batch over a whole transcript) may pass
+          ;; pre-fetched `:concept-embeddings` — a value OR a `delay` — so the embeddings
+          ;; are materialized ONCE for the whole batch instead of re-fetched per query.
+          ;; `force` deref's a delay (memoized → fetched once) and passes a value through;
+          ;; when none is supplied we fetch as before (single-query path unchanged).
           filter-opts (cond-> {}
                         scope (assoc :scope scope)
                         ontology-id (assoc :ontology-id ontology-id)
                         ontology-ids (assoc :ontology-ids ontology-ids))
-          concept-embeddings (rm/get-all-concept-embeddings ctx
-                                                             (when (seq filter-opts) filter-opts))]
+          concept-embeddings (force
+                              (or concept-embeddings
+                                  (delay (rm/get-all-concept-embeddings
+                                          ctx (when (seq filter-opts) filter-opts)))))]
 
       (when (and query-embedding (seq concept-embeddings))
         ;; Search using embedding similarity
@@ -938,7 +946,21 @@
                           (colbert-search-concepts-batch ctx query-texts
                                                          :colbert-index-id colbert-index-id
                                                          :limit (* 2 limit)
-                                                         :weight (:colbert weights 1.0)))]
+                                                         :weight (:colbert weights 1.0)))
+        ;; PERF: materialize the concept embeddings ONCE for the whole batch (a `delay`,
+        ;; forced by the first per-query semantic-search-concepts call, then memoized) —
+        ;; instead of re-fetching all concept embeddings per query (was O(queries) reads of
+        ;; the whole embedding read-model). Behavior-identical: same embeddings, same fetch
+        ;; filter (scope/ontology-id/ontology-ids). nil when the embedding signal is off, so
+        ;; nothing is fetched then. Lazy ⇒ stubs of semantic-search-concepts never force it.
+        shared-concept-embeddings
+        (when embedding-enabled?
+          (delay (rm/get-all-concept-embeddings
+                  ctx (let [fo (cond-> {}
+                                 scope (assoc :scope scope)
+                                 ontology-id (assoc :ontology-id ontology-id)
+                                 ontology-ids (assoc :ontology-ids ontology-ids))]
+                         (when (seq fo) fo)))))]
     (mapv (fn [i query-text]
             (let [graph-results (when (and graph-enabled? (seq seed-uris))
                                   (->> (expand-concept-neighborhood seed-uris
@@ -951,7 +973,8 @@
                                                                  :ontology-id ontology-id
                                                                  :ontology-ids ontology-ids
                                                                  :limit (* 2 limit)
-                                                                 :min-similarity min-similarity))
+                                                                 :min-similarity min-similarity
+                                                                 :concept-embeddings shared-concept-embeddings))
                   colbert-results (when colbert-batches (nth colbert-batches i nil))]
               (fuse-and-enrich {:graph-results graph-results
                                 :embedding-results embedding-results

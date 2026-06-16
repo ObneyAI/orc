@@ -10,7 +10,10 @@
    search + the batched ColBERT search) are stubbed with canned per-query results
    so a mis-alignment would surface as a mismatch."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.ontology.core.retrieval :as retrieval]))
+            [ai.obney.orc.ontology.core.retrieval :as retrieval]
+            [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.orc.ontology.core.embedding :as embedding]
+            [ai.obney.orc.ontology.core.static-ontology :as static]))
 
 ;; Canned, per-query signal results. Distinct per query so any cross-wiring shows up.
 (def embedding-by-query
@@ -73,3 +76,36 @@
           (is (false? @colbert-called?) "no ColBERT batch call when its signal is off")
           (is (= (:results single) (:results (first batch)))
               "embedding-only fusion is identical batched vs single"))))))
+
+;; --- PERF: fetch concept embeddings ONCE per batch (not per query) -----------
+
+(deftest batch-fetches-concept-embeddings-once
+  (testing "hybrid-search-batch materializes the concept embeddings ONCE for the whole
+            batch (a shared delay), not once per query — the O(queries) read-model fetch
+            that dominated whole-transcript detection"
+    (let [fetches (atom 0)]
+      (with-redefs [;; count real fetches; the per-query path must NOT re-fetch
+                    rm/get-all-concept-embeddings
+                    (fn [& _] (swap! fetches inc) {"c:a" {:embedding [0.1] :ontology-id "o"}})
+                    ;; mimic the REAL per-query call: it force's the passed :concept-embeddings
+                    retrieval/semantic-search-concepts
+                    (fn [_ctx q & {:keys [concept-embeddings]}]
+                      (force concept-embeddings)        ; deref the shared delay (memoized)
+                      (get embedding-by-query q))
+                    retrieval/colbert-search-concepts-batch (fn [& _] nil)]
+        (retrieval/hybrid-search-batch {} {:query-texts ["q1" "q2"] :signals #{:embedding}})
+        (is (= 1 @fetches)
+            "concept embeddings fetched exactly once for a 2-query batch (was 1 per query)")))))
+
+(deftest semantic-search-uses-provided-concept-embeddings-skips-fetch
+  (testing "when :concept-embeddings is supplied (value or delay), semantic-search-concepts
+            uses it and does NOT hit the read-model fetch — the seam the batch relies on"
+    (with-redefs [rm/get-all-concept-embeddings
+                  (fn [& _] (throw (ex-info "must not fetch when embeddings are provided" {})))
+                  embedding/embed-text (fn [& _] [0.1 0.2 0.3])
+                  embedding/search-concepts-by-embedding
+                  (fn [_q ces & _] (mapv (fn [[uri _]] {:uri uri :similarity 0.9}) ces))
+                  static/get-concept-by-uri (fn [uri] {:label (str "L:" uri) :description "" :scope :x})]
+      (let [out (retrieval/semantic-search-concepts
+                 {} "q" :concept-embeddings {"c:a" {:embedding [0.1]}})]
+        (is (= ["c:a"] (map :uri out)) "used the provided embeddings; no fetch (no throw)")))))
