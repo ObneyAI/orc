@@ -272,9 +272,9 @@
             tokens."
     (let [docs csv-tools/csv-source-tool-docs
           required ["PURPOSE" "EXAMPLE" "RETURNS"]]
-      (is (= #{'peek-columns 'sample-rows 'profile-column}
+      (is (= #{'peek-columns 'sample-rows 'profile-column 'count-rows 'stream-all}
              (set (keys docs)))
-          "exactly the three CSV source tools are documented")
+          "all five CSV source tools are documented (V19 added count-rows + stream-all)")
       (doseq [[sym doc] docs]
         (testing (str sym " docstring has all required structural elements")
           (is (string? doc) (str sym " has a docstring"))
@@ -323,9 +323,9 @@
             write surface to emit events through."
     (let [path (write-tmp-csv! synthetic-csv)
           bindings (tools-for path)]
-      (is (= #{'peek-columns 'sample-rows 'profile-column}
+      (is (= #{'peek-columns 'sample-rows 'profile-column 'count-rows 'stream-all}
              (set (keys bindings)))
-          "exactly the three read-side tools are exposed")
+          "all five read-side tools are exposed (V19 added count-rows + stream-all)")
       ;; Calling every tool produces only data; no IO beyond reading the file.
       (is (map? ((get bindings 'peek-columns))))
       (is (map? ((get bindings 'sample-rows) 1)))
@@ -373,3 +373,81 @@
             pc ((get bindings 'peek-columns))]
         (is (some? (:error pc))
             "missing source surfaces as data, not a crash")))))
+
+;; =============================================================================
+;; V19 — Format-specialist ergonomics: count + stream-all + teaching error
+;; (consistent shape with the sql/excel/text specialists)
+;; =============================================================================
+
+(defn- big-csv
+  "A header + N data rows whose first column is the row index, so coverage can be
+   checked exactly."
+  [n]
+  (apply str "idx,payload\n"
+         (map (fn [i] (str i ",row-" i "\n")) (range n))))
+
+;; --- V19.1 — wrong-shape sampling arg is a TEACHING error --------------------
+
+(deftest sample-rows-wrong-shape-arg-is-a-teaching-error
+  (testing "A wrong-shape arg to sample-rows (neither an integer N nor an opts
+            map — e.g. a vector) yields a clear teaching error naming the correct
+            (sample-rows N) / (sample-rows {:limit N :offset K}) forms, NOT a raw
+            cast/arity exception."
+    (let [path (write-tmp-csv! synthetic-csv)
+          sample (tool path 'sample-rows)]
+      (is (thrown-with-msg? Exception #"(?i):limit|:offset|opts map"
+                            (sample [1 2 3]))
+          "a vector arg teaches the correct form")
+      (is (thrown-with-msg? Exception #"(?i)sample-rows"
+                            (sample [1 2 3]))
+          "the error names the tool")))
+  (testing "An extra positional arg (the Excel-style mistake) is a teaching error
+            here too — consistent across specialists."
+    (let [path (write-tmp-csv! synthetic-csv)
+          sample (tool path 'sample-rows)]
+      (is (thrown-with-msg? Exception #"(?i):limit|:offset|opts map|positional"
+                            (sample 10 {:offset 0}))
+          "a 2nd positional arg teaches putting :offset in the opts map"))))
+
+;; --- V19.2 — count affordance: total DATA-row count WITHOUT a full dump -------
+
+(deftest count-rows-returns-data-row-count
+  (testing "count-rows returns the CSV's total DATA-row count (header excluded)
+            without loading the file into context — on a 5000-row file it returns
+            5000, far above the sample cap, so a specialist knows how much
+            remains."
+    (let [path (write-tmp-csv! (big-csv 5000))
+          c ((tool path 'count-rows))]
+      (is (= 5000 (:row-count c)) "5000 data rows (header not counted)")
+      (is (false? (:capped? c)) "count is exact, not a capped estimate")))
+  (testing "header-only file -> 0 data rows; empty file -> 0"
+    (is (= 0 (:row-count ((tool (write-tmp-csv! "a,b\n") 'count-rows)))))
+    (is (= 0 (:row-count ((tool (write-tmp-csv! "") 'count-rows)))))))
+
+;; --- V19.3 — stream-all: iterate the FULL row set in bounded windows ----------
+
+(deftest stream-all-covers-every-row-exactly-once
+  (testing "stream-all pages the FULL data-row set in bounded windows, covering
+            every row exactly once while honoring the per-call hard cap. The
+            5000-row fixture's idx column is the row index, so the concatenation
+            of all windows must be exactly 0..4999."
+    (let [path (write-tmp-csv! (big-csv 5000))
+          windows ((tool path 'stream-all) {:window 100})
+          idxs (mapcat #(map (fn [r] (Long/parseLong (get r "idx"))) (:rows %))
+                       windows)]
+      (is (> (count windows) 1) "more than one window — file did not fit in one")
+      (is (every? #(<= (count (:rows %)) csv-tools/max-sample-rows) windows)
+          "every window respects the per-call hard cap")
+      (is (= (range 0 5000) idxs) "every row covered, in order, exactly once")
+      (is (= 5000 (count (set idxs))) "no duplicates"))))
+
+(deftest stream-all-clamps-window-to-hard-cap
+  (testing "A :window above the hard cap is clamped — stream-all never pulls more
+            than the per-call ceiling in one window, but still covers the file."
+    (let [path (write-tmp-csv! (big-csv 1200))
+          windows ((tool path 'stream-all) {:window 999999})
+          idxs (mapcat #(map (fn [r] (Long/parseLong (get r "idx"))) (:rows %))
+                       windows)]
+      (is (every? #(<= (count (:rows %)) csv-tools/max-sample-rows) windows)
+          "window clamped to the hard cap")
+      (is (= 1200 (count idxs)) "all 1200 rows still covered across windows"))))

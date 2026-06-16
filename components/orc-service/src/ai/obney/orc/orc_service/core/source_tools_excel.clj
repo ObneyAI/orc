@@ -122,30 +122,66 @@
                        (str "xl/" (str/replace tgt #"^/?xl/" ""))])))
                 (re-seq #"<Relationship\s+([^>]*?)/?>" rels)))))
 
+(defn- normalize-selector
+  "V19 — forgiving sheet selector. Accepts:
+     - a name STRING                          (\"Earnings\")
+     - a 0-based INDEX                        (1)
+     - a DESCRIPTOR MAP as list-sheets returns ({:name \"Earnings\" :index 0 ...})
+       — passing back the exact map a prior list-sheets call returned must
+       resolve, not throw (the V17 failure).
+   A descriptor map is reduced to its :name (preferred) or :index. Any other
+   shape (a vector, a set, nil) is left as-is so sheet-target-for raises a
+   teaching error naming the accepted forms."
+  [selector]
+  (cond
+    (map? selector) (let [{nm :name idx :index} selector]
+                      (cond (string? nm) nm
+                            (integer? idx) idx
+                            :else selector))   ; an empty/foreign map -> loud below
+    :else selector))
+
 (defn- sheet-target-for
-  "Resolve a sheet selector (name string, or 0-based index, or 1-based
-   sheetId) to its worksheet entry path. Throws a clear error listing the
-   available sheet names if the selector matches nothing."
+  "Resolve a sheet selector (name string, 0-based index, 1-based sheetId, OR a
+   descriptor MAP as list-sheets returns) to its worksheet entry path. Throws a
+   clear TEACHING error listing the available sheet names + the accepted selector
+   forms if the selector matches nothing."
   [^ZipFile zf selector]
   (let [sheets (workbook-sheets zf)
         rmap (rid->target zf)
+        sel (normalize-selector selector)
         by-name (cond
-                  (string? selector)
-                  (first (filter #(= selector (:name %)) sheets))
-                  (integer? selector)
-                  (get (vec sheets) selector)
+                  (string? sel)
+                  (first (filter #(= sel (:name %)) sheets))
+                  (integer? sel)
+                  (get (vec sheets) sel)
                   :else nil)
         chosen (or by-name
                    ;; fall back: treat a numeric string as an index
-                   (when (and (string? selector) (re-matches #"\d+" selector))
-                     (get (vec sheets) (Integer/parseInt selector))))]
+                   (when (and (string? sel) (re-matches #"\d+" sel))
+                     (get (vec sheets) (Integer/parseInt sel))))]
     (when-not chosen
       (throw (ex-info (str "Excel source tool: no sheet matching " (pr-str selector)
-                           ". Available sheets: " (mapv :name sheets))
+                           ". A sheet selector is a NAME string, a 0-based INDEX, or "
+                           "the descriptor MAP a list-sheets call returned "
+                           "(e.g. {:name \"Earnings\" :index 0}). Available sheets: "
+                           (mapv :name sheets))
                       {:selector selector :available (mapv :name sheets)})))
     (or (get rmap (:rid chosen))
         ;; positional fallback when rels lacks the r:id
         (str "xl/worksheets/sheet" (inc (.indexOf (vec sheets) chosen)) ".xml"))))
+
+(defn- selector-display-name
+  "The sheet NAME for a selector (for echoing in a result :sheet), resolving a
+   descriptor map / index against the workbook. Falls back to the raw selector
+   when it cannot be resolved to a name (it will already have thrown upstream if
+   truly unresolvable)."
+  [^ZipFile zf selector]
+  (let [sel (normalize-selector selector)
+        sheets (workbook-sheets zf)]
+    (cond
+      (string? sel) sel
+      (integer? sel) (:name (nth (vec sheets) sel nil))
+      :else (str selector))))
 
 ;; =============================================================================
 ;; sharedStrings (small, bounded by unique-string count — safe to load whole)
@@ -271,6 +307,26 @@
                           (persistent! rows))]
           {:rows dense :max-col width}))))))
 
+(defn- count-worksheet-rows
+  "V19 — stream a worksheet and COUNT its <row> elements WITHOUT accumulating any
+   cell data. The whole point: report a sheet's cardinality (so a specialist
+   knows how much remains / V20 can bound a run) without a full load — only a
+   counter is kept in memory, never the rows. Closes the stream when done."
+  [^ZipFile zf target]
+  (let [e (or (.getEntry zf target)
+              (throw (ex-info (str "Excel source tool: worksheet entry missing: " target)
+                              {:target target})))]
+    (with-open [is (.getInputStream zf e)]
+      (let [r (xml-reader is)
+            n (volatile! 0)]
+        (try
+          (while (.hasNext r)
+            (when (and (= (.next r) XMLStreamConstants/START_ELEMENT)
+                       (= "row" (.getLocalName r)))
+              (vswap! n inc)))
+          (finally (.close r)))
+        @n))))
+
 ;; =============================================================================
 ;; Header detection + type inference
 ;; =============================================================================
@@ -337,7 +393,7 @@
           header (nth rows hidx nil)
           data-rows (drop (inc hidx) rows)
           types (infer-col-types data-rows max-col)]
-      {:sheet (if (string? selector) selector (:name (nth (workbook-sheets zf) selector nil)))
+      {:sheet (selector-display-name zf selector)
        :header header
        :header-row-index hidx
        :column-count max-col
@@ -353,6 +409,18 @@
   ([path selector] (do-sample-rows path selector 20))
   ([path selector n-or-opts]
    (assert-xlsx! path)
+   ;; V19 — a wrong-shape limit/offset arg is a TEACHING error, not a confusing
+   ;; downstream cast. Accept an integer N or an opts map {:limit :offset};
+   ;; anything else names the correct call form.
+   (when-not (or (integer? n-or-opts) (map? n-or-opts))
+     (throw (ex-info (str "sample-rows takes (sample-rows path sheet) , "
+                          "(sample-rows path sheet N) , or "
+                          "(sample-rows path sheet {:limit N :offset K}). The 3rd "
+                          "arg must be an integer row count OR an options map with "
+                          ":limit / :offset — got " (pr-str n-or-opts) ". To page a "
+                          "sheet, put :offset inside the opts map (do NOT pass it as "
+                          "a 4th argument).")
+                     {:bad-arg n-or-opts})))
    (let [n (cond (integer? n-or-opts) n-or-opts
                  (map? n-or-opts) (or (:limit n-or-opts) (:n n-or-opts) 20)
                  :else 20)
@@ -362,12 +430,71 @@
              shared (shared-strings zf)
              req (if (integer? n) n 20)
              {:keys [rows max-col]} (stream-rows zf target shared req offset)]
-         {:sheet (if (string? selector) selector selector)
+         {:sheet (selector-display-name zf selector)
           :rows rows
           :row-count (count rows)
           :offset offset
           :column-count max-col
-          :capped? (>= (count rows) max-rows-hard-cap)})))))
+          :capped? (>= (count rows) max-rows-hard-cap)}))))
+  ;; V19 — a 4th positional arg (the V17 mistake) is caught with a teaching error
+  ;; instead of a raw arity exception. The fix: put :offset in the opts map.
+  ([path selector n-or-opts & extra]
+   (throw (ex-info (str "sample-rows takes at most 3 args: "
+                        "(sample-rows path sheet {:limit N :offset K}). You passed "
+                        (+ 3 (count extra)) " args (an extra " (pr-str (vec extra))
+                        "). Pass :limit and :offset INSIDE the opts map, not as "
+                        "separate positional args, e.g. "
+                        "(sample-rows path \"Earnings\" {:limit 100 :offset 0}).")
+                   {:path path :selector selector
+                    :n-or-opts n-or-opts :extra (vec extra)}))))
+
+(defn- do-count-rows
+  "V19 — total <row> count of a sheet WITHOUT loading it (count-worksheet-rows
+   keeps only a counter). The selector is forgiving (name / index / descriptor
+   map)."
+  [path selector]
+  (assert-xlsx! path)
+  (with-open [zf (ZipFile. (str path))]
+    (let [target (sheet-target-for zf selector)]
+      {:sheet (selector-display-name zf selector)
+       :row-count (count-worksheet-rows zf target)})))
+
+(defn- do-stream-all
+  "V19 — iterate a sheet's FULL row set in bounded windows. Each window is a
+   do-sample-rows-shaped map; consecutive windows use :offset so together they
+   cover every worksheet row exactly once. The per-call hard cap is preserved:
+   a :window above the cap is clamped to it (the iteration, not a single call, is
+   what achieves coverage — the substrate V20's full extraction applies a
+   transform over).
+
+   opts: {:window <int, default cap> :offset <int, start, default 0>
+          :max-windows <int, safety ceiling, default 100000>}
+   Returns a VECTOR of window maps. Stops when a window comes back short of the
+   window size (the sheet is exhausted)."
+  ([path selector] (do-stream-all path selector {}))
+  ([path selector opts]
+   (assert-xlsx! path)
+   (when-not (map? (or opts {}))
+     (throw (ex-info (str "stream-all opts must be a map {:window N :offset K}; got "
+                          (pr-str opts))
+                     {:bad-arg opts})))
+   (let [opts (or opts {})
+         req-win (or (:window opts) (:limit opts) max-rows-hard-cap)
+         win (min (max 1 (long (if (number? req-win) req-win max-rows-hard-cap)))
+                  max-rows-hard-cap)
+         start (long (or (:offset opts) 0))
+         max-windows (long (or (:max-windows opts) 100000))]
+     (loop [offset start
+            windows []
+            guard 0]
+       (if (>= guard max-windows)
+         windows
+         (let [w (do-sample-rows path selector {:limit win :offset offset})
+               n (:row-count w)]
+           (cond
+             (zero? n) windows
+             (< n win) (conj windows w)               ; last (short) window
+             :else (recur (+ offset n) (conj windows w) (inc guard)))))))))
 
 (defn- do-excel-dir-sheets [dir]
   (let [d (File. (str dir))]
@@ -457,6 +584,49 @@
    a vector of dense cell vectors (nil for absent cells). :capped? is true when
    the hard row cap was reached (there is more data than was sampled).")
 
+(def count-rows-doc
+  "PURPOSE — Report a sheet's TOTAL row count WITHOUT loading it, so you know how
+   much data remains before you page or stream. The sample tools cap at 500 rows;
+   this tells you the real size (e.g. a PSEO sheet with tens of thousands of
+   rows) so you can decide how many windows stream-all will need.
+
+   EXAMPLE
+     (count-rows \"/data/pseo_la.xlsx\" \"Earnings\")
+     ;; => {:sheet \"Earnings\" :row-count 41234}
+     ;; The sheet selector is forgiving — a name, a 0-based index, or the
+     ;; descriptor map list-sheets returned all work:
+     (count-rows \"/data/pseo_la.xlsx\" {:name \"Earnings\" :index 0})
+
+   RETURNS — {:sheet :row-count}. :row-count is the full <row> count of the
+   sheet (header rows included), computed by streaming and counting only — no
+   cell data is held in memory, so it is safe on a 119 MB sheet.")
+
+(def stream-all-doc
+  "PURPOSE — Iterate a sheet's ENTIRE row set in bounded windows, so you can
+   cover every row without ever loading the whole sheet into context. Builds on
+   the :offset paging sample-rows already has: each window is one bounded
+   sample-rows result, and consecutive windows step by :offset so together they
+   cover every row exactly once. This is the substrate a deterministic
+   full-extraction transform runs over.
+
+   EXAMPLE
+     (stream-all \"/data/pseo_la.xlsx\" \"Earnings\")            ; default window
+     (stream-all \"/data/pseo_la.xlsx\" \"Earnings\" {:window 500})
+     ;; => [{:sheet \"Earnings\" :rows [[...] ...] :row-count 500 :offset 0 ...}
+     ;;     {:sheet \"Earnings\" :rows [[...] ...] :row-count 500 :offset 500 ...}
+     ;;     ... last window is short when the sheet is exhausted]
+     ;; Concatenate the windows' :rows to get every row, in order:
+     (mapcat :rows (stream-all \"/data/pseo_la.xlsx\" \"Earnings\" {:window 500}))
+
+   WINDOW — :window is the rows-per-window; it is CLAMPED to the 500-row per-call
+   hard cap (the cap is never lifted — coverage comes from MANY windows, not one
+   big call). Start partway in with :offset; bound the loop with :max-windows.
+   The selector is forgiving (name / index / descriptor map).
+
+   RETURNS — a VECTOR of window maps, each shaped like sample-rows
+   ({:sheet :rows :row-count :offset :column-count :capped?}). Iteration stops at
+   the first short/empty window (the sheet is exhausted).")
+
 (def excel-dir-sheets-doc
   "PURPOSE — Enumerate a DIRECTORY of .xlsx workbooks (the O*NET shape: dozens
    of single-sheet files), listing each file and its sheet names, WITHOUT
@@ -503,8 +673,18 @@
                          sheet-columns-doc)
      'sample-rows      (with-doc (fn sample-rows
                                    ([path sheet] (do-sample-rows path sheet))
-                                   ([path sheet n] (do-sample-rows path sheet n)))
+                                   ([path sheet n] (do-sample-rows path sheet n))
+                                   ;; V19 — a 4th+ arg (the V17 mistake) is a
+                                   ;; teaching error, not a raw arity exception.
+                                   ([path sheet n & extra]
+                                    (apply do-sample-rows path sheet n extra)))
                          sample-rows-doc)
+     'count-rows       (with-doc (fn count-rows [path sheet] (do-count-rows path sheet))
+                         count-rows-doc)
+     'stream-all       (with-doc (fn stream-all
+                                   ([path sheet] (do-stream-all path sheet))
+                                   ([path sheet opts] (do-stream-all path sheet opts)))
+                         stream-all-doc)
      'excel-dir-sheets (with-doc (fn excel-dir-sheets [dir] (do-excel-dir-sheets dir))
                          excel-dir-sheets-doc)}))
 
@@ -515,4 +695,6 @@
   {'list-sheets      list-sheets-doc
    'sheet-columns    sheet-columns-doc
    'sample-rows      sample-rows-doc
+   'count-rows       count-rows-doc
+   'stream-all       stream-all-doc
    'excel-dir-sheets excel-dir-sheets-doc})

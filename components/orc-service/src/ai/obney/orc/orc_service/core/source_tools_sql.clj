@@ -142,6 +142,28 @@
          (contains? #{"SELECT" "WITH" "PRAGMA" "EXPLAIN"} lead))))
 
 ;; =============================================================================
+;; V19 — forgiving table selector (consistent with the Excel sheet selector)
+;; =============================================================================
+
+(defn- resolve-table-name
+  "V19 — accept a table selector as a NAME string OR a descriptor MAP carrying
+   :name (or :table) — so a builder can pass back a descriptor map (the shape the
+   Excel list-sheets tools return) without an arity/cast error. Any other shape
+   raises a TEACHING error naming the accepted forms and the example call.
+
+   `tool` is the tool name for the message (e.g. \"sample-rows\")."
+  [tool selector]
+  (let [nm (cond
+             (string? selector) selector
+             (map? selector) (let [n (or (:name selector) (:table selector))]
+                               (when (string? n) n)))]
+    (or nm
+        (throw (ex-info (str tool " takes a table-NAME string or the descriptor "
+                             "MAP a table listing returns (e.g. {:name \"HD2022\"}), "
+                             "then an optional opts map. Got: " (pr-str selector))
+                        {:selector selector})))))
+
+;; =============================================================================
 ;; Tool: list-tables
 ;; =============================================================================
 
@@ -174,11 +196,8 @@
 ;; =============================================================================
 
 (defn- make-table-schema-fn [db-path]
-  (fn table-schema [table-name]
-    (when-not (string? table-name)
-      (throw (ex-info (str "table-schema takes a table-name STRING, e.g. "
-                           "(table-schema \"HD2022\"). Got: " (pr-str (type table-name)))
-                      {:table-name table-name})))
+  (fn table-schema [table-selector]
+    (let [table-name (resolve-table-name "table-schema" table-selector)]
     (->> (run-bounded db-path
                       ;; PRAGMA table_info — the sql_ontology schema-read knowledge.
                       (str "PRAGMA table_info('" table-name "')")
@@ -188,7 +207,7 @@
                   :type (or (some-> (:type c) str) "")
                   :primary-key (pos? (long (or (:pk c) 0)))
                   :nullable (zero? (long (or (:notnull c) 0)))
-                  :default (:dflt_value c)})))))
+                  :default (:dflt_value c)}))))))
 
 (def table-schema-doc
   "PURPOSE — Read one table's COLUMNS + TYPES (plus primary-key and nullability)
@@ -212,11 +231,8 @@
 ;; =============================================================================
 
 (defn- make-foreign-keys-fn [db-path]
-  (fn foreign-keys [table-name]
-    (when-not (string? table-name)
-      (throw (ex-info (str "foreign-keys takes a table-name STRING, e.g. "
-                           "(foreign-keys \"employee\"). Got: " (pr-str (type table-name)))
-                      {:table-name table-name})))
+  (fn foreign-keys [table-selector]
+    (let [table-name (resolve-table-name "foreign-keys" table-selector)]
     (->> (run-bounded db-path
                       ;; PRAGMA foreign_key_list — the sql_ontology FK-read knowledge.
                       (str "PRAGMA foreign_key_list('" table-name "')")
@@ -227,7 +243,7 @@
                  {:from-table table-name
                   :from-column (str (:from fk))
                   :to-table (str (:table fk))
-                  :to-column (str (:to fk))})))))
+                  :to-column (str (:to fk))}))))))
 
 (def foreign-keys-doc
   "PURPOSE — List the DECLARED foreign-key edges out of one table. Each FK is a
@@ -271,24 +287,38 @@
 
 (defn- make-sample-rows-fn [db-path]
   (fn sample-rows
-    ([table-name] (sample-rows table-name {}))
-    ([table-name opts]
-     (when-not (string? table-name)
-       (throw (ex-info (str "sample-rows takes a table-name STRING and an optional "
-                            "opts map, e.g. (sample-rows \"HD2022\" {:limit 10}). Got: "
-                            (pr-str (type table-name)))
-                       {:table-name table-name})))
-     (let [n (clamp-limit (or opts {}))
-           off (clamp-offset (or opts {}))]
-       ;; Double-bound: an explicit LIMIT/OFFSET in the SQL *and* setMaxRows. The
-       ;; DB never streams more than `n` rows to us. An :offset skips that many
-       ;; rows first, so consecutive windows ({:offset 0} {:offset n} ...) page
-       ;; through the WHOLE table in bounded slices — comprehensive coverage
-       ;; without ever dumping the table (mirrors the CSV/Excel :offset path).
-       (run-bounded db-path
-                    (str "SELECT * FROM \"" table-name "\" LIMIT " n
-                         (when (pos? off) (str " OFFSET " off)))
-                    n)))))
+    ([table-selector] (sample-rows table-selector {}))
+    ([table-selector opts]
+     (let [table-name (resolve-table-name "sample-rows" table-selector)]
+       ;; V19 — a wrong-shape opts arg is a TEACHING error, not a confusing
+       ;; downstream failure. opts must be a map {:limit :offset} (or omitted).
+       (when-not (map? opts)
+         (throw (ex-info (str "sample-rows takes a table (name or descriptor map) and "
+                              "an optional opts map, e.g. "
+                              "(sample-rows \"HD2022\" {:limit 100 :offset 0}). The "
+                              "2nd arg must be that opts map with :limit / :offset — "
+                              "got " (pr-str opts) ". To page, put :offset INSIDE the "
+                              "opts map (do NOT pass it as a separate argument).")
+                         {:bad-arg opts})))
+       (let [n (clamp-limit opts)
+             off (clamp-offset opts)]
+         ;; Double-bound: an explicit LIMIT/OFFSET in the SQL *and* setMaxRows. The
+         ;; DB never streams more than `n` rows to us. An :offset skips that many
+         ;; rows first, so consecutive windows ({:offset 0} {:offset n} ...) page
+         ;; through the WHOLE table in bounded slices — comprehensive coverage
+         ;; without ever dumping the table (mirrors the CSV/Excel :offset path).
+         (run-bounded db-path
+                      (str "SELECT * FROM \"" table-name "\" LIMIT " n
+                           (when (pos? off) (str " OFFSET " off)))
+                      n))))
+    ;; V19 — an extra positional arg (the Excel-style 4th-arg mistake) is a
+    ;; teaching error instead of a raw arity exception. The fix: opts is ONE map.
+    ([table-selector opts & extra]
+     (throw (ex-info (str "sample-rows takes at most 2 args: (sample-rows table "
+                          "{:limit N :offset K}). You passed an extra "
+                          (pr-str (vec extra)) ". Put :limit and :offset INSIDE the "
+                          "single opts map, not as separate positional args.")
+                     {:table table-selector :opts opts :extra (vec extra)})))))
 
 (def sample-rows-doc
   "PURPOSE — Read a small, BOUNDED sample of rows from one table — never the
@@ -389,6 +419,99 @@
    modified.")
 
 ;; =============================================================================
+;; Tool: count-rows (V19)
+;; =============================================================================
+
+(defn- make-count-rows-fn [db-path]
+  (fn count-rows [table-selector]
+    (let [table-name (resolve-table-name "count-rows" table-selector)
+          ;; COUNT(*) over the table — the engine returns one row; no table data
+          ;; is materialized, so this is safe on a multi-million-row table.
+          rows (run-bounded db-path
+                            (str "SELECT COUNT(*) AS n FROM \"" table-name "\"")
+                            1)]
+      {:table table-name
+       :row-count (long (or (:n (first rows)) 0))})))
+
+(def count-rows-doc
+  "PURPOSE — Report a table's TOTAL row count WITHOUT loading it (a COUNT(*) the
+   engine answers from its own bookkeeping), so you know how much data remains
+   before you page or stream. The sample tools cap at 100 rows; this tells you
+   the real size so you can decide how many windows stream-all will need.
+
+   EXAMPLE
+     (count-rows \"C2022_A\")
+     ;; => {:table \"C2022_A\" :row-count 234517}
+     ;; The table selector is forgiving — a name OR the descriptor map a table
+     ;; listing returns both work:
+     (count-rows {:name \"C2022_A\"})
+
+   RETURNS — {:table :row-count}. :row-count is the table's full cardinality; no
+   row data is read into memory.")
+
+;; =============================================================================
+;; Tool: stream-all (V19)
+;; =============================================================================
+
+(defn- make-stream-all-fn [db-path sample-rows-fn]
+  (fn stream-all
+    ([table-selector] (stream-all table-selector {}))
+    ([table-selector opts]
+     (let [table-name (resolve-table-name "stream-all" table-selector)
+           opts (or opts {})]
+       (when-not (map? opts)
+         (throw (ex-info (str "stream-all opts must be a map {:window N :offset K}; "
+                              "got " (pr-str opts))
+                         {:bad-arg opts})))
+       (let [req-win (or (:window opts) (:limit opts) hard-max-rows)
+             win (min (max 1 (long (if (number? req-win) req-win hard-max-rows)))
+                      hard-max-rows)
+             start (long (or (:offset opts) 0))
+             max-windows (long (or (:max-windows opts) 1000000))]
+         ;; Build windows by stepping :offset; each window is one bounded
+         ;; sample-rows call (the per-call cap is preserved — coverage comes from
+         ;; iteration). Stop at the first short/empty window (table exhausted).
+         (loop [offset start
+                windows []
+                guard 0]
+           (if (>= guard max-windows)
+             windows
+             (let [rows (sample-rows-fn table-name {:limit win :offset offset})
+                   n (count rows)
+                   w {:table table-name :rows rows :row-count n :offset offset}]
+               (cond
+                 (zero? n) windows
+                 (< n win) (conj windows w)
+                 :else (recur (+ offset n) (conj windows w) (inc guard)))))))))))
+
+(def stream-all-doc
+  "PURPOSE — Iterate a table's ENTIRE row set in bounded windows, so you can
+   cover every row without ever dumping the table. Builds on the :offset paging
+   sample-rows already has: each window is one bounded sample-rows result, and
+   consecutive windows step by :offset so together they cover every row exactly
+   once. This is the substrate a deterministic full-extraction transform runs
+   over.
+
+   EXAMPLE
+     (stream-all \"C2022_A\")                       ; default window
+     (stream-all \"C2022_A\" {:window 100})
+     ;; => [{:table \"C2022_A\" :rows [{...} ...] :row-count 100 :offset 0}
+     ;;     {:table \"C2022_A\" :rows [{...} ...] :row-count 100 :offset 100}
+     ;;     ... last window is short when the table is exhausted]
+     ;; Concatenate the windows' :rows to get every row, in order:
+     (mapcat :rows (stream-all \"C2022_A\" {:window 100}))
+
+   WINDOW — :window is rows-per-window, CLAMPED to the 100-row per-call hard cap
+   (the cap is never lifted — coverage comes from MANY windows, not one big
+   call). Start partway with :offset; bound the loop with :max-windows. The
+   selector is forgiving (name or descriptor map). For a stable order on a table
+   with no rowid, prefer the `query` tool's :offset paging with an explicit
+   ORDER BY.
+
+   RETURNS — a VECTOR of window maps {:table :rows :row-count :offset}. Iteration
+   stops at the first short/empty window (the table is exhausted).")
+
+;; =============================================================================
 ;; Public binding builder
 ;; =============================================================================
 
@@ -407,11 +530,14 @@
    introspection `(meta sample-rows)` returns the doc the model reads."
   [{:keys [db-path]}]
   (when (and db-path (string? db-path) (seq db-path))
-    (let [with-doc (fn [f doc] (with-meta f {:doc doc}))]
+    (let [with-doc (fn [f doc] (with-meta f {:doc doc}))
+          sample-rows-fn (make-sample-rows-fn db-path)]
       {'list-tables  (with-doc (make-list-tables-fn db-path) list-tables-doc)
        'table-schema (with-doc (make-table-schema-fn db-path) table-schema-doc)
        'foreign-keys (with-doc (make-foreign-keys-fn db-path) foreign-keys-doc)
-       'sample-rows  (with-doc (make-sample-rows-fn db-path) sample-rows-doc)
+       'sample-rows  (with-doc sample-rows-fn sample-rows-doc)
+       'count-rows   (with-doc (make-count-rows-fn db-path) count-rows-doc)
+       'stream-all   (with-doc (make-stream-all-fn db-path sample-rows-fn) stream-all-doc)
        'query        (with-doc (make-query-fn db-path) query-doc)})))
 
 (def sql-source-tool-docs
@@ -424,4 +550,6 @@
    'table-schema table-schema-doc
    'foreign-keys foreign-keys-doc
    'sample-rows  sample-rows-doc
+   'count-rows   count-rows-doc
+   'stream-all   stream-all-doc
    'query        query-doc})

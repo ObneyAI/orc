@@ -112,13 +112,17 @@
                (reset! *last-lines-read* (count taken))
                {:lines lines :more? more?})
              ;; Offset: keep the header (first physical line), then drop `skip`
-             ;; data lines and take the next n (plus 1 to detect :more?).
-             (let [ls (line-seq rdr)
+             ;; data lines and take the next (n-1) DATA lines — so the returned
+             ;; :lines vector totals `n` lines (header + (n-1) data), SYMMETRIC
+             ;; with the zero-offset branch above (which returns n total lines).
+             ;; Take one extra to detect :more? without realizing the rest.
+             (let [data-n (max 0 (dec n))
+                   ls (line-seq rdr)
                    header (first ls)
                    after (drop (inc skip) ls)
-                   taken (vec (take (inc n) after))
-                   more? (> (count taken) n)
-                   data (vec (take n taken))
+                   taken (vec (take (inc data-n) after))
+                   more? (> (count taken) data-n)
+                   data (vec (take data-n taken))
                    lines (vec (cons header data))]
                (reset! *last-lines-read* (inc (count taken)))
                {:lines lines :more? more?}))))
@@ -127,6 +131,26 @@
      (catch Exception e
        (reset! *last-lines-read* 0)
        {:error (str "Failed to read CSV source " path ": " (.getMessage e))}))))
+
+(defn- count-data-lines
+  "V19 — stream the CSV and COUNT its data lines (every physical line after the
+   header) WITHOUT accumulating them — only a counter is kept, so this is safe on
+   a multi-GB file. Returns {:row-count n} or {:error ...} for a missing file.
+   (A header-only file -> 0; an empty file -> 0.)
+
+   NOTE: counts PHYSICAL lines, mirroring the line-oriented sample-rows reader —
+   a quoted field containing a literal newline would be counted as multiple
+   lines, the same assumption sample-rows already makes."
+  [path]
+  (try
+    (if (and path (.exists (io/file path)))
+      (with-open [rdr (io/reader path)]
+        (let [physical (reduce (fn [acc _] (inc acc)) 0 (line-seq rdr))]
+          {:row-count (max 0 (dec physical))}))   ; minus the header line
+      {:error (str "CSV source not found or unreadable: " path) :row-count 0})
+    (catch Exception e
+      {:error (str "Failed to read CSV source " path ": " (.getMessage e))
+       :row-count 0})))
 
 ;; =============================================================================
 ;; Minimal RFC4180-ish single-line parser
@@ -335,6 +359,15 @@
   (fn sample-rows
     ([] (sample-rows 10))
     ([n-or-opts]
+     ;; V19 — a wrong-shape arg is a TEACHING error, not a confusing cast. Accept
+     ;; an integer N or an opts map {:limit :offset}; anything else names the form.
+     (when-not (or (integer? n-or-opts) (map? n-or-opts))
+       (throw (ex-info (str "sample-rows takes (sample-rows) , (sample-rows N) , or "
+                            "(sample-rows {:limit N :offset K}). The arg must be an "
+                            "integer row count OR an options map with :limit / "
+                            ":offset — got " (pr-str n-or-opts) ". To page, put "
+                            ":offset INSIDE the opts map.")
+                       {:bad-arg n-or-opts})))
      (let [opts? (map? n-or-opts)
            n (cond (integer? n-or-opts) n-or-opts
                    opts? (or (:limit n-or-opts) (:n n-or-opts) 10)
@@ -357,7 +390,15 @@
             :offset offset
             ;; capped? when more data rows existed beyond what we returned
             ;; (whether because of the hard cap or just a bigger file).
-            :capped? (boolean more?)}))))))
+            :capped? (boolean more?)}))))
+    ;; V19 — an extra positional arg (the Excel-style 4th-arg mistake) is a
+    ;; teaching error instead of a raw arity exception. The fix: opts is ONE map.
+    ([n-or-opts & extra]
+     (throw (ex-info (str "sample-rows takes at most 1 arg: an integer N or an "
+                          "opts map {:limit N :offset K}. You passed an extra "
+                          (pr-str (vec extra)) ". Put :limit and :offset INSIDE the "
+                          "single opts map, not as separate positional args.")
+                     {:n-or-opts n-or-opts :extra (vec extra)})))))
 
 (def sample-rows-doc
   "PURPOSE — Read the first N data rows of a CSV as maps keyed by the header,
@@ -462,6 +503,92 @@
    file.")
 
 ;; =============================================================================
+;; Tool: count-rows (V19)
+;; =============================================================================
+
+(defn- make-count-rows-fn
+  [{:keys [csv-path]}]
+  (fn count-rows []
+    (let [{:keys [row-count error]} (count-data-lines csv-path)]
+      (cond-> {:row-count row-count :capped? false}
+        error (assoc :error error)))))
+
+(def count-rows-doc
+  "PURPOSE — Report the CSV's total DATA-row count (the header line is NOT
+   counted) WITHOUT loading the file into context, so you know how much data
+   remains before you page or stream. The sample tools cap at 100 rows; this
+   tells you the real size so you can decide how many windows stream-all needs.
+
+   EXAMPLE
+     (count-rows)
+     ;; => {:row-count 6097 :capped? false}
+
+   RETURNS — {:row-count :capped?}. :row-count is the exact number of data rows
+   (header excluded), computed by streaming and counting only — no row data is
+   held in memory, so it is safe on a multi-GB file. :capped? is always false
+   (the count is exact). A missing file adds an :error marker with :row-count 0.")
+
+;; =============================================================================
+;; Tool: stream-all (V19)
+;; =============================================================================
+
+(defn- make-stream-all-fn
+  [cfg]
+  (let [sample (make-sample-rows-fn cfg)]
+    (fn stream-all
+      ([] (stream-all {}))
+      ([opts]
+       (let [opts (or opts {})]
+         (when-not (map? opts)
+           (throw (ex-info (str "stream-all opts must be a map {:window N :offset K}; "
+                                "got " (pr-str opts))
+                           {:bad-arg opts})))
+         (let [req-win (or (:window opts) (:limit opts) max-sample-rows)
+               win (min (max 1 (long (if (number? req-win) req-win max-sample-rows)))
+                        max-sample-rows)
+               start (long (or (:offset opts) 0))
+               max-windows (long (or (:max-windows opts) 1000000))]
+           ;; Each window is one bounded sample-rows call; consecutive windows
+           ;; step by :offset so together they cover every data row exactly once.
+           ;; The per-call hard cap is preserved (coverage is from iteration).
+           (loop [offset start
+                  windows []
+                  guard 0]
+             (if (>= guard max-windows)
+               windows
+               (let [w (sample {:limit win :offset offset})
+                     n (:returned w)]
+                 (cond
+                   (zero? n) windows
+                   (< n win) (conj windows w)            ; last (short) window
+                   :else (recur (+ offset n) (conj windows w) (inc guard))))))))))))
+
+(def stream-all-doc
+  "PURPOSE — Iterate the CSV's ENTIRE data-row set in bounded windows, so you can
+   cover every row without ever loading the whole file. Builds on the :offset
+   paging sample-rows already has: each window is one bounded sample-rows result,
+   and consecutive windows step by :offset so together they cover every data row
+   exactly once. This is the substrate a deterministic full-extraction transform
+   runs over.
+
+   EXAMPLE
+     (stream-all)                       ; default window
+     (stream-all {:window 100})
+     ;; => [{:rows [{header->value} ...] :returned 100 :offset 0 :capped? true}
+     ;;     {:rows [{header->value} ...] :returned 100 :offset 100 :capped? true}
+     ;;     ... last window is short when the file is exhausted]
+     ;; Concatenate the windows' :rows to get every row, in order:
+     (mapcat :rows (stream-all {:window 100}))
+
+   WINDOW — :window is rows-per-window, CLAMPED to the 100-row per-call hard cap
+   (the cap is never lifted — coverage comes from MANY windows, not one big
+   call). Start partway with :offset; bound the loop with :max-windows.
+
+   RETURNS — a VECTOR of window maps, each shaped like sample-rows
+   ({:rows :returned :requested :offset :capped?}). Iteration stops at the first
+   short/empty window (the file is exhausted).")
+
+;; =============================================================================
 ;; Public binding builder + docs map
 ;; =============================================================================
 
@@ -472,7 +599,9 @@
    :csv-path). Same role as S19's ontology-tool-docs."
   {'peek-columns   peek-columns-doc
    'sample-rows    sample-rows-doc
-   'profile-column profile-column-doc})
+   'profile-column profile-column-doc
+   'count-rows     count-rows-doc
+   'stream-all     stream-all-doc})
 
 (defn csv-source-tools
   "Return the SCI {symbol -> fn} map for the three CSV source-access tools,
@@ -493,4 +622,6 @@
     (let [with-doc (fn [f doc] (with-meta f {:doc doc}))]
       {'peek-columns   (with-doc (make-peek-columns-fn cfg) peek-columns-doc)
        'sample-rows    (with-doc (make-sample-rows-fn cfg) sample-rows-doc)
-       'profile-column (with-doc (make-profile-column-fn cfg) profile-column-doc)})))
+       'profile-column (with-doc (make-profile-column-fn cfg) profile-column-doc)
+       'count-rows     (with-doc (make-count-rows-fn cfg) count-rows-doc)
+       'stream-all     (with-doc (make-stream-all-fn cfg) stream-all-doc)})))

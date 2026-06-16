@@ -264,9 +264,10 @@
   (testing "every tool doc has PURPOSE, EXAMPLE, RETURNS with a concrete call form"
     (let [docs sql/sql-source-tool-docs
           required ["PURPOSE" "EXAMPLE" "RETURNS"]]
-      (is (= #{'list-tables 'table-schema 'foreign-keys 'sample-rows 'query}
+      (is (= #{'list-tables 'table-schema 'foreign-keys 'sample-rows 'count-rows
+               'stream-all 'query}
              (set (keys docs)))
-          "all five tools are documented")
+          "all seven tools are documented (V19 added count-rows + stream-all)")
       (doseq [[sym doc] docs]
         (testing (str sym " has all required structural elements")
           (is (string? doc))
@@ -309,3 +310,78 @@
             expose unscoped source tools"
     (is (nil? (sql/sql-source-tools {})))
     (is (nil? (sql/sql-source-tools {:db-path nil})))))
+
+;; =============================================================================
+;; V19 — Format-specialist ergonomics + count + stream-all (consistent shape
+;; with the csv/excel/text specialists)
+;; =============================================================================
+
+;; --- V19.1 — a table DESCRIPTOR MAP resolves where a name is expected ---------
+;; list-tables returns name strings, but a builder that builds its own descriptor
+;; (or a future structured list-tables) may pass back a {:name "..."} map — and
+;; a builder fluent in Excel (where list-sheets returns maps) will reach for the
+;; same shape. The selector must be forgiving and resolve it, not throw.
+
+(deftest table-selector-accepts-a-descriptor-map
+  (testing "Passing a {:name <table>} descriptor map where a table name is
+            expected resolves — table-schema / sample-rows / foreign-keys all
+            accept it (consistent with the Excel sheet-descriptor ergonomics)."
+    (let [cols (call 'table-schema {:name "employee"})]
+      (is (= #{"id" "name" "salary" "dept_id"} (set (map :name cols)))
+          "table-schema resolved the descriptor map"))
+    (let [rows (call 'sample-rows {:name "employee"})]
+      (is (= 3 (count rows)) "sample-rows resolved the descriptor map"))
+    (let [fks (call 'foreign-keys {:name "employee"})]
+      (is (= 1 (count fks)) "foreign-keys resolved the descriptor map"))))
+
+;; --- V19.2 — wrong-shape sampling arg is a TEACHING error, not an arity crash -
+
+(deftest sample-rows-wrong-shape-opts-is-a-teaching-error
+  (testing "An opts arg that is neither a map nor absent (e.g. a bare integer
+            passed where the opts map goes, or a vector) yields a clear teaching
+            error naming the (sample-rows table {:limit N :offset K}) form."
+    (is (thrown-with-msg? Exception #"(?i):limit|:offset|opts map"
+                          (call 'sample-rows "employee" [1 2 3]))
+        "a vector opts arg teaches the correct form")
+    (is (thrown-with-msg? Exception #"(?i)sample-rows"
+                          (call 'sample-rows "employee" [1 2 3]))
+        "the error names the tool"))
+  (testing "An extra positional arg (the Excel-style 4th-arg mistake) is a
+            teaching error here too — consistent across specialists."
+    (is (thrown-with-msg? Exception #"(?i):limit|:offset|opts map|positional"
+                          (call 'sample-rows "employee" 10 {:offset 0}))
+        "a 4th positional arg teaches putting :offset in the opts map")))
+
+;; --- V19.3 — count affordance: row count WITHOUT loading the table -----------
+
+(deftest count-rows-returns-table-cardinality
+  (testing "count-rows returns a table's total row count without loading it — on
+            the 5000-row big_table it returns 5000 (far above the 100-row sample
+            cap), so a specialist knows how much remains."
+    (let [c (call 'count-rows "big_table")]
+      (is (= 5000 (:row-count c)) "full cardinality, not the sample cap")
+      (is (= "big_table" (:table c))))
+    (testing "count-rows resolves a descriptor map too"
+      (is (= 3 (:row-count (call 'count-rows {:name "employee"})))))))
+
+;; --- V19.4 — stream-all: page the FULL table in bounded windows --------------
+
+(deftest stream-all-covers-every-row-exactly-once
+  (testing "stream-all iterates the FULL table in bounded windows, covering every
+            row exactly once while honoring the per-call hard cap. big_table has
+            pk 1..5000; the union of all windows' :id must be exactly that set."
+    (let [windows (call 'stream-all "big_table" {:window 100})
+          ids (mapcat #(map (comp int :id) (:rows %)) windows)]
+      (is (> (count windows) 1) "more than one window — table did not fit in one")
+      (is (every? #(<= (count (:rows %)) 100) windows)
+          "every window respects the per-call cap")
+      (is (= (range 1 5001) ids) "every row covered, in order, exactly once")
+      (is (= 5000 (count (set ids))) "no duplicates"))))
+
+(deftest stream-all-clamps-window-to-hard-cap
+  (testing "A :window above the hard cap is clamped — stream-all never pulls more
+            than the per-call ceiling in one window, but still covers the table."
+    (let [windows (call 'stream-all "big_table" {:window 999999})
+          ids (mapcat #(map (comp int :id) (:rows %)) windows)]
+      (is (every? #(<= (count (:rows %)) 100) windows) "window clamped to cap")
+      (is (= 5000 (count ids)) "all rows still covered across windows"))))

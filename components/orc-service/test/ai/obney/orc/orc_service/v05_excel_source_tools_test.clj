@@ -353,9 +353,10 @@
             concrete worked call form (no <placeholder> tokens)."
     (let [docs ex/excel-source-tool-docs
           required ["PURPOSE" "EXAMPLE" "RETURNS"]]
-      (is (= #{'list-sheets 'sheet-columns 'sample-rows 'excel-dir-sheets}
+      (is (= #{'list-sheets 'sheet-columns 'sample-rows 'count-rows 'stream-all
+               'excel-dir-sheets}
              (set (keys docs)))
-          "all four tools have docs")
+          "all six tools have docs (V19 added count-rows + stream-all)")
       (doseq [[sym doc] docs]
         (testing (str sym " docstring structure")
           (is (string? doc))
@@ -412,3 +413,108 @@
           tools (ex/excel-source-tools)]
       (is (thrown-with-msg? Exception #"(?i)People|Cities|no sheet"
                             ((get tools 'sheet-columns) (.getAbsolutePath f) "Nonexistent"))))))
+
+;; =============================================================================
+;; V19 — Format-specialist ergonomics + count + stream-all
+;; =============================================================================
+;; Surfaced by V17: the Excel builder passed a sheet-MAP (the descriptor that a
+;; prior list-sheets call returned) where a name/index was expected, then passed
+;; a 4th positional arg to sample-rows — repeated ARITY exceptions burned ~4
+;; iterations and PSEO yielded :no-output. V19 makes the selector forgiving (a
+;; descriptor map resolves), makes a wrong-shape arg a teaching error not an
+;; arity crash, and adds a count affordance + a stream-all affordance.
+
+;; --- V19.1 — a descriptor MAP (as list-sheets returns) resolves, no throw ----
+
+(deftest sheet-selector-accepts-a-list-sheets-descriptor-map
+  (testing "Passing back the exact descriptor map list-sheets returned (the V17
+            failure) resolves to the sheet — it does NOT throw an arity/cast
+            error."
+    (let [f (make-simple-xlsx! (temp-file ".xlsx"))
+          tools (ex/excel-source-tools)
+          descriptors ((get tools 'list-sheets) (.getAbsolutePath f))
+          people-desc (first descriptors)]      ; {:name "People" :index 0 :sheet-id "1"}
+      (is (map? people-desc) "list-sheets returns descriptor maps")
+      ;; sheet-columns with the MAP, not the name — this is what V17 threw on.
+      (let [r ((get tools 'sheet-columns) (.getAbsolutePath f) people-desc)]
+        (is (= ["name" "age" "city"] (:header r))
+            "the descriptor map resolved to the People sheet"))
+      ;; sample-rows with the MAP too.
+      (let [s ((get tools 'sample-rows) (.getAbsolutePath f) people-desc 2)]
+        (is (= 2 (:row-count s)) "sample-rows resolved the descriptor map"))
+      ;; A map carrying only :index also resolves.
+      (let [r ((get tools 'sheet-columns) (.getAbsolutePath f) {:index 0})]
+        (is (= ["name" "age" "city"] (:header r))
+            "a map with only :index resolves")))))
+
+;; --- V19.2 — wrong-shape / extra-arg sampling call is a TEACHING error --------
+
+(deftest sample-rows-wrong-shape-arg-is-a-teaching-error
+  (testing "An extra positional arg (the V17 mistake — a 4th arg to sample-rows)
+            yields a CLEAR teaching error naming the correct call form, NOT a raw
+            arity exception."
+    (let [f (make-simple-xlsx! (temp-file ".xlsx"))
+          tools (ex/excel-source-tools)
+          sample (get tools 'sample-rows)]
+      ;; The V17 call: (sample-rows path "Earnings" 100 {:offset 0}) — a 4th arg.
+      (is (thrown-with-msg? Exception #"(?i)sample-rows"
+                            (sample (.getAbsolutePath f) "People" 100 {:offset 0}))
+          "the error names the tool")
+      (is (thrown-with-msg? Exception #"(?i):limit|:offset|opts map|positional"
+                            (sample (.getAbsolutePath f) "People" 100 {:offset 0}))
+          "the error states the correct call form")
+      ;; A wrong-shape selector arg (a vector — not name/index/map) also teaches.
+      (is (thrown-with-msg? Exception #"(?i)name|index|sheet"
+                            (sample (.getAbsolutePath f) ["not" "a" "sheet"]))
+          "a wrong-shape selector arg teaches the accepted forms"))))
+
+;; --- V19.3 — count affordance: cardinality WITHOUT a full load ----------------
+
+(deftest count-rows-returns-sheet-cardinality-without-loading
+  (testing "count-rows reports a sheet's total row count without loading the
+            sheet — so a specialist knows how much remains. On the 5000-row
+            over-cap fixture it returns 5000 (far above the 500-row sample cap)."
+    (let [f (make-overcap-xlsx! (temp-file ".xlsx") 5000)
+          tools (ex/excel-source-tools)
+          c ((get tools 'count-rows) (.getAbsolutePath f) "Big")]
+      (is (= 5000 (:row-count c)) "full cardinality, not the sample cap")
+      (is (= "Big" (:sheet c))))
+    (testing "count-rows resolves a descriptor map selector too"
+      (let [f (make-simple-xlsx! (temp-file ".xlsx"))
+            tools (ex/excel-source-tools)
+            desc (first ((get tools 'list-sheets) (.getAbsolutePath f)))
+            c ((get tools 'count-rows) (.getAbsolutePath f) desc)]
+        (is (= 3 (:row-count c)) "People sheet has 3 rows (header + 2 data)")))))
+
+;; --- V19.4 — stream-all: iterate the FULL set in bounded windows --------------
+
+(deftest stream-all-covers-every-row-exactly-once
+  (testing "stream-all iterates the FULL row set in bounded windows, covering
+            every row exactly once while honoring the per-call ceiling. The
+            5000-row fixture's col0 equals the row index, so the concatenation of
+            all windows must be exactly 0..4999, each once."
+    (let [f (make-overcap-xlsx! (temp-file ".xlsx") 5000)
+          tools (ex/excel-source-tools)
+          stream (get tools 'stream-all)
+          ;; window-size below the hard cap so multiple windows are required.
+          windows (stream (.getAbsolutePath f) "Big" {:window 200})
+          rows (mapcat :rows windows)
+          col0s (mapv #(long (Double/parseDouble (str (first %)))) rows)]
+      (is (> (count windows) 1) "more than one window — the set did not fit in one")
+      (is (every? #(<= (count (:rows %)) 500) windows)
+          "every window respects the per-call hard cap")
+      (is (= 5000 (count col0s)) "every row covered")
+      (is (= (range 0 5000) col0s)
+          "rows are covered in order, exactly once, no gaps or dupes"))))
+
+(deftest stream-all-respects-the-hard-cap-as-window-ceiling
+  (testing "A :window above the hard cap is clamped to the cap — stream-all never
+            pulls more than the per-call ceiling in a single window, but still
+            covers the whole sheet across windows."
+    (let [f (make-overcap-xlsx! (temp-file ".xlsx") 1200)
+          tools (ex/excel-source-tools)
+          windows ((get tools 'stream-all) (.getAbsolutePath f) "Big" {:window 100000})
+          rows (mapcat :rows windows)]
+      (is (every? #(<= (count (:rows %)) 500) windows)
+          "window clamped to the 500-row hard cap")
+      (is (= 1200 (count rows)) "all 1200 rows still covered across windows"))))
