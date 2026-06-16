@@ -224,19 +224,33 @@
 
 (defmethod format-exploration-guidance :excel
   [source]
-  (str
-   "SOURCE FORMAT: Excel (.xlsx). You have these source-access tools (stream, never "
-   "load):\n"
-   "  (list-sheets \"" (:path source) "\")            — every worksheet, in order.\n"
-   "  (sheet-columns \"" (:path source) "\" <sheet>)  — header + per-column types for one "
-   "sheet. The header is NOT necessarily row 1 (Census/PSEO sheets put title/note "
-   "rows first) — this detects the header row and returns its index + the raw "
-   "scanned rows so you can override.\n"
-   "  (sample-rows \"" (:path source) "\" <sheet> N)  — a bounded sample of rows from one "
-   "sheet (a 119 MB sheet is sampled in ms, never loaded).\n"
-   "Pass the file path as the first argument to every Excel tool; <sheet> is a name "
-   "string or a 0-based index. Explore by SAMPLING — never load a whole sheet.\n\n"
-   cross-source-linking-rule))
+  (let [path (:path source)
+        dir? (let [f (java.io.File. (str path))] (.isDirectory f))]
+    (str
+     "SOURCE FORMAT: Excel (.xlsx). You have these source-access tools (stream, never "
+     "load):\n"
+     (when dir?
+       (str "  (excel-dir-sheets \"" path "\")        — FIRST CALL when the source is a "
+            "DIRECTORY of .xlsx workbooks (this one is). Lists every workbook file, its "
+            "absolute :path, and its :sheets — WITHOUT loading any data. Use it to find "
+            "which workbook holds the entities you care about, then pass that file's "
+            ":path to the per-workbook tools below.\n"))
+     "  (list-sheets \"<workbook.xlsx>\")            — every worksheet of one workbook, in order.\n"
+     "  (sheet-columns \"<workbook.xlsx>\" <sheet>)  — header + per-column types for one "
+     "sheet. The header is NOT necessarily row 1 (Census/PSEO sheets put title/note "
+     "rows first) — this detects the header row and returns its index + the raw "
+     "scanned rows so you can override.\n"
+     "  (sample-rows \"<workbook.xlsx>\" <sheet> N)  — a bounded sample of rows from one "
+     "sheet (a 119 MB sheet is sampled in ms, never loaded). Pass {:limit N :offset M} "
+     "as the last arg to PAGE deeper into a sheet and cover it comprehensively.\n"
+     (if dir?
+       (str "The source is a FOLDER — start with (excel-dir-sheets \"" path "\") to "
+            "discover the workbooks, then pass a specific workbook's :path (from that "
+            "result) as the first argument to list-sheets / sheet-columns / sample-rows.\n")
+       (str "Pass the file path \"" path "\" as the first argument to every Excel tool; "
+            "<sheet> is a name string or a 0-based index.\n"))
+     "Explore by SAMPLING — never load a whole sheet.\n\n"
+     cross-source-linking-rule)))
 
 (defmethod format-exploration-guidance :default
   [_]

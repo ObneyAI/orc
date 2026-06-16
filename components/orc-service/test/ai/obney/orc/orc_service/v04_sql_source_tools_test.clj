@@ -29,6 +29,7 @@
      adversarial twin proves the check is not trivially passing."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.string :as str]
+            [clojure.set :as set]
             [ai.obney.orc.orc-service.core.source-tools-sql :as sql])
   (:import [java.sql DriverManager]
            [java.io File]))
@@ -159,6 +160,50 @@
       (is (< (count rows) 5000)
           "unbounded SELECT * over 5000 rows is capped inside the tool")
       (is (pos? (count rows))))))
+
+;; =============================================================================
+;; AC2c — OFFSET paging (comprehensive coverage): page through a full result set
+;; in bounded windows. The per-call cap stays (sample-never-dump into the model
+;; context); comprehensiveness comes from paging — the same affordance the CSV
+;; and Excel source tools already provide via :offset. Surfaced as a real scale
+;; wall in the V17 full-scale autonomous build: with no offset path the builder
+;; could not retrieve more than one capped window of the IPEDS program set, so
+;; comprehensive coverage was structurally impossible through the SQL tools.
+;; =============================================================================
+
+(deftest sample-rows-offset-pages-through-a-large-table
+  (testing "sample-rows :offset skips that many rows so consecutive windows are
+            disjoint and together cover the table (deterministic order via pk)"
+    (let [page0 (call 'sample-rows "big_table" {:limit 10 :offset 0})
+          page1 (call 'sample-rows "big_table" {:limit 10 :offset 10})
+          ids0 (mapv :id page0)
+          ids1 (mapv :id page1)]
+      (is (= 10 (count page0)))
+      (is (= 10 (count page1)))
+      ;; SQLite returns big_table in pk order without an ORDER BY (rowid scan),
+      ;; so page1 begins exactly where page0 ended — disjoint, contiguous windows.
+      (is (= (range 1 11) (map int ids0)) "first window is rows 1..10")
+      (is (= (range 11 21) (map int ids1)) "offset 10 window is rows 11..20")
+      (is (empty? (set/intersection (set ids0) (set ids1)))
+          "paged windows are disjoint"))))
+
+(deftest sample-rows-offset-still-capped
+  (testing "offset does not lift the per-call cap — an over-cap :limit at an
+            offset is still clamped (the window is bounded, paging is the way to
+            cover the table, never a single dump)"
+    (let [rows (call 'sample-rows "big_table" {:limit 999999 :offset 50})]
+      (is (< (count rows) 5000) "an absurd :limit is still clamped at an offset"))))
+
+(deftest query-offset-pages-through-a-select
+  (testing "query :offset pages a SELECT result so the builder can sweep a full
+            join/scan in bounded windows without writing its own LIMIT/OFFSET"
+    (let [page0 (call 'query "SELECT id FROM big_table ORDER BY id" {:limit 5 :offset 0})
+          page1 (call 'query "SELECT id FROM big_table ORDER BY id" {:limit 5 :offset 5})]
+      (is (= [1 2 3 4 5] (map int (mapv :id page0))))
+      (is (= [6 7 8 9 10] (map int (mapv :id page1))))))
+  (testing "query with no :offset is unchanged (offset 0 is the default)"
+    (let [rows (call 'query "SELECT id FROM big_table ORDER BY id" {:limit 5})]
+      (is (= [1 2 3 4 5] (map int (mapv :id rows)))))))
 
 ;; =============================================================================
 ;; AC2b — READ-ONLY (adversarial): writes/DDL are rejected and DB is unchanged

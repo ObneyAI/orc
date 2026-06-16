@@ -261,6 +261,14 @@
         req (if (and (number? req) (pos? req)) (long req) hard-max-rows)]
     (min req hard-max-rows)))
 
+(defn- clamp-offset
+  "Resolve the effective OFFSET — a non-negative integer to skip before the
+   window. The per-call cap is unchanged by the offset (paging covers a large
+   table in bounded windows; a single call still never dumps the table)."
+  [opts]
+  (let [off (get opts :offset 0)]
+    (if (and (number? off) (not (neg? off))) (long off) 0)))
+
 (defn- make-sample-rows-fn [db-path]
   (fn sample-rows
     ([table-name] (sample-rows table-name {}))
@@ -270,11 +278,16 @@
                             "opts map, e.g. (sample-rows \"HD2022\" {:limit 10}). Got: "
                             (pr-str (type table-name)))
                        {:table-name table-name})))
-     (let [n (clamp-limit (or opts {}))]
-       ;; Double-bound: an explicit LIMIT in the SQL *and* setMaxRows. The DB
-       ;; never streams more than `n` rows to us.
+     (let [n (clamp-limit (or opts {}))
+           off (clamp-offset (or opts {}))]
+       ;; Double-bound: an explicit LIMIT/OFFSET in the SQL *and* setMaxRows. The
+       ;; DB never streams more than `n` rows to us. An :offset skips that many
+       ;; rows first, so consecutive windows ({:offset 0} {:offset n} ...) page
+       ;; through the WHOLE table in bounded slices — comprehensive coverage
+       ;; without ever dumping the table (mirrors the CSV/Excel :offset path).
        (run-bounded db-path
-                    (str "SELECT * FROM \"" table-name "\" LIMIT " n)
+                    (str "SELECT * FROM \"" table-name "\" LIMIT " n
+                         (when (pos? off) (str " OFFSET " off)))
                     n)))))
 
 (def sample-rows-doc
@@ -291,9 +304,19 @@
      (sample-rows \"HD2022\" {:limit 5})     ;; ask for 5
      ;; => [{:UNITID 100654 :INSTNM \"Alabama A & M University\" ...} ...]
 
+   OFFSET / PAGING — the opts map may carry {:limit <int> :offset <int>} to skip
+   the first :offset rows and read the NEXT window. Consecutive windows page
+   through the WHOLE table in bounded slices, so you can cover a large table
+   comprehensively without ever dumping it:
+     (sample-rows \"C2022_A\" {:limit 100 :offset 0})    ;; rows 1..100
+     (sample-rows \"C2022_A\" {:limit 100 :offset 100})  ;; rows 101..200, etc.
+   Build the full set deterministically by looping offsets until a short/empty
+   window comes back.
+
    RETURNS — a vector of row maps (column-keyword -> value), at most the cap
-   (default 100). A :limit above the hard cap is clamped — you can never dump the
-   whole table. Empty vector for an empty table.")
+   (default 100). A :limit above the hard cap is clamped — a single call can
+   never dump the whole table; use :offset paging to cover it. Empty vector for
+   an empty table or an offset past the end.")
 
 ;; =============================================================================
 ;; Tool: query
@@ -321,8 +344,18 @@
                             "a table use sample-rows; to inspect schema use "
                             "table-schema / foreign-keys. Got: " (pr-str sql))
                        {:sql sql})))
-     (let [n (clamp-limit (or opts {}))]
-       (run-bounded db-path sql n)))))
+     (let [n (clamp-limit (or opts {}))
+           off (clamp-offset (or opts {}))
+           ;; An :offset pages a SELECT result in bounded windows. We wrap the
+           ;; (already validated single-read) statement in a bounded outer query
+           ;; rather than string-splicing into the user's SQL, so the offset
+           ;; applies to the FULL ordered result regardless of the inner shape.
+           ;; A trailing `;` is stripped first so the wrap is a single statement.
+           bounded-sql (if (pos? off)
+                         (str "SELECT * FROM (" (str/replace sql #";\s*$" "")
+                              ") LIMIT " n " OFFSET " off)
+                         sql)]
+       (run-bounded db-path bounded-sql n)))))
 
 (def query-doc
   "PURPOSE — Run a READ-ONLY, BOUNDED SELECT for targeted exploration the fixed
@@ -340,10 +373,20 @@
 
      (query \"SELECT name FROM department\" {:limit 10})   ;; bound it yourself
 
+     (query \"SELECT * FROM employee ORDER BY id\" {:limit 100 :offset 200})
+     ;; rows 201..300 of the ordered result — page a big join/scan window by window
+
+   OFFSET / PAGING — the opts map may carry {:limit <int> :offset <int>}. The
+   offset applies to the full ORDERED result of your SELECT, so consecutive
+   windows page through a large join or scan in bounded slices. Cover a big
+   result comprehensively by looping the offset until a short/empty window
+   returns (always give your SELECT a deterministic ORDER BY so windows align).
+
    RETURNS — a vector of result-row maps (column-keyword -> value), at most the
-   cap (default 100; an over-cap :limit is clamped). READ-ONLY: any INSERT /
-   UPDATE / DELETE / CREATE / DROP / ALTER, or a stacked statement, is REJECTED
-   with a clear error and the source is never modified.")
+   cap (default 100; an over-cap :limit is clamped — page with :offset to cover
+   more). READ-ONLY: any INSERT / UPDATE / DELETE / CREATE / DROP / ALTER, or a
+   stacked statement, is REJECTED with a clear error and the source is never
+   modified.")
 
 ;; =============================================================================
 ;; Public binding builder
