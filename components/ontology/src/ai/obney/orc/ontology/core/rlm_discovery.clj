@@ -451,6 +451,131 @@
    (vec sources)))
 
 ;; =============================================================================
+;; DT1 — reusable single-node session runner
+;; =============================================================================
+;; The discovery-tree redesign (DT1) runs FOCUSED reasoning nodes (Profile /
+;; Model / Transform) as one-shot recursive-RLM `:repl-researcher` sessions —
+;; the SAME executor + `:granted-source` per-format tool-binding seam
+;; `run-discovery!` uses, just with the node's own focused prompt + declared
+;; contract writes instead of the monolithic discovery prompt. This factors that
+;; session-construction-and-execute spine out of `run-discovery!` so the
+;; discovery tree REUSES it rather than forking the executor wiring
+;; (Discipline #8 — re-orchestration, not duplication).
+;;
+;; A node here does NOT run the V20 full-extraction apply-step or the
+;; compile/draft path — those are orchestrated by the discovery tree at the
+;; stage boundaries. This runner's job is exactly: construct the synthetic
+;; recursive-RLM node (granting the source's format tools), run it through the
+;; executor, and return its `(final! ...)` outputs (the node's frozen contract)
+;; verbatim.
+
+(defn run-node-session!
+  "Run ONE focused reasoning node as a recursive-RLM `:repl-researcher` session
+   against a single structured source, returning its emitted contract output.
+
+   The medium's specialist tools (V06/V19) are bound by REUSING the
+   `:granted-source` seam + the per-format exploration prompt assembly — the
+   same path `run-discovery!` uses; no fork.
+
+   Required `params`:
+     :node-name     — a keyword naming the node (e.g. :profile / :model / :transform).
+     :instruction   — the node's focused prompt (the promotion-seam body).
+     :source        — ONE source descriptor `{:name <kw> :type :csv|:sql|:excel
+                      :path <str>}` (or a :text source). When structured, the
+                      format's source-access tools are granted + the format
+                      exploration guidance is prepended (so the node can sample
+                      the source by shape, just like discovery).
+     :writes        — the node's declared `(final! ...)` keys (its frozen
+                      contract). The executor validates the model populates them.
+
+   Optional `params`:
+     :extra-inputs  — a map of additional blackboard keys (e.g. the predecessor
+                      node's contract output) the node reads via (get-input k).
+                      This is the inter-node contract channel.
+     :model         — OpenRouter model id. Default gemini-3-flash-preview.
+     :budget        — `{:max-iterations N :total-budget-ms N :max-retries N}`.
+     :auto-classify? — default false here (a focused thin node does not need the
+                      monolithic-discovery seed prepend); DT6 flips this behind
+                      the promotion seam.
+     :debug?        — debug logging on the session.
+
+   Returns:
+     {:status :ok      :output <contract-map> :usage <usage> :session <raw result>}
+   or
+     {:status :failed  :error <root-cause string> :session <raw result>}
+
+   A session that fails to construct/execute, or that produces no outputs,
+   surfaces as `:failed` with the root cause — no false green (Discipline #5)."
+  [ctx {:keys [node-name instruction source writes extra-inputs
+               model budget auto-classify? debug?]
+        :or {model "google/gemini-3-flash-preview"
+             auto-classify? false}}]
+  (when-not (:ontology-id ctx)
+    ;; The granted scope is required for the S19/S20 wiring; the discovery tree
+    ;; threads it on ctx OR we accept it explicitly below. Surface loudly.
+    nil)
+  (let [structured? (structured-source? source)
+        granted-source (when structured?
+                         {:format (:type source) :path (:path source)})
+        effective-prompt (if structured?
+                           (structured-discovery-prompt instruction source)
+                           instruction)
+        rlm-config (build-rlm-config
+                    {:granted-ontology-id (:granted-ontology-id ctx)
+                     :auto-classify? auto-classify?
+                     :debug? debug?
+                     :granted-source granted-source})
+        ;; The source content (descriptor string for a structured source) + any
+        ;; extra inter-node inputs become the blackboard the node reads.
+        source-key (or (:name source) :source-1)
+        source-bb (sources->blackboard [source])
+        extra-bb (reduce-kv
+                  (fn [acc k v]
+                    (assoc acc k {:key k :schema :any :value v :version 1}))
+                  {} (or extra-inputs {}))
+        blackboard (merge source-bb extra-bb)
+        read-keys (vec (concat [source-key] (keys (or extra-inputs {}))))
+        node {:node-type :repl-researcher
+              :name node-name
+              :model model
+              :instruction effective-prompt
+              :reads read-keys
+              :writes (vec writes)
+              :rlm rlm-config
+              :max-iterations (or (:max-iterations budget) 8)
+              :options (cond-> {}
+                         (:total-budget-ms budget) (assoc :timeout-ms (:total-budget-ms budget))
+                         (:max-retries budget)     (assoc :max-retries (:max-retries budget)))}
+        provider (or (:provider ctx) :openrouter)
+        execute-fn (executor-fn 'ai.obney.orc.orc-service.core.executor/execute-repl-researcher)
+        exec-context (select-keys ctx [:event-store :tenant-id :cache
+                                       :command-registry :query-registry
+                                       :sheet-id :tick-id])
+        session-result (try
+                         (execute-fn node blackboard provider exec-context)
+                         (catch Throwable t
+                           {:status :failure
+                            :error (.getMessage t)
+                            :exception-data (ex-data t)}))
+        outputs (or (:outputs session-result) {})]
+    (cond
+      (= :failure (:status session-result))
+      {:status :failed
+       :error (or (:error session-result) "node session failed")
+       :session session-result}
+
+      (empty? outputs)
+      {:status :failed
+       :error (str "node session produced no outputs (declared writes: " (vec writes) ")")
+       :session session-result}
+
+      :else
+      {:status :ok
+       :output outputs
+       :usage (:usage session-result)
+       :session session-result})))
+
+;; =============================================================================
 ;; Public entry: run-discovery!
 ;; =============================================================================
 
