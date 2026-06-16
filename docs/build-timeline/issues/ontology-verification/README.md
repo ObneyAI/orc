@@ -42,6 +42,26 @@ and tests whether it DISCOVERS the cross-source connections (incl. the earnings�
 program bridge) on its own — NO hardcoded joins in the driver (HITL directive).
 The earnings→program link is a measured test result, not a task.
 
+### Builder-hardening track (surfaced by V17's honest-partial result)
+
+V17 ran true (no hardcoding) and honestly showed the autonomous builder is
+currently partial: it discovered the central crosswalk bridge but produced no
+program nodes, 119/249 dangling edges, no earnings (PSEO `:no-output` from Excel
+tool arity errors), and no comprehensive coverage. These are GENERAL,
+domain-agnostic builder gaps to fix (format/medium specialists are encouraged;
+no education/industry tuning) before re-running.
+
+| # | Slice | Type | Milestone | Blocked by |
+|---|-------|------|-----------|------------|
+| V18 | Referential integrity as an always-on structural invariant (auto-mint implied entities) | AFK | M3 | — |
+| V19 | Format-specialist tool ergonomics + count affordance + stream-all | AFK | M3 | — |
+| V20 | General scaffolding (entity-modeling + extract-to-coverage) + deterministic full-extraction | AFK | M3 | V18, V19 |
+| V21 | Re-run V17 autonomously to measure the improved builder | AFK | M3 | V18, V19, V20 |
+
+Per HITL direction, coverage is solved BOTH ways (count affordance + guidance AND
+deterministic full-extraction where the specialist designs the transform on a
+sample and the skeleton applies it to the full streamed source).
+
 **Fix-slices V14–V16** were surfaced by the V02 Mode-A early read — real,
 root-caused bugs the verification phase was designed to expose. Routed as focused
 fix-slices ahead of their dependents (the chosen "fix-slices before dependents"
