@@ -70,6 +70,24 @@
                            "Could not resolve: " sym)
                       {:symbol sym}))))
 
+(defn- resolve-or-throw
+  "Lazy-resolve a fully-qualified symbol from a peer component (orc-service),
+   throwing a clear classpath error when it's absent. Mirrors `executor-fn`'s
+   discipline — the ontology component depends on orc-service at runtime (the
+   per-format source tools + the SCI sandbox both live there), but we keep the
+   resolution deferred so the ontology brick's isolated compile doesn't force
+   orc-service onto its declared deps."
+  [sym what]
+  (or (requiring-resolve sym)
+      (throw (ex-info (str "rlm-discovery requires " what " on the classpath. "
+                           "Could not resolve: " sym)
+                      {:symbol sym}))))
+
+;; V20 — forward declaration; the deterministic full-extraction apply-step is
+;; defined further down (after run-discovery!) but run-discovery! calls it when
+;; the model hands back a sample-validated transform.
+(declare apply-extraction-transform!)
+
 ;; =============================================================================
 ;; Discovery prompt assembly
 ;; =============================================================================
@@ -96,6 +114,16 @@
    "to see which ontology-discovery patterns the corpus suggests. The retrieved patterns are "
    "behavioral subtrees specialized for discovery — choose the one that fits your source's "
    "size and shape, adapt it, or design a fresh tree if none fit.\n\n"
+   "ENTITY-AS-NODE MODELING (read carefully — this shapes a USEFUL graph): mint as "
+   "CONCEPTS the entities that BEAR THEIR OWN ATTRIBUTES or are REFERENCED BY OTHER "
+   "ENTITIES. A thing that HAS PROPERTIES, or that you would RETRIEVE / RECOMMEND / "
+   "DESCRIBE, is a NODE — give it its own :uri and :concept-draft. Do NOT represent a "
+   "real entity ONLY as an EDGE (a :relationship-draft) between two other concepts: an "
+   "edge has no identity, no attributes, and cannot be retrieved or described. For "
+   "example, if each row of a source is a distinct thing with its own values, that thing "
+   "is a NODE carrying those values in :attributes — and the categories / owners / codes "
+   "it refers to are ALSO nodes, with edges CONNECTING the node to them. Edges are for the "
+   "RELATIONSHIPS between nodes, never a substitute for a node.\n\n"
    "OUTPUT SHAPE (via (final! ...)):\n"
    "  {:concept-drafts [{:uri <str> :label <str> :description <str> :scope <kw> "
    "                     :attributes {<key> <value> ...} "
@@ -308,6 +336,66 @@
        "                 :relationship-drafts (vec edges)\n"
        "                 :axiom-drafts []\n"
        "                 :rlm-trace [\"sampled crosswalk; minted shareable cip:/soc: uris + edges\"]}))\n\n"
+       "EXTRACT TO COVERAGE — design a TRANSFORM, do NOT hand-pick a sample:\n"
+       "  - SIZE the source first with (count-rows ...) so you know how many rows it "
+       "really holds (the sample tools cap at ~100 rows; count-rows reports the true "
+       "total WITHOUT loading the source). A real source often has thousands or millions "
+       "of rows — minting drafts only for the ~100 you sampled would cover a tiny "
+       "fraction.\n"
+       "  - DO NOT page the whole source yourself and mint a draft per row inline. That "
+       "is slow, burns your budget, and you will stop at one window. INSTEAD, design your "
+       "extraction as a PURE TRANSFORM over ONE row, validate it on a sample, and hand it "
+       "back — the deterministic skeleton will STREAM THE FULL SOURCE and apply your "
+       "transform to EVERY row at no extra LLM cost, so you get comprehensive coverage "
+       "without looping.\n"
+       "  - The transform is a fn of one row that returns the drafts FOR THAT ROW:\n"
+       "        (fn [row] {:concept-drafts [...] :relationship-drafts [...]})\n"
+       "    It must use ONLY clojure.core (plus clojure.string / clojure.set) — the SAME "
+       "restricted sandbox you sample in — no Java interop, no tool calls inside it (it "
+       "runs per-row over the full source). Read the row's fields with (get row :COLUMN) "
+       "using the SAME keys sample-rows returned (sql/excel keys are KEYWORDS like "
+       "(:UNITID row); csv keys are STRINGS like (get row \"col\")).\n"
+       "  - VALIDATE the transform on your sample BEFORE handing it back: map it over the "
+       "rows you sampled and confirm the drafts look right (right uris, attributes carried, "
+       "edges between real nodes). Then emit it via :extraction-transform in (final! ...):\n"
+       "        (final! {:concept-drafts <drafts from your sample — for inspection>\n"
+       "                 :relationship-drafts <edges from your sample>\n"
+       "                 :axiom-drafts []\n"
+       "                 :extraction-transform\n"
+       "                   {:transform-source \"(fn [row] ...)\"   ; the fn AS A STRING\n"
+       "                    :selector \"<table-or-sheet>\"}        ; sql/excel only; omit for csv\n"
+       "                 :rlm-trace [\"designed + validated transform on sample; full source "
+       "will be streamed deterministically\"]})\n"
+       "    The skeleton runs :extraction-transform over the WHOLE source (count-rows rows) "
+       "and uses THOSE drafts; your sample drafts are for your own inspection. If you do "
+       "NOT supply :extraction-transform, only your hand-picked sample drafts are used — so "
+       "for any source bigger than a sample, ALWAYS supply the transform. When the source "
+       "genuinely IS small enough that your sample covered every row, supply "
+       ":extraction-transform {} (an empty map) and your sample drafts stand.\n\n"
+       "MODEL AT THE RIGHT GRAIN — one concept per real ENTITY, NOT one per raw row "
+       "(this is what separates an ontology from a raw-table dump):\n"
+       "  - Decide what a real-world ENTITY is here, and derive each concept's :uri "
+       "from ONLY the fields that IDENTIFY that entity. Source rows are frequently "
+       "FINER-grained than entities: the same entity recurs across many rows that "
+       "differ only by an extra dimension — a category, a sub-measure, a "
+       "demographic/group breakdown, a year, a status. Minting one concept per such "
+       "row produces noise, not knowledge.\n"
+       "  - Because your transform runs PER ROW (it cannot see other rows), handle "
+       "breakdown rows one of two general ways: (i) FILTER to the single canonical / "
+       "summary / total row per entity — inspect the source to find the column that "
+       "marks it (e.g. a total/all-groups indicator) and return EMPTY drafts "
+       "(`{:concept-drafts [] :relationship-drafts []}`) for the non-canonical rows; "
+       "or (ii) if every breakdown is itself a thing worth representing, give the "
+       "breakdown its OWN entity type and put the breakdown key IN its :uri so the "
+       "rows don't collapse. Pick ONE; do not emit an undifferentiated concept per "
+       "raw row.\n"
+       "  - Carry the row's real measures as :attributes on the entity concept, not "
+       "as separate nodes.\n"
+       "HONOR THE SCOPE THE GOAL STATES — if the goal names a scope (a region, a "
+       "subset, a time window, a category), your transform must FILTER the source to "
+       "that scope: return EMPTY drafts for out-of-scope rows. Discover which "
+       "field carries the scope by sampling the source (it is not given to you). "
+       "Extracting far beyond the goal's scope is over-extraction, not coverage.\n\n"
        "Note on evidence quotes: every :evidence :quote must be a LITERAL value you "
        "read from the source (a cell value, a column name, a code) — never a tool "
        "result map or a paraphrase.\n\n"
@@ -484,8 +572,14 @@
               :model model
               :instruction effective-prompt
               :reads (vec source-keys)
+              ;; V20 — :extraction-transform is a declared write so the model can
+              ;; hand back a sample-validated transform the skeleton applies over
+              ;; the FULL source. The prompt instructs the model to ALWAYS include
+              ;; it (an empty map {} when the sample already covered the source), so
+              ;; the final! writes-validator (exact-key match) is satisfied either
+              ;; way without touching the off-limits rlm_sandbox validator.
               :writes [:concept-drafts :relationship-drafts
-                       :axiom-drafts :rlm-trace]
+                       :axiom-drafts :rlm-trace :extraction-transform]
               :rlm rlm-config
               :max-iterations (or (:max-iterations budget) 8)
               ;; V09 — thread the existing executor `:max-retries` primitive
@@ -523,10 +617,57 @@
                             :exception-data (ex-data t)}))
 
         outputs (or (:outputs session-result) {})
-        concepts (vec (or (get outputs :concept-drafts) []))
-        relationships (vec (or (get outputs :relationship-drafts) []))
+        sample-concepts (vec (or (get outputs :concept-drafts) []))
+        sample-relationships (vec (or (get outputs :relationship-drafts) []))
         axioms (vec (or (get outputs :axiom-drafts) []))
-        rlm-trace (vec (or (get outputs :rlm-trace) []))]
+        rlm-trace (vec (or (get outputs :rlm-trace) []))
+
+        ;; V20 — the model may hand back a sample-validated EXTRACTION TRANSFORM.
+        ;; When it does (and the source is structured), the DETERMINISTIC skeleton
+        ;; streams the FULL source and applies the transform per row, COLLECTING the
+        ;; comprehensive draft set — coverage that does NOT depend on the model
+        ;; looping. The model's own sample drafts are then for inspection only; the
+        ;; full set REPLACES them. When :extraction-transform is absent / {} / has a
+        ;; blank :transform-source, the sample drafts stand (a genuinely small
+        ;; source the sample already covered).
+        ext (get outputs :extraction-transform)
+        transform-source (when (map? ext) (:transform-source ext))
+        full-extraction
+        (when (and structured
+                   (string? transform-source)
+                   (seq (str/trim transform-source)))
+          (try
+            (apply-extraction-transform!
+             {:descriptor {:format (:type structured) :path (:path structured)}
+              :selector (when (map? ext) (:selector ext))
+              :transform-source transform-source
+              :window (when (map? ext) (:window ext))
+              :max-windows (when (map? ext) (:max-windows ext))})
+            (catch Throwable t
+              ;; A transform that fails to EVALUATE (not a per-row error — those
+              ;; are caught inside the apply-step) surfaces as a structured
+              ;; full-extraction failure. We do NOT silently fall back to the
+              ;; sample (that would hide a broken transform under a false green);
+              ;; the failure is recorded and the caller sees it in provenance.
+              {::transform-eval-error (.getMessage t)})))
+        transform-failed? (and full-extraction (::transform-eval-error full-extraction))
+        ;; Use the full draft set when the apply-step succeeded; otherwise the
+        ;; model's sample drafts (no transform, or transform failed to eval).
+        concepts (if (and full-extraction (not transform-failed?))
+                   (vec (:concept-drafts full-extraction))
+                   sample-concepts)
+        relationships (if (and full-extraction (not transform-failed?))
+                        (vec (:relationship-drafts full-extraction))
+                        sample-relationships)
+        ;; Surface the full-extraction provenance in the trace verbatim so the
+        ;; caller sees coverage (rows streamed/ok/errored) + any eval failure.
+        rlm-trace (cond-> rlm-trace
+                    full-extraction
+                    (conj {:full-extraction
+                           (if transform-failed?
+                             full-extraction
+                             (dissoc full-extraction :concept-drafts
+                                     :relationship-drafts))}))]
 
     (cond
       ;; Session failure — surface the root cause; do NOT mask with
@@ -534,6 +675,16 @@
       (= :failure (:status session-result))
       {:status :failed-at-session
        :error (:error session-result)
+       :session-result session-result
+       :patterns-offered patterns-offered}
+
+      ;; A transform was supplied but failed to EVALUATE — that's a real fault,
+      ;; not a zero-yield source. Surface it loudly (no silent sample fallback).
+      transform-failed?
+      {:status :failed-at-session
+       :error (str "extraction-transform failed to evaluate: "
+                   (::transform-eval-error full-extraction))
+       :extraction-transform ext
        :session-result session-result
        :patterns-offered patterns-offered}
 
@@ -557,10 +708,258 @@
        :emitted-relationships relationships
        :emitted-axioms axioms
        :rlm-trace rlm-trace
+       ;; V20 — full-extraction coverage report (nil when no transform was run).
+       :full-extraction (when (and full-extraction (not transform-failed?))
+                          (dissoc full-extraction :concept-drafts
+                                  :relationship-drafts))
        :iteration-reasonings (vec (or (:iteration-reasonings session-result) []))
        :usage (:usage session-result)
        :session-result session-result
        :patterns-offered patterns-offered})))
+
+;; =============================================================================
+;; V20 — Deterministic full-extraction apply-step
+;; =============================================================================
+;; V17 root cause #2: the builder hand-picked a SAMPLE of rows (one window per
+;; source) and minted drafts only for that sample — no comprehensive coverage,
+;; despite an explicit paging instruction. The coverage guarantee must NOT
+;; depend on the model looping the source itself (slow + budget-bound + unreliable).
+;;
+;; The seam (domain-agnostic): the builder designs an EXTRACTION TRANSFORM on a
+;; sample inside the discovery loop — a pure fn `(fn [row] -> {:concept-drafts
+;; [...] :relationship-drafts [...]})` authored as a string of Clojure source —
+;; and the DETERMINISTIC skeleton streams the FULL source (V19 `stream-all`,
+;; per-call ceiling preserved) and applies the transform to EVERY row, collecting
+;; the full draft set. Per-row errors are caught + counted + surfaced (a transform
+;; that throws on some rows skips+counts them, never aborts the source; a high
+;; failure RATE surfaces loudly — no false green).
+;;
+;; The transform is eval'd in the SAME kind of SCI sandbox the RLM already uses
+;; for model code (the safe `clojure.core` subset; `clojure.string`/`clojure.set`
+;; added as a harmless superset). We build a FRESH SCI context here rather than
+;; touching the off-limits `rlm_sandbox.clj` — applying a model fn over more rows
+;; is the same eval, just more rows. No `rlm_sandbox.clj` binding seam is needed.
+
+(def ^:private apply-step-safe-core
+  "The safe `clojure.core` symbol subset the model-authored transform may use —
+   the SAME list the RLM sandbox grants model code (so a transform that evals in
+   the sandbox during sample-validation evals identically here). The transform
+   designs drafts with plain `map`/`for`/`get`/`str`/`assoc`/etc. over a row map;
+   no IO, no eval, no interop. Kept in sync with the sandbox's whitelist."
+  '[+ - * / mod quot rem
+    = not= < > <= >= compare
+    str pr-str prn-str println print
+    inc dec min max abs
+    first rest next last butlast
+    cons conj concat into
+    map filter remove reduce
+    take drop take-while drop-while
+    partition partition-all partition-by
+    sort sort-by reverse shuffle
+    get get-in assoc assoc-in dissoc update update-in
+    select-keys merge merge-with
+    keys vals contains? find
+    count empty? not-empty seq vec set list
+    apply comp partial juxt
+    identity constantly
+    some every? not-any? not-every?
+    group-by frequencies
+    zipmap interleave interpose
+    repeat range iterate
+    true? false? nil? some? boolean
+    keyword keyword? symbol symbol? string? number? integer? float? map? vector? set? list? coll? seq? fn?
+    name namespace
+    re-find re-matches re-seq
+    subs format
+    type class])
+
+(defn- build-transform-sci-ctx
+  "Build a fresh SCI evaluation context for the model-authored extraction
+   transform. Mirrors the RLM sandbox's safe environment (the same restricted
+   `clojure.core` subset) so the transform evaluates here exactly as it did
+   when the builder validated it on a sample. `clojure.string` / `clojure.set`
+   are registered as a harmless superset (a transform that doesn't use them is
+   unaffected; one that does still evaluates). No IO / eval / require is exposed.
+
+   Lazy-resolves `sci.core/init` (sci lives on orc-service's deps; the ontology
+   brick reaches it transitively at runtime — same discipline as the executor
+   resolution)."
+  []
+  (let [sci-init (resolve-or-throw 'sci.core/init "the SCI sandbox (sci.core)")
+        core-publics (ns-publics 'clojure.core)
+        safe-core (select-keys core-publics apply-step-safe-core)
+        string-publics (ns-publics 'clojure.string)
+        set-publics (ns-publics 'clojure.set)]
+    (sci-init
+     {:namespaces {'clojure.core safe-core
+                   'clojure.string string-publics
+                   'clojure.set set-publics}
+      ;; Same JVM impl classes the base sandbox exposes so map/vector literals
+      ;; with computed values inside the model fn don't fail at invocation.
+      :classes {'clojure.lang.PersistentArrayMap clojure.lang.PersistentArrayMap
+                'clojure.lang.PersistentHashMap clojure.lang.PersistentHashMap
+                'clojure.lang.PersistentVector clojure.lang.PersistentVector
+                'clojure.lang.PersistentHashSet clojure.lang.PersistentHashSet
+                'clojure.lang.PersistentTreeMap clojure.lang.PersistentTreeMap}})))
+
+(defn- eval-transform-fn
+  "Eval the model-authored transform SOURCE STRING to a callable fn in a fresh
+   sandbox context. The source must evaluate to an IFn (a `(fn [row] ...)`); a
+   non-fn result fails LOUDLY (no silent fallback — Disciplines #5)."
+  [transform-source]
+  (when-not (and (string? transform-source) (seq (str/trim transform-source)))
+    (throw (ex-info "apply-extraction-transform!: :transform-source must be a non-blank string of Clojure source defining (fn [row] -> {:concept-drafts ... :relationship-drafts ...})"
+                    {:transform-source transform-source})))
+  (let [sci-eval (resolve-or-throw 'sci.core/eval-string* "the SCI sandbox (sci.core)")
+        sci-ctx (build-transform-sci-ctx)
+        f (try
+            (sci-eval sci-ctx transform-source)
+            (catch Throwable t
+              (throw (ex-info (str "apply-extraction-transform!: transform source failed to evaluate: "
+                                   (.getMessage t))
+                              {:transform-source transform-source} t))))]
+    (when-not (fn? f)
+      (throw (ex-info (str "apply-extraction-transform!: transform source must evaluate to a fn (fn [row] ...); got "
+                           (pr-str (type f)))
+                      {:transform-source transform-source :evaluated f})))
+    f))
+
+(def ^:private max-error-sample
+  "Cap on the per-row error sample surfaced in the apply result. The COUNT is the
+   authoritative no-false-green signal; the sample is for human diagnosis. An
+   enormous broken transform must not bloat the result."
+  25)
+
+(defn- normalize-window-rows
+  "A `stream-all` window is a per-format map; the row vector lives under :rows
+   for csv/sql/excel. Return the row maps for one window."
+  [window]
+  (cond
+    (map? window) (vec (or (:rows window) []))
+    ;; A format whose stream-all yields bare row vectors (defensive).
+    (sequential? window) (vec window)
+    :else []))
+
+(defn apply-extraction-transform!
+  "V20 — the deterministic full-extraction apply-step.
+
+   Given a model-authored extraction transform (validated on a sample inside the
+   discovery loop) and a structured source descriptor, STREAM the FULL source via
+   V19's `stream-all` and apply the transform to EVERY row, collecting the full
+   draft set. The per-call window ceiling is preserved — coverage comes from
+   iterating windows, NOT from one giant read.
+
+   Params (a single map):
+     :descriptor        REQUIRED. `{:type :csv|:sql|:excel :path <str>}` (or with
+                        an explicit `:format`). The SAME descriptor shape
+                        `run-discovery!` / the V06 source-tool registry use.
+     :transform-source  REQUIRED. A STRING of Clojure source that evaluates to
+                        `(fn [row] -> {:concept-drafts [...] :relationship-drafts [...]})`.
+                        Eval'd in a fresh SCI sandbox matching the RLM sandbox's
+                        safe environment.
+     :selector          The sheet/table selector for sql/excel (a name, index, or
+                        descriptor map — V19 forgiving selectors). Ignored for csv
+                        (a csv source has no selector).
+     :window            Rows per stream-all window (clamped to the format's
+                        per-call ceiling). Default: the format default.
+     :max-windows       Safety bound on the number of windows streamed. Default
+                        very high (covers any realistic source).
+
+   Behavior (adversarial, Disciplines #4/#5):
+     - Per-row transform errors are CAUGHT, COUNTED, and SAMPLED — a transform
+       that works on the sample but throws on some later row skips that row,
+       increments :rows-errored, and the source is NOT aborted. The rest extract.
+     - A transform whose result for a row is not a map, or whose
+       :concept-drafts / :relationship-drafts are not sequential, is treated as a
+       row error (counted + sampled) — not silently coerced.
+     - The COUNT of streamed vs errored rows is returned so a HIGH failure rate
+       surfaces loudly (the caller can gate on it; no false green).
+
+   Returns:
+     {:selector <selector>
+      :rows-streamed   <int — total rows the transform was applied to>
+      :rows-errored    <int — rows whose transform threw / returned a bad shape>
+      :rows-ok         <int — rows that produced a (possibly empty) draft map>
+      :windows         <int — stream-all windows consumed>
+      :errors-sample   [<{:row <row> :error <msg>}> ...]   (capped)
+      :concept-drafts      [<draft ...>]   (the FULL collected set, verbatim)
+      :relationship-drafts [<draft ...>]}
+
+   The returned :concept-drafts / :relationship-drafts are the SAME draft shapes
+   `compile-discovery-source!` ingests — so the caller flows them through the
+   existing compile + V18 referential integrity unchanged."
+  [{:keys [descriptor transform-source selector window max-windows]}]
+  (when-not (map? descriptor)
+    (throw (ex-info "apply-extraction-transform!: :descriptor must be a source descriptor map {:type ... :path ...}"
+                    {:descriptor descriptor})))
+  (let [source-tools-for (resolve-or-throw
+                          'ai.obney.orc.orc-service.core.source-tools/source-tools-for
+                          "the V06 source-tool registry (orc-service)")
+        tools (source-tools-for descriptor)
+        _ (when-not (map? tools)
+            (throw (ex-info (str "apply-extraction-transform!: no source tools for descriptor "
+                                 (pr-str descriptor) " (a :text source has no stream-all; V20 "
+                                 "scope is csv / sql / excel)")
+                            {:descriptor descriptor})))
+        stream-all (get tools 'stream-all)
+        _ (when-not (fn? stream-all)
+            (throw (ex-info "apply-extraction-transform!: the source tools do not expose stream-all"
+                            {:descriptor descriptor :tools (keys tools)})))
+        xform (eval-transform-fn transform-source)
+        stream-opts (cond-> {}
+                      window     (assoc :window window)
+                      max-windows (assoc :max-windows max-windows))
+        ;; csv stream-all is 0/1-arg (no selector); sql/excel are selector-first.
+        windows (if (some? selector)
+                  (stream-all selector stream-opts)
+                  (stream-all stream-opts))
+        ;; Apply the transform to one row; classify the outcome. A non-map result
+        ;; or a non-sequential drafts field is a ROW ERROR (counted), not silently
+        ;; coerced — a transform that returns a bad shape on a row is a real fault.
+        apply-row (fn [row]
+                    (try
+                      (let [r (xform row)]
+                        (cond
+                          (not (map? r))
+                          {:error (str "transform returned a non-map: " (pr-str (type r)))}
+                          (not (sequential? (or (:concept-drafts r) [])))
+                          {:error ":concept-drafts is not sequential"}
+                          (not (sequential? (or (:relationship-drafts r) [])))
+                          {:error ":relationship-drafts is not sequential"}
+                          :else {:ok r}))
+                      (catch Throwable t
+                        {:error (.getMessage t)})))
+        ;; Fold ALL rows (across every window) in a single flat loop — no nested
+        ;; recur. Windows are concatenated lazily so the per-call ceiling holds
+        ;; (each window is a bounded read); we never realize the whole source.
+        all-rows (mapcat normalize-window-rows windows)]
+    (loop [rs (seq all-rows)
+           rows-streamed 0
+           rows-ok 0
+           rows-errored 0
+           errors []
+           concept-drafts (transient [])
+           relationship-drafts (transient [])]
+      (if (empty? rs)
+        {:selector selector
+         :rows-streamed rows-streamed
+         :rows-ok rows-ok
+         :rows-errored rows-errored
+         :windows (count windows)
+         :errors-sample (vec errors)
+         :concept-drafts (persistent! concept-drafts)
+         :relationship-drafts (persistent! relationship-drafts)}
+        (let [row (first rs)
+              outcome (apply-row row)]
+          (if-let [r (:ok outcome)]
+            (recur (next rs) (inc rows-streamed) (inc rows-ok) rows-errored errors
+                   (reduce conj! concept-drafts (or (:concept-drafts r) []))
+                   (reduce conj! relationship-drafts (or (:relationship-drafts r) [])))
+            (recur (next rs) (inc rows-streamed) rows-ok (inc rows-errored)
+                   (if (< (count errors) max-error-sample)
+                     (conj errors {:row row :error (:error outcome)})
+                     errors)
+                   concept-drafts relationship-drafts)))))))
 
 ;; =============================================================================
 ;; Public entry: compile-discovery-source!
