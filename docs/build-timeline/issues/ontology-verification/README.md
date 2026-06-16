@@ -33,6 +33,14 @@ binding **Core Disciplines** block (standard 7 + verification-phase additions
 | V14 | TTL ingest: brownfield concept-type recognition + no-false-green | AFK | M3 | — (gates A2/Mode-A) |
 | V15 | hybrid-search result label enrichment (event-sourced projection) | AFK | M3 | — (gates V12) |
 | V16 | ColBERT index-creation timeout scaling (+ LMDB map-size note) | AFK | M3 | — (gates V09) |
+| V17 | Graph B full-scale rebuild — autonomous discovery, no hardcoded joins | AFK | M3 | V09 |
+
+**V17 supersedes V09's 434-concept sample as the comparison artifact.** V09 proved
+the pipeline but its connectivity was driver-engineered (hand-fed offsets/keys/
+LIMITs). V17 hands the evolutionary builder only the sources + tools + domain goal
+and tests whether it DISCOVERS the cross-source connections (incl. the earnings↔
+program bridge) on its own — NO hardcoded joins in the driver (HITL directive).
+The earnings→program link is a measured test result, not a task.
 
 **Fix-slices V14–V16** were surfaced by the V02 Mode-A early read — real,
 root-caused bugs the verification phase was designed to expose. Routed as focused
