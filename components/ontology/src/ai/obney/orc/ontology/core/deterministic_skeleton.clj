@@ -233,13 +233,46 @@
             (recur (rest remaining)
                    (conj reports report))))))))
 
+(defn- referential-integrity-report
+  "V18 — the always-on referential-integrity backstop for the assembled
+   graph. Given the in-scope concepts + relationships, report whether
+   EVERY relationship endpoint resolves to a concept that exists. This is
+   a STRUCTURAL INVARIANT independent of the optional shape-gated
+   validate-stage (whose short-circuit on absent shapes let V17's 119
+   dangling edges survive into the artifact while the build reported
+   success).
+
+   The `:rlm-discovery` compile path repairs danglers at emission time by
+   auto-minting implied concepts; this backstop is the artifact-level
+   GUARANTEE — it surfaces any endpoint that still does not resolve (e.g.
+   relationships introduced by a non-discovery source path) so the build
+   result can never report a clean success while carrying a dangling edge.
+
+   Domain-agnostic: a pure structural set-membership check, no domain
+   knowledge. Returns:
+     {:every-edge-endpoint-resolves? <bool>
+      :dangling-edge-count <int>
+      :dangling-edges [<{:source-uri :target-uri :predicate}> ...]}"
+  [concepts relationships]
+  (let [concept-uris (set (map :uri concepts))
+        dangling (->> relationships
+                      (filter (fn [r]
+                                (or (not (contains? concept-uris (:source-uri r)))
+                                    (not (contains? concept-uris (:target-uri r))))))
+                      (mapv (fn [r] (select-keys r [:source-uri :target-uri :predicate])))) ]
+    {:every-edge-endpoint-resolves? (empty? dangling)
+     :dangling-edge-count (count dangling)
+     ;; Cap the surfaced sample so an enormous broken graph doesn't bloat
+     ;; the result map; the COUNT is the authoritative no-false-green signal.
+     :dangling-edges (vec (take 25 dangling))}))
+
 (defn- normalize-stage
   "Verify the substrate-contract events landed and produce a
    summary the pipeline carries forward. NO additional event
    emission in the TTL path — the ingester already emitted them.
    Returns:
      {:status :ok :concepts-count :relationships-count
-      :events-emitted-so-far :stage-duration-ms}."
+      :events-emitted-so-far :referential-integrity :stage-duration-ms}."
   [ctx {:keys [ontology-id]}]
   (let [start (System/currentTimeMillis)
         concepts (filter #(= ontology-id (:ontology-id %))
@@ -256,6 +289,8 @@
      :concepts-count (count concepts)
      :relationships-count (count relationships)
      :events-emitted-so-far events-in-scope
+     ;; V18 — always-on referential-integrity backstop (independent of shapes).
+     :referential-integrity (referential-integrity-report concepts relationships)
      :stage-duration-ms (ms-since start)}))
 
 (defn- tokenize
@@ -859,6 +894,7 @@
                                :reason (:reason exit-r)
                                :concepts-count (:concepts-count norm-r)
                                :relationships-count (:relationships-count norm-r)
+                               :referential-integrity (:referential-integrity norm-r)
                                :dedup-summary {:pairs-evaluated (:pairs-evaluated dedup-r)
                                                :merges (:merges dedup-r)
                                                :distinct (:distinct dedup-r)
@@ -873,6 +909,12 @@
                                        :concepts-count (:concepts-count norm-r)
                                        :relationships-count (:relationships-count norm-r)
                                        :events-emitted (:events-emitted-so-far norm-r)
+                                       ;; V18 — referential-integrity is reported on
+                                       ;; EVERY completed build (always-on structural
+                                       ;; invariant), so an artifact can never be read
+                                       ;; as a clean success while carrying dangling
+                                       ;; edges — the count + flag are right here.
+                                       :referential-integrity (:referential-integrity norm-r)
                                        :validation-warnings (:warnings val-r)
                                        :dedup-summary {:pairs-evaluated (:pairs-evaluated dedup-r)
                                                        :merges (:merges dedup-r)

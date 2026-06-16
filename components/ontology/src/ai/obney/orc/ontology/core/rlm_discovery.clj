@@ -52,6 +52,8 @@
   (:require [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.ontology.core.seeds :as seeds]
+            [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -753,6 +755,175 @@
    :properties (or (:properties draft) {})})
 
 ;; =============================================================================
+;; V18 — Referential integrity as an always-on structural invariant
+;; =============================================================================
+;; V17 root cause: a graph built with NO supplied validation shapes had the
+;; shape-gated validate-stage short-circuit, so 119/249 relationship edges
+;; referenced concept URIs the builder never minted — those dangling edges
+;; survived into the artifact while the build reported success.
+;;
+;; Fix (domain-agnostic — encodes NOTHING about any source/medium/domain):
+;; referential integrity is a STRUCTURAL INVARIANT enforced HERE in the
+;; deterministic compile path, NOT behind the optional validate-stage. After
+;; concept-drafts are minted, every relationship endpoint must resolve. A
+;; referenced-but-unminted endpoint is itself a discovered entity, so we
+;; auto-mint a minimal IMPLIED concept for it (low-confidence / flagged for
+;; enrichment, label derived GENERICALLY from the URI's own id segment). If
+;; the dangling URI is a near-variant of an EXISTING concept URI (a different
+;; identifier encoding), we ALSO record it as an ambiguity for the dedup/
+;; alignment layer (reusing the S12 structural-similarity primitives — NOT a
+;; hardcoded code-format rule) rather than silently treating it as unrelated.
+;; An endpoint with no resolvable id segment is surfaced as UNRESOLVED — the
+;; compile result never reports clean success while carrying a dangling edge.
+
+(defn- uri-id-segment
+  "Derive a GENERIC, domain-neutral id segment from a URI for an implied
+   concept's label. Takes the last non-empty segment after the common URI
+   delimiters (`:` `/` `#`). Returns nil when nothing usable remains (e.g.
+   a blank / delimiter-only URI) so the caller can treat the endpoint as
+   UNRESOLVED rather than fabricate a label. NO domain knowledge — this is
+   pure string structure."
+  [uri]
+  (when (string? uri)
+    (let [segs (->> (str/split (str/trim uri) #"[:/#]")
+                    (map str/trim)
+                    (remove str/blank?))]
+      (last segs))))
+
+(defn- implied-label
+  "A generic human-readable label for an implied concept, derived from the
+   URI id segment. Domain-neutral: it never invents a domain term, it only
+   surfaces the id the edge referenced (made readable) so a human/enrichment
+   pass can recognize it."
+  [id-segment]
+  (str "Implied: " id-segment))
+
+(def ^:private near-variant-similarity-min
+  "Structural URI-similarity threshold above which a dangling URI is treated
+   as a near-variant (likely an alternate encoding) of an existing concept
+   URI and surfaced as an ambiguity for the alignment layer. Uses the SAME
+   Jaro-Winkler primitive the S12 dedup cascade uses — a GENERAL structural
+   measure, not a code-format rule. Set high so only genuinely-close
+   encodings (an extra/dropped char, a separator variant) trip it; ordinary
+   distinct URIs (`entity:beta` vs `entity:gamma`) stay well below it."
+  0.92)
+
+(defn- nearest-variant
+  "Given a dangling URI and the set of known concept URIs, return the most
+   structurally-similar known URI together with its similarity score WHEN
+   that score is at/above the near-variant threshold; nil otherwise. Reuses
+   the S12 dedup-cascade `jaro-winkler-similarity` over the raw URI strings —
+   a domain-agnostic structural measure. The dangling URI itself is excluded
+   from the candidate set."
+  [dangling-uri known-uris]
+  (let [candidates (disj (set known-uris) dangling-uri)]
+    (when (seq candidates)
+      (let [[best score] (reduce
+                          (fn [[_best _score :as acc] cand]
+                            (let [s (dedup/jaro-winkler-similarity dangling-uri cand)]
+                              (if (> s _score) [cand s] acc)))
+                          [nil 0.0]
+                          candidates)]
+        (when (and best (>= score near-variant-similarity-min))
+          {:near-existing-uri best :similarity score})))))
+
+(defn- implied-concept-command
+  "Build an `:ontology/create-concept` command for an auto-minted IMPLIED
+   concept. Flagged via :attributes so it is distinguishable from an
+   explicitly-discovered concept and routed to later enrichment / alignment.
+   `:ambiguous?` is set when the endpoint is a near-variant of an existing
+   URI (the alignment layer should resolve whether to merge)."
+  [ontology-id uri id-segment ambiguity]
+  {:command/name :ontology/create-concept
+   :command/id (random-uuid)
+   :command/timestamp (time/now)
+   :ontology-id ontology-id
+   :uri uri
+   :label (implied-label id-segment)
+   :description (str "Auto-minted implied concept for a referenced endpoint "
+                     "that was not explicitly discovered. Flagged for enrichment."
+                     (when ambiguity
+                       (str " Possible near-variant of " (:near-existing-uri ambiguity)
+                            " (structural similarity "
+                            (format "%.3f" (double (:similarity ambiguity))) ")"
+                            " — recorded as an ambiguity for the alignment layer.")))
+   :scope :custom
+   :broader []
+   :indicators []
+   :attributes (cond-> {:implied? true
+                        :confidence-class :implied
+                        :enrichment-pending? true}
+                 ambiguity (assoc :ambiguous? true
+                                  :near-existing-uri (:near-existing-uri ambiguity)))})
+
+(defn- ensure-referential-integrity!
+  "The V18 structural invariant. Given the validated concept-drafts and
+   relationship-drafts (and the ctx + ontology-id), scan every relationship
+   endpoint. For any endpoint not already a concept (neither in this batch's
+   drafts NOR already in the graph), auto-mint a minimal implied concept via
+   the create-concept command path, recording near-variant endpoints as
+   ambiguities. Endpoints with no resolvable id segment are surfaced as
+   UNRESOLVED (no fabricated concept).
+
+   Returns:
+     {:implied-minted <int>
+      :ambiguities    [<{:dangling-uri :near-existing-uri :similarity}> ...]
+      :unresolved     [<uri ...>]
+      :every-edge-endpoint-resolves? <bool>}
+
+   Emits implied-concept events BEFORE the caller emits the relationship
+   events, so the relationship endpoints resolve at append time."
+  [ctx ontology-id concept-drafts relationship-drafts]
+  (let [draft-uris (set (map :uri concept-drafts))
+        existing-uris (set (map :uri
+                                (filter #(= ontology-id (:ontology-id %))
+                                        (rm/get-concepts ctx {}))))
+        ;; A mutable accumulator of every URI now known to resolve (drafts +
+        ;; existing + implied-as-we-mint), so two danglers to the SAME URI
+        ;; mint exactly one implied concept and the second resolves against it.
+        endpoints (distinct
+                   (mapcat (fn [r] [(:source-uri r) (:target-uri r)])
+                           relationship-drafts))]
+    (loop [remaining endpoints
+           known (into draft-uris existing-uris)
+           implied-minted 0
+           ambiguities []
+           unresolved []]
+      (if (empty? remaining)
+        {:implied-minted implied-minted
+         :ambiguities (vec ambiguities)
+         :unresolved (vec unresolved)
+         :every-edge-endpoint-resolves? (empty? unresolved)}
+        (let [uri (first remaining)]
+          (cond
+            ;; Already resolves — nothing to do.
+            (contains? known uri)
+            (recur (rest remaining) known implied-minted ambiguities unresolved)
+
+            :else
+            (let [id-seg (uri-id-segment uri)]
+              (if (nil? id-seg)
+                ;; No resolvable id segment — cannot mint honestly. Surface as
+                ;; UNRESOLVED (no false green); the edge stays dangling and the
+                ;; caller's provenance reports integrity does NOT hold.
+                (recur (rest remaining) known implied-minted ambiguities
+                       (conj unresolved uri))
+                (let [ambiguity (some-> (nearest-variant uri known)
+                                        (assoc :dangling-uri uri))
+                      result (cp/process-command
+                              (assoc ctx :command
+                                     (implied-concept-command
+                                      ontology-id uri id-seg ambiguity)))]
+                  (when (:cognitect.anomalies/category result)
+                    (throw (ex-info "compile-discovery-source!: implied-concept mint anomaly"
+                                    {:uri uri :anomaly result})))
+                  (recur (rest remaining)
+                         (conj known uri)
+                         (inc implied-minted)
+                         (cond-> ambiguities ambiguity (conj ambiguity))
+                         unresolved))))))))))
+
+;; =============================================================================
 ;; V07 — Axiom-draft ingest
 ;; =============================================================================
 ;; Discovery EXTRACTS axiom drafts (`{:axiom-type <kw|str> :body <map>
@@ -1003,32 +1174,49 @@
           (throw (ex-info "compile-discovery-source!: concept emission anomaly"
                           {:draft c :anomaly result})))))
 
-    (doseq [r relationships]
-      (let [result (cp/process-command
-                     (assoc ctx :command (relationship-draft->command ontology-id r)))]
-        (when (:cognitect.anomalies/category result)
-          (throw (ex-info "compile-discovery-source!: relationship emission anomaly"
-                          {:draft r :anomaly result})))))
+    ;; V18 — enforce referential integrity as an ALWAYS-ON structural
+    ;; invariant (not behind the optional shape-gated validate-stage that
+    ;; let V17's 119 dangling edges through). Auto-mint implied concepts
+    ;; for referenced-but-unminted endpoints and surface near-variant
+    ;; ambiguities — BEFORE the relationship events land so every endpoint
+    ;; resolves at append time.
+    (let [integrity (ensure-referential-integrity!
+                      ctx ontology-id concepts relationships)]
 
-    ;; V07 — route axiom-drafts to their S07 axiom commands. The
-    ;; axiom-draft->command transform coerces axiom-type + characteristic
-    ;; enums from JSON strings and fails loudly on anything unrouteable
-    ;; (no silent drop, no fabricated axiom). A command-level rejection
-    ;; (e.g. singleton class-uris) surfaces as a loud anomaly too.
-    (doseq [a (or axioms [])]
-      (let [result (cp/process-command
-                     (assoc ctx :command (axiom-draft->command ontology-id a)))]
-        (when (:cognitect.anomalies/category result)
-          (throw (ex-info "compile-discovery-source!: axiom emission anomaly"
-                          {:draft a :anomaly result})))))
+      (doseq [r relationships]
+        (let [result (cp/process-command
+                       (assoc ctx :command (relationship-draft->command ontology-id r)))]
+          (when (:cognitect.anomalies/category result)
+            (throw (ex-info "compile-discovery-source!: relationship emission anomaly"
+                            {:draft r :anomaly result})))))
 
-    {:type :inline-concepts
-     :concepts []
-     :discovery-provenance {:status :ingested
+      ;; V07 — route axiom-drafts to their S07 axiom commands. The
+      ;; axiom-draft->command transform coerces axiom-type + characteristic
+      ;; enums from JSON strings and fails loudly on anything unrouteable
+      ;; (no silent drop, no fabricated axiom). A command-level rejection
+      ;; (e.g. singleton class-uris) surfaces as a loud anomaly too.
+      (doseq [a (or axioms [])]
+        (let [result (cp/process-command
+                       (assoc ctx :command (axiom-draft->command ontology-id a)))]
+          (when (:cognitect.anomalies/category result)
+            (throw (ex-info "compile-discovery-source!: axiom emission anomaly"
+                            {:draft a :anomaly result})))))
+
+      {:type :inline-concepts
+       :concepts []
+       :discovery-provenance {:status :ingested
                             :concepts-emitted (count concepts)
                             :relationships-emitted (count relationships)
                             :axioms-emitted (count (or axioms []))
-                            :rlm-trace rlm-trace}}))
+                            ;; V18 — referential-integrity report (always on).
+                            :implied-concepts-minted (:implied-minted integrity)
+                            :ambiguities-flagged (count (:ambiguities integrity))
+                            :ambiguities (:ambiguities integrity)
+                            :unresolved-endpoints (count (:unresolved integrity))
+                            :unresolved-endpoint-uris (:unresolved integrity)
+                            :every-edge-endpoint-resolves?
+                            (:every-edge-endpoint-resolves? integrity)
+                            :rlm-trace rlm-trace}})))
 
 ;; =============================================================================
 ;; Public convenience: discover-and-build!

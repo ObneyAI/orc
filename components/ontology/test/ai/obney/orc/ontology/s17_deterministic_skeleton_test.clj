@@ -514,3 +514,66 @@
           "Skeleton must not bypass commands — bare es/append is forbidden")
       (is (not (str/includes? src "event-store/append"))
           "Same check, longer-form alias"))))
+
+;; =============================================================================
+;; V18 — Referential integrity is reported on EVERY build (always-on backstop)
+;; =============================================================================
+;; The shape-gated validate-stage short-circuits to {:skipped? true} when no
+;; shapes are supplied (the V17 condition). The skeleton's normalize stage now
+;; ALWAYS computes a referential-integrity report so an artifact can never be
+;; read as a clean success while carrying dangling edges. Domain-agnostic: a
+;; pure structural set-membership check over generic URIs (no CIP/SOC).
+
+(deftest build-reports-clean-referential-integrity-with-no-shapes
+  (testing "A build with all relationship endpoints present + NO supplied
+            shapes still reports referential integrity holds — the
+            invariant is NOT gated behind the optional validate-stage."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            result (sk/build!
+                     ctx
+                     {:ontology-id oid
+                      :sources
+                      [{:type :inline-concepts
+                        :concepts [{:uri "entity:alpha" :label "Alpha" :description "a"}
+                                   {:uri "entity:beta" :label "Beta" :description "b"}]}
+                       {:type :inline-relationships
+                        :relationships [{:source-uri "entity:alpha"
+                                         :target-uri "entity:beta"
+                                         :predicate "links-to"}]}]})]
+        (is (= :complete (:status result)))
+        ;; No shapes supplied → validate-stage skipped, but integrity STILL
+        ;; reported (the V18 always-on invariant).
+        (is (true? (get-in result [:referential-integrity :every-edge-endpoint-resolves?]))
+            "every endpoint resolves; integrity holds without shapes")
+        (is (= 0 (get-in result [:referential-integrity :dangling-edge-count])))))))
+
+(deftest build-surfaces-dangling-edge-no-false-green
+  (testing "When a relationship endpoint does NOT resolve to any concept
+            (the V17 condition, reproduced via a non-discovery source path
+            that bypasses the compile-time auto-mint), the build result
+            surfaces the dangling edge — every-edge-endpoint-resolves? is
+            FALSE and the count is > 0. No false green: the artifact cannot
+            be read as a clean success while carrying the dangling edge."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            result (sk/build!
+                     ctx
+                     {:ontology-id oid
+                      :sources
+                      [{:type :inline-concepts
+                        :concepts [{:uri "entity:alpha" :label "Alpha" :description "a"}]}
+                       ;; entity:ghost was never minted — this edge dangles.
+                       {:type :inline-relationships
+                        :relationships [{:source-uri "entity:alpha"
+                                         :target-uri "entity:ghost"
+                                         :predicate "links-to"}]}]})]
+        (is (= :complete (:status result))
+            "the pipeline completes, but the integrity report flags the danger")
+        (is (false? (get-in result [:referential-integrity :every-edge-endpoint-resolves?]))
+            "integrity flag is FALSE — no false green")
+        (is (= 1 (get-in result [:referential-integrity :dangling-edge-count]))
+            "the dangling edge is counted")
+        (let [edge (first (get-in result [:referential-integrity :dangling-edges]))]
+          (is (= "entity:ghost" (:target-uri edge))
+              "the dangling endpoint is surfaced for the operator"))))))
