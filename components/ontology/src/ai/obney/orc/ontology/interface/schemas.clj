@@ -1633,7 +1633,14 @@
      ;; the aggregation still fires (deciding cascade events still
      ;; count as evidence) — source-refs simply don't accumulate.
      [:a-source-ref {:optional true} :string]
-     [:b-source-ref {:optional true} :string]]]
+     [:b-source-ref {:optional true} :string]
+     ;; DTscale-1 — project-once: the caller (dedup-stage) MAY thread the
+     ;; per-section disjointness map (from the `:ontology/axioms` projection)
+     ;; and the existing concept-evidence map, both projected ONCE per stage,
+     ;; so the command does NOT re-project per pair. When omitted the command
+     ;; projects them itself (defensive — the command stays self-sufficient).
+     [:disjointness {:optional true} [:map-of :string [:set :string]]]
+     [:existing-evidence {:optional true} [:map-of :string :any]]]]
 
    ;; S13 — record a field-value contradiction the builder detected.
    ;; The contradiction is MARKED (visible, queryable) — the stored

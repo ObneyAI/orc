@@ -65,9 +65,11 @@
      by Grain's event-store at append time. A schema-violating event
      surfaces as a parse-stage failure with the anomaly attached."
   (:require [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
             [ai.obney.orc.ontology.core.lints.queries :as lint-q]
             [ai.obney.orc.ontology.core.ttl-ingest :as ttl-ingest]
             [ai.obney.orc.ontology.core.serialization :as serialization]
@@ -293,64 +295,104 @@
      :referential-integrity (referential-integrity-report concepts relationships)
      :stage-duration-ms (ms-since start)}))
 
-(defn- tokenize
-  "Naive whitespace + word-boundary tokenizer for the dedup blocking
-   pass. Lowercased; empty-string tokens dropped."
-  [s]
-  (->> (str/split (str/lower-case (or s "")) #"\W+")
-       (remove str/blank?)
-       set))
+(defn candidate-pairs
+  "Generate candidate concept pairs for the dedup cascade via REAL
+   LSH/MinHash blocking (S12's `dedup/lsh-candidate-pairs`): each concept
+   is signed with a MinHash signature over its label features and only
+   concepts colliding in a signature band become a pair. This prunes the
+   O(n^2) all-pairs set down to the genuinely-similar neighborhoods —
+   sub-quadratic in concept count — which is what lets the dedup stage
+   complete on a thousands-of-concept graph in minutes instead of
+   hot-looping for hours.
 
-(defn- candidate-pairs
-  "Enumerate candidate concept pairs whose labels share at least one
-   token. Each pair is `[a b]` with `a-uri < b-uri` so we evaluate
-   each unordered pair exactly once. Concepts whose label is missing
-   are excluded — there is nothing to compare.
-
-   This is a deliberately-coarse blocking pass. Production-tier
-   blocking (LSH from S12) is a future optimization; for the current
-   skeleton, this lets every reasonable pair flow through S12's
-   cascade where the real verdict happens."
+   Each pair is `[a b]` with `a-uri < b-uri`; concepts whose label is
+   missing (or carries no signable features) are excluded. Delegates to
+   the pure dedup-cascade blocker so the LSH neighborhood and the T7
+   Jaccard gate measure the SAME similarity — no forked notion."
   [concepts]
-  (let [with-tokens (->> concepts
-                         (filter :label)
-                         (mapv #(assoc % ::tokens (tokenize (:label %)))))]
-    (for [a with-tokens
-          b with-tokens
-          :when (and (neg? (compare (:uri a) (:uri b)))
-                     (seq (set/intersection (::tokens a) (::tokens b))))]
-      [(dissoc a ::tokens) (dissoc b ::tokens)])))
+  (dedup/lsh-candidate-pairs concepts))
 
 (defn- dedup-stage
-  "Run S12's cascade over every candidate pair in scope. S13 evidence
-   aggregation runs AUTOMATICALLY inside the cascade command — this
-   stage just dispatches. Budget exhaustion in S12 surfaces as a
-   `:requires-review` verdict; the skeleton collects them but does
-   NOT halt (they're explicit review work).
+  "Run S12's cascade over the blocked candidate pairs in scope.
+
+   DTscale-1 — the stage is the scale-critical orchestration:
+     1. LSH/MinHash blocking (`candidate-pairs`) prunes O(n^2) → similar
+        neighborhoods.
+     2. PROJECT-ONCE: the `:ontology/axioms` (T1 disjointness) and
+        `:ontology/concept-evidence` (S13) read-models are projected ONCE
+        for the whole stage — NOT once per pair as before (the per-pair
+        re-projection was the hot-loop's second compounding fault).
+     3. PURE PRE-FILTER: every blocked pair runs the projection-independent
+        cheap tiers (`dedup/prefilter-verdict`, threading the projected
+        disjointness map) as a PURE function. Pairs the cheap tiers decide
+        (disjoint / number / negation / entropy / type / LSH-jaccard) get
+        their verdict with NO command, NO event — the vast majority.
+     4. Only SURVIVORS (real merge / ambiguity-band candidates) dispatch the
+        full `run-dedup-cascade` command, threaded with the SHARED projected
+        state so the command does NOT re-project. S13 evidence aggregation
+        still runs automatically inside that command for survivors.
+
+   Verdict-invariance: a survivor's full-cascade verdict is unchanged (its
+   T1–T5/T7 gates are no-ops — the pre-filter already confirmed none fire —
+   so it reaches the SAME T6/T8/T9 verdict). Pre-filtered pairs are TRUE
+   non-candidates (KEEP/SKIP guaranteed); their bookkeeping events are
+   intentionally not emitted (the cost the slice removes).
+
+   Budget exhaustion in S12 surfaces as a `:requires-review` verdict; the
+   skeleton collects them but does NOT halt.
 
    Returns:
-     {:status :ok :pairs-evaluated :merges :distinct :requires-review
-      :verdicts [...] :stage-duration-ms}.
-
-   `:verdicts` is the full per-pair verdict vector — kept on the
-   stage result so the build summary can attach a sample to
-   :dedup-summary without re-querying the projection."
+     {:status :ok :pairs-evaluated :candidate-pairs :prefiltered :survivors
+      :merges :distinct :skipped :requires-review :verdicts [...]
+      :stage-duration-ms}."
   [ctx {:keys [ontology-id alignment-ontology-id llm-budget]
         :or {llm-budget 0}}]
   (let [start (System/currentTimeMillis)]
     (try
-      (let [;; The :broader field on the projection is a set; the
-            ;; cascade command schema requires `[:vector :string]`.
-            ;; Coerce explicitly — a silent serialization mismatch
-            ;; would suppress the cascade.
+      (let [;; The :broader field on the projection is a set; the cascade
+            ;; command schema requires `[:vector :string]`. Coerce explicitly.
             concepts (->> (rm/get-concepts ctx {})
                           (filter #(= ontology-id (:ontology-id %)))
                           (mapv (fn [c]
-                                  (cond-> (select-keys c [:uri :label :description])
+                                  (cond-> (select-keys c [:uri :label :description :type])
                                     (seq (:broader c))
                                     (assoc :broader (vec (:broader c)))))))
+            ;; (1) LSH/MinHash blocking — sub-quadratic candidate generation.
             pairs (candidate-pairs concepts)
-            verdicts
+            ;; (2) PROJECT ONCE for the whole stage (NOT per pair) — BOTH the
+            ;;     S07 disjointness axioms (T1 guard) AND the S13 concept-
+            ;;     evidence map. Pre-fix each per-pair command re-projected both
+            ;;     read-models (a full event-store scan apiece), so the cost was
+            ;;     O(pairs × events) — the hot-loop's second fault. Projecting
+            ;;     once and threading the snapshots into the survivors' commands
+            ;;     reduces this to O(events) for the whole stage.
+            ;;
+            ;;     The dedup VERDICT is unaffected (it comes from the cascade
+            ;;     tiers, not from evidence). The only behavioral nuance is the
+            ;;     S13 evidence LEDGER: survivors that share a URI within one
+            ;;     stage now aggregate from the same start-of-stage snapshot
+            ;;     rather than seeing each other's intra-stage increments. The
+            ;;     events still ALL land, so the post-stage projection is
+            ;;     correct; only the per-event intermediate aggregate differs.
+            ;;     Per-pair evidence re-projection at thousands of concepts was
+            ;;     itself a scale wall, so trading exact intra-stage ledger
+            ;;     intermediates for the project-once contract is the right call.
+            disjointness (or (get-in (rmp/project ctx :ontology/axioms)
+                                     [ontology-id :disjointness])
+                             {})
+            existing-evidence (rmp/project ctx :ontology/concept-evidence)
+            ;; (3) PURE pre-filter — partition blocked pairs into cheaply
+            ;;     decided (no command) vs survivors (full cascade).
+            prefiltered (atom [])
+            survivors (atom [])
+            _ (doseq [[a b] pairs]
+                (if-let [v (dedup/prefilter-verdict
+                            {:a a :b b :disjointness-map disjointness})]
+                  (swap! prefiltered conj v)
+                  (swap! survivors conj [a b])))
+            ;; (4) Only survivors hit the full cascade command — threaded with
+            ;;     the SHARED projected state so the command does NOT re-project.
+            survivor-verdicts
             (mapv (fn [[a b]]
                     (let [result (cp/process-command
                                   (assoc ctx :command
@@ -360,21 +402,25 @@
                                           :ontology-id ontology-id
                                           :alignment-ontology-id alignment-ontology-id
                                           :a a :b b
-                                          :llm-budget llm-budget}))]
-                      ;; Disciplines #5 — no silent fallback. If the
-                      ;; cascade command surfaces an anomaly (schema
-                      ;; reject, missing alignment, etc.), we raise
-                      ;; with the full result attached so the caller
-                      ;; sees the root cause instead of a degraded
-                      ;; silent skip.
+                                          :llm-budget llm-budget
+                                          :disjointness disjointness
+                                          :existing-evidence existing-evidence}))]
+                      ;; Disciplines #5 — no silent fallback. Surface anomalies.
                       (when (:cognitect.anomalies/category result)
                         (throw (ex-info "dedup-stage: cascade command returned anomaly"
                                         {:anomaly result :a a :b b})))
                       (get-in result [:command-result/data :verdict])))
-                  pairs)
+                  @survivors)
+            ;; The verdict vector unifies the pre-filtered (cheap) verdicts and
+            ;; the survivor (full-cascade) verdicts — the stage's reported
+            ;; counts cover BOTH so no decision is silently lost.
+            verdicts (into @prefiltered survivor-verdicts)
             by-verdict (group-by :verdict verdicts)]
         {:status :ok
          :pairs-evaluated (count verdicts)
+         :candidate-pairs (count pairs)
+         :prefiltered (count @prefiltered)
+         :survivors (count @survivors)
          :merges (count (get by-verdict :merge []))
          :distinct (count (get by-verdict :distinct []))
          :skipped (count (get by-verdict :skip []))

@@ -1486,13 +1486,17 @@
    verdict)."
   [{{:keys [ontology-id alignment-ontology-id a b
             llm-budget string-merge-threshold string-ambiguity-lo lsh-jaccard-min
-            a-source-ref b-source-ref]} :command
+            a-source-ref b-source-ref
+            disjointness existing-evidence]} :command
     :as ctx}]
-  (let [;; Pull the S07 axioms projection ONCE for the cascade's T1 guard.
-        all-axioms (rmp/project ctx :ontology/axioms)
-        ;; Per-section disjointness map. Empty {} when no axioms recorded
-        ;; (the guard then no-ops cleanly).
-        disjointness (or (get-in all-axioms [ontology-id :disjointness]) {})
+  (let [;; DTscale-1 — project-once: when the caller (dedup-stage) threads the
+        ;; per-section disjointness map (projected ONCE for the whole stage),
+        ;; use it directly. Otherwise project `:ontology/axioms` here so the
+        ;; command stays self-sufficient for direct callers / tests.
+        disjointness (or disjointness
+                         (get-in (rmp/project ctx :ontology/axioms)
+                                 [ontology-id :disjointness])
+                         {})
         ;; The guard's fn closes over the broader vectors on both candidates
         ;; AND the per-section disjointness map. The cascade tests this
         ;; FIRST — zero LLM calls if it fires.
@@ -1532,7 +1536,10 @@
         ;;
         ;; Not R-Inject-gated — mechanism-level functionality. Every
         ;; cascade invocation emits one of these per side.
-        existing-evidence (rmp/project ctx :ontology/concept-evidence)
+        ;; DTscale-1 — project-once: reuse the stage-supplied evidence map when
+        ;; present; otherwise project here (self-sufficient for direct callers).
+        existing-evidence (or existing-evidence
+                              (rmp/project ctx :ontology/concept-evidence))
         a-agg (evidence/aggregate-from-cascade
                {:existing     (get existing-evidence a-uri {})
                 :verdict      verdict

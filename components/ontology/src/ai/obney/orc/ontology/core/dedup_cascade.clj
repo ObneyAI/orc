@@ -54,6 +54,10 @@
   (:require [clojure.set :as set]
             [clojure.string :as str]))
 
+;; Forward declaration — `prefilter-verdict` (DTscale-1) reuses the T1
+;; disjointness check defined later in the file.
+(declare disjoint-under-axioms?)
+
 ;; =============================================================================
 ;; Normalization + entropy
 ;; =============================================================================
@@ -190,6 +194,141 @@
                        (/ (double (count (set/intersection sh1 sh2)))
                           (count (set/union sh1 sh2))))]
     (max word-jacc shingle-jacc)))
+
+;; =============================================================================
+;; MinHash / LSH banding — pair generation at scale
+;; =============================================================================
+;;
+;; The skeleton's old `candidate-pairs` enumerated EVERY pair sharing a single
+;; label token, which is near-O(n^2) on a graph of thousands of similar-labeled
+;; concepts (the crosswalk hot-loop root cause). Real LSH replaces that: each
+;; concept gets a MinHash signature over its label features, the signature is
+;; cut into bands, and ONLY concepts colliding in at least one band become a
+;; candidate pair. The pair set collapses to the genuinely-similar
+;; neighborhoods — sub-quadratic in concept count.
+;;
+;; The signature features REUSE the same machinery the Jaccard blocking tier
+;; uses (`word-tokens` ∪ 3-`shingles`), so the LSH neighborhood and the T7
+;; Jaccard gate measure the SAME similarity — a pair the T7 gate would keep
+;; will (with high probability) collide in a band, and a pair T7 would skip
+;; (no shared shingles) will not. No new similarity notion is introduced.
+
+(def ^:private minhash-default-perms
+  "MinHash signature length per feature-space. 64 perms cut into 32 bands of
+   2 rows tunes the LSH S-curve so pairs whose Jaccard is at/above the T7
+   floor (0.30) collide with high probability — at s=0.30,
+   1-(1-0.30^2)^32 ≈ 0.94 — while token-disjoint pairs (Jaccard 0) never
+   collide. The blocker is deliberately RECALL-biased (it may admit a few
+   below-floor pairs, which the exact T7 Jaccard gate then skips): it must
+   never DROP a genuine candidate, only over-admit a little."
+  64)
+
+(def ^:private minhash-default-bands 32)
+
+(defn- hash-seeds
+  "`n` deterministic odd multiplier/adder pairs for the universal-hash family
+   used to simulate `n` independent permutations. Pure + deterministic so the
+   signature of a given label is stable across runs."
+  [n]
+  (mapv (fn [i]
+          [(unchecked-int (+ (* (inc i) 0x9E3779B1) 1))      ; odd multiplier
+           (unchecked-int (+ (* (inc i) 0x85EBCA77) 1))])    ; adder
+        (range n)))
+
+(def ^:private default-seeds (hash-seeds minhash-default-perms))
+
+(defn- minhash-of
+  "MinHash signature of a feature SET under `seeds`. nil for an empty set."
+  [features seeds]
+  (when (seq features)
+    (let [bases (mapv #(unchecked-int (hash %)) features)]
+      (mapv (fn [[m a]]
+              (reduce (fn [mn base]
+                        (let [h (unchecked-int
+                                 (bit-xor (unchecked-multiply base m) a))]
+                          (if (< h mn) h mn)))
+                      Integer/MAX_VALUE
+                      bases))
+            seeds))))
+
+(defn minhash-signature
+  "MinHash signature of a label's combined word-token ∪ 3-shingle feature set.
+   Returns nil for a feature-less label. Pure / deterministic.
+
+   (Convenience accessor over the combined feature space; `lsh-candidate-pairs`
+   signs the word-token and shingle spaces SEPARATELY so a collision in either
+   admits the pair — mirroring `blocking-jaccard`'s `max` semantics.)"
+  ([label] (minhash-signature label default-seeds))
+  ([label seeds]
+   (minhash-of (set/union (word-tokens label) (shingles label 3)) seeds)))
+
+(defn- band-keys
+  "Split a MinHash signature into `bands` contiguous bands; return one bucket
+   key per band, tagged by `space` so word-token bands and shingle bands never
+   collide with each other. Concepts sharing ANY tagged band key are
+   LSH-candidates."
+  [space signature bands]
+  (let [rows (quot (count signature) bands)]
+    (when (pos? rows)
+      (mapv (fn [b]
+              [space b (subvec signature (* b rows) (* (inc b) rows))])
+            (range bands)))))
+
+(defn lsh-candidate-pairs
+  "Real LSH/MinHash blocking. Each concept is MinHash-signed over TWO feature
+   spaces — its word-tokens (handles camelCase / underscore composites, e.g.
+   `hasAuthor` vs `hasWriter` sharing `has`) and its 3-shingles (handles
+   substring overlap on single words, e.g. `Organization` vs `Organisation`).
+   Each signature is cut into bands; concepts colliding in ANY band of EITHER
+   space become a candidate pair. This mirrors `blocking-jaccard`'s `max`
+   semantics, so the LSH neighborhood matches the T7 Jaccard gate — and prunes
+   the O(n^2) all-pairs set down to the genuinely-similar neighborhoods
+   (sub-quadratic in concept count).
+
+   RECALL-biased by design: it may over-admit a few below-floor pairs (the
+   exact T7 Jaccard gate then skips them) but must NEVER drop a genuine
+   candidate. Each pair is `[a b]` with `a-uri < b-uri`, emitted once even on
+   multi-band collision. Concepts with a missing / feature-less label are
+   excluded.
+
+   Pure function — no I/O. Options:
+     :perms  signature length per space (default 64)
+     :bands  bands per space            (default 32 → 2 rows)"
+  ([concepts] (lsh-candidate-pairs concepts {}))
+  ([concepts {:keys [perms bands]
+              :or {perms minhash-default-perms bands minhash-default-bands}}]
+   (let [seeds (if (= perms minhash-default-perms) default-seeds (hash-seeds perms))
+         ;; Sign every labeled concept once, in both feature spaces.
+         signed (->> concepts
+                     (filter :label)
+                     (keep (fn [c]
+                             (let [wsig (minhash-of (word-tokens (:label c)) seeds)
+                                   ssig (minhash-of (shingles (:label c) 3) seeds)]
+                               (when (or wsig ssig)
+                                 (assoc c ::wsig wsig ::ssig ssig))))))
+         ;; Bucket by tagged band key across both spaces.
+         buckets (reduce
+                  (fn [acc c]
+                    (reduce (fn [a k] (update a k (fnil conj []) c))
+                            acc
+                            (concat (when (::wsig c) (band-keys :w (::wsig c) bands))
+                                    (when (::ssig c) (band-keys :s (::ssig c) bands)))))
+                  {}
+                  signed)
+         ;; Within each bucket, enumerate ordered pairs (a-uri < b-uri),
+         ;; deduping pairs that collide in more than one band via a set.
+         seen (java.util.HashSet.)
+         out (transient [])]
+     (doseq [[_ members] buckets
+             :when (> (count members) 1)
+             a members
+             b members
+             :when (neg? (compare (:uri a) (:uri b)))]
+       (let [k [(:uri a) (:uri b)]]
+         (when-not (.contains seen k)
+           (.add seen k)
+           (conj! out [(dissoc a ::wsig ::ssig) (dissoc b ::wsig ::ssig)]))))
+     (persistent! out))))
 
 ;; =============================================================================
 ;; String similarity (Jaro-Winkler)
@@ -453,6 +592,98 @@ Pair under review:
                                      :b-label b-lab :b-desc b-desc
                                      :kind-hint (or (:kind-hint a) (:kind-hint b))})]
                     (assoc llm :tier :llm-verdict)))))))))))
+
+;; =============================================================================
+;; Pure pre-filter — the cheap, projection-independent tiers as a PURE fn
+;; =============================================================================
+;;
+;; DTscale-1: at scale the dominant dedup cost was dispatching a COMMAND per
+;; blocked pair, each re-projecting `:ontology/axioms`. The cheap tiers (T1
+;; disjointness, T2 number, T3 negation, T4 entropy, T5 type, T7 LSH-jaccard)
+;; decide the vast majority of blocked pairs and need NO LLM and NO event-store
+;; write to do so. This fn lifts EXACTLY those tiers out of the command path so
+;; the stage can resolve them with no command / no projection / no events.
+;;
+;; It returns a TERMINAL verdict map (the same shape `run-cascade` returns for
+;; those tiers — same `:tier`/`:verdict`/`:reason`) for a pair the cheap tiers
+;; decide, or `nil` when the pair SURVIVES to the full cascade. A `nil`
+;; (surviving) pair is exactly the set the cascade resolves at T6 (exact-norm
+;; MERGE), T8 (string-similarity), or T9 (LLM) — the tiers that emit events or
+;; cost an LLM call. The verdict for a surviving pair is therefore UNCHANGED
+;; from the pre-fix cascade: the survivor runs the full `run-cascade`, whose
+;; T1–T5/T7 gates are no-ops for it (the pre-filter already confirmed none
+;; fire) and which then reaches the SAME T6/T8/T9 verdict it always did.
+;;
+;; Verdict-invariance with the full cascade is the load-bearing property:
+;;   - T1 disjointness is honored HERE too (when the caller threads the
+;;     projected `:disjointness-map`), so a disjoint pair never leaks past as
+;;     a survivor and never gets a different tier than the cascade's T1.
+;;   - The cascade evaluates T1→T7 in order; this fn evaluates the SAME
+;;     predicates in the SAME order, so the deciding tier matches.
+
+(defn prefilter-verdict
+  "PURE pre-filter over a candidate pair. Decides the projection-independent
+   cheap tiers (T1 disjointness — when a `:disjointness-map` is supplied — plus
+   T2 number, T3 negation, T4 entropy, T5 type, T7 LSH-jaccard) with NO I/O,
+   returning the terminal verdict map. Returns `nil` when the pair SURVIVES —
+   i.e. it must go to the full `run-cascade` (T6 merge / T8 similarity / T9
+   LLM), where events/LLM cost live.
+
+   Options:
+     :a / :b              the candidate concept maps (`:uri :label :description
+                          :type :broader`)
+     :disjointness-map    OPTIONAL per-section disjointness map (the stage
+                          projects `:ontology/axioms` ONCE and threads it). When
+                          present, the T1 guard fires here; when absent, T1 is
+                          deferred to the full cascade for surviving pairs.
+     :lsh-jaccard-min     T7 floor (default 0.30 — matches `run-cascade`)"
+  [{:keys [a b disjointness-map lsh-jaccard-min]
+    :or {lsh-jaccard-min 0.30}}]
+  (let [a-lab (:label a) b-lab (:label b)
+        a-type (:type a) b-type (:type b)]
+    (cond
+      ;; T1 — disjointness (only when the stage threaded the projected map)
+      (and disjointness-map
+           (disjoint-under-axioms? disjointness-map
+                                   (:broader a []) (:broader b [])))
+      {:tier :disjointness-guard :verdict :distinct :reason :disjointness-guard
+       :detail "concepts under disjoint classes — KEEP without further tiers"}
+
+      ;; T2 — number guard
+      (number-difference? a-lab b-lab)
+      {:tier :number-guard :verdict :distinct :reason :number-difference
+       :detail (str "labels carry different numeric tokens: "
+                    (pr-str (re-seq #"\d+" a-lab)) " vs "
+                    (pr-str (re-seq #"\d+" b-lab)))}
+
+      ;; T3 — negation guard
+      (negation-difference? a-lab b-lab)
+      {:tier :negation-guard :verdict :distinct :reason :negation-difference
+       :detail "labels are a polarity-flip pair"}
+
+      ;; T4 — entropy gate
+      (or (low-info-label? a-lab) (low-info-label? b-lab))
+      {:tier :entropy-gate :verdict :skip :reason :low-information
+       :detail "label too short or stop-word-only"}
+
+      ;; T5 — type-based blocking
+      (and a-type b-type (not= a-type b-type))
+      {:tier :type-blocking :verdict :distinct :reason :type-mismatch
+       :detail (str "types differ: " (pr-str a-type) " vs " (pr-str b-type))}
+
+      ;; T7 — LSH jaccard floor. ONLY when the labels are NOT exact-normalize-
+      ;; equal (an exact-norm-equal pair is a T6 candidate that MUST survive to
+      ;; the cascade even if its Jaccard somehow dipped — mirrors run-cascade's
+      ;; `(and (not norm-equal?) (< jacc ...))` ordering).
+      (let [norm-equal? (= (normalize-label a-lab) (normalize-label b-lab))]
+        (and (not norm-equal?)
+             (< (blocking-jaccard a-lab b-lab) lsh-jaccard-min)))
+      {:tier :lsh-blocking :verdict :skip :reason :no-shared-shingles
+       :detail (format "Jaccard %.3f below %.3f"
+                       (blocking-jaccard a-lab b-lab) lsh-jaccard-min)}
+
+      ;; SURVIVES — T6 / T8 / T9 candidate; the full cascade decides it.
+      :else nil)))
 
 ;; =============================================================================
 ;; Disjointness lookup helper — used by the defcommand to wire S07 axioms in
