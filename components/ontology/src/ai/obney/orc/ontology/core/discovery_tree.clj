@@ -250,24 +250,99 @@
         "  :entity-candidates  — vector of candidate entity-type descriptions (strings)\n  :identifying-keys   — map of entity-candidate (string) -> vector of field(s) that identify it\n  :scope-fields       — vector of field names that COULD scope the source (no value chosen)\n  :linking-keys       — vector of code/key field names that likely link to other sources\n  :grain-signals      — vector of strings noting where rows are finer-grained than entities\n  :sample             — vector of a few representative row maps read from the source")))
 
 (defn model-node-prompt
-  "PROMOTION SEAM (PRD M6) for the Model node. DT1 thin body: read goal + the
-   profile (its predecessor's output on the blackboard) and decide entity types,
-   URI-keying, grain strategy, and the scope filter. DT3 replaces this body with
-   a focused, prototyped prompt — orchestration unchanged."
+  "PROMOTION SEAM (PRD M6) for the Model node. DT3 FOCUSED body: a small,
+   single-purpose prompt that does ONE job — turn the GOAL + the DT2 profile into
+   the MODELING DECISION (the entity model) — and emits the frozen model-spec
+   contract. It does NOT re-profile and does NOT author a transform (DT4 owns the
+   transform); it makes ONLY the grain + scope + entity decision.
+
+   This node is the KEYSTONE of the V17/V20 OVER-EXTRACTION FIX. The retired
+   mega-prompt buried 'decide grain + scope' in a wall of prose the loop kept
+   dropping, so the builder dumped one concept per raw row (one node per national
+   sub-row, no requested-region scope). Here the two load-bearing decisions are
+   the node's WHOLE job and a structurally-guaranteed step:
+
+     - GRAIN: when the profile's grain-signals show an entity recurs across
+       breakdown / sub-rows (a demographic / category / period / sub-measure
+       split, or repeated identifying keys), choose `:canonical-row-filter`
+       (keep the ONE summary/total row per entity, drop breakdown rows) OR
+       `:breakdown-as-entity` (the breakdown is ITSELF a distinct entity, keyed
+       into its URI). NEVER one-concept-per-raw-row.
+     - SCOPE: if the GOAL states a scope (a region, subset, time window,
+       category), emit a `:scope-filter` keyed to a scope-field the profile
+       discovered. The scope comes from the RUNTIME GOAL — never invented, never
+       hardcoded.
+
+   The profile is read TOLERANTLY: the DT1-frozen contract freezes the KEY SET,
+   not value shapes, and the DT2 live verify showed some profile fields come back
+   as prose STRINGS rather than maps/vectors (model-variable). The node is told
+   the keys may be strings OR structured and to read whichever it gets.
+
+   Domain-agnostic (discipline 12): no CIP/SOC/industry/education knowledge — it
+   models ANY structured source from goal + profile. `goal` is the ONLY domain
+   reference; it orients the entity choice AND supplies the scope. Orchestration
+   unchanged — this body is returned through the same seam the thin DT1 body was."
   [goal]
-  (str "GOAL (orients this step): " goal "\n\n"
-       "STEP: MODEL the entities. You are given the PROFILE of this source as "
-       "the input key :profile (read it with (get-input :profile)). Decide the "
-       "ENTITY TYPES this source contributes, which field(s) KEY each entity's "
-       "URI (so the same real entity collapses to one node, not one-per-row), the "
-       "GRAIN STRATEGY for each entity type (one of " (pr-str valid-grain-strategies)
-       " — :canonical-row-filter keeps one entity per canonical row and drops "
-       "breakdown rows; :breakdown-as-entity mints each breakdown as its own "
-       "entity), the SCOPE FILTER the goal implies (the field + values to keep), "
-       "and the EDGES between entity types."
+  (str "You are the MODEL step of an ontology-discovery pipeline. Your ONE job is "
+       "to decide the ENTITY MODEL for this source — the entity types, how each is "
+       "keyed, the GRAIN to keep, and the SCOPE the goal asks for. You do NOT "
+       "re-profile the source and you do NOT write any extraction code; a later "
+       "step authors the transform. Make ONLY the modeling decision, then call "
+       "(final! {…}).\n\n"
+       "GOAL (orients the entity choice AND states the scope to honor): " goal "\n\n"
+       "INPUT: you are given the PROFILE of this source as the input key :profile "
+       "(read it with (get-input :profile)). The profile characterizes the source: "
+       "its entity-candidates, identifying-keys (field(s) that name one instance), "
+       "scope-fields (fields that COULD narrow the source), linking-keys (shared "
+       "codes that connect to other sources), grain-signals (where rows are FINER "
+       "than entities), and a sample of real rows. READ IT TOLERANTLY: any field "
+       "may come back as a plain STRING (prose) OR as a structured map/vector — "
+       "handle whichever you get; never assume a rigid shape. You may sample a few "
+       "rows from the source to confirm a field name, but do NOT re-do the profile.\n\n"
+       "MAKE TWO LOAD-BEARING DECISIONS (this is the whole job — get these right "
+       "and the source will NOT over-extract):\n\n"
+       "  1. GRAIN — for EACH entity type, choose how the rows map to entities so "
+       "you NEVER mint one concept per raw row when rows are finer than entities. "
+       "Look at the profile's grain-signals + the repeats in the sample. If an "
+       "entity recurs across breakdown / sub-rows (a category, period, status, "
+       "subgroup, or sub-measure split — or its identifying key repeats across "
+       "many rows), pick ONE grain-strategy for it from " (pr-str valid-grain-strategies)
+       ":\n"
+       "       :canonical-row-filter — the entity has ONE summary/total/canonical "
+       "row per instance and the rest are breakdown rows of that same entity; keep "
+       "the canonical row, drop the breakdowns (note which field marks the "
+       "canonical/total row so the transform step can filter on it).\n"
+       "       :breakdown-as-entity — the breakdown is ITSELF a real entity worth a "
+       "node; mint each breakdown as its own entity and FOLD the breakdown key into "
+       "its URI so the rows don't collapse.\n"
+       "     Pick whichever fits what the GOAL wants to count. If rows are already "
+       "one-per-entity (the profile shows no finer grain), :canonical-row-filter "
+       "with no breakdown is fine — the point is you DECIDED, not that you dumped "
+       "every row.\n"
+       "     URI-KEYING: derive each entity's :uri-keying-fields from the profile's "
+       "identifying-keys for that entity (the field(s) whose value names one "
+       "instance), so the same real entity collapses to ONE node, not one-per-row. "
+       "For :breakdown-as-entity, INCLUDE the breakdown key in the keying fields.\n\n"
+       "  2. SCOPE — does the GOAL state a scope (a region, a subset, a time "
+       "window, a category)? If YES, emit a :scope-filter that keeps ONLY the "
+       "in-scope rows, keyed to a scope-field the profile discovered (pick the "
+       "field from the profile's scope-fields that matches what the goal asks for) "
+       "with the value(s) the GOAL names. The scope VALUE comes from the GOAL — "
+       "do NOT invent a scope the goal didn't ask for, and do NOT hardcode one. "
+       "If the goal states NO scope, set :scope-filter to nil (keep everything).\n\n"
+       "Then decide the EDGES between your entity types (the relationships the "
+       "source supports — e.g. one entity links to another via a shared key the "
+       "profile flagged as a linking-key).\n\n"
+       "EMIT EDN DATA, NOT STRINGS: the values you (final! …) must be real "
+       "Clojure data structures — :entity-types a VECTOR of MAPS, :edges a VECTOR "
+       "of MAPS, :scope-filter a MAP (or nil) — NOT a JSON string and NOT a prose "
+       "string. CRITICAL: each entity's :grain-strategy MUST be EXACTLY one of "
+       "these two keywords — " (pr-str (vec valid-grain-strategies)) " — a bare "
+       "keyword, NOT a sentence describing it. The downstream transform step reads "
+       "the grain-strategy keyword directly; a prose description there is unusable."
        (contract-block
         model-contract-keys
-        "  :entity-types  — vector of {:type <str> :uri-keying-fields [<field> ...] :grain-strategy <one of the enum above>}\n  :scope-filter  — a description (or map) of the field + values to keep for the goal's scope\n  :edges         — vector of {:source-type <str> :target-type <str> :predicate <str>}")))
+        "  :entity-types  — VECTOR of MAPS: [{:type <str> :uri-keying-fields [<field> ...] :grain-strategy <EXACTLY :canonical-row-filter OR :breakdown-as-entity, a bare keyword>} ...]\n                   (you MAY add :canonical-row-marker <field/value note> for a :canonical-row-filter entity, or :breakdown-key <field> for a :breakdown-as-entity entity — the transform step reads these)\n  :scope-filter  — nil if the goal states no scope, else a MAP {:field <scope-field from the profile> :values [<value(s) the GOAL names>]}; the value comes from the GOAL, never invented\n  :edges         — VECTOR of MAPS: [{:source-type <str> :target-type <str> :predicate <str>} ...]")))
 
 (defn transform-node-prompt
   "PROMOTION SEAM (PRD M6) for the Transform node. DT1 thin body: read goal + the
@@ -514,11 +589,19 @@
       (let [bb {:profile {:output (:output profile-r)}}
 
             ;; --- Node 2: MODEL+grain+scope (reads the profile via the blackboard) ---
+            ;; DT3: the Model node is FOCUSED — its prompt is used verbatim
+            ;; (:focused-prompt? true) so the retired mega-prompt's profiling /
+            ;; transform / coverage guidance is NOT prepended. The focused body
+            ;; makes ONLY the grain + scope + entity decision (the V17/V20
+            ;; over-extraction fix as a guaranteed step). The granted source-access
+            ;; tools are still bound via :granted-source so the node can sample a
+            ;; row to confirm a field name without re-profiling.
             model-r (run-node! ctx {:node-key :model
                                     :prompt (model-node-prompt goal)
                                     :source source
                                     :contract-keys model-contract-keys
                                     :extra-inputs {:profile (node-output bb :profile)}
+                                    :focused-prompt? true
                                     :model model :budget budget :debug? debug?})]
         (if (not= :ok (:status model-r))
           {:status :failed-at-model
