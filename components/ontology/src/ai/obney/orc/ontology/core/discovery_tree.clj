@@ -121,6 +121,25 @@
    is the V17/V20 over-extraction fix made a first-class decision."
   #{:canonical-row-filter :breakdown-as-entity})
 
+(defn normalize-grain-strategy
+  "Normalize a model-spec :grain-strategy value to its frozen-enum KEYWORD,
+   tolerating the value-shape variance the DT3 live verify documented: the model
+   emits the strategy as the bare keyword `:canonical-row-filter` on some runs and
+   as the STRING form `\":canonical-row-filter\"` on others (the frozen contract
+   freezes the KEY SET + the ENUM, not the literal value-shape). A symbol form is
+   also tolerated. Returns the keyword (`:canonical-row-filter` /
+   `:breakdown-as-entity`) when it maps onto the enum, else nil — so a consumer
+   can read the DECISION regardless of which value-shape arrived. This is the
+   carry-forward the DT4 Transform node MUST apply when reading the model-spec
+   (the transform's grain handling keys off the keyword, not a sentence)."
+  [v]
+  (let [k (cond
+            (keyword? v) v
+            (symbol? v)  (keyword (str/replace (str v) #"^:" ""))
+            (string? v)  (keyword (str/replace (str/trim v) #"^:" ""))
+            :else        nil)]
+    (when (contains? valid-grain-strategies k) k)))
+
 ;; =============================================================================
 ;; Promotion seam (PRD M6) — static now, living later
 ;; =============================================================================
@@ -345,33 +364,117 @@
         "  :entity-types  — VECTOR of MAPS: [{:type <str> :uri-keying-fields [<field> ...] :grain-strategy <EXACTLY :canonical-row-filter OR :breakdown-as-entity, a bare keyword>} ...]\n                   (you MAY add :canonical-row-marker <field/value note> for a :canonical-row-filter entity, or :breakdown-key <field> for a :breakdown-as-entity entity — the transform step reads these)\n  :scope-filter  — nil if the goal states no scope, else a MAP {:field <scope-field from the profile> :values [<value(s) the GOAL names>]}; the value comes from the GOAL, never invented\n  :edges         — VECTOR of MAPS: [{:source-type <str> :target-type <str> :predicate <str>} ...]")))
 
 (defn transform-node-prompt
-  "PROMOTION SEAM (PRD M6) for the Transform node. DT1 thin body: read goal + the
-   model-spec (its predecessor's output) + a sample and author a per-row
-   extraction TRANSFORM (the V20 shape), sample-validate it, and emit it. DT4
-   replaces this body with a focused, prototyped prompt — orchestration
-   unchanged. The V20 apply-step (downstream) is already proven; this node just
-   AUTHORS the transform."
+  "PROMOTION SEAM (PRD M6) for the Transform node. DT4 FOCUSED body: a small,
+   single-purpose prompt that does ONE job — AUTHOR + sample-VALIDATE the per-row
+   extraction TRANSFORM (the V20 shape) that HONORS the model-spec — and emits the
+   frozen transform contract. It does NOT re-model, re-profile, or re-decide grain/
+   scope (DT2/DT3 own those); it TRANSLATES the model-spec into executable
+   per-row code and proves it on a sample before scale.
+
+   This node is where GRAIN + SCOPE actually TAKE EFFECT on the data. The DT3
+   Model node DECIDED them; here the transform ENFORCES them per row — the V17/V20
+   over-extraction fix made real at extraction time:
+
+     - GRAIN. For a :canonical-row-filter entity, the transform returns EMPTY
+       drafts for breakdown/non-canonical rows (so demographic / sub-measure splits
+       collapse into the ONE canonical concept and its :attributes — never one
+       concept per raw row). For a :breakdown-as-entity entity, the breakdown key
+       is folded into the :uri so each breakdown is its own node.
+     - SCOPE. If the model-spec carries a :scope-filter, the transform returns
+       EMPTY drafts for OUT-OF-SCOPE rows. When the scope field is present in the
+       row, test it directly; when the scope field lives in ANOTHER table the row
+       does NOT carry, RESOLVE the in-scope key set ONCE during authoring (sample
+       the other table with the source tools) and EMBED it as a literal set in the
+       transform so the per-row test is pure (the transform runs in a sandbox with
+       no tool access — it cannot query at apply time).
+     - URI-KEYING. Key each concept's :uri from the model-spec's entity's
+       :uri-keying-fields, so the same real entity collapses to ONE node.
+     - EDGES. Emit a relationship-draft per the model-spec's :edges between the
+       URIs of the entities a row produces.
+
+   The model-spec is read TOLERANTLY (the DT3 carry-forward): :grain-strategy may
+   arrive as the bare keyword OR its string form — the prompt tells the node to
+   normalize it; every other field may be a map/vector or prose.
+
+   Domain-agnostic (discipline 12): no CIP/SOC/industry/education knowledge — it
+   authors a transform for ANY structured source from the model-spec the prior
+   node produced. `goal` only orients; the modeling decisions come from the
+   model-spec. Orchestration unchanged — returned through the same seam the thin
+   DT1 body was."
   [goal]
-  (str "GOAL (orients this step): " goal "\n\n"
-       "STEP: DESIGN the extraction TRANSFORM. You are given the MODEL-SPEC as the "
-       "input key :model-spec (read it with (get-input :model-spec)). Author a PURE "
-       "per-row transform — a (fn [row] {:concept-drafts [...] :relationship-drafts "
-       "[...]}) — that mints the entity types the model-spec decided at the grain + "
-       "scope it decided (return EMPTY drafts for breakdown/out-of-scope rows). "
-       "VALIDATE it on a sample (map it over rows you sample), then hand it back AS "
-       "A STRING via :transform-source. It runs in the restricted sandbox (only "
-       "clojure.core / clojure.string / clojure.set; no Java interop, no tool calls "
-       "inside it). Carry the row's measures as :attributes on the entity concept. "
-       "EVERY concept-draft your transform returns MUST carry BOTH a :uri and a "
-       ":label (a human-readable name — derive it from the row when the row has a "
-       "name/title field, else from the identifying value), plus an :evidence "
-       "vector with a verbatim quote; every relationship-draft MUST carry "
-       ":source-uri, :target-uri, and :predicate. A draft missing :uri or :label "
-       "is rejected downstream — emit both for every draft (including any node an "
-       "edge points to)."
+  (str "You are the TRANSFORM step of an ontology-discovery pipeline. Your ONE job "
+       "is to AUTHOR a pure per-row extraction transform that ENFORCES the decisions "
+       "the prior MODEL step already made, VALIDATE it on a sample, then emit it. "
+       "You do NOT re-model, re-profile, or re-decide grain/scope — those are "
+       "decided; you TRANSLATE them into code. Make ONLY the transform, then call "
+       "(final! {…}).\n\n"
+       "GOAL (orients only): " goal "\n\n"
+       "INPUT: you are given the MODEL-SPEC as the input key :model-spec (read it "
+       "with (get-input :model-spec)). It has :entity-types (each with :type, "
+       ":uri-keying-fields, and a :grain-strategy), an optional :scope-filter "
+       "{:field … :values […]} (nil = keep everything), and :edges. READ IT "
+       "TOLERANTLY: a field may be a map/vector or prose. CRITICAL — :grain-strategy "
+       "may arrive as a bare keyword (e.g. :canonical-row-filter) OR as its STRING "
+       "form (e.g. \":canonical-row-filter\"); NORMALIZE it (strip a leading colon, "
+       "treat the two as equal) before you branch on it. The two strategies are "
+       (pr-str (vec valid-grain-strategies)) ".\n\n"
+       "WHAT THE TRANSFORM MUST DO (this is the whole job — get grain + scope right "
+       "and the source will NOT over-extract):\n"
+       "  1. SAMPLE a few real rows from the source (a quick tool call) and LOOK at "
+       "the EXACT map a row is. The transform receives each row as the SAME map the "
+       "sample tool returns — so access its fields with the EXACT key type the "
+       "sample shows (if the sampled row's keys print as :SOME_FIELD they are "
+       "KEYWORDS — use (:SOME_FIELD row) or (get row :SOME_FIELD); if they print as "
+       "\"SOME_FIELD\" they are STRINGS). Do NOT assume — copy the key form from the "
+       "real sampled row. A key-type mismatch silently yields nil for EVERY row and "
+       "extracts NOTHING (a 0-concept false-empty — the failure to avoid).\n"
+       "  2. AUTHOR a (fn [row] {:concept-drafts [...] :relationship-drafts [...]}):\n"
+       "     - SCOPE: if :scope-filter is non-nil, return {:concept-drafts [] "
+       ":relationship-drafts []} for rows OUTSIDE the scope. If the scope field is "
+       "IN the row, test it directly. If the scope field is NOT in the row (it lives "
+       "in another table the row doesn't carry), resolve the in-scope key set NOW "
+       "during authoring by ACTUALLY RUNNING a tool query against the OTHER table "
+       "for the COMPLETE set of in-scope identifying values (e.g. select the id "
+       "field where the scope field matches the goal's value). Use the REAL VALUES "
+       "the query RETURNS — NEVER invent, guess, or hand-type id values you did not "
+       "get back from a tool call (fabricated ids match nothing and silently extract "
+       "ZERO). Get them ALL (not just one sample window, or you scope to a tiny "
+       "fraction). EMBED that returned set as a literal (e.g. a closed-over #{…}) so "
+       "the per-row test is PURE — the transform CANNOT "
+       "call tools at apply time. Use the SAME key/value TYPE for the set members "
+       "that the per-row field will have (e.g. if the row's key is an integer, store "
+       "integers, or stringify both sides consistently).\n"
+       "     - GRAIN: for a :canonical-row-filter entity, return EMPTY drafts for "
+       "non-canonical / breakdown rows (keep ONE concept per entity; fold the row's "
+       "measures into that concept's :attributes — never one concept per raw row). "
+       "For a :breakdown-as-entity entity, FOLD the breakdown key into the :uri so "
+       "each breakdown becomes its own node.\n"
+       "     - URI: key each concept's :uri from that entity's :uri-keying-fields "
+       "(join the row's values for those fields) so the same real entity collapses "
+       "to ONE node.\n"
+       "     - EDGES: for each :edges entry, emit a relationship-draft between the "
+       "URIs of the source-type and target-type concepts the row produced.\n"
+       "  3. VALIDATE on the REAL sampled rows (not a hand-typed copy): map your fn "
+       "over the ACTUAL row maps the sample tool returned and CONFIRM the result is "
+       "sane — AT LEAST ONE in-scope row must produce a NON-EMPTY concept-draft "
+       "carrying a :uri + :label, and out-of-scope / breakdown rows produce empty "
+       "drafts. If EVERY sampled in-scope row comes back empty, your field-key access "
+       "or scope test is wrong (the key-type trap above) — FIX it and re-validate. "
+       "Only finalize once the sample actually produces drafts.\n\n"
+       "SANDBOX: the transform is eval'd in a restricted sandbox — clojure.core / "
+       "clojure.string / clojure.set ONLY; NO Java interop, NO tool calls inside the "
+       "fn. Do all sampling/scope-resolution BEFORE the fn and bake the result into "
+       "the source.\n\n"
+       "EVERY concept-draft MUST carry BOTH a :uri and a :label (a human-readable "
+       "name — from the row's name/title field if present, else from the identifying "
+       "value), plus an :evidence vector with a verbatim quote from the row; carry "
+       "the row's measures as :attributes. EVERY relationship-draft MUST carry "
+       ":source-uri, :target-uri, and :predicate. A draft missing :uri or :label is "
+       "rejected downstream — emit both for every draft (including any node an edge "
+       "points to)."
        (contract-block
         transform-contract-keys
-        "  :transform-source — the (fn [row] ...) AS A STRING of Clojure source\n  :selector         — the table/sheet name the transform applies to (omit for csv)")))
+        "  :transform-source — the (fn [row] {:concept-drafts [...] :relationship-drafts [...]}) AS A STRING of Clojure source, scope+grain enforced, sample-validated\n  :selector         — the EXACT table/sheet name whose ROWS the transform consumes (the same table/sheet you SAMPLED above, so the apply-step streams the right table). For sql this is the table NAME (e.g. the table you sampled), NOT a function name and NOT `identity`. Omit (or nil) for a csv source.")))
 
 ;; =============================================================================
 ;; node-output — the inter-node contract READ mechanism
@@ -617,11 +720,21 @@
           (let [bb (assoc bb :model {:output (:output model-r)})
 
                 ;; --- Node 3: TRANSFORM-design (reads the model-spec via the blackboard) ---
+                ;; DT4: the Transform node is FOCUSED — its prompt is used verbatim
+                ;; (:focused-prompt? true) so the retired mega-prompt's profiling /
+                ;; modeling / scope-DECISION guidance is NOT prepended. The focused
+                ;; body's WHOLE job is authoring + sample-validating the per-row
+                ;; transform that ENFORCES the model-spec's grain + scope (the V17/
+                ;; V20 over-extraction fix made real at extraction time). The granted
+                ;; source-access tools are still bound via :granted-source so the
+                ;; node can sample rows (and any cross-table scope key set) before it
+                ;; bakes them into the pure transform source.
                 transform-r (run-node! ctx {:node-key :transform
                                             :prompt (transform-node-prompt goal)
                                             :source source
                                             :contract-keys transform-contract-keys
                                             :extra-inputs {:model-spec (node-output bb :model)}
+                                            :focused-prompt? true
                                             :model model :budget budget :debug? debug?})]
             (if (not= :ok (:status transform-r))
               {:status :failed-at-transform
