@@ -82,6 +82,9 @@
    promotion seam, PRD M6)."
   (:require [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
             [ai.obney.orc.ontology.core.deterministic-skeleton :as skeleton]
+            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.time.interface :as time]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -769,6 +772,254 @@
    reviewer reads each node's output step-by-step (PRD user-story 25)."
   [blackboard node-key]
   (get-in blackboard [node-key :output]))
+
+;; =============================================================================
+;; DT5 — graph-level Requirements / competency-question node (PRD M3 + M7)
+;; =============================================================================
+;; A GRAPH-LEVEL node that runs AFTER every source has been profiled. It derives
+;; competency questions (CQs) from the GOAL ⨯ the profiles — grounded in what the
+;; sources actually contain (the profiles' entity-candidates / keys / fields) AND
+;; goal-anchored (testing what the graph SHOULD answer per the goal, not merely
+;; what was extracted, so the exit gate is not self-fulfilling). The derived CQs
+;; are persisted as the S14 ORSD spec the S15 exit-criterion judges (PRD M7), and
+;; surfaced for HITL review/override. A consumer-supplied CQ set seeds/overrides
+;; the derived set (when CQs are supplied, derivation is skipped/merged).
+;;
+;; The CQ prompt carries NO domain knowledge (discipline 12): the CQs come from
+;; the runtime goal + the profiles. The node reads profiles TOLERANTLY (the DT2
+;; value-shape variance: a profile field may be prose strings OR maps/vectors).
+
+(def cq-contract-keys
+  "The frozen Requirements/CQ-node output contract (PRD M3). The node emits the
+   derived competency questions (a vector of natural-language question strings) —
+   the load-bearing exit-gate questions S15 judges — plus the rationale that ties
+   each back to the goal + the profiles (so the HITL reviewer can see WHY each was
+   derived). Only `:competency-questions` persists into the ORSD spec; the
+   rationale is surfaced for review, not gated on."
+  [:competency-questions :rationale])
+
+(defn cq-node-prompt
+  "PROMOTION SEAM (PRD M6) for the graph-level Requirements/CQ node. DT5 FOCUSED
+   body: a small, single-purpose prompt that does ONE job — derive COMPETENCY
+   QUESTIONS from the GOAL ⨯ the source profiles — and emits the frozen CQ
+   contract. It does NOT profile, model, transform, or extract; it reasons over
+   the ALREADY-PRODUCED profiles + the goal to author the questions the finished
+   graph must be able to answer.
+
+   The two load-bearing properties (both required, in tension — this is the whole
+   job):
+
+     - GROUNDED: each CQ must be answerable IN PRINCIPLE from what the profiles
+       show the sources actually CONTAIN — the entity-candidates, identifying/
+       linking keys, scope fields, and grain the profiles surfaced. A CQ about a
+       thing no profile mentions is ungrounded; do not author it.
+     - GOAL-ANCHORED: the CQs test what the graph SHOULD answer to satisfy the
+       GOAL — not merely what happens to get extracted. This keeps the exit gate
+       from being self-fulfilling: the questions come from the goal's intent,
+       checked against what the sources can support, NOT read back off the
+       extraction. Prefer questions that exercise the goal's core relationships /
+       connections across sources, not trivial single-field lookups.
+
+   The profiles are read TOLERANTLY (the DT2 carry-forward): any profile field may
+   arrive as a prose STRING or as a structured map/vector — handle whichever.
+
+   Domain-agnostic (discipline 12): no CIP/SOC/industry/education knowledge — the
+   CQs are derived for ANY set of profiled sources from the runtime goal + the
+   profiles. `goal` is the ONLY domain reference. Orchestration unchanged — this
+   body is returned through the same seam the focused DT2/DT3/DT4 bodies are."
+  [goal]
+  (str "You are the REQUIREMENTS step of an ontology-discovery pipeline. Your ONE "
+       "job is to derive the COMPETENCY QUESTIONS the finished graph must be able "
+       "to answer — the natural-language questions that, once the graph is built, "
+       "are the acceptance test for whether discovery achieved the goal. You do "
+       "NOT profile, model, transform, or extract; the sources are ALREADY "
+       "profiled. Reason over the goal + the profiles, then call (final! {…}).\n\n"
+       "GOAL (the questions test whether the graph satisfies THIS): " goal "\n\n"
+       "INPUT: you are given the PROFILES of every source as the input key "
+       ":profiles (read it with (get-input :profiles)) — a vector of per-source "
+       "profile maps. Each profile characterizes one source: its entity-candidates "
+       "(the real-world things its rows describe), identifying-keys (the field(s) "
+       "that name one instance), scope-fields (fields that could narrow it), "
+       "linking-keys (shared codes that connect it to OTHER sources), grain-signals "
+       "(where rows are finer than entities), and a sample of real rows. READ THEM "
+       "TOLERANTLY: any field may be a prose STRING or a structured map/vector — "
+       "handle whichever you get; never assume a rigid shape.\n\n"
+       "DERIVE THE COMPETENCY QUESTIONS (this is the whole job — get BOTH "
+       "properties right):\n\n"
+       "  1. GOAL-ANCHORED — author the questions from what the GOAL says the graph "
+       "should answer, NOT from whatever happens to get extracted. The questions "
+       "are the goal made testable. Favour questions that exercise the goal's CORE "
+       "relationships — especially CONNECTIONS ACROSS sources (use the profiles' "
+       "linking-keys to find where two sources describe the same entity), not "
+       "trivial single-field lookups. Do NOT just paraphrase the extraction; the "
+       "gate must NOT be self-fulfilling.\n"
+       "  2. GROUNDED — every question must be answerable, at least in theory, from "
+       "what the profiles show the sources actually CONTAIN (their entity-candidates, "
+       "keys, scope-fields, grain). If the goal wants something NO profile "
+       "supports, do NOT author a question for it (an honest gap is better than a "
+       "question the sources cannot answer — that is a later honest-unanswerable "
+       "signal, not a CQ to mint here).\n\n"
+       "Write each CQ as ONE clear, specific natural-language question (e.g. "
+       "\"Which X are linked to a given Y?\", \"What is the Z attribute of each W "
+       "in <the goal's scope>?\"). Honor any scope the GOAL states. Aim for a "
+       "focused set (roughly 4–8) that COVERS the goal's intent without padding — "
+       "each question earns its place by testing a distinct part of the goal that "
+       "the profiles can support.\n\n"
+       "For EACH question, also give a one-line RATIONALE naming (a) which part of "
+       "the GOAL it tests and (b) which profile fields/sources GROUND it — so a "
+       "human reviewer can see WHY it was derived and override it if wrong.\n\n"
+       "Do NOT mint concepts, do NOT emit a tree, do NOT design a transform — just "
+       "derive the questions and finalize."
+       (contract-block
+        cq-contract-keys
+        "  :competency-questions — VECTOR of natural-language question STRINGS (the load-bearing exit-gate questions; these persist as the ORSD spec)\n  :rationale            — VECTOR of one-line strings, parallel to :competency-questions, each naming the goal-part the CQ tests + the profile field(s)/source(s) that ground it (for HITL review; not gated on)")))
+
+(defn string-cqs
+  "Coerce a model-emitted :competency-questions value into a clean vector of
+   non-blank question STRINGS (the ORSD-spec shape). Tolerant of the value-shape
+   variance the DT2/DT3 live verifies documented: the model may emit a vector of
+   strings, a single newline-joined string, or a vector of {:question …}/{:cq …}
+   maps. Returns [] for anything with no recoverable question text — so an empty
+   derivation surfaces honestly (no false green) rather than persisting garbage."
+  [cqs]
+  (let [->str (fn [x]
+                (cond
+                  (string? x) x
+                  (map? x)    (or (:question x) (:cq x) (:text x)
+                                  (get x "question") (get x "cq") (get x "text"))
+                  :else       nil))
+        items (cond
+                (sequential? cqs) (keep ->str cqs)
+                (string? cqs)     (str/split-lines cqs)
+                :else             [])]
+    (->> items
+         (map str)
+         (map str/trim)
+         (remove str/blank?)
+         (distinct)
+         vec)))
+
+(defn record-competency-questions!
+  "Persist the competency questions as the S14 ORSD spec for the ontology-id, via
+   the existing `:ontology/record-ontology-spec` command (Grain discipline —
+   command → schema-validated event → projection; NO bare append). The CQs land
+   in the spec body's `:competency-questions` so build!'s S15 exit-criterion stage
+   reads them and judges the graph against them (PRD M7).
+
+   The spec is APPEND-only (S14): we read the CURRENT spec body (if any), MERGE the
+   derived/supplied CQs into its `:competency-questions`, and optionally stamp the
+   goal as the spec `:purpose` when the spec has none — so recording CQs never
+   destroys a spec a consumer already recorded (it grows it). Returns the command
+   result so a caller can surface the dispatch outcome honestly."
+  [ctx ontology-id cqs goal]
+  (let [cqs (string-cqs cqs)
+        existing (ontology/get-ontology-spec ctx ontology-id)
+        body (cond-> (or existing {})
+               true               (assoc :competency-questions cqs)
+               (and goal (str/blank? (str (:purpose existing))))
+               (assoc :purpose (str goal)))]
+    (cp/process-command
+     (assoc ctx :command
+            {:command/name :ontology/record-ontology-spec
+             :command/id (random-uuid)
+             :command/timestamp (time/now)
+             :ontology-id ontology-id
+             :body body}))))
+
+(defn requirements-cq-node!
+  "DT5 — the graph-level Requirements/CQ node. Runs AFTER all sources are profiled.
+
+   Derives competency questions from the GOAL ⨯ the supplied profiles (grounded +
+   goal-anchored), persists them as the S14 ORSD spec the S15 exit-criterion
+   judges (PRD M7), and returns the derived CQs surfaced for HITL review/override.
+
+   A consumer-supplied CQ set SEEDS/OVERRIDES the derived set: when `:cqs` is
+   non-empty, derivation is SKIPPED and the supplied questions are persisted as-is
+   (the consumer is authoritative); otherwise the node derives them from the
+   profiles. (Merge-on-top of a consumer set can be added behind this seam later;
+   today supplied = override, which is the safe HITL default.)
+
+   Required `params`:
+     :ontology-id  — the granted scope the spec is recorded against (REQUIRED).
+     :goal         — the runtime goal the CQs are anchored to (REQUIRED, non-blank).
+
+   One of (REQUIRED unless :cqs supplied):
+     :profiles     — a vector of the per-source DT2 profile contract maps (the
+                     output of the Profile node for each source). Read tolerantly.
+
+   Optional `params`:
+     :cqs          — consumer-supplied competency questions (a vector of strings).
+                     When non-empty, derivation is SKIPPED and these are persisted.
+     :source       — a source descriptor used ONLY to give the derivation session a
+                     blackboard slot (the node reasons over :profiles, not source
+                     tools); defaults to a :text slot so no source tools are bound.
+     :model :budget :debug? — passed to the derivation session.
+
+   Returns:
+     {:status :ok
+      :origin :derived | :supplied
+      :competency-questions [<question string> ...]   ; surfaced for HITL review
+      :rationale [<one-line string> ...]              ; nil for :supplied
+      :spec-recorded? <bool>                          ; the CQs persisted as the ORSD spec
+      :record-result <the command result, verbatim>}
+   or
+     {:status :failed :error <root-cause> ...}        ; honest — no false green.
+
+   A derivation that produces NO questions surfaces as :failed (the exit gate has
+   nothing to judge against — Discipline #5, no silent empty)."
+  [ctx {:keys [ontology-id goal profiles cqs source model budget debug?]
+        :or {model "google/gemini-3-flash-preview"}}]
+  (when-not ontology-id
+    (throw (ex-info "requirements-cq-node! requires :ontology-id (the granted scope)"
+                    {:params {:ontology-id ontology-id}})))
+  (when-not (and (string? goal) (seq goal))
+    (throw (ex-info "requirements-cq-node! requires :goal (a non-blank string)"
+                    {:goal goal})))
+  (let [ctx (assoc ctx :granted-ontology-id ontology-id :ontology-id ontology-id)
+        supplied (string-cqs cqs)]
+    (if (seq supplied)
+      ;; CONSUMER OVERRIDE: supplied CQs are authoritative — skip derivation,
+      ;; persist them as the ORSD spec the gate judges (PRD M3).
+      (let [rec (record-competency-questions! ctx ontology-id supplied goal)]
+        {:status :ok
+         :origin :supplied
+         :competency-questions supplied
+         :rationale nil
+         :spec-recorded? (not (some? (:cognitect.anomalies/category rec)))
+         :record-result rec})
+      ;; DERIVE from goal ⨯ profiles.
+      (let [profiles (vec (or profiles []))]
+        (when (empty? profiles)
+          (throw (ex-info "requirements-cq-node! requires :profiles (a vector of source profiles) when no :cqs are supplied"
+                          {:profiles profiles})))
+        (let [derive-r (rlm-discovery/run-node-session!
+                        ctx
+                        {:node-name :requirements
+                         :instruction (cq-node-prompt goal)
+                         :source (or source {:name :requirements :type :text :content ""})
+                         :writes cq-contract-keys
+                         :extra-inputs {:profiles profiles}
+                         :focused-prompt? true
+                         :model model :budget budget :debug? debug?})]
+          (if (not= :ok (:status derive-r))
+            {:status :failed
+             :error (str "CQ derivation session failed: " (:error derive-r))
+             :session (:session derive-r)}
+            (let [out (:output derive-r)
+                  derived (string-cqs (:competency-questions out))
+                  rationale (:rationale out)]
+              (if (empty? derived)
+                {:status :failed
+                 :error "CQ derivation produced NO competency questions (the exit gate would have nothing to judge against)"
+                 :raw-output out
+                 :session (:session derive-r)}
+                (let [rec (record-competency-questions! ctx ontology-id derived goal)]
+                  {:status :ok
+                   :origin :derived
+                   :competency-questions derived
+                   :rationale rationale
+                   :spec-recorded? (not (some? (:cognitect.anomalies/category rec)))
+                   :record-result rec})))))))))
 
 ;; =============================================================================
 ;; Per-medium tool-leaf (Discipline #8 reuse — V06/V19 via run-discovery!)
