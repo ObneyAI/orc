@@ -537,6 +537,12 @@
   (let [sample (make-sample-rows-fn cfg)]
     (fn stream-all
       ([] (stream-all {}))
+      ;; Uniform (selector, opts) calling convention so the deterministic
+      ;; full-extraction apply-step (V20) streams CSV/SQL/Excel identically.
+      ;; CSV has no table/sheet selector, so the selector is ignored. (V19
+      ;; cross-format consistency — surfaced by the DT1 extract stage on a CSV
+      ;; source, which the SQL-only apply-step path had never exercised.)
+      ([_selector opts] (stream-all opts))
       ([opts]
        (let [opts (or opts {})]
          (when-not (map? opts)
