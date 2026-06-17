@@ -235,7 +235,7 @@
             (recur (rest remaining)
                    (conj reports report))))))))
 
-(defn- referential-integrity-report
+(defn referential-integrity-report
   "V18 — the always-on referential-integrity backstop for the assembled
    graph. Given the in-scope concepts + relationships, report whether
    EVERY relationship endpoint resolves to a concept that exists. This is

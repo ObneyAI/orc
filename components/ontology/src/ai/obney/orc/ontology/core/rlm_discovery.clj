@@ -1470,6 +1470,35 @@
                          (cond-> ambiguities ambiguity (conj ambiguity))
                          unresolved))))))))))
 
+(defn reconcile-current-graph-integrity!
+  "DT7 reuse seam — run the V18 referential-integrity invariant over the
+   CURRENT graph state (NOT a fresh draft batch). Reads the existing concepts +
+   relationships for `ontology-id` off the projection and feeds them to the SAME
+   `ensure-referential-integrity!` the always-on compile path uses (no fork):
+   every relationship endpoint that does not resolve to a concept already in the
+   graph gets a minimal IMPLIED concept auto-minted (low-confidence / flagged for
+   enrichment), and a dangling endpoint that is a near-variant of an existing
+   URI is recorded as an AMBIGUITY for the alignment layer (the S12 structural-
+   similarity primitive — domain-agnostic, no code-format rule).
+
+   This is what lets the graph-level cross-source reconciliation pass resolve
+   danglers introduced by edges whose endpoint lives in a DIFFERENT source than
+   the one that minted the edge — and surface the near-variant identity rather
+   than silently dropping it.
+
+   IDEMPOTENT (the load-bearing maintain seam): every endpoint already in the
+   graph short-circuits as already-resolved, so a second pass mints nothing — it
+   reconciles, it does NOT duplicate. Returns the same integrity report shape
+   `ensure-referential-integrity!` returns:
+     {:implied-minted <int> :ambiguities [...] :unresolved [...]
+      :every-edge-endpoint-resolves? <bool>}."
+  [ctx ontology-id]
+  (let [concepts (filterv #(= ontology-id (:ontology-id %))
+                          (rm/get-concepts ctx {:ontology-id ontology-id}))
+        relationships (filterv #(= ontology-id (:ontology-id %))
+                               (rm/get-relationships ctx))]
+    (ensure-referential-integrity! ctx ontology-id concepts relationships)))
+
 ;; =============================================================================
 ;; V07 — Axiom-draft ingest
 ;; =============================================================================

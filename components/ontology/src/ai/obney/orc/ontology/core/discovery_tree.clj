@@ -82,8 +82,11 @@
    promotion seam, PRD M6)."
   (:require [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
             [ai.obney.orc.ontology.core.deterministic-skeleton :as skeleton]
+            [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
+            [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [ai.obney.grain.time.interface :as time]
             [clojure.string :as str]))
 
@@ -1458,6 +1461,304 @@
                                      :cq-reextract cq-branch
                                      :recovery (recovery-branch-stub
                                                 ctx {:failed-node nil :error nil})}})))))))))))))
+
+;; =============================================================================
+;; DT7 — Cross-source linking / reconciliation (PRD M5)
+;; =============================================================================
+;; A GRAPH-LEVEL reconciliation pass that runs AFTER every source has extracted
+;; (the per-source sub-trees have each landed their drafts as events). It is
+;; where the cross-source graph becomes CONNECTED and where "discover
+;; ambiguities" lives. It re-orchestrates proven machinery — it forks NOTHING
+;; (Discipline #8):
+;;
+;;   LINK across sources
+;;     - SHARED CANONICAL URI (the load-bearing collapse): two sources that mint
+;;       the SAME canonical URI (e.g. both emit `cip:01.0101`) ALREADY collapse
+;;       to ONE node in the URI-keyed `:ontology/concepts` projection
+;;       (last-write-wins on the URI key). The reconcile pass does NOT need to
+;;       merge them — it READS the current projection and REPORTS the collapse
+;;       (the shared-URI concepts that now resolve to a single node). This is the
+;;       cheapest, most reliable cross-source link and it needs zero LLM.
+;;     - NEAR-MATCH (different encodings of the same real thing): the S12 dedup
+;;       cascade (`dedup/lsh-candidate-pairs` blocking + the `run-dedup-cascade`
+;;       command, project-once disjointness) runs over the CURRENT graph's
+;;       concepts. A `:merge` verdict records an S08 equivalence into an S03
+;;       alignment SECTION — so the graph is connected WITHOUT corrupting either
+;;       source's URI-keyed concept (the S08 Path-B discipline).
+;;
+;;   SURFACE ambiguities (the "discover ambiguities" capability)
+;;     - the cascade's `:requires-review` verdicts (the ambiguity band the
+;;       deterministic guards can't close — surfaced, NEVER silently merged or
+;;       dropped) PLUS the V18 near-variant ambiguities the always-on compile
+;;       backstop recorded. Both are surfaced on the result for HITL review.
+;;
+;;   0 DANGLING (V18 referential integrity) — the always-on structural invariant
+;;     re-checked over the CURRENT graph (`skeleton`'s pure report, reused).
+;;
+;; *** THE LOAD-BEARING SEAM (PRD M5 / the maintain handoff §3) ***
+;; The pass reads EXISTING concepts/relationships from the projection and
+;; reconciles against the CURRENT GRAPH STATE — it does NOT assume an empty
+;; graph. Proof that this makes maintain a clean later addition: running
+;; reconciliation TWICE (or against a pre-populated graph) RECONCILES — it
+;; merges / no-ops — it does NOT duplicate. This holds structurally because
+;; (a) re-minting a shared URI is a projection no-op (same key), and (b) an S08
+;; equivalence pair is a SET (re-assertion is a set no-op). The reconcile pass
+;; therefore has no empty-graph assumption to remove when the maintain branch
+;; (greenfield-vs-maintain edge + this same stage over an existing graph) lands.
+;;
+;; Domain-agnostic (Discipline #12): linking is generic — shared-id collapse /
+;; structural similarity / alignment. NO CIP/SOC/education/industry knowledge,
+;; NO hardcoded phrase matching. The candidate generation + verdicts are the
+;; same medium-agnostic S12 primitives the intra-source dedup stage uses.
+
+(defn- current-graph-concepts
+  "Read the CURRENT concepts for an ontology-id off the projection (NOT an empty
+   graph) — the section-keyed scoped view, coerced to the dedup-cascade's
+   candidate shape (`:uri :label :description :type :broader`). This is the
+   load-bearing read: reconciliation operates over whatever is already in the
+   graph, so a second pass / a pre-populated graph reconciles rather than
+   rebuilds. The :broader set is vectorized for the cascade command schema —
+   identical coercion to S17's dedup-stage (no forked notion)."
+  [ctx ontology-id]
+  (->> (rm/get-concepts ctx {:ontology-id ontology-id})
+       (mapv (fn [c]
+               (cond-> (select-keys c [:uri :label :description :type])
+                 (seq (:broader c)) (assoc :broader (vec (:broader c))))))))
+
+(defn shared-uri-links
+  "The cross-source SHARED-CANONICAL-URI links present in the current graph.
+
+   Given the per-source draft URI-sets the reconcile pass was handed
+   (`source-uri-sets` — a vector of `{:source <name> :uris #{...}}`, one per
+   extracted source), return the URIs that appear in MORE THAN ONE source's
+   draft set AND resolve to a single node in the current graph. Each such URI is
+   a cross-source merge that the URI-keyed projection collapsed automatically —
+   one node, not two. Domain-agnostic: pure set intersection over whatever URIs
+   the sources minted; it names no domain.
+
+   Returns:
+     {:shared-uris       [<uri> ...]                 ; in ≥2 sources + resolves
+      :shared-uri-count  <int>
+      :by-uri            {<uri> #{<source-name> ...}} ; which sources contributed}"
+  [source-uri-sets current-concept-uris]
+  (let [current (set current-concept-uris)
+        contributing (reduce
+                      (fn [acc {:keys [source uris]}]
+                        (reduce (fn [a u]
+                                  (update a u (fnil conj #{}) source))
+                                acc
+                                (set uris)))
+                      {}
+                      (or source-uri-sets []))
+        shared (->> contributing
+                    (filter (fn [[uri sources]]
+                              (and (> (count sources) 1)
+                                   (contains? current uri))))
+                    (map first)
+                    sort
+                    vec)]
+    {:shared-uris shared
+     :shared-uri-count (count shared)
+     :by-uri (select-keys contributing shared)}))
+
+(defn default-alignment-section-id
+  "Derive the DEFAULT cross-source alignment-section id for an ontology — a
+   DISTINCT, stable UUID, NOT the ontology-id itself. S08's Path-B discipline
+   forbids recording an equivalence against a primary section (it would corrupt
+   the URI-keyed concept projection via last-write-wins collapse), and the S03
+   register command rejects a self-section (a duplicate [:ontology id] tag). So
+   the cross-source equivalences land in a derived companion section. Stable
+   (a deterministic v3/name-based UUID over the ontology-id) so re-running
+   reconcile targets the SAME alignment section — idempotent, not a fresh
+   section per run. Domain-agnostic: pure id derivation, names no domain."
+  [ontology-id]
+  (java.util.UUID/nameUUIDFromBytes
+   (.getBytes (str "dt7-cross-source-alignment:" ontology-id) "UTF-8")))
+
+(defn reconcile-graph!
+  "DT7 — the graph-level cross-source reconciliation pass (PRD M5).
+
+   Runs AFTER all per-source extraction has landed in the graph. Reconciles the
+   CURRENT GRAPH STATE (it READS existing concepts/relationships from the
+   projection — it does NOT assume an empty graph), linking entities from
+   different sources, surfacing ambiguities, and re-checking referential
+   integrity. Reuses S03 (alignment registry) + S12 (dedup cascade + LSH
+   blocking + project-once) + V18 (referential integrity) — NO fork.
+
+   Required `params`:
+     :ontology-id  — the granted scope whose current graph is reconciled.
+
+   Optional `params`:
+     :source-uri-sets — a vector of `{:source <name> :uris #{<uri> ...}}`, one
+                        per source the tree extracted. When supplied, the result
+                        reports the cross-source SHARED-URI links (URIs minted by
+                        ≥1 source that appear in ≥2 sources' draft sets and
+                        resolve to a single node — the automatic projection
+                        collapse). Omit it and the shared-URI report is empty
+                        (the near-match link + integrity still run over the full
+                        graph).
+     :alignment-ontology-id — the S03 alignment SECTION cross-source `:merge`
+                        equivalences are recorded into (S08). Defaults to a
+                        DISTINCT stable derived section (`default-alignment-
+                        section-id`) — NOT the primary (S08 Path-B forbids
+                        recording equivalences against a primary; the S03 register
+                        command rejects a self-section). A caller maintaining its
+                        own alignment section threads its id.
+     :llm-budget   — max LLM calls the S12 cascade may spend on the ambiguity
+                     band. DEFAULT 0 — reconciliation is deterministic; the
+                     ambiguity-band pairs the deterministic guards can't close
+                     surface as `:requires-review` ambiguities (honest, no LLM,
+                     never silently merged). Raise it to let the cascade's LLM
+                     tier adjudicate the band.
+     :llm-fn       — the cascade's T9 verdict fn (threaded onto ctx); only used
+                     when :llm-budget > 0.
+
+   Returns:
+     {:status :ok
+      :ontology-id <uuid>
+      :alignment-ontology-id <uuid>
+      ;; --- LINK ---
+      :concepts-in-scope <int>                  ; size of the current graph read
+      :shared-uri-links {:shared-uris [...] :shared-uri-count <int> :by-uri {...}}
+      :candidate-pairs <int>                    ; S12 LSH-blocked cross-graph pairs
+      :merges <int>                             ; near-match links recorded (S08)
+      :merge-equivalences [<{:source-uri :target-uri :kind}> ...]
+      ;; --- AMBIGUITIES (surfaced, never silently merged/dropped) ---
+      :ambiguities-surfaced <int>
+      :ambiguities [<verdict-or-near-variant> ...]
+      ;; --- 0 DANGLING (V18) ---
+      :referential-integrity {:every-edge-endpoint-resolves? <bool>
+                              :dangling-edge-count <int> :dangling-edges [...]}
+      :relationships-in-scope <int>}
+
+   Idempotent by construction (the load-bearing seam): re-running merges / no-ops
+   (re-mint of a shared URI is a projection no-op; an S08 equivalence pair is a
+   set, so re-assertion is a set no-op) — it does NOT duplicate."
+  [ctx {:keys [ontology-id source-uri-sets alignment-ontology-id llm-budget]
+        :or {llm-budget 0}}]
+  (when-not ontology-id
+    (throw (ex-info "reconcile-graph! requires :ontology-id (the granted scope)"
+                    {:params {:ontology-id ontology-id}})))
+  (let [alignment-ontology-id (or alignment-ontology-id
+                                  (default-alignment-section-id ontology-id))
+
+        ;; --- V18: reconcile referential integrity over the CURRENT graph FIRST.
+        ;;     A cross-source edge can reference an endpoint a DIFFERENT source
+        ;;     owns; the always-on V18 invariant (reused verbatim — no fork) auto-
+        ;;     mints the implied endpoint and surfaces a near-variant identity as
+        ;;     an AMBIGUITY. Idempotent: a second pass finds the endpoints already
+        ;;     resolved and mints nothing. This runs BEFORE the near-match pass so
+        ;;     the freshly-implied endpoint participates in dedup. ---
+        v18 (rlm-discovery/reconcile-current-graph-integrity! ctx ontology-id)
+
+        ;; --- READ THE CURRENT GRAPH STATE (the load-bearing seam) ---
+        ;; Read AFTER the V18 pass so any auto-minted implied endpoint is in
+        ;; scope for the near-match cascade + the final integrity report.
+        concepts (current-graph-concepts ctx ontology-id)
+        relationships (filterv #(= ontology-id (:ontology-id %))
+                               (rm/get-relationships ctx))
+        concept-uris (set (map :uri concepts))
+
+        ;; --- S03: ensure the alignment section exists so cross-source
+        ;;     equivalences register against a real section (idempotent: the
+        ;;     register command is additive; re-registering is a set no-op).
+        ;;     A self-section (alignment == primary) is degenerate AND rejected
+        ;;     by the S03 command (duplicate tag) — skip it (a caller that passed
+        ;;     alignment == primary deliberately gets no section, not a fault).
+        ;;     A genuine command rejection surfaces loudly (Discipline #5). ---
+        _ (when (not= alignment-ontology-id ontology-id)
+            (let [reg (cp/process-command
+                       (assoc ctx :command
+                              {:command/name :ontology/register-alignment-section
+                               :command/id (random-uuid)
+                               :command/timestamp (time/now)
+                               :primary-ontology-id ontology-id
+                               :alignment-ontology-id alignment-ontology-id}))]
+              (when (:cognitect.anomalies/category reg)
+                (throw (ex-info "reconcile-graph!: alignment-section registration anomaly"
+                                {:anomaly reg
+                                 :primary ontology-id
+                                 :alignment alignment-ontology-id})))))
+
+        ;; --- LINK: shared canonical URI (the automatic projection collapse) ---
+        shared (shared-uri-links source-uri-sets concept-uris)
+
+        ;; --- LINK: near-match via S12 (LSH blocking + project-once cascade) ---
+        ;; Block the CURRENT graph's concepts into candidate pairs with the SAME
+        ;; LSH/MinHash blocker the intra-source dedup-stage uses (no forked
+        ;; similarity notion). Project the S07 disjointness ONCE (project-once
+        ;; discipline — not per pair).
+        pairs (dedup/lsh-candidate-pairs concepts)
+        disjointness (or (get-in (rmp/project ctx :ontology/axioms)
+                                 [ontology-id :disjointness])
+                         {})
+        existing-evidence (rmp/project ctx :ontology/concept-evidence)
+        ;; Pure pre-filter resolves the cheap tiers (no command, no event);
+        ;; only survivors (real merge / ambiguity-band candidates) dispatch the
+        ;; full cascade command — IDENTICAL orchestration to S17's dedup-stage.
+        survivors (->> pairs
+                       (remove (fn [[a b]]
+                                 (dedup/prefilter-verdict
+                                  {:a a :b b :disjointness-map disjointness})))
+                       vec)
+        survivor-verdicts
+        (mapv (fn [[a b]]
+                (let [result (cp/process-command
+                              (assoc ctx :command
+                                     {:command/name :ontology/run-dedup-cascade
+                                      :command/id (random-uuid)
+                                      :command/timestamp (time/now)
+                                      :ontology-id ontology-id
+                                      :alignment-ontology-id alignment-ontology-id
+                                      :a a :b b
+                                      :llm-budget llm-budget
+                                      :disjointness disjointness
+                                      :existing-evidence existing-evidence}))]
+                  (when (:cognitect.anomalies/category result)
+                    (throw (ex-info "reconcile-graph!: cascade command returned anomaly"
+                                    {:anomaly result :a a :b b})))
+                  (assoc (get-in result [:command-result/data :verdict])
+                         :a-uri (:uri a) :b-uri (:uri b))))
+              survivors)
+        merge-verdicts (filterv #(= :merge (:verdict %)) survivor-verdicts)
+        review-verdicts (filterv #(= :requires-review (:verdict %)) survivor-verdicts)
+
+        ;; --- SURFACE AMBIGUITIES (never silently merged or dropped) ---
+        ;; Two honest sources, unified: (a) the V18 near-variant ambiguities the
+        ;; integrity pass just recorded (a dangling endpoint that is a near-
+        ;; variant of an existing URI — likely an alternate encoding of the same
+        ;; real thing); (b) the cascade's :requires-review verdicts (the near-
+        ;; match ambiguity band the deterministic guards can't close — surfaced
+        ;; rather than guessed). Both go on the result for HITL review.
+        v18-ambiguities
+        (mapv (fn [a] (assoc a :source :v18-referential-integrity))
+              (:ambiguities v18))
+        ambiguities (into v18-ambiguities review-verdicts)
+
+        ;; --- 0 DANGLING (V18 referential integrity over the CURRENT graph) ---
+        ;; Reuse the skeleton's pure report (no fork). It needs concepts with
+        ;; :uri and relationships with :source-uri/:target-uri — exactly the
+        ;; projection shapes. After the V18 reconcile above, every endpoint that
+        ;; had a resolvable id segment is now minted, so this should report 0
+        ;; dangling (an unresolved endpoint with no id segment stays surfaced).
+        integrity (skeleton/referential-integrity-report concepts relationships)]
+    {:status :ok
+     :ontology-id ontology-id
+     :alignment-ontology-id alignment-ontology-id
+     :concepts-in-scope (count concepts)
+     :relationships-in-scope (count relationships)
+     :shared-uri-links shared
+     :implied-endpoints-minted (:implied-minted v18)
+     :candidate-pairs (count pairs)
+     :merges (count merge-verdicts)
+     :merge-equivalences (mapv (fn [v]
+                                 {:source-uri (:a-uri v)
+                                  :target-uri (:b-uri v)
+                                  :kind (:kind v)})
+                               merge-verdicts)
+     :ambiguities-surfaced (count ambiguities)
+     :ambiguities ambiguities
+     :referential-integrity integrity}))
 
 ;; =============================================================================
 ;; Composable behavior-tree node (PRD user-story 24)
