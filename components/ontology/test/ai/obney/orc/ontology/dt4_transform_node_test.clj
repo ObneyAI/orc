@@ -182,6 +182,98 @@
             (str "the focused transform prompt body must not bake in the term: " term))))))
 
 ;; =============================================================================
+;; DT4-grounding — the prompt surfaces the REAL sampled-row key shape so the
+;; model grounds field access verbatim (the honest-negative fix). The key shape
+;; is computed MECHANICALLY from a real sample (no hardcoded domain field names)
+;; and injected per-format: SQL/excel rows have KEYWORD keys, CSV rows STRING
+;; keys. See docs/build-timeline/live-verify/DT4-grounding.md.
+;; =============================================================================
+
+(deftest key-shape-block-is-empty-without-a-sample
+  (testing "with NO key-shape the prompt renders nothing extra (back-compat) —
+            the grounding block only appears when a real sample is surfaced, so
+            the domain-agnostic guarantee (rendered with no key-shape) holds"
+    (is (= "" (dt/key-shape-block nil)))
+    (is (= "" (dt/key-shape-block {})))))
+
+(deftest transform-prompt-surfaces-exact-keyword-keys-for-sql
+  (testing "given a real SQL sample (KEYWORD keys), the prompt names the EXACT
+            keys verbatim and the keyword access idiom — the model can copy them
+            instead of guessing/renaming/case-folding"
+    (let [;; the EXACT shape sql sample-rows / query return: keyword keys.
+          key-shape (dt/sample-row-key-shape
+                     {:type :sql}
+                     [{:UNITID 158662 :CIPCODE "01.0000" :MAJORNUM 1}])
+          block (dt/key-shape-block key-shape)
+          full (dt/transform-node-prompt "Build the ontology." key-shape)]
+      (is (= :keyword (:key-type key-shape)))
+      ;; the exact keys appear VERBATIM (correct case, keyword form)
+      (is (str/includes? block ":UNITID"))
+      (is (str/includes? block ":CIPCODE"))
+      (is (str/includes? block ":MAJORNUM"))
+      ;; the keyword access idiom is shown
+      (is (str/includes? block "(:UNITID row)"))
+      ;; a hard do-not-invent instruction is present
+      (is (str/includes? (str/lower-case block) "verbatim"))
+      (is (str/includes? (str/lower-case block) "do not"))
+      ;; and the whole prompt carries it
+      (is (str/includes? full ":UNITID")))))
+
+(deftest transform-prompt-surfaces-exact-string-keys-for-csv
+  (testing "given a real CSV sample (STRING keys), the prompt names the EXACT
+            header keys verbatim and the STRING access idiom — the model can copy
+            them instead of inventing a keyword variant (the run-4 negative)"
+    (let [;; the EXACT shape csv sample-rows returns: string keys (zipmap header).
+          key-shape (dt/sample-row-key-shape
+                     {:type :csv}
+                     [{"CIP_Code" "01.0000" "SOC_Code" "19-1011"}])
+          block (dt/key-shape-block key-shape)
+          full (dt/transform-node-prompt "Build the ontology." key-shape)]
+      (is (= :string (:key-type key-shape)))
+      ;; the exact header keys appear VERBATIM as STRINGS
+      (is (str/includes? block "\"CIP_Code\""))
+      (is (str/includes? block "\"SOC_Code\""))
+      ;; the STRING access idiom is shown
+      (is (str/includes? block "(get row \"CIP_Code\")"))
+      (is (str/includes? full "\"CIP_Code\"")))))
+
+(deftest sample-validation-rejects-an-empty-yield-transform
+  (testing "a structurally-correct but MIS-GROUNDED transform (accesses the wrong
+            key shape so EVERY in-scope sample row yields empty) is REJECTED at
+            authoring time — caught here, not at full-scale apply (the false-empty
+            failure mode from the honest negative)"
+    ;; The real sample rows have KEYWORD keys (:UNITID); the transform accesses a
+    ;; lowercase STRING key — exactly the run-3 mis-grounding — so it yields empty
+    ;; for every row.
+    (let [sample-rows [{:UNITID "158662" :CIPCODE "01" :MAJORNUM 1}
+                       {:UNITID "158663" :CIPCODE "02" :MAJORNUM 1}]
+          mis-grounded "(fn [row] (let [u (get row \"unitid\")] (if u {:concept-drafts [{:uri (str \"p:\" u) :label u}] :relationship-drafts []} {:concept-drafts [] :relationship-drafts []})))"
+          v (dt/validate-transform-on-sample mis-grounded sample-rows)]
+      (is (= :rejected (:status v)))
+      (is (str/includes? (str/lower-case (:reason v)) "empty"))
+      (is (zero? (:concept-yield v))
+          "no concept-drafts came back from any sample row (the false-empty)"))))
+
+(deftest sample-validation-accepts-a-grounded-transform
+  (testing "a transform whose field access is GROUNDED in the real sample key
+            shape (keyword keys) yields non-empty drafts on at least one sample
+            row and is ACCEPTED"
+    (let [sample-rows [{:UNITID "158662" :CIPCODE "01" :MAJORNUM 1}
+                       {:UNITID "158663" :CIPCODE "02" :MAJORNUM 1}]
+          grounded "(fn [row] (let [u (:UNITID row)] (if u {:concept-drafts [{:uri (str \"p:\" u) :label (str u)}] :relationship-drafts []} {:concept-drafts [] :relationship-drafts []})))"
+          v (dt/validate-transform-on-sample grounded sample-rows)]
+      (is (= :ok (:status v)))
+      (is (pos? (:concept-yield v))
+          "at least one sample row produced a concept-draft (grounded access)"))))
+
+(deftest sample-validation-rejects-an-unevaluable-transform
+  (testing "a transform that does not evaluate to a fn is rejected honestly (no
+            false green) rather than silently passing"
+    (let [v (dt/validate-transform-on-sample "(+ 1 2)" [{:UNITID 1}])]
+      (is (= :rejected (:status v)))
+      (is (some? (:reason v))))))
+
+;; =============================================================================
 ;; The Transform node runs the FOCUSED path + reads the model-spec
 ;; =============================================================================
 

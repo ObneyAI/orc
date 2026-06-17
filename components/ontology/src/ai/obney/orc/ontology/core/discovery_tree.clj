@@ -363,6 +363,266 @@
         model-contract-keys
         "  :entity-types  — VECTOR of MAPS: [{:type <str> :uri-keying-fields [<field> ...] :grain-strategy <EXACTLY :canonical-row-filter OR :breakdown-as-entity, a bare keyword>} ...]\n                   (you MAY add :canonical-row-marker <field/value note> for a :canonical-row-filter entity, or :breakdown-key <field> for a :breakdown-as-entity entity — the transform step reads these)\n  :scope-filter  — nil if the goal states no scope, else a MAP {:field <scope-field from the profile> :values [<value(s) the GOAL names>]}; the value comes from the GOAL, never invented\n  :edges         — VECTOR of MAPS: [{:source-type <str> :target-type <str> :predicate <str>} ...]")))
 
+;; =============================================================================
+;; DT4-grounding — surface the REAL sampled-row key shape into the transform seam
+;; =============================================================================
+;; The honest negative from DT4: the model authored STRUCTURALLY-correct
+;; transforms whose per-row FIELD ACCESS was grounded in ASSUMED key names/shapes
+;; rather than the source's REAL ones — e.g. (get row "unitid") where the real
+;; SQL key is the keyword :UNITID; (get row :CIP2020Code) where the real CSV key
+;; is the string "CIP_Code". A wrong key silently yields nil for EVERY row → a
+;; 0-concept false-empty. Root cause: the prompt did not FORCE grounding in the
+;; EXACT row-key shape, which differs by medium (SQL/excel rows have KEYWORD
+;; keys; CSV rows have STRING keys keyed by the header).
+;;
+;; The fix is mechanical + domain-agnostic (discipline 12): take a REAL sample
+;; row, extract its EXACT key set + key TYPE, and inject them + the format's exact
+;; access idiom into the prompt with a hard "use these verbatim; do NOT invent /
+;; rename / guess" instruction. NO hardcoded domain field names — every key comes
+;; from the runtime sample, exactly like the goal orients the prompt. It is
+;; format-AWARE (the key shape genuinely differs by medium), which is allowed.
+
+(defn- map-rows-from-sample
+  "Pull the row MAPS out of whatever a sample/stream call returned for a medium.
+   csv/sql sample-rows return {:rows [...]} (csv: string-keyed maps; sql:
+   keyword-keyed maps); the sql `query` tool returns a bare VECTOR of maps;
+   stream-all returns a vector of window maps each with :rows. Returns the first
+   non-empty vector of MAPS found, else []."
+  [sampled]
+  (let [maps-only (fn [coll] (filterv map? (or coll [])))]
+    (cond
+      ;; a bare vector — either of row maps (query) or of window maps (stream-all)
+      (and (sequential? sampled) (seq sampled) (every? map? sampled))
+      (let [rows (maps-only sampled)]
+        (if (and (seq rows) (some :rows rows))
+          ;; these are window maps; descend into their :rows
+          (maps-only (mapcat #(or (:rows %) []) rows))
+          rows))
+      (sequential? sampled) (maps-only sampled)
+      ;; a single {:rows [...]} map
+      (and (map? sampled) (contains? sampled :rows)) (maps-only (:rows sampled))
+      :else [])))
+
+(defn mechanical-sample-rows
+  "Pull a small set of REAL rows DIRECTLY from the source via the V06 per-format
+   source-tool registry — the SAME tools the V20 apply-step streams through, so
+   the row shape returned is EXACTLY what the transform will see at apply time.
+   This is the authoritative key-shape source: it does NOT trust the profile
+   node's emitted `:sample` (an LLM may re-key / stringify it), it reads the
+   medium's tools directly.
+
+   `descriptor` is `{:type :csv|:sql|:excel :path <str>}`. `selector` is the
+   table/sheet name when known (sql/excel); for sql, when no selector is given we
+   pick the table with the MOST rows (the data table is the extraction target far
+   more often than a tiny lookup table) so the surfaced shape is representative.
+   Returns a vector of real row maps (capped small), or [] when the source can't
+   be sampled (the caller then falls back / renders no grounding block — never a
+   fabricated shape). Domain-agnostic: it reads keys, names no field."
+  ([descriptor] (mechanical-sample-rows descriptor nil 5))
+  ([descriptor selector] (mechanical-sample-rows descriptor selector 5))
+  ([descriptor selector n]
+   (try
+     (let [tools-for (requiring-resolve
+                      'ai.obney.orc.orc-service.core.source-tools/source-tools-for)
+           tools (tools-for {:type (:type descriptor) :format (:format descriptor)
+                             :path (:path descriptor)})]
+       (if-not (map? tools)
+         []
+         (let [sample (get tools 'sample-rows)
+               fmt (or (:type descriptor) (:format descriptor))]
+           (cond
+             ;; CSV: (sample-rows N) -> {:rows [string-keyed maps]}
+             (= :csv fmt)
+             (map-rows-from-sample (sample n))
+             ;; SQL: (sample-rows table {:limit N}) -> [keyword-keyed maps]
+             (= :sql fmt)
+             (let [tbl (cond
+                         (string? selector) selector
+                         (map? selector) (or (:name selector) (:table selector))
+                         :else
+                         ;; pick the largest table as the representative target
+                         (let [list-tables (get tools 'list-tables)
+                               count-rows (get tools 'count-rows)
+                               tables (when (fn? list-tables) (list-tables))]
+                           (when (seq tables)
+                             (->> tables
+                                  (map (fn [t] [t (try (:row-count (count-rows t))
+                                                       (catch Throwable _ 0))]))
+                                  (sort-by second >)
+                                  ffirst))))]
+               (if (and tbl (fn? sample))
+                 (map-rows-from-sample (sample tbl {:limit n}))
+                 []))
+             ;; Excel: rows are positional cell vectors, not maps — no map key
+             ;; shape to surface; the caller renders no keyword/string idiom.
+             :else []))))
+     (catch Throwable _ []))))
+
+(defn sample-row-key-shape
+  "Mechanically derive the EXACT row-key shape from a REAL sample of the source —
+   the load-bearing input to the DT4-grounding fix. DOMAIN-AGNOSTIC: it reads the
+   keys that are actually present on a sampled row; it bakes in NO field names.
+
+   `descriptor` is the source descriptor ({:type :csv|:sql|:excel ...}); `rows`
+   is a real sample (the row maps a sample/stream tool returned, in any of the
+   shapes `map-rows-from-sample` accepts). When `rows` yields no map rows, this
+   falls back to `mechanical-sample-rows` — reading the source's own tools
+   directly — so an unreliable profile-emitted sample never silences the
+   grounding. Returns:
+
+     {:keys      [<the EXACT keys of a representative row, verbatim>]
+      :key-type  :keyword | :string | :other   ; how the row's keys are typed
+      :format    <the source format>
+      :sample-row <one representative row map, verbatim>}
+
+   or nil when no map row could be sampled (the caller renders no grounding block
+   and the legacy prompt stands — no false grounding from an absent sample).
+
+   The key TYPE is what differs by medium and is the exact trap the honest
+   negative hit: sql/excel rows are KEYWORD-keyed, csv rows STRING-keyed."
+  ([descriptor rows] (sample-row-key-shape descriptor rows nil))
+  ([descriptor rows selector]
+   (let [from-passed (map-rows-from-sample rows)
+         ;; The profile-emitted sample is best-effort (an LLM may re-key it);
+         ;; when it yields no map rows, read the source's OWN tools directly so
+         ;; the grounding is never silenced by an unreliable upstream sample.
+         row-maps (if (seq from-passed)
+                    from-passed
+                    (mechanical-sample-rows descriptor selector))
+         ;; pick the row with the MOST keys as representative (defends against a
+         ;; first row with nil-trimmed columns).
+         rep (when (seq row-maps)
+               (apply max-key (comp count keys) row-maps))]
+     (when (and (map? rep) (seq rep))
+       (let [ks (vec (keys rep))
+             key-type (cond
+                        (every? keyword? ks) :keyword
+                        (every? string? ks)  :string
+                        :else                :other)]
+         {:keys ks
+          :key-type key-type
+          :format (or (:type descriptor) (:format descriptor))
+          :sample-row rep})))))
+
+(defn- access-idiom-for
+  "The EXACT per-row field-access idiom for a key type, as the model should write
+   it — shown with a real key from the sample so it is concrete, not abstract."
+  [key-type a-key]
+  (case key-type
+    :keyword (str "(" (pr-str a-key) " row)  — or  (get row " (pr-str a-key) ")  "
+                  "(the keys are KEYWORDS)")
+    :string  (str "(get row " (pr-str a-key) ")  (the keys are STRINGS — there is "
+                  "NO keyword form; (" (pr-str a-key) " row) would NOT work)")
+    (str "(get row " (pr-str a-key) ")  (use the EXACT key form shown)")))
+
+(defn key-shape-block
+  "Render the REAL sampled-row key shape as a hard grounding instruction for the
+   transform prompt. Empty string when no key shape was sampled (back-compat: the
+   prompt renders nothing extra, preserving the domain-agnostic guarantee — the
+   keys, like the goal, are RUNTIME input, never baked into the body).
+
+   The block lists the EXACT keys verbatim, the format's exact access idiom keyed
+   to a real example key, and a hard 'use these verbatim; do NOT invent, rename,
+   case-fold, or guess; derive every value from the row' instruction. This is the
+   seam that fixes the honest negative — it forces the model to ground field
+   access in the source's REAL key shape rather than an assumed one."
+  [key-shape]
+  (let [{:keys [keys key-type sample-row]} key-shape]
+    (if (or (nil? key-shape) (empty? (or keys [])))
+      ""
+      (let [a-key (first keys)]
+        (str "\n\nREAL ROW KEY SHAPE (sampled from THIS source — the transform "
+             "receives each row as a map with EXACTLY these keys). Ground EVERY "
+             "field access in these — do NOT invent, rename, case-fold, abbreviate, "
+             "or guess a key, and do NOT trust a profile/prose variant of a name "
+             "over what is shown here:\n"
+             "  KEYS (verbatim): " (str/join "  " (map pr-str keys)) "\n"
+             "  KEY TYPE: " (name (or key-type :other)) "\n"
+             "  ACCESS A FIELD LIKE: " (access-idiom-for key-type a-key) "\n"
+             "  ONE REAL ROW (verbatim): " (pr-str sample-row) "\n"
+             "  Use these EXACT keys; access a field with the idiom above. A key "
+             "that does not appear above is NOT in the row — accessing it yields nil "
+             "for EVERY row and extracts NOTHING. Derive every emitted value FROM "
+             "the row (id-sets too: never fabricate ids — resolve them from a real "
+             "tool query and embed the returned values).")))))
+
+(defn validate-transform-on-sample
+  "DT4 sample-validation seam — assert a candidate transform yields NON-EMPTY
+   drafts on REAL sample rows BEFORE the full-scale apply, so a mis-grounded
+   transform (the false-empty failure mode) is caught at authoring time.
+
+   `transform-source` is the model-authored `(fn [row] …)` source string; `rows`
+   is a vector of REAL sampled row maps (the same shape the transform will see at
+   apply time). The transform is eval'd in the SAME restricted sandbox the V20
+   apply-step uses (reuse, not fork — Discipline #8) and mapped over the sample.
+
+   Returns:
+     {:status :ok        :concept-yield <int> :rows-tested <int>}
+       when at least one sample row produced a non-empty concept-draft.
+     {:status :rejected  :rejection-kind <kw> :reason <str>
+                         :concept-yield <int> :rows-tested <int> :rows-threw <int>}
+       :rejection-kind is :eval-failure when the source did not evaluate to a fn
+       or THREW on every sampled row (a definite fault — e.g. a JS builtin like
+       js/parseInt, a wrong contract shape, an unresolved symbol). It is
+       :empty-yield when the fn evaluated cleanly but produced no concept-draft on
+       any sampled row (a key-shape mis-grounding OR a legitimately out-of-scope
+       window — the caller decides how hard to gate on each kind).
+
+   This is honest (Discipline #5): an empty yield / unevaluable transform is
+   REJECTED, never silently accepted; the :rejection-kind lets the orchestration
+   hard-block a definite fault while not false-rejecting a correctly-scoped
+   transform whose small sample window happens to be all out-of-scope."
+  [transform-source rows]
+  (let [eval-fn (requiring-resolve
+                 'ai.obney.orc.ontology.core.rlm-discovery/eval-transform-fn)
+        rows (vec (or rows []))]
+    (let [f (try (eval-fn transform-source)
+                 (catch Throwable t {::err (.getMessage t)}))]
+      (if (or (map? f) (not (fn? f)))
+        {:status :rejected
+         :rejection-kind :eval-failure
+         :reason (str "transform did not evaluate to a (fn [row] …): "
+                      (or (::err f) (str "got " (pr-str (type f)))))
+         :concept-yield 0
+         :rows-tested (count rows)
+         :rows-threw (count rows)}
+        (let [{:keys [yields threw]}
+              (reduce
+               (fn [acc row]
+                 (let [r (try (f row) (catch Throwable _ ::threw))]
+                   (cond
+                     (= ::threw r) (update acc :threw inc)
+                     (and (map? r) (sequential? (:concept-drafts r)))
+                     (update acc :yields + (count (:concept-drafts r)))
+                     :else acc)))
+               {:yields 0 :threw 0} rows)]
+          (cond
+            (pos? yields)
+            {:status :ok :concept-yield yields :rows-tested (count rows)
+             :rows-threw threw}
+            ;; the fn THREW on every row (e.g. a bad builtin / wrong shape that
+            ;; only blows up at invocation) — a definite fault, not a scope miss.
+            (and (pos? threw) (= threw (count rows)))
+            {:status :rejected
+             :rejection-kind :eval-failure
+             :reason (str "the transform THREW on ALL " (count rows) " sampled rows "
+                          "(it runs but errors per-row — a wrong builtin, wrong "
+                          "contract shape, or bad field access).")
+             :concept-yield 0
+             :rows-tested (count rows)
+             :rows-threw threw}
+            :else
+            {:status :rejected
+             :rejection-kind :empty-yield
+             :reason (str "the transform produced EMPTY concept-drafts on ALL "
+                          (count rows) " sampled rows — a false-empty. Its field "
+                          "access or scope test may be mis-grounded in the real row "
+                          "key shape (the keys must match the sampled row verbatim), "
+                          "or the sampled window is entirely out of scope.")
+             :concept-yield 0
+             :rows-tested (count rows)
+             :rows-threw threw}))))))
+
 (defn transform-node-prompt
   "PROMOTION SEAM (PRD M6) for the Transform node. DT4 FOCUSED body: a small,
    single-purpose prompt that does ONE job — AUTHOR + sample-VALIDATE the per-row
@@ -396,12 +656,21 @@
    arrive as the bare keyword OR its string form — the prompt tells the node to
    normalize it; every other field may be a map/vector or prose.
 
+   DT4-grounding: the optional `key-shape` (from `sample-row-key-shape` over a
+   REAL sample) is rendered as a hard grounding block (`key-shape-block`) that
+   names the EXACT row keys + the format's exact access idiom, so the model
+   grounds field access verbatim instead of assuming a key name/shape (the
+   honest-negative fix). With no key-shape the block is empty and the legacy
+   prompt stands — the keys, like the goal, are RUNTIME input, never baked into
+   the body (so the prompt body remains domain-agnostic).
+
    Domain-agnostic (discipline 12): no CIP/SOC/industry/education knowledge — it
    authors a transform for ANY structured source from the model-spec the prior
    node produced. `goal` only orients; the modeling decisions come from the
    model-spec. Orchestration unchanged — returned through the same seam the thin
    DT1 body was."
-  [goal]
+  ([goal] (transform-node-prompt goal nil))
+  ([goal key-shape]
   (str "You are the TRANSFORM step of an ontology-discovery pipeline. Your ONE job "
        "is to AUTHOR a pure per-row extraction transform that ENFORCES the decisions "
        "the prior MODEL step already made, VALIDATE it on a sample, then emit it. "
@@ -472,9 +741,10 @@
        ":source-uri, :target-uri, and :predicate. A draft missing :uri or :label is "
        "rejected downstream — emit both for every draft (including any node an edge "
        "points to)."
+       (key-shape-block key-shape)
        (contract-block
         transform-contract-keys
-        "  :transform-source — the (fn [row] {:concept-drafts [...] :relationship-drafts [...]}) AS A STRING of Clojure source, scope+grain enforced, sample-validated\n  :selector         — the EXACT table/sheet name whose ROWS the transform consumes (the same table/sheet you SAMPLED above, so the apply-step streams the right table). For sql this is the table NAME (e.g. the table you sampled), NOT a function name and NOT `identity`. Omit (or nil) for a csv source.")))
+        "  :transform-source — the (fn [row] {:concept-drafts [...] :relationship-drafts [...]}) AS A STRING of Clojure source, scope+grain enforced, sample-validated\n  :selector         — the EXACT table/sheet name whose ROWS the transform consumes (the same table/sheet you SAMPLED above, so the apply-step streams the right table). For sql this is the table NAME (e.g. the table you sampled), NOT a function name and NOT `identity`. Omit (or nil) for a csv source."))))
 
 ;; =============================================================================
 ;; node-output — the inter-node contract READ mechanism
@@ -719,6 +989,23 @@
 
           (let [bb (assoc bb :model {:output (:output model-r)})
 
+                ;; --- DT4-grounding: surface the REAL sampled-row key shape ---
+                ;; The honest-negative fix. Sample REAL rows DIRECTLY from the
+                ;; source via the SAME per-medium tools the V20 apply-step streams
+                ;; through (mechanical-sample-rows) — NOT the profile node's emitted
+                ;; :sample, which an LLM may re-key (the CSV grounding-miss). The
+                ;; exact row-key shape is then injected into the transform prompt so
+                ;; the model grounds field access verbatim instead of assuming a key
+                ;; name/shape, and the SAME rows feed the sample-validation gate.
+                ;; Mechanical + domain-agnostic — the keys come from the runtime
+                ;; sample, never baked in. Empty when the source can't be sampled
+                ;; (the prompt then stands without a grounding block; no false shape).
+                grounding-rows (mechanical-sample-rows
+                                {:type (:type source) :path (:path source)})
+                key-shape (sample-row-key-shape
+                           source (or (seq grounding-rows)
+                                      (:sample (node-output bb :profile))))
+
                 ;; --- Node 3: TRANSFORM-design (reads the model-spec via the blackboard) ---
                 ;; DT4: the Transform node is FOCUSED — its prompt is used verbatim
                 ;; (:focused-prompt? true) so the retired mega-prompt's profiling /
@@ -730,7 +1017,7 @@
                 ;; node can sample rows (and any cross-table scope key set) before it
                 ;; bakes them into the pure transform source.
                 transform-r (run-node! ctx {:node-key :transform
-                                            :prompt (transform-node-prompt goal)
+                                            :prompt (transform-node-prompt goal key-shape)
                                             :source source
                                             :contract-keys transform-contract-keys
                                             :extra-inputs {:model-spec (node-output bb :model)}
@@ -752,6 +1039,34 @@
                     transform-source (:transform-source transform-out)
                     selector (:selector transform-out)
 
+                    ;; --- DT4-grounding: sample-validation gate (BEFORE full-scale apply) ---
+                    ;; Assert the authored transform yields NON-EMPTY drafts on REAL
+                    ;; rows of the table/sheet the transform ACTUALLY targets (its
+                    ;; own :selector — so the validation rows match what the apply
+                    ;; step streams), catching a mis-grounded (false-empty) transform
+                    ;; HERE rather than after streaming the full source to a
+                    ;; 0-concept dump. Falls back to the grounding sample when the
+                    ;; selector yields nothing. Only runs when we have real sample
+                    ;; rows AND a transform source — else it would false-fail; the
+                    ;; V20 apply still surfaces a true empty.
+                    validation-rows
+                    (or (seq (mechanical-sample-rows
+                              {:type (:type source) :path (:path source)} selector 100))
+                        (seq grounding-rows))
+                    sample-validation
+                    (when (and (seq validation-rows)
+                               (string? transform-source)
+                               (seq (str/trim transform-source)))
+                      (validate-transform-on-sample transform-source (vec validation-rows)))
+                    ;; Hard-block ONLY a DEFINITE fault (the transform does not
+                    ;; evaluate, or throws on every row — e.g. a JS builtin, an
+                    ;; unresolved symbol, a wrong contract shape). An :empty-yield
+                    ;; is NOT hard-blocked: a small window may legitimately be all
+                    ;; out-of-scope, and the V20 apply surfaces the true full-scale
+                    ;; count honestly (no false green either way). It is recorded.
+                    validation-fatal?
+                    (= :eval-failure (:rejection-kind sample-validation))
+
                     ;; --- full-extract-vs-inline branch (DT1 stub: always full-extract) ---
                     fx-branch (full-extract-vs-inline-branch-stub
                                ctx {:row-count nil :sample-covers? false})
@@ -762,10 +1077,14 @@
                     ;; that fails to EVALUATE or a bad selector is a real fault — we
                     ;; capture it as ::extract-error so it surfaces honestly as
                     ;; :failed-at-extract below (no false green, no silent sample
-                    ;; fallback — Discipline #5).
+                    ;; fallback — Discipline #5). SKIPPED only when the gate found a
+                    ;; DEFINITE fault (eval-failure) — we do not stream the full
+                    ;; source to evaluate a transform that cannot run. An empty-yield
+                    ;; is allowed through; the apply surfaces the true count honestly.
                     full-extraction
                     (when (and (string? transform-source)
-                               (seq (str/trim transform-source)))
+                               (seq (str/trim transform-source))
+                               (not validation-fatal?))
                       (try
                         (rlm-discovery/apply-extraction-transform!
                          {:descriptor {:type (:type source) :path (:path source)}
@@ -774,6 +1093,24 @@
                         (catch Throwable t
                           {::extract-error (.getMessage t)})))
                     extract-error (::extract-error full-extraction)]
+                (if validation-fatal?
+                  ;; The authored transform is a DEFINITE fault (does not evaluate /
+                  ;; throws on every row) — surface honestly at authoring time, do
+                  ;; NOT run the full apply or fake a pass (Discipline #5; the
+                  ;; honest-negative fix).
+                  {:status :failed-at-transform-validation
+                   :ontology-id ontology-id :goal goal
+                   :nodes-run [:profile :model :transform]
+                   :blackboard bb
+                   :sample-validation sample-validation
+                   :error (str "transform sample-validation failed: "
+                               (:reason sample-validation))
+                   :branch-points {:greenfield-vs-maintain gf-branch
+                                   :full-extract-vs-inline fx-branch
+                                   :recovery (recovery-branch-stub
+                                              ctx {:failed-node :transform
+                                                   :error (:reason sample-validation)})}}
+
                 (if extract-error
                   ;; The transform failed to evaluate / stream — surface honestly.
                   {:status :failed-at-extract
@@ -864,11 +1201,12 @@
                      :referential-integrity (:referential-integrity build-result)
                      :concepts-count (:concepts-count build-result)
                      :relationships-count (:relationships-count build-result)
+                     :sample-validation sample-validation
                      :branch-points {:greenfield-vs-maintain gf-branch
                                      :full-extract-vs-inline fx-branch
                                      :cq-reextract cq-branch
                                      :recovery (recovery-branch-stub
-                                                ctx {:failed-node nil :error nil})}}))))))))))))
+                                                ctx {:failed-node nil :error nil})}})))))))))))))
 
 ;; =============================================================================
 ;; Composable behavior-tree node (PRD user-story 24)

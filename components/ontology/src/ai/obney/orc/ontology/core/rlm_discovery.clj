@@ -946,10 +946,14 @@
                 'clojure.lang.PersistentHashSet clojure.lang.PersistentHashSet
                 'clojure.lang.PersistentTreeMap clojure.lang.PersistentTreeMap}})))
 
-(defn- eval-transform-fn
+(defn eval-transform-fn
   "Eval the model-authored transform SOURCE STRING to a callable fn in a fresh
    sandbox context. The source must evaluate to an IFn (a `(fn [row] ...)`); a
-   non-fn result fails LOUDLY (no silent fallback — Disciplines #5)."
+   non-fn result fails LOUDLY (no silent fallback — Disciplines #5).
+
+   PUBLIC so the DT4 sample-validation seam (discovery-tree) can eval a candidate
+   transform against real sampled rows BEFORE the full-scale apply, using the SAME
+   restricted sandbox the apply-step uses (no fork — Discipline #8)."
   [transform-source]
   (when-not (and (string? transform-source) (seq (str/trim transform-source)))
     (throw (ex-info "apply-extraction-transform!: :transform-source must be a non-blank string of Clojure source defining (fn [row] -> {:concept-drafts ... :relationship-drafts ...})"
