@@ -497,6 +497,17 @@
      :auto-classify? — default false here (a focused thin node does not need the
                       monolithic-discovery seed prepend); DT6 flips this behind
                       the promotion seam.
+     :focused-prompt? — default false. When TRUE, the `:instruction` is used
+                      VERBATIM as the node's prompt — the monolithic
+                      `structured-discovery-prompt` (modeling / grain / scope /
+                      transform guidance) is NOT prepended even for a structured
+                      source. The granted source-access tools are STILL bound via
+                      the `:granted-source` seam; the node's own focused prompt is
+                      responsible for naming the per-medium tools it should call
+                      (DT2's Profile node assembles its own focused per-medium tool
+                      catalog). This is how a single-purpose node (DT2/DT3/DT4)
+                      avoids inheriting the retired mega-prompt's cross-concern
+                      guidance while keeping the SAME tool-binding seam.
      :debug?        — debug logging on the session.
 
    Returns:
@@ -507,9 +518,10 @@
    A session that fails to construct/execute, or that produces no outputs,
    surfaces as `:failed` with the root cause — no false green (Discipline #5)."
   [ctx {:keys [node-name instruction source writes extra-inputs
-               model budget auto-classify? debug?]
+               model budget auto-classify? focused-prompt? debug?]
         :or {model "google/gemini-3-flash-preview"
-             auto-classify? false}}]
+             auto-classify? false
+             focused-prompt? false}}]
   (when-not (:ontology-id ctx)
     ;; The granted scope is required for the S19/S20 wiring; the discovery tree
     ;; threads it on ctx OR we accept it explicitly below. Surface loudly.
@@ -517,9 +529,16 @@
   (let [structured? (structured-source? source)
         granted-source (when structured?
                          {:format (:type source) :path (:path source)})
-        effective-prompt (if structured?
-                           (structured-discovery-prompt instruction source)
-                           instruction)
+        ;; A FOCUSED node (DT2/DT3/DT4) uses its instruction VERBATIM — the
+        ;; monolithic structured-discovery-prompt is NOT prepended (it carries
+        ;; modeling/grain/scope/transform guidance a single-purpose node must
+        ;; not inherit). The source-access tools are still bound by
+        ;; `:granted-source`; the focused prompt names the tools itself. A
+        ;; non-focused structured node keeps the legacy mega-prompt prepend.
+        effective-prompt (cond
+                           focused-prompt? instruction
+                           structured? (structured-discovery-prompt instruction source)
+                           :else instruction)
         rlm-config (build-rlm-config
                     {:granted-ontology-id (:granted-ontology-id ctx)
                      :auto-classify? auto-classify?

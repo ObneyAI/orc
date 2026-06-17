@@ -145,23 +145,109 @@
        (str/join " " (map (fn [k] (str k)) keys-vec))
        (when extra (str "\n" extra))))
 
+;; --- Focused per-medium tool catalog (DT2) ----------------------------------
+;; The executor binds the per-medium source-access tools via the :granted-source
+;; seam but does NOT auto-list them in the prompt — a node only learns which
+;; tools exist from its prompt text. The retired mega-prompt listed them inline
+;; alongside modeling/transform/scope guidance; a FOCUSED node must name the
+;; tools WITHOUT that cross-concern guidance. We pull the SAME docstrings the
+;; specialist tools ship (V06/V19 `source-tool-docs-for`) — no re-typing of tool
+;; names that could drift — and render a lean name + one-line PURPOSE catalog.
+
+(defn- resolve-source-tool-docs
+  "Lazy-resolve the orc-service per-medium tool-docs accessor (a peer component;
+   resolved at runtime, same discipline as the executor resolution in
+   rlm-discovery). Returns `{symbol -> docstring}` for a format, or nil for a
+   format with no source tools (`:text` uses the inline blackboard path)."
+  [fmt]
+  (let [f (requiring-resolve 'ai.obney.orc.orc-service.core.source-tools/source-tool-docs-for)]
+    (f {:format fmt})))
+
+(defn- tool-purpose-line
+  "Extract the one-line PURPOSE summary from a specialist tool docstring (they
+   open with `PURPOSE — <text>` then an EXAMPLE / RETURNS block). Falls back to
+   the docstring's first non-blank line. Keeps the focused catalog small."
+  [doc]
+  (let [doc (str doc)
+        purpose (some->> (re-find #"(?s)PURPOSE\s*[—\-:]\s*(.+?)(?:\n\s*\n|\nEXAMPLE|\nRETURNS)" doc)
+                         second)
+        line (or purpose (first (remove str/blank? (str/split-lines doc))))]
+    (-> (or line "")
+        (str/replace #"\s+" " ")
+        str/trim)))
+
+(defn- focused-tool-catalog
+  "Render a lean per-medium tool catalog (tool name + one-line PURPOSE) for the
+   focused Profile prompt, pulled from the specialist tools' own docstrings. This
+   is the ONLY medium specialization in the Profile prompt — it names which tools
+   to call for csv / sql / excel; the profiling INSTRUCTION is medium-agnostic.
+   A `:text` source (no source tools) returns a short note pointing at the inline
+   content. Domain-agnostic (discipline 12): tool ergonomics, never a domain."
+  [fmt]
+  (if-let [docs (resolve-source-tool-docs fmt)]
+    (str "SOURCE-ACCESS TOOLS for this " (name fmt) " source (call them as bare "
+         "top-level expressions — e.g. just `(" (-> docs keys first name) ")` on "
+         "its own line; do NOT wrap a tool call in `(code ...)`):\n"
+         (str/join "\n"
+                   (map (fn [[sym doc]]
+                          (str "  (" (name sym) " …) — " (tool-purpose-line doc)))
+                        docs))
+         "\n(You may call `(meta " (-> docs keys first name) ")` to read a tool's "
+         "full docstring with arg shapes + examples.)")
+    (str "SOURCE CONTENT is provided inline on the blackboard (read it with "
+         "(get-input …)). Profile it directly — there are no source-access tools "
+         "for this medium.")))
+
 (defn profile-node-prompt
-  "PROMOTION SEAM (PRD M6) for the Profile node. DT1 thin body: characterize the
-   source via the granted specialist tools and emit the frozen profile contract.
-   DT2 replaces this body with a focused, prototyped prompt — orchestration
-   unchanged. `goal` orients the node (PRD user-story 17)."
-  [goal]
-  (str "GOAL (orients this step): " goal "\n\n"
-       "STEP: PROFILE the source. Using the granted source-access tools (sample, "
-       "never dump), characterize what this source contains. Identify the "
-       "candidate entities, which field(s) IDENTIFY each entity, which fields "
-       "could SCOPE the source (region / subset / time window the goal names), "
-       "which fields are CODES/KEYS that could LINK to other sources, any "
-       "breakdown/grain signals (a column whose repeats make rows finer than "
-       "entities), and keep a small representative sample of rows."
+  "PROMOTION SEAM (PRD M6) for the Profile node. DT2 FOCUSED body: a small,
+   single-purpose prompt that does ONE job — CHARACTERIZE what the source is
+   ABOUT — and emits the frozen profile contract. It carries NO modeling, NO
+   transform-design, NO scope DECISION (DT3/DT4 own those); the only medium
+   specialization is the per-medium tool catalog naming which tools to call.
+   Domain-agnostic (discipline 12): no CIP/SOC/industry knowledge — it
+   characterizes ANY structured source. `goal` ORIENTS the node (it points the
+   characterization at the kinds of things the goal cares about, PRD user-story
+   17) but the node does NOT decide scope here.
+
+   `fmt` is the source format (`:csv` / `:sql` / `:excel` / `:text`) used only to
+   bind the focused tool catalog. Orchestration unchanged — this body is returned
+   through the same seam the thin DT1 body was."
+  [goal fmt]
+  (str "You are the PROFILE step of an ontology-discovery pipeline. Your ONE job "
+       "is to CHARACTERIZE what this source is ABOUT — not to model it, design a "
+       "transform, or decide what to keep. Later steps do that; do NOT do their "
+       "work.\n\n"
+       "GOAL (orients what to look for, but you make NO scope decision here): "
+       goal "\n\n"
+       (focused-tool-catalog fmt) "\n\n"
+       "HOW TO PROFILE (a couple of quick tool calls, then finalize — do NOT use "
+       "emit-tree!, do NOT page the whole source, do NOT mint any concepts):\n"
+       "  1. Look at the source's SHAPE (its columns / tables / sheets / fields).\n"
+       "  2. SAMPLE a few real rows to see actual values.\n"
+       "  3. From the shape + sample, characterize the source into the contract "
+       "below, then call (final! {…}).\n\n"
+       "WHAT TO CHARACTERIZE (this is the whole job):\n"
+       "  - ENTITY CANDIDATES: what real-world thing(s) does each row / record "
+       "describe? Name the candidate entity TYPES (a row is usually about one or a "
+       "few kinds of thing).\n"
+       "  - IDENTIFYING KEYS: for each entity candidate, which field(s) IDENTIFY a "
+       "single instance of it (the field whose value names that one thing).\n"
+       "  - SCOPE FIELDS: which fields COULD later be used to narrow the source to "
+       "a region / subset / time window / category (a state, a year, a group, a "
+       "status column). Just LIST the candidate fields — do NOT pick values or "
+       "filter; that is a later step's decision.\n"
+       "  - LINKING KEYS: which fields are CODES or KEYS that likely identify the "
+       "SAME entity in OTHER sources (a shared code / id a different source would "
+       "also carry), so the graph can connect across sources later.\n"
+       "  - GRAIN SIGNALS: any sign that rows are FINER-grained than entities — a "
+       "column whose repeats split one entity across many rows (a breakdown / "
+       "category / demographic / sub-measure / year dimension), or a "
+       "total/summary marker. Note the column(s) responsible.\n"
+       "  - SAMPLE: keep a few representative row maps verbatim (as you read them) "
+       "so the next step sees real values."
        (contract-block
         profile-contract-keys
-        "  :entity-candidates  — vector of candidate entity descriptions (strings)\n  :identifying-keys   — map of entity-candidate -> the field(s) that identify it\n  :scope-fields       — vector of fields that could scope the source to the goal\n  :linking-keys       — vector of code/key fields that link to other sources\n  :grain-signals      — vector of signals that rows are finer-grained than entities\n  :sample             — vector of a few representative row maps")))
+        "  :entity-candidates  — vector of candidate entity-type descriptions (strings)\n  :identifying-keys   — map of entity-candidate (string) -> vector of field(s) that identify it\n  :scope-fields       — vector of field names that COULD scope the source (no value chosen)\n  :linking-keys       — vector of code/key field names that likely link to other sources\n  :grain-signals      — vector of strings noting where rows are finer-grained than entities\n  :sample             — vector of a few representative row maps read from the source")))
 
 (defn model-node-prompt
   "PROMOTION SEAM (PRD M6) for the Model node. DT1 thin body: read goal + the
@@ -261,7 +347,8 @@
    Returns `{:status :ok :output <contract-map> :usage ... :session <raw>}` on a
    successful emission, or `{:status :failed :error <msg> :session <raw>}` — the
    orchestrator surfaces a node failure honestly (no false green)."
-  [ctx {:keys [node-key prompt source contract-keys extra-inputs model budget debug?]}]
+  [ctx {:keys [node-key prompt source contract-keys extra-inputs
+               focused-prompt? model budget debug?]}]
   (let [result (rlm-discovery/run-node-session!
                 ctx
                 {:node-name node-key
@@ -269,6 +356,7 @@
                  :source source
                  :writes contract-keys
                  :extra-inputs extra-inputs
+                 :focused-prompt? focused-prompt?
                  :model model
                  :budget budget
                  :debug? debug?})]
@@ -403,10 +491,15 @@
         gf-branch (greenfield-vs-maintain-branch-stub ctx {:mode :greenfield})
 
         ;; --- Node 1: PROFILE (structurally guaranteed first step) ---
+        ;; DT2: the Profile node is FOCUSED — its prompt is used verbatim
+        ;; (:focused-prompt? true) so the retired mega-prompt's modeling / grain /
+        ;; scope / transform guidance is NOT prepended. The per-medium tool
+        ;; catalog is assembled inside profile-node-prompt from the source format.
         profile-r (run-node! ctx {:node-key :profile
-                                  :prompt (profile-node-prompt goal)
+                                  :prompt (profile-node-prompt goal (:type source))
                                   :source source
                                   :contract-keys profile-contract-keys
+                                  :focused-prompt? true
                                   :model model :budget budget :debug? debug?})]
     (if (not= :ok (:status profile-r))
       {:status :failed-at-profile
