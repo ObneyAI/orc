@@ -145,6 +145,7 @@
         (println "build-status:" (:build-status result))
         (println "concepts:" (count concepts) "relationships:" (count relationships))
         {:ontology-id oid :model model :budget budget :elapsed-ms ms
+         :source source
          :tree-status (:status result)
          :nodes-run (:nodes-run result)
          :profile-output (dt/node-output (:blackboard result) :profile)
@@ -184,8 +185,8 @@
   (spit capture-path
         (str "# DT1 — Discovery-tree scaffold + orchestration — LIVE VERIFY\n\n"
              "**Date:** 2026-06-16. **Branch:** `feature/ontology-architecture`.\n"
-             "**Model:** `" (:model r) "` (real OpenRouter). **Source:** real IPEDS "
-             "SQLite (`output.db`). **No mocks.**\n\n"
+             "**Model:** `" (:model r) "` (real OpenRouter). **Source:** `"
+             (pr-str (:source r)) "`. **No mocks.**\n\n"
              "Ontology-id: `" (:ontology-id r) "`. Budget: `" (pr-str (:budget r)) "`. "
              "Elapsed: " (:elapsed-ms r) "ms.\n\n"
              "The tree ran Profile -> Model -> Transform -> [V20 apply-step] -> build! "
