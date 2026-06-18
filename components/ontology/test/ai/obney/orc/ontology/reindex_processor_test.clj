@@ -71,6 +71,23 @@
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
 
+(defn- wait-for
+  "Poll `pred` (a 0-arg fn returning truthy when the awaited condition holds)
+   every `interval-ms` until it holds or `timeout-ms` elapses. Returns true if
+   the condition held, false on timeout. Deterministic replacement for a blind
+   `Thread/sleep` — we wait for the ACTUAL settle condition (e.g. the reindex
+   counter resetting once the rebuild's :colbert/index-created lands) rather
+   than a fixed wall-clock guess, so the test neither flakes under load nor
+   masks a genuine multi-fire by sampling too early."
+  ([pred] (wait-for pred 5000 10))
+  ([pred timeout-ms interval-ms]
+   (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+     (loop []
+       (cond
+         (pred) true
+         (> (System/currentTimeMillis) deadline) false
+         :else (do (Thread/sleep interval-ms) (recur)))))))
+
 ;; =============================================================================
 ;; RED #1 — :ontology/reindex-config-set event schema validates
 ;; =============================================================================
@@ -522,7 +539,15 @@
           (dotimes [i 10]
             (emit-description-updated! ctx :node-type
               (keyword (str "node-type-" i))))
-          (Thread/sleep 500)
+          ;; Deterministic settle: the threshold crossing fires create-index!
+          ;; (the stub emits :colbert/index-created) which resets the counter
+          ;; to 0. Wait for that reset — the real settle condition — instead of
+          ;; a blind sleep. Bounded; fails loudly if it never settles.
+          (is (wait-for #(= 0 (:events-since-last-rebuild (ontology/get-reindex-state ctx))))
+              "reindex-state counter resets to 0 within timeout after the burst settles")
+          ;; Brief grace so any ERRONEOUS extra concurrent fire (the bug this
+          ;; test guards) would still be captured before we assert exactly-one.
+          (Thread/sleep 200)
           (is (= 1 (count @calls))
               "create-index! is called exactly once after 10 events")
           (let [opts (first @calls)]

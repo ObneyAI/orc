@@ -405,6 +405,44 @@
         (u/log ::reindex-failed
                :error (.getMessage e))))))
 
+;; ---------------------------------------------------------------------------
+;; Single-writer guard for the threshold check-and-rebuild (RF4 root-cause fix)
+;;
+;; The todo-processor-v2 execution layer spawns a fresh `async/thread` per
+;; delivered event (see grain-core-v2 todo-processor-v2/core ::execution-fn).
+;; A burst of N :ontology/*-description-updated events therefore runs N
+;; concurrent maybe-rebuild! invocations. Each reads events-since-last-rebuild
+;; from the reindex-state projection, compares it against the threshold, and —
+;; if crossed — dispatches :colbert/create-index whose :colbert/index-created
+;; event is what RESETS the counter. Because the read-check-dispatch-reset
+;; sequence is NOT atomic, multiple concurrent threads can each observe
+;; counter >= threshold before the reset event lands and is projected, firing
+;; create-index! 2–N times for a SINGLE threshold crossing (wasted rebuilds /
+;; churn). Proven via thread-name instrumentation: maybe-rebuild! ran on up to
+;; 10 distinct async-thread-macro-* threads, create-index! fired up to 10×.
+;;
+;; Fix: serialize the check-and-dispatch per tenant. process-command appends
+;; the :colbert/index-created event SYNCHRONOUSLY before returning, and the
+;; reindex-state projection uses a 0ms L1 TTL (always revalidate from the
+;; event watermark). So once the first holder of the lock fires + the reset
+;; lands, every subsequent holder re-projects a counter of 0 and does NOT
+;; fire. Exactly one crossing → exactly one rebuild.
+;; ---------------------------------------------------------------------------
+
+(def ^:private rebuild-locks*
+  "Per-tenant monitor objects guarding the threshold check-and-rebuild
+   critical section. Interned by tenant-id so concurrent maybe-rebuild!
+   invocations for the same tenant serialize, while different tenants stay
+   independent. Unbounded growth is a non-issue in practice (tenant count is
+   small + bounded); a global lock would needlessly serialize across tenants."
+  (atom {}))
+
+(defn- rebuild-lock
+  "Return the (interned) monitor object for `tenant-id`, creating it once."
+  [tenant-id]
+  (or (get @rebuild-locks* tenant-id)
+      (get (swap! rebuild-locks* update tenant-id #(or % (Object.))) tenant-id)))
+
 (defn maybe-rebuild!
   "Read reindex-state + config; if the trigger conditions are met, build
    the document collection from the current descriptions read-model and
@@ -415,16 +453,22 @@
    We dispatch via the command processor (NOT colbert/create-index!
    directly) because the interface fn bypasses event emission — it
    returns the bridge result but never emits :colbert/index-created.
-   The defcommand is the only path that emits the event."
+   The defcommand is the only path that emits the event.
+
+   RF4: the read-check-dispatch sequence runs inside a per-tenant lock so a
+   burst of concurrent invocations (one async/thread per event) crosses the
+   threshold exactly once. State is re-read INSIDE the lock so threads that
+   queue behind the firing thread observe the post-reset counter and skip."
   [context]
-  (let [reindex-state (rm/get-reindex-state context)
-        reindex-config (rm/get-reindex-config context)
-        descriptions (collect-current-descriptions context)]
-    (when (should-rebuild? reindex-state reindex-config (count descriptions))
-      (dispatch-create-index! context descriptions
-        {:event-count (:events-since-last-rebuild reindex-state)
-         :threshold (:reindex-threshold-events reindex-config)
-         :cold-start? (not (:index-built? reindex-state))}))))
+  (locking (rebuild-lock (:tenant-id context))
+    (let [reindex-state (rm/get-reindex-state context)
+          reindex-config (rm/get-reindex-config context)
+          descriptions (collect-current-descriptions context)]
+      (when (should-rebuild? reindex-state reindex-config (count descriptions))
+        (dispatch-create-index! context descriptions
+          {:event-count (:events-since-last-rebuild reindex-state)
+           :threshold (:reindex-threshold-events reindex-config)
+           :cold-start? (not (:index-built? reindex-state))})))))
 
 (defn force-rebuild!
   "QP-3: dispatch :colbert/create-index unconditionally, bypassing the
