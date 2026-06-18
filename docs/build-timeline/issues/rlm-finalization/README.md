@@ -30,13 +30,15 @@ and unifies finalization on one model (aligned with the recursive-only direction
 |---|-------|------|-----------|
 | RF1 | Structured `final!` finalization for the terminal `:repl-researcher` path (+ rewrite the 12 stale `repl-researcher-test` + fix the 1 stale `code-executor-test` string) | AFK | — |
 | RF2 | `seed-descriptions` test-classpath gap — make the 5 ontology tests runnable under `clj -M:poly test` | AFK · deferred | — |
-| RF3 | `build-atomicity-test` sqlite brick-dep gap — add `grain-event-store-sqlite-v3` to `orc-service/deps.edn` test scope so the brick gate exits 0 | AFK · deferred | — |
+| RF3 | `build-atomicity-test` sqlite brick-dep gap — add `grain-event-store-sqlite-v3` to `orc-service/deps.edn` test scope so the brick gate exits 0 | AFK · **DONE** (`afac14dd`) | — |
+| RF4 | de-flake `reindex-processor-fires-at-threshold` (async race) — the sole remaining ontology-gate blocker once RF2 lands | AFK · deferred | RF2 |
 
 **RF2 + RF3 are the same class** — "brick test-classpath gaps": a test depends on
 something present only on the root/`:dev` classpath, so `clj -M:poly test` can't
-load it (it then either skips silently or reds the whole gate). Both were surfaced
-by RF1 once the stale failures stopped aborting the runs early. They are pure
-test-infra fixes, deferred and tracked so they aren't lost.
+load it (it then either skips silently or reds the whole gate). **RF4** is the
+next layer the same way: each fix un-masks the next previously-unreachable failure
+(RF1 → build-atomicity/RF3 → seed-load/RF2 → reindex-flaky/RF4). All were surfaced
+by making the gate actually run. They are deferred + tracked so they aren't lost.
 
 ## Posture
 - Each slice: `/handoff` → `/tdd` (red→green tracer bullets) → the binding
