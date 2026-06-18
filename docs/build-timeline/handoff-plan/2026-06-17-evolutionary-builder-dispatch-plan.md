@@ -64,15 +64,26 @@ YES: **EB1** (delegation/registry seam), **EB10** (central loop + routing). WORT
 
 ## Carry-forwards (from EB1 /inspect-orc — bake into every subbehavior handoff)
 
-- **C1 — structured Malli schemas for map contracts across `:delegate`.** The AI
-  executor coerces only STRUCTURED `[:map …]`/`[:map-of …]` schemas; a BARE `:map`
-  write arrives across the `:delegate` seam as a JSON STRING (proven in EB1). Every
-  subbehavior (EB2 Survey profile, EB3 model-spec, EB4 transform, EB5 reconcile
-  output, EB6 axioms, EB8 CQs) hands a map contract back to the central tree — so
-  each subbehavior's map `:writes` MUST declare a structured Malli schema (or be
-  produced by a `:code` node). NEVER a bare `:map` for a contract that must arrive
-  parsed. (Otherwise the central tree / downstream subbehavior receives a string
-  and silently mis-reads it.)
+- **C1 — getting a map contract to arrive PARSED across `:delegate` is NODE-TYPE-
+  specific (refined by EB2 /inspect-orc).** `:delegate` passes values VERBATIM
+  (key-normalized via `normalize-output-keys`, NO value coercion) — so parsed-ness
+  is determined by the PRODUCING node, not the seam:
+  - **`:llm` node** (EB3 Model, EB8 CQs, EB10 routing): the LLM returns TEXT parsed
+    against the `:writes` schema — a BARE `:map` arrives as a JSON STRING; the map
+    contract MUST declare a STRUCTURED `[:map …]`/`[:map-of …]` Malli schema (the
+    load-bearing EB1 case).
+  - **`:repl-researcher`** (EB2 Survey): `(final! {...})` captures the SCI-eval'd
+    real Clojure map → persisted PARSED verbatim. The load-bearing fix is the
+    PROMPT (require `final!` with EDN data; FORBID `emit-tree!`, else the output is
+    a tree-result string); the structured schema is defense-in-depth.
+  - **`:code` node**: returns native Clojure → parsed map naturally.
+  In ALL cases VERIFY the contract arrives parsed by reading the parent bb back
+  from the projection (EB1/EB2 method); never trust the return value.
 - **C2 — delegation overhead method.** EB1 measured child-tick delegation overhead
   at ~50ms (median over 5 trials, vs ~1.2s LLM latency) — the measurement method
   EB12 reuses to judge `:delegate`-per-subbehavior cost at full scale.
+- **C3 — cold-start blank-completion (gemini) follow-up (EB2).** gemini's
+  blank-first-completion mode intermittently yields "LLM did not generate code";
+  the executor's `rr-max-retries` knob (default 1) is NOT plumbed from node
+  `:options`. Plumbing it (orc-service todo-processor) would harden cold-start —
+  a small follow-up; not a blocker (surrounding runs succeed).
