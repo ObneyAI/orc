@@ -31,7 +31,8 @@ and unifies finalization on one model (aligned with the recursive-only direction
 | RF1 | Structured `final!` finalization for the terminal `:repl-researcher` path (+ rewrite the 12 stale `repl-researcher-test` + fix the 1 stale `code-executor-test` string) | AFK | — |
 | RF2 | `seed-descriptions` test-classpath gap — make the 5 ontology tests runnable under `clj -M:poly test` | AFK · deferred | — |
 | RF3 | `build-atomicity-test` sqlite brick-dep gap — add `grain-event-store-sqlite-v3` to `orc-service/deps.edn` test scope so the brick gate exits 0 | AFK · **DONE** (`afac14dd`) | — |
-| RF4 | de-flake `reindex-processor-fires-at-threshold` (async race) — the sole remaining ontology-gate blocker once RF2 lands | AFK · deferred | RF2 |
+| RF4 | de-flake `reindex-processor-fires-at-threshold` — root-caused to a **real production concurrency race** (multi-fire); fixed with a per-tenant lock + deterministic test wait | AFK · **DONE** (`56cb54b8`) | RF2 |
+| RF5 | separate live/slow integration tests (s17 live-ColBERT, c2a 9-min) from the ontology fast gate — **needs a repo-owner decision** | AFK · open | RF2,RF4 |
 
 **RF2 + RF3 are the same class** — "brick test-classpath gaps": a test depends on
 something present only on the root/`:dev` classpath, so `clj -M:poly test` can't
