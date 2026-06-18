@@ -59,3 +59,20 @@ Slice-by-slice: **EB1 → EB2 → EB3 → (EB4→EB5) ∥ (EB6, EB7) → EB8 →
 
 ## Prototype summary
 YES: **EB1** (delegation/registry seam), **EB10** (central loop + routing). WORTH: EB2, EB3, EB5, EB6, EB7, EB8, EB9, EB11. SOFT: EB4. NO: EB12.
+
+---
+
+## Carry-forwards (from EB1 /inspect-orc — bake into every subbehavior handoff)
+
+- **C1 — structured Malli schemas for map contracts across `:delegate`.** The AI
+  executor coerces only STRUCTURED `[:map …]`/`[:map-of …]` schemas; a BARE `:map`
+  write arrives across the `:delegate` seam as a JSON STRING (proven in EB1). Every
+  subbehavior (EB2 Survey profile, EB3 model-spec, EB4 transform, EB5 reconcile
+  output, EB6 axioms, EB8 CQs) hands a map contract back to the central tree — so
+  each subbehavior's map `:writes` MUST declare a structured Malli schema (or be
+  produced by a `:code` node). NEVER a bare `:map` for a contract that must arrive
+  parsed. (Otherwise the central tree / downstream subbehavior receives a string
+  and silently mis-reads it.)
+- **C2 — delegation overhead method.** EB1 measured child-tick delegation overhead
+  at ~50ms (median over 5 trials, vs ~1.2s LLM latency) — the measurement method
+  EB12 reuses to judge `:delegate`-per-subbehavior cost at full scale.
