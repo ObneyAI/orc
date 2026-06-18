@@ -78,8 +78,9 @@
    The Profile/Model/Transform nodes here are intentionally THIN — minimal,
    single-purpose prompts that prove the contract flows. DT2/DT3/DT4 replace the
    thin prompt of each node with a focused, prototyped one WITHOUT touching the
-   orchestration (the prompt for each node goes through the `*-node-prompt`
-   promotion seam, PRD M6)."
+   orchestration (the prompt for each node goes through the DT6
+   `assemble-node-prompt` promotion seam, PRD M6 — static now, a clean flip to a
+   living-behavior source later)."
   (:require [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
             [ai.obney.orc.ontology.core.deterministic-skeleton :as skeleton]
             [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
@@ -877,6 +878,92 @@
         cq-contract-keys
         "  :competency-questions — VECTOR of natural-language question STRINGS (the load-bearing exit-gate questions; these persist as the ORSD spec)\n  :rationale            — VECTOR of one-line strings, parallel to :competency-questions, each naming the goal-part the CQ tests + the profile field(s)/source(s) that ground it (for HITL review; not gated on)")))
 
+;; =============================================================================
+;; DT6 — the prompt-assembly promotion seam (PRD M6): ONE seam, static now
+;; =============================================================================
+;; Every focused node above defines its STATIC focused body as a `*-node-prompt`
+;; fn (DT2/DT3/DT4/DT5). DT6 routes ALL of them through ONE assembly seam so the
+;; orchestration has a SINGLE point where a node's prompt is produced — and a
+;; SINGLE point a later slice flips from the static body to a LIVING-BEHAVIOR
+;; source (classify-behaviors → inject the top-fitting behavior's worked-examples
+;; + participate in minting). Today the seam returns the static prompt verbatim:
+;; NO behavior change (the DT2-DT5 node tests still pin the static bodies, and
+;; the seam returns them byte-identical).
+;;
+;; *** THE PROMOTION CONTRACT (the whole point of this seam) ***
+;; The seam takes a `prompt-source` fn — `(fn [node-kind params] <prompt-string>)`
+;; — defaulting to `static-node-prompt-source`. Promotion to a living behavior is
+;; a CLEAN FLIP behind the seam: a future slice supplies a prompt-source that, for
+;; a node-kind + params, calls `classify-behaviors` over the node's task shape,
+;; prepends the top-fitting seed-corpus behavior's capabilities + worked-example
+;; DSL snippets, and lets the node `(mint-behavior! …)` when no pattern fits —
+;; WITHOUT rewriting any node or its call site (they keep calling the seam).
+;;
+;; *** NO COUPLING TO CURRENT MINTING INTERNALS (the load-bearing boundary) ***
+;; The seam takes a PLAIN injected fn; it does NOT call into today's
+;; `classify-behaviors` / mint code (the minting process is being reworked
+;; separately — DT6 must not bind to it). The injection point is a clean fn
+;; boundary, so the promotion source can be composed/wrapped (corpus-sourced with
+;; a static fall-back) and threaded in later. This namespace requires NO
+;; classify/mint symbol for the seam to work — proof the boundary is clean.
+
+(defn static-node-prompt-source
+  "The DEFAULT prompt-source for `assemble-node-prompt`: returns the node's
+   STATIC focused body (the DT2-DT5 `*-node-prompt` fns) for a node-kind + params.
+   This is the `(fn [node-kind params] <prompt-string>)` contract a promotion
+   slice composes/replaces behind the seam (e.g. corpus-sourced-or-fall-back-to-
+   static) — it is PUBLIC so a later source can wrap it rather than fork the
+   static bodies.
+
+   `node-kind` ∈ #{:profile :model :transform :requirements}. `params` carries
+   the per-node inputs the static body needs:
+     :profile      → :goal :fmt        (fmt selects the per-medium tool catalog)
+     :model        → :goal
+     :transform    → :goal :key-shape  (key-shape = the optional DT4 grounding block; nil → none)
+     :requirements → :goal
+
+   An unknown node-kind throws (Discipline #5 — a routing bug surfaces loudly,
+   never a silent/wrong prompt)."
+  [node-kind {:keys [goal fmt key-shape]}]
+  (case node-kind
+    :profile      (profile-node-prompt goal fmt)
+    :model        (model-node-prompt goal)
+    :transform    (transform-node-prompt goal key-shape)
+    :requirements (cq-node-prompt goal)
+    (throw (ex-info "static-node-prompt-source: unknown node-kind"
+                    {:node-kind node-kind
+                     :known #{:profile :model :transform :requirements}}))))
+
+(defn assemble-node-prompt
+  "THE PROMOTION SEAM (PRD M6) — assemble a focused discovery node's prompt
+   through ONE point. Every node's prompt (Profile/Model/Transform/Requirements)
+   flows through here, so there is a SINGLE place a later slice flips the source
+   from the static focused body to a living-behavior source.
+
+   TODAY this returns the node's STATIC focused prompt verbatim (via
+   `static-node-prompt-source`) — NO behavior change; the DT2-DT5 node bodies are
+   byte-identical through the seam.
+
+   `node-kind` is the node being assembled (`:profile` / `:model` / `:transform`
+   / `:requirements`). `params` is the per-node input map the source needs (see
+   `static-node-prompt-source` for the per-kind keys).
+
+   `opts` (optional) is where promotion plugs in:
+     :prompt-source — `(fn [node-kind params] <prompt-string>)`. DEFAULTS to
+                      `static-node-prompt-source`. A promotion slice supplies a
+                      source that sources from classify-behaviors / the seed
+                      corpus and participates in minting — a CLEAN FLIP behind
+                      this seam, no node rewrite. nil falls back to static.
+
+   The seam does NOT couple to current minting internals: it invokes the source
+   as a plain 2-arg fn and depends on NO classify/mint symbol (the minting rework
+   is separate). Promotion is opt-in by injecting a source — the default is
+   static."
+  ([node-kind params] (assemble-node-prompt node-kind params nil))
+  ([node-kind params {:keys [prompt-source]}]
+   (let [source (or prompt-source static-node-prompt-source)]
+     (source node-kind params))))
+
 (defn string-cqs
   "Coerce a model-emitted :competency-questions value into a clean vector of
    non-blank question STRINGS (the ORSD-spec shape). Tolerant of the value-shape
@@ -998,7 +1085,7 @@
         (let [derive-r (rlm-discovery/run-node-session!
                         ctx
                         {:node-name :requirements
-                         :instruction (cq-node-prompt goal)
+                         :instruction (assemble-node-prompt :requirements {:goal goal})
                          :source (or source {:name :requirements :type :text :content ""})
                          :writes cq-contract-keys
                          :extra-inputs {:profiles profiles}
@@ -1198,7 +1285,7 @@
         ;; scope / transform guidance is NOT prepended. The per-medium tool
         ;; catalog is assembled inside profile-node-prompt from the source format.
         profile-r (run-node! ctx {:node-key :profile
-                                  :prompt (profile-node-prompt goal (:type source))
+                                  :prompt (assemble-node-prompt :profile {:goal goal :fmt (:type source)})
                                   :source source
                                   :contract-keys profile-contract-keys
                                   :focused-prompt? true
@@ -1224,7 +1311,7 @@
             ;; tools are still bound via :granted-source so the node can sample a
             ;; row to confirm a field name without re-profiling.
             model-r (run-node! ctx {:node-key :model
-                                    :prompt (model-node-prompt goal)
+                                    :prompt (assemble-node-prompt :model {:goal goal})
                                     :source source
                                     :contract-keys model-contract-keys
                                     :extra-inputs {:profile (node-output bb :profile)}
@@ -1271,7 +1358,7 @@
                 ;; node can sample rows (and any cross-table scope key set) before it
                 ;; bakes them into the pure transform source.
                 transform-r (run-node! ctx {:node-key :transform
-                                            :prompt (transform-node-prompt goal key-shape)
+                                            :prompt (assemble-node-prompt :transform {:goal goal :key-shape key-shape})
                                             :source source
                                             :contract-keys transform-contract-keys
                                             :extra-inputs {:model-spec (node-output bb :model)}
