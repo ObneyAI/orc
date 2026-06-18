@@ -1152,37 +1152,65 @@
     result))
 
 ;; =============================================================================
-;; Branch points — NAMED STUBS (PRD M1; filled by DT8/DT9)
+;; Branch points — DT8 FILLS recovery + cq-reextract; DT9 fills greenfield/maintain
 ;; =============================================================================
-;; These exist as explicit, named, no-op functions so later slices fill them in
-;; place WITHOUT restructuring the spine. Each is invoked at its branch point in
-;; `run-discovery-tree!` and returns `{:branch <name> :taken? false :reason
-;; :stub-not-yet-implemented}` today. A test asserts they are present + named.
+;; These were NAMED STUBS at DT1 so later slices fill them in place WITHOUT
+;; restructuring the spine. DT8 fills `recovery-branch-stub` (focused single-node
+;; recovery) and `cq-reextract-branch-stub` (the CQ-driven re-extract loop) with
+;; their real branch DECISION logic; the two DT9 stubs stay no-ops. Each is still
+;; invoked at its branch point in `run-discovery-tree!` and each still returns a
+;; `{:branch <name> :taken? <bool> ...}` map so the surfaced branch-points read
+;; uniformly. The HEAVY lifting (the loop / the recovery re-run) lives in the
+;; `cq-driven-loop!` / `focused-node-recovery!` orchestration fns below; these
+;; branch fns are the thin DECIDERS that say whether (and why) a branch is taken.
 
 (defn recovery-branch-stub
-  "BRANCH STUB (DT8) — focused single-node recovery. When a node in the sequence
-   fails, DT8 will re-run just that node reading the surviving blackboard vars +
-   the failure (the self-improving-loop focused-failure-recovery pattern). DT1:
-   no-op — a node failure is surfaced honestly to the caller, not recovered."
+  "BRANCH (DT8) — focused single-node recovery DECISION. Given a failed node +
+   error, decide whether the focused single-node recovery branch should be taken.
+   It is taken whenever a real node/stage failure is present (a named
+   `:failed-node` with an `:error`) — the orchestrator then runs
+   `focused-node-recovery!` (re-run JUST that node reading the surviving
+   blackboard vars + the failure, the self-improving-loop focused-failure-recovery
+   pattern), NOT a full rebuild. With no failure (the happy path) the branch is
+   not taken. Kept named `recovery-branch-stub` so the DT1 spine wiring + the
+   surfaced branch-points key are unchanged."
   [_ctx {:keys [failed-node error]}]
-  {:branch :recovery
-   :taken? false
-   :reason :stub-not-yet-implemented
-   :failed-node failed-node
-   :error error})
+  (if failed-node
+    {:branch :recovery
+     :taken? true
+     :reason :node-failure
+     :strategy :focused-single-node-recovery
+     :failed-node failed-node
+     :error error}
+    {:branch :recovery
+     :taken? false
+     :reason :no-node-failure
+     :failed-node nil
+     :error nil}))
 
 (defn cq-reextract-branch-stub
-  "BRANCH STUB (DT8) — CQ-driven re-extract loop. When the build!'s CQ verdict
-   FAILS, DT8 will inspect the failing CQ + graph-health (drill-down), trace it
-   to the node whose output the gap traces to, FOCUSED re-extract/re-link, and
-   re-gate — or surface an honestly-unanswerable CQ + terminate. DT1: no-op —
-   the CQ verdict is read + surfaced; no loop runs."
+  "BRANCH (DT8) — CQ-driven re-extract DECISION. Given build!'s CQ verdict
+   (`:build-status` ∈ {:complete :failed-cq} + `:graph-health`), decide whether
+   the adaptive CQ-driven re-extract loop should be entered. It is taken when the
+   verdict is `:failed-cq` (the gate did NOT pass) — the orchestrator then runs
+   `cq-driven-loop!`, which inspects the failing CQs + graph-health, FOCUSED
+   re-extracts/re-links the node the gap traces to, re-gates, and terminates
+   honestly (gate-pass / all-remaining-unanswerable / budget) — NEVER spins,
+   NEVER false-greens. On `:complete` the branch is not taken. Kept named
+   `cq-reextract-branch-stub` so the DT1 spine wiring is unchanged."
   [_ctx {:keys [build-status graph-health]}]
-  {:branch :cq-reextract
-   :taken? false
-   :reason :stub-not-yet-implemented
-   :build-status build-status
-   :graph-health graph-health})
+  (if (= :failed-cq build-status)
+    {:branch :cq-reextract
+     :taken? true
+     :reason :failed-cq
+     :strategy :focused-reextract-loop
+     :build-status build-status
+     :graph-health graph-health}
+    {:branch :cq-reextract
+     :taken? false
+     :reason :cq-gate-passed
+     :build-status build-status
+     :graph-health graph-health}))
 
 (defn greenfield-vs-maintain-branch-stub
   "BRANCH STUB (DT9) — greenfield vs maintain. Greenfield is the BUILT arm (DT1
@@ -1213,6 +1241,11 @@
 ;; =============================================================================
 ;; Graph-level orchestration — the fixed-core per-source sub-tree
 ;; =============================================================================
+
+;; Forward declarations: the DT8 adaptive-loop + focused-recovery orchestration
+;; fns are DEFINED below `reconcile-graph!` (cq-driven-loop! reuses DT7 re-link),
+;; but the per-source spine here invokes them — declare so the spine compiles.
+(declare focused-node-recovery! cq-driven-loop!)
 
 (defn run-discovery-tree!
   "DT1 — run the discovery behavior tree for ONE source, end-to-end:
@@ -1258,7 +1291,8 @@
    A node failure (profile/model/transform) surfaces honestly as
    :failed-at-<node> with the node's session error — no fabricated downstream
    steps run (Discipline #5; no false green). `build!` is invoked UNCHANGED."
-  [ctx {:keys [ontology-id source goal model budget judge-fn exit-criterion debug?]
+  [ctx {:keys [ontology-id source goal model budget judge-fn exit-criterion debug?
+               cq-loop-config recover-nodes?]
         :or {model "google/gemini-3-flash-preview"}}]
   (when-not ontology-id
     (throw (ex-info "run-discovery-tree! requires :ontology-id (the granted scope)"
@@ -1310,13 +1344,24 @@
             ;; over-extraction fix as a guaranteed step). The granted source-access
             ;; tools are still bound via :granted-source so the node can sample a
             ;; row to confirm a field name without re-profiling.
-            model-r (run-node! ctx {:node-key :model
-                                    :prompt (assemble-node-prompt :model {:goal goal})
-                                    :source source
-                                    :contract-keys model-contract-keys
-                                    :extra-inputs {:profile (node-output bb :profile)}
-                                    :focused-prompt? true
-                                    :model model :budget budget :debug? debug?})]
+            model-r0 (run-node! ctx {:node-key :model
+                                     :prompt (assemble-node-prompt :model {:goal goal})
+                                     :source source
+                                     :contract-keys model-contract-keys
+                                     :extra-inputs {:profile (node-output bb :profile)}
+                                     :focused-prompt? true
+                                     :model model :budget budget :debug? debug?})
+            ;; --- DT8 focused single-node recovery (opt-in) ---
+            ;; On a Model-node failure, re-run JUST the Model node reading the
+            ;; SURVIVING Profile output + the failure (the focused-failure-recovery
+            ;; pattern) — NOT a full rebuild. Off by default so the honest
+            ;; :failed-at-model surfacing is preserved unless a caller opts in.
+            model-r (if (and recover-nodes? (not= :ok (:status model-r0)))
+                      (focused-node-recovery!
+                       ctx {:failed-node :model :error (:error model-r0)
+                            :blackboard bb :source source :goal goal
+                            :model model :budget budget :debug? debug?})
+                      model-r0)]
         (if (not= :ok (:status model-r))
           {:status :failed-at-model
            :ontology-id ontology-id :goal goal
@@ -1357,13 +1402,23 @@
                 ;; source-access tools are still bound via :granted-source so the
                 ;; node can sample rows (and any cross-table scope key set) before it
                 ;; bakes them into the pure transform source.
-                transform-r (run-node! ctx {:node-key :transform
-                                            :prompt (assemble-node-prompt :transform {:goal goal :key-shape key-shape})
-                                            :source source
-                                            :contract-keys transform-contract-keys
-                                            :extra-inputs {:model-spec (node-output bb :model)}
-                                            :focused-prompt? true
-                                            :model model :budget budget :debug? debug?})]
+                transform-r0 (run-node! ctx {:node-key :transform
+                                             :prompt (assemble-node-prompt :transform {:goal goal :key-shape key-shape})
+                                             :source source
+                                             :contract-keys transform-contract-keys
+                                             :extra-inputs {:model-spec (node-output bb :model)}
+                                             :focused-prompt? true
+                                             :model model :budget budget :debug? debug?})
+                ;; --- DT8 focused single-node recovery (opt-in) ---
+                ;; On a Transform-node failure, re-run JUST the Transform node
+                ;; reading the SURVIVING model-spec + the failure — NOT a rebuild.
+                transform-r (if (and recover-nodes? (not= :ok (:status transform-r0)))
+                              (focused-node-recovery!
+                               ctx {:failed-node :transform :error (:error transform-r0)
+                                    :blackboard bb :source source :goal goal
+                                    :key-shape key-shape
+                                    :model model :budget budget :debug? debug?})
+                              transform-r0)]
             (if (not= :ok (:status transform-r))
               {:status :failed-at-transform
                :ontology-id ontology-id :goal goal
@@ -1514,7 +1569,7 @@
                         ;; build! sees a single zero-concept :inline-concepts source and
                         ;; runs normalize → dedup → validate → embed → index → CQ over the
                         ;; graph the discovery nodes built.
-                        build-result
+                        initial-build
                         (skeleton/build!
                          ctx
                          (cond-> {:ontology-id ontology-id
@@ -1522,10 +1577,27 @@
                            judge-fn       (assoc :judge-fn judge-fn)
                            exit-criterion (assoc :exit-criterion exit-criterion)))
 
-                        ;; --- read the CQ verdict back (PRD M7) ---
+                        ;; --- read the CQ verdict back + DECIDE the cq-reextract
+                        ;;     branch (PRD M7). On :failed-cq the tree OWNS the
+                        ;;     adaptive loop: focused re-extract → re-gate →
+                        ;;     terminate honestly (pass / unanswerable / budget). On
+                        ;;     :complete the branch is not taken; build! stands. ---
                         cq-branch (cq-reextract-branch-stub
-                                   ctx {:build-status (:status build-result)
-                                        :graph-health (:graph-health build-result)})]
+                                   ctx {:build-status (:status initial-build)
+                                        :graph-health (:graph-health initial-build)})
+                        build-result
+                        (if (:taken? cq-branch)
+                          (cq-driven-loop!
+                           ctx
+                           {:ontology-id ontology-id :source source :goal goal
+                            :blackboard bb :key-shape key-shape
+                            :judge-fn judge-fn :exit-criterion exit-criterion
+                            :model model :budget budget :debug? debug?
+                            :cq-loop-config cq-loop-config
+                            ;; single-source run: no cross-source re-link to do.
+                            :reconcile-fn false
+                            :initial-build-result initial-build})
+                          initial-build)]
                     {:status (:status build-result)
                      :ontology-id ontology-id
                      :goal goal
@@ -1537,6 +1609,7 @@
                      :compile-provenance (:discovery-provenance compiled)
                      :build-result build-result
                      :build-status (:status build-result)
+                     :cq-loop (:cq-loop build-result)
                      :graph-health (:graph-health build-result)
                      :exit-criterion (:exit-criterion build-result)
                      :referential-integrity (:referential-integrity build-result)
@@ -1846,6 +1919,355 @@
      :ambiguities-surfaced (count ambiguities)
      :ambiguities ambiguities
      :referential-integrity integrity}))
+
+;; =============================================================================
+;; DT8 — the tree-owned adaptive CQ-driven loop + focused recovery (PRD M7)
+;; =============================================================================
+;; The two RLM-chosen branches the DT1 spine left named-stubbed are filled here
+;; as REAL orchestration around the intact `build!` sub-call. build! stays a
+;; deterministic sub-call (Discipline #8 — no fork); the TREE owns the loop:
+;;
+;;   build! ─CQ verdict─┬─ :complete ──────────────────────────────────→ DONE
+;;                      └─ :failed-cq → inspect failing CQs + graph-health
+;;                                      → FOCUSED re-extract the node the gap
+;;                                        traces to (NOT a full rebuild)
+;;                                      → re-gate (build! again)
+;;                                      → unanswerable? surface + terminate
+;;                                      → budget? terminate with the reason
+;;
+;; And, orthogonally, when a NODE/STAGE in the per-source sub-tree FAILS (throws),
+;; `focused-node-recovery!` re-runs JUST that node reading the surviving
+;; blackboard vars + the failure (mirrors the self-improving-loop focused-failure-
+;; recovery pattern) rather than rebuilding the whole pipeline.
+;;
+;; HONEST-NEGATIVE ETHOS (V17 / discipline 9 / PRD US-20): the loop distinguishes
+;; "re-extract to close the gap" from "honestly unanswerable from these sources".
+;; A failing CQ is judged unanswerable by S15 against the RUNTIME CQs — NOT by any
+;; domain rule (discipline 12). Operationally: a CQ stays failing AND a focused
+;; re-extract aimed at it supplied NO new graph data closing it (the graph did not
+;; grow toward that CQ across the iteration) ⇒ the sources genuinely lack the data
+;; ⇒ the CQ is surfaced as unanswerable and the loop stops chasing it. The loop is
+;; ALWAYS budget-bounded (max iterations) so it terminates even if every iteration
+;; grows the graph; the termination reason is always surfaced. NEVER an infinite
+;; loop, NEVER a false green.
+
+(def default-cq-loop-config
+  "DT8 adaptive-loop budget + gate knobs. `:max-iterations` is the HARD bound on
+   focused re-extract iterations after the initial build! (so the loop ALWAYS
+   terminates regardless of model behavior). `:exit-criterion` is build!'s CQ
+   gate (defaults to skeleton/default-exit-criterion: pass-rate >= 0.8,
+   unknown-rate <= 0.3); the loop re-gates against the SAME criterion each pass."
+  {:max-iterations 3})
+
+(defn failing-cq-verdicts
+  "The per-CQ verdicts that represent a GAP the loop should try to close — the
+   load-bearing read for both re-extract targeting AND unanswerable detection.
+
+   `evaluated` is the `:evaluated` vector S15's `evaluate-cqs!` returns (one
+   `{:cq-text :verdict :reasoning :evidence-uris :layer :gaps}` per CQ). A CQ is a
+   GAP when its verdict is `:fail` (the graph contradicts/closes-out the answer)
+   OR `:unknown` (open-world: the graph cannot confirm it). A `:pass` is not a
+   gap. Domain-agnostic: it reads the S15 verdict, names no domain. Returns the
+   gap verdicts verbatim (so the re-extract can read each CQ's text + gaps)."
+  [evaluated]
+  (filterv (fn [v] (contains? #{:fail :unknown} (:verdict v)))
+           (or evaluated [])))
+
+(defn- graph-size
+  "A cheap (concepts + relationships) size signal for an ontology-id off the
+   projection — the load-bearing delta the unanswerable test keys off. If a
+   focused re-extract aimed at a gap CQ grows neither concepts nor relationships,
+   it supplied NO new data toward that CQ. Domain-agnostic count, names nothing."
+  [ctx ontology-id]
+  (let [cs (count (filterv #(= ontology-id (:ontology-id %))
+                           (rm/get-concepts ctx {:ontology-id ontology-id})))
+        rs (count (filterv #(= ontology-id (:ontology-id %))
+                           (rm/get-relationships ctx)))]
+    {:concepts cs :relationships rs :total (+ cs rs)}))
+
+(defn focused-node-recovery!
+  "DT8 — focused SINGLE-NODE recovery (mirrors the self-improving-loop
+   focused-failure-recovery pattern). When a node/stage in the per-source sub-tree
+   FAILED, re-run JUST that node reading the SURVIVING blackboard vars + the
+   failure — NOT a full rebuild.
+
+   `failed-node` is the node key that failed (`:profile`/`:model`/`:transform`);
+   `error` is its failure (the `tree-failures`/`failed-leaves` analogue surfaced
+   by run-node-session!). `blackboard` carries the SURVIVING upstream node outputs
+   (the work that already succeeded — re-running it would re-pay for it). The
+   recovery re-runs the failed node with its predecessor's surviving contract as
+   :extra-inputs, plus a short recovery preamble naming the prior error so the
+   model resumes from the surviving data rather than rebuilding the pipeline.
+
+   `run-node` is the injected node runner (`run-node!` in production; a stub in
+   tests) so the recovery is testable deterministically. Returns the node session
+   result `{:status :ok :output …}` / `{:status :failed :error …}` verbatim plus
+   `:recovery? true` + `:recovered-node` so the caller can see it was a recovery
+   (no false green — a recovery that fails again surfaces honestly)."
+  [ctx {:keys [failed-node error blackboard source goal model budget debug? run-node
+                key-shape]}]
+  (let [run-node (or run-node run-node!)
+        ;; The surviving predecessor output the failed node reads (the inter-node
+        ;; contract channel) — exactly what run-discovery-tree! threads on the
+        ;; happy path, so recovery resumes from surviving work, not a rebuild.
+        extra-inputs (case failed-node
+                       :model     {:profile (node-output blackboard :profile)}
+                       :transform {:model-spec (node-output blackboard :model)}
+                       {})
+        contract-keys (case failed-node
+                        :profile   profile-contract-keys
+                        :model     model-contract-keys
+                        :transform transform-contract-keys
+                        nil)
+        base-prompt (case failed-node
+                      :profile   (assemble-node-prompt :profile {:goal goal :fmt (:type source)})
+                      :model     (assemble-node-prompt :model {:goal goal})
+                      :transform (assemble-node-prompt :transform {:goal goal :key-shape key-shape})
+                      nil)
+        recovery-preamble
+        (str "RECOVERY RE-RUN of the " (name (or failed-node :node)) " step: the "
+             "previous attempt FAILED with:\n  " (pr-str error) "\n"
+             "The upstream steps SUCCEEDED — their outputs are on your inputs "
+             "(read them with (get-input …)); do NOT redo them. Re-do ONLY THIS "
+             "step, fixing what caused the failure above, then (final! {…}).\n\n")]
+    (if (nil? contract-keys)
+      {:status :failed
+       :recovery? true
+       :recovered-node failed-node
+       :error (str "focused-node-recovery!: not a recoverable node: "
+                   (pr-str failed-node))}
+      (let [r (run-node ctx {:node-key failed-node
+                             :prompt (str recovery-preamble base-prompt)
+                             :source source
+                             :contract-keys contract-keys
+                             :extra-inputs extra-inputs
+                             :focused-prompt? true
+                             :model model :budget budget :debug? debug?})]
+        (assoc r :recovery? true :recovered-node failed-node)))))
+
+(defn focused-reextract!
+  "DT8 — FOCUSED re-extract aimed at a set of failing CQs (NOT a full rebuild).
+
+   Re-runs the TRANSFORM node (the extraction node whose output a graph gap traces
+   to) oriented by the failing CQs + the surviving blackboard (the profile +
+   model-spec that already succeeded), re-applies the V20 full-extraction step,
+   re-compiles the drafts as events, and returns a summary of what it landed. The
+   caller (`cq-driven-loop!`) then re-runs build! to RE-GATE.
+
+   The failing CQs are injected as the node's orientation so the re-extract is
+   TARGETED (close THESE gaps) rather than a blind re-run. The transform node
+   re-reads the surviving model-spec; the surviving profile/model work is NOT
+   re-paid. Domain-agnostic: the CQ text comes from the runtime spec, not a domain
+   rule.
+
+   `run-node` / `apply-fn` / `compile-fn` are injected so the loop is testable
+   deterministically (production wires run-node!, apply-extraction-transform!,
+   compile-discovery-source!). Returns:
+     {:status :ok :concepts-added <int> :relationships-added <int>
+      :transform-output <verbatim> :before <size> :after <size>}
+   or {:status :failed :error <root-cause>} — honest; a re-extract that throws or
+   yields a bad transform surfaces, never a silent pass."
+  [ctx {:keys [ontology-id source goal failing-cqs blackboard key-shape
+                model budget debug? run-node apply-fn compile-fn]}]
+  (let [run-node (or run-node run-node!)
+        apply-fn (or apply-fn rlm-discovery/apply-extraction-transform!)
+        compile-fn (or compile-fn rlm-discovery/compile-discovery-source!)
+        before (graph-size ctx ontology-id)
+        cq-texts (mapv :cq-text failing-cqs)
+        reextract-preamble
+        (str "FOCUSED RE-EXTRACT: the graph BUILT but did NOT answer these "
+             "competency questions yet:\n"
+             (str/join "\n" (map-indexed (fn [i q] (str "  " (inc i) ". " q)) cq-texts))
+             "\nRe-author the per-row extraction transform so the graph CARRIES "
+             "the entities/relationships/attributes these questions need (the prior "
+             "model-spec is on your inputs as :model-spec — read it with "
+             "(get-input :model-spec)). If the SOURCES genuinely do not contain the "
+             "data a question needs, do NOT fabricate it — extract only what is "
+             "really there; the loop surfaces a still-unanswered question honestly.\n\n")
+        node-r (run-node ctx {:node-key :transform
+                              :prompt (str reextract-preamble
+                                           (assemble-node-prompt
+                                            :transform {:goal goal :key-shape key-shape}))
+                              :source source
+                              :contract-keys transform-contract-keys
+                              :extra-inputs {:model-spec (node-output blackboard :model)
+                                             :failing-cqs cq-texts}
+                              :focused-prompt? true
+                              :model model :budget budget :debug? debug?})]
+    (if (not= :ok (:status node-r))
+      {:status :failed
+       :error (str "focused re-extract transform node failed: " (:error node-r))
+       :before before :after before
+       :concepts-added 0 :relationships-added 0}
+      (let [t-out (:output node-r)
+            t-src (:transform-source t-out)
+            selector (:selector t-out)]
+        (if-not (and (string? t-src) (seq (str/trim t-src)))
+          {:status :failed
+           :error "focused re-extract produced no transform-source"
+           :transform-output t-out
+           :before before :after before
+           :concepts-added 0 :relationships-added 0}
+          (let [extraction (try
+                             (apply-fn {:descriptor {:type (:type source) :path (:path source)}
+                                        :selector selector
+                                        :transform-source t-src})
+                             (catch Throwable t {::extract-error (.getMessage t)}))]
+            (if-let [ex (::extract-error extraction)]
+              {:status :failed
+               :error (str "focused re-extract apply failed: " ex)
+               :transform-output t-out
+               :before before :after before
+               :concepts-added 0 :relationships-added 0}
+              (let [compile-r (try
+                               {:ok (compile-fn
+                                     ctx ontology-id
+                                     {:status :emitted-drafts
+                                      :emitted-concepts (vec (:concept-drafts extraction))
+                                      :emitted-relationships (vec (:relationship-drafts extraction))
+                                      :emitted-axioms []
+                                      :rlm-trace []})}
+                               (catch Throwable t {:error (.getMessage t)}))]
+                (if (:error compile-r)
+                  {:status :failed
+                   :error (str "focused re-extract compile failed: " (:error compile-r))
+                   :transform-output t-out
+                   :before before :after before
+                   :concepts-added 0 :relationships-added 0}
+                  (let [after (graph-size ctx ontology-id)]
+                    {:status :ok
+                     :transform-output t-out
+                     :before before
+                     :after after
+                     :concepts-added (- (:concepts after) (:concepts before))
+                     :relationships-added (- (:relationships after) (:relationships before))}))))))))))
+
+(defn cq-driven-loop!
+  "DT8 — the tree-owned adaptive CQ-driven loop around the intact `build!`.
+
+   Entered when build!'s FIRST CQ verdict is `:failed-cq`. Each iteration:
+     1. read the failing CQs (S15 per-CQ verdicts: :fail / :unknown);
+     2. FOCUSED re-extract aimed at them (`focused-reextract!` — re-run the
+        transform node, re-apply, re-compile — NOT a full rebuild);
+     3. re-link the cross-source graph (`reconcile-graph!`, DT7 reuse) so a gap a
+        re-extract closed via a shared/near key is connected before re-gating;
+     4. re-run `build!` to RE-GATE against the SAME exit-criterion;
+     5. branch: gate now passes → DONE (:complete); the re-extract supplied NO new
+        data AND the same CQs are still failing → those CQs are UNANSWERABLE from
+        the sources → surface + terminate honestly; else loop (budget permitting).
+
+   The loop ALWAYS terminates: it stops on a pass, on all-remaining-CQs-
+   unanswerable, or on budget exhaustion — and ALWAYS surfaces a
+   `:termination-reason` ∈ {:cq-gate-passed :all-remaining-unanswerable
+   :budget-exhausted}. NEVER an infinite loop; NEVER a false green (an
+   unanswerable termination is `:status :failed-cq` carrying the unanswerable CQs,
+   NOT a fake :complete).
+
+   Injected seams (production defaults; tests stub them):
+     :build-fn        — (fn [ctx params] build-result). Default skeleton/build!.
+     :reextract-fn    — (fn [ctx opts] reextract-result). Default focused-reextract!.
+     :reconcile-fn    — (fn [ctx opts] reconcile-result). Default reconcile-graph!.
+                        Pass false to skip re-link (single-source runs).
+     :evaluate-cqs-fn — (fn [ctx ontology-id judge-fn] {:evaluated [...] ...}).
+                        Default reads S15's evaluate-cqs! for the per-CQ verdicts.
+
+   Returns the FINAL build! result (verbatim, from the last re-gate) augmented
+   with:
+     {:cq-loop {:iterations <int>
+                :termination-reason <kw>
+                :unanswerable-cqs [<cq-text> ...]   ; surfaced honestly (V17)
+                :history [{:iteration :build-status :failing-cqs
+                           :reextract :graph-delta} ...]}}"
+  [ctx {:keys [ontology-id source goal blackboard key-shape judge-fn exit-criterion
+                model budget debug? cq-loop-config
+                build-fn reextract-fn reconcile-fn evaluate-cqs-fn
+                source-uri-sets initial-build-result]}]
+  (let [{:keys [max-iterations]} (merge default-cq-loop-config cq-loop-config)
+        build-fn (or build-fn skeleton/build!)
+        reextract-fn (or reextract-fn focused-reextract!)
+        reconcile-fn (if (contains? #{nil true} reconcile-fn)
+                       reconcile-graph!
+                       reconcile-fn)   ; false disables re-link
+        evaluate-cqs-fn
+        (or evaluate-cqs-fn
+            (fn [ctx ontology-id judge-fn]
+              (ontology/evaluate-cqs! {:ctx ctx
+                                       :ontology-id ontology-id
+                                       :judge-fn judge-fn})))
+        re-build! (fn []
+                    (build-fn ctx
+                              (cond-> {:ontology-id ontology-id
+                                       :sources [{:type :inline-concepts :concepts []}]}
+                                judge-fn       (assoc :judge-fn judge-fn)
+                                exit-criterion (assoc :exit-criterion exit-criterion))))]
+    (loop [iteration 0
+           build-result initial-build-result
+           history []
+           unanswerable #{}]
+      (cond
+        ;; the gate passed (either initially or after a re-extract) — DONE.
+        (= :complete (:status build-result))
+        (assoc build-result
+               :cq-loop {:iterations iteration
+                         :termination-reason :cq-gate-passed
+                         :unanswerable-cqs (vec unanswerable)
+                         :history history})
+
+        ;; budget exhausted — terminate honestly with the still-failing verdict.
+        (>= iteration max-iterations)
+        (assoc build-result
+               :cq-loop {:iterations iteration
+                         :termination-reason :budget-exhausted
+                         :unanswerable-cqs (vec unanswerable)
+                         :history history})
+
+        :else
+        ;; :failed-cq — inspect, focused re-extract, re-gate.
+        (let [evald (evaluate-cqs-fn ctx ontology-id judge-fn)
+              gap-verdicts (failing-cq-verdicts (:evaluated evald))
+              ;; CQs still failing that we have NOT already proven unanswerable.
+              targetable (filterv #(not (contains? unanswerable (:cq-text %)))
+                                  gap-verdicts)]
+          (if (empty? targetable)
+            ;; every still-failing CQ is already known-unanswerable — terminate
+            ;; honestly rather than re-extracting for data the sources lack.
+            (assoc build-result
+                   :cq-loop {:iterations iteration
+                             :termination-reason :all-remaining-unanswerable
+                             :unanswerable-cqs (vec unanswerable)
+                             :history history})
+            (let [rx (reextract-fn ctx {:ontology-id ontology-id
+                                        :source source :goal goal
+                                        :failing-cqs targetable
+                                        :blackboard blackboard
+                                        :key-shape key-shape
+                                        :model model :budget budget :debug? debug?})
+                  ;; re-link the cross-source graph (DT7 reuse) so a closed gap is
+                  ;; connected before the re-gate. Skipped when reconcile-fn=false.
+                  _ (when (and reconcile-fn (= :ok (:status rx)))
+                      (reconcile-fn ctx {:ontology-id ontology-id
+                                         :source-uri-sets source-uri-sets}))
+                  graph-grew? (and (= :ok (:status rx))
+                                   (pos? (+ (long (or (:concepts-added rx) 0))
+                                            (long (or (:relationships-added rx) 0)))))
+                  ;; UNANSWERABLE detection (honest negative): a focused re-extract
+                  ;; aimed at THESE CQs supplied NO new graph data — the sources
+                  ;; genuinely lack what they need. Mark them unanswerable so the
+                  ;; loop stops chasing them (the gate stays failed-cq, surfaced).
+                  newly-unanswerable (if graph-grew?
+                                       #{}
+                                       (set (map :cq-text targetable)))
+                  unanswerable' (into unanswerable newly-unanswerable)
+                  next-build (if graph-grew?
+                               (re-build!)        ; re-gate over the grown graph
+                               build-result)      ; no growth → no point re-gating
+                  entry {:iteration (inc iteration)
+                         :failing-cqs (mapv :cq-text targetable)
+                         :reextract (dissoc rx :transform-output)
+                         :graph-grew? graph-grew?
+                         :newly-unanswerable (vec newly-unanswerable)
+                         :build-status (:status next-build)}]
+              (recur (inc iteration) next-build (conj history entry) unanswerable'))))))))
 
 ;; =============================================================================
 ;; Composable behavior-tree node (PRD user-story 24)

@@ -177,9 +177,10 @@
 ;; Branch points — present as NAMED stubs (DT8/DT9 fill them)
 ;; =============================================================================
 
-(deftest branch-points-exist-as-named-no-op-stubs
-  (testing "all four branch points are present, named, and no-op (taken? false)
-            so DT8/DT9 fill them without restructuring"
+(deftest branch-points-exist-as-named-deciders
+  (testing "all four branch points are present + named. DT8 FILLED recovery +
+            cq-reextract (real branch deciders — not taken on the happy path); the
+            two DT9 branches remain no-op stubs"
     (let [ctx {}]
       (is (= :recovery (:branch (dt/recovery-branch-stub ctx {}))))
       (is (= :cq-reextract (:branch (dt/cq-reextract-branch-stub ctx {}))))
@@ -187,11 +188,13 @@
              (:branch (dt/greenfield-vs-maintain-branch-stub ctx {}))))
       (is (= :full-extract-vs-inline
              (:branch (dt/full-extract-vs-inline-branch-stub ctx {}))))
-      (doseq [s [(dt/recovery-branch-stub ctx {})
-                 (dt/cq-reextract-branch-stub ctx {})
-                 (dt/greenfield-vs-maintain-branch-stub ctx {})
+      ;; DT8-filled branches: not TAKEN on the happy path (no failure / gate passed)
+      (is (false? (:taken? (dt/recovery-branch-stub ctx {}))))
+      (is (false? (:taken? (dt/cq-reextract-branch-stub ctx {}))))
+      ;; DT9 branches remain unimplemented no-op stubs
+      (doseq [s [(dt/greenfield-vs-maintain-branch-stub ctx {})
                  (dt/full-extract-vs-inline-branch-stub ctx {})]]
-        (is (false? (:taken? s)) "a DT1 branch stub is a no-op")
+        (is (false? (:taken? s)) "a DT9 branch stub is still a no-op")
         (is (= :stub-not-yet-implemented (:reason s)))))))
 
 ;; =============================================================================
