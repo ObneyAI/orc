@@ -56,7 +56,7 @@
    DT2 verbatim through the discovery-tree promotion seam — no fork. The
    profiling INSTRUCTION is medium-agnostic; the only specialization is naming
    which tools to call for csv vs sql vs excel. No vertical/domain knowledge."
-  (:require [ai.obney.orc.orc-service.core.dsl :as dsl]
+  (:require [ai.obney.orc.orc-service.interface :as dsl]
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [clojure.string :as str]))
 

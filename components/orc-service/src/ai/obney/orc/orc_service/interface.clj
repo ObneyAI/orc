@@ -172,6 +172,7 @@
 ;; Build functions
 (def build-workflow! dsl/build-workflow!)
 (def build-workflow!! dsl/build-workflow!!)
+(def sheet-id-for-name dsl/sheet-id-for-name)
 
 ;; Utilities
 (def print-tree dsl/print-tree)

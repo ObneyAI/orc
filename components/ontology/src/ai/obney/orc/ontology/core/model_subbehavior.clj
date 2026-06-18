@@ -68,7 +68,7 @@
    framing (read `:reads` keys / emit the `:writes`, no `final!`). No vertical
    knowledge: the entity model, scope, embed-fields, and axioms are all decided
    from goal + profile at runtime — no CIP/SOC/IPEDS/industry schema baked in."
-  (:require [ai.obney.orc.orc-service.core.dsl :as dsl]
+  (:require [ai.obney.orc.orc-service.interface :as dsl]
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [clojure.string :as str]))
 
