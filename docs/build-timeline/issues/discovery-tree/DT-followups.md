@@ -29,3 +29,16 @@ Evidence: `docs/build-timeline/live-verify/DT4-grounding.md` adversarial verdict
 ## Also watch
 - ColBERT index time grows with corpus (V16 scaled the timeout; confirm it holds
   at the full real graph in DT10).
+
+## F3 — Per-node Phase-2 tick timeout for LLM-authored extraction (surfaced by DT7)
+The focused nodes run as recursive-RLM repl-researcher sessions whose Phase-2
+emit-tree sub-tick can take ~4-5 min (V06's earlier note). DT7's per-source
+`run-discovery-tree!` extraction hit `:failed-at-model` (~235s per-node timeout)
+for BOTH real sources, so DT7 verified reconciliation over deterministic
+V20-apply extraction instead of the LLM-authored path in one run. DT1 DID reach
+`:complete` (~3.3 min) so nodes CAN finish — this is a MARGINAL/under-load
+timeout, not a hard break. Gates the full LLM-driven DT10 real build.
+Fix direction: raise/scale the per-node Phase-2 tick timeout to comfortably
+exceed the emit-tree sub-tick cost, and/or have the focused nodes avoid
+emit-tree (use direct llm/code, which is faster — emit-tree was already
+discouraged for sampling). Evidence: `docs/build-timeline/live-verify/DT7-linking.md` caveat 1.
