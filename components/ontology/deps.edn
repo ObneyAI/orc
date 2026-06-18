@@ -5,5 +5,26 @@
         org.clojure/data.csv {:mvn/version "1.1.0"}
         org.clojure/data.json {:mvn/version "2.5.0"}
         org.xerial/sqlite-jdbc {:mvn/version "3.47.0.0"}}
- :aliases {:test {:extra-paths ["test"]
+ :aliases {:test {;; RF2: several ontology *brick tests* (description-events-test,
+                  ;; r02-flat-pattern-children-test, r07-investigation-behavioral-
+                  ;; seed-test, r05a-behavioral-subtree-foundation-test,
+                  ;; tree-class-hierarchy-test, c2a-live-verify-test,
+                  ;; r03-ood-stress-test) require dev-only support namespaces that
+                  ;; historically lived under `development/src` (on the :dev
+                  ;; classpath ONLY): the seed-corpus shim `seed-descriptions`
+                  ;; (transitively `seed-principles`), plus the `c2a-live-verify`
+                  ;; and `c2d-ood-stress-test` orchestrators. Under
+                  ;; `clj -M:poly test brick:ontology` those nss were not on the
+                  ;; brick classpath, so the tests FAILED TO LOAD
+                  ;; (FileNotFoundException) — a real coverage hole. They now live
+                  ;; in the dedicated `development/ontology-test-support` dir,
+                  ;; exposed here on the brick's TEST alias so the tests LOAD +
+                  ;; RUN under the canonical poly gate. A *dedicated* dir — not all
+                  ;; of `development/src` — keeps the rest of the dev tree off the
+                  ;; brick classpath. TEST-SCOPED: it is NOT in :paths, so it never
+                  ;; enters the runtime/consumer surface — a consumer pulling the
+                  ;; ontology git dep still inherits ["src" "resources"] only.
+                  ;; Relative to this brick root (components/ontology),
+                  ;; `../../development/ontology-test-support` is the repo dir.
+                  :extra-paths ["test" "../../development/ontology-test-support"]
                   :extra-deps {}}}}
