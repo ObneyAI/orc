@@ -17,6 +17,7 @@
    - Blackboard values → DSCloj input values
    - DSCloj output values → Blackboard writes"
   (:require [dscloj.core :as dscloj]
+            [sci.core :as sci]
             [clojure.string :as str]
             [clojure.set]
             [clojure.walk :as walk]
@@ -1437,11 +1438,40 @@
         browser-tools (or (:browser-tools node) [])
         call-tool-fn (:call-tool-fn context)
 
-        ;; Build SCI context with MCP and browser tools injected
-        sci-ctx (sci-sandbox/build-sci-context
-                 {:call-tool-fn call-tool-fn
-                  :mcp-tools mcp-tools
-                  :browser-tools browser-tools})
+        ;; RF1: structured finalization for the terminal (non-:rlm) path.
+        ;; The model calls (final! {:<write-key> value}) when satisfied; we
+        ;; validate against the node's :writes (reusing rlm-sandbox/validate-final!,
+        ;; NOT a fork) and capture the validated map into this atom. The loop
+        ;; reads :outputs DIRECTLY off the captured value — no marker scrape,
+        ;; no pr-str round-trip, no syntax-trust.
+        final-output (atom nil)
+        ;; Captures the message from a validate-final! rejection (extra/missing/
+        ;; all-blank). validate-final! THROWS on a bad call; SCI's execute-code
+        ;; swallows that into exec-result :error, so we stash the message here to
+        ;; surface it as a clean :failure directly off the structured exception
+        ;; (no phrase matching). nil unless final! was called with invalid output.
+        final-error (atom nil)
+        declared-writes (:writes node)
+        final!-fn (fn [output]
+                    (try
+                      (let [validated (rlm-sandbox/validate-final! output declared-writes)]
+                        (reset! final-output validated)
+                        validated)
+                      (catch clojure.lang.ExceptionInfo e
+                        ;; Record the validate-final! rejection message, then
+                        ;; rethrow so SCI aborts this iteration's execution.
+                        (reset! final-error (.getMessage e))
+                        (throw e))))
+
+        ;; Build SCI context with MCP and browser tools injected, then merge in
+        ;; the final! binding (executor-side via sci/merge-opts — reuses the
+        ;; shared finalizer machinery without forking build-sci-context).
+        sci-ctx (-> (sci-sandbox/build-sci-context
+                     {:call-tool-fn call-tool-fn
+                      :mcp-tools mcp-tools
+                      :browser-tools browser-tools})
+                    (sci/merge-opts {:namespaces {'user {'final! final!-fn}}
+                                     :bindings {'final! final!-fn}}))
 
         ;; Build blackboard metadata (types only, no values)
         bb-metadata (build-blackboard-metadata node blackboard)
@@ -1536,7 +1566,37 @@
                                  (:raw-result exec-result))
                     result-for-extraction (or raw-result (:result exec-result))]
                 (cond
-                  ;; Check for FINAL_ANSWER in result or stdout
+                  ;; RF1: (final! {...}) was called with output that failed the
+                  ;; :writes contract (extra / missing / all-blank). validate-final!
+                  ;; threw; we surface its message as a clean :failure rather than
+                  ;; letting it fall through to convergence detection.
+                  @final-error
+                  {:status :failure
+                   :error @final-error
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage @total-usage}
+
+                  ;; RF1: structured finalization — the model called (final! {...}).
+                  ;; Check the captured atom FIRST. :outputs is read directly off
+                  ;; the validated map (validate-final! already enforced the
+                  ;; :writes contract; an invalid call would have thrown and been
+                  ;; caught by the outer try → :failure with a descriptive error).
+                  @final-output
+                  {:status :success
+                   :outputs @final-output
+                   :final-answer @final-output
+                   :iterations new-history
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage @total-usage}
+
+                  ;; DEPRECATED fallback: FINAL_ANSWER marker scrape in result or
+                  ;; stdout. Retained only because non-:rlm production callers in
+                  ;; mcp-sheet-builder (build-repl-researcher-sheet! and the
+                  ;; generate-repl-researcher-node-data / pattern generators in
+                  ;; core/generator.clj) still emit nodes whose generated code
+                  ;; may rely on the marker. New code should call (final! {...}).
+                  ;; Remove once those callers are migrated to final!.
                   (or (sci-sandbox/contains-final-answer? result-for-extraction)
                       (sci-sandbox/contains-final-answer? (:stdout exec-result)))
                   (let [final-answer (or (sci-sandbox/extract-final-answer result-for-extraction)

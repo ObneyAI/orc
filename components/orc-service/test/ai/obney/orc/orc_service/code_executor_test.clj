@@ -102,7 +102,7 @@
                 :writes []}
           result (executor/execute-code node {} {})]
       (is (= :failure (:status result)))
-      (is (re-find #"must return a map" (:error result))))))
+      (is (re-find #"could not be reconciled with declared :writes" (:error result))))))
 
 ;; =============================================================================
 ;; Integration Tests

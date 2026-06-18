@@ -141,7 +141,7 @@
                           (if (= n 1)
                             {:outputs {:code "(println (get (lookup {\"key\" \"answer\"}) \"value\"))"}
                              :usage {:prompt_tokens 50 :completion_tokens 20 :total_tokens 70}}
-                            {:outputs {:code "FINAL_ANSWER: 42"}
+                            {:outputs {:code "(final! {:answer \"42\"})"}
                              :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})))]
           (let [{:keys [sheet-id]} (setup-repl-researcher-sheet! ctx)
                 {:keys [promise]} (dispatch-async-execute! ctx sheet-id {:question "What is the answer?"})
@@ -157,7 +157,7 @@
     (with-mcp-async-context [ctx nil]
       (with-redefs [dscloj/predict
                     (fn [_provider _module _inputs _opts]
-                      {:outputs {:code "FINAL_ANSWER: 42"}
+                      {:outputs {:code "(final! {:answer \"42\"})"}
                        :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]
         (let [{:keys [sheet-id]} (setup-repl-researcher-sheet!
                                    ctx :mcp-tools [] :instruction "Compute 21+21")
