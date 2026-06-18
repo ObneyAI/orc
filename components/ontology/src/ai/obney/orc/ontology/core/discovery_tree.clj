@@ -1212,17 +1212,93 @@
      :build-status build-status
      :graph-health graph-health}))
 
+;; `graph-exists?` (defined below) reads the CURRENT graph projection via DT7's
+;; `current-graph-concepts` — declared above so the branch decider + the spine
+;; (both defined before that read) can call it without reordering the file.
+(declare graph-exists?)
+
 (defn greenfield-vs-maintain-branch-stub
-  "BRANCH STUB (DT9) — greenfield vs maintain. Greenfield is the BUILT arm (DT1
-   builds into a fresh ontology). DT9 will add the maintain/incremental arm
-   (deferred — see the maintain handoff); M5's reconcile-against-current-graph-
-   state seam is what makes maintain a clean drop-in later. DT1: always
-   greenfield."
-  [_ctx {:keys [mode]}]
-  {:branch :greenfield-vs-maintain
-   :taken? false
-   :reason :stub-not-yet-implemented
-   :selected (or mode :greenfield)})
+  "BRANCH (DT9) — greenfield-vs-maintain front-of-tree DECISION. The hybrid edge
+   branch (PRD M1): does a graph ALREADY EXIST for this ontology-id?
+
+     - GREENFIELD (no graph yet) — the BUILT arm: run the full discovery tree
+       into a fresh ontology, exactly as DT1-DT8 verified. The default arm;
+       `:taken?` is false (the spine proceeds normally).
+     - MAINTAIN (a graph already exists) — the branch is TAKEN and selects the
+       EXPLICIT, NAMED `maintain-deferred-stub` (see below). The maintain /
+       incremental build itself is DEFERRED (the maintain handoff). It is NOT a
+       silent gap and NOT a partial build — a caller sees `:selected :maintain`
+       + `:maintain :deferred`.
+
+   Existence is read off the CURRENT graph projection via `graph-exists?`, which
+   reuses DT7's `current-graph-concepts` read — the SAME projection the M5
+   reconcile pass reconciles against (no forked notion). That is what makes the
+   deferred maintain build ADDITIVE (per the handoff §1+§3): a thin flip of this
+   decider's maintain arm from the deferred stub to a per-source run +
+   `reconcile-graph!` (DT7) against the existing graph — NO restructure of the
+   spine. `:reuses` names that reconcile path.
+
+   `params` carries `:ontology-id` (REQUIRED — the scope whose graph existence is
+   checked). An optional `:mode` forces the selection (`:greenfield`/`:maintain`)
+   for tests/HITL override without inspecting the graph."
+  [ctx {:keys [ontology-id mode]}]
+  (let [selected (or mode (if (graph-exists? ctx ontology-id) :maintain :greenfield))]
+    (case selected
+      :maintain
+      {:branch :greenfield-vs-maintain
+       :taken? true
+       :reason :graph-already-exists
+       :selected :maintain
+       :maintain :deferred
+       :reuses 'reconcile-graph!}
+      ;; :greenfield (default arm — full tree runs unchanged)
+      {:branch :greenfield-vs-maintain
+       :taken? false
+       :reason :no-existing-graph
+       :selected :greenfield})))
+
+(defn maintain-deferred-stub
+  "BRANCH RESULT (DT9) — the EXPLICIT, NAMED deferred maintain surface.
+
+   Returned by `run-discovery-tree!` when the front-of-tree condition selects
+   maintain (a graph already exists for the ontology-id). It is a CLEAR
+   `:status :maintain-deferred` result a caller CANNOT mistake for a completed
+   build or a silent no-op: NO discovery node ran, NOTHING was built, and the
+   shape says so. The maintain / incremental-discovery branch (Pillar 4) is
+   intentionally DEFERRED to the maintain handoff.
+
+   This is the clean-additive seam: the deferred build replaces THIS stub with a
+   per-source discovery run that reconciles into the existing graph via
+   `reconcile-graph!` (DT7), which already reconciles against current graph state
+   (PRD M5 / handoff §3) — a thin condition flip + reuse, not a restructure.
+   `:reuses` names that reconcile path so the next implementer sees the seam.
+
+   `params` mirrors `run-discovery-tree!`'s (`:ontology-id`, `:goal`, `:source`)
+   so the deferred surface echoes WHAT was asked of maintain."
+  [_ctx {:keys [ontology-id goal source]}]
+  {:status :maintain-deferred
+   :ontology-id ontology-id
+   :goal goal
+   :source source
+   :nodes-run nil
+   :build-result nil
+   :reuses 'reconcile-graph!
+   :deferred (str "A graph already exists for this ontology-id; the maintain / "
+                  "incremental-discovery branch is intentionally DEFERRED. The "
+                  "greenfield discovery tree builds into a fresh graph; maintain "
+                  "re-runs a source against an EXISTING graph and reconciles the "
+                  "new extraction into it. This deferred arm is a thin later "
+                  "addition: run the per-source discovery and reconcile against "
+                  "the current graph state (the reconcile pass already reads + "
+                  "reconciles current graph state, so it merges rather than "
+                  "rebuilds). Nothing was built on this run.")
+   :branch-points {:greenfield-vs-maintain
+                   {:branch :greenfield-vs-maintain
+                    :taken? true
+                    :reason :graph-already-exists
+                    :selected :maintain
+                    :maintain :deferred
+                    :reuses 'reconcile-graph!}}})
 
 (defn full-extract-vs-inline-branch-stub
   "BRANCH STUB — full-extract vs inline. For a source SMALL enough that the
@@ -1309,11 +1385,22 @@
         ;; `run-node-session!` reads `:granted-ontology-id` off ctx.
         ctx (assoc ctx :granted-ontology-id ontology-id :ontology-id ontology-id)
 
-        ;; The greenfield-vs-maintain branch is decided FIRST (DT9 stub): DT1 is
-        ;; always greenfield (build into the supplied ontology-id).
-        gf-branch (greenfield-vs-maintain-branch-stub ctx {:mode :greenfield})
+        ;; --- DT9: the greenfield-vs-maintain front-of-tree condition (decided
+        ;;     FIRST). Does a graph ALREADY EXIST for this ontology-id? Read off
+        ;;     the CURRENT graph projection (the same read M5's reconcile pass
+        ;;     reconciles against — `graph-exists?` reuses DT7's
+        ;;     `current-graph-concepts`, no forked notion). GREENFIELD (no graph)
+        ;;     runs the full tree below, exactly as DT1-DT8 verified. MAINTAIN (a
+        ;;     graph exists) is intentionally DEFERRED — short-circuit to the
+        ;;     EXPLICIT, NAMED `maintain-deferred-stub` WITHOUT running any node or
+        ;;     building (no silent gap, no partial build). The deferred build is a
+        ;;     clean later addition: a thin flip of this arm to a per-source run +
+        ;;     `reconcile-graph!` against the existing graph (handoff §1+§3). ---
+        gf-branch (greenfield-vs-maintain-branch-stub ctx {:ontology-id ontology-id})]
+    (if (= :maintain (:selected gf-branch))
+      (maintain-deferred-stub ctx {:ontology-id ontology-id :goal goal :source source})
 
-        ;; --- Node 1: PROFILE (structurally guaranteed first step) ---
+      (let [;; --- Node 1: PROFILE (structurally guaranteed first step) ---
         ;; DT2: the Profile node is FOCUSED — its prompt is used verbatim
         ;; (:focused-prompt? true) so the retired mega-prompt's modeling / grain /
         ;; scope / transform guidance is NOT prepended. The per-medium tool
@@ -1620,7 +1707,7 @@
                                      :full-extract-vs-inline fx-branch
                                      :cq-reextract cq-branch
                                      :recovery (recovery-branch-stub
-                                                ctx {:failed-node nil :error nil})}})))))))))))))
+                                                ctx {:failed-node nil :error nil})}})))))))))))))))
 
 ;; =============================================================================
 ;; DT7 — Cross-source linking / reconciliation (PRD M5)
@@ -1684,6 +1771,31 @@
        (mapv (fn [c]
                (cond-> (select-keys c [:uri :label :description :type])
                  (seq (:broader c)) (assoc :broader (vec (:broader c))))))))
+
+(defn graph-exists?
+  "Does a graph ALREADY EXIST for this ontology-id? — the DT9 greenfield-vs-
+   maintain existence read. True when the CURRENT graph projection has at least
+   one concept for the scope, false otherwise (an empty/never-built graph).
+
+   It reuses DT7's `current-graph-concepts` read — the SAME projection the M5
+   reconcile pass reconciles against — so existence and reconciliation share ONE
+   notion of 'the current graph' (no forked read). A nil ontology-id is treated
+   as no-graph (false) so the front-of-tree decider defaults to greenfield and
+   the spine's own `:ontology-id` guard surfaces the missing scope loudly.
+
+   GREENFIELD IS THE SAFE DEFAULT: when the projection cannot be read because no
+   graph store is wired into ctx (a no-store ctx — e.g. a node-only orchestration
+   test that never builds), there IS no existing graph, so this returns false
+   (greenfield). It does NOT mask a real fault: a wired-but-empty store reads
+   cleanly as empty (also false), and the maintain arm is only ever selected by a
+   genuinely-populated projection. Existence is a READ-ONLY probe — it never
+   writes; an unreadable read is treated as 'no graph yet', not an error to crash
+   the front of the tree on."
+  [ctx ontology-id]
+  (boolean
+   (and ontology-id
+        (try (seq (current-graph-concepts ctx ontology-id))
+             (catch Throwable _ false)))))
 
 (defn shared-uri-links
   "The cross-source SHARED-CANONICAL-URI links present in the current graph.

@@ -179,8 +179,9 @@
 
 (deftest branch-points-exist-as-named-deciders
   (testing "all four branch points are present + named. DT8 FILLED recovery +
-            cq-reextract (real branch deciders — not taken on the happy path); the
-            two DT9 branches remain no-op stubs"
+            cq-reextract; DT9 FILLED greenfield-vs-maintain (a real existence
+            decider — greenfield default arm when no graph exists); the
+            full-extract-vs-inline branch remains a no-op stub"
     (let [ctx {}]
       (is (= :recovery (:branch (dt/recovery-branch-stub ctx {}))))
       (is (= :cq-reextract (:branch (dt/cq-reextract-branch-stub ctx {}))))
@@ -191,10 +192,14 @@
       ;; DT8-filled branches: not TAKEN on the happy path (no failure / gate passed)
       (is (false? (:taken? (dt/recovery-branch-stub ctx {}))))
       (is (false? (:taken? (dt/cq-reextract-branch-stub ctx {}))))
-      ;; DT9 branches remain unimplemented no-op stubs
-      (doseq [s [(dt/greenfield-vs-maintain-branch-stub ctx {})
-                 (dt/full-extract-vs-inline-branch-stub ctx {})]]
-        (is (false? (:taken? s)) "a DT9 branch stub is still a no-op")
+      ;; DT9-filled greenfield-vs-maintain: with no ontology-id / no graph it
+      ;; defaults to greenfield (the built arm), branch not taken.
+      (let [gf (dt/greenfield-vs-maintain-branch-stub ctx {})]
+        (is (= :greenfield (:selected gf)) "defaults to greenfield (no existing graph)")
+        (is (false? (:taken? gf)) "greenfield is the default arm — not taken"))
+      ;; the full-extract-vs-inline branch remains an unimplemented no-op stub
+      (let [s (dt/full-extract-vs-inline-branch-stub ctx {})]
+        (is (false? (:taken? s)) "a DT9-era stub is still a no-op")
         (is (= :stub-not-yet-implemented (:reason s)))))))
 
 ;; =============================================================================
