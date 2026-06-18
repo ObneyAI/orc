@@ -4,4 +4,10 @@
         com.brunobonacci/mulog {:mvn/version "0.9.0"}
         org.babashka/sci {:mvn/version "0.8.43"}}
  :aliases {:test {:extra-paths ["test"]
-                  :extra-deps {}}}}
+                  ;; Test-only: build-atomicity-test exercises the real SQLite
+                  ;; event store. Declared here (not in top-level :deps) so it
+                  ;; stays out of the brick's runtime/consumer surface.
+                  :extra-deps {obneyai/grain-event-store-sqlite-v3
+                               {:git/url "https://github.com/ObneyAI/grain.git"
+                                :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
+                                :deps/root "projects/grain-event-store-sqlite-v3"}}}}}
