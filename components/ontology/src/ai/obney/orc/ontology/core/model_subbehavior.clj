@@ -1,0 +1,346 @@
+(ns ai.obney.orc.ontology.core.model-subbehavior
+  "EB3 — the MODEL subbehavior as a delegatable ORC sheet.
+
+   The SECOND real subbehavior on the EB1 registry/delegation pattern (after EB2
+   Survey). A subbehavior is a first-class composed ORC sheet, built via the DSL
+   + `build-workflow!`, registered under a stable name → deterministic sheet-id,
+   and invoked from a central evolver tree via `:delegate` (child tick, isolated
+   blackboard, mapped `:reads`/`:writes`).
+
+   ## What Model does (its ONE job)
+
+   Turn the GOAL × the EB2 PROFILE into the MODELING DECISION — the entity model:
+   the entity types (each with its URI-keying fields + GRAIN strategy), the SCOPE
+   filter the goal asks for, the edges between entity types, PLUS two EB3
+   additions: the EMBED-WORTHY FIELDS (P2 — the fields the embed+index step EB7
+   embeds) and the CANDIDATE TBox/AXIOMS (feeds EB6 — disjointness / functional /
+   subClass candidates the axiom step asserts).
+
+   It re-houses the proven DT3 grain/scope reasoning verbatim (the V17/V20
+   over-extraction fix made a first-class decision) and ADDS only the two new
+   output signals. It does NOT re-profile and does NOT author a transform (EB4
+   owns the transform).
+
+   ## A SINGLE `:llm` node — NOT a repl-researcher (F3 does not apply)
+
+   Modeling is single-turn reasoning over goal + profile: read the inputs, think,
+   emit the model-spec. There is NO iterative tool-using session here (Survey
+   already explored the source; the profile carries the sample). So the body is
+   ONE `:llm` node — not a `:repl-researcher`, no recursion, no F3 Phase-2 tick.
+
+   ## C1 (EB1/EB2 carry-forward) — the model-spec crosses `:delegate` PARSED, and
+   for an `:llm` node the STRUCTURED schema is the LOAD-BEARING fix
+
+   The model-spec is a MAP that crosses the `:delegate` seam back to the central
+   tree. C1 is NODE-TYPE-specific (refined by the EB1/EB2 inspections):
+
+     - For EB2's `:repl-researcher` Survey, the PRIMARY fix was the PROMPT
+       (`final!` with real EDN), the structured schema defense-in-depth.
+     - For THIS `:llm` Model node it is the OPPOSITE: an `:llm` node returns TEXT
+       that the AI executor parses against the node's `:writes` BLACKBOARD SCHEMA.
+       A BARE `:map` write has no field structure to parse into, so the executor
+       hands back a JSON STRING — which then crosses `:delegate` verbatim as a
+       string (the C1 failure mode). The fix is to declare a STRUCTURED Malli
+       `[:map …]` schema for every map write: the executor flattens the structured
+       fields into DSCloj output fields and REASSEMBLES them into a nested PARSED
+       MAP (`build-module` / `flatten-output-schema` / `reassemble-flattened-
+       outputs`). So for an `:llm` node the structured `[:map …]`/`[:map-of …]`
+       schema is the LOAD-BEARING mechanism, not defense-in-depth.
+
+   Both map writes here (`:model-spec`, `:candidate-axioms`) therefore declare
+   STRUCTURED schemas; the live verify reads the model-spec back off the PARENT
+   tick blackboard via the projection and asserts `(map? …)` (a JSON string would
+   FAIL the assert).
+
+   ## #13 — `:reasoning` written FIRST
+
+   The `:llm` node writes `:reasoning` FIRST in its `:writes` (chain-of-thought
+   before the structured model-spec — force think-before-emit). This is a SINGLE
+   node (no `:parallel` / `:map-each`), so a bare `:reasoning` key is fine (no
+   blackboard-trample risk).
+
+   ## Re-orchestration, not rewrite (8) + domain-agnostic (12)
+
+   The grain/scope DECISION PROSE is re-housed from DT3
+   (`discovery-tree/model-node-prompt`) verbatim through the promotion seam — no
+   fork of the over-extraction reasoning. The only EB3 prompt additions are the
+   embed-fields + candidate-axioms instruction tails and the `:llm`-node I/O
+   framing (read `:reads` keys / emit the `:writes`, no `final!`). No vertical
+   knowledge: the entity model, scope, embed-fields, and axioms are all decided
+   from goal + profile at runtime — no CIP/SOC/IPEDS/industry schema baked in."
+  (:require [ai.obney.orc.orc-service.core.dsl :as dsl]
+            [ai.obney.orc.ontology.core.discovery-tree :as dt]
+            [clojure.string :as str]))
+
+;; =============================================================================
+;; The model-spec contract (re-housed from DT3) + the EB3 additions
+;; =============================================================================
+
+(def embed-fields-key
+  "EB3 addition #1 (P2): the embed-worthy FIELDS the Model commits to for the
+   embed+index step (EB7). EB2's profile SURFACED candidate embed-worthy fields
+   by value-shape; the Model DECIDES which of them are worth embedding given the
+   entity model + goal (e.g. the title/name/description field of a kept entity,
+   not a code/id). Carried verbatim from the profile's embed signal when the model
+   keeps it. A vector of field-name strings (empty if the source is all codes)."
+  :embed-fields)
+
+(def candidate-axioms-key
+  "EB3 addition #2: CANDIDATE TBox/axioms that feed EB6 (the axiom step). The
+   Model proposes ontology-level constraints implied by the entity model — e.g.
+   two entity types are DISJOINT, an identifying key is FUNCTIONAL/an inverse-
+   functional id, or one type is a subClassOf another. EB6 reads these candidates
+   and asserts the real axioms via the S07 axiom commands. A vector of axiom-
+   candidate maps; empty if the model proposes none."
+  :candidate-axioms)
+
+(def model-spec-contract-keys
+  "The EB3 Model model-spec contract: the DT3-frozen model-contract keys
+   (`:entity-types :scope-filter :edges`) PLUS the EB3 embed-fields signal. The
+   frozen DT3 keys are re-used verbatim (no drift) from
+   `discovery-tree/model-contract-keys`. `:candidate-axioms` is a SEPARATE
+   sibling write (its own structured schema), not nested in the model-spec, so
+   EB6 can `:delegate`-read it without the rest of the spec."
+  (conj (vec dt/model-contract-keys) embed-fields-key))
+
+(def model-spec-contract-schema
+  "C1 — the STRUCTURED Malli `[:map …]` schema for the model-spec contract. For
+   an `:llm` node this is the LOAD-BEARING C1 fix, and it has TWO parts proven by
+   the EB3 prototype:
+
+     1. OUTER STRUCTURE — declared as the `:model-spec` write's blackboard schema,
+        the AI executor FLATTENS the `[:map …]` fields into separate DSCloj output
+        fields and REASSEMBLES them into a nested map. A bare `:map` has no fields
+        to flatten, so the `:llm` executor returns the whole map as a JSON STRING
+        (the C1 failure mode).
+
+     2. PER-FIELD TYPE — each flattened field must carry a CONCRETE structural
+        spec (`[:vector …]` / `[:map …]` / `[:maybe …]`), NOT `:any`. The
+        prototype proved that an `:any`-typed flattened field is NOT parsed by
+        DSCloj — it comes back as the raw EDN/JSON TEXT (`:entity-types` arrived as
+        the STRING \"[{:type …}]\"). A concrete collection spec makes DSCloj parse
+        the field's text into real Clojure data. So each field is typed to its
+        collection SHAPE while its LEAF values stay `:any` (the DT3 model-variance
+        tolerance: grain-strategy may be a keyword or a `\":canonical-row-filter\"`
+        string; an inner field may be prose or structured).
+
+   `{:closed false}` (outer + the entity/edge inner maps) tolerates extra keys the
+   model adds (e.g. `:canonical-row-marker`, `:breakdown-key`). A consumer still
+   reads each field TOLERANTLY (the DT3/DT5 carry-forward; grain-strategy via
+   `discovery-tree/normalize-grain-strategy`)."
+  [:map {:closed false}
+   ;; concrete VECTOR-OF-MAPS so DSCloj parses it (not :any → raw string)
+   [:entity-types {:optional true}
+    [:vector [:map {:closed false}
+              [:type {:optional true} :any]
+              [:uri-keying-fields {:optional true} [:vector :any]]
+              [:grain-strategy {:optional true} :any]]]]
+   ;; a MAP or nil — :maybe keeps the structural parse while allowing no-scope
+   [:scope-filter {:optional true}
+    [:maybe [:map {:closed false}
+             [:field {:optional true} :any]
+             [:values {:optional true} [:vector :any]]]]]
+   [:edges {:optional true}
+    [:vector [:map {:closed false}
+              [:source-type {:optional true} :any]
+              [:target-type {:optional true} :any]
+              [:predicate {:optional true} :any]]]]
+   [embed-fields-key {:optional true} [:vector :string]]])
+
+(def candidate-axioms-schema
+  "C1 — the STRUCTURED Malli schema for the `:candidate-axioms` write (the EB6
+   feed). The natural shape is a VECTOR of axiom-candidate MAPS, wrapped under a
+   one-key structured map `{:axioms [...]}` — the `[:map …]` wrapper is what makes
+   the `:llm` executor FLATTEN + reassemble the write rather than return a JSON
+   string (the C1 outer-structure fix). The `:axioms` field is typed
+   `[:vector [:map …]]` (NOT `:any`) so DSCloj parses the vector into real Clojure
+   data (the C1 per-field-type fix the prototype proved). `{:closed false}` + `:any`
+   leaf values keep it tolerant of whatever axiom shapes the model proposes (EB6
+   reads them tolerantly and maps onto the S07 axiom commands)."
+  [:map {:closed false}
+   [:axioms {:optional true}
+    [:vector [:map {:closed false}
+              [:kind {:optional true} :any]
+              [:rationale {:optional true} :any]]]]])
+
+;; =============================================================================
+;; The Model prompt — re-housed DT3 grain/scope body + the EB3 additions
+;; =============================================================================
+
+(def ^:private runtime-goal-sentinel
+  "DT3's `model-node-prompt` interpolates the goal inline. The Model subbehavior
+   gets its goal at RUNTIME as a `:delegate` :reads input (so one sheet serves any
+   goal — the goal is not part of sheet identity). We pass this sentinel where the
+   DT3 body expects the goal text, then frame the `:llm` node to read the real
+   goal from the `goal` blackboard input. This keeps the DT3 grain/scope reasoning
+   re-housed verbatim (no fork) while sourcing the goal from the blackboard."
+  "the GOAL provided to you at runtime as the blackboard input `goal`")
+
+(defn- llm-io-framing
+  "Adapt the DT3 body (written for a `:repl-researcher`'s `(get-input …)` /
+   `(final! …)` mechanics) to THIS `:llm` node's I/O model. An `:llm` node is
+   given its `:reads` keys as context and produces its `:writes` keys as parsed
+   output — there is NO `get-input`/`final!`/tool session here. This block tells
+   the model exactly that, so the re-housed DT3 prose (which references those
+   primitives in passing) reads correctly for an `:llm` node."
+  []
+  (str "*** HOW THIS NODE WORKS (read carefully) ***\n"
+       "You are a single REASONING step. You are GIVEN two inputs as context: the "
+       "GOAL (`goal`) and the source PROFILE (`profile`, the structured output of "
+       "the earlier Survey step). You do NOT call any tools, you do NOT explore the "
+       "source, and you do NOT emit a behavior tree — you THINK over the goal + "
+       "profile and PRODUCE the structured outputs described below. Ignore any "
+       "general guidance about tool sessions, `get-input`, `final!`, or "
+       "`emit-tree!`; for THIS node you simply read the two inputs and emit the "
+       "declared output fields.\n\n"))
+
+(defn- embed-fields-block
+  "EB3 addition #1 (P2): instruct the node to DECIDE the embed-worthy FIELDS for
+   the embed+index step (EB7). Domain-agnostic — it asks which field(s) of the
+   KEPT entity model carry free-text meaning worth embedding, grounded in the
+   profile's surfaced embed signal, naming no domain field."
+  []
+  (str "\n\nALSO decide the EMBED-WORTHY FIELDS (consumed by a later "
+       "embed+index step):\n"
+       "  - The profile may carry an embed-signal (a field set it flagged as "
+       "free-text / natural-language values — a name, title, label, or "
+       "description column whose value is human-readable prose, NOT a pure "
+       "code/id/number). From the ENTITY MODEL you just decided, pick the "
+       "field(s) whose VALUES are worth embedding for semantic retrieval — the "
+       "free-text field(s) of the entities you are keeping. Judge by the VALUE, "
+       "not the column name. Empty if the source is all codes/ids/numbers with "
+       "no free-text field. Emit them as `embed-fields` (a vector of field-name "
+       "strings)."))
+
+(defn- candidate-axioms-block
+  "EB3 addition #2: instruct the node to propose CANDIDATE TBox/axioms (the EB6
+   feed). Domain-agnostic — it asks for ontology-level constraints IMPLIED BY the
+   entity model the node just decided (disjointness, functional/identifying keys,
+   subClass), each justified, naming no domain axiom."
+  []
+  (str "\n\nALSO propose CANDIDATE AXIOMS (TBox constraints, consumed by a later "
+       "axiom step):\n"
+       "  - From the entity model you decided, propose any ontology-level "
+       "constraints it IMPLIES. Common kinds:\n"
+       "      :disjoint   — two entity types are mutually exclusive (no instance "
+       "is both).\n"
+       "      :functional — an identifying/URI-keying field that takes at most ONE "
+       "value per instance (a single-valued identifier / inverse-functional id).\n"
+       "      :sub-class  — one entity type is a specialization (subClassOf) of "
+       "another.\n"
+       "  - Propose ONLY constraints the entity model + profile actually support; "
+       "do NOT invent constraints the data doesn't justify. Each candidate is a "
+       "MAP with at least `:kind` (one of the kinds above) plus the types/fields "
+       "it concerns and a short `:rationale`. Emit them as `candidate-axioms` "
+       "under the key `:axioms` (a vector of these maps; empty if none are "
+       "warranted)."))
+
+(defn- output-framing
+  "Spell out the `:llm` node's declared `:writes` for the model — `:reasoning`
+   FIRST (#13), then the model-spec map (with the embed-fields folded in), then
+   the candidate-axioms map. The DT3 contract-block already lists the model-spec
+   field shapes; this block names the THREE separate write keys + the #13 ordering
+   so the `:llm` executor produces the right blackboard shape."
+  []
+  (str "\n\n*** YOUR OUTPUT — produce these fields, REASONING FIRST (#13) ***\n"
+       "  1. `reasoning` — FIRST, before anything else: briefly think through the "
+       "grain decision (per entity), the scope decision (what the goal asks for), "
+       "the embed-fields, and the candidate axioms. Chain-of-thought BEFORE the "
+       "structured output.\n"
+       "  2. `model-spec` — a MAP with EXACTLY these keys: "
+       (str/join ", " (map str model-spec-contract-keys)) ". `:entity-types`, "
+       "`:edges`, `:embed-fields` are VECTORS; `:scope-filter` is a MAP or nil. "
+       "(See the field shapes described above; `:embed-fields` as decided in the "
+       "embed-worthy step.)\n"
+       "  3. `candidate-axioms` — a MAP `{:axioms [<candidate maps>]}` as decided "
+       "in the candidate-axioms step (empty axioms vector if none).\n"
+       "Emit real structured data for the maps/vectors, NOT JSON strings and NOT "
+       "prose strings — the downstream steps read them as parsed Clojure data."))
+
+(defn model-prompt
+  "The Model node prompt: the DT3 grain/scope/entity-model reasoning body
+   (`discovery-tree/model-node-prompt`) re-housed VERBATIM through the promotion
+   seam — the V17/V20 over-extraction fix as a focused node — wrapped with the
+   `:llm`-node I/O framing and EXTENDED with the two EB3 outputs (embed-fields +
+   candidate-axioms) and the #13 reasoning-first output framing.
+
+   The goal is read at RUNTIME from the `goal` blackboard input (a `:delegate`
+   :reads input) so a single Model sheet serves any goal; the profile is the other
+   :reads input. Domain-agnostic (12): no vertical knowledge — it models ANY
+   structured source from goal + profile."
+  []
+  (str
+   (llm-io-framing)
+   ;; Re-house the DT3 grain/scope/entity-model body VERBATIM through the
+   ;; promotion seam (discipline 8 — no fork of the over-extraction reasoning).
+   ;; It already carries: the ONE-job framing, the TWO load-bearing decisions
+   ;; (GRAIN via :canonical-row-filter|:breakdown-as-entity, SCOPE via
+   ;; :scope-filter from the goal), URI-keying from the profile, the edges step,
+   ;; the EDN-not-strings directive, and the model-contract block. The goal slot
+   ;; gets the runtime-read sentinel (the real goal is read as a blackboard input).
+   (dt/assemble-node-prompt :model {:goal runtime-goal-sentinel})
+   ;; The two EB3 additions.
+   (embed-fields-block)
+   (candidate-axioms-block)
+   ;; The #13 reasoning-first output framing across the three write keys.
+   (output-framing)))
+
+;; =============================================================================
+;; The delegatable Model sheet — built on the EB1/EB2 registry pattern
+;; =============================================================================
+
+(defn model-subbehavior-name
+  "Canonical registry name for the Model subbehavior. UNLIKE Survey, the Model
+   node bakes in NO source path — it reasons over the GOAL + the PROFILE (both
+   runtime `:reads` inputs), so a SINGLE Model sheet serves every source and goal.
+   `\"<family>/<behavior>@v<N>\"` — version is part of identity (a new version is a
+   new, separately-evolvable sheet; callers pinned to @v1 are never rebuilt out
+   from under them)."
+  []
+  "ontology-model/model@v1")
+
+(defn model-sheet-id-for
+  "Look up the deterministic sheet-id for the Model subbehavior (pure — no
+   event-store read). The central tree points its `:delegate` `:target-sheet-id`
+   here without rebuilding the subbehavior."
+  []
+  (dsl/sheet-id-for-name (model-subbehavior-name)))
+
+(defn model-subbehavior-def
+  "The Model subbehavior workflow definition.
+
+   Body: a single `:llm` node — single-turn reasoning over goal + profile. NOT a
+   `:repl-researcher` (no tool session, no recursion, F3 does not apply).
+
+   Contract (the public `:reads`/`:writes`):
+     :reads  [:goal :profile]
+     :writes [:reasoning :model-spec :candidate-axioms]   (#13 reasoning FIRST)
+   The two MAP writes (`:model-spec`, `:candidate-axioms`) declare STRUCTURED
+   `[:map …]` schemas — the LOAD-BEARING C1 fix for the `:llm` node-type."
+  [{:keys [model]}]
+  (let [nm (model-subbehavior-name)]
+    (dsl/workflow nm
+      (dsl/blackboard {:goal :string
+                       ;; the profile is read tolerantly; declare it structured so
+                       ;; it can also be delegated IN as a parsed map.
+                       :profile [:map {:closed false}]
+                       :reasoning :string
+                       ;; C1 — STRUCTURED schemas for the map contracts that cross
+                       ;; :delegate; NEVER a bare :map (the :llm-node failure mode).
+                       :model-spec model-spec-contract-schema
+                       :candidate-axioms candidate-axioms-schema})
+      (dsl/sequence "model-root"
+        (dsl/llm "model"
+          :model (or model "google/gemini-3-flash-preview")
+          :instruction (model-prompt)
+          :reads [:goal :profile]
+          ;; #13 — :reasoning FIRST (chain-of-thought before the structured spec).
+          :writes [:reasoning :model-spec :candidate-axioms])))))
+
+(defn register-model-subbehavior!
+  "REGISTER (build, idempotent) the Model subbehavior sheet and return its
+   deterministic sheet-id. Re-registering an unchanged def is a no-op (same id).
+   The central evolver tree resolves the name → id via `model-sheet-id-for` and
+   `:delegate`s to it."
+  [ctx {:keys [model]}]
+  (dsl/build-workflow! ctx (model-subbehavior-def {:model model})))

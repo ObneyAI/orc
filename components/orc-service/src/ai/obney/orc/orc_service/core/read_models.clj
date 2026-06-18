@@ -428,13 +428,45 @@
 ;; Blackboard Projection
 ;; =============================================================================
 
+;; The blackboard read model is PARTITIONED by :sheet-id, and the
+;; read-model-processor-v2 partition cache requires the ENTITY-ID to be GLOBALLY
+;; UNIQUE across partitions: it maintains one `eid → partition` lookup and treats
+;; a re-seen eid as a cross-partition MOVE (read_model_processor_v2/core
+;; `process-events-partitioned` / `find-entity-via-index`). A blackboard KEY
+;; (e.g. :goal, :profile, :model-spec) is NOT unique across sheets — every sheet
+;; declares its own — so keying entities by the bare `:key` made the cache route
+;; a second sheet's `:goal` as a "move" out of the first sheet's partition,
+;; leaving the second sheet's partition EMPTY. That corrupted any sub-sheet that
+;; shared blackboard key names with a sheet projected earlier in the same process
+;; — exactly what `:delegate` does (parent + sub share key names by the
+;; reads/writes name-mapping). The symptom: a delegated `:llm` node's structured
+;; `[:map …]` write lost its schema (the snapshot blackboard came back empty, so
+;; the executor saw :schema :any), could not flatten, and returned the map as a
+;; JSON STRING across `:delegate` (the EB3 C1 failure).
+;;
+;; The fix: make the entity-id GLOBALLY UNIQUE by composing it with the sheet-id
+;; (`blackboard-entity-id`). The reducer keys its per-partition state by that SAME
+;; composite so the cache's move-detection (`(get new-state eid)`) stays
+;; consistent. `get-blackboard-by-key` reads ONE partition (a single sheet) and
+;; RE-KEYS the result back to `{key → entry}` so every existing consumer (and the
+;; `[:map-of :keyword ::blackboard-entry]` interface schema) is unchanged.
+
+(defn blackboard-entity-id
+  "Globally-unique entity-id for the partitioned :sheet/blackboard read model:
+   `[sheet-id key]`. Bare `:key` collides across sheets (see the comment above)."
+  [event]
+  [(:sheet-id event) (:key event)])
+
 (defmulti blackboard*
-  "Apply event to blackboard read model"
+  "Apply event to blackboard read model. State is keyed by the GLOBALLY-UNIQUE
+   composite entity-id `[sheet-id key]` (the partition cache requires unique
+   eids); `get-blackboard-by-key` re-keys a single sheet's partition back to
+   `{key → entry}` for consumers."
   (fn [_state event] (:event/type event)))
 
 (defmethod blackboard* :sheet/key-declared
   [state event]
-  (assoc state (:key event)
+  (assoc state (blackboard-entity-id event)
          {:sheet-id (:sheet-id event)
           :key (:key event)
           :schema (:schema event)
@@ -443,17 +475,17 @@
 
 (defmethod blackboard* :sheet/key-schema-updated
   [state event]
-  (assoc-in state [(:key event) :schema] (:schema event)))
+  (assoc-in state [(blackboard-entity-id event) :schema] (:schema event)))
 
 (defmethod blackboard* :sheet/key-value-set
   [state event]
   (-> state
-      (assoc-in [(:key event) :value] (:value event))
-      (assoc-in [(:key event) :version] (:version event))))
+      (assoc-in [(blackboard-entity-id event) :value] (:value event))
+      (assoc-in [(blackboard-entity-id event) :version] (:version event))))
 
 (defmethod blackboard* :sheet/key-deleted
   [state event]
-  (dissoc state (:key event)))
+  (dissoc state (blackboard-entity-id event)))
 
 (defmethod blackboard* :default [state _] state)
 
@@ -463,9 +495,9 @@
   (reduce blackboard* (or initial-state {}) events))
 
 (defreadmodel :sheet blackboard
-  {:events blackboard-events :version 2
+  {:events blackboard-events :version 3
    :partition-fn :sheet-id
-   :entity-id-fn :key}
+   :entity-id-fn blackboard-entity-id}
   [state event] (blackboard* state event))
 
 ;; =============================================================================
@@ -682,9 +714,15 @@
   (vals (rmp/project ctx :sheet/blackboard {:partition-key sheet-id})))
 
 (defn get-blackboard-by-key
-  "Get the blackboard for a sheet as a map keyed by key name"
+  "Get the blackboard for a sheet as a map keyed by key name.
+
+   The partitioned read-model state is keyed by the globally-unique composite
+   entity-id `[sheet-id key]` (see `blackboard-entity-id`). This reads ONE sheet's
+   partition and RE-KEYS it back to `{key → entry}` — the contract every consumer
+   (and the `[:map-of :keyword ::blackboard-entry]` interface schema) expects."
   [ctx sheet-id]
-  (rmp/project ctx :sheet/blackboard {:partition-key sheet-id}))
+  (into {} (map (fn [[_eid entry]] [(:key entry) entry]))
+        (rmp/project ctx :sheet/blackboard {:partition-key sheet-id})))
 
 (defn get-judges
   "Get all judges declared for a sheet as a map keyed by judge name"

@@ -172,3 +172,88 @@
         (is (= (set (concat (keys sample-contract) [:echoed-by :field-count]))
                (set (keys echoed)))
             "echoed contract carries exactly the input keys + provenance")))))
+
+;; ---------------------------------------------------------------------------
+;; Cross-sheet blackboard-key isolation (the EB3 C1 root-cause regression).
+;;
+;; The :sheet/blackboard read model is PARTITIONED by :sheet-id. The partition
+;; cache requires globally-unique entity-ids; keying by the bare blackboard :key
+;; let a second sheet's shared key (e.g. :goal) be routed as a cross-partition
+;; "move" out of the first sheet's partition, leaving the second sheet's
+;; blackboard EMPTY (schemas lost). Because :delegate maps :reads/:writes by the
+;; SAME key name on parent + sub, the parent and sub ALWAYS share key names — so
+;; the central tree's blackboard projection poisoned the sub-sheet's, and a
+;; delegated :llm node's structured [:map …] write lost its schema and crossed
+;; :delegate as a JSON STRING (the EB3 C1 failure). The fix composes the
+;; entity-id with the sheet-id. These hermetic tests lock that isolation.
+;; ---------------------------------------------------------------------------
+
+(deftest blackboards-with-shared-key-names-stay-isolated-per-sheet-test
+  (testing "two sheets that declare the SAME blackboard key names keep their own
+            schemas — projecting one must not empty/poison the other's partition"
+    (h/with-async-test-context [ctx]
+      (let [;; both sheets declare a key named :shared but with DIFFERENT schemas
+            sheet-a (dsl/build-workflow! ctx
+                      (dsl/workflow "iso-test/sheet-a@v1"
+                        (dsl/blackboard {:shared :string :only-a :int})
+                        (dsl/sequence "a-root"
+                          (dsl/code "a" :fn "clojure.core/identity"
+                            :reads [:shared] :writes [:only-a]))))
+            sheet-b (dsl/build-workflow! ctx
+                      (dsl/workflow "iso-test/sheet-b@v1"
+                        (dsl/blackboard {:shared [:map {:closed false}] :only-b :boolean})
+                        (dsl/sequence "b-root"
+                          (dsl/code "b" :fn "clojure.core/identity"
+                            :reads [:shared] :writes [:only-b]))))
+            ;; read A first (populates the partition cache / entity-index), then B
+            bb-a (rm/get-blackboard-by-key ctx sheet-a)
+            bb-b (rm/get-blackboard-by-key ctx sheet-b)]
+        ;; Each sheet keeps EXACTLY its own keys — no bleed, no emptying.
+        (is (= #{:shared :only-a} (set (keys bb-a)))
+            "sheet A keeps its own keys after sheet B is also projected")
+        (is (= #{:shared :only-b} (set (keys bb-b)))
+            "sheet B's blackboard is NOT emptied by sharing :shared with sheet A")
+        ;; The shared key carries each sheet's OWN schema (not the other's).
+        (is (= :string (get-in bb-a [:shared :schema]))
+            "sheet A's :shared keeps A's schema")
+        (is (= [:map {:closed false}] (get-in bb-b [:shared :schema]))
+            "sheet B's :shared keeps B's schema (not poisoned by A)")
+        ;; Every entry is correctly attributed to its own sheet.
+        (is (= sheet-a (get-in bb-a [:shared :sheet-id])))
+        (is (= sheet-b (get-in bb-b [:shared :sheet-id])))))))
+
+(deftest delegated-sub-sheet-keeps-its-schema-when-parent-shares-key-names-test
+  (testing "the EB3 C1 root cause: a delegated sub-sheet's blackboard SCHEMA
+            survives even though the central tree declares the SAME key names —
+            so a structured map write can flatten/parse across :delegate"
+    (h/with-async-test-context [ctx]
+      (let [structured-schema [:map {:closed false} [:x {:optional true} :any]]
+            sub-id (dsl/build-workflow! ctx
+                     (dsl/workflow "iso-test/sub@v1"
+                       (dsl/blackboard {:input-contract :map
+                                        :echoed-contract structured-schema})
+                       (dsl/sequence "sub-root"
+                         (dsl/code "echo"
+                           :fn "ai.obney.orc.orc-service.delegate-composition-test/echo-transform"
+                           :reads [:input-contract] :writes [:echoed-contract]))))
+            ;; central declares the SAME keys (delegate maps by name) — this is
+            ;; what poisoned the sub-sheet partition before the fix.
+            central-id (dsl/build-workflow! ctx
+                         (dsl/workflow "iso-test/central@v1"
+                           (dsl/blackboard {:input-contract :map
+                                            :echoed-contract structured-schema})
+                           (dsl/sequence "c-root"
+                             (dsl/delegate "to-sub"
+                               :target-sheet-id sub-id
+                               :reads [:input-contract] :writes [:echoed-contract]
+                               :timeout-ms 15000))))
+            tick-id (random-uuid)
+            _ (runtime/execute ctx central-id {"input-contract" sample-contract}
+                               :timeout-ms 15000 :tick-id tick-id)
+            ;; the sub-sheet's build-time blackboard still carries its schema
+            sub-bb (rm/get-blackboard-by-key ctx sub-id)]
+        (is (= structured-schema (get-in sub-bb [:echoed-contract :schema]))
+            "the sub-sheet's structured :echoed-contract schema is intact even though
+             the central tree declares the same key name (no partition poisoning)")
+        (is (= :map (get-in sub-bb [:input-contract :schema]))
+            "the sub-sheet's :input-contract schema is intact too")))))
