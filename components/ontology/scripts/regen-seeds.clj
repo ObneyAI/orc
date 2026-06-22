@@ -1,11 +1,13 @@
-;; One-shot conversion: read the hand-authored seed vectors from the dev
-;; namespace `seed-descriptions`, serialize each to EDN under
-;; `components/ontology/resources/seeds/`. After running this script the
-;; ontology component is self-sufficient (consumers don't need
-;; `development/src/seed_descriptions.clj` to be on their classpath).
+;; One-shot conversion: read the hand-authored seed vectors from the brick
+;; test-support namespace
+;; `ai.obney.orc.ontology.test-support.seed-descriptions`, serialize each to
+;; EDN under `components/ontology/resources/seeds/`. After running this script
+;; the ontology component is self-sufficient (consumers don't need the
+;; seed-descriptions fixture on their classpath).
 ;;
-;; Run via:
-;;   clj -M:dev -e "(load-file \"components/ontology/scripts/regen-seeds.clj\")"
+;; Run via (the :test alias puts the brick test-support fixtures on the
+;; classpath):
+;;   clj -M:dev:test -e "(load-file \"components/ontology/scripts/regen-seeds.clj\")"
 ;;
 ;; The script verifies round-trip equality (loaded EDN == source Clojure data)
 ;; after writing each file; mismatches throw.
@@ -13,7 +15,7 @@
   (:require [clojure.java.io :as io]
             [clojure.edn :as edn]
             [clojure.pprint :as pp]
-            [seed-descriptions :as s]))
+            [ai.obney.orc.ontology.test-support.seed-descriptions :as s]))
 
 (defn dump-seeds-edn!
   [out-path seeds header]

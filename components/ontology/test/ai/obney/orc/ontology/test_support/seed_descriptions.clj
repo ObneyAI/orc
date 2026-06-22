@@ -1,4 +1,4 @@
-(ns seed-descriptions
+(ns ai.obney.orc.ontology.test-support.seed-descriptions
   "Thin shim over `ai.obney.orc.ontology.interface/baseline-seeds`. Kept
    for backward compatibility with development-only tests and tooling
    that reference the historical named seed vars (e.g.,
@@ -18,7 +18,7 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
-            [seed-principles :as principles]))
+            [ai.obney.orc.ontology.test-support.seed-principles :as principles]))
 
 ;; =============================================================================
 ;; UUID derivation (same logic as the pre-shim file — drives stable IDs)
@@ -312,7 +312,7 @@
 
 (comment
   ;; Run from REPL after starting a context:
-  (require '[seed-descriptions :as s] :reload)
+  (require '[ai.obney.orc.ontology.test-support.seed-descriptions :as s] :reload)
   (count s/all-node-type-seeds)
   (count s/all-tree-fingerprint-seeds)
   (count s/all-behavioral-subtree-seeds)

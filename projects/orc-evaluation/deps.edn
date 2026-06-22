@@ -1,0 +1,20 @@
+{:paths []
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+
+        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
+                               :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
+                               :deps/root "projects/grain-core-v2"}
+
+        ;; The judge stack — explicitly self-describing (each component listed):
+        ;;   evaluation  → the judges (Layer 1)
+        ;;   orc-service → the engine evaluation builds on
+        ;;   langfuse    → orc-service's tracing layer
+        ;; NO ontology, NO colbert, NO DJL, NO Python. The Living-Description
+        ;; gate in judge_runtime is resolved lazily, so ontology is never
+        ;; required here — judges are a standalone capability.
+        orc/orc-service {:local/root "../../components/orc-service"}
+        orc/evaluation  {:local/root "../../components/evaluation"}
+        orc/langfuse    {:local/root "../../components/langfuse"}}
+
+ :aliases {:test {:extra-paths []
+                  :extra-deps {}}}}

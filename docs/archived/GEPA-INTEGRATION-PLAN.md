@@ -1,3 +1,7 @@
+> **Archived.** This was a Phase-0 planning document. GEPA is now shipped as a native-Clojure implementation inside orc. See [GEPA-GUIDE.md](../GEPA-GUIDE.md) for the current consumer guide.
+
+---
+
 # Plan: GEPA Training Loop Integration
 
 ## Current Status: PHASE 0 COMPLETE ✓ | READY FOR PHASE 1

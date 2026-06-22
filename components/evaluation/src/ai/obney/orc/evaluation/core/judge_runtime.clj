@@ -18,12 +18,35 @@
    Living Description bodies."
   (:require [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
-            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.orc.evaluation.core.heuristic-structural :as heuristic-structural]
             [com.brunobonacci.mulog :as u]))
+
+;; =============================================================================
+;; Living Description opt-in gate (lazily resolved)
+;; =============================================================================
+
+(defn- living-description-enabled?
+  "Return the system-level Living Description opt-in flag.
+
+   The flag lives in the ontology component. We resolve it lazily via
+   `requiring-resolve` so the evaluation component does NOT hard-depend on
+   ontology: judges run as a standalone capability (Layer 1) with no DJL,
+   no ColBERT, no Python on the classpath. When ontology is not present,
+   the flag is simply false — judges still fire on terminal execution and
+   emit `:judge/score-emitted`; only the self-improving write-side (which
+   needs ontology anyway) stays dormant. When ontology IS present this is
+   identical to calling `ontology/get-living-description-enabled?`."
+  [ctx]
+  (boolean
+   (when-let [f (try (requiring-resolve
+                      'ai.obney.orc.ontology.interface/get-living-description-enabled?)
+                     (catch Throwable _ nil))]
+     (f ctx))))
 
 ;; =============================================================================
 ;; Trace-data construction
@@ -262,22 +285,24 @@
 ;; Event construction
 ;; =============================================================================
 
-(defn- ->score-emitted-event
-  [event judge-name judge-config result]
-  (es/->event
-    {:type :judge/score-emitted
-     :tags #{[:sheet (:sheet-id event)]
-             [:node (:node-id event)]
-             [:tick (:tick-id event)]}
-     :body {:sheet-id (:sheet-id event)
-            :tick-id (:tick-id event)
-            :node-id (:node-id event)
-            :judge-name judge-name
-            :judge-config judge-config
-            :score (:score result)
-            :feedback (:feedback result)
-            :dimensions (:dimensions result)
-            :emitted-at (str (java.time.Instant/now))}}))
+(defn- ->record-judge-score-command
+  "Pure builder: the body for the `:evaluation/record-judge-score`
+   command. The command handler is the sole writer of
+   `:judge/score-emitted`; this builds the body it validates + emits.
+   `source` is any map carrying :sheet-id / :node-id / :tick-id."
+  [source judge-name judge-config result]
+  {:command/id (random-uuid)
+   :command/timestamp (time/now)
+   :command/name :evaluation/record-judge-score
+   :sheet-id (:sheet-id source)
+   :tick-id (:tick-id source)
+   :node-id (:node-id source)
+   :judge-name judge-name
+   :judge-config judge-config
+   :score (:score result)
+   :feedback (:feedback result)
+   :dimensions (:dimensions result)
+   :emitted-at (str (java.time.Instant/now))})
 
 ;; =============================================================================
 ;; Gap-8 — multi-judge weight aggregation
@@ -375,23 +400,27 @@
           Math/round
           (/ 10000.0)))))
 
-(defn- ->composite-score-event
-  "Gap-8: build a `:judge/composite-score-computed` event from the
-   judge results collected during a single processor cycle. Returns
-   nil when fewer than 2 judges have valid scores — single-judge ticks
-   don't need a composite distinct from the score itself, and zero-
-   judge ticks have nothing to composite.
+(defn- ->record-composite-score-command
+  "Gap-8: build the body for the `:evaluation/record-composite-score`
+   command from the judge results collected during a single processor
+   cycle. Returns nil when fewer than 2 judges have valid scores —
+   single-judge ticks don't need a composite distinct from the score
+   itself, and zero-judge ticks have nothing to composite.
 
    `judge-results` is a seq of `{:judge-name :judge-config :result}`
    where :result is the canonical `{:score :feedback :dimensions}`
    shape (or nil for failed judges).
 
-   The `:contributing-judges` field on the emitted event shows the
-   EFFECTIVE normalized weight each judge contributed (e.g., `1/N`
-   when consumers didn't set explicit weights), not the raw
-   :judge-config value. This is what consumers want for debugging
-   the composite: 'how did this number get computed?'"
-  [event judge-results]
+   The `:contributing-judges` field shows the EFFECTIVE normalized
+   weight each judge contributed (e.g., `1/N` when consumers didn't set
+   explicit weights), not the raw :judge-config value. This is what
+   consumers want for debugging the composite: 'how did this number get
+   computed?'
+
+   The command handler is the sole writer of
+   `:judge/composite-score-computed`; this builds the body it validates
+   + emits. `source` carries :sheet-id / :node-id / :tick-id."
+  [source judge-results]
   (let [raw-entries (keep (fn [{:keys [judge-name judge-config result]}]
                             (when (and result (number? (:score result)))
                               {:judge-name judge-name
@@ -401,21 +430,19 @@
     (when (>= (count raw-entries) 2)
       (when-let [normalized (normalize-judge-weights raw-entries)]
         (when-let [composite (compute-composite-score raw-entries)]
-          (es/->event
-            {:type :judge/composite-score-computed
-             :tags #{[:sheet (:sheet-id event)]
-                     [:node (:node-id event)]
-                     [:tick (:tick-id event)]}
-             :body {:sheet-id (:sheet-id event)
-                    :tick-id (:tick-id event)
-                    :node-id (:node-id event)
-                    :composite-score composite
-                    :contributing-judges (mapv (fn [{:keys [judge-name score weight]}]
-                                                  {:judge-name judge-name
-                                                   :score (double score)
-                                                   :weight (double weight)})
-                                                normalized)
-                    :emitted-at (str (java.time.Instant/now))}}))))))
+          {:command/id (random-uuid)
+           :command/timestamp (time/now)
+           :command/name :evaluation/record-composite-score
+           :sheet-id (:sheet-id source)
+           :tick-id (:tick-id source)
+           :node-id (:node-id source)
+           :composite-score composite
+           :contributing-judges (mapv (fn [{:keys [judge-name score weight]}]
+                                        {:judge-name judge-name
+                                         :score (double score)
+                                         :weight (double weight)})
+                                      normalized)
+           :emitted-at (str (java.time.Instant/now))})))))
 
 ;; =============================================================================
 ;; Gap-5 — Default judge attachment for repl-researcher nodes
@@ -556,7 +583,7 @@
                      (:judges node))))
 
            (and (= :repl-researcher (:type node))
-                (ontology/get-living-description-enabled? ctx))
+                (living-description-enabled? ctx))
            default-judges
 
            :else [])]
@@ -564,22 +591,130 @@
               all-effective))))
 
 ;; =============================================================================
-;; Processor — handler
+;; Processor — async judge execution + command-only emission
 ;; =============================================================================
+;;
+;; ORC async pattern (mirrors orc-service's `execute-leaf-node`): the
+;; processor handler NEVER blocks on slow LLM-judge futures. It returns a
+;; `:result/effect` that spawns ONE background future and returns
+;; immediately, so LLM latency is never jammed into the pubsub/poller
+;; thread. Inside that future we resolve + run the judges in PARALLEL
+;; (per-judge future + per-judge timeout, exactly as before), then emit
+;; each result via `cp/process-command` — the commands
+;; (:evaluation/record-judge-score, :evaluation/record-composite-score)
+;; are the ONLY writers of the score events, and they are idempotent so
+;; an at-least-once effect-path replay can't double-emit.
+;;
+;; This replaces the previous design where the handler deref'd the judge
+;; futures inline and returned `:result/events`. That blocked the handler
+;; for the full max(judge time), and a throw in the coalesced poller
+;; batch path lost the whole batch and re-looped forever (the verified
+;; stall). The effect path routes through `process-event`'s per-event
+;; try/catch + skip-checkpoint, which is safe under burst.
+
+(def ^:private per-judge-timeout-ms
+  "How long a single judge invocation may run before we give up on it.
+   A slow/stuck judge can't block the others (each judge owns its own
+   future) and now can't block the pubsub thread either (the whole
+   resolve+run loop lives in the effect's background future)."
+  60000)
+
+(defn- run-judges-and-dispatch!
+  "Run the resolved `effective` judges against `trace-data` in PARALLEL
+   (one future per judge + per-judge timeout), then dispatch one
+   `:evaluation/record-judge-score` command per judge that produced a
+   result and, when ≥2 judges scored, one
+   `:evaluation/record-composite-score` command.
+
+   `source` carries :sheet-id / :node-id / :tick-id used to tag the
+   emitted events. Runs entirely on the caller's thread — callers invoke
+   it from inside the effect's background future so the pubsub/poller
+   thread is never blocked.
+
+   Preserves all prior judge behavior: tier-1 + :custom dispatch via
+   invoke-judge, per-judge failure isolation
+   (::judge-invocation-failed), per-judge timeout
+   (::judge-invocation-timeout), and the ::all-judges-returned-nil
+   audible-silence safeguard."
+  [context source effective trace-data]
+  (let [futures (mapv
+                  (fn [{:keys [judge-name judge-config]}]
+                    [judge-name judge-config
+                     (future
+                       (try (invoke-judge context judge-config trace-data)
+                            (catch Throwable t
+                              (u/log ::judge-invocation-failed
+                                     :judge-name judge-name
+                                     :error (.getMessage t)
+                                     :exception-class (.getName (class t)))
+                              nil)))])
+                  effective)
+        ;; Collect the raw judge results so the composite can be computed
+        ;; from them without re-deriving.
+        judge-results (mapv
+                        (fn [[judge-name judge-config fut]]
+                          (let [result (try (deref fut per-judge-timeout-ms ::timeout)
+                                            (catch Throwable t
+                                              (u/log ::judge-deref-failed
+                                                     :judge-name judge-name
+                                                     :error (.getMessage t))
+                                              nil))]
+                            {:judge-name judge-name
+                             :judge-config judge-config
+                             :result (cond
+                                       (= ::timeout result)
+                                       (do (u/log ::judge-invocation-timeout
+                                                  :judge-name judge-name
+                                                  :timeout-ms per-judge-timeout-ms)
+                                           nil)
+                                       :else result)}))
+                        futures)
+        scored (filter :result judge-results)]
+    (if (seq scored)
+      (do
+        ;; One record-judge-score command per judge with a result. The
+        ;; command emits :judge/score-emitted (idempotent on
+        ;; [sheet node tick judge-name]).
+        (doseq [{:keys [judge-name judge-config result]} scored]
+          (cp/process-command
+            (assoc context :command
+                   (->record-judge-score-command source judge-name
+                                                 judge-config result))))
+        ;; After all per-judge scores: one record-composite-score command
+        ;; (idempotent on [sheet node tick]) when ≥2 judges scored.
+        (when-let [composite-cmd (->record-composite-score-command source judge-results)]
+          (cp/process-command
+            (assoc context :command composite-cmd))))
+      ;; All effective judges returned nil. Surface this loudly — the
+      ;; silent-skip path was masking a real wiring gap on recursive-RLM
+      ;; terminal completions (terminal :writes lack :generated-tree-raw →
+      ;; heuristic-structural nils; LLM judges also nil for reasons not
+      ;; yet diagnosed). This log makes the silence audible.
+      (u/log ::all-judges-returned-nil
+             :sheet-id (:sheet-id source)
+             :node-id (:node-id source)
+             :tick-id (:tick-id source)
+             :effective-judge-names (mapv :judge-name effective)
+             :has-generated-tree-raw? (some? (get-in trace-data
+                                                     [:outputs :generated-tree-raw]))
+             :writes-keys (vec (keys (or (:outputs trace-data) {})))))))
 
 (defn on-node-execution-completed
   "Handler for :sheet/node-execution-completed. Gated on the Living
    Description opt-in flag. When on, resolves the effective judge list
    for the node (explicit attachment OR Gap-5 defaults for
-   :repl-researcher), dispatches each, and returns `:result/events`
-   containing one :judge/score-emitted per successful invocation.
+   :repl-researcher) and returns a non-blocking `:result/effect` that
+   spawns a background future to run the judges and dispatch the
+   score-recording commands.
 
-   Resolution lives in `get-effective-judges-for-node` — same flag
-   gate applies inside the resolver, so the outer check here is
-   redundant but kept for clarity / short-circuit before any node
+   The handler NEVER derefs a judge future and NEVER returns
+   `:result/events` — that was the blocking design that stalled grain's
+   coalesced poller under LLM latency. Resolution lives in
+   `get-effective-judges-for-node` — same flag gate applies inside the
+   resolver, so the outer check here is a short-circuit before any node
    lookup."
   [{:keys [event] :as context}]
-  (when (ontology/get-living-description-enabled? context)
+  (when (living-description-enabled? context)
     (let [sheet-id (:sheet-id event)
           node-id (:node-id event)
           ;; Gap-7: pass the event's :completion-kind into the resolver
@@ -589,89 +724,27 @@
           completion-kind (:completion-kind event)
           effective (get-effective-judges-for-node context sheet-id node-id completion-kind)]
       (when (seq effective)
+        ;; Snapshot trace-data on the handler thread (cheap: reads the
+        ;; event + at most one event-store lookup), but run the slow
+        ;; judges + command dispatch in the effect's background future so
+        ;; the pubsub thread returns immediately. NO deref here.
         (let [trace-data (build-trace-data context event)
-              ;; 2026-06-05 LLM-judge-nilling root-cause finding:
-              ;; The original investigation thought judges were silently
-              ;; returning nil on terminal events. Heavy instrumentation
-              ;; revealed the real issue: judges DO produce results, but
-              ;; the processor invoked them SEQUENTIALLY — each LLM
-              ;; judge takes 2-3s against OpenRouter, so 4 LLM judges in
-              ;; sequence = 8-12s per event. Verify scripts that polled
-              ;; the event store with a short Thread/sleep would see 0
-              ;; events because the processor was still mid-flight.
-              ;;
-              ;; Fix: run independent judges in parallel via `future`.
-              ;; Each judge owns its own thread; total wall time =
-              ;; max(judge times) instead of sum. We deref with a
-              ;; per-judge timeout so a single slow/stuck judge can't
-              ;; block the others.
-              ;;
-              ;; The :all-judges-returned-nil log below remains as an
-              ;; audible-silence safeguard for the case where every
-              ;; judge legitimately returns nil (e.g., no inputs/no tree
-              ;; and they can't grade anything).
-              per-judge-timeout-ms 60000
-              futures (mapv
-                        (fn [{:keys [judge-name judge-config]}]
-                          [judge-name judge-config
-                           (future
-                             (try (invoke-judge context judge-config trace-data)
-                                  (catch Throwable t
-                                    (u/log ::judge-invocation-failed
-                                           :judge-name judge-name
-                                           :error (.getMessage t)
-                                           :exception-class (.getName (class t)))
-                                    nil)))])
-                        effective)
-              ;; Collect both score-events AND the raw judge results so
-              ;; Gap-8 can compute a weighted composite from the results
-              ;; without re-deriving them.
-              judge-results (mapv
-                              (fn [[judge-name judge-config fut]]
-                                (let [result (try (deref fut per-judge-timeout-ms ::timeout)
-                                                  (catch Throwable t
-                                                    (u/log ::judge-deref-failed
-                                                           :judge-name judge-name
-                                                           :error (.getMessage t))
-                                                    nil))]
-                                  {:judge-name judge-name
-                                   :judge-config judge-config
-                                   :result (cond
-                                             (= ::timeout result)
-                                             (do (u/log ::judge-invocation-timeout
-                                                        :judge-name judge-name
-                                                        :timeout-ms per-judge-timeout-ms)
-                                                 nil)
-                                             :else result)}))
-                              futures)
-              score-events (vec
-                             (keep (fn [{:keys [judge-name judge-config result]}]
-                                     (when result
-                                       (->score-emitted-event event judge-name
-                                                              judge-config result)))
-                                   judge-results))
-              composite-event (->composite-score-event event judge-results)
-              events (cond-> score-events
-                       composite-event (conj composite-event))]
-          (if (seq events)
-            {:result/events events}
-            ;; All effective judges returned nil. Surface this loudly —
-            ;; the silent-skip path was masking a real wiring gap on
-            ;; recursive-RLM terminal completions (terminal :writes lack
-            ;; :generated-tree-raw → heuristic-structural nils; LLM
-            ;; judges also nil for reasons not yet diagnosed). Tracked
-            ;; for design follow-up; until that lands, this log makes
-            ;; the silence audible.
-            (do (u/log ::all-judges-returned-nil
-                       :sheet-id sheet-id
-                       :node-id node-id
-                       :tick-id (:tick-id event)
-                       :status (:status event)
-                       :effective-judge-names (mapv :judge-name effective)
-                       :has-generated-tree-raw? (some? (get-in trace-data
-                                                              [:outputs :generated-tree-raw]))
-                       :writes-keys (vec (keys (or (:outputs trace-data) {}))))
-                nil)))))))
+              source {:sheet-id sheet-id
+                      :node-id node-id
+                      :tick-id (:tick-id event)}]
+          {:result/checkpoint :after
+           :result/effect
+           (fn []
+             (future
+               (try
+                 (run-judges-and-dispatch! context source effective trace-data)
+                 (catch Throwable t
+                   (u/log ::judge-runtime-future-failed
+                          :sheet-id sheet-id
+                          :node-id node-id
+                          :tick-id (:tick-id event)
+                          :error (.getMessage t)
+                          :exception-class (.getName (class t)))))))})))))
 
 ;; =============================================================================
 ;; Gap-7b — per-Phase-1-iteration tree-shape grading
@@ -717,10 +790,13 @@
    via the matching :sheet/node-execution-started event for the tick.
 
    Filters the resolver's effective judge list to tree-shape graders
-   (currently heuristic-structural) and invokes them in parallel with
-   per-judge timeout — same discipline as on-node-execution-completed."
+   (currently heuristic-structural) and returns a non-blocking
+   `:result/effect` that runs them in parallel (per-judge timeout) and
+   dispatches the score-recording command in a background future — same
+   async discipline as on-node-execution-completed. NO deref in the
+   handler, NO :result/events."
   [{:keys [event] :as context}]
-  (when (ontology/get-living-description-enabled? context)
+  (when (living-description-enabled? context)
     (let [tick-id (:execution-id event)
           raw-dsl (:raw-dsl event)
           direct-sheet-id (:sheet-id event)
@@ -743,54 +819,31 @@
                                                        (:type (:judge-config %)))
                                             effective)]
           (when (seq tree-shape-effective)
+            ;; Snapshot trace-data on the handler thread; run the judges +
+            ;; command dispatch in the effect's background future so the
+            ;; pubsub thread returns immediately. The score events are
+            ;; tagged with the discovered (sheet, node, tick) so the
+            ;; consolidator's join keys match.
             (let [trace-data {:inputs inputs
                               :outputs {:generated-tree-raw raw-dsl}
                               :instruction (or (:instruction node) "")}
-                  per-judge-timeout-ms 60000
-                  futures (mapv
-                            (fn [{:keys [judge-name judge-config]}]
-                              [judge-name judge-config
-                               (future
-                                 (try (invoke-judge context judge-config trace-data)
-                                      (catch Throwable t
-                                        (u/log ::judge-invocation-failed
-                                               :judge-name judge-name
-                                               :error (.getMessage t)
-                                               :exception-class (.getName (class t)))
-                                        nil)))])
-                            tree-shape-effective)
-                  ;; Score events are tagged with the discovered (sheet,
-                  ;; node, tick) so consolidator's join keys match. The
-                  ;; ->score-emitted-event helper reads sheet-id/node-id/
-                  ;; tick-id from the source event; we synthesize the
-                  ;; required shape for it.
-                  synthetic-source {:sheet-id sheet-id
-                                    :node-id node-id
-                                    :tick-id tick-id}
-                  events (vec
-                           (keep
-                             (fn [[judge-name judge-config fut]]
-                               (let [result (try (deref fut per-judge-timeout-ms ::timeout)
-                                                 (catch Throwable t
-                                                   (u/log ::judge-deref-failed
-                                                          :judge-name judge-name
-                                                          :error (.getMessage t))
-                                                   nil))]
-                                 (cond
-                                   (= ::timeout result)
-                                   (do (u/log ::judge-invocation-timeout
-                                              :judge-name judge-name
-                                              :timeout-ms per-judge-timeout-ms)
-                                       nil)
-
-                                   result
-                                   (->score-emitted-event synthetic-source
-                                                          judge-name judge-config result)
-
-                                   :else nil)))
-                             futures))]
-              (when (seq events)
-                {:result/events events}))))))))
+                  cmd-source {:sheet-id sheet-id
+                              :node-id node-id
+                              :tick-id tick-id}]
+              {:result/checkpoint :after
+               :result/effect
+               (fn []
+                 (future
+                   (try
+                     (run-judges-and-dispatch! context cmd-source
+                                               tree-shape-effective trace-data)
+                     (catch Throwable t
+                       (u/log ::judge-runtime-future-failed
+                              :sheet-id sheet-id
+                              :node-id node-id
+                              :tick-id tick-id
+                              :error (.getMessage t)
+                              :exception-class (.getName (class t)))))))})))))))
 
 ;; =============================================================================
 ;; Read-model — judge scores history per (sheet, tick, node)

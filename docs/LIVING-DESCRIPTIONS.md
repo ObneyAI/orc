@@ -11,18 +11,11 @@
 > section of the consumer guide for what's solid today and what's
 > rough.
 
+> **Consumer entry point:** For a progressive introduction to the self-improving loop, see [SELF-IMPROVING-LOOP.md](SELF-IMPROVING-LOOP.md). This doc covers the architecture and implementation detail — three granularities, four anti-recency safeguards, and the consolidation pipeline.
+
 ## Part 1 — The 30-second story (for stakeholders)
 
-ORC runs LLM-powered workflows as **behavior trees** — structured plans of LLM calls, code transforms, parallel branches, and so on. When the same kind of workflow runs many times, patterns emerge: certain tree shapes work well for certain tasks, certain nodes consistently produce good (or poor) results in certain contexts.
-
-The **Living Descriptions** system captures those patterns automatically:
-
-- Every tree and every node carries a self-description: *what it's good at, when it works well, when it tends to fail, and what to prefer or avoid in similar situations.*
-- These descriptions are not written by humans (mostly). They're produced by an automated **reflection step** that periodically reads the recent execution events for that tree/node, compares them against history, and updates the description to reflect what was learned.
-- A human-authored seed gets the system started (so it has some sensible starting descriptions on day one), but as workflows run, descriptions evolve from real evidence — successes climb in confidence; failures get principle-shaped lessons attached.
-- When a developer designs a new workflow, the system can surface relevant prior descriptions as inspiration: *"a tree shaped like this has worked well before; here's what it tends to be good at."*
-
-The result: ORC gets smarter over time without needing developers to babysit it.
+ORC runs LLM-powered workflows as **behavior trees** — structured plans of LLM calls, code transforms, parallel branches, and so on. When the same workflow runs many times, the **Living Descriptions** system automatically captures what each tree and node is good at, when it tends to fail, and what to prefer or avoid — building up self-knowledge from real execution evidence, not hand-written docs. A human-authored seed corpus starts the system on day one; as workflows run, descriptions evolve: successes gain confidence and failures get actionable, principle-shaped lessons. When a developer builds a new workflow, the system surfaces relevant prior patterns as design inspiration. The result: ORC gets smarter over time without needing developers to babysit it — see [Part 2](#part-2--the-developer-mental-model) for how.
 
 ## Part 2 — The developer mental model
 
@@ -62,7 +55,7 @@ Every strength and weakness is **principle-shaped**: a concrete trait, a context
 | Granularity | What it groups | Example use |
 |---|---|---|
 | **node-type** | All instances of `:llm` (or `:map-each`, etc.) across all workflows | *"In general, what do `:map-each` nodes tend to do well?"* |
-| **node-instance** | One specific node in one specific workflow | *"The 'validator' LLM in my report-generation workflow has been reliable in the last 50 runs."* |
+| **node-instance** | One specific node in one specific workflow | *"The 'validator' LLM in my report-generation workflow has been reliable in the last 50 runs."* — [see in action (GETTING-STARTED.md Phase 2)](GETTING-STARTED.md#phase-2--llm-judges) |
 | **tree-fingerprint** | Trees with the same structural shape (regardless of content) | *"Chunked-extraction trees with a final synthesizer step work well for medium-large docs."* |
 
 ### How descriptions evolve
@@ -89,6 +82,8 @@ Most developers won't interact with the system directly — they just write thei
 1. **Pattern injection** — when a repl-researcher runs with `:auto-classify? true` on its `:rlm` config, the top-fitting pattern's full body (capabilities + worked-example DSL snippets + observed strengths and weaknesses) is prepended to the model's instruction before it starts designing the tree.
 
 2. **Cross-task behavioral retrieval** — when the model designs a new tree, behavioral subtrees that match the task's accomplishment shape are surfaced as candidates. The model can adopt, adapt, or — if nothing fits — contribute a new behavior via the `(mint-behavior! ...)` sandbox primitive. Minted behaviors persist for future retrieval across all tasks.
+
+> **LD loop and GEPA are orthogonal.** The Living Description consolidation loop feeds GEPA with per-run score+feedback signal; GEPA is the static-instruction actuator that tunes `:llm` node instruction strings from that signal. Neither requires the other.
 
 For developers who want explicit control:
 
@@ -130,11 +125,12 @@ SEMANTIC RETRIEVAL
 
 The consolidator's reflection input was extended to include judge scores alongside raw execution events. Verified live on `legal-issue-detection` multi-cycle:
 
-- **Per-event evaluator runtime** (`components/evaluation/src/.../core/judge_runtime.clj`) subscribes to `:sheet/node-execution-completed` and fires attached judges (default + custom) in parallel via futures with a 60s per-judge timeout. When the Living Description opt-in flag is on, repl-researcher nodes get 5 default judges auto-attached (heuristic-structural + grounding + reasoning + completeness + instruction-following).
+- **Per-event evaluator runtime** (`components/evaluation/src/.../core/judge_runtime.clj`) subscribes to `:sheet/node-execution-completed` and fires attached judges (default + custom) in parallel via futures with a 60s per-judge timeout. The opt-in gate is `get-living-description-enabled?` (lines 559, 582, 723). When on, repl-researcher nodes get 5 default judges auto-attached: heuristic-structural + grounding + reasoning + completeness + instruction-following (`judge_runtime.clj:499-508`).
+- **Tier-1 judge scores** (ADR 0011): judge scores use the tier-1 discrete 1–5 band design. Each `:judge/score-emitted` `:score` is derived deterministically from a discrete band via `level->unit-score` in `scale.clj` — never self-reported as a float. The richer `:level`/`:reasoning` fields ride along; the no-run-through gate means a structured-output regression errors loudly rather than feeding the consolidator a silent 0. See [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md) and [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#tier-1-judge-model-2026-06-decoupled-discrete-scale--reason-before-score--all-four-llm-judges).
 - **Score events** (`:judge/score-emitted`) land in the event store tagged with `[:sheet :tick :node]`.
 - **Consolidator joins them** via `gather-recent-tree-class-events`: per-observation `:judge-scores` from the recent window + `:judge-averages` per judge across the target's lifetime in `:aggregate-metrics`.
 - **Reflection instruction explains the data**: tells the LLM that `:judge-averages` is the stable baseline and to weight per-tick judge divergence with the same anti-recency discipline as success-rate deltas.
-- **Custom judges** plug into the same pipeline via `:type :custom` + `:sheet-id` referencing a consumer-built eval workflow. See [`RLM-GUIDE.md`](RLM-GUIDE.md#attaching-judges-to-your-behavior-trees).
+- **Custom judges** plug into the same pipeline via `:type :custom` + `:sheet-id` referencing a consumer-built eval workflow. See [`RLM-GUIDE.md`](RLM-GUIDE.md#judges-on-repl-researcher-nodes-rlm-specific-defaults--living-description-loop).
 
 Composite scoring (shipped 2026-06): when 2+ judges fire on the same (sheet, node, tick), the runtime emits a `:judge/composite-score-computed` event with the weighted composite. Default policy: even-weight (1/N) when consumers don't set explicit weights; consumer-set `:judge-config :weight` values normalize to sum to 1.0. The per-judge `:judge-averages` map stays alongside in the consolidator's reflection input — consumers wanting the independent per-judge signal aren't disrupted.
 
@@ -159,7 +155,7 @@ The following capabilities are part of the shipped self-improving loop:
 
 - **Consumer entry point:** [`SELF-IMPROVING-LOOP.md`](SELF-IMPROVING-LOOP.md) — practical guide for developers using the loop in their workflows
 - **Recursive RLM reference:** [`RLM-GUIDE.md`](RLM-GUIDE.md) — tree DSL, sandbox primitives, drill-down, sub-LLM costs
-- **Storage and event surface:** [`SELF-LEARNING-MANUAL.md`](SELF-LEARNING-MANUAL.md) — events emitted, read-model projections, query API
-- **Continuous-improvement framing:** [`FEEDBACK-LOOP.md`](FEEDBACK-LOOP.md) — the larger cycle ORC fits into
+- **Storage and event surface:** [`PATTERN-RECORDING.md`](PATTERN-RECORDING.md) — events emitted, read-model projections, query API
+- **Continuous-improvement framing:** [`SELF-IMPROVING-LOOP.md`](SELF-IMPROVING-LOOP.md) — consumer guide for the full self-improving loop (see also [`archived/FEEDBACK-LOOP.md`](archived/FEEDBACK-LOOP.md) for the pre-RLM framing)
 - **Building behavior trees:** [`ORC-SERVICE-GUIDE.md`](ORC-SERVICE-GUIDE.md) — node types, blackboard schemas, composition
-- **Pattern library:** [`pattern-compendium.md`](pattern-compendium.md) — common tree shapes worked-out
+- **Pattern library:** [`CONTRIBUTOR-GRAIN-PATTERNS.md`](contributors/CONTRIBUTOR-GRAIN-PATTERNS.md) — common tree shapes worked-out

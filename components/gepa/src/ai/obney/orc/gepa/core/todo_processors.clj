@@ -31,7 +31,8 @@
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
-            [litellm.router :as litellm-router]
+            [clojure.string :as string]
+            [dscloj.core :as dscloj]
             [com.brunobonacci.mulog :as u]))
 
 ;; =============================================================================
@@ -43,6 +44,20 @@
   [context command]
   (command-processor/process-command
     (assoc context :command command)))
+
+(defn score+feedback-of
+  "Normalize a metric-fn return value into {:score double :feedback string-or-nil}.
+
+   The judge metric returns {:score :feedback}; the structural metrics
+   (exact-match/contains) and user metric-fns return a bare number. This
+   unifies both so the evaluation path can carry per-example judge feedback
+   when it is available, and nil otherwise (back-compat)."
+  [metric-result]
+  (if (map? metric-result)
+    {:score (double (or (:score metric-result) 0.0))
+     :feedback (:feedback metric-result)}
+    {:score (double (or metric-result 0.0))
+     :feedback nil}))
 
 (defn extract-workflow-instructions
   "Extract current instructions from a sheet/workflow.
@@ -73,6 +88,30 @@
       ;; Fallback if no LLM nodes found
       {"default" "You are a helpful assistant."})))
 
+(defn legacy-score-feedback
+  "The score-only feedback string GEPA used before judge feedback was threaded
+   through. Kept as the back-compat fallback for candidates evaluated by a
+   structural/user metric-fn (no per-example judge feedback)."
+  [score expected]
+  (str "The response scored " (format "%.2f" (double score))
+       " on this example. "
+       "Expected: " expected ". "
+       "Please improve the instruction to handle "
+       "this type of input better."))
+
+(defn reflective-feedback-for-instance
+  "Choose the feedback to put in a reflective example for one instance.
+
+   Prefers the candidate's RICH per-instance judge feedback (the judges'
+   weakest-first :feedback/:reasoning) so the proposer sees WHY it scored low.
+   Falls back to the legacy score-string when no rich feedback is present
+   (blank or absent), preserving back-compat for non-judge metrics."
+  [feedbacks instance-id score expected]
+  (let [rich (get feedbacks instance-id)]
+    (if (and rich (not (string/blank? rich)))
+      rich
+      (legacy-score-feedback score expected))))
+
 (defn build-reflective-dataset
   "Build reflective examples from failing instances.
 
@@ -80,16 +119,32 @@
    Returns Python GEPA-compatible ReflectiveExample format:
    {\"Inputs\" {...}, \"Generated Outputs\" {...}, \"Feedback\" \"...\"}
 
-   This matches Python's TypedDict structure exactly."
+   When the candidate was scored by the judge metric, the per-instance
+   `:feedbacks` carried on the candidate-evaluated event (the judges' rich,
+   weakest-first feedback) is used as the ReflectiveExample feedback INSTEAD of
+   the legacy 'scored 0.XX' string. This is what lets the proposer turn a bad
+   instruction into a good one. Falls back to the score string per-instance
+   when no rich feedback is available (back-compat).
+
+   The per-instance generated `:outputs` (the candidate's actual bad answer for
+   each failing instance) are likewise put into the 'Generated Outputs' slot so
+   the proposer sees BOTH what was produced AND why it scored low. Falls back to
+   `{}` per-instance when no output was recorded (back-compat)."
   [context optimization-id candidate-id config]
   (let [event-store (:event-store context)
         failures (rm/get-failing-instances context optimization-id candidate-id)
         trainset (rm/get-trainset context optimization-id)
+        ;; Per-instance RICH judge feedback recorded on candidate-evaluated.
+        feedbacks (rm/get-candidate-feedbacks context optimization-id candidate-id)
+        ;; Per-instance generated outputs recorded on candidate-evaluated.
+        outputs (rm/get-candidate-outputs context optimization-id candidate-id)
         minibatch-size (get config :reflection-minibatch-size 3)]
 
     (u/log ::building-reflective-dataset
            :candidate-id candidate-id
            :num-failures (count failures)
+           :num-rich-feedbacks (count feedbacks)
+           :num-outputs (count outputs)
            :minibatch-size minibatch-size)
 
     ;; Sample failures and build examples in Python GEPA format
@@ -102,17 +157,17 @@
                                    (get input "expected")
                                    (get input "label")
                                    "")
-                      ;; Build feedback explaining the failure
-                      feedback (str "The response scored " (format "%.2f" (double score))
-                                    " on this example. "
-                                    "Expected: " expected ". "
-                                    "Please improve the instruction to handle "
-                                    "this type of input better.")]
+                      ;; Prefer the judges' rich feedback; else legacy string.
+                      feedback (reflective-feedback-for-instance
+                                 feedbacks instance-id score expected)
+                      ;; The candidate's actual generated output for this
+                      ;; instance (the bad answer); {} when none was recorded.
+                      generated-output (get outputs instance-id {})]
                   ;; Return in exact Python GEPA ReflectiveExample format
                   (reflection/make-reflective-example
-                    input           ;; Inputs
-                    {}              ;; Generated Outputs (from trace if available)
-                    feedback))))    ;; Feedback string
+                    input             ;; Inputs
+                    generated-output  ;; Generated Outputs (the real bad answer)
+                    feedback))))      ;; Feedback string
          vec)))
 
 (defn select-component
@@ -143,7 +198,9 @@
 (defn execute-workflow-with-instructions
   "Execute a workflow with specific instructions on a single input.
 
-   Returns {:output map :trace-id uuid :score double :success? bool}."
+   Returns {:output map :trace-id uuid :score double :feedback string-or-nil
+            :success? bool}. The :feedback is the judges' rich per-example
+   feedback when the metric is the judge metric, else nil (back-compat)."
   [context sheet-id instructions input metric-fn]
   (let [;; Build input map from the example — use keyword keys to match blackboard
         input-map (if (map? input)
@@ -167,21 +224,33 @@
            :duration-ms (:duration-ms result))
 
     (let [output (:outputs result)
-          ;; Calculate score using the metric function
-          score (try
-                  (metric-fn input output)
-                  (catch Exception e
-                    (u/log ::metric-error :error (.getMessage e))
-                    0.0))]
+          ;; The metric sees the ORIGINAL example and the full output
+          ;; blackboard. The judge metric grades the response against a STABLE
+          ;; task (its :judges :task), NOT the candidate instruction — feeding
+          ;; the candidate instruction would let instruction-following reward a
+          ;; faithfully-followed BAD instruction (Goodhart). See metrics.
+          {:keys [score feedback]}
+          (try
+            (score+feedback-of (metric-fn input output))
+            (catch Exception e
+              (u/log ::metric-error :error (.getMessage e))
+              {:score 0.0 :feedback nil}))]
       {:output output
        :trace-id (random-uuid)  ;; TODO: Get from actual trace
        :score score
+       :feedback feedback
        :success? (= :success (:status result))})))
 
 (defn evaluate-candidate-on-valset
   "Evaluate a candidate's instructions on the full validation set.
 
-   Returns {:scores [double ...] :trace-ids [uuid ...] :metric-calls int}."
+   Returns {:scores [double ...] :trace-ids [uuid ...]
+            :feedbacks {instance-idx -> feedback-string}
+            :outputs {instance-idx -> output-map} :metric-calls int}.
+   :feedbacks only contains entries for examples whose metric supplied rich
+   feedback (the judge metric); structural metrics leave it empty. :outputs
+   carries the per-instance generated output blackboard so the reflective
+   dataset can show the proposer the actual (bad) answer text."
   [context sheet-id instructions valset metric-fn]
   (let [results (doall  ;; Force evaluation for side effects
                   (map-indexed
@@ -194,6 +263,12 @@
                     valset))]
     {:scores (mapv :score results)
      :trace-ids (mapv :trace-id results)
+     :feedbacks (into {} (keep-indexed (fn [idx r]
+                                         (when (:feedback r) [idx (:feedback r)]))
+                                       results))
+     :outputs (into {} (keep-indexed (fn [idx r]
+                                       (when (some? (:output r)) [idx (:output r)]))
+                                     results))
      :metric-calls (count valset)}))
 
 (defn evaluate-candidate-on-subsample
@@ -260,29 +335,35 @@
 ;; =============================================================================
 
 (defn make-llm-fn
-  "Create an LLM function from context for instruction proposal.
+  "Create the reflection LLM function (prompt) -> response-string for the
+   instruction proposer.
 
-   Uses the dscloj-provider from context, or falls back to a default model.
-   Returns a function (prompt) -> response-string."
+   Calls the reflection model through dscloj/predict with
+   :use-function-calling? true. This is REQUIRED for structured-output
+   reflection models such as gemini-3-flash-preview (whose default
+   function-calling is off); a raw chat-completion call returns malformed /
+   empty output for those models. The single typed :response output field
+   carries the proposer's full text (the proposer then extracts the
+   instruction from its ``` block), per the validated reference harness."
   [context model-name]
-  (let [provider (:dscloj-provider context)]
+  (let [provider (or (:dscloj-provider context) :openrouter)
+        module {:inputs [{:name :prompt :spec :string
+                          :description "the full proposer prompt"}]
+                :outputs [{:name :response :spec :string
+                           :description "the full response to the prompt"}]
+                :instructions (str "Respond to the prompt exactly as it asks. "
+                                   "When it asks for a new instruction in a ``` block, "
+                                   "include the full new instruction inside a ``` block.")}]
     (fn [prompt]
-      (u/log ::calling-llm
-             :model model-name
-             :prompt-length (count prompt))
-      (try
-        (let [response (litellm-router/completion
-                         provider
-                         {:model model-name
-                          :messages [{:role :user :content prompt}]})
-              content (-> response :choices first :message :content)]
-          (u/log ::llm-response-received
-                 :response-length (count content))
-          content)
-        (catch Exception e
-          (u/log ::llm-call-failed :error (.getMessage e))
-          ;; Return a default instruction on failure
-          (str "```\nYou are a helpful assistant that answers questions accurately.\n```"))))))
+      (u/log ::calling-llm :model model-name :prompt-length (count prompt))
+      (let [response (str (:response
+                           (dscloj/predict provider module {:prompt prompt}
+                             {:model model-name
+                              :use-function-calling? true
+                              :validate? false
+                              :with-metadata? false})))]
+        (u/log ::llm-response-received :response-length (count response))
+        response))))
 
 (defn generate-mutated-instruction
   "Generate a mutated instruction using the proposer.
@@ -506,7 +587,9 @@
                              (/ (reduce + (:scores eval-result))
                                 (count (:scores eval-result)))))
 
-        ;; Record the evaluation results
+        ;; Record the evaluation results (including any per-instance judge
+        ;; feedback so the reflective dataset can use it instead of the
+        ;; score-only string).
         (run-command! context
           {:command/id (random-uuid)
            :command/timestamp (time/now)
@@ -515,6 +598,10 @@
            :candidate-id candidate-id
            :scores (:scores eval-result)
            :trace-ids (:trace-ids eval-result)
+           :feedbacks (:feedbacks eval-result)
+           ;; Per-instance generated outputs so the reflective dataset can
+           ;; show the proposer the actual (bad) answer text.
+           :outputs (:outputs eval-result)
            :metric-calls (:metric-calls eval-result)})))))
 
 ;; =============================================================================

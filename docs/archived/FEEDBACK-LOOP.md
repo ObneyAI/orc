@@ -1,3 +1,7 @@
+> **Archived.** This document predates the RLM architecture (2025). The self-improving loop pipeline it describes is now implemented differently. See [SELF-IMPROVING-LOOP.md](../SELF-IMPROVING-LOOP.md) for the current consumer guide and [LIVING-DESCRIPTIONS.md](../LIVING-DESCRIPTIONS.md) for architecture detail.
+
+---
+
 # Feedback Loop Architecture
 
 This document describes the end-to-end continuous improvement cycle that connects execution, evaluation, ontology learning, and context injection into a self-improving system.
@@ -5,7 +9,7 @@ This document describes the end-to-end continuous improvement cycle that connect
 **Related Documentation:**
 - [EVALUATION-PLAN.md](./EVALUATION-PLAN.md) - Strategic vision for evaluation and GEPA optimization
 - [ONTOLOGY-COMPONENT.md](./ONTOLOGY-COMPONENT.md) - Ontology component architecture
-- [dsl-tutorial.md](./dsl-tutorial.md) - ORC DSL and `:context` parameter
+- [DSL-REFERENCE.md](./DSL-REFERENCE.md) - ORC DSL and `:context` parameter
 
 ---
 
@@ -106,7 +110,7 @@ Run reference-free evaluation using LLM-as-judge patterns. The evaluation compon
 
 **Five Default Judges (auto-attach to `:repl-researcher` when Living Description opt-in is on):**
 
-Four LLM judges + one deterministic heuristic. See [`RLM-GUIDE.md` § Attaching judges](RLM-GUIDE.md#attaching-judges-to-your-behavior-trees) for the attach flow and how custom judges integrate.
+Four LLM judges + one deterministic heuristic. See [`ORC-SERVICE-GUIDE.md` § Attaching Judges to Nodes](ORC-SERVICE-GUIDE.md#attaching-judges-to-nodes) for the general attach flow and how custom judges integrate, and [`RLM-GUIDE.md` § Judges on repl-researcher nodes](RLM-GUIDE.md#judges-on-repl-researcher-nodes-rlm-specific-defaults--living-description-loop) for the RLM-specific defaults.
 
 **Four Built-in LLM Judges (and their advisory weights — see note below):**
 
@@ -124,6 +128,8 @@ Four LLM judges + one deterministic heuristic. See [`RLM-GUIDE.md` § Attaching 
 | Heuristic Structural | Pure Clojure, no LLM | Grades the SHAPE of trees the model produces (`:generated-tree-raw`). Fires per `:rlm/tree-generated` AND on terminal completions. |
 
 > **Note on weights (2026-06):** The `% weight` column above is *advisory* — these specific numbers (35/25/20/20) aren't used as defaults in code. When multiple judges attach to a node, a `:judge/composite-score-computed` event lands per tick alongside the per-judge `:judge/score-emitted` events. Default policy: even-weight (1/N) when consumers don't set explicit weights; explicit `:judge-config :weight` values normalize to sum to 1.0. Single-judge ticks don't emit a composite (score = composite by definition).
+>
+> **Tier-1 judge shape (2026-06, ADR 0011):** all four LLM judges score on a decoupled discrete **1–5 `Scale`** (explicit per-level bands), take an **adversarial reviewer stance**, and **reason before they score**; the `[0,1]` `:score` is derived deterministically from the band, not self-reported. Output is carried by the typed blackboard (no `:output-schemas`, no JSON-in-prompt) and a no-run-through gate throws on empty output. The pipeline below is unchanged. Full detail: [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#tier-1-judge-model-2026-06-decoupled-discrete-scale--reason-before-score--all-four-llm-judges).
 
 ```clojure
 (require '[ai.obney.orc.evaluation.interface :as eval])

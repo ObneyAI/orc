@@ -4,6 +4,72 @@
 >
 > Related: FUTURE-VISION.md Theme 9, components/colbert/
 
+## Start here: you're already retrieving from the ontology
+
+You're already retrieving from the ontology with semantic search. Every `hybrid-search` call against your concept graph fuses two signals — graph BFS (spreading activation through related concepts) and DJL embeddings (single-vector semantic similarity) — entirely in the JVM, no Python, no extra setup. **For most corpora, the built-in DJL embeddings are plenty.**
+
+But as your corpus grows large, or your queries get subtle — long technical documents, near-synonyms, phrasing that doesn't line up with the stored text — single-vector embeddings start missing relevant results. A whole passage gets squashed into one 384-dimensional vector, and the nuance that would have matched your query gets averaged away.
+
+**ColBERT adds token-level late-interaction matching as a third retrieval signal** — it compares your query token-by-token against each candidate, then fuses with graph + embeddings via the same RRF the ontology already uses. It's a drop-in upgrade: the *same* `hybrid-search` call, one more signal in the set.
+
+### When you DON'T need ColBERT
+
+Keep it honest — the 2-signal (graph + embedding) setup is the right default and is enough when:
+
+- Your corpus is small-to-moderate and your concepts are well-separated.
+- Queries closely resemble the stored concept text (label/description matches work).
+- You want zero Python in the stack — graph + DJL embeddings run purely on the JVM.
+
+If that's you, do nothing. You're already getting hybrid retrieval.
+
+### When you DO want ColBERT
+
+Reach for the third signal when:
+
+- **Your corpus grows large** — more candidates means more ways a single averaged vector blurs the distinction between near-matches.
+- **Your queries are subtle** — long passages, technical vocabulary, paraphrases, or multi-aspect questions where *which tokens* match matters, not just overall topical similarity.
+
+In those cases late-interaction token-level matching measurably improves precision.
+
+### The one-line change
+
+You don't learn a new API. `hybrid-search` already accepts a `:signals` set, defaulting to all three. To go from 2 signals to 3, **add `:colbert` to the `:signals` set** (and point it at a ColBERT index):
+
+```clojure
+;; Before — 2 signals (graph + embedding), pure JVM
+(ontology/hybrid-search ctx
+  {:query-text "arbitration clause"
+   :signals    #{:graph :embedding}
+   :ontology-id my-ontology-id
+   :limit 10})
+
+;; After — 3 signals (add :colbert, point at an index)
+(ontology/hybrid-search ctx
+  {:query-text       "arbitration clause"
+   :signals          #{:graph :embedding :colbert}   ;; <- the one change
+   :colbert-index-id my-index-id
+   :ontology-id      my-ontology-id
+   :limit 10})
+```
+
+Same call shape, same RRF fusion, same result map — just one more ranked list folded in.
+
+### The one cost: a Python environment
+
+ColBERT is a transformer neural network, so it can't run on the JVM. The `colbert` component spawns a subprocess bridge into a `.venv-colbert` Python environment (RAGatouille + ColBERT under PyTorch). That virtualenv is the single price of admission for the third signal — see [Dependencies](#dependencies) below. (Graph + embeddings never touch it.)
+
+### Graceful degradation: it just falls back
+
+You don't have to guard your code. If the `colbert` component isn't on the classpath, retrieval automatically falls back to 2 signals — **no errors, no exceptions.** `hybrid-search` resolves ColBERT dynamically at call time via `(find-ns 'ai.obney.orc.colbert.interface)`; when it's absent that resolves to `nil`, the ColBERT signal is simply omitted from the RRF fusion, and graph + embeddings carry the search. So you can ship `:signals #{:graph :embedding :colbert}` everywhere and let the environment decide whether the third signal participates.
+
+---
+
+> **ColBERT is an optional third retrieval signal (Layer 5 in [COMPONENT-MAP.md](COMPONENT-MAP.md)).** ORC's ontology component works fully without it — graph BFS + DJL embeddings give you a 2-signal hybrid search. Add ColBERT when you need late-interaction token-level matching for larger corpora.
+>
+> **Python required.** ColBERT requires a `.venv-colbert` Python environment (the `colbert` component spawns a subprocess bridge).
+>
+> **Graceful degradation.** When the `colbert` component is absent from the classpath, `hybrid-search` automatically runs on 2 signals (graph + embedding). No exception thrown — source: `retrieval.clj` dynamically resolves ColBERT via `(find-ns 'ai.obney.orc.colbert.interface)`, returning `nil` when absent.
+
 ## Overview
 
 This document describes the integration of ColBERT (via RAGatouille) into the ORC behavior tree system. ColBERT provides **late-interaction retrieval**—token-level semantic matching that outperforms single-vector embeddings for complex queries.
@@ -17,6 +83,47 @@ This document describes the integration of ColBERT (via RAGatouille) into the OR
 | **Tree Profile Indexing** | Index tree self-descriptions | Few-shot example retrieval |
 | **Reranking** | In-memory rerank without index | Candidate selection |
 | **Domain Training** | Fine-tune on pairs/triplets | Custom retrievers |
+
+---
+
+## 2-signal vs 3-signal
+
+By default `hybrid-search` enables all three signals. Pass `:signals #{:graph :embedding}` to run without ColBERT — no index required, no Python process:
+
+```clojure
+;; 2-signal (graph BFS + DJL embeddings — no ColBERT needed)
+(ontology/hybrid-search ctx
+  {:query-text "arbitration clause"
+   :signals    #{:graph :embedding}
+   :ontology-id my-ontology-id
+   :limit 10})
+
+;; 3-signal (graph BFS + DJL + ColBERT — requires colbert component + Python)
+(ontology/hybrid-search ctx
+  {:query-text      "arbitration clause"
+   :signals         #{:graph :embedding :colbert}
+   :colbert-index-id my-index-id
+   :ontology-id      my-ontology-id
+   :limit 10})
+```
+
+**When to add ColBERT:** when 2-signal retrieval is insufficient for corpus size and semantic complexity — late-interaction token-level matching provides measurably better precision for long documents and technical vocabulary.
+
+**How graceful degradation works** (`retrieval.clj:702`):
+
+```clojure
+(defn- resolve-colbert-search-fn
+  "Dynamically resolve the ColBERT search-for-rrf function if available.
+
+   Returns the function or nil if ColBERT component is not loaded."
+  []
+  (try
+    (when-let [ns (find-ns 'ai.obney.orc.colbert.interface)]  ;; line 708 — nil when absent
+      (ns-resolve ns 'search-for-rrf))
+    (catch Exception _ nil)))
+```
+
+If the `colbert` component is not on the classpath, `(find-ns 'ai.obney.orc.colbert.interface)` returns `nil`, the search function resolves to `nil`, and `hybrid-search` simply omits the ColBERT signal from the RRF fusion — no exception thrown.
 
 ---
 
@@ -588,5 +695,5 @@ sentence-transformers
 
 - `FUTURE-VISION.md` - Theme 9: Enhanced Retrieval with ColBERT
 - `ARCHITECTURE.md` - Overall system architecture
-- `docs/dsl-tutorial.md` - ORC behavior tree DSL
+- `docs/DSL-REFERENCE.md` - ORC behavior tree DSL
 - RAGatouille: https://github.com/bclavie/RAGatouille

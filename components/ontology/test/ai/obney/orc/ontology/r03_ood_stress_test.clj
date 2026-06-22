@@ -1,14 +1,15 @@
 (ns ai.obney.orc.ontology.r03-ood-stress-test
   "Unit tests for the R03 OOD stress-test orchestrator's pure helpers.
 
-   The orchestrator lives in development/src/c2d_ood_stress_test.clj.
+   The orchestrator lives in the brick test-support namespace
+   ai.obney.orc.ontology.test-support.c2d-ood-stress-test.
    These tests cover the unit-testable helpers — corpus loader, metric
    computation, per-instruction outcome classifier, markdown generator,
    EDN persistence. The actual live stress run is the HITL audit step;
    it's not unit-testable (requires real LLM + ColBERT)."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
-            [c2d-ood-stress-test :as ood]))
+            [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]))
 
 ;; =============================================================================
 ;; RED #1 — corpus loader reads *.txt files and strips leading `;` comments

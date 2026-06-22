@@ -30,7 +30,7 @@
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]
-            [seed-descriptions :as seeds]))
+            [ai.obney.orc.ontology.test-support.seed-descriptions :as seeds]))
 
 ;; =============================================================================
 ;; Test context helpers (mirrors the in-memory pattern from C-1's probe)

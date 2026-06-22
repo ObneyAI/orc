@@ -8,6 +8,8 @@ ORC (Orchestrator) is a behavior-tree-based workflow execution engine built on t
 
 This is a **library** — no web layer, no auth, no database config. Consumers pull it in as a git dep and provide their own Grain infrastructure (event store, cache, web server).
 
+> **Read first:** [`docs/ORC-PRINCIPLES.md`](docs/ORC-PRINCIPLES.md) — the durable, framework-level principles for thinking about and building with ORC (the node palette, composition via `:delegate`, events-first discipline, fitness-gate-as-objective, adversarial verification). Read it before designing or verifying a workflow.
+
 ## Components
 
 | Component | Purpose |

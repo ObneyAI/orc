@@ -42,7 +42,7 @@
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.interface.schemas]
-            [seed-principles :as seed]
+            [ai.obney.orc.ontology.test-support.seed-principles :as seed]
             [clojure.pprint :as pp]
             [clojure.string :as str]
             [clojure.java.io :as io]))

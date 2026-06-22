@@ -1,8 +1,12 @@
-# ORC + Grain + DSPy Architecture Reference
+# ORC + Grain Architecture Reference
+
+> For onboarding see [GETTING-STARTED.md](GETTING-STARTED.md); for the dependency map see [COMPONENT-MAP.md](COMPONENT-MAP.md). This doc covers internal execution mechanics.
+
+> For the dependency decision table see [COMPONENT-MAP.md](COMPONENT-MAP.md). This doc covers internal execution mechanics and component boundary details.
 
 ## Overview
 
-This document provides a comprehensive architectural reference for understanding how ORC (behavior trees), Grain (event sourcing), and DSPy (LLM optimization) integrate in the ORC library.
+This document provides a comprehensive architectural reference for understanding how ORC (behavior trees) and Grain (event sourcing) integrate in the ORC library.
 
 ---
 
@@ -43,14 +47,14 @@ This document provides a comprehensive architectural reference for understanding
               ▼                              ▼
 ┌──────────────────────┐          ┌──────────────────────┐
 │   CODE EXECUTOR      │          │    AI EXECUTOR       │
-│   (Clojure fns)      │          │    (DSCloj)          │
+│   (Clojure fns)      │          │    (LLM layer)       │
 └──────────────────────┘          └──────────┬───────────┘
                                              │
                                              ▼
                                ┌──────────────────────────┐
-                               │   DSCloj (Clojure-native)│
-                               │   → litellm-router       │
-                               │   → OpenRouter API       │
+                               │   orc's LLM layer        │
+                               │   → configured provider  │
+                               │     (e.g. OpenRouter)    │
                                └──────────────────────────┘
 ```
 
@@ -75,7 +79,7 @@ This document provides a comprehensive architectural reference for understanding
 | `parallel` | Run children concurrently; configurable success/failure policies |
 | `fallback` | Try children until one succeeds (selector) |
 | `map-each` | Iterate over collection with optional parallelism |
-| `llm` | Call LLM via DSCloj |
+| `llm` | Call LLM via orc's LLM layer |
 | `code` | Execute Clojure function |
 | `condition` | Static boolean check on blackboard |
 | `llm-condition` | LLM-evaluated yes/no question |
@@ -120,14 +124,13 @@ Command → Validation → Events → Event Store
 - `orc-service/core/read_models.clj` - `defreadmodel` registrations with L1/L2 caching and partitioning
 - `orc-service/core/todo_processors.clj` - Event-driven side effects
 
-### 3. DSCloj Integration (Primary AI Path)
+### 3. LLM Layer (Primary AI Path)
 
 **Purpose:** Structured LLM calls with Clojure-native execution
 
 **Integration Stack:**
 ```
-PRIMARY:   ORC → DSCloj (Clojure-native) → litellm-router → OpenRouter → LLMs
-FALLBACK:  ORC → libpython-clj → DSPy (Python) → LLMs
+ORC → orc's LLM layer → configured provider (e.g. OpenRouter) → LLMs
 ```
 
 **Module Building:**
@@ -137,9 +140,9 @@ FALLBACK:  ORC → libpython-clj → DSPy (Python) → LLMs
 - Node `:instruction` → module instructions
 
 **Key Files:**
-- `bases/orc-dev/core.clj` - DSCloj initialization
-- `executor.clj:109-140` - `build-module` (schema → DSCloj module)
-- `executor.clj:264-354` - `execute-ai` (call DSCloj predictor)
+- `bases/orc-dev/core.clj` - LLM layer initialization
+- `executor.clj:109-140` - `build-module` (schema → typed module)
+- `executor.clj:264-354` - `execute-ai` (call LLM predictor)
 - `executor.clj:27-82` - `malli-schema->description`
 
 ---
@@ -196,7 +199,7 @@ This makes `build-workflow!` safe to call on every application startup — uncha
 ```
 
 5. For leaf nodes, dispatch to executor:
-   - `:ai` → `execute-ai` → DSCloj → LLM
+   - `:ai` → `execute-ai` → LLM layer → LLM
    - `:code` → `execute-code` → resolve and call Clojure fn
 
 6. Merge outputs into blackboard with version tracking
@@ -259,55 +262,73 @@ This makes `build-workflow!` safe to call on every application startup — uncha
 ## Node Execution Behaviors
 
 ### Sequence
+
+```mermaid
+flowchart TB
+  s["<b>sequence</b><br/>run left → right · FAIL FAST"]:::seq
+  s --> a["A"]:::leaf
+  s --> b["B"]:::leaf
+  s --> c["C"]:::leaf
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef leaf fill:#334155,stroke:#94a3b8,color:#fff;
 ```
-[A] → [B] → [C]
-  │
-  ├─ Run children left-to-right
-  ├─ FAIL FAST: Stop on first failure
-  └─ Return final blackboard on success
-```
+
+- Run children left-to-right
+- **Fail fast** — stop on first failure
+- Return the final blackboard on success
 
 ### Fallback
+
+```mermaid
+flowchart TB
+  f["<b>fallback</b><br/>try left → right · SUCCEED FAST"]:::fb
+  f --> a["A"]:::leaf
+  f --> b["B"]:::leaf
+  f --> c["C"]:::leaf
+  classDef fb fill:#7c2d12,stroke:#fb923c,color:#fff,stroke-width:2px;
+  classDef leaf fill:#334155,stroke:#94a3b8,color:#fff;
 ```
-[A] ⟿ [B] ⟿ [C]
-  │
-  ├─ Try children left-to-right
-  ├─ SUCCEED FAST: Stop on first success
-  └─ Return failure only if ALL children fail
-```
+
+- Try children left-to-right
+- **Succeed fast** — stop on first success
+- Return failure only if ALL children fail
 
 ### Parallel
-```
-    ┌─[A]─┐
-────┤     ├────
-    └─[B]─┘
 
-  ├─ Launch all children as futures
-  ├─ Wait for all to complete
-  ├─ Merge blackboards by version (highest wins)
-  └─ Evaluate policies:
-      success-policy: :all | :any | :majority
-      failure-policy: :any | :all
+```mermaid
+flowchart TB
+  p["<b>parallel</b><br/>launch all as futures, wait for all"]:::par
+  p --> a["A"]:::leaf
+  p --> b["B"]:::leaf
+  classDef par fill:#0f766e,stroke:#2dd4bf,color:#fff,stroke-width:2px;
+  classDef leaf fill:#334155,stroke:#94a3b8,color:#fff;
 ```
+
+- Launch all children as futures; wait for all to complete
+- Merge blackboards by version (highest wins)
+- Policies — `success-policy: :all | :any | :majority`, `failure-policy: :any | :all`
 
 ### Map-Each
-```
-items: [x, y, z]
-         │
-    ┌────┼────┐
-    ▼    ▼    ▼
-   [A]  [A]  [A]
-    │    │    │
-    └────┴────┘
-         │
-    results: [...]
 
-  ├─ Iterate over source-key collection
-  ├─ Set item-key for each iteration
-  ├─ Execute child subtree per item
-  ├─ Collect outputs into output-key
-  └─ Respects :max-concurrency (batch parallel)
+```mermaid
+flowchart TB
+  m["<b>map-each</b><br/>run the child subtree once per item"]:::me
+  src(["source: [x, y, z]"]):::io
+  src --> m
+  m --> a1["child · item x"]:::leaf
+  m --> a2["child · item y"]:::leaf
+  m --> a3["child · item z"]:::leaf
+  a1 --> out(["output: [ … ]"]):::io
+  a2 --> out
+  a3 --> out
+  classDef me fill:#4c1d95,stroke:#c4b5fd,color:#fff,stroke-width:2px;
+  classDef leaf fill:#334155,stroke:#94a3b8,color:#fff;
+  classDef io fill:#713f12,stroke:#facc15,color:#fff;
 ```
+
+- Iterate over the `source-key` collection; set `item-key` per iteration
+- Execute the child subtree per item; collect outputs into `output-key`
+- Respects `:max-concurrency` (batched parallel)
 
 ---
 
@@ -361,84 +382,15 @@ items: [x, y, z]
 
 ---
 
-## DSCloj Internals
+## LLM layer
 
-**Source:** `https://github.com/unravel-team/DSCloj`
+orc's LLM layer is built on **DSCloj** — the Clojure implementation of [DSPy](https://github.com/stanfordnlp/dspy)-style structured prompting that orc uses as its LLM base. When a leaf node dispatches to the AI executor, that layer turns the node's declared shape into a structured call and parses the response back into typed blackboard values:
 
-### Core Functions
+1. **Build a typed module from the node.** The node's blackboard schema (Malli) plus its `:instruction` are compiled into a typed module — `:reads` become typed input fields (with human-readable descriptions derived from the schema), `:writes` become typed output fields, and `:instruction` becomes the module instruction.
+2. **Call the configured provider.** The module and the gathered input values are sent to the provider configured for the deployment (e.g. OpenRouter), along with call options such as temperature.
+3. **Parse structured output.** The provider's response is parsed back into the declared output fields and validated against their schemas, yielding typed values that are merged into the blackboard.
 
-#### `quick-setup!`
-Registers providers from environment variables:
-```clojure
-(dscloj/quick-setup!)
-
-;; Checks these env vars:
-;; OPENAI_API_KEY     → :openai
-;; ANTHROPIC_API_KEY  → :anthropic
-;; GEMINI_API_KEY     → :gemini
-;; OPENROUTER_API_KEY → :openrouter
-;; MISTRAL_API_KEY    → :mistral
-```
-
-#### `predict`
-Main prediction function:
-```clojure
-(dscloj/predict provider module input-map options)
-
-;; Parameters:
-;;   provider   - :openrouter, :anthropic, etc.
-;;   module     - {:inputs [...] :outputs [...] :instructions "..."}
-;;   input-map  - {:field-name value}
-;;   options    - {:temperature 0.7 :validate? true}
-
-;; Returns:
-;;   {:field-name parsed-value ...}
-```
-
-### Module Structure
-
-```clojure
-{:inputs [{:name :question
-           :spec :string
-           :description "The user's question"}]
- :outputs [{:name :answer
-            :spec :string
-            :description "The response"}]
- :instructions "Answer concisely and accurately."}
-```
-
-### Prompt Generation
-
-DSCloj generates structured prompts with field markers:
-
-```
-Your input fields are:
-- question (str): The user's question
-
-Your output fields are:
-- answer (str): The response
-
-Instructions: Answer concisely and accurately.
-
-Respond with the following format:
-
-[[ ## question ## ]]
-{input value here}
-
-[[ ## answer ## ]]
-{your answer here}
-```
-
-### Why DSCloj Over libpython-clj/DSPy
-
-| Aspect | DSCloj | libpython-clj/DSPy |
-|--------|--------|-------------------|
-| **Runtime** | Pure Clojure/JVM | Python subprocess |
-| **Startup** | Instant | Python interpreter init |
-| **Memory** | JVM only | JVM + Python heap |
-| **Debugging** | Clojure stacktraces | Cross-language complexity |
-| **Dependencies** | litellm-clj only | Python env + dspy package |
-| **Streaming** | core.async native | Python async bridge |
+This keeps the LLM call shape-driven: the same Malli schemas that define the blackboard also define the request/response contract, so structured outputs round-trip into versioned blackboard entries without hand-written prompt plumbing.
 
 ---
 
@@ -546,13 +498,29 @@ Judges are defined at the workflow level (paralleling `sheet/blackboard`) and st
 
 ---
 
+## Component boundaries
+
+| Component | Public namespace | Direct compile deps | Emits events |
+|-----------|-----------------|---------------------|--------------|
+| `orc-service` | `ai.obney.orc.orc-service.interface` | LLM layer, mulog, sci | `:sheet/*`, `:rlm/*` |
+| `evaluation` | `ai.obney.orc.evaluation.interface` | orc-service, LLM layer, cheshire | `:judge/score-emitted`, `:judge/composite-score-computed` |
+| `gepa` | `ai.obney.orc.gepa.interface` | evaluation, mulog | `:gepa/optimization-*` |
+| `ontology` | `ai.obney.orc.ontology.interface` | ai.djl/api, ai.djl.huggingface/tokenizers, ai.djl.pytorch/pytorch-engine, data.csv, data.json, sqlite-jdbc | `:ontology/*`, `:evolutionary/*` |
+| `colbert` | `ai.obney.orc.colbert.interface` | mulog, data.json [+Python subprocess] | `:colbert/*` |
+| `mcp-sheet-builder` | `ai.obney.orc.mcp-sheet-builder.interface` | clj-http, cheshire, sci | none |
+| `langfuse` | `ai.obney.orc.langfuse.interface` | (none) | none |
+
+For the full opt-in hierarchy and Python requirements, see [COMPONENT-MAP.md](COMPONENT-MAP.md).
+
+---
+
 ## Demo Files
 
 | File | Description |
 |------|-------------|
 | `development/src/lead_qualification_demo.clj` | CRM lead qualification with parallel tracks |
 | `development/src/chatbot_demo.clj` | All node types + versioning |
-| `docs/dsl-tutorial.md` | Comprehensive DSL reference |
+| `docs/DSL-REFERENCE.md` | Comprehensive DSL reference |
 
 ---
 
@@ -561,7 +529,7 @@ Judges are defined at the workflow level (paralleling `sheet/blackboard`) and st
 From Obsidian vault research:
 
 ### GEPA Optimization
-- Each node can be a trainable DSPy module
+- Each node can be a trainable, optimizable module
 - `ScoreWithFeedback(score=..., feedback=...)` pattern
 - Reflective mutation: LLM analyzes failures, proposes fixes
 - 35x fewer rollouts than RL methods
@@ -579,5 +547,5 @@ Grain Framework (execution engine)
         ↓
 Ontology Exploration (RDF/semantic)
         ↓
-DSPy + GEPA (optimization)
+GEPA (optimization)
 ```

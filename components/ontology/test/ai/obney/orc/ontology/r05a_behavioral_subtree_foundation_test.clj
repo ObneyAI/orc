@@ -390,8 +390,8 @@
 ;; =============================================================================
 
 (deftest behavioral-seeds-present-and-well-formed
-  (require 'seed-descriptions)
-  (let [seeds-ns (find-ns 'seed-descriptions)
+  (require 'ai.obney.orc.ontology.test-support.seed-descriptions)
+  (let [seeds-ns (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions)
         seed (fn [sym] @(ns-resolve seeds-ns sym))
         all-bh (seed 'all-behavioral-subtree-seeds)
         principle-shaped? (ns-resolve seeds-ns 'principle-shaped?)
@@ -435,8 +435,8 @@
 ;; =============================================================================
 
 (deftest cross-reference-audit-table
-  (require 'seed-descriptions)
-  (let [seeds-ns (find-ns 'seed-descriptions)
+  (require 'ai.obney.orc.ontology.test-support.seed-descriptions)
+  (let [seeds-ns (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions)
         seed (fn [sym] @(ns-resolve seeds-ns sym))
         ci-of (fn [seed-sym]
                 (set (get-in (seed seed-sym) [:body :composes-into])))
@@ -537,8 +537,8 @@
 
 (deftest end-to-end-seed-all-projects-both-layers
   (with-test-ctx [ctx]
-    (require 'seed-descriptions)
-    (let [seed-all! (requiring-resolve 'seed-descriptions/seed-all!)
+    (require 'ai.obney.orc.ontology.test-support.seed-descriptions)
+    (let [seed-all! (requiring-resolve 'ai.obney.orc.ontology.test-support.seed-descriptions/seed-all!)
           _ (seed-all! ctx)
           _ (drive-both-processors! ctx)
           concepts (rmp/project ctx :ontology/concepts)
@@ -554,8 +554,8 @@
             "17 behavioral-subtree concepts — R05a's 11 top-level competencies + R07's Investigation + S18's 5 ontology-discovery patterns (DirectExtraction, SequentialPipeline, AdversarialGrounding, ChunkedSynthesis, SpecializedSynthesis)"))
 
       (testing "behavior:composes-into edges exist on every behavioral seed"
-        (require 'seed-descriptions)
-        (let [seeds-ns (find-ns 'seed-descriptions)
+        (require 'ai.obney.orc.ontology.test-support.seed-descriptions)
+        (let [seeds-ns (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions)
               seed (fn [sym] @(ns-resolve seeds-ns sym))
               all-bh (seed 'all-behavioral-subtree-seeds)]
           (doseq [s all-bh]
@@ -566,8 +566,8 @@
                        " composes-into edges from its seed"))))))
 
       (testing "shells carry :composed-by reverse edges from behaviors that compose into them"
-        (require 'seed-descriptions)
-        (let [seeds-ns (find-ns 'seed-descriptions)
+        (require 'ai.obney.orc.ontology.test-support.seed-descriptions)
+        (let [seeds-ns (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions)
               seed (fn [sym] @(ns-resolve seeds-ns sym))
               draft-critique (seed 'draft-critique-task-class-id)
               critique-uri (behavioral-subtree-uri (seed 'critique-behavior-id))

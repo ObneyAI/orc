@@ -1,4 +1,4 @@
-(ns c2d-ood-stress-test
+(ns ai.obney.orc.ontology.test-support.c2d-ood-stress-test
   "C-Loop-3 R04 — out-of-distribution stress orchestrator for the
    R-Inject + classify-task + classify-behaviors path.
 

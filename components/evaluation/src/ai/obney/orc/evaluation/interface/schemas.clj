@@ -86,7 +86,36 @@
 ;; =============================================================================
 
 (defschemas commands
-  {:evaluation/evaluate-trace
+  {;; The judge runtime's background future dispatches these two commands
+   ;; once each judge result / the composite is ready. They are the ONLY
+   ;; writers of the score events. Bodies mirror the corresponding event
+   ;; shapes (minus the auto-filled :emitted-at, which is optional here so
+   ;; the command handler can stamp it).
+   :evaluation/record-judge-score
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:judge-name :string]
+    [:judge-config :map]
+    [:score [:and number? [:>= 0.0] [:<= 1.0]]]
+    [:feedback :string]
+    [:dimensions [:vector DimensionScore]]
+    [:emitted-at {:optional true} :string]]
+
+   :evaluation/record-composite-score
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:composite-score [:and number? [:>= 0.0] [:<= 1.0]]]
+    [:contributing-judges [:vector [:map
+                                    [:judge-name :string]
+                                    [:score number?]
+                                    [:weight number?]]]]
+    [:emitted-at {:optional true} :string]]
+
+   :evaluation/evaluate-trace
    [:map
     [:trace-id :uuid]
     [:sheet-id :uuid]

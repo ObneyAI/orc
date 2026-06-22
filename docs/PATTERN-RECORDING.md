@@ -1,3 +1,206 @@
+# Pattern Recording: making your existing tree better over time
+
+> Your tree handles the same kind of task again and again. You've noticed it does
+> well in some conditions and poorly in others — but that knowledge lives in your
+> head. Pattern recording lets you write that knowledge down as data the tree can
+> read back: "when conditions look like X, approach Y worked." You record successes
+> and failures explicitly, then inject the accumulated patterns into a node's prompt.
+
+You already have a working tree. Nothing here asks you to rebuild it. You add a thin
+loop *around* it: after a run, you record what happened; before the next run, the tree
+reads back what it learned. The store underneath is Grain's event-sourced log, so every
+recorded pattern is durable and auditable — but you never touch that machinery directly.
+You call two commands to record, and one function to read back.
+
+The walk below goes from "I have a tree" to "my tree carries its own experience forward,"
+one step at a time.
+
+## Step 1 — Record one strength, retrieve it, inject it
+
+Start as small as possible: a single good run, a single recorded strength.
+
+Say your tree just produced an answer you're happy with. Record *that this tree*
+demonstrated a success pattern — through the command processor:
+
+```clojure
+(require '[ai.obney.grain.command-processor-v2.interface :as cp])
+(require '[ai.obney.orc.ontology.interface :as ontology])
+
+;; After a run you judged good, record one strength for THIS tree.
+(cp/process-command
+  (assoc ctx :command
+    {:command/name       :ontology/record-tree-strength
+     :tree-id            my-sheet-id
+     :pattern-uri        "success:ClearStructuredAnswer"
+     :confidence         0.85
+     :evidence-trace-ids [trace-id]
+     :avg-score          0.90}))
+```
+
+That's the whole "write it down" step. Now read it back — `find-self-patterns` returns
+the patterns *this* tree has accumulated (not a cross-tree aggregate):
+
+```clojure
+(ontology/find-self-patterns ctx my-sheet-id {})
+;; => {:strengths [{:uri "success:ClearStructuredAnswer" :confidence 0.85 ...}]
+;;     :weaknesses []}
+```
+
+Finally, turn the accumulated patterns into a prompt-ready string and inject it.
+`build-actionable-context` returns a **map**; the piece you inject is `(:formatted-context …)`:
+
+```clojure
+(let [result (ontology/build-actionable-context ctx my-sheet-id "problem:Classification" {})]
+  (:formatted-context result))
+;; => "## Learned Patterns from Previous Executions\n..."
+```
+
+Drop that string into your `:llm` node's `:instruction`. The next run is now primed with
+what the last good run looked like. Record after each good run, and the injected context
+grows richer over time.
+
+## Step 2 — Record failures, with the context that triggered them
+
+Successes alone teach the tree what to repeat; failures teach it what to avoid. When a run
+goes wrong, record a weakness — and crucially, *the conditions that surrounded it* so the
+tree can recognize the situation next time:
+
+```clojure
+(cp/process-command
+  (assoc ctx :command
+    {:command/name       :ontology/record-tree-weakness
+     :tree-id            my-sheet-id
+     :failure-uri        "failure:Hallucination"
+     :frequency          0.15
+     :severity           :high
+     :triggers           ["missing-context" "vague-input"]
+     :evidence-trace-ids [trace-id]
+     ;; The situation when it went wrong — any keys you like:
+     :failure-context    {:input-length 12
+                          :missing-fields ["company-size" "budget"]}}))
+```
+
+`:failure-context` is free-form: record whatever you observed about the inputs or state
+when the tree underperformed. `build-actionable-context` folds these weaknesses into the
+same injected string as "patterns to avoid," so a single injection now carries *both* what
+worked and what to steer clear of.
+
+## Step 3 — Let your tree read its own patterns at runtime
+
+Steps 1–2 had you inject patterns by hand in the REPL. The natural next move is to make the
+tree do it itself on every run: add one `:code` node to your **existing** tree that loads the
+patterns and writes them to the blackboard, and have the downstream `:llm` node you already
+have read that key. Nothing else in your tree changes.
+
+The `:code` node executor receives `{:keys [inputs ctx]}` and returns a map keyed by its
+`:writes`. It calls `build-actionable-context` and hands the formatted string to the board:
+
+```clojure
+(require '[ai.obney.orc.ontology.interface :as ontology])
+
+(defn load-learned-patterns
+  [{:keys [inputs ctx]}]
+  (let [result (ontology/build-actionable-context
+                 ctx (:tree-id inputs) "problem:Classification" {})]
+    {:learned-context (:formatted-context result)}))
+```
+
+Wire it in front of your existing LLM node — one new node, then your LLM node reads what it
+produced via `{{learned-context}}`:
+
+```clojure
+(sheet/sequence "answer-with-experience"
+  ;; NEW: pull this tree's accumulated patterns onto the blackboard
+  (sheet/code "load-patterns"
+    :fn     "my.ns/load-learned-patterns"
+    :reads  [:tree-id]
+    :writes [:learned-context])
+
+  ;; YOUR existing LLM node — now primed with what past runs learned
+  (sheet/llm "answer"
+    :instruction "Apply what previous runs learned, then answer.
+
+{{learned-context}}
+
+Question: {{question}}"
+    :reads  [:learned-context :question]
+    :writes [:answer]))
+```
+
+Now every execution reads back the patterns you've recorded, with zero manual injection.
+You keep full control over *what* gets written down (Steps 1–2 are still explicit, deliberate
+calls you make), while the *reading-back* happens automatically inside the tree.
+
+> ORC also ships a built-in `:context` parameter on `:llm` nodes that automates the
+> read-back without writing a `:code` node — see [Step 4 of the Quick Start](#step-4-enable-automatic-context-injection)
+> below. The `:code` node shown here is the explicit version: reach for it when you want
+> to shape, filter, or combine the patterns before they hit the prompt.
+
+## When to use this — and when to let the loop do it
+
+**Use manual pattern recording (this doc) when *you* decide what's worth remembering.** You
+judge each run, you choose the `:pattern-uri` and confidence, you record only the lessons you
+trust. It's deliberate, inspectable, and you're never surprised by what's in the prompt.
+
+**Reach for the automated [self-improving loop](SELF-IMPROVING-LOOP.md) when you want the
+system to observe executions and learn without you in the loop** — it classifies each run
+against a pattern corpus, evolves pattern bodies from accumulated evidence, and can mint new
+behaviors. That's the same recording machinery underneath, driven automatically instead of by
+hand. Start manual to build intuition and a trustworthy corpus; graduate to the loop when the
+volume outpaces your willingness to review every run.
+
+## How this relates to the ontology as memory
+
+The patterns you record here live in the same event-sourced ontology that backs
+[ORC's "ontology as memory"](ONTOLOGY.md). The difference is *what* you're remembering:
+[ONTOLOGY.md](ONTOLOGY.md) is about giving a tree memory of **domain knowledge** (facts,
+concepts, prior documents it can retrieve and ground answers in); this doc is about giving a
+tree memory of **its own performance** (which approaches worked under which conditions). Both
+use a `:code` node to pull memory onto the blackboard for a downstream `:llm` node — Step 3
+above is the performance-memory twin of [ONTOLOGY.md Step 3](ONTOLOGY.md). A mature workflow
+often uses both: domain memory to know the subject, performance memory to know how it
+handles it.
+
+---
+
+> **When to use this:** You want to explicitly record what your workflow has learned and inject it into future prompts, with direct control over what gets recorded.
+>
+> **If you want automatic learning** (the system observes executions and learns without manual calls), see [SELF-IMPROVING-LOOP.md](SELF-IMPROVING-LOOP.md) instead.
+
+---
+
+## Quick path: record → retrieve → inject
+
+```clojure
+(require '[ai.obney.grain.command-processor-v2.interface :as cp])
+(require '[ai.obney.orc.ontology.interface :as ontology])
+
+;; 1. Record a pattern after a successful execution
+(cp/process-command
+  (assoc ctx :command
+    {:command/name       :ontology/record-tree-strength
+     :tree-id            my-sheet-id
+     :pattern-uri        "success:MyPattern"
+     :confidence         0.85
+     :evidence-trace-ids [trace-id]
+     :avg-score          0.90}))
+
+;; 2. Retrieve patterns recorded for this tree
+(ontology/find-self-patterns ctx my-sheet-id {})
+;; => {:strengths [{:uri ... :confidence 0.85 :context-conditions {...} ...}]
+;;     :weaknesses [...]}
+
+;; 3. Build a formatted context string and inject it
+(let [result (ontology/build-actionable-context ctx my-sheet-id "problem:Classification" {})]
+  (:formatted-context result))
+;; => "## Learned Patterns from Previous Executions\n..."
+```
+
+Inject `(:formatted-context result)` directly into an `:instruction` string or `:reads` key.
+No ontology infrastructure beyond `components/ontology` required.
+
+---
+
 # Manual Self-Learning with Ontology Context
 
 This guide explains how to use ORC's self-learning capabilities to improve your workflows over time. The system uses Grain's event sourcing infrastructure, providing full audit trails and reliable pattern storage.
@@ -318,6 +521,6 @@ The tests verify:
 | File | Description |
 |------|-------------|
 | `docs/ONTOLOGY.md` | Full ontology component reference |
-| `docs/FEEDBACK-LOOP.md` | 7-stage continuous improvement cycle |
-| `docs/dsl-tutorial.md` | DSL reference including `:context` parameter |
+| `docs/SELF-IMPROVING-LOOP.md` | 7-stage continuous improvement cycle (current) |
+| `docs/DSL-REFERENCE.md` | DSL reference including `:context` parameter |
 | `development/src/self_learning_integration_test.clj` | Integration tests |

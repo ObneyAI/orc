@@ -33,7 +33,7 @@
             [clojure.pprint :as pprint]
             [clojure.set :as set]
             [clojure.string :as str]
-            [seed-principles :as principles]
+            [ai.obney.orc.ontology.test-support.seed-principles :as principles]
             [runner]
             [legal-issue-detection :as task]))
 
@@ -435,8 +435,9 @@
      :diffs diffs}))
 
 (comment
-  ;; Run via REPL:
-  ;;   OPENROUTER_API_KEY=... clj -M:dev -e \
+  ;; Run via REPL (the :test alias puts the relocated ontology test-support
+  ;; seed fixtures on the classpath):
+  ;;   OPENROUTER_API_KEY=... clj -M:dev:test -e \
   ;;     "(require '[c-loop-1-live-verify :as v]) (v/verify! {})"
   ;;
   ;; Tune sample size for cheaper iteration:

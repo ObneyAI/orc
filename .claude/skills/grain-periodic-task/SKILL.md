@@ -155,4 +155,4 @@ No manual wiring is needed. `pt/start-periodic-triggers!` discovers periodic tas
 - `components/membership-service/src/.../core/periodic_tasks.clj` -- Billing check trigger
 - `components/scheduling-service/src/.../core/periodic_tasks.clj` -- Scheduling triggers
 - `components/user-service/src/.../core/periodic_tasks.clj` -- User maintenance
-- `docs/pattern-compendium.md` section 1.4.1 -- Authoritative periodic task reference
+- `docs/contributors/CONTRIBUTOR-GRAIN-PATTERNS.md` section 1.4.1 -- Authoritative periodic task reference

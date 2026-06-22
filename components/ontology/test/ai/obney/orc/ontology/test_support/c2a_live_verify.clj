@@ -1,4 +1,4 @@
-(ns c2a-live-verify
+(ns ai.obney.orc.ontology.test-support.c2a-live-verify
   "C-2a live-verify orchestrator — the end-to-end adversarial-quality gate
    for the Living Description system (C-2a-1, C-2a-2, C-2a-3 combined).
 
@@ -19,7 +19,7 @@
          ships; currently a graceful no-op).
 
    Run from REPL:
-     (require '[c2a-live-verify :as v] :reload)
+      (require '[ai.obney.orc.ontology.test-support.c2a-live-verify :as v] :reload)
      (v/run!)
      ;; Or override defaults:
      (v/run! {:scenario-b-sample-indices [0 5 11]
@@ -48,7 +48,7 @@
             [ai.obney.orc.orc-service.core.read-models]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
-            [seed-descriptions :as seeds]
+            [ai.obney.orc.ontology.test-support.seed-descriptions :as seeds]
             [litellm.router :as litellm-router]))
 
 ;; =============================================================================

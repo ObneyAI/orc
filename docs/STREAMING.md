@@ -1,5 +1,42 @@
 # ORC Live Streaming
 
+## Watch your tree run
+
+Your tree runs and returns a result — but while it's running, you're blind.
+Streaming lets you watch each node start and finish, see incremental output,
+and follow a `:repl-researcher`'s exploration live — without changing your
+durable event model. Subscribe, and you get a live feed of everything
+happening inside your tree.
+
+If you already have a tree, you call `orc/execute` and block until it's done:
+
+```clojure
+(require '[ai.obney.orc.orc-service.interface :as orc])
+
+(orc/execute ctx sheet-id {:question "..."})
+;; => {:status :success :outputs {...} :duration-ms 1234}
+;;    ...but nothing until the whole tree finishes.
+```
+
+Swap that one call for `orc/execute-stream` and you get the same result map
+*plus* a live channel of everything that happens along the way:
+
+```clojure
+(require '[clojure.core.async :as async])
+
+(let [{:keys [events-ch result]}
+      (orc/execute-stream ctx sheet-id {:question "..."})]
+  (async/go-loop []
+    (when-let [e (async/<! events-ch)]
+      (println (:orc.stream/type e) (:node-name e))   ;; live: each node start/finish
+      (recur)))
+  @result)                                            ;; same map execute returns
+```
+
+That's the whole jump: `execute` → `execute-stream`, blocking → live. The rest
+of this doc explains the event taxonomy you'll see on that channel, what the
+stream guarantees (and what it doesn't), and how to bridge it to a UI.
+
 ORC executions can be observed live: node lifecycle, progress, incremental
 node results, RLM phase activity, and (Stage 2) LLM token output — delivered
 in-process over a core.async channel that your application bridges to
@@ -10,6 +47,13 @@ Streaming is an **ephemeral observation layer**. The durable event-sourced
 model is unchanged: every event that was persisted before is persisted
 exactly the same way, whether or not anyone is streaming. If nobody
 subscribes, the stream machinery is a no-op.
+
+## What streaming is for
+
+Streaming is an **ephemeral observation layer** — node lifecycle, progress, incremental node results, RLM phase activity. The durable event-sourced model is unchanged: every event that was persisted before is still persisted. If nobody subscribes, the stream machinery is a no-op.
+
+**Use it for:** real-time UI progress bars, live debugging, streaming LLM token output to a frontend, monitoring execution from a separate process.
+**Don't use it as persistence** — the event store is the durable record. Streaming is ephemeral.
 
 ## Quick start
 
@@ -72,12 +116,12 @@ Malli schemas for every type:
 | `:node-completed` | any node finishes — **this is the incremental-results event** | `:status` `:writes` `:usage` `:duration-ms` `:error` `:completion-kind` |
 | `:progress` | sequence/map-each advances | `:kind` `:index` `:total` |
 | `:child-tick-linked` | a child tick spawned (RLM Phase 2, delegate) | `:parent-tick-id` `:child-tick-id` |
-| `:rlm-iteration-started` | RLM Phase 1 iteration begins | `:iteration` `:max-iterations` |
-| `:rlm-code-generated` | model wrote sandbox code | `:iteration` `:code` `:reasoning` (capped) |
-| `:rlm-sandbox-completed` | sandbox execution finished | `:iteration` `:result` `:stdout` `:error` `:vars-created` `:final?` |
+| `:rlm-iteration-started` | RLM Phase 1 iteration begins (**recursive mode only**) | `:iteration` `:max-iterations` |
+| `:rlm-code-generated` | model wrote sandbox code (**recursive mode only**) | `:iteration` `:code` `:reasoning` (capped) |
+| `:rlm-sandbox-completed` | sandbox execution finished (**recursive mode only**) | `:iteration` `:result` `:stdout` `:error` `:vars-created` `:final?` |
 | `:rlm-tree-generated` | emit-tree! produced a tree | `:raw-dsl` (capped) |
-| `:rlm-phase2-started` | Phase 2 child tick dispatched | `:child-tick-id` |
-| `:rlm-phase2-completed` | Phase 2 child tick finished | `:child-tick-id` `:status` `:duration-ms` `:error` |
+| `:rlm-phase2-started` | Phase 2 child tick dispatched (**recursive mode only**) | `:child-tick-id` |
+| `:rlm-phase2-completed` | Phase 2 child tick finished (**recursive mode only**) | `:child-tick-id` `:status` `:duration-ms` `:error` |
 | `:llm-fields` | *(Stage 2)* progressive per-field text from a streaming `:ai` leaf | `:fields` `:final?` |
 | `:llm-raw-delta` | *(Stage 2, opt-in)* raw text delta | `:text` |
 | `:tick-completed` | a tick reached a terminal status | `:status` `:outputs` `:error` |
@@ -96,6 +140,8 @@ Notes:
   {:parent :index}` disambiguates.
 
 ## Ordering, loss, and reconnection
+
+**Plain summary:** `:seq` is a strictly monotonic integer per subscription. A gap in `:seq` means your consumer fell behind the sliding buffer and lost events. For lost events, reconstruct from the event store using `(es/read event-store {:tags #{[:tick tick-id]}})`. This is why streaming is not a replacement for event store queries — it is a live feed, not a guarantee.
 
 - `:seq` is strictly monotonic per subscription, assigned by a single
   router in arrival order. In practice a node's `:node-started` precedes
@@ -149,6 +195,8 @@ entirely with `:include-values? false`.
 (orc/cancel! ctx tick-id)
 ;; => {:cancelled [tick-id child-tick-id ...]} | anomaly map
 ```
+
+Best-effort: the engine stops progressing; in-flight LLM HTTP calls run to completion.
 
 Semantics (best-effort, documented honestly):
 - The engine stops progressing: no new nodes start (a guard fails queued
@@ -235,12 +283,12 @@ Opt in per subscription:
 `:llm-fields` events carry the **text-so-far per output field** (idempotent
 for UIs — render the latest snapshot); the last one has `:final? true`.
 Active only when ALL hold: a covering subscription set `:llm-deltas? true`,
-the loaded DSCloj has `predict-stream-v2` (capability detection — older
+orc's LLM layer supports streaming (capability detection — older
 pins fall back to blocking execution with no delta events), and the node
 isn't using function-calling. The cross-repo chain delivering usage-correct
 token streams: litellm-clj `stream_options`/usage-in-chunks support →
-DSCloj `predict-stream-v2` (typed-event channel with a final
-`{:outputs :usage :model}` emission) → SHA bumps litellm→DSCloj→orc.
+orc's streaming LLM layer (typed-event channel with a final
+`{:outputs :usage :model}` emission) → SHA bumps orc's LLM layer.
 
 Streamed and non-streamed executions always produce **byte-identical
 persisted events** — streaming never changes

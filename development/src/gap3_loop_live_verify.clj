@@ -39,7 +39,7 @@
             [clojure.pprint :as pprint]
             [clojure.set :as set]
             [clojure.string :as str]
-            [seed-principles :as principles]
+            [ai.obney.orc.ontology.test-support.seed-principles :as principles]
             [runner]
             [legal-issue-detection :as task]))
 

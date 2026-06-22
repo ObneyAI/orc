@@ -29,7 +29,7 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [c2d-ood-stress-test :as ood]
+            [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
             [runner]))
 
 (def corpus-dir "development/bench/ood-corpus")

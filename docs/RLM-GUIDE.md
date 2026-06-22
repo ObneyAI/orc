@@ -1,26 +1,75 @@
 # RLM (Recursive Language Model) Mode
 
-**ORC is a workbench built on behavior trees.** This guide describes how Recursive Language Model strategies — a model that can spawn sub-computations, inspect their outputs, and continue reasoning — are applied in ORC's decomposition space: behavior trees the model emits via `emit-tree!`, with `:llm`, `:code`, `:map-each`, `:parallel`, `:sequence`, and `:final` as the building blocks.
+## You already have a tree. One step is open-ended.
 
-In implementation terms, this is a two-phase execution pattern for the `:repl-researcher` node type. The LLM iteratively generates Clojure code in a sandboxed REPL (Phase 1) and can emit behavior trees that ORC executes as child ticks (Phase 2). **Recursive mode is the default** — each `emit-tree!` returns control to Phase 1 so the model can inspect outputs, accumulate sandbox-vars across iterations, and call `(final! ...)` when ready. Terminal mode (`:rlm {:recursive? false}`) is preserved as an explicit opt-out for the rare case a single tree emission is genuinely terminal. Phase 1 is the recursive code-generation loop; Phase 2 is the spawned sub-computation (the emitted tree); the recursive merge folds Phase 2 outputs back into Phase 1 sandbox-vars for further iteration.
+Picture the workflow you've already built. Most of it is a *known shape* — survey the document, then diff it against the prior version, then summarize the changes. You knew the nodes up front, so you wired them as a fixed `:sequence` of `:llm` and `:code` nodes. That's exactly right: when you know the shape, hardcode the shape.
 
-Where other Recursive Language Model implementations might spawn sub-computations via `predict()` calls and `asyncio.gather()`, ORC's researcher emits a behavior tree. Same RLM strategies, expressed in ORC's behavior-tree decomposition space — and that's what this guide walks through.
+But sometimes **one step is genuinely open-ended.** You don't know up front whether it needs a single `:llm` call or a chunk-and-map-reduce over 40 sections. Maybe it depends on how big the input turns out to be, or what the survey step found, or whether a first pass succeeded. You can't draw that sub-tree in advance because its right shape depends on data you won't have until runtime.
+
+**That's the one step you hand to `:repl-researcher` (RLM).** Instead of you drawing the sub-tree, the researcher node *designs and runs its own sub-tree* at runtime, inspects the result, and iterates until the step is done. The rest of your workflow stays exactly as it is — `:repl-researcher` is just another leaf node you drop into your existing sequence.
+
+The rest of this guide walks you from your existing tree to using RLM well:
+
+1. **[When to reach for RLM](#when-to-use-rlm)** vs. a fixed `:llm` / `:code` node — the key judgment. This is the heaviest node in the palette; reserve it for genuinely unknown-shape work.
+2. **[Dropping a single `:repl-researcher` node into your existing sequence](#composition-repl-researcher-as-a-node-inside-a-larger-workflow)** — the pre-process → research → post-process pattern.
+3. **[What recursive mode does](#recursive-mode-rlm-recursive-true)** — the Phase 1 ↔ Phase 2 loop. Recursive is the **default**; terminal mode is deprecated.
+4. **[How the researcher emits its own sub-trees](#phase-2-tree-dsl-node-types)** and composes them during exploration.
+5. **[`:auto-classify?`](#pattern-injection-via-r-inject-auto-classify)** — an opt-in that helps the researcher *design* better trees from a shared corpus of patterns. (Distinct from GEPA, which tunes *static instruction strings* — see [GEPA-GUIDE.md](GEPA-GUIDE.md).)
+
+---
+
+**Under the hood**, RLM is a two-phase execution pattern for the `:repl-researcher` node type. The model iteratively generates Clojure code in a sandboxed REPL (Phase 1) and can emit behavior trees that ORC executes as child ticks (Phase 2). **Recursive mode is the default** — each `emit-tree!` returns control to Phase 1 so the model can inspect outputs, accumulate sandbox-vars across iterations, and call `(final! ...)` when ready. Terminal mode (`:rlm {:recursive? false}`) is preserved as an explicit opt-out for the rare case a single tree emission is genuinely terminal. Phase 1 is the recursive code-generation loop; Phase 2 is the spawned sub-computation (the emitted tree); the recursive merge folds Phase 2 outputs back into Phase 1 sandbox-vars for further iteration.
+
+The building blocks the model emits via `emit-tree!` are the same ones you already know — `:llm`, `:code`, `:map-each`, `:parallel`, `:sequence`, and `:final`. RLM is "a model that can spawn sub-computations, inspect their outputs, and continue reasoning," expressed entirely in ORC's behavior-tree decomposition space — and that's what this guide walks through.
+
+---
+
+> **Recursive mode is the default.** Every `:repl-researcher` node runs recursively unless you explicitly set `:rlm {:recursive? false}`. Source — `executor.clj line 2176`: `recursive-mode? (not= false (get-in node [:rlm :recursive?]))`.
+>
+> **Terminal mode is deprecated.** `:rlm true` / `:rlm {}` / `:rlm {:debug? true}` all resolve to recursive mode. `:rlm {:recursive? false}` is the explicit escape hatch — it is preserved for backward compatibility and will be removed after all bench tasks migrate.
+
+> For a progressive introduction to RLM, see [GETTING-STARTED.md](GETTING-STARTED.md) Phase 6.
+
+---
 
 ## When to use RLM
 
-RLM fits problems where the *right tree shape isn't known up front*. The model designs the workflow as it learns about the input. Examples:
+This is the most important judgment in this guide. `:repl-researcher` is the **heaviest node in the palette** — it pays for an LLM to write and reason about Clojure code on every Phase 1 iteration before any real work happens. Reach for it only when that cost buys you something a fixed node can't: a tree shape you genuinely can't draw up front.
 
-- **Analytical tasks on large documents** — model decides whether to chunk, how many parallel iterations, how to synthesize
-- **Multi-step extraction** — emit a tree to get summary, then inspect, then call follow-up LLM/code for derived metrics
-- **Adaptive recovery** — when a tree returns `:partial` with some chunks failed, the model can decide to retry, fall back, or accept what it has
+**Reach for `:llm` or `:code` (a fixed node) when:**
 
-If your tree shape is fixed and known, use the regular ORC DSL directly — don't pay the Phase 1 code-gen overhead.
+- You know the step is one prompt → use `:llm`.
+- You know the step is a deterministic transform → use `:code`.
+- You know it's "chunk, map over chunks, then aggregate" *and the boundaries are fixed* → wire `:map-each` directly.
+- In short: **if you can draw the sub-tree on a whiteboard, draw it.** Don't pay the Phase 1 code-gen overhead to rediscover a shape you already know.
+
+**Reach for `:repl-researcher` (RLM) when the shape is genuinely unknown until runtime:**
+
+- **Analytical tasks on large documents** — the model decides whether to chunk at all, how many parallel iterations, and how to synthesize, based on the input it actually receives.
+- **Multi-step extraction** — emit a tree to get a summary, *inspect it*, then decide whether a follow-up LLM/code pass for derived metrics is even needed.
+- **Adaptive recovery** — when a tree returns `:partial` with some chunks failed, the model decides at runtime whether to retry, fall back, or accept what it has.
+
+A useful test: *would two different inputs to this step want two structurally different sub-trees?* If yes, that's RLM's sweet spot. If every input wants the same sub-tree, hardcode it.
+
+> **RLM tunes tree *shape*, GEPA tunes instruction *text*.** These are complementary, not competing. If your problem is "this fixed `:llm` node's prompt isn't getting good results," that's a [GEPA](GEPA-GUIDE.md) job — it optimizes the static instruction string. If your problem is "I don't know what nodes this step should even have," that's RLM. You can use both: GEPA on the static nodes around the researcher, RLM for the open-ended step.
 
 ## Composition: `repl-researcher` as a node inside a larger workflow
 
 `orc/repl-researcher` is a leaf-style node like `orc/llm` or `orc/code` — it sits anywhere in your behavior tree, not just at the root. Upstream nodes can write to blackboard keys the researcher reads; downstream nodes can consume what the researcher wrote.
 
 A common pattern is **pre-process → research → post-process**, using the high-level DSL:
+
+```mermaid
+flowchart TB
+  seq["<b>pipeline</b><br/>SEQUENCE"]:::seq
+  seq --> pre["<b>pre-process</b><br/>LLM · leaf<br/><i>clean / normalize input</i><hr/>▸ reads&nbsp;&nbsp;raw<br/>◂ writes&nbsp;&nbsp;clean"]:::llm
+  seq --> rlm["<b>research</b> &#9662;<br/>REPL-RESEARCHER · leaf<br/><i>Phase 1 ↔ Phase 2 loop runs inside this node</i><hr/>▸ reads&nbsp;&nbsp;clean<br/>◂ writes&nbsp;&nbsp;findings"]:::rlm
+  seq --> post["<b>post-process</b><br/>CODE · leaf<br/><i>package the output</i><hr/>▸ reads&nbsp;&nbsp;findings<br/>◂ writes&nbsp;&nbsp;report"]:::code
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+  classDef code fill:#0f766e,stroke:#5eead4,color:#fff;
+  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:2px;
+```
 
 ```clojure
 (require '[ai.obney.orc.orc-service.interface :as orc])
@@ -82,6 +131,19 @@ There's nothing special about being a child — the researcher emits the same `:
 
 The simplest case: a workflow whose root is a single `repl-researcher` node.
 
+> **Prefer the composed pattern** — a pre-process node cleans the input, the researcher explores, a post-process node packages the output. See the "Composition" section above for the three-node pattern.
+
+```mermaid
+flowchart TB
+  p1["<b>Phase 1 — reason</b><br/>model inspects sandbox-vars,<br/>runs (llm …) / (code …), drills into prior trees"]:::rlm
+  p1 -->|"emit-tree!"| p2["<b>Phase 2 — execute</b><br/>run the emitted subtree<br/>sequence / parallel / llm / code …"]:::seq
+  p2 -->|"outputs merge into sandbox-vars"| p1
+  p1 -->|"final!"| done(["<b>return result</b>"]):::done
+  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:2px;
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef done fill:#0f766e,stroke:#5eead4,color:#fff;
+```
+
 ```clojure
 (require '[ai.obney.orc.orc-service.interface :as orc])
 
@@ -142,10 +204,10 @@ All options accepted by the `repl-researcher` node and the `:rlm` config map.
 
 | Option | Type | Default | Purpose |
 |---|---|---|---|
-| `:recursive?` | bool | `false` | Non-terminal `emit-tree!` — after each Phase-2 tree completes, control returns to Phase 1 for inspection / follow-up / `(final! ...)`. See [Recursive mode](#recursive-mode-rlm-recursive-true). |
+| `:recursive?` | bool | `true` | Non-terminal `emit-tree!` — after each Phase-2 tree completes, control returns to Phase 1 for inspection / follow-up / `(final! ...)`. Defaults to `true` — recursive is the default; pass `:recursive? false` to opt out (deprecated escape hatch). See [Recursive mode](#recursive-mode-rlm-recursive-true). |
 | `:auto-classify?` | bool | `false` | Before Phase 1 starts, classify the task against the seed corpus and prepend the top-fitting pattern's body (capabilities + worked-example DSL snippets in `:strengths.:recommended-pattern` + observed weaknesses + representative-uses) to the model's instruction. Pairs naturally with `:recursive? true`. See [Pattern injection via R-Inject](#pattern-injection-via-r-inject-auto-classify) below. |
 | `:debug?` | bool | `false` | Verbose `[DEBUG RLM]` / `[DEBUG Tree]` stderr logging useful during development. Default off for production. |
-| `:available-code-nodes` | string | nil | Markdown catalog of pre-built `:code` fns the model can reference via `[:code {:fn "ns/sym"}]`. Surfaced as an extra DSCloj module input field. See [Pre-built code-node catalog](#pre-built-code-node-catalog-available-code-nodes). |
+| `:available-code-nodes` | string | nil | Markdown catalog of pre-built `:code` fns the model can reference via `[:code {:fn "ns/sym"}]`. Surfaced as an extra input field on the framework's LLM module. See [Pre-built code-node catalog](#pre-built-code-node-catalog-available-code-nodes). |
 | `:sub-model` | string | nil | Alternative location for `:sub-model` — `(:sub-model (:rlm node))` takes precedence over `(:sub-model node)`. Either works. |
 
 ### Per-`:llm`-node options inside `emit-tree!` trees
@@ -211,9 +273,11 @@ The framework walks the canonical emit-tree! tree and injects `:model :sub-model
 
 Set on the `repl-researcher` node, or alternatively under the `:rlm` map as `:rlm {:sub-model "..."}`. When unset, all calls use `:model`.
 
-This matches the predict-rlm bench's "apples-to-apples" pattern (gpt-5.4 main + gpt-5.1-chat sub). See [`development/bench/predict-rlm-comparison/`](../development/bench/predict-rlm-comparison/) for runnable examples.
+This is a common "apples-to-apples" cost pattern: a high-capability main LM for tree design (e.g. `openai/gpt-5.4`) paired with a cheaper sub-LM for the per-leaf calls (e.g. `openai/gpt-5.1-chat`).
 
 ## Pattern injection via R-Inject (`:auto-classify?`)
+
+> **Note:** `:auto-classify?` shapes RLM tree design — it prepends a matched corpus pattern to the researcher's context before it designs a tree. It does NOT modify instruction strings inside static `orc/llm` nodes. For instruction optimization on static LLM nodes, see [GEPA-GUIDE.md](GEPA-GUIDE.md).
 
 `:auto-classify? true` on the `:rlm` config opts the node into automatic classification against the corpus of structural patterns (tree-classes) and behavioral patterns (behavioral subtrees). Before Phase 1 starts:
 
@@ -447,7 +511,7 @@ Patterns are written via the standard ontology commands. A strength (success pat
      :expected-outcome "Successful per-chunk extraction without rate-limit failures"}))
 ```
 
-A weakness uses `:ontology/record-tree-weakness` with `:failure-uri`, `:severity`, `:triggers`, `:failure-context`, `:attempted-action`. See the SELF-LEARNING-MANUAL for the full command schemas.
+A weakness uses `:ontology/record-tree-weakness` with `:failure-uri`, `:severity`, `:triggers`, `:failure-context`, `:attempted-action`. See [PATTERN-RECORDING.md](PATTERN-RECORDING.md) for the full command schemas.
 
 The structured fields map directly to the rendered output: `:context-conditions` becomes the "when" guard, `:action-taken.target` becomes the recommended pattern snippet (rendered as a Clojure code block), `:action-taken.reason` becomes the "Why" line, and `:expected-outcome` becomes the "Expected outcome" line.
 
@@ -558,7 +622,7 @@ In recursive mode the SCI sandbox also exposes five primitives that read directl
 
 Usage guidance baked into the system prompt: **prefer the `:tree-results` summary; drill down only when the summary doesn't give you enough to decide your next step.** A `(tree-trajectory)` call can return multi-KB data — pulling it into every iteration's history bloats the next prompt.
 
-These primitives are bound in the sandbox **only when `:recursive? true`** — non-recursive callers (`:rlm true`, `:rlm {:debug? true}`) get unresolved-symbol if they try to call them.
+These primitives are bound in the sandbox **only in recursive mode (the default)** — the only callers that won't have them are those explicitly opting out with `:rlm {:recursive? false}`.
 
 ### Common pitfalls (forward guidance baked into the prompt)
 
@@ -682,13 +746,13 @@ When an `:llm` node's downstream consumer is a `:code` node, you typically want 
                                 [:reason :string]]]}}]
 ```
 
-The framework propagates the declared schema to the child sheet's blackboard key. DSCloj's `complex-spec?` detector recognizes the structured shape, instructs the LLM to respond with JSON matching that schema, and parses the response back into Clojure data before the downstream `:code` node reads it.
+The framework propagates the declared schema to the child sheet's blackboard key. The framework's LLM module detects the structured shape, instructs the LLM to respond with JSON matching that schema, and parses the response back into Clojure data before the downstream `:code` node reads it.
 
 `:output-schemas` is a map from write-key to Malli schema. Keys without a declared schema fall back to `:any` and arrive as text.
 
 ### Pre-built code-node catalog (`:available-code-nodes`)
 
-For benchmarks/tasks that ship deterministic helper functions (e.g. `apply-redactions`, `count-letter-frequencies`), set `:available-code-nodes` on the repl-researcher to surface a markdown catalog as an extra DSCloj module input field. The model sees the catalog as `inputs.available-code-nodes` and can reference any function via `[:code {:fn "ns/sym" :reads [...] :writes [...]}]` instead of writing the transform inline.
+For benchmarks/tasks that ship deterministic helper functions (e.g. `apply-redactions`, `count-letter-frequencies`), set `:available-code-nodes` on the repl-researcher to surface a markdown catalog as an extra input field on the framework's LLM module. The model sees the catalog as `inputs.available-code-nodes` and can reference any function via `[:code {:fn "ns/sym" :reads [...] :writes [...]}]` instead of writing the transform inline.
 
 ```clojure
 (orc/repl-researcher "redactor"
@@ -711,7 +775,7 @@ For Phase-1 sub-LLM calls AND Phase-2 `:llm` leaf nodes that read image-typed bl
    :query       :string})
 ```
 
-The framework propagates `:field-type :image` into the DSCloj module's input field, which routes the value as a multimodal `image_url` content block rather than as inline text. Without `:field-type :image`, vision tasks ship base64 data URIs as inline text — wrong content shape AND ~480K tokens per image vs ~1K for image-tile billing.
+The framework propagates `:field-type :image` into the LLM module's input field, which routes the value as a multimodal `image_url` content block rather than as inline text. Without `:field-type :image`, vision tasks ship base64 data URIs as inline text — wrong content shape AND ~480K tokens per image vs ~1K for image-tile billing.
 
 The same schema is preserved from the parent sheet to the Phase-2 child sheet via `:blackboard-schemas`, so leaf `:llm` nodes inside `emit-tree!` trees inherit the correct routing.
 
@@ -723,7 +787,7 @@ The model is told:
 You MUST call (final! {...}) with keys: [<the :writes-declared keys>]
 ```
 
-And, for the prompt format DSCloj's parser expects:
+And, for the prompt format the framework's LLM module parser expects:
 
 ```
 Your response MUST start with `[[ ## code ## ]]` on its own line, followed by
@@ -731,7 +795,7 @@ RAW Clojure code (NO markdown code fences, NO ```clojure tags), and end with
 `[[ ## completed ## ]]`.
 ```
 
-Some models (notably gemini-2.5-flash) default to markdown fences which DSCloj's marker-based parser silently drops. The "CRITICAL OUTPUT FORMAT" prompt section is what keeps them aligned.
+Some models (notably gemini-2.5-flash) default to markdown fences which the framework's marker-based parser silently drops. The "CRITICAL OUTPUT FORMAT" prompt section is what keeps them aligned.
 
 ## Safety surface
 
@@ -855,11 +919,13 @@ When the Living Description opt-in flag is on, every `:repl-researcher` node tha
 
 | Judge | What it grades | Implementation |
 |---|---|---|
-| `heuristic-structural` | The shape of the tree the model emitted in Phase 1 | Pure heuristic over `:generated-tree-raw` |
-| `grounding` | Are the output claims supported by the original inputs? | LLM with structured-output rubric |
-| `reasoning` | Logical consistency of the model's chain of thought | LLM rubric |
-| `completeness` | Does the output cover what the instruction asked? | LLM rubric |
-| `instruction-following` | Did the model follow the explicit task requirements? | LLM rubric |
+| `heuristic-structural` | The shape of the tree the model emitted in Phase 1 | Pure heuristic over `:generated-tree-raw` (deterministic, no LLM; keeps its `[0,1]` shape directly) |
+| `grounding` | Are the output claims supported by the original inputs? | Tier-1 LLM judge: adversarial source-grounded, reason-before-score, discrete 1–5 `Scale` |
+| `reasoning` | Logical consistency of the model's chain of thought | Tier-1 LLM judge: adversarial logician, reason-before-score, discrete 1–5 `Scale` |
+| `completeness` | Does the output cover what the instruction asked? | Tier-1 LLM judge: adversarial coverage auditor, reason-before-score, discrete 1–5 `Scale` |
+| `instruction-following` | Did the model follow the explicit task requirements? | Tier-1 LLM judge: adversarial compliance auditor, reason-before-score, discrete 1–5 `Scale` |
+
+> **Tier-1 judge shape (ADR 0011 / [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#tier-1-judge-model-2026-06-decoupled-discrete-scale--reason-before-score--all-four-llm-judges)):** the four LLM judges score on a decoupled discrete **1–5 `Scale`** (explicit per-level bands, mapped deterministically to `[0,1]`), take an **adversarial reviewer stance**, and **reason before they score** (field order forces `:reasoning` + evidence lists before the `:level` band). Output is carried by the **typed blackboard** — no `:output-schemas`, no JSON-in-the-prompt — and a **no-run-through gate** throws on empty/garbage output rather than emitting a silent 0. The `:judge/score-emitted` event still carries a `[0,1]` `:score`, so the consolidator pipeline below is unchanged; the score is just no longer a self-reported float — it's derived from the band.
 
 Consumers can override defaults by explicitly calling `:sheet/set-node-judges` on a repl-researcher node — then ONLY their list applies. To turn the loop on:
 
@@ -884,7 +950,7 @@ host repl-researcher fires :sheet/node-execution-completed (terminal) +
    ↓
 per-event evaluator processors (judge_runtime)
    ↓ (for each attached judge, in parallel via futures)
-   - default LLM judges → invoke-llm-judge → dscloj/predict
+   - default LLM judges → invoke-llm-judge → the framework's LLM `predict` call
    - heuristic-structural → pure heuristic over generated-tree-raw
    - :custom → orc/execute on consumer's eval sheet
    ↓
@@ -909,7 +975,7 @@ The same mechanism applies to custom judges attached to repl-researcher nodes: t
 ## Related guides
 
 - [`docs/ORC-SERVICE-GUIDE.md`](ORC-SERVICE-GUIDE.md) — Core execution engine and DSL reference
-- [`docs/dsl-tutorial.md`](dsl-tutorial.md) — Step-by-step DSL tutorial
+- [`docs/DSL-REFERENCE.md`](DSL-REFERENCE.md) — Complete DSL reference
 - [`docs/EVENT-STORE-PATTERNS.md`](EVENT-STORE-PATTERNS.md) — Grain event-sourcing patterns
 - [`docs/LIVING-DESCRIPTIONS.md`](LIVING-DESCRIPTIONS.md) — How judge scores feed the description-update loop
 - [`development/bench/RESULTS.md`](../development/bench/RESULTS.md) — Generalization benchmark headline report

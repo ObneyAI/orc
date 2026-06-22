@@ -1,4 +1,4 @@
-(ns seed-principles
+(ns ai.obney.orc.ontology.test-support.seed-principles
   "C-1 seed — hand-authored RLM tree-design principles, stored via the
    existing :ontology/record-tree-strength and :ontology/record-tree-weakness
    commands. Each principle is keyed by a stable task-class UUID so
@@ -22,7 +22,7 @@
    :expected-outcome) in the prompt the model sees at iteration 1.
 
    Run from REPL:
-     (require '[seed-principles :as s])
+      (require '[ai.obney.orc.ontology.test-support.seed-principles :as s])
      (s/seed-all! ctx)   ;; emits all principles into the event store
      ;; OR
      (s/seed-one! ctx s/bounded-map-each-for-chunked-extraction)"
@@ -130,4 +130,4 @@
 (comment
   ;; Smoke test from REPL — see development/src/c1_pipeline_probe.clj for a
   ;; full end-to-end probe that exercises seed → retrieve → format.
-  (require '[seed-principles :as s]))
+  (require '[ai.obney.orc.ontology.test-support.seed-principles :as s]))

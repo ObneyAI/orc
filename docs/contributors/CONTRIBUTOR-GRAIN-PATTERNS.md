@@ -1,5 +1,8 @@
 # Pattern Compendium
 
+> **This doc is for ORC/Grain contributors** building framework internals (`defcommand`, `defreadmodel`, `defprocessor`, `defperiodic`, etc.).
+> If you are building behavior-tree workflows with the ORC DSL, see [GETTING-STARTED.md](../GETTING-STARTED.md) instead.
+
 A complete guide to the backend patterns used in this project. Written for AI agents and developers who need to understand how things work and build new features that fit naturally.
 
 ---

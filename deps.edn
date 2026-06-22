@@ -1,16 +1,4 @@
-{:aliases {:dev {:extra-paths ["development/src" "development/bench"
-                               ;; RF2: dedicated dir for dev-only support nss that
-                               ;; ontology *brick tests* depend on (seed-corpus
-                               ;; shim `seed-descriptions` + its dep
-                               ;; `seed-principles`; the `c2a-live-verify` and
-                               ;; `c2d-ood-stress-test` orchestrators). Shared with
-                               ;; the ontology brick's :test alias so those brick
-                               ;; tests LOAD + RUN under `clj -M:poly test`; kept on
-                               ;; :dev so dev tooling / live-verify that references
-                               ;; these nss still resolves. A *dedicated* dir (not
-                               ;; all of development/src) keeps the rest of the dev
-                               ;; tree out of the brick's classpath.
-                               "development/ontology-test-support"]
+{:aliases {:dev {:extra-paths ["development/src" "development/bench"]
                  :jvm-opts ["--add-opens=java.base/java.nio=ALL-UNNAMED"
                             "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"]
                  :extra-deps {org.clojure/clojure {:mvn/version "1.12.0"}

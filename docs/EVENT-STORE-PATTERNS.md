@@ -1,16 +1,117 @@
 # Event Store Patterns
 
+Every step your tree takes is an event — durably recorded. That's not just
+persistence; it's how you debug, build training data, and learn from execution.
+This guide shows the queries you'll actually reach for: pull a tree's traces,
+read a node's judge scores, check rolling metrics.
+
+Three reach-for-it-first queries, all keyed off a `sheet-id` (or a `tick-id`
+from `orc/execute-stream` / `orc/get-tick`):
+
+```clojure
+(require '[ai.obney.orc.orc-service.interface :as orc])
+(require '[ai.obney.grain.read-model-processor-v2.interface :as rmp])
+(require '[ai.obney.orc.evaluation.interface :as eval])
+
+(rmp/project ctx :sheet/traces {:partition-key sheet-id}) ;; a tree's traces
+(orc/get-node-rolling-metrics ctx sheet-id node-id)       ;; rolling node metrics
+(eval/get-judge-scores ctx sheet-id node-id tick-id)      ;; a node's judge scores
+```
+
+Each is expanded — with result shapes and the raw-query escape hatch — in the
+[ORC workflow builder queries](#orc-workflow-builder-queries) section just below.
+
 A guide to working with Grain's event store for querying workflow executions, building training data, and debugging.
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Event Structure](#event-structure)
-3. [Reading Events](#reading-events)
-4. [Sheet-Service Events](#orc-service-events)
-5. [Read Models](#read-models)
-6. [Query Patterns for GEPA](#query-patterns-for-gepa)
-7. [Testing with In-Memory Event Store](#testing-with-in-memory-event-store)
+1. [ORC workflow builder queries](#orc-workflow-builder-queries)
+2. [Overview](#overview)
+3. [Event Structure](#event-structure)
+4. [Reading Events](#reading-events)
+5. [Sheet-Service Events](#orc-service-events)
+6. [Read Models](#read-models)
+7. [Query Patterns for GEPA](#query-patterns-for-gepa)
+8. [Testing with In-Memory Event Store](#testing-with-in-memory-event-store)
+
+---
+
+## ORC workflow builder queries
+
+If you are building ORC workflows, this section has the event-store queries you will actually use. For Grain framework internals (`defcommand`, `defreadmodel` construction), see [docs/contributors/CONTRIBUTOR-GRAIN-PATTERNS.md](contributors/CONTRIBUTOR-GRAIN-PATTERNS.md).
+
+### Traces and execution history
+
+The preferred path for listing traces is the cached read model. `es/read` is for ad-hoc or cross-aggregate queries (see the raw query section below).
+
+```clojure
+(require '[ai.obney.orc.orc-service.interface :as orc])
+(require '[ai.obney.grain.read-model-processor-v2.interface :as rmp])
+
+;; All traces assembled for a sheet
+(rmp/project ctx :sheet/traces {:partition-key sheet-id})
+
+;; A specific tick (tree execution run) by ID
+(orc/get-tick ctx tick-id)
+```
+
+### Node and tree rolling metrics
+
+Source-verified signatures from `interface/read_models.clj`: both functions take `ctx`, not `event-store`.
+
+```clojure
+;; Rolling metrics for a specific node
+(orc/get-node-rolling-metrics ctx sheet-id node-id)
+;; => {:sheet-id         #uuid "..."
+;;     :node-id          #uuid "..."
+;;     :execution-count  150
+;;     :success-rate     0.967
+;;     :failure-rate     0.033
+;;     :avg-duration-ms  423.5
+;;     :recent-trend     :stable}
+
+;; Rolling metrics for all nodes in a sheet
+(orc/get-tree-rolling-metrics ctx sheet-id)
+;; => {:sheet-id          #uuid "..."
+;;     :nodes             [{:node-id ... :success-rate ...}]
+;;     :total-executions  500}
+```
+
+### Judge scores
+
+See [GETTING-STARTED.md — Phase 2](GETTING-STARTED.md#phase-2--llm-judges) for the full query and result shape. Short form:
+
+```clojure
+(require '[ai.obney.orc.evaluation.interface :as eval])
+
+;; All judge scores that fired on a specific node+tick.
+;; tick-id is available from orc/execute-stream or (orc/get-tick ctx tick-id).
+(eval/get-judge-scores ctx sheet-id node-id tick-id)
+```
+
+### Raw event queries — the `(into [])` materialization rule
+
+`es/read` returns a **reducible collection** — it is lazy and consumed-once. **Always wrap with `(into [])` before `count`, `seq`, or any operation that requires a realized collection.**
+
+**Why:** `es/read` returns a reducible (satisfies `IReduceInit`) but NOT `Counted` or `Seqable`. Calling `(count ...)` on an unrealized reducible returns 0; `(seq ...)` can throw `UnsupportedOperationException`. Wrapping with `(into [] ...)` forces full materialization into a vector before further operations.
+
+```clojure
+(require '[ai.obney.grain.event-store-v2.interface :as es])
+
+;; WRONG — throws UnsupportedOperationException or returns 0
+(count (es/read event-store {:types #{:sheet/node-execution-completed}}))
+
+;; CORRECT — materialize with (into []) first
+(into [] (es/read event-store
+           {:types #{:sheet/node-execution-completed}
+            :tags  #{[:sheet sheet-id]}
+            :limit 50}))
+
+;; Filter by tick tag — all node events for one execution run
+(into [] (es/read event-store
+           {:types #{:sheet/node-execution-completed}
+            :tags  #{[:tick tick-id]}}))
+```
 
 ---
 
@@ -253,6 +354,8 @@ Complete reference of all `:sheet/*` event types.
 
 ## Read Models
 
+> **For ORC/Grain contributors** building new framework features. Workflow builders see the ORC consumer section above.
+
 Read models project events into queryable state.
 
 ### Rolling Metrics Pattern
@@ -373,6 +476,8 @@ Track node performance over a sliding window:
 ---
 
 ## Testing with In-Memory Event Store
+
+> **For ORC/Grain contributors** building new framework features. Workflow builders see the ORC consumer section above.
 
 ### Test Context Setup
 

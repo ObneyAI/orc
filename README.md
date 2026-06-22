@@ -4,11 +4,99 @@
 
 ORC provides composable primitives for building, executing, optimizing, and evaluating LLM-powered workflows. It's designed as a library that consumers pull in as a git dependency.
 
+Behavior trees have run game NPCs and robots for decades. The tree ticks **top-down, root first**; every leaf **reads** the blackboard (sensor / world state) and **writes** an action or command. Here's a game AI deciding how to fight:
+
+```mermaid
+flowchart TB
+  brain["<b>combat brain</b><br/>FALLBACK · first child that works"]:::fb
+  brain --> engage
+  brain --> patrol["<b>patrol</b><br/>ACTION leaf<br/><i>walk the route</i><hr/>▸ reads&nbsp;&nbsp;waypoints<br/>◂ writes&nbsp;&nbsp;move_cmd"]:::act
+  subgraph ENGAGE["seq: engage"]
+    direction TB
+    engage["<b>engage</b><br/>SEQUENCE · all must pass"]:::seq
+    engage --> see(["<b>enemy visible?</b><br/>CONDITION<br/><i>check line of sight</i><hr/>▸ reads&nbsp;&nbsp;vision"]):::cond
+    engage --> swing["<b>swing sword</b><br/>ACTION leaf<br/><i>strike the target</i><hr/>▸ reads&nbsp;&nbsp;enemy_pos, stamina<br/>◂ writes&nbsp;&nbsp;attack_cmd"]:::act
+  end
+  classDef fb fill:#7c2d12,stroke:#fb923c,color:#fff,stroke-width:2px;
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef cond fill:#713f12,stroke:#facc15,color:#fff;
+  classDef act fill:#0f766e,stroke:#5eead4,color:#fff;
+```
+
+**ORC is the same machine for LLM work** — same composites, same top-down tick, same reads/writes contracts. The leaves just call an LLM or sandboxed code, and the blackboard holds *your* data instead of joint angles. Same tree shape, one-to-one:
+
+```mermaid
+flowchart TB
+  triage["<b>support triage</b><br/>FALLBACK · first child that works"]:::fb
+  triage --> urgent
+  triage --> auto["<b>auto-reply</b><br/>LLM leaf<br/><i>draft a normal response</i><hr/>▸ reads&nbsp;&nbsp;ticket<br/>◂ writes&nbsp;&nbsp;reply"]:::llm
+  subgraph URGENT["seq: urgent path"]
+    direction TB
+    urgent["<b>urgent path</b><br/>SEQUENCE · all must pass"]:::seq
+    urgent --> isUrgent{{"<b>is it urgent?</b><br/>LLM-CONDITION<br/><i>model judges yes / no</i><hr/>▸ reads&nbsp;&nbsp;ticket"}}:::llmc
+    urgent --> esc["<b>escalate</b><br/>LLM leaf<br/><i>page a human + summarize</i><hr/>▸ reads&nbsp;&nbsp;ticket<br/>◂ writes&nbsp;&nbsp;escalation"]:::llm
+  end
+  classDef fb fill:#7c2d12,stroke:#fb923c,color:#fff,stroke-width:2px;
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llmc fill:#5b21b6,stroke:#ddd6fe,color:#fff;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+```
+
+*Game `condition` → ORC `llm-condition`; game `ACTION` → an `llm`/`code` leaf; game sensors/commands → blackboard keys you **read** and **write**. If you can read the game tree, you can read the ORC one. Composites (`sequence`, `fallback`, `parallel`, `map-each`) shape control flow; any whole tree drops into a bigger one as a subbehavior via `:delegate`. That's the entire mental model — see the [full contract-analysis walkthrough](docs/GETTING-STARTED.md).*
+
 > **Early-stage software.** ORC is under active development. Expect sharp edges and breaking changes — APIs, event schemas, and conventions may shift between commits. Pin to a specific `:git/sha` and review the diff before updating. Expect incomplete docs, use at your own peril!
+
+## New here?
+
+Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from bare behavior tree through judges, GEPA, ontology, and self-improvement.
+
+## Pick your package
+
+ORC ships as standalone packages — **you pull in exactly ONE package and it
+bundles every component that capability needs** (transitively). You don't
+assemble components by hand. Find the row that matches what you want, then add
+one dependency: give it the lib name shown and point `:deps/root` at the project.
+
+| I want… | Pull this package | Heavy deps |
+|---|---|:--:|
+| Just run behavior trees (the engine) | `obneyai/orc-service` → `projects/orc-service` | — |
+| …plus LLM-as-judge evaluation | `obneyai/orc-evaluation` → `projects/orc-evaluation` | — |
+| …plus GEPA prompt optimization | `obneyai/orc-gepa` → `projects/orc-gepa` | — |
+| …plus concept graph + DJL embeddings | `obneyai/orc-ontology` → `projects/orc-ontology` | DJL (JVM) |
+| …plus ColBERT retrieval (added to ontology) | also `obneyai/orc-colbert` → `projects/orc-colbert` | Python |
+| …plus MCP-driven tree generation | `obneyai/orc-mcp-sheet-builder` → `projects/orc-mcp-sheet-builder` | — |
+| **Everything** / the full self-improving loop | `obneyai/orc` → `projects/orc` | DJL + Python |
+
+```clojure
+;; deps.edn — pick ONE row above; use its lib name + :deps/root
+obneyai/orc-evaluation {:git/url "https://github.com/ObneyAI/orc.git"
+                        :git/sha "..."                    ;; pin to a reviewed commit
+                        :deps/root "projects/orc-evaluation"}
+```
+
+Every non-leaf package bundles the engine (`orc-service`) transitively, so the
+require namespaces are the same whichever you pick. The only time you add a
+*second* package is ColBERT (pull `orc-ontology` **and** `orc-colbert` — distinct
+lib names so the keys don't collide). Full per-package detail and the
+ontology+colbert combination live in **[docs/PACKAGES.md](docs/PACKAGES.md)**; the
+layer → internal-component mapping and dependency graph live in
+**[docs/COMPONENT-MAP.md](docs/COMPONENT-MAP.md)**.
+
+> **Self-improving loop is alpha-stage.** The full loop (`:auto-classify?` +
+> `:recursive?`) works end-to-end on workflows that align with the shipped seed
+> corpus, but force-fit classifications appear on out-of-distribution tasks. It
+> needs the ColBERT Python bridge. See [docs/SELF-IMPROVING-LOOP.md](docs/SELF-IMPROVING-LOOP.md)
+> for an honest current-state breakdown.
+
+> **RLM recursive mode is now the default.** `:repl-researcher` nodes default to
+> `{:rlm {:recursive? true}}`; terminal mode (`:rlm true` / `:rlm {:recursive? false}`)
+> is deprecated and will be removed.
 
 ## Quick Start
 
-Add to your `deps.edn`:
+Add the package you picked above to your `deps.edn`. The umbrella (`obneyai/orc`
+→ `projects/orc`) gives you everything to start experimenting; swap it for a
+leaner package (e.g. `obneyai/orc-service`) once you know which layers you need:
 
 ```clojure
 obneyai/orc {:git/url "https://github.com/ObneyAI/orc.git"
@@ -41,6 +129,8 @@ obneyai/orc {:git/url "https://github.com/ObneyAI/orc.git"
 
 ## Components
 
+The full opt-in layer table, dependency graph, and known issues live in **[docs/COMPONENT-MAP.md](docs/COMPONENT-MAP.md)**. For judge architecture, rubric design, and custom judge patterns see **[docs/JUDGE-ARCHITECTURE.md](docs/JUDGE-ARCHITECTURE.md)**.
+
 | Component | Namespace | Purpose |
 |-----------|-----------|---------|
 | **orc-service** | `ai.obney.orc.orc-service` | Core behavior tree execution, DSL, versioning, event sourcing |
@@ -57,9 +147,9 @@ ORC is built on the **Grain** event-sourcing framework (CQRS pattern):
 
 ```
 Commands -> Events -> Read Models -> Queries
-              |
-              v
-        Todo Processors (side effects)
+               |
+               v
+         Todo Processors (side effects)
 ```
 
 - **Sheets** are behavior trees stored as event streams
@@ -109,6 +199,50 @@ Commands -> Events -> Read Models -> Queries
 | `orc/llm-condition` | Leaf | Branch based on LLM yes/no judgment. |
 | `orc/repl-researcher` | Leaf | Iterative: generate code, call MCP tools, refine. |
 | `orc/delegate` | Leaf | Execute another workflow with isolated blackboard. |
+
+These compose into real control flow. A `fallback` that tries a guarded `sequence` first and falls back to a default sibling is classic if/else:
+
+```mermaid
+flowchart TB
+  route["<b>handle request</b><br/>FALLBACK · if/else"]:::fb
+  route --> s["<b>premium path</b><br/>SEQUENCE"]:::seq
+  s --> cond["<b>is premium?</b><br/>CONDITION · code predicate"]:::cond
+  s --> act["<b>priority reply</b><br/>LLM · leaf"]:::llm
+  route --> default["<b>default reply</b><br/>LLM · leaf"]:::llm
+  classDef fb fill:#7c2d12,stroke:#fb923c,color:#fff,stroke-width:2px;
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef cond fill:#713f12,stroke:#facc15,color:#fff;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+```
+
+Swap the code `condition` for an `llm-condition` and the same shape becomes LLM-driven routing:
+
+```mermaid
+flowchart TB
+  route["<b>route by urgency</b><br/>FALLBACK"]:::fb
+  route --> s["<b>urgent path</b><br/>SEQUENCE"]:::seq
+  s --> q["<b>is it urgent?</b><br/>LLM-CONDITION · yes/no"]:::llmc
+  s --> esc["<b>escalate</b><br/>LLM · leaf"]:::llm
+  route --> normal["<b>normal handling</b><br/>LLM · leaf"]:::llm
+  classDef fb fill:#7c2d12,stroke:#fb923c,color:#fff,stroke-width:2px;
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llmc fill:#5b21b6,stroke:#ddd6fe,color:#fff;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+```
+
+And the flagship leaf, `repl-researcher`, is a whole two-phase reasoning loop that drops into a tree like any other node — see the [RLM Guide](docs/RLM-GUIDE.md):
+
+```mermaid
+flowchart TB
+  seq["<b>pipeline</b><br/>SEQUENCE"]:::seq
+  seq --> prep["<b>prep input</b><br/>LLM · leaf<br/><i>normalize the request</i>"]:::llm
+  seq --> rlm["<b>investigate</b> &#9662;<br/>REPL-RESEARCHER · leaf<br/><i>two-phase: designs + runs its own subtree</i>"]:::rlm
+  seq --> fin["<b>finalize</b><br/>CODE · leaf<br/><i>assemble the answer</i>"]:::code
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+  classDef code fill:#0f766e,stroke:#5eead4,color:#fff;
+  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:2px;
+```
 
 ## Development Setup
 
@@ -187,8 +321,13 @@ ORC is a library — consumers provide:
 
 | Guide | Description |
 |-------|-------------|
+| [**Getting Started**](docs/GETTING-STARTED.md) | Progressive onboarding: core → judges → GEPA → ontology → self-improvement |
+| [**Packages**](docs/PACKAGES.md) | Standalone packages — pull in only the layer you need |
+| [**Component Map**](docs/COMPONENT-MAP.md) | Opt-in layer table, full dependency graph, known issues |
+| [**Judge Architecture**](docs/JUDGE-ARCHITECTURE.md) | Rubric design, judge types, custom judges, scale design, composite scoring |
+| [ORC Principles](docs/ORC-PRINCIPLES.md) | Framework-level principles: node palette, `:delegate` composition, events-first discipline |
 | [ORC Service Guide](docs/ORC-SERVICE-GUIDE.md) | Core execution engine and DSL reference |
-| [DSL Tutorial](docs/dsl-tutorial.md) | Step-by-step workflow building tutorial |
+| [DSL Reference](docs/DSL-REFERENCE.md) | Complete DSL reference — Core Concepts section is the newcomer entry point |
 | [**RLM Guide**](docs/RLM-GUIDE.md) | Recursive Language Model — two-phase execution, recursive `emit-tree!`, drill-down primitives, and the Phase 2 tree DSL |
 | [Architecture](docs/ARCHITECTURE.md) | System architecture and design decisions |
 | [GEPA Guide](docs/GEPA-GUIDE.md) | Prompt optimization with GEPA |
@@ -196,8 +335,9 @@ ORC is a library — consumers provide:
 | [ColBERT Integration](docs/COLBERT-INTEGRATION.md) | Semantic retrieval setup |
 | [Ontology](docs/ONTOLOGY.md) | Concept graph and pattern discovery |
 | [MCP Sheet Builder](docs/MCP-SHEET-BUILDER-GUIDE.md) | Dynamic workflow generation |
+| [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md) | Alpha-stage: auto-classify, pattern evolution, behavior minting |
 | [Event Store Patterns](docs/EVENT-STORE-PATTERNS.md) | Grain event sourcing patterns |
-| [Pattern Compendium](docs/pattern-compendium.md) | Complete pattern reference |
+| [Contributor Grain Patterns](docs/contributors/CONTRIBUTOR-GRAIN-PATTERNS.md) | Complete pattern reference (contributors) |
 
 ### Benchmarks
 
