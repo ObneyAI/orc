@@ -1,4 +1,14 @@
-{:aliases {:dev {:extra-paths ["development/src" "development/bench"]
+{:aliases {:dev {:extra-paths ["development/src" "development/bench"
+                               ;; RF5: on-demand lane for slow live/integration
+                               ;; tests excluded from the fast `clj -M:poly test`
+                               ;; brick gate. c2a-live-verify-test hard-sleeps
+                               ;; 30s/phase (~9 min) — it dominated the ontology
+                               ;; gate's wall-clock — so it lives here, runnable
+                               ;; via `clj -M:dev:test`, NOT on the ontology brick
+                               ;; :test alias. (The ColBERT build! tests stay in
+                               ;; the gate — the bridge persists + caches, so they
+                               ;; run fast.)
+                               "development/ontology-integration"]
                  :jvm-opts ["--add-opens=java.base/java.nio=ALL-UNNAMED"
                             "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"]
                  :extra-deps {org.clojure/clojure {:mvn/version "1.12.0"}
