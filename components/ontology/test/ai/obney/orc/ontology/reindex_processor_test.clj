@@ -570,6 +570,102 @@
                    :consolidated-from-event-count 0}
             :provenance :human-authored})))
 
+;; =============================================================================
+;; COLD-START BURST — the production bug (this worktree's target)
+;;
+;; Repro of the consumer symptom: a cold-start seed burst emits ~18+
+;; *-description-updated events rapidly with NO index built yet. Each event
+;; re-triggers the cold-start rebuild path. The INVARIANT we assert (through
+;; the public interfaces — colbert/list-indexes read-model + ontology/
+;; search-descriptions) is:
+;;
+;;   After the burst settles, EXACTLY ONE active "ontology-descriptions"
+;;   index is registered in the colbert list-indexes read-model, AND
+;;   search-descriptions returns >= 1 hit.
+;;
+;; Deterministic skeleton: we stub the OPERATIONS-level create-index! (so the
+;; real :colbert/create-index defcommand still runs and emits a real, schema-
+;; valid :colbert/index-created event that the colbert read-model projects),
+;; with a small bridge-like delay so the concurrent-burst race window is real.
+;; The Python bridge is NOT needed to prove the event->read-model contract.
+;; =============================================================================
+
+(defn- bridge-like-stub-create-index!
+  "Like stub-create-index! but adds a small sleep to emulate the real
+   ColBERT bridge's latency, so a concurrent burst actually races. Returns
+   [calls-atom stub-fn]."
+  [sleep-ms]
+  (let [calls (atom [])]
+    [calls
+     (fn [_ctx opts]
+       (swap! calls conj opts)
+       (when (pos? sleep-ms) (Thread/sleep sleep-ms))
+       (let [index-id (random-uuid)
+             collection (:collection opts)
+             docs (vec collection)
+             doc-ids (or (:document-ids opts)
+                         (vec (map str (range (count docs)))))
+             docs-metadatas (or (:document-metadatas opts) [])]
+         {:index-id index-id
+          :index-path (str "/tmp/test-stub-" index-id)
+          :num-passages (count docs)
+          :duration-ms 1
+          :document-ids doc-ids
+          :document-metadatas docs-metadatas
+          :document-count (count docs)
+          :model-name (or (:model-name opts) "colbert-ir/colbertv2.0")
+          :index-name (:index-name opts)
+          :config {:split-documents? (boolean (get opts :split-documents? true))
+                   :max-document-length (or (:max-document-length opts) 256)
+                   :use-faiss? false}}))]))
+
+(defn- emit-burst!
+  "Emit n node-type description-updated events back-to-back (no settle
+   between them) to simulate the cold-start seed burst."
+  [ctx n]
+  (dotimes [i n]
+    (emit-description-updated! ctx :node-type (keyword (str "burst-node-" i)))))
+
+(deftest cold-start-burst-registers-exactly-one-queryable-index
+  (testing "A cold-start burst of N description-updated events results in EXACTLY ONE registered ontology-descriptions index, and search-descriptions returns >= 1 hit"
+    (with-test-ctx [ctx]
+      (is (false? (:index-built? (ontology/get-reindex-state ctx)))
+          "Sanity: no index built yet (cold start)")
+      (let [[calls stub] (bridge-like-stub-create-index! 40)]
+        (with-redefs [colbert-ops/create-index! stub]
+          ;; Burst: 18 rapid cold-start events, matching the seed corpus size.
+          (emit-burst! ctx 18)
+          ;; Settle: generous wait for all concurrent handler threads + the
+          ;; coalescing latch passes + the emitted index-created events to land.
+          (Thread/sleep 2000)
+          (let [active-indexes (colbert/list-indexes ctx)
+                onto-indexes (filter #(= "ontology-descriptions" (:index-name %))
+                                     active-indexes)]
+            ;; THE INVARIANT — through the public colbert read-model.
+            (is (= 1 (count onto-indexes))
+                (str "Exactly ONE ontology-descriptions index should be "
+                     "registered after a cold-start burst. Found "
+                     (count onto-indexes) " (create-index! dispatched "
+                     (count @calls) " times)."))
+            (is (true? (:index-built? (ontology/get-reindex-state ctx)))
+                ":index-built? must flip true once the index registers"))
+          ;; THE INVARIANT — through the consumer-facing search API. Stub
+          ;; colbert/search so retrieval is deterministic; the point is that
+          ;; search-descriptions takes the WARM path (an index is registered)
+          ;; rather than ::search-cold-no-index.
+          (with-redefs [colbert/search
+                        (fn [_ctx _opts]
+                          [{:content "a seeded description summary"
+                            :score 0.9 :rank 1
+                            :document-id "node-type::burst-node-0"
+                            :document-metadata {:granularity :node-type
+                                                :target-id :burst-node-0
+                                                :confidence 0.9
+                                                :last-update "2026-06-18T00:00:00Z"}}])]
+            (let [hits (ontology/search-descriptions ctx {:query "seeded" :k 5})]
+              (is (>= (count hits) 1)
+                  "search-descriptions must return >= 1 hit (warm path), not [] (cold path)"))))))))
+
 (deftest mint-triggers-immediate-rebuild-bypassing-threshold
   (testing "QP-3: A single :ontology/behavioral-subtree-minted event triggers create-index! immediately even when events-since-last-rebuild is < threshold"
     (with-test-ctx [ctx]
