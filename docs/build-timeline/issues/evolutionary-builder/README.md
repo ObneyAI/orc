@@ -21,7 +21,7 @@ contexts).
 | EB2 | Survey subbehavior (`:repl-researcher`, terminal) | AFK | WORTH | EB1 |
 | EB3 | Model subbehavior (`:llm`: grain/scope + embed-fields + candidate axioms) | AFK | WORTH | EB1,EB2 |
 | EB4 | Extract subbehavior (`:code`→`:llm`→`:code` V20 apply) — **DONE** (autonomous transform live-verified: 572 scoped concepts / 286 rels on real CSV, no hand-correction) | AFK | SOFT | EB1,EB3 |
-| EB5 | Reconcile subbehavior (entity+attribute, check-before-mint) | AFK | WORTH | EB1,EB4 |
+| EB5 | Reconcile subbehavior (entity+attribute, check-before-mint) — **DONE** (deterministic, no fork; live-verified: check-before-mint fired pre-mint w/ real ColBERT, reconcile-not-duplicate 6→7 on 2nd pass, attribute-links, 0 dangling) | AFK | WORTH | EB1,EB4 |
 | EB6 | Axiom/TBox subbehavior (mint) | AFK | WORTH | EB1,EB3 |
 | EB7 | Embed+Index subbehavior (guaranteed P2) | AFK | WORTH | EB1,EB3 |
 | EB8 | Validate+CQ subbehavior (semantic + derive/check CQs) | HITL | WORTH | EB1,EB2 |
