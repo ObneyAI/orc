@@ -28,11 +28,11 @@ and unifies finalization on one model (aligned with the recursive-only direction
 
 | # | Slice | Type | Blocked by |
 |---|-------|------|-----------|
-| RF1 | Structured `final!` finalization for the terminal `:repl-researcher` path (+ rewrite the 12 stale `repl-researcher-test` + fix the 1 stale `code-executor-test` string) | AFK | — |
-| RF2 | `seed-descriptions` test-classpath gap — make the 5 ontology tests runnable under `clj -M:poly test` | AFK · deferred | — |
-| RF3 | `build-atomicity-test` sqlite brick-dep gap — add `grain-event-store-sqlite-v3` to `orc-service/deps.edn` test scope so the brick gate exits 0 | AFK · **DONE** (`afac14dd`) | — |
-| RF4 | de-flake `reindex-processor-fires-at-threshold` — root-caused to a **real production concurrency race** (multi-fire); fixed with a per-tenant lock + deterministic test wait | AFK · **DONE** (`56cb54b8`) | RF2 |
-| RF5 | separate live/slow integration tests (s17 live-ColBERT, c2a 9-min) from the ontology fast gate — **needs a repo-owner decision** | AFK · open | RF2,RF4 |
+| RF1 | Structured `final!` finalization for the terminal `:repl-researcher` path (+ rewrite the 12 stale `repl-researcher-test` + fix the 1 stale `code-executor-test` string) | AFK · **DONE** (`47e56eea`, preserved through merge) | — |
+| RF2 | `seed-descriptions` test-classpath gap | AFK · **SUPERSEDED** by `origin/main` merge (`04c97106`) — main relocated the seed/support nss into `components/ontology/test/.../test_support/`, cleaner than RF2's `development/` dir (which the merge removed) | — |
+| RF3 | `build-atomicity-test` sqlite brick-dep gap — add `grain-event-store-sqlite-v3` to `orc-service/deps.edn` test scope | AFK · **DONE** (`afac14dd`, preserved through merge — combined with main's langfuse) | — |
+| RF4 | reindex `fires-at-threshold` multi-fire — a **real production concurrency race** | AFK · **SUPERSEDED** by merge — main's coalescing-latch + dirty-recheck fix (`87b9587a`) replaced RF4's per-tenant lock (two independent root-causes confirmed the bug; main's is canonical + more robust). Main also made ColBERT optional. | RF2 |
+| RF5 | split slow ColBERT-`build!`/scale integration tests out of the fast poly gate | AFK · **DONE** (`5539e370`) — relocated 8 heavy tests (c2a, dt1, dt4, dt9, s17, dtscale1, v01, v06) to `development/ontology-integration` (on-demand `:dev:test`); gate now 3m34s + green. Bridge proven NOT broken (s17 = 48 assertions green w/ real ColBERT; persistent + cached). | merge |
 
 **RF2 + RF3 are the same class** — "brick test-classpath gaps": a test depends on
 something present only on the root/`:dev` classpath, so `clj -M:poly test` can't
