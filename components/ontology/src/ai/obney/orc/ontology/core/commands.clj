@@ -1315,6 +1315,29 @@
              :super-predicate super-predicate
              :asserted-at (now-str)}})]})
 
+(defcommand :ontology assert-sub-class
+  "EB6 MINT — record an `rdfs:subClassOf` relationship between two CLASS
+   URIs. The sub-class is the more specific class; the super-class is the
+   broader class (e.g. Dog subClassOf Animal). Mirrors `assert-sub-property`
+   exactly: stored as a per-ontology sub→super map; lint/export consult it.
+
+   CLOSES the EB3 `:sub-class` candidate's previously-pathless silent drop:
+   before this command, class subsumption could only be set on the
+   concept-creation `:broader` SKOS field, which cannot be asserted over
+   ALREADY-LANDED concepts at axiom time — so a `:sub-class` candidate had
+   NO emission target and was dropped. This is a DATA assertion only — NO
+   inference (the formality ceiling is unchanged: it never reclassifies a
+   concept's class membership)."
+  [{{:keys [ontology-id sub-class super-class]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/sub-class-asserted
+      :tags #{[:ontology ontology-id]}
+      :body {:ontology-id ontology-id
+             :sub-class sub-class
+             :super-class super-class
+             :asserted-at (now-str)}})]})
+
 (defcommand :ontology assert-chain-axiom
   "Record a chain definition P∘Q→R (`owl:propertyChainAxiom`).
 

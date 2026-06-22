@@ -711,6 +711,17 @@
                    (uri->turtle-ref super)
                    " ."))))
 
+(defn- sub-class-of->turtle
+  "EB6 MINT — emit `rdfs:subClassOf` triples — one per sub→super class
+   mapping. Mirrors `sub-property-of->turtle`."
+  [sub-class-of-map]
+  (str/join "\n"
+            (for [[sub super] sub-class-of-map]
+              (str (uri->turtle-ref sub)
+                   " rdfs:subClassOf "
+                   (uri->turtle-ref super)
+                   " ."))))
+
 (defn- chain->turtle
   "Emit one `owl:propertyChainAxiom` triple per derived predicate, with
    the chain rendered as a Turtle list `( P Q ... )`."
@@ -804,7 +815,8 @@
         ;; {ontology-id -> axiom-map} shape.
         ;; Detect by looking for the expected keys at the top level.
         ontology-axioms (if (some #{:disjointness :characteristics
-                                    :inverse-of :sub-property-of :chains}
+                                    :inverse-of :sub-property-of :sub-class-of
+                                    :chains}
                                   (keys axioms-input))
                           [axioms-input]
                           (vals axioms-input))
@@ -814,6 +826,7 @@
                              (update :characteristics (fnil merge {}) (:characteristics m))
                              (update :inverse-of (fnil merge {}) (:inverse-of m))
                              (update :sub-property-of (fnil merge {}) (:sub-property-of m))
+                             (update :sub-class-of (fnil merge {}) (:sub-class-of m))
                              (update :chains (fnil merge {}) (:chains m))))
                        {}
                        ontology-axioms)
@@ -828,6 +841,9 @@
                   (when (seq (:sub-property-of merged))
                     (str "# Sub-Property-Of\n"
                          (sub-property-of->turtle (:sub-property-of merged))))
+                  (when (seq (:sub-class-of merged))
+                    (str "# Sub-Class-Of\n"
+                         (sub-class-of->turtle (:sub-class-of merged))))
                   (when (seq (:chains merged))
                     (str "# Chain Axioms\n"
                          (chain->turtle (:chains merged))))]

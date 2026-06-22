@@ -641,6 +641,7 @@
 ;;     :characteristics  {<predicate>  #{:functional :transitive :symmetric}}
 ;;     :inverse-of       {<predicate>  <inverse-predicate>}              ; bidirectional
 ;;     :sub-property-of  {<sub-pred>   <super-pred>}
+;;     :sub-class-of     {<sub-class>  <super-class>}                    ; EB6 mint
 ;;     :chains           {<derived-pred> [<chain-pred-1> <chain-pred-2> ...]}}}
 ;;
 ;; CRITICAL non-goal: this projection does NOT inspect concept state and
@@ -659,6 +660,7 @@
   #{:ontology/disjointness-asserted
     :ontology/property-characteristic-asserted
     :ontology/sub-property-asserted
+    :ontology/sub-class-asserted
     :ontology/chain-axiom-asserted})
 
 (defmulti axioms*
@@ -711,6 +713,16 @@
         super (:super-predicate event)]
     (assoc-in state [ontology-id :sub-property-of sub] super)))
 
+(defmethod axioms* :ontology/sub-class-asserted
+  [state event]
+  ;; EB6 MINT — each sub maps to its super class (last-write-wins on
+  ;; conflict, the SAME shape as :sub-property-of; the consumer can widen if
+  ;; multiple supers are ever needed).
+  (let [ontology-id (:ontology-id event)
+        sub (:sub-class event)
+        super (:super-class event)]
+    (assoc-in state [ontology-id :sub-class-of sub] super)))
+
 (defmethod axioms* :ontology/chain-axiom-asserted
   [state event]
   ;; Derived predicate keys the entry; the chain value is the ordered
@@ -732,8 +744,8 @@
 
 (defn get-axioms
   "Return the full axiom map (:disjointness / :characteristics /
-   :inverse-of / :sub-property-of / :chains) for an ontology-id, or
-   nil if no axioms have been asserted for it."
+   :inverse-of / :sub-property-of / :sub-class-of / :chains) for an
+   ontology-id, or nil if no axioms have been asserted for it."
   [ctx ontology-id]
   (get (rmp/project ctx :ontology/axioms) ontology-id))
 

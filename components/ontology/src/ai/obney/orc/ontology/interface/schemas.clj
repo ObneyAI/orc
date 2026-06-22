@@ -808,6 +808,17 @@
     [:super-predicate :string]
     [:asserted-at     :string]]
 
+   ;; (3b) EB6 MINT — class subsumption (rdfs:subClassOf). The sub-class is
+   ;; the more specific class; the super-class is the broader class. Mirrors
+   ;; sub-property exactly. Closes the EB3 `:sub-class` candidate's previously
+   ;; pathless silent drop.
+   :ontology/sub-class-asserted
+   [:map
+    [:ontology-id :uuid]
+    [:sub-class   :string]
+    [:super-class :string]
+    [:asserted-at :string]]
+
    ;; (4) Chain definitions — P∘Q→R rules. Stored as DEFINITIONS now;
    ;; query-time synthesis arrives in a later NEXT-tail slice. The chain
    ;; is a vector of predicates; the derived predicate is the rule head.
@@ -1536,6 +1547,20 @@
     [:ontology-id     :uuid]
     [:sub-predicate   :string]
     [:super-predicate :string]]
+
+   ;; EB6 MINT — subClassOf as a first-class TBox axiom. There was no S07
+   ;; command for class subsumption (only the concept-creation :broader
+   ;; SKOS field, which cannot be asserted over EXISTING landed concepts at
+   ;; axiom time), so an EB3 `:sub-class` candidate had no emission path and
+   ;; was silently dropped. This command mirrors `assert-sub-property`
+   ;; exactly — a per-ontology sub→super CLASS map — closing that gap with a
+   ;; real `rdfs:subClassOf` TBox axiom (NO inference; data + lint input +
+   ;; export, the same formality ceiling as the other four families).
+   :ontology/assert-sub-class
+   [:map
+    [:ontology-id :uuid]
+    [:sub-class   :string]
+    [:super-class :string]]
 
    :ontology/assert-chain-axiom
    [:map
