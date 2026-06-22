@@ -24,7 +24,7 @@ contexts).
 | EB5 | Reconcile subbehavior (entity+attribute, check-before-mint) — **DONE** (deterministic, no fork; live-verified: check-before-mint fired pre-mint w/ real ColBERT, reconcile-not-duplicate 6→7 on 2nd pass, attribute-links, 0 dangling) | AFK | WORTH | EB1,EB4 |
 | EB6 | Axiom/TBox subbehavior (mint) — **DONE** (emits real TBox axioms via S07 + MINTED assert-sub-class; live-verified axioms LAND via get-axioms; closes :axioms-skipped; honest-gap surfaces domain/range/closure + ungrounded) | AFK | WORTH | EB1,EB3 |
 | EB7 | Embed+Index subbehavior (guaranteed P2) — **DONE** (embed+ColBERT-index fire BY DEFAULT, no caller wiring; live-verified: 10 embedded + read back, index built, hybrid-search returns labeled semantic hits) | AFK | WORTH | EB1,EB3 |
-| EB8 | Validate+CQ subbehavior (semantic + derive/check CQs) | HITL | WORTH | EB1,EB2 |
+| EB8 | Validate+CQ subbehavior (semantic + derive/check CQs) — **DONE** (live-verified: derives 5 grounded goal-anchored CQs, persists as ORSD, S15 semantic gate verdict pass/unknown/fail + graph-health; consumer-override; HITL CQs surfaced) | HITL | WORTH | EB1,EB2 |
 | EB9 | Subbehavior-internal resilience (fallback/condition/troubleshoot) | AFK | WORTH | EB2–EB8 |
 | EB10 | Central evolver loop (CQ-gate-as-objective + routing) | AFK | YES | EB2–EB8,EB9 |
 | EB11 | Maintain (evolutionary: new classes/attrs vs existing graph) | AFK | WORTH | EB5,EB6,EB10 |
