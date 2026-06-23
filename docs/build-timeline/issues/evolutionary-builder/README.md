@@ -25,7 +25,7 @@ contexts).
 | EB6 | Axiom/TBox subbehavior (mint) — **DONE** (emits real TBox axioms via S07 + MINTED assert-sub-class; live-verified axioms LAND via get-axioms; closes :axioms-skipped; honest-gap surfaces domain/range/closure + ungrounded) | AFK | WORTH | EB1,EB3 |
 | EB7 | Embed+Index subbehavior (guaranteed P2) — **DONE** (embed+ColBERT-index fire BY DEFAULT, no caller wiring; live-verified: 10 embedded + read back, index built, hybrid-search returns labeled semantic hits) | AFK | WORTH | EB1,EB3 |
 | EB8 | Validate+CQ subbehavior (semantic + derive/check CQs) — **DONE** (live-verified: derives 5 grounded goal-anchored CQs, persists as ORSD, S15 semantic gate verdict pass/unknown/fail + graph-health; consumer-override; HITL CQs surfaced) | HITL | WORTH | EB1,EB2 |
-| EB9 | Subbehavior-internal resilience (fallback/condition/troubleshoot) | AFK | WORTH | EB2–EB8 |
+| EB9 | Subbehavior-internal resilience (fallback/condition/troubleshoot) — **DONE** (reusable `with-resilience`; composed into the 3 :llm subbehaviors; live-verified: recoverable→fallback recovers 572 concepts, unrecoverable→clean failure + real-LLM diagnosis, downstream not poisoned; + scoped orc-service delegate-failure-write fix) | AFK | WORTH | EB2–EB8 |
 | EB10 | Central evolver loop (CQ-gate-as-objective + routing) | AFK | YES | EB2–EB8,EB9 |
 | EB11 | Maintain (evolutionary: new classes/attrs vs existing graph) | AFK | WORTH | EB5,EB6,EB10 |
 | EB12 | End-to-end acceptance on the BRYC 5 (verify-not-assume) | HITL | NO | EB1–EB11 |

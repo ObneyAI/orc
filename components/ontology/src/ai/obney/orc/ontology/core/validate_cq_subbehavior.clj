@@ -75,6 +75,7 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [ai.obney.orc.ontology.core.cq-runner :as cqr]
+            [ai.obney.orc.ontology.core.resilience :as res]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -437,6 +438,27 @@
   []
   (dsl/sheet-id-for-name (validate-cq-subbehavior-name)))
 
+(defn- robust-derive-tail
+  "EB9 — the ROBUST CQ-derivation author's extra grounding emphasis. The
+   failure-prone DERIVE output is an EMPTY (or non-goal-grounded) CQ set — the
+   exit gate would then have nothing to judge. The ROBUST author is the SAME
+   `derive-prompt` PLUS this tail forcing at least one goal-anchored, profile-
+   grounded question. A more-robust SECOND attempt (#8), tried by the `:fallback`
+   only when the primary's CQ set failed the sanity gate. Domain-agnostic (#12)."
+  []
+  (str "\n\n*** ROBUST CQ DERIVATION (a careful re-attempt) ***\n"
+       "A prior attempt produced NO usable competency questions. Re-derive "
+       "carefully: in your `reasoning`, FIRST name the concrete parts of the GOAL "
+       "the graph must answer + the profile field(s) that GROUND each, then commit "
+       "to AT LEAST ONE clear, specific, goal-anchored question grounded in what "
+       "the profile(s) actually show. Do NOT return an empty set — the exit gate "
+       "must have something to judge."))
+
+(defn robust-derive-prompt
+  "The ROBUST DERIVE prompt: the primary `derive-prompt` PLUS the EB9 robust tail."
+  []
+  (str (derive-prompt) (robust-derive-tail)))
+
 (defn validate-cq-subbehavior-def
   "The Validate+CQ subbehavior workflow definition.
 
@@ -455,33 +477,81 @@
 
    `:consumer-cqs` (optional read) OVERRIDES derivation when supplied. `:judge-fn`
    (optional read) is the real LLM judge a production caller wires into the S15
-   gate; when omitted, the S15 runner surfaces non-Layer-1 gaps honestly."
-  [{:keys [model]}]
-  (let [nm (validate-cq-subbehavior-name)]
+   gate; when omitted, the S15 runner surfaces non-Layer-1 gaps honestly.
+
+   `resilient?` (EB9, optional) wraps the failure-prone DERIVE `:llm` step in a
+   `with-resilience` sub-tree: the PRIMARY derivation is gated by a SEMANTIC
+   `:llm-condition` (did it produce a non-empty, goal-grounded CQ set?); on a gate
+   failure a ROBUST author re-attempts; if BOTH still produce nothing usable, a
+   troubleshoot `:llm` lands a structured `:diagnosis` and the subbehavior returns
+   a CLEAN `:failure` (the exit gate never has nothing to judge dressed as a pass —
+   #4/#5). The public `:reads`/`:writes` contract is UNCHANGED."
+  [{:keys [model resilient?]}]
+  (let [nm (validate-cq-subbehavior-name)
+        mdl (or model "google/gemini-3-flash-preview")
+        derive-node
+        (fn [path-label prompt]
+          (dsl/llm (str "derive-" path-label)
+            :model mdl
+            :instruction prompt
+            :reads [:goal :profile]
+            ;; #13 — :reasoning FIRST (chain-of-thought before the questions).
+            :writes derive-contract-keys))
+        derive-body
+        (if resilient?
+          (res/with-resilience
+            {:step "derive"
+             :primary (derive-node "primary" (derive-prompt))
+             :robust  (derive-node "robust" (robust-derive-prompt))
+             ;; SEMANTIC gate — a non-empty, goal-grounded CQ set (the CQ vector
+             ;; can't be checked for non-emptiness by a flat deterministic
+             ;; :condition; a yes/no :llm-condition judges it — NOT a hardcoded
+             ;; phrase list, #7).
+             :gate {:llm-check
+                    {:model mdl
+                     :reads [:competency-questions]
+                     :instruction
+                     (str "You are a sanity gate. Below is a set of competency "
+                          "questions a derivation step produced. Answer YES only if "
+                          "it is a NON-EMPTY list containing at least one clear, "
+                          "specific, answerable question. Answer NO if the list is "
+                          "empty or contains no usable question. Answer strictly yes "
+                          "or no.")}}
+             :troubleshoot
+             {:reads [:goal :profile :competency-questions]
+              :model mdl
+              :step-label "the competency-question derivation (goal × profile → CQs)"
+              :expectation (str "a non-empty, goal-anchored set of competency "
+                                "questions grounded in the profile")}})
+          (dsl/llm "derive"
+            :model mdl
+            :instruction (derive-prompt)
+            :reads [:goal :profile]
+            :writes derive-contract-keys))]
     (dsl/workflow nm
-      (dsl/blackboard {;; public :reads — the granted scope + goal + profile(s)
-                       :ontology-id :any
-                       :goal :string
-                       :profile profile-read-schema
-                       ;; optional override + judge wiring
-                       :consumer-cqs consumer-cqs-schema
-                       :judge-fn :any
-                       ;; internal inter-node keys
-                       :reasoning :string
-                       :rationale rationale-schema
-                       :persist-result [:map {:closed false}]
-                       ;; public :writes — the derived CQs (HITL) + the gate verdict
-                       competency-questions-key competency-questions-schema
-                       cq-verdict-key cq-verdict-schema
-                       graph-health-key graph-health-schema})
+      (dsl/blackboard
+       (merge
+        {;; public :reads — the granted scope + goal + profile(s)
+         :ontology-id :any
+         :goal :string
+         :profile profile-read-schema
+         ;; optional override + judge wiring
+         :consumer-cqs consumer-cqs-schema
+         :judge-fn :any
+         ;; internal inter-node keys
+         :reasoning :string
+         :rationale rationale-schema
+         :persist-result [:map {:closed false}]
+         ;; public :writes — the derived CQs (HITL) + the gate verdict
+         competency-questions-key competency-questions-schema
+         cq-verdict-key cq-verdict-schema
+         graph-health-key graph-health-schema}
+        ;; EB9 — the resilience-internal keys (#13 reasoning + structured
+        ;; :diagnosis + the always-fail sentinel) when resilient.
+        (when resilient? (res/resilience-blackboard-keys))))
       (dsl/sequence "validate-cq-root"
-        ;; Node 1 — DERIVE the CQs (re-house DT5; #13 :reasoning FIRST).
-        (dsl/llm "derive"
-          :model (or model "google/gemini-3-flash-preview")
-          :instruction (derive-prompt)
-          :reads [:goal :profile]
-          ;; #13 — :reasoning FIRST (chain-of-thought before the questions).
-          :writes derive-contract-keys)
+        ;; Node 1 — DERIVE the CQs (resilient :fallback when :resilient?).
+        derive-body
         ;; Node 2 — PERSIST as the ORSD spec (REUSE record-competency-questions!;
         ;; consumer override). Reads the derived CQs + the consumer override.
         (dsl/code "persist"
@@ -499,5 +569,5 @@
    deterministic sheet-id. Re-registering an unchanged def is a no-op (same id).
    The central evolver tree resolves the name → id via `validate-cq-sheet-id-for`
    and `:delegate`s to it."
-  [ctx {:keys [model]}]
-  (dsl/build-workflow! ctx (validate-cq-subbehavior-def {:model model})))
+  [ctx {:keys [model resilient?]}]
+  (dsl/build-workflow! ctx (validate-cq-subbehavior-def {:model model :resilient? resilient?})))

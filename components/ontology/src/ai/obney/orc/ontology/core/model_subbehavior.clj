@@ -70,6 +70,7 @@
    from goal + profile at runtime — no CIP/SOC/IPEDS/industry schema baked in."
   (:require [ai.obney.orc.orc-service.interface :as dsl]
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
+            [ai.obney.orc.ontology.core.resilience :as res]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -306,6 +307,29 @@
   []
   (dsl/sheet-id-for-name (model-subbehavior-name)))
 
+(defn- robust-model-tail
+  "EB9 — the ROBUST model author's extra grounding emphasis. A failure-prone Model
+   output is one with NO usable entity model (an empty `:entity-types`) — the
+   profile was thin or the goal was mis-read. The ROBUST author is the SAME prompt
+   PLUS this tail forcing the model to re-derive at least one well-grounded entity
+   type from whatever the profile shows. A more-robust SECOND attempt of the SAME
+   step (#8), tried by the `:fallback` only when the primary's spec failed the
+   sanity gate. Domain-agnostic (#12): names no field, only the discipline."
+  []
+  (str "\n\n*** ROBUST MODELING (a careful re-attempt) ***\n"
+       "A prior attempt produced NO usable entity model (an empty entity-types). "
+       "Re-derive carefully: in your `reasoning`, FIRST list verbatim the concrete "
+       "entity-candidates + identifying keys the PROFILE actually surfaced, then "
+       "commit to AT LEAST ONE entity type grounded in them (with its uri-keying "
+       "field(s) + grain). Do NOT return an empty model — if the profile is thin, "
+       "model the single most-supported entity the goal needs. Re-check the scope "
+       "against the goal so you don't over-narrow to nothing."))
+
+(defn robust-model-prompt
+  "The ROBUST Model prompt: the primary `model-prompt` PLUS the EB9 robust tail."
+  []
+  (str (model-prompt) (robust-model-tail)))
+
 (defn model-subbehavior-def
   "The Model subbehavior workflow definition.
 
@@ -316,31 +340,82 @@
      :reads  [:goal :profile]
      :writes [:reasoning :model-spec :candidate-axioms]   (#13 reasoning FIRST)
    The two MAP writes (`:model-spec`, `:candidate-axioms`) declare STRUCTURED
-   `[:map …]` schemas — the LOAD-BEARING C1 fix for the `:llm` node-type."
-  [{:keys [model]}]
-  (let [nm (model-subbehavior-name)]
+   `[:map …]` schemas — the LOAD-BEARING C1 fix for the `:llm` node-type.
+
+   `resilient?` (EB9, optional) wraps the `:llm` model node in a `with-resilience`
+   sub-tree: the PRIMARY author is gated by a SEMANTIC `:llm-condition` (is the
+   model-spec a USABLE entity model with at least one entity type?); on a gate
+   failure a ROBUST author (extra grounding emphasis) re-attempts; if BOTH still
+   produce no usable model, a troubleshoot `:llm` lands a structured `:diagnosis`
+   and the subbehavior returns a CLEAN `:failure` (never an empty model dressed as
+   success — #4/#5). The Model gate uses the `:llm-condition` flavor (judgment over
+   the model-spec MAP — there is no flat count to gate deterministically), whereas
+   Extract uses the deterministic `:condition` flavor; together they exercise both
+   gate flavors of the builder. The public `:reads`/`:writes` contract is
+   UNCHANGED."
+  [{:keys [model resilient?]}]
+  (let [nm (model-subbehavior-name)
+        mdl (or model "google/gemini-3-flash-preview")
+        model-node
+        (fn [path-label prompt]
+          (dsl/llm (str "model-" path-label)
+            :model mdl
+            :instruction prompt
+            :reads [:goal :profile]
+            ;; #13 — :reasoning FIRST (chain-of-thought before the structured spec).
+            :writes [:reasoning :model-spec :candidate-axioms]))
+        body
+        (if resilient?
+          (res/with-resilience
+            {:step "model"
+             :primary (model-node "primary" (model-prompt))
+             :robust  (model-node "robust" (robust-model-prompt))
+             ;; SEMANTIC gate — the model-spec MAP cannot be checked by a flat
+             ;; deterministic :condition, so a yes/no :llm-condition judges
+             ;; usability (NOT a hardcoded phrase list — #7).
+             :gate {:llm-check
+                    {:model mdl
+                     :reads [:model-spec]
+                     :instruction
+                     (str "You are a sanity gate. Below is a model-spec produced by "
+                          "a modeling step. Answer YES only if it is a USABLE entity "
+                          "model — it has a NON-EMPTY entity-types list with at least "
+                          "one entity type that carries a type name and at least one "
+                          "uri-keying field. Answer NO if entity-types is empty/"
+                          "missing or no entity type is usable. Answer strictly yes "
+                          "or no.")}}
+             :troubleshoot
+             {:reads [:goal :profile :model-spec]
+              :model mdl
+              :step-label "the entity-model derivation (goal × profile → model-spec)"
+              :expectation (str "a usable entity model — a non-empty entity-types "
+                                "list grounded in the profile")}})
+          (dsl/llm "model"
+            :model mdl
+            :instruction (model-prompt)
+            :reads [:goal :profile]
+            :writes [:reasoning :model-spec :candidate-axioms]))]
     (dsl/workflow nm
-      (dsl/blackboard {:goal :string
-                       ;; the profile is read tolerantly; declare it structured so
-                       ;; it can also be delegated IN as a parsed map.
-                       :profile [:map {:closed false}]
-                       :reasoning :string
-                       ;; C1 — STRUCTURED schemas for the map contracts that cross
-                       ;; :delegate; NEVER a bare :map (the :llm-node failure mode).
-                       :model-spec model-spec-contract-schema
-                       :candidate-axioms candidate-axioms-schema})
-      (dsl/sequence "model-root"
-        (dsl/llm "model"
-          :model (or model "google/gemini-3-flash-preview")
-          :instruction (model-prompt)
-          :reads [:goal :profile]
-          ;; #13 — :reasoning FIRST (chain-of-thought before the structured spec).
-          :writes [:reasoning :model-spec :candidate-axioms])))))
+      (dsl/blackboard
+       (merge
+        {:goal :string
+         ;; the profile is read tolerantly; declare it structured so
+         ;; it can also be delegated IN as a parsed map.
+         :profile [:map {:closed false}]
+         :reasoning :string
+         ;; C1 — STRUCTURED schemas for the map contracts that cross
+         ;; :delegate; NEVER a bare :map (the :llm-node failure mode).
+         :model-spec model-spec-contract-schema
+         :candidate-axioms candidate-axioms-schema}
+        ;; EB9 — the resilience-internal keys (#13 reasoning + structured
+        ;; :diagnosis + the always-fail sentinel) when resilient.
+        (when resilient? (res/resilience-blackboard-keys))))
+      (dsl/sequence "model-root" body))))
 
 (defn register-model-subbehavior!
   "REGISTER (build, idempotent) the Model subbehavior sheet and return its
    deterministic sheet-id. Re-registering an unchanged def is a no-op (same id).
    The central evolver tree resolves the name → id via `model-sheet-id-for` and
    `:delegate`s to it."
-  [ctx {:keys [model]}]
-  (dsl/build-workflow! ctx (model-subbehavior-def {:model model})))
+  [ctx {:keys [model resilient?]}]
+  (dsl/build-workflow! ctx (model-subbehavior-def {:model model :resilient? resilient?})))

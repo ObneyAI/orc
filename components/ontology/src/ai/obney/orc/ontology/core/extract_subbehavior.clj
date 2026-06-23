@@ -73,6 +73,7 @@
   (:require [ai.obney.orc.orc-service.interface :as dsl]
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
+            [ai.obney.orc.ontology.core.resilience :as res]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -256,6 +257,37 @@
     ;; The #13 reasoning-first output framing across the two write keys.
     (output-framing))))
 
+(defn- robust-grounding-tail
+  "EB9 — the ROBUST author's extra grounding emphasis. The PRIMARY author's most
+   common failure (the gate the resilient step checks: a 0-concept false-empty) is
+   MIS-GROUNDING — keying field access off a column the rows do not carry, so every
+   draft uri is nil. The ROBUST author is the SAME re-housed DT4 body PLUS this
+   tail, which spends extra tokens forcing the model to ECHO the real keys it will
+   use BEFORE authoring, then ground every access in them. This is a more-robust
+   SECOND attempt of the SAME step (re-orchestration, not a new algorithm — #8),
+   tried by the `:fallback` only when the primary's output failed the sanity gate.
+   Domain-agnostic (#12): it names no field, only the discipline."
+  []
+  (str "\n\n*** ROBUST GROUNDING (a careful re-attempt) ***\n"
+       "A prior attempt at this step produced an EMPTY result — the most likely "
+       "cause is mis-grounded field access (a key that is not actually in the "
+       "rows). Be EXTRA careful: in your `reasoning`, FIRST list verbatim the EXACT "
+       "keys present in the provided `sample-rows` (copy them character-for-"
+       "character, with their key TYPE — string vs keyword). Then author the "
+       "transform accessing ONLY those exact keys. Do NOT guess, normalize, or "
+       "invent a key name; if a field you expect is absent, work from what IS "
+       "present. Re-check that the scope-filter value(s) actually occur in the "
+       "sampled rows' values before filtering on them — an over-tight or "
+       "mis-typed scope filter is the other common cause of an empty result."))
+
+(defn robust-author-prompt
+  "The ROBUST author prompt: the primary `transform-author-prompt` PLUS the EB9
+   robust-grounding tail. Used as the `:fallback`'s robust alternative for the
+   author step."
+  ([] (robust-author-prompt nil))
+  ([key-shape]
+   (str (transform-author-prompt key-shape) (robust-grounding-tail))))
+
 ;; =============================================================================
 ;; Node 3 (`:code`) — APPLY the transform over the FULL source (REUSE V20
 ;; `apply-extraction-transform!`; no fork) → drafts + per-row error count
@@ -284,6 +316,11 @@
         relationship-drafts (vec (:relationship-drafts result))]
     {:concept-drafts concept-drafts
      :relationship-drafts relationship-drafts
+     ;; EB9 — a FLAT concept-count so a deterministic resilience sanity
+     ;; `:condition` can gate the intermediate state (a `:condition` reads the
+     ;; blackboard VALUE, not a nested map field). Mirrors :extraction-report's
+     ;; nested :concept-count; written only when the apply node declares it.
+     :concept-count (count concept-drafts)
      :extraction-report
      {:selector (:selector result)
       :rows-streamed (:rows-streamed result)
@@ -335,45 +372,106 @@
    instructs the `:llm` node to ground field access in the `sample-rows` input it
    is GIVEN at runtime (Node 1's real sample), which is what makes ONE sheet serve
    any source. (The static path exists for parity with DT4's seam; the runtime
-   `sample-rows` input is the load-bearing grounding.)"
-  [{:keys [model key-shape]}]
-  (let [nm (extract-subbehavior-name)]
+   `sample-rows` input is the load-bearing grounding.)
+
+   `resilient?` (EB9, optional) wraps the failure-prone AUTHOR→APPLY sub-pipeline
+   in a `with-resilience` sub-tree: the PRIMARY (author → apply) is gated on a
+   non-empty draft set (the 0-concept false-empty the DT4 mis-ground produces); on
+   a gate failure a ROBUST author (extra grounding emphasis) re-attempts; if BOTH
+   produce an empty set, a troubleshoot `:llm` node lands a structured `:diagnosis`
+   and the subbehavior returns a CLEAN `:failure` (never a poisoned empty success —
+   #4/#5). The public `:reads`/`:writes` contract is UNCHANGED."
+  [{:keys [model key-shape resilient?]}]
+  (let [nm (extract-subbehavior-name)
+        mdl (or model "google/gemini-3-flash-preview")
+        ;; the AUTHOR → APPLY sub-pipeline (the failure-prone unit — the
+        ;; concept-count is only known AFTER apply). `author-prompt` selects the
+        ;; primary or the robust (extra-grounding) author body.
+        author-apply
+        (fn [path-label author-prompt]
+          (dsl/sequence (str "extract-" path-label)
+            (dsl/llm (str "extract-" path-label "-author")
+              :model mdl
+              :instruction author-prompt
+              :reads [:model-spec :sample-rows]
+              ;; #13 — :reasoning FIRST (chain-of-thought before the transform).
+              :writes [:reasoning :transform-source :selector])
+            (dsl/code (str "extract-" path-label "-apply")
+              :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-code"
+              :reads [:source :transform-source :selector]
+              ;; EB9 — declare the FLAT :concept-count so the sanity :condition
+              ;; can gate the intermediate state.
+              :writes [:concept-drafts :relationship-drafts
+                       :extraction-report :concept-count])))
+        ;; the RESILIENT AUTHOR→APPLY unit (only when :resilient?). When not
+        ;; resilient the original flat "author"/"apply-transform" nodes are used
+        ;; below (unchanged — EB4 contract preserved).
+        resilient-author-apply
+        (res/with-resilience
+          {:step "extract"
+           :primary (author-apply "primary" (transform-author-prompt key-shape))
+           :robust  (author-apply "robust"  (robust-author-prompt key-shape))
+           ;; deterministic sanity gate — a non-empty draft set (the 0-concept
+           ;; false-empty is the DT4 mis-ground failure mode). NO hardcoded
+           ;; phrase matching — a structural threshold on the declared key.
+           :gate {:check {:key :concept-count :op :gt :value 0}}
+           :troubleshoot
+           {:reads [:model-spec :sample-rows :transform-source
+                    :concept-count :extraction-report]
+            :model mdl
+            :step-label "the per-row extraction transform (author → apply)"
+            :expectation (str "a NON-EMPTY, scoped set of concept drafts grounded "
+                              "in the source's real keys")}})]
     (dsl/workflow nm
-      (dsl/blackboard {;; public :reads — the EB3 model-spec + the source descriptor
-                       :model-spec [:map {:closed false}]
-                       :source [:map {:closed false}]
-                       ;; internal inter-node keys
-                       :sample-rows [:vector [:map {:closed false}]]
-                       :reasoning :string
-                       :transform-source :string
-                       :selector [:maybe :string]
-                       ;; public :writes — the draft set + the coverage report
-                       :concept-drafts concept-drafts-schema
-                       :relationship-drafts relationship-drafts-schema
-                       :extraction-report extraction-report-schema})
-      (dsl/sequence "extract-root"
-        ;; Node 1 — SAMPLE real rows + key-shape (REUSE mechanical-sample-rows).
-        (dsl/code "sample-rows"
-          :fn "ai.obney.orc.ontology.core.extract-subbehavior/sample-rows-code"
-          :reads [:source]
-          :writes [:sample-rows])
-        ;; Node 2 — AUTHOR the transform (#13 :reasoning FIRST).
-        (dsl/llm "author"
-          :model (or model "google/gemini-3-flash-preview")
-          :instruction (transform-author-prompt key-shape)
-          :reads [:model-spec :sample-rows]
-          ;; #13 — :reasoning FIRST (chain-of-thought before the transform).
-          :writes [:reasoning :transform-source :selector])
-        ;; Node 3 — APPLY over the FULL source (REUSE apply-extraction-transform!).
-        (dsl/code "apply-transform"
-          :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-code"
-          :reads [:source :transform-source :selector]
-          :writes [:concept-drafts :relationship-drafts :extraction-report])))))
+      (dsl/blackboard
+       (merge
+        {;; public :reads — the EB3 model-spec + the source descriptor
+         :model-spec [:map {:closed false}]
+         :source [:map {:closed false}]
+         ;; internal inter-node keys
+         :sample-rows [:vector [:map {:closed false}]]
+         :reasoning :string
+         :transform-source :string
+         :selector [:maybe :string]
+         ;; EB9 — the flat intermediate-state count the sanity gate checks.
+         :concept-count :int
+         ;; public :writes — the draft set + the coverage report
+         :concept-drafts concept-drafts-schema
+         :relationship-drafts relationship-drafts-schema
+         :extraction-report extraction-report-schema}
+        ;; EB9 — the resilience-internal keys (the troubleshoot's #13 reasoning +
+        ;; the structured :diagnosis + the always-fail sentinel) when resilient.
+        (when resilient? (res/resilience-blackboard-keys))))
+      (if resilient?
+        (dsl/sequence "extract-root"
+          ;; Node 1 — SAMPLE real rows + key-shape (REUSE mechanical-sample-rows).
+          (dsl/code "sample-rows"
+            :fn "ai.obney.orc.ontology.core.extract-subbehavior/sample-rows-code"
+            :reads [:source]
+            :writes [:sample-rows])
+          ;; Node 2/3 — the RESILIENT AUTHOR → APPLY :fallback (EB9).
+          resilient-author-apply)
+        ;; the ORIGINAL flat three-node body (EB4 — unchanged contract + names).
+        (dsl/sequence "extract-root"
+          (dsl/code "sample-rows"
+            :fn "ai.obney.orc.ontology.core.extract-subbehavior/sample-rows-code"
+            :reads [:source]
+            :writes [:sample-rows])
+          (dsl/llm "author"
+            :model mdl
+            :instruction (transform-author-prompt key-shape)
+            :reads [:model-spec :sample-rows]
+            :writes [:reasoning :transform-source :selector])
+          (dsl/code "apply-transform"
+            :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-code"
+            :reads [:source :transform-source :selector]
+            :writes [:concept-drafts :relationship-drafts :extraction-report]))))))
 
 (defn register-extract-subbehavior!
   "REGISTER (build, idempotent) the Extract subbehavior sheet and return its
    deterministic sheet-id. Re-registering an unchanged def is a no-op (same id).
    The central evolver tree resolves the name → id via `extract-sheet-id-for` and
    `:delegate`s to it."
-  [ctx {:keys [model key-shape]}]
-  (dsl/build-workflow! ctx (extract-subbehavior-def {:model model :key-shape key-shape})))
+  [ctx {:keys [model key-shape resilient?]}]
+  (dsl/build-workflow! ctx (extract-subbehavior-def
+                            {:model model :key-shape key-shape :resilient? resilient?})))

@@ -1078,7 +1078,17 @@
         ;; For tick-scoped executions with successful writes, emit bb writes atomically
         ;; Also handle :tree-generated status (RLM two-phase execution)
         tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
-        bb-write-events (when (and tick-scoped? (#{:success :tree-generated} status) (seq writes))
+        ;; EB9: a FAILED :delegate node still propagates its (already-computed)
+        ;; child outputs to the parent blackboard — a subbehavior that fails
+        ;; CLEANLY WITH A DIAGNOSIS must surface that diagnosis across the
+        ;; :delegate seam (the structured failure artifact is the whole point of
+        ;; a clean failure). Other node types keep the original gate: a failed
+        ;; node's partial/garbage writes are dropped (no poison).
+        delegate-failure-writes? (and (= :delegate node-type) (= :failure status))
+        bb-write-events (when (and tick-scoped?
+                                   (or (#{:success :tree-generated} status)
+                                       delegate-failure-writes?)
+                                   (seq writes))
                           (mapv (fn [[k v]]
                                   (->event
                                     {:type :sheet/execution-value-written

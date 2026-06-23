@@ -1235,7 +1235,12 @@
                            {}
                            write-keys)]
 
-              ;; Complete node execution (ORC pattern)
+              ;; Complete node execution (ORC pattern). Carry :node-type :delegate
+              ;; so the completion command can project the child's structured
+              ;; outputs to the PARENT blackboard EVEN ON :failure — a subbehavior
+              ;; that fails CLEANLY WITH A DIAGNOSIS (EB9 resilience) must surface
+              ;; that diagnosis across the :delegate seam, not silently drop it
+              ;; (the failed-node write-projection gate otherwise drops it).
               (cp/process-command
                 (assoc context :command
                        (cond-> {:command/id (random-uuid)
@@ -1244,6 +1249,7 @@
                                 :sheet-id sheet-id
                                 :tick-id tick-id
                                 :node-id node-id
+                                :node-type :delegate
                                 :status status
                                 :writes (normalize-output-keys outputs)
                                 :duration-ms duration-ms}
