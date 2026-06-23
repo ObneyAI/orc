@@ -29,6 +29,7 @@
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
+            [ai.obney.orc.orc-service.core.source-tools :as source-tools]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -294,6 +295,199 @@
 ;; =============================================================================
 ;; Entity-as-node: attribute-bearing entities become NODES (not edge-only)
 ;; =============================================================================
+
+;; =============================================================================
+;; MC-0 fix #2 — SQL selector resolution / validation against the real table list
+;; =============================================================================
+;; REGRESSION: the AUTHOR node emits sql table selectors inconsistently — the
+;; literal string "null"/blank (→ "no such table: null"), a name with baked-in
+;; quotes ("\"C2022_A\"" → FROM ""C2022_A"" syntax error), or a hallucinated name.
+;; The fix RESOLVES + VALIDATES the selector against the real `list-tables` and
+;; falls back to the LARGEST table for ANY selector that doesn't name a real
+;; table. These tests drive apply-extraction-transform! against a STUB sql
+;; tools-map (no real .db) so the selector resolution is deterministic — the
+;; production source-tools-for is redef'd to return the stub.
+;;
+;; The stub's stream-all records the table-name it was actually asked to stream,
+;; so a test can assert the BAD selector NEVER reaches stream-all (it was resolved
+;; to a real table first). Pre-fix, the raw "null"/quoted string flows straight
+;; through to stream-all → the captured table is the bad string (RED).
+
+(def ^:private sql-stub-tables ["small_t" "big_t" "mid_t"])
+(def ^:private sql-stub-row-counts {"small_t" 10 "mid_t" 100 "big_t" 5000})
+
+(defn- sql-stub-tools
+  "A stub sql tools-map mirroring the V19 sql source-tools surface that
+   apply-extraction-transform! uses for the sql selector path: list-tables,
+   count-rows, and a stream-all that RECORDS the table-name it was handed (into
+   `streamed`) and returns one window of keyword-keyed rows for that table."
+  [streamed]
+  {'list-tables (fn [] sql-stub-tables)
+   'count-rows  (fn [t]
+                  (let [nm (if (map? t) (or (:name t) (:table t)) t)]
+                    {:table nm :row-count (get sql-stub-row-counts nm 0)}))
+   'stream-all  (fn stream-all
+                  ([selector] (stream-all selector {}))
+                  ([selector _opts]
+                   (let [nm (if (map? selector)
+                              (or (:name selector) (:table selector))
+                              selector)]
+                     (reset! streamed nm)
+                     ;; one window of keyword-keyed rows (the V19 sql shape)
+                     [{:table nm
+                       :rows [{:id "1" :name "Alpha"}
+                              {:id "2" :name "Beta"}]
+                       :row-count 2 :offset 0}])))})
+
+;; A transform that keys off the keyword :id/:name (the V19 sql row shape).
+(def ^:private id-name-transform
+  "(fn [row]
+     {:concept-drafts
+      [{:uri (str \"thing:\" (get row :id))
+        :label (str (get row :name))
+        :scope :custom
+        :evidence [{:source \"id\" :quote (str (get row :id))}]}]
+      :relationship-drafts []})")
+
+(defn- resolve-sql-selector
+  "Run apply-extraction-transform! with a STUB sql tools-map and return the
+   table-name stream-all was actually asked to stream — i.e. the RESOLVED
+   selector. `bad-selector` is the raw selector the author emitted."
+  [bad-selector]
+  (let [streamed (atom :never-called)]
+    (with-redefs [source-tools/source-tools-for (fn [_descriptor] (sql-stub-tools streamed))]
+      (let [result (rlm-discovery/apply-extraction-transform!
+                    {:descriptor {:type :sql :path "/tmp/does-not-exist.db"}
+                     :transform-source id-name-transform
+                     :selector bad-selector})]
+        {:streamed @streamed :result result}))))
+
+(deftest sql-selector-null-string-resolves-to-real-largest-table
+  (testing "a literal \"null\" selector (the no-such-table:null bug) is NOT passed
+            through — it resolves to a REAL table (the largest, big_t)."
+    (let [{:keys [streamed result]} (resolve-sql-selector "null")]
+      (is (= "big_t" streamed)
+          "the bad \"null\" selector must resolve to the largest REAL table, never \"null\"")
+      (is (= "big_t" (:selector result)))
+      (is (pos? (count (:concept-drafts result)))
+          "real rows streamed → non-empty drafts (no SQLITE no-such-table error)"))))
+
+(deftest sql-selector-quoted-name-is-unwrapped-to-real-table
+  (testing "a name with baked-in quotes (\"\\\"big_t\\\"\") is unwrapped and matched
+            against the real table list — NOT passed through as a quoted string
+            (which would be a FROM \"\"big_t\"\" syntax error)."
+    (let [{:keys [streamed result]} (resolve-sql-selector "\"big_t\"")]
+      (is (= "big_t" streamed)
+          "the quoted selector must be unwrapped to the real table name")
+      (is (= "big_t" (:selector result))))))
+
+(deftest sql-selector-hallucinated-name-falls-back-to-largest-table
+  (testing "a hallucinated table name (not in list-tables) falls back to the
+            largest REAL table rather than erroring."
+    (let [{:keys [streamed result]} (resolve-sql-selector "NONEXISTENT_TABLE")]
+      (is (= "big_t" streamed)
+          "a hallucinated name resolves to the largest real table")
+      (is (= "big_t" (:selector result))))))
+
+(deftest sql-selector-real-name-is-respected
+  (testing "a selector that DOES name a real table is honored as-is (the fix does
+            not over-correct a valid selector)."
+    (let [{:keys [streamed result]} (resolve-sql-selector "mid_t")]
+      (is (= "mid_t" streamed)
+          "a valid real-table selector must be respected, not overridden")
+      (is (= "mid_t" (:selector result))))))
+
+;; =============================================================================
+;; MC-0 fix #4 — each row carries BOTH keyword AND string keys before xform
+;; =============================================================================
+;; REGRESSION: the LLM author is inconsistent about row key TYPE. csv rows are
+;; string-keyed; sql/excel rows are keyword-keyed. A transform that reads the
+;; "wrong" key type silently gets nil for EVERY field → empty-URI/empty-label
+;; drafts (a false-green: "0 errors" but garbage concepts). The fix presents each
+;; row with BOTH keyword and string keys, so the transform works either way.
+;;
+;; Driven against a STUB tools-map yielding rows of a KNOWN key type, with a
+;; transform that reads the OPPOSITE key type. Pre-fix → empty URIs (RED).
+
+(defn- stub-csv-tools
+  "A stub csv-shaped tools-map: csv stream-all is selector-less (0/1-arg). Rows
+   are STRING-keyed (the real csv shape)."
+  []
+  {'stream-all (fn stream-all
+                 ([] (stream-all {}))
+                 ([_opts]
+                  [{:rows [{"id" "1" "name" "Alpha"}
+                           {"id" "2" "name" "Beta"}]}]))})
+
+;; A transform that reads KEYWORD keys (:id/:name) — the "wrong" type for a
+;; string-keyed csv row. With dual-key, the keyword lookups still resolve.
+(def ^:private keyword-reading-transform
+  "(fn [row]
+     {:concept-drafts
+      [{:uri (str \"thing:\" (get row :id))
+        :label (str (get row :name))
+        :scope :custom
+        :evidence [{:source \"id\" :quote (str (get row :id))}]}]
+      :relationship-drafts []})")
+
+(deftest dual-key-keyword-transform-over-string-keyed-rows-yields-nonempty-uris
+  (testing "a transform reading KEYWORD keys (:id) over STRING-keyed csv rows still
+            produces non-empty URIs/labels — the dual-key presentation bridges the
+            key-type mismatch. Pre-fix: every (get row :id) is nil → \"thing:\" /
+            empty label (false-green)."
+    (let [result (with-redefs [source-tools/source-tools-for (fn [_descriptor] (stub-csv-tools))]
+                   (rlm-discovery/apply-extraction-transform!
+                    {:descriptor {:type :csv :path "/tmp/does-not-exist.csv"}
+                     :transform-source keyword-reading-transform}))
+          uris (map :uri (:concept-drafts result))
+          labels (map :label (:concept-drafts result))]
+      (is (= 2 (:rows-streamed result)))
+      (is (= 0 (:rows-errored result)))
+      (is (= #{"thing:1" "thing:2"} (set uris))
+          "keyword reads resolved over string-keyed rows → real URIs, not \"thing:\"")
+      (is (every? seq labels)
+          "labels are non-empty (no empty-label false-green)")
+      (is (not-any? #(= "thing:" %) uris)
+          "no empty-suffix URI from a nil field read"))))
+
+(defn- stub-sql-tools-for-dualkey
+  "A stub sql tools-map yielding KEYWORD-keyed rows (the V19 sql shape)."
+  []
+  {'list-tables (fn [] ["t"])
+   'count-rows  (fn [_] {:table "t" :row-count 2})
+   'stream-all  (fn stream-all
+                  ([_selector] (stream-all nil {}))
+                  ([_selector _opts]
+                   [{:table "t"
+                     :rows [{:id "1" :name "Alpha"}
+                            {:id "2" :name "Beta"}]
+                     :row-count 2 :offset 0}]))})
+
+;; A transform that reads STRING keys ("id"/"name") — the "wrong" type for a
+;; keyword-keyed sql row. With dual-key, the string lookups still resolve.
+(def ^:private string-reading-transform
+  "(fn [row]
+     {:concept-drafts
+      [{:uri (str \"thing:\" (get row \"id\"))
+        :label (str (get row \"name\"))
+        :scope :custom
+        :evidence [{:source \"id\" :quote (str (get row \"id\"))}]}]
+      :relationship-drafts []})")
+
+(deftest dual-key-string-transform-over-keyword-keyed-rows-yields-nonempty-uris
+  (testing "the reverse mismatch: a transform reading STRING keys (\"id\") over
+            KEYWORD-keyed sql rows still produces non-empty URIs — dual-key bridges
+            both directions."
+    (let [result (with-redefs [source-tools/source-tools-for (fn [_descriptor] (stub-sql-tools-for-dualkey))]
+                   (rlm-discovery/apply-extraction-transform!
+                    {:descriptor {:type :sql :path "/tmp/does-not-exist.db"}
+                     :transform-source string-reading-transform
+                     :selector "t"}))
+          uris (map :uri (:concept-drafts result))]
+      (is (= 2 (:rows-streamed result)))
+      (is (= 0 (:rows-errored result)))
+      (is (= #{"thing:1" "thing:2"} (set uris))
+          "string reads resolved over keyword-keyed rows → real URIs"))))
 
 (deftest full-extraction-yields-entity-nodes-not-edge-only
   (testing "Entity-as-node scaffolding goal: a source whose rows describe

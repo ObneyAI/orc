@@ -158,6 +158,30 @@
         (is (= [:profile] (vec (:writes rr)))
             "the node's sole declared write is the :profile contract")))))
 
+;; =============================================================================
+;; MC-0 fix #5 — the survey :repl-researcher carries enough :max-iterations
+;; =============================================================================
+;; REGRESSION: 8 iterations was too tight for a DIRECTORY-of-workbooks source
+;; (e.g. O*NET's ~50 sheets): the survey hit "max iterations reached without
+;; final!" intermittently (:failed-at-survey). The fix raises :max-iterations to
+;; give the directory case headroom (simple sources still finalize early). This
+;; asserts the directory headroom STRUCTURALLY on the persisted node — pre-fix
+;; (8) → RED.
+
+(deftest survey-node-has-directory-headroom-max-iterations-test
+  (testing "the Survey :repl-researcher carries :max-iterations >= 20 so a
+            directory-of-workbooks source doesn't hit 'max iterations reached
+            without final!' (8 was too tight)."
+    (h/with-async-test-context [ctx]
+      (let [sid (survey/register-survey-subbehavior! ctx {:source csv-source})
+            nodes (rm/get-nodes-by-id ctx sid)
+            rr (first (filter #(= :repl-researcher (:type %)) (vals nodes)))]
+        (is (some? rr) "the Survey sheet has a :repl-researcher node")
+        (is (integer? (:max-iterations rr))
+            "the node carries an explicit :max-iterations bound")
+        (is (>= (:max-iterations rr) 20)
+            "the bound gives the directory-of-workbooks case headroom (>= 20)")))))
+
 ;; ---------------------------------------------------------------------------
 ;; Prompt: domain-agnostic, medium-specialized, anti-emit-tree (the C1 fix).
 ;; ---------------------------------------------------------------------------

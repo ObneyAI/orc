@@ -1188,7 +1188,11 @@
         ;; Request metadata for usage tracking
         ;; Disable validation since inputs may be JSON serialized
         ;; The node's :model rides through as a per-request override.
-        dscloj-options (cond-> (assoc options :validate? false)
+        ;; :with-metadata? true is REQUIRED — without it dscloj/predict returns the
+        ;; bare parsed map ({:result true}), NOT {:outputs {...} :usage … :model …},
+        ;; so (get-in response [:outputs :result]) was ALWAYS nil → (boolean nil) →
+        ;; the condition ALWAYS evaluated false (every :llm-condition silently failed).
+        dscloj-options (cond-> (assoc options :validate? false :with-metadata? true)
                          (:model node) (assoc :model (:model node)))]
     (try
       (let [response (dscloj/predict provider module input-values dscloj-options)

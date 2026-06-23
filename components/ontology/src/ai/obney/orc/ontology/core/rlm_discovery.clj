@@ -1057,16 +1057,64 @@
         stream-opts (cond-> {}
                       window     (assoc :window window)
                       max-windows (assoc :max-windows max-windows))
+        ;; sql selector is brittle to LLM variance — the AUTHOR node emits table
+        ;; selectors inconsistently: the literal string "null"/"nil"/blank (→ "no
+        ;; such table: null"), a name with baked-in quotes ("\"C2022_A\"" → FROM
+        ;; ""C2022_A"" syntax error), or a hallucinated name. So for sql we RESOLVE
+        ;; + VALIDATE the selector against the real table list and fall back to the
+        ;; largest table (the SAME default SAMPLE used — keeps sample/author/apply
+        ;; consistent) for ANY selector that doesn't name a real table.
+        selector (if (= :sql (or (:type descriptor) (:format descriptor)))
+                   (let [tables    (let [lt (get tools 'list-tables)]
+                                     (when (fn? lt) (vec (lt))))
+                         table-set (set tables)
+                         norm      (when (string? selector)
+                                     (let [s (.trim ^String selector)]
+                                       (if (and (>= (count s) 2)
+                                                (#{\" \'} (first s))
+                                                (= (first s) (last s)))
+                                         (subs s 1 (dec (count s)))
+                                         s)))
+                         from-map  (when (map? selector)
+                                     (or (:name selector) (:table selector)))
+                         largest   (delay
+                                     (let [count-rows (get tools 'count-rows)]
+                                       (when (seq tables)
+                                         (->> tables
+                                              (map (fn [t] [t (try (:row-count (count-rows t))
+                                                                   (catch Throwable _ 0))]))
+                                              (sort-by second >)
+                                              ffirst))))]
+                     (cond
+                       (and norm (table-set norm))         norm
+                       (and from-map (table-set from-map)) from-map
+                       :else                               @largest))
+                   selector)
         ;; csv stream-all is 0/1-arg (no selector); sql/excel are selector-first.
         windows (if (some? selector)
                   (stream-all selector stream-opts)
                   (stream-all stream-opts))
+        ;; Present each row with BOTH keyword AND string keys so the authored
+        ;; transform works whether it does (get row :UNITID) or (get row "UNITID").
+        ;; The LLM author is inconsistent about key type, and a mismatch silently
+        ;; yields nil for EVERY field → empty-URI/empty-label drafts (a false-green:
+        ;; "0 errors" but garbage concepts). Non-map rows pass through untouched.
+        dual-key (fn [row]
+                   (if (map? row)
+                     (persistent!
+                      (reduce-kv (fn [m k v]
+                                   (let [alt (cond (keyword? k) (name k)
+                                                   (string? k) (keyword k)
+                                                   :else nil)]
+                                     (cond-> (assoc! m k v) alt (assoc! alt v))))
+                                 (transient {}) row))
+                     row))
         ;; Apply the transform to one row; classify the outcome. A non-map result
         ;; or a non-sequential drafts field is a ROW ERROR (counted), not silently
         ;; coerced — a transform that returns a bad shape on a row is a real fault.
         apply-row (fn [row]
                     (try
-                      (let [r (xform row)]
+                      (let [r (xform (dual-key row))]
                         (cond
                           (not (map? r))
                           {:error (str "transform returned a non-map: " (pr-str (type r)))}

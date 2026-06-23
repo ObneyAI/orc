@@ -258,7 +258,13 @@
           :instruction (survey-prompt type)
           :reads [:goal :source-descriptor]
           :writes [:profile]
-          :max-iterations 8
+          ;; A single-file csv/sql/excel source profiles in 2-3 iterations, but a
+          ;; DIRECTORY-of-workbooks source (e.g. O*NET's db_30_1_excel, ~50 sheets)
+          ;; needs to enumerate + sample across files — 8 was too tight and the
+          ;; survey hit "max iterations reached without final!" intermittently
+          ;; (:failed-at-survey). Give the directory case headroom; simple sources
+          ;; still finalize early so this only helps the borderline case.
+          :max-iterations 20
           ;; TERMINAL mode (explicit opt-out of the recursive default) + V06
           ;; granted source-access tools for this medium.
           :rlm {:recursive? false

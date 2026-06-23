@@ -251,3 +251,36 @@
                     "degree" "stabbr" "unitid" "awlevel" "crosswalk"]]
         (is (not (str/includes? p leak))
             (str "the Extract AUTHOR prompt must not bake in the vertical term: " leak))))))
+
+;; =============================================================================
+;; MC-0 fix #3 — the APPLY :code node passes a BOUNDED :max-windows
+;; =============================================================================
+;; REGRESSION: without :max-windows the apply-step streams the FULL source
+;; unbounded, so a pathologically large table (millions of rows) times out the
+;; node wholesale. The fix passes :max-windows 50 to apply-extraction-transform!
+;; so the huge-table case samples within the node timeout instead of hanging.
+;; This test redef's apply-extraction-transform! to CAPTURE its args (no stream)
+;; and asserts the bound is present + finite. Pre-fix: :max-windows is absent
+;; from the captured args (nil) → RED.
+
+(deftest apply-node-passes-bounded-max-windows-test
+  (testing "the APPLY :code node bounds apply-extraction-transform! with a finite
+            :max-windows so an unbounded stream can't recur forever on a huge table"
+    (let [captured (atom nil)]
+      (with-redefs [rlm-discovery/apply-extraction-transform!
+                    (fn [args]
+                      (reset! captured args)
+                      {:concept-drafts [] :relationship-drafts []
+                       :selector nil :rows-streamed 0 :rows-ok 0 :rows-errored 0
+                       :windows 0 :errors-sample []})]
+        (extract/apply-transform-code
+         {:inputs {:source {:type :sql :path "/tmp/whatever.db"}
+                   :transform-source "(fn [row] {:concept-drafts [] :relationship-drafts []})"
+                   :selector "some_table"}})
+        (let [mw (:max-windows @captured)]
+          (is (some? mw)
+              "the APPLY node MUST pass :max-windows (absent → unbounded stream → timeout)")
+          (is (and (integer? mw) (pos? mw))
+              ":max-windows must be a positive finite bound")
+          (is (= 50 mw)
+              "the bound is the proven 50-window ceiling"))))))

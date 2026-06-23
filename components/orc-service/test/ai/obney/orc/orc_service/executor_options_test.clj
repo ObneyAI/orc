@@ -85,6 +85,70 @@
           (is (= :success (:status result)))
           (is (= false (:use-function-calling? @captured-options))))))))
 
+;; =============================================================================
+;; MC-0 fix #1 — :llm-condition MUST request :with-metadata? true
+;; =============================================================================
+;; REGRESSION: dscloj/predict returns TWO shapes depending on :with-metadata?:
+;;   - with :with-metadata? true  → {:outputs {:result true} :usage … :model …}
+;;   - WITHOUT it                 → the bare parsed map {:result true}
+;; execute-llm-condition reads (get-in response [:outputs :result]). Without the
+;; :with-metadata? true flag, dscloj returns the BARE map, so [:outputs :result]
+;; is nil → (boolean nil) → the condition ALWAYS evaluates false (every
+;; :llm-condition silently failed; this killed all EB9 resilience). This test
+;; simulates dscloj's REAL dual-shape behavior and asserts the node returns true.
+
+(def condition-blackboard
+  {:claim {:key :claim
+           :schema :string
+           :value "The sky is blue."
+           :version 1}})
+
+(deftest llm-condition-requests-metadata-and-parses-result
+  (testing "execute-llm-condition returns the LLM's true answer because it calls
+            dscloj/predict with :with-metadata? true (so the {:outputs {:result …}}
+            envelope is returned, not the bare parsed map). RED without the flag:
+            the bare map yields nil at [:outputs :result] → boolean false."
+    (let [captured-options (atom nil)
+          node {:type :llm-condition
+                :name "is-blue?"
+                :model "google/gemini-3-flash-preview"
+                :instruction "Is the claim true?"
+                :reads [:claim]}]
+      (with-redefs [dscloj/predict
+                    (fn [_provider _module _inputs options]
+                      (reset! captured-options options)
+                      ;; Simulate dscloj's REAL dual-shape contract: the metadata
+                      ;; envelope ONLY when :with-metadata? true; otherwise bare.
+                      (if (:with-metadata? options)
+                        {:outputs {:result true}
+                         :usage {:prompt_tokens 8 :completion_tokens 1 :total_tokens 9}
+                         :model "google/gemini-3-flash-preview"}
+                        {:result true}))]
+        (let [result (executor/execute-llm-condition
+                       node condition-blackboard :openrouter)]
+          (is (= :success (:status result)))
+          (is (= true (:result result))
+              "a clear 'yes' must surface as true — NOT silently false")
+          (is (= true (:with-metadata? @captured-options))
+              "the executor must request the metadata envelope dscloj returns :result in")))))
+
+  (testing "a clear 'no' surfaces as false (the boolean is genuinely parsed, not
+            constant-false)"
+    (with-redefs [dscloj/predict
+                  (fn [_provider _module _inputs options]
+                    (if (:with-metadata? options)
+                      {:outputs {:result false}
+                       :usage {} :model "google/gemini-3-flash-preview"}
+                      {:result false}))]
+      (let [node {:type :llm-condition
+                  :name "is-green?"
+                  :instruction "Is the claim true?"
+                  :reads [:claim]}
+            result (executor/execute-llm-condition
+                     node condition-blackboard :openrouter)]
+        (is (= :success (:status result)))
+        (is (= false (:result result)))))))
+
 (deftest repl-researcher-preserves-node-options
   (testing "repl-researcher node options are passed to its DSCloj call"
     (let [captured-options (atom nil)

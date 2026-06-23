@@ -311,7 +311,16 @@
         result (rlm-discovery/apply-extraction-transform!
                 {:descriptor source
                  :transform-source transform-source
-                 :selector selector})
+                 :selector selector
+                 ;; Bound the stream so a pathologically large table (e.g. IPEDS
+                 ;; national completions, millions of rows) yields a representative
+                 ;; SAMPLE within the node timeout rather than timing out wholesale.
+                 ;; Small csv/excel sources finish in far fewer windows, so this only
+                 ;; bites the huge-table case. The :extraction-report records
+                 ;; :windows + :rows-streamed so the truncation is HONEST (no
+                 ;; false-green); comprehensive multi-table SQL coverage is the
+                 ;; deeper follow-up.
+                 :max-windows 50})
         concept-drafts (vec (:concept-drafts result))
         relationship-drafts (vec (:relationship-drafts result))]
     {:concept-drafts concept-drafts
