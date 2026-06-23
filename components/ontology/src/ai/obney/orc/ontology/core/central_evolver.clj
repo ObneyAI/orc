@@ -1,0 +1,897 @@
+(ns ai.obney.orc.ontology.core.central-evolver
+  "EB10 — the CENTRAL evolver loop (the keystone). CQ-satisfaction as the OBJECTIVE.
+
+   This is the RE-ORCHESTRATION slice: it RE-HOUSES DT8's tree-owned adaptive
+   CQ-loop + focused-recovery logic and DT9's greenfield-vs-maintain front-of-tree
+   decision, and REUSES the deterministic skeleton `build!` (dedup + the S15
+   exit-criterion) — but instead of DT1-DT9's INLINE Profile/Model/Transform nodes
+   it composes the EB2-EB9 SUBBEHAVIORS via `:delegate`. Nothing here forks the
+   subbehaviors or the loop machinery; the new work is the COMPOSITION + the ROUTE.
+
+   ## The central tree (the OBJECTIVE is CQ-satisfaction, not a terminal report)
+
+     :condition greenfield-vs-maintain (re-house DT9 decision)
+       → Survey (per source, :delegate ontology-survey/…@v1)
+       → derive CQs (Validate+CQ derive, :delegate) + persist ORSD
+       → bounded LOOP [
+            :map-each sources (delegate Model→Extract; the fixed per-source sheet,
+                               optionally :parallel)
+            → :code land drafts + delegate Reconcile + delegate Axiom/TBox
+            → delegate Embed+Index (guaranteed P2)
+            → :code build! (dedup + the S15 exit-criterion)     ; deterministic skeleton
+            → run the CQ gate (evaluate-cqs! IN-PROCESS w/ the judge capability —
+                               the judge fn CANNOT cross :delegate)
+            → :condition on the verdict:
+                 pass         → done
+                 fail         → ROUTE (ONE adaptive :llm/decision node, :reasoning
+                                FIRST: map the failing CQ + graph-health → the
+                                subbehavior that closes the gap) → re-invoke FOCALLY
+                                → re-gate
+                 unanswerable → terminate HONESTLY (no spin, no false-green; reason)
+          ]   ; budget-bounded — ALWAYS terminates with a surfaced reason
+
+   ## RE-HOUSE / REUSE (discipline 8 — no fork)
+
+   - The LOOP + the honest-negative ethos + the budget bound + the unanswerable
+     detection are DT8's `cq-driven-loop!` SHAPE, re-housed here so each step
+     invokes a SUBBEHAVIOR rather than the inline transform node. The DT8 loop's
+     `focused-reextract!` re-ran the inline transform node; EB10's ROUTE re-invokes
+     the CLOSING SUBBEHAVIOR focally (missing entity → Extract, missing link →
+     Reconcile, missing class/attr → Axiom/Model, absent-in-source → terminate).
+   - The greenfield-vs-maintain `:condition` is `dt/greenfield-vs-maintain-branch-stub`
+     (DT9) — reused verbatim. Maintain short-circuits to the EXPLICIT, NAMED
+     `dt/maintain-deferred-stub` (no silent gap, no partial build).
+   - `build!` (skeleton) runs UNCHANGED (dedup + S15 exit-criterion + the graph-
+     health verdict shape).
+   - The CQ gate is the SUBBEHAVIOR's own `run-gate!` (EB8 `evaluate-cqs!` — the S15
+     three-layer retrieve-then-judge runner), run IN-PROCESS with the judge
+     capability, because the judge is a Clojure FN VALUE that cannot cross the
+     `:delegate` blackboard (event-sourced). Survey/Model/Extract/Reconcile/Axiom/
+     Embed all cross `:delegate`; the gate's JUDGE does not, so the gate runs
+     in-process (the EB8/EB9 fn-value boundary).
+
+   ## The ROUTE — ONE adaptive :llm/decision node (NOT hardcoded phrase matching)
+
+   On a `:failed-cq` verdict the ROUTE reads the FAILING CQ + the graph-health and
+   maps the gap to the subbehavior that closes it. It is ONE `:llm`/decision node
+   that writes `:reasoning` FIRST (#13). The mapping is the model's reasoning over
+   the CQ text + graph-health (NOT a string-equality table, #7/#12). The decision
+   space is the closeable subbehaviors + `:terminate` (genuinely-absent-in-source).
+   `route-decision` is the injected seam (production wires the real `:llm` route
+   node sheet; tests stub the verdict→route mapping deterministically).
+
+   ## Always terminates, never false-greens (#4/#9)
+
+   The loop stops on a gate PASS (`:cq-gate-passed`), on every remaining CQ being
+   UNANSWERABLE/terminate-routed (`:all-remaining-unanswerable`), or on budget
+   exhaustion (`:budget-exhausted`) — and ALWAYS surfaces a `:termination-reason`.
+   An unanswerable/budget termination is `:status :failed-cq` carrying the
+   surfaced reason + the unanswered CQs, NEVER a fake `:complete`."
+  (:require [ai.obney.orc.orc-service.interface :as dsl]
+            [ai.obney.orc.ontology.core.discovery-tree :as dt]
+            [ai.obney.orc.ontology.core.deterministic-skeleton :as skeleton]
+            [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.orc.ontology.core.survey-subbehavior :as survey]
+            [ai.obney.orc.ontology.core.model-subbehavior :as model]
+            [ai.obney.orc.ontology.core.extract-subbehavior :as extract]
+            [ai.obney.orc.ontology.core.reconcile-subbehavior :as reconcile]
+            [ai.obney.orc.ontology.core.axiom-tbox-subbehavior :as axiom]
+            [ai.obney.orc.ontology.core.embed-index-subbehavior :as embed]
+            [ai.obney.orc.ontology.core.validate-cq-subbehavior :as vcq]
+            [clojure.string :as str]))
+
+;; =============================================================================
+;; The fixed-composed per-source PIPELINE sheet — Model → Extract via :delegate
+;; (the structural :delegate-composition proof; :map-each-able / :parallel-able)
+;; =============================================================================
+;;
+;; The per-source Model → Extract pair is the part of the loop that is a FIXED
+;; composition over the subbehaviors (vs. the dynamic land/reconcile/axiom/embed/
+;; gate/route steps that read the runtime graph state + the judge). We build it as
+;; a real central ORC sheet whose two nodes `:delegate` to the Model + Extract
+;; subbehaviors, mapping `:writes`→`:reads` (Model `:model-spec` → Extract) on the
+;; ISOLATED child blackboard. The central evolver runs this sheet per source (the
+;; `:map-each` over sources; `:parallel` is the executor's per-source concurrency).
+
+(def model-extract-pipeline-name
+  "Canonical registry name for the fixed Model → Extract per-source pipeline sheet.
+   Source-agnostic (Model + Extract are both source-agnostic @v1 sheets), so ONE
+   pipeline sheet serves every source — the runtime goal/profile/source are the
+   `:reads` inputs."
+  "ontology-central/model-extract-pipeline@v1")
+
+(defn model-extract-pipeline-sheet-id-for
+  "Pure name→deterministic sheet-id lookup for the Model→Extract pipeline sheet."
+  []
+  (dsl/sheet-id-for-name model-extract-pipeline-name))
+
+(defn model-extract-pipeline-def
+  "The fixed-composed per-source pipeline sheet: `:delegate` Model → `:delegate`
+   Extract, mapping Model's `:model-spec` → Extract's `:reads` on the ISOLATED
+   child blackboard.
+
+   Contract (the public `:reads`/`:writes`):
+     :reads  [:goal :profile :source]
+     :writes [:model-spec :candidate-axioms :embed-fields
+              :concept-drafts :relationship-drafts :extraction-report]
+   Model writes `:reasoning :model-spec :candidate-axioms` (and `:embed-fields`
+   inside the model-spec); we re-surface `:embed-fields` as a top-level write for
+   the loop's Embed step. Extract reads `:model-spec :source` and writes the draft
+   set. Both delegated sheets must be registered first (the loop registers them)."
+  [{:keys [_model _resilient?]}]
+  (let [model-sid (model/model-sheet-id-for)
+        extract-sid (extract/extract-sheet-id-for)]
+    (dsl/workflow model-extract-pipeline-name
+      (dsl/blackboard
+       {;; public :reads
+        :goal :string
+        :profile [:map {:closed false}]
+        :source [:map {:closed false}]
+        ;; Model outputs (cross :delegate as parsed maps — the EB3 C1 schemas)
+        :reasoning :string
+        :model-spec model/model-spec-contract-schema
+        :candidate-axioms model/candidate-axioms-schema
+        ;; Extract outputs
+        :concept-drafts extract/concept-drafts-schema
+        :relationship-drafts extract/relationship-drafts-schema
+        :extraction-report extract/extraction-report-schema})
+      (dsl/sequence "model-extract-root"
+        ;; STEP 1 — :delegate Model (goal × profile → model-spec + candidate-axioms)
+        (dsl/delegate "delegate-model"
+          :target-sheet-id model-sid
+          :reads [:goal :profile]
+          :writes [:reasoning :model-spec :candidate-axioms]
+          :timeout-ms 180000)
+        ;; STEP 2 — :delegate Extract (model-spec × source → drafts). Reads the
+        ;; model-spec Model just wrote onto the central child blackboard.
+        (dsl/delegate "delegate-extract"
+          :target-sheet-id extract-sid
+          :reads [:model-spec :source]
+          :writes [:concept-drafts :relationship-drafts :extraction-report]
+          :timeout-ms 180000)))))
+
+(defn register-pipeline-sheets!
+  "Register (idempotent) the Model + Extract subbehaviors AND the fixed
+   Model→Extract pipeline sheet, returning their deterministic sheet-ids. The
+   pipeline `:delegate`s to Model/Extract by their deterministic ids, so they must
+   exist first. `resilient?` (EB9) is threaded to Model + Extract."
+  [ctx {:keys [model resilient?]}]
+  (let [model-sid (model/register-model-subbehavior! ctx {:model model :resilient? resilient?})
+        extract-sid (extract/register-extract-subbehavior! ctx {:model model :resilient? resilient?})
+        pipeline-sid (dsl/build-workflow!
+                      ctx (model-extract-pipeline-def {:model model :resilient? resilient?}))]
+    {:model-sheet-id model-sid
+     :extract-sheet-id extract-sid
+     :pipeline-sheet-id pipeline-sid}))
+
+;; =============================================================================
+;; The ROUTE — one adaptive :llm/decision node (the gap → closing subbehavior map)
+;; =============================================================================
+
+(def routable-subbehaviors
+  "The decision space the ROUTE node maps a failing CQ + graph-health onto — the
+   subbehaviors that can CLOSE a gap, plus `:terminate` for a genuinely-absent-in-
+   source CQ. The mapping is the model's reasoning over the CQ text + graph-health
+   (NOT a hardcoded phrase table — #7/#12). The four close-paths mirror the handoff:
+     :extract   — a MISSING ENTITY the source has but the graph lacks (re-extract).
+     :reconcile — a MISSING LINK between entities the graph already holds.
+     :axiom     — a MISSING CLASS/ATTRIBUTE constraint (TBox the graph lacks).
+     :model     — a MIS-MODELED grain/scope the re-extract needs re-decided first.
+     :terminate — the source genuinely lacks the data the CQ needs (honest #4/#9)."
+  #{:extract :reconcile :axiom :model :terminate})
+
+(def route-node-name
+  "Registry name for the standalone ROUTE :llm/decision sheet (production seam).
+   ONE adaptive node, `:reasoning` FIRST (#13), source-agnostic."
+  "ontology-central/route-decision@v1")
+
+(defn route-node-sheet-id-for []
+  (dsl/sheet-id-for-name route-node-name))
+
+(defn route-prompt
+  "The ROUTE node prompt — map a FAILING competency question + the graph-health to
+   the subbehavior that CLOSES the gap. The model reasons over the CQ + graph-health
+   (NOT a phrase table, #7/#12); `:reasoning` is written FIRST (#13). Domain-
+   agnostic (#12) — it names no vertical; it reasons about graph-shape gaps."
+  []
+  (str
+   "*** HOW THIS NODE WORKS (read carefully) ***\n"
+   "You are a single ROUTING decision step. You are GIVEN as context a FAILING "
+   "competency question (`failing-cq`, a question the built graph could NOT answer) "
+   "and the GRAPH-HEALTH metric (`graph-health`, the per-CQ pass/unknown/fail counts "
+   "+ rates). You do NOT call tools, you do NOT emit a tree — you THINK over the gap "
+   "and DECIDE which ONE focused step is most likely to close it, then PRODUCE the "
+   "declared outputs. Ignore any general guidance about tool sessions or "
+   "`emit-tree!`.\n\n"
+   "*** YOUR OUTPUT — produce these fields, REASONING FIRST (#13) ***\n"
+   "  1. `reasoning` — FIRST, before anything else: think through WHY the graph "
+   "cannot answer the failing CQ. Is the needed ENTITY missing (the source has it "
+   "but it was not extracted)? Is the needed LINK between two entities missing "
+   "(both exist but are not connected)? Is a CLASS/ATTRIBUTE-level CONSTRAINT "
+   "(disjointness / sub-class / functional key) missing? Was the grain/scope "
+   "MIS-MODELED so the right entities were never extracted? Or does the SOURCE "
+   "GENUINELY NOT CONTAIN the data the question needs (in which case no re-run can "
+   "close it — terminate honestly)? Chain-of-thought BEFORE the decision.\n"
+   "  2. `route` — EXACTLY ONE keyword naming the focused step that closes the gap:\n"
+   "       :extract   — a MISSING ENTITY the source has but the graph lacks "
+   "(re-author + re-apply the per-row extraction).\n"
+   "       :reconcile — a MISSING LINK between entities the graph already holds "
+   "(re-link / cross-source reconcile).\n"
+   "       :axiom     — a MISSING CLASS/ATTRIBUTE CONSTRAINT (a TBox axiom the graph "
+   "lacks — disjointness / sub-class / functional).\n"
+   "       :model     — a MIS-MODELED grain/scope (re-decide the entity model before "
+   "re-extracting).\n"
+   "       :terminate — the SOURCE GENUINELY LACKS the data the CQ needs; no re-run "
+   "can close it (terminate honestly — do NOT fabricate data, do NOT spin).\n"
+   "Emit `route` as a real keyword (one of :extract :reconcile :axiom :model "
+   ":terminate), NOT prose and NOT a JSON string."))
+
+(def route-decision-schema
+  "Schema for the ROUTE node's `:route` write — a keyword in the decision space.
+   Concrete (NOT `:any`) so the `:llm` executor parses it into a real keyword."
+  [:enum :extract :reconcile :axiom :model :terminate])
+
+(defn route-node-def
+  "The standalone ROUTE :llm/decision sheet — ONE adaptive node, `:reasoning` FIRST.
+
+   Contract:
+     :reads  [:failing-cq :graph-health]
+     :writes [:reasoning :route]
+   `:route` ∈ routable-subbehaviors. Source-agnostic; the central evolver invokes
+   it per failing CQ to decide the closing subbehavior (or :terminate)."
+  [{:keys [model]}]
+  (let [mdl (or model "google/gemini-3-flash-preview")]
+    (dsl/workflow route-node-name
+      (dsl/blackboard {:failing-cq :string
+                       :graph-health [:maybe [:map {:closed false}]]
+                       :reasoning :string
+                       :route route-decision-schema})
+      (dsl/sequence "route-root"
+        (dsl/llm "route"
+          :model mdl
+          :instruction (route-prompt)
+          :reads [:failing-cq :graph-health]
+          ;; #13 — :reasoning FIRST (chain-of-thought before the decision).
+          :writes [:reasoning :route])))))
+
+(defn register-route-node!
+  "Register (idempotent) the ROUTE :llm/decision sheet, returning its sheet-id."
+  [ctx {:keys [model]}]
+  (dsl/build-workflow! ctx (route-node-def {:model model})))
+
+;; =============================================================================
+;; Delegation seams — run a subbehavior via :delegate and read the writes back off
+;; the PARENT tick blackboard (discipline 7 — the projection, not the return value)
+;; =============================================================================
+
+(defn delegate-subbehavior!
+  "Run a subbehavior sheet via a CENTRAL `:delegate` tree and read its `:writes`
+   back off the PARENT tick blackboard from the projection (discipline 7 — NOT the
+   `execute` return value). This is the production delegation seam every subbehavior
+   step uses: it builds a thin one-node central `:delegate` sheet for the target,
+   executes it with the mapped `:reads`, and returns `{:status … :outputs {…}}`.
+
+   `central-name` is a stable per-target name; `bb-schema` is the central tree's
+   blackboard (declaring the SAME key names + schemas as the target — `:delegate`
+   maps by name, and the structured schemas keep the contract parsed across the
+   seam). `inputs` is the string-keyed `:reads` map dsl/execute wants.
+
+   The judge-fn (a Clojure fn value) CANNOT cross `:delegate` (event-sourced
+   blackboard) — so a step needing the judge (the CQ gate) does NOT use this seam;
+   it runs in-process (see `run-cq-gate!`)."
+  [ctx {:keys [central-name target-sheet-id bb-schema reads writes inputs timeout-ms]
+        :or {timeout-ms 180000}}]
+  (let [central-id (dsl/build-workflow!
+                    ctx (dsl/workflow central-name
+                          (dsl/blackboard bb-schema)
+                          (dsl/sequence "central-root"
+                            (dsl/delegate "to-subbehavior"
+                              :target-sheet-id target-sheet-id
+                              :reads (vec reads)
+                              :writes (vec writes)
+                              :timeout-ms timeout-ms))))
+        tick-id (random-uuid)
+        result (dsl/execute ctx central-id inputs
+                                :timeout-ms timeout-ms :tick-id tick-id)
+        parent-bb (dsl/get-tick-blackboard ctx tick-id)
+        outputs (reduce (fn [acc k]
+                          (assoc acc k (get-in parent-bb [k :value])))
+                        {} writes)]
+    {:status (:status result)
+     :tick-id tick-id
+     :outputs outputs
+     :error (:error result)}))
+
+;; ------- the per-subbehavior production delegation seams (default fns) --------
+
+(defn delegate-survey!
+  "Production Survey seam: register the per-source Survey sheet + `:delegate` it.
+   Returns `{:status … :profile <map>}`."
+  [ctx {:keys [source goal model]}]
+  (let [sub-id (survey/register-survey-subbehavior! ctx {:source source :model model})
+        r (delegate-subbehavior!
+           ctx {:central-name (str "ontology-central/survey-" (name (:type source)) "@v1")
+                :target-sheet-id sub-id
+                :bb-schema {:goal :string
+                            :source-descriptor :string
+                            :profile survey/profile-contract-schema}
+                :reads [:goal :source-descriptor]
+                :writes [:profile]
+                :inputs {"goal" goal
+                         "source-descriptor" (survey/source-descriptor-string source)}})]
+    {:status (:status r)
+     :profile (get-in r [:outputs :profile])
+     :tick-id (:tick-id r)
+     :error (:error r)}))
+
+(defn delegate-model-extract!
+  "Production Model→Extract seam: `:delegate` the fixed per-source pipeline sheet
+   (Model → Extract). Returns the drafts + the model-spec + candidate-axioms +
+   embed-fields the loop's land/axiom/embed steps consume."
+  [ctx {:keys [source goal profile pipeline-sheet-id]}]
+  (let [r (delegate-subbehavior!
+           ctx {:central-name (str "ontology-central/pipeline-" (name (:type source)) "@v1")
+                :target-sheet-id pipeline-sheet-id
+                :bb-schema {:goal :string
+                            :profile [:map {:closed false}]
+                            :source [:map {:closed false}]
+                            :model-spec model/model-spec-contract-schema
+                            :candidate-axioms model/candidate-axioms-schema
+                            :concept-drafts extract/concept-drafts-schema
+                            :relationship-drafts extract/relationship-drafts-schema
+                            :extraction-report extract/extraction-report-schema}
+                :reads [:goal :profile :source]
+                :writes [:model-spec :candidate-axioms
+                         :concept-drafts :relationship-drafts :extraction-report]
+                :inputs {"goal" goal "profile" profile "source" source}})
+        model-spec (get-in r [:outputs :model-spec])]
+    {:status (:status r)
+     :model-spec model-spec
+     :candidate-axioms (get-in r [:outputs :candidate-axioms])
+     ;; embed-fields are folded into the model-spec (EB3); surface them for Embed.
+     :embed-fields (vec (or (model/embed-fields-key model-spec) []))
+     :concept-drafts (vec (or (get-in r [:outputs :concept-drafts]) []))
+     :relationship-drafts (vec (or (get-in r [:outputs :relationship-drafts]) []))
+     :extraction-report (get-in r [:outputs :extraction-report])
+     :tick-id (:tick-id r)
+     :error (:error r)}))
+
+(defn delegate-reconcile!
+  "Production Reconcile seam: `:delegate` Reconcile (land + entity/attr reconcile)."
+  [ctx {:keys [ontology-id concept-drafts relationship-drafts source-uri-sets model]}]
+  (let [sub-id (reconcile/register-reconcile-subbehavior! ctx {:model model})
+        r (delegate-subbehavior!
+           ctx {:central-name "ontology-central/reconcile@v1"
+                :target-sheet-id sub-id
+                :bb-schema {:ontology-id :any
+                            :concept-drafts [:vector [:map {:closed false}]]
+                            :relationship-drafts [:vector [:map {:closed false}]]
+                            :source-uri-sets [:maybe [:vector [:map {:closed false}]]]
+                            reconcile/reconcile-report-key reconcile/reconcile-report-schema}
+                :reads [:ontology-id :concept-drafts :relationship-drafts :source-uri-sets]
+                :writes [reconcile/reconcile-report-key]
+                :inputs {"ontology-id" ontology-id
+                         "concept-drafts" (vec (or concept-drafts []))
+                         "relationship-drafts" (vec (or relationship-drafts []))
+                         "source-uri-sets" source-uri-sets}})]
+    {:status (:status r)
+     :reconcile-report (get-in r [:outputs reconcile/reconcile-report-key])
+     :tick-id (:tick-id r)
+     :error (:error r)}))
+
+(defn delegate-axiom!
+  "Production Axiom/TBox seam: `:delegate` Axiom/TBox (candidate axioms → S07)."
+  [ctx {:keys [ontology-id candidate-axioms model-spec model]}]
+  (let [sub-id (axiom/register-axiom-tbox-subbehavior! ctx {:model model})
+        r (delegate-subbehavior!
+           ctx {:central-name "ontology-central/axiom-tbox@v1"
+                :target-sheet-id sub-id
+                :bb-schema {:ontology-id :any
+                            :candidate-axioms [:map {:closed false}]
+                            :model-spec [:maybe [:map {:closed false}]]
+                            axiom/axiom-report-key axiom/axiom-report-schema}
+                :reads [:ontology-id :candidate-axioms :model-spec]
+                :writes [axiom/axiom-report-key]
+                :inputs {"ontology-id" ontology-id
+                         "candidate-axioms" (or candidate-axioms {:axioms []})
+                         "model-spec" model-spec}})]
+    {:status (:status r)
+     :axiom-report (get-in r [:outputs axiom/axiom-report-key])
+     :tick-id (:tick-id r)
+     :error (:error r)}))
+
+(defn delegate-embed!
+  "Production Embed+Index seam: `:delegate` Embed+Index (GUARANTEED P2)."
+  [ctx {:keys [ontology-id embed-fields model]}]
+  (let [sub-id (embed/register-embed-index-subbehavior! ctx {:model model})
+        r (delegate-subbehavior!
+           ctx {:central-name "ontology-central/embed-index@v1"
+                :target-sheet-id sub-id
+                :bb-schema {:ontology-id :any
+                            :embed-fields [:maybe [:vector :string]]
+                            embed/embed-index-report-key embed/embed-index-report-schema}
+                :reads [:ontology-id :embed-fields]
+                :writes [embed/embed-index-report-key]
+                :inputs {"ontology-id" ontology-id
+                         "embed-fields" (vec (or embed-fields []))}})]
+    {:status (:status r)
+     :embed-index-report (get-in r [:outputs embed/embed-index-report-key])
+     :tick-id (:tick-id r)
+     :error (:error r)}))
+
+(defn delegate-derive-cqs!
+  "Production Validate+CQ DERIVE seam: `:delegate` Validate+CQ to DERIVE the CQs
+   from goal × profile(s) and PERSIST them as the ORSD spec. The gate runs there
+   with NO judge (the judge can't cross `:delegate`); the IN-PROCESS gate runs the
+   judged retrieve-then-judge (`run-cq-gate!`). Returns the persisted CQs."
+  [ctx {:keys [ontology-id goal profile consumer-cqs model resilient?]}]
+  (let [sub-id (vcq/register-validate-cq-subbehavior! ctx {:model model :resilient? resilient?})
+        r (delegate-subbehavior!
+           ctx {:central-name "ontology-central/derive-cqs@v1"
+                :target-sheet-id sub-id
+                :bb-schema {:ontology-id :any
+                            :goal :string
+                            :profile vcq/profile-read-schema
+                            :consumer-cqs vcq/consumer-cqs-schema
+                            :judge-fn :any
+                            vcq/competency-questions-key vcq/competency-questions-schema
+                            vcq/cq-verdict-key vcq/cq-verdict-schema
+                            vcq/graph-health-key vcq/graph-health-schema}
+                :reads [:ontology-id :goal :profile :consumer-cqs]
+                :writes [vcq/competency-questions-key]
+                :inputs (cond-> {"ontology-id" ontology-id
+                                 "goal" goal
+                                 "profile" profile}
+                          (seq consumer-cqs) (assoc "consumer-cqs" (vec consumer-cqs)))})]
+    {:status (:status r)
+     :competency-questions (get-in r [:outputs vcq/competency-questions-key])
+     :tick-id (:tick-id r)
+     :error (:error r)}))
+
+;; =============================================================================
+;; The CQ gate — run IN-PROCESS with the judge capability (the judge fn cannot
+;; cross :delegate). REUSE the EB8 subbehavior's `run-gate!` (S15 evaluate-cqs!).
+;; =============================================================================
+
+(defn run-cq-gate!
+  "Run the S15 CQ gate IN-PROCESS with the judge capability. REUSES the EB8
+   subbehavior's `run-gate!` (which reuses `evaluate-cqs!` — the S15 three-layer
+   retrieve-then-judge runner) — NO fork. The judge-fn is a Clojure FN VALUE that
+   cannot cross the `:delegate` blackboard, so the gate runs in-process here.
+
+   Returns `{:cq-verdict [...] :graph-health <map> :evaluated <vector>}`. The
+   verdict is read back off the projection (discipline 7, inside `run-gate!`).
+   `:evaluated` is the per-CQ `{:cq-text :verdict …}` shape `failing-cq-verdicts`
+   reads (re-housed from the raw verdict so the DT8 unanswerable read still works)."
+  [ctx {:keys [ontology-id judge-fn]}]
+  (let [gate (vcq/run-gate! ctx {:ontology-id ontology-id :judge-fn judge-fn})
+        verdict (vec (:cq-verdict gate))
+        evaluated (mapv (fn [v]
+                          {:cq-text (or (:cq-text v) (:cq-index v))
+                           :verdict (:verdict v)
+                           :reasoning (:reasoning v)
+                           :gaps (:gaps v)})
+                        verdict)]
+    {:cq-verdict verdict
+     :graph-health (:graph-health gate)
+     :evaluated evaluated
+     :run-reason (:run-reason gate)}))
+
+(defn gate-passed?
+  "Apply build!'s exit-criterion to a graph-health metric — the SAME gate
+   `build!`/the deterministic skeleton uses (REUSE `skeleton/default-exit-criterion`:
+   pass-rate ≥ 0.8 AND unknown-rate ≤ 0.3). Domain-agnostic, no fork."
+  [graph-health exit-criterion]
+  (let [{:keys [pass-rate-min unknown-rate-max]}
+        (merge skeleton/default-exit-criterion exit-criterion)
+        pass-rate (or (:pass-rate graph-health) 0.0)
+        unk-rate (or (:unknown-rate graph-health) 0.0)]
+    (and (>= pass-rate pass-rate-min) (<= unk-rate unknown-rate-max))))
+
+;; =============================================================================
+;; The ROUTE seam — map a failing CQ + graph-health → the closing subbehavior
+;; (production: the :llm/decision sheet; tests stub a deterministic mapping)
+;; =============================================================================
+
+(defn route-decision!
+  "Production ROUTE seam: invoke the ROUTE `:llm`/decision sheet for ONE failing CQ
+   + the graph-health, returning the routed subbehavior keyword (one of
+   `routable-subbehaviors`). `:reasoning` is written FIRST on the node (#13). The
+   decision is the model's reasoning over the CQ + graph-health (NOT a phrase table,
+   #7/#12). The node is invoked DIRECTLY (not via `:delegate`) because a route
+   decision needs no isolated child blackboard — it is a single reasoning step on
+   the central tree's own scope."
+  [ctx {:keys [route-sheet-id failing-cq graph-health]}]
+  (let [tick-id (random-uuid)
+        result (dsl/execute ctx route-sheet-id
+                                {"failing-cq" failing-cq
+                                 "graph-health" graph-health}
+                                :timeout-ms 120000 :tick-id tick-id)
+        parent-bb (dsl/get-tick-blackboard ctx tick-id)
+        route (get-in parent-bb [:route :value])
+        route-kw (cond
+                   (keyword? route) route
+                   (string? route) (keyword (str/replace route #"^:" ""))
+                   :else :terminate)]
+    {:status (:status result)
+     :route (if (contains? routable-subbehaviors route-kw) route-kw :terminate)
+     :reasoning (get-in parent-bb [:reasoning :value])
+     :tick-id tick-id}))
+
+;; =============================================================================
+;; The CENTRAL EVOLVER LOOP — re-house DT8's cq-driven loop; route to subbehaviors
+;; =============================================================================
+
+(def default-evolver-config
+  "EB10 adaptive-loop budget + gate knobs (re-housed from `dt/default-cq-loop-config`).
+   `:max-iterations` is the HARD bound on focused route-and-close iterations after
+   the initial build (so the loop ALWAYS terminates regardless of model behavior)."
+  {:max-iterations 3})
+
+(defn- focal-close!
+  "Re-invoke the routed CLOSING subbehavior FOCALLY (NOT a full rebuild) for a
+   failing CQ. Maps the ROUTE keyword to the subbehavior seam:
+     :extract / :model → re-run the per-source Model→Extract pipeline (re-decide /
+                         re-author the extraction), re-land via Reconcile.
+     :reconcile        → re-link the current graph (Reconcile over the existing
+                         landed drafts — no new extraction).
+     :axiom            → re-emit TBox axioms (Axiom/TBox) from the held candidates.
+     :terminate        → no close (handled by the caller — the source lacks it).
+   Returns `{:status :ok/:failed :closed <route> …}`; honest on failure (#5)."
+  [ctx {:keys [route ontology-id source goal profile model resilient?
+               pipeline-sheet-id source-uri-sets held-candidate-axioms held-model-spec
+               held-embed-fields
+               seams]}]
+  (let [{:keys [model-extract-fn reconcile-fn axiom-fn embed-fn]} seams]
+    (case route
+      (:extract :model)
+      ;; re-run the per-source pipeline (re-model + re-extract) → re-land + re-embed.
+      (let [mx ((or model-extract-fn delegate-model-extract!)
+                ctx {:source source :goal goal :profile profile
+                     :pipeline-sheet-id pipeline-sheet-id :model model :resilient? resilient?})]
+        (if (not= :success (:status mx))
+          {:status :failed :closed route :error (:error mx) :stage :model-extract}
+          (let [rc ((or reconcile-fn delegate-reconcile!)
+                    ctx {:ontology-id ontology-id
+                         :concept-drafts (:concept-drafts mx)
+                         :relationship-drafts (:relationship-drafts mx)
+                         :source-uri-sets source-uri-sets :model model})
+                _ ((or embed-fn delegate-embed!)
+                   ctx {:ontology-id ontology-id :embed-fields (:embed-fields mx) :model model})]
+            {:status :ok :closed route
+             :concept-drafts (:concept-drafts mx)
+             :reconcile-report (:reconcile-report rc)})))
+
+      :reconcile
+      ;; re-link the CURRENT graph (no new extraction — connect what is already
+      ;; landed). Reconcile with empty drafts re-runs the entity/attr reconcile.
+      (let [rc ((or reconcile-fn delegate-reconcile!)
+                ctx {:ontology-id ontology-id
+                     :concept-drafts [] :relationship-drafts []
+                     :source-uri-sets source-uri-sets :model model})]
+        {:status (if (= :success (:status rc)) :ok :failed)
+         :closed route :reconcile-report (:reconcile-report rc) :error (:error rc)})
+
+      :axiom
+      ;; re-emit TBox axioms from the held candidate-axioms (no new extraction).
+      (let [ax ((or axiom-fn delegate-axiom!)
+                ctx {:ontology-id ontology-id
+                     :candidate-axioms held-candidate-axioms
+                     :model-spec held-model-spec :model model})]
+        {:status (if (= :success (:status ax)) :ok :failed)
+         :closed route :axiom-report (:axiom-report ax) :error (:error ax)})
+
+      ;; :terminate or unknown — no close attempted.
+      {:status :ok :closed :terminate})))
+
+(defn cq-objective-loop!
+  "EB10 — the central evolver's CQ-objective loop. RE-HOUSES DT8's `cq-driven-loop!`
+   SHAPE, but each focused close re-invokes the ROUTED SUBBEHAVIOR (not the inline
+   transform node). The CQ-gate is the loop OBJECTIVE: a failing CQ ROUTES (the
+   adaptive :llm/decision node, `:reasoning` first) to the subbehavior that closes
+   it, re-invoked FOCALLY, re-gated → pass; a genuinely-unanswerable / :terminate-
+   routed CQ terminates HONESTLY (no spin, no false-green); budget-bounded.
+
+   Each iteration:
+     1. read the per-CQ verdicts (the IN-PROCESS S15 gate);
+     2. for each STILL-FAILING, not-yet-unanswerable CQ, ROUTE (the :llm/decision
+        node) → the closing subbehavior (or :terminate);
+     3. re-invoke the routed subbehavior FOCALLY (`focal-close!`);
+     4. re-GATE in-process; branch:
+          gate now passes        → DONE (:complete);
+          route said :terminate, OR the close grew the graph by NOTHING toward the
+            CQ                    → that CQ is UNANSWERABLE → surface + stop chasing;
+          else loop (budget permitting).
+
+   ALWAYS terminates: stops on a pass, on all-remaining-unanswerable, or on budget
+   exhaustion — and ALWAYS surfaces a `:termination-reason` ∈ {:cq-gate-passed
+   :all-remaining-unanswerable :budget-exhausted}. NEVER spins; NEVER false-greens
+   (an unanswerable/budget termination is `:status :failed-cq` carrying the reason).
+
+   Injected seams (production defaults; tests stub them deterministically):
+     :gate-fn   — (fn [ctx {:ontology-id :judge-fn}] {:cq-verdict :graph-health
+                  :evaluated}). Default `run-cq-gate!` (in-process S15 + judge).
+     :route-fn  — (fn [ctx {:route-sheet-id :failing-cq :graph-health}] {:route kw}).
+                  Default `route-decision!` (the :llm/decision node).
+     :model-extract-fn / :reconcile-fn / :axiom-fn / :embed-fn — the focal-close
+                  subbehavior seams. Defaults delegate to the real subbehaviors."
+  [ctx {:keys [ontology-id source goal profile judge-fn exit-criterion model
+               resilient? evolver-config pipeline-sheet-id route-sheet-id
+               source-uri-sets held-candidate-axioms held-model-spec held-embed-fields
+               gate-fn route-fn model-extract-fn reconcile-fn axiom-fn embed-fn]}]
+  (let [{:keys [max-iterations]} (merge default-evolver-config evolver-config)
+        gate-fn (or gate-fn run-cq-gate!)
+        route-fn (or route-fn route-decision!)
+        seams {:model-extract-fn model-extract-fn :reconcile-fn reconcile-fn
+               :axiom-fn axiom-fn :embed-fn embed-fn}
+        graph-size (fn [] (let [cs (count (rm/get-concepts ctx {:ontology-id ontology-id}))
+                                rs (count (filterv #(= ontology-id (:ontology-id %))
+                                                   (rm/get-relationships ctx)))]
+                            (+ cs rs)))
+        ;; the initial gate over the freshly-built graph.
+        initial (gate-fn ctx {:ontology-id ontology-id :judge-fn judge-fn})]
+    (loop [iteration 0
+           gate initial
+           history []
+           unanswerable #{}]
+      (let [passed? (gate-passed? (:graph-health gate) exit-criterion)
+            gaps (dt/failing-cq-verdicts (:evaluated gate))
+            targetable (filterv #(not (contains? unanswerable (:cq-text %))) gaps)]
+        (cond
+          ;; the gate passed — DONE (the OBJECTIVE is met).
+          passed?
+          {:status :complete
+           :ontology-id ontology-id
+           :graph-health (:graph-health gate)
+           :cq-verdict (:cq-verdict gate)
+           :cq-loop {:iterations iteration
+                     :termination-reason :cq-gate-passed
+                     :unanswerable-cqs (vec unanswerable)
+                     :history history}}
+
+          ;; budget exhausted — terminate honestly with the still-failing verdict.
+          (>= iteration max-iterations)
+          {:status :failed-cq
+           :ontology-id ontology-id
+           :graph-health (:graph-health gate)
+           :cq-verdict (:cq-verdict gate)
+           :cq-loop {:iterations iteration
+                     :termination-reason :budget-exhausted
+                     :unanswerable-cqs (vec unanswerable)
+                     :history history}}
+
+          ;; every still-failing CQ is already known-unanswerable — terminate
+          ;; honestly rather than re-routing for data the sources lack.
+          (empty? targetable)
+          {:status :failed-cq
+           :ontology-id ontology-id
+           :graph-health (:graph-health gate)
+           :cq-verdict (:cq-verdict gate)
+           :cq-loop {:iterations iteration
+                     :termination-reason :all-remaining-unanswerable
+                     :unanswerable-cqs (vec unanswerable)
+                     :history history}}
+
+          :else
+          ;; :failed-cq with targetable gaps — ROUTE the first, close it focally,
+          ;; re-gate. One CQ per iteration (the most-actionable gap), budget-bounded.
+          (let [failing (first targetable)
+                cq-text (:cq-text failing)
+                before (graph-size)
+                routed (route-fn ctx {:route-sheet-id route-sheet-id
+                                      :failing-cq (str cq-text)
+                                      :graph-health (:graph-health gate)})
+                route (:route routed)]
+            (if (= :terminate route)
+              ;; the ROUTE judged the source genuinely lacks the data — UNANSWERABLE.
+              (let [unanswerable' (conj unanswerable cq-text)
+                    entry {:iteration (inc iteration)
+                           :failing-cq cq-text
+                           :route :terminate
+                           :route-reasoning (:reasoning routed)
+                           :graph-grew? false
+                           :newly-unanswerable [cq-text]}]
+                (recur (inc iteration) gate (conj history entry) unanswerable'))
+              ;; a closeable route — re-invoke the subbehavior FOCALLY, re-gate.
+              (let [close (focal-close!
+                           ctx {:route route :ontology-id ontology-id :source source
+                                :goal goal :profile profile :model model
+                                :resilient? resilient? :pipeline-sheet-id pipeline-sheet-id
+                                :source-uri-sets source-uri-sets
+                                :held-candidate-axioms held-candidate-axioms
+                                :held-model-spec held-model-spec
+                                :held-embed-fields held-embed-fields
+                                :seams seams})
+                    after (graph-size)
+                    graph-grew? (> after before)
+                    ;; UNANSWERABLE detection (honest negative): a focused close
+                    ;; aimed at THIS CQ supplied NO new graph data → the source
+                    ;; genuinely lacks what it needs. Mark it unanswerable so the
+                    ;; loop stops chasing it.
+                    newly-unanswerable (if (and (= :ok (:status close)) graph-grew?)
+                                         #{} #{cq-text})
+                    unanswerable' (into unanswerable newly-unanswerable)
+                    next-gate (if graph-grew?
+                                (gate-fn ctx {:ontology-id ontology-id :judge-fn judge-fn})
+                                gate)
+                    entry {:iteration (inc iteration)
+                           :failing-cq cq-text
+                           :route route
+                           :route-reasoning (:reasoning routed)
+                           :close-status (:status close)
+                           :graph-grew? graph-grew?
+                           :before before :after after
+                           :newly-unanswerable (vec newly-unanswerable)}]
+                (recur (inc iteration) next-gate (conj history entry) unanswerable')))))))))
+
+;; =============================================================================
+;; run-central-evolver! — the keystone entry point (greenfield-vs-maintain →
+;; survey → derive CQs → bounded loop → CQ verdict). RE-HOUSES the DT1 spine.
+;; =============================================================================
+
+(defn run-central-evolver!
+  "EB10 — the CENTRAL evolver. Pursues CQ-satisfaction as its OBJECTIVE over a set
+   of sources by COMPOSING the EB2-EB9 subbehaviors via `:delegate` and re-housing
+   DT8/DT9's loop + DT9's greenfield-vs-maintain decision. The keystone:
+
+     1. greenfield-vs-maintain `:condition` (DT9 reuse): a graph already exists for
+        the ontology-id? MAINTAIN is the EXPLICIT, NAMED deferred surface (no silent
+        gap). GREENFIELD runs the full evolver below.
+     2. SURVEY each source (`:delegate` ontology-survey/…@v1) → per-source profile.
+     3. DERIVE the CQs (`:delegate` Validate+CQ derive) + persist the ORSD spec.
+     4. For each source: `:delegate` Model→Extract (the fixed pipeline sheet), then
+        `:code` LAND + `:delegate` Reconcile + `:delegate` Axiom/TBox, then
+        `:delegate` Embed+Index (guaranteed P2).
+     5. `:code` build! (the deterministic skeleton — dedup + the S15 exit-criterion).
+     6. the CQ-OBJECTIVE LOOP (`cq-objective-loop!`): run the gate IN-PROCESS w/ the
+        judge, route failing CQs to the closing subbehavior, re-invoke focally,
+        re-gate — until pass / all-unanswerable / budget. ALWAYS terminates with a
+        surfaced reason.
+
+   Required `params`:
+     :ontology-id — the granted scope (REQUIRED).
+     :sources     — vector of source descriptors `{:type :csv|:sql|:excel :path …}`.
+     :goal        — the runtime goal that orients every subbehavior (a string).
+
+   Optional:
+     :model :budget :resilient? :judge-fn :exit-criterion :consumer-cqs
+     :evolver-config :debug? :mode (force :greenfield/:maintain)
+     + the injected loop/seam fns (tests stub them; production delegates for real).
+
+   Returns:
+     {:status :complete | :failed-cq | :maintain-deferred | :failed-at-survey
+              | :failed-at-derive-cqs
+      :ontology-id :goal :graph-health :cq-verdict
+      :branch-points {:greenfield-vs-maintain <DT9 decision>}
+      :survey-profiles [<per-source profile> …]
+      :competency-questions [<CQ> …]
+      :build-result <verbatim build! result>
+      :cq-loop {:iterations :termination-reason :unanswerable-cqs :history}}
+   A subbehavior failure surfaces honestly as :failed-at-<step> (#5; no false green)."
+  [ctx {:keys [ontology-id sources goal model budget resilient? judge-fn exit-criterion
+               consumer-cqs evolver-config debug? mode source-uri-sets
+               survey-fn derive-cqs-fn model-extract-fn reconcile-fn axiom-fn embed-fn
+               build-fn gate-fn route-fn]
+        :or {model "google/gemini-3-flash-preview"}}]
+  (when-not ontology-id
+    (throw (ex-info "run-central-evolver! requires :ontology-id (the granted scope)"
+                    {:ontology-id ontology-id})))
+  (when-not (and (sequential? sources) (seq sources))
+    (throw (ex-info "run-central-evolver! requires a non-empty :sources vector" {:sources sources})))
+  (when-not (and (string? goal) (seq goal))
+    (throw (ex-info "run-central-evolver! requires :goal (a non-blank string)" {:goal goal})))
+  (let [ctx (assoc ctx :granted-ontology-id ontology-id :ontology-id ontology-id)
+        ;; --- STEP 1: DT9 greenfield-vs-maintain (re-house the decision) ---
+        gf-branch (dt/greenfield-vs-maintain-branch-stub ctx (cond-> {:ontology-id ontology-id}
+                                                               mode (assoc :mode mode)))]
+    (if (= :maintain (:selected gf-branch))
+      ;; MAINTAIN — the EXPLICIT, NAMED deferred surface (no silent gap, no partial
+      ;; build). Re-house DT9's `maintain-deferred-stub`.
+      (dt/maintain-deferred-stub ctx {:ontology-id ontology-id :goal goal
+                                      :source (first sources)})
+
+      (let [;; seam defaults (production delegate; tests stub)
+            survey-fn (or survey-fn delegate-survey!)
+            derive-cqs-fn (or derive-cqs-fn delegate-derive-cqs!)
+            model-extract-fn (or model-extract-fn delegate-model-extract!)
+            reconcile-fn (or reconcile-fn delegate-reconcile!)
+            axiom-fn (or axiom-fn delegate-axiom!)
+            embed-fn (or embed-fn delegate-embed!)
+            build-fn (or build-fn skeleton/build!)
+            ;; register the per-source pipeline + route sheets once (idempotent).
+            {:keys [pipeline-sheet-id]}
+            (register-pipeline-sheets! ctx {:model model :resilient? resilient?})
+            route-sheet-id (register-route-node! ctx {:model model})]
+        ;; --- STEP 2: SURVEY each source (:delegate) ---
+        (let [surveys (mapv (fn [src] (assoc (survey-fn ctx {:source src :goal goal :model model})
+                                             :source src))
+                            sources)
+              survey-fail (first (filter #(not= :success (:status %)) surveys))]
+          (if survey-fail
+            {:status :failed-at-survey
+             :ontology-id ontology-id :goal goal
+             :branch-points {:greenfield-vs-maintain gf-branch}
+             :error (:error survey-fail)
+             :failed-source (:source survey-fail)}
+
+            (let [profiles (mapv :profile surveys)
+                  ;; --- STEP 3: DERIVE the CQs (:delegate) + persist ORSD ---
+                  derive (derive-cqs-fn ctx {:ontology-id ontology-id :goal goal
+                                             :profile profiles :consumer-cqs consumer-cqs
+                                             :model model :resilient? resilient?})]
+              (if (not= :success (:status derive))
+                {:status :failed-at-derive-cqs
+                 :ontology-id ontology-id :goal goal
+                 :branch-points {:greenfield-vs-maintain gf-branch}
+                 :survey-profiles profiles
+                 :error (:error derive)}
+
+                (let [;; --- STEP 4: per-source Model→Extract → land/reconcile/axiom
+                      ;;             → embed (the per-source loop body) ---
+                      per-source
+                      (mapv
+                       (fn [src profile]
+                         (let [mx (model-extract-fn
+                                   ctx {:source src :goal goal :profile profile
+                                        :pipeline-sheet-id pipeline-sheet-id
+                                        :model model :resilient? resilient?})]
+                           (when (= :success (:status mx))
+                             ;; LAND + RECONCILE (Reconcile lands the drafts via
+                             ;; compile-discovery-source! then entity/attr reconcile)
+                             (reconcile-fn ctx {:ontology-id ontology-id
+                                                :concept-drafts (:concept-drafts mx)
+                                                :relationship-drafts (:relationship-drafts mx)
+                                                :source-uri-sets source-uri-sets :model model})
+                             ;; AXIOM/TBox from the held candidate-axioms
+                             (axiom-fn ctx {:ontology-id ontology-id
+                                            :candidate-axioms (:candidate-axioms mx)
+                                            :model-spec (:model-spec mx) :model model})
+                             ;; EMBED+INDEX (guaranteed P2)
+                             (embed-fn ctx {:ontology-id ontology-id
+                                            :embed-fields (:embed-fields mx) :model model}))
+                           (assoc mx :source src)))
+                       sources profiles)
+                      mx-fail (first (filter #(not= :success (:status %)) per-source))
+                      ;; hold the last source's model-spec / candidate-axioms /
+                      ;; embed-fields for the focal-close re-invokes.
+                      last-ok (last (filter #(= :success (:status %)) per-source))]
+                  (if mx-fail
+                    {:status :failed-at-model-extract
+                     :ontology-id ontology-id :goal goal
+                     :branch-points {:greenfield-vs-maintain gf-branch}
+                     :survey-profiles profiles
+                     :error (:error mx-fail)
+                     :failed-source (:source mx-fail)}
+
+                    (let [;; --- STEP 5: build! (deterministic skeleton — dedup +
+                          ;;             S15 exit-criterion over the landed graph) ---
+                          build-result (build-fn ctx (cond-> {:ontology-id ontology-id
+                                                              :sources [{:type :inline-concepts
+                                                                         :concepts []}]}
+                                                       judge-fn (assoc :judge-fn judge-fn)
+                                                       exit-criterion (assoc :exit-criterion exit-criterion)))
+                          ;; --- STEP 6: the CQ-OBJECTIVE LOOP ---
+                          loop-result (cq-objective-loop!
+                                       ctx {:ontology-id ontology-id :source (first sources)
+                                            :goal goal :profile (first profiles)
+                                            :judge-fn judge-fn :exit-criterion exit-criterion
+                                            :model model :resilient? resilient?
+                                            :evolver-config evolver-config
+                                            :pipeline-sheet-id pipeline-sheet-id
+                                            :route-sheet-id route-sheet-id
+                                            :source-uri-sets source-uri-sets
+                                            :held-candidate-axioms (:candidate-axioms last-ok)
+                                            :held-model-spec (:model-spec last-ok)
+                                            :held-embed-fields (:embed-fields last-ok)
+                                            :gate-fn gate-fn :route-fn route-fn
+                                            :model-extract-fn model-extract-fn
+                                            :reconcile-fn reconcile-fn
+                                            :axiom-fn axiom-fn :embed-fn embed-fn})]
+                      (merge
+                       (select-keys loop-result [:status :graph-health :cq-verdict :cq-loop])
+                       {:ontology-id ontology-id
+                        :goal goal
+                        :branch-points {:greenfield-vs-maintain gf-branch}
+                        :survey-profiles profiles
+                        :competency-questions (:competency-questions derive)
+                        :build-result build-result}))))))))))))

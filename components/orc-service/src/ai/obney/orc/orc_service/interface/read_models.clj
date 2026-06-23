@@ -92,6 +92,13 @@
   [ctx tick-id]
   (core/get-tick ctx tick-id))
 
+(defn get-tick-blackboard
+  "Get the blackboard state for a tick (the projection read-back of a tick's final
+   blackboard — the discipline-7 surface for asserting a tick's writes LANDED, NOT
+   trusting the `execute` return value). Returns `{<key> {:value … :schema …}}`."
+  [ctx tick-id]
+  (core/get-tick-blackboard ctx tick-id))
+
 ;; =============================================================================
 ;; Version Read Model Functions
 ;; =============================================================================

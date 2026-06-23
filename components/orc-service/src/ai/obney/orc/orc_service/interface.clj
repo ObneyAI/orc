@@ -46,6 +46,7 @@
 
 ;; Tick functions
 (def get-tick rm/get-tick)
+(def get-tick-blackboard rm/get-tick-blackboard)
 
 ;; Version functions
 (def get-versions-for-sheet rm/get-versions-for-sheet)
