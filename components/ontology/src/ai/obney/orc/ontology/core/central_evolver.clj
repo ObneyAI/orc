@@ -725,6 +725,144 @@
                 (recur (inc iteration) next-gate (conj history entry) unanswerable')))))))))
 
 ;; =============================================================================
+;; run-evolver-pipeline! — the SHARED per-source subbehavior pipeline (survey →
+;; derive CQs → model→extract → reconcile → axiom → embed → build → CQ loop).
+;; BOTH the greenfield AND the maintain arm run THIS — the only difference is the
+;; recorded branch decision + the `:mode` tag, because the subbehaviors already
+;; READ CURRENT GRAPH STATE (EB5 reconcile-drafts! reads pre-existing-uris before
+;; landing; greenfield's empty graph and maintain's populated graph are the same
+;; code path against a different starting projection). EB11 flips the maintain arm
+;; from `dt/maintain-deferred-stub` to THIS shared pipeline — RE-ORCHESTRATION,
+;; not a fork (discipline 8): no subbehavior or loop machinery is duplicated.
+;; =============================================================================
+
+(defn- run-evolver-pipeline!
+  "The shared evolver pipeline (EB10 STEP 2-6) both arms run. `mode` is
+   `:greenfield` | `:maintain` (recorded on the result as `:mode`); `gf-branch` is
+   the DT9 decision recorded under `:branch-points`. For `:maintain`, the EXISTING
+   graph is the starting projection — the per-source reconcile (EB5) reads it and
+   reconciles-not-duplicates (idempotent), the new source's NEW classes/attrs land
+   ALONGSIDE the existing graph, and the CQ loop re-gates the UPDATED graph. The
+   pipeline body is IDENTICAL across modes because the subbehaviors are
+   against-graph-state by construction (handoff §3 — the single load-bearing seam).
+
+   Injected seams default to the production `:delegate`s; tests stub them."
+  [ctx {:keys [ontology-id sources goal model resilient? judge-fn exit-criterion
+               consumer-cqs evolver-config mode gf-branch source-uri-sets
+               survey-fn derive-cqs-fn model-extract-fn reconcile-fn axiom-fn embed-fn
+               build-fn gate-fn route-fn]}]
+  (let [;; seam defaults (production delegate; tests stub)
+        survey-fn (or survey-fn delegate-survey!)
+        derive-cqs-fn (or derive-cqs-fn delegate-derive-cqs!)
+        model-extract-fn (or model-extract-fn delegate-model-extract!)
+        reconcile-fn (or reconcile-fn delegate-reconcile!)
+        axiom-fn (or axiom-fn delegate-axiom!)
+        embed-fn (or embed-fn delegate-embed!)
+        build-fn (or build-fn skeleton/build!)
+        ;; register the per-source pipeline + route sheets once (idempotent).
+        {:keys [pipeline-sheet-id]}
+        (register-pipeline-sheets! ctx {:model model :resilient? resilient?})
+        route-sheet-id (register-route-node! ctx {:model model})
+        ;; the common result envelope keys (the branch decision + the mode tag are
+        ;; recorded identically across modes; only their VALUES differ).
+        envelope {:ontology-id ontology-id
+                  :goal goal
+                  :mode mode
+                  :branch-points {:greenfield-vs-maintain gf-branch}}]
+    ;; --- STEP 2: SURVEY each source (:delegate) ---
+    (let [surveys (mapv (fn [src] (assoc (survey-fn ctx {:source src :goal goal :model model})
+                                         :source src))
+                        sources)
+          survey-fail (first (filter #(not= :success (:status %)) surveys))]
+      (if survey-fail
+        (merge envelope
+               {:status :failed-at-survey
+                :error (:error survey-fail)
+                :failed-source (:source survey-fail)})
+
+        (let [profiles (mapv :profile surveys)
+              ;; --- STEP 3: DERIVE the CQs (:delegate) + persist ORSD ---
+              derive (derive-cqs-fn ctx {:ontology-id ontology-id :goal goal
+                                         :profile profiles :consumer-cqs consumer-cqs
+                                         :model model :resilient? resilient?})]
+          (if (not= :success (:status derive))
+            (merge envelope
+                   {:status :failed-at-derive-cqs
+                    :survey-profiles profiles
+                    :error (:error derive)})
+
+            (let [;; --- STEP 4: per-source Model→Extract → land/reconcile/axiom
+                  ;;             → embed (the per-source loop body) ---
+                  per-source
+                  (mapv
+                   (fn [src profile]
+                     (let [mx (model-extract-fn
+                               ctx {:source src :goal goal :profile profile
+                                    :pipeline-sheet-id pipeline-sheet-id
+                                    :model model :resilient? resilient?})]
+                       (when (= :success (:status mx))
+                         ;; LAND + RECONCILE (Reconcile lands the drafts via
+                         ;; compile-discovery-source! then entity/attr reconcile
+                         ;; AGAINST CURRENT GRAPH STATE — the maintain seam: an
+                         ;; existing entity reconciles-not-duplicates, a new
+                         ;; class/attr lands alongside the existing graph).
+                         (reconcile-fn ctx {:ontology-id ontology-id
+                                            :concept-drafts (:concept-drafts mx)
+                                            :relationship-drafts (:relationship-drafts mx)
+                                            :source-uri-sets source-uri-sets :model model})
+                         ;; AXIOM/TBox from the held candidate-axioms (NEW classes/
+                         ;; properties + how they relate to existing — TBox evolution).
+                         (axiom-fn ctx {:ontology-id ontology-id
+                                        :candidate-axioms (:candidate-axioms mx)
+                                        :model-spec (:model-spec mx) :model model})
+                         ;; EMBED+INDEX (guaranteed P2)
+                         (embed-fn ctx {:ontology-id ontology-id
+                                        :embed-fields (:embed-fields mx) :model model}))
+                       (assoc mx :source src)))
+                   sources profiles)
+                  mx-fail (first (filter #(not= :success (:status %)) per-source))
+                  ;; hold the last source's model-spec / candidate-axioms /
+                  ;; embed-fields for the focal-close re-invokes.
+                  last-ok (last (filter #(= :success (:status %)) per-source))]
+              (if mx-fail
+                (merge envelope
+                       {:status :failed-at-model-extract
+                        :survey-profiles profiles
+                        :error (:error mx-fail)
+                        :failed-source (:source mx-fail)})
+
+                (let [;; --- STEP 5: build! (deterministic skeleton — dedup +
+                      ;;             S15 exit-criterion over the landed graph) ---
+                      build-result (build-fn ctx (cond-> {:ontology-id ontology-id
+                                                          :sources [{:type :inline-concepts
+                                                                     :concepts []}]}
+                                                   judge-fn (assoc :judge-fn judge-fn)
+                                                   exit-criterion (assoc :exit-criterion exit-criterion)))
+                      ;; --- STEP 6: the CQ-OBJECTIVE LOOP ---
+                      loop-result (cq-objective-loop!
+                                   ctx {:ontology-id ontology-id :source (first sources)
+                                        :goal goal :profile (first profiles)
+                                        :judge-fn judge-fn :exit-criterion exit-criterion
+                                        :model model :resilient? resilient?
+                                        :evolver-config evolver-config
+                                        :pipeline-sheet-id pipeline-sheet-id
+                                        :route-sheet-id route-sheet-id
+                                        :source-uri-sets source-uri-sets
+                                        :held-candidate-axioms (:candidate-axioms last-ok)
+                                        :held-model-spec (:model-spec last-ok)
+                                        :held-embed-fields (:embed-fields last-ok)
+                                        :gate-fn gate-fn :route-fn route-fn
+                                        :model-extract-fn model-extract-fn
+                                        :reconcile-fn reconcile-fn
+                                        :axiom-fn axiom-fn :embed-fn embed-fn})]
+                  (merge
+                   envelope
+                   (select-keys loop-result [:status :graph-health :cq-verdict :cq-loop])
+                   {:survey-profiles profiles
+                    :competency-questions (:competency-questions derive)
+                    :build-result build-result}))))))))))
+
+;; =============================================================================
 ;; run-central-evolver! — the keystone entry point (greenfield-vs-maintain →
 ;; survey → derive CQs → bounded loop → CQ verdict). RE-HOUSES the DT1 spine.
 ;; =============================================================================
@@ -735,8 +873,15 @@
    DT8/DT9's loop + DT9's greenfield-vs-maintain decision. The keystone:
 
      1. greenfield-vs-maintain `:condition` (DT9 reuse): a graph already exists for
-        the ontology-id? MAINTAIN is the EXPLICIT, NAMED deferred surface (no silent
-        gap). GREENFIELD runs the full evolver below.
+        the ontology-id? BOTH arms run the SAME evolver pipeline below
+        (`run-evolver-pipeline!`) — the difference is the recorded branch decision +
+        the `:mode` tag. MAINTAIN (EB11) runs the pipeline AGAINST THE EXISTING
+        graph: the EB5 reconcile reads current graph state so an existing entity
+        reconciles-not-duplicates (idempotent), a NEW source's NEW classes/attrs
+        land alongside the existing graph (TBox evolution via EB6), and the CQ loop
+        re-gates the UPDATED graph. GREENFIELD runs it against an empty graph. It is
+        the SAME code path (handoff §3 — the subbehaviors are against-graph-state by
+        construction); EB11 flipped the maintain arm from the deferred stub.
      2. SURVEY each source (`:delegate` ontology-survey/…@v1) → per-source profile.
      3. DERIVE the CQs (`:delegate` Validate+CQ derive) + persist the ORSD spec.
      4. For each source: `:delegate` Model→Extract (the fixed pipeline sheet), then
@@ -759,15 +904,23 @@
      + the injected loop/seam fns (tests stub them; production delegates for real).
 
    Returns:
-     {:status :complete | :failed-cq | :maintain-deferred | :failed-at-survey
-              | :failed-at-derive-cqs
+     {:status :complete | :failed-cq | :failed-at-survey | :failed-at-derive-cqs
+              | :failed-at-model-extract
+      :mode :greenfield | :maintain           ; which arm ran (EB11)
       :ontology-id :goal :graph-health :cq-verdict
       :branch-points {:greenfield-vs-maintain <DT9 decision>}
       :survey-profiles [<per-source profile> …]
       :competency-questions [<CQ> …]
       :build-result <verbatim build! result>
       :cq-loop {:iterations :termination-reason :unanswerable-cqs :history}}
-   A subbehavior failure surfaces honestly as :failed-at-<step> (#5; no false green)."
+   A subbehavior failure surfaces honestly as :failed-at-<step> (#5; no false green).
+
+   EB11: BOTH the greenfield AND the maintain arm now run the SHARED
+   `run-evolver-pipeline!` (the maintain arm was flipped from `maintain-deferred-
+   stub`). The maintain arm runs the pipeline AGAINST THE EXISTING graph (the EB5
+   reconcile is against-graph-state, so this is RE-ORCHESTRATION, not a fork — the
+   existing graph is the input; the new source's discoveries reconcile-not-
+   duplicate and grow the TBox). `:mode` distinguishes which arm ran."
   [ctx {:keys [ontology-id sources goal model budget resilient? judge-fn exit-criterion
                consumer-cqs evolver-config debug? mode source-uri-sets
                survey-fn derive-cqs-fn model-extract-fn reconcile-fn axiom-fn embed-fn
@@ -783,115 +936,20 @@
   (let [ctx (assoc ctx :granted-ontology-id ontology-id :ontology-id ontology-id)
         ;; --- STEP 1: DT9 greenfield-vs-maintain (re-house the decision) ---
         gf-branch (dt/greenfield-vs-maintain-branch-stub ctx (cond-> {:ontology-id ontology-id}
-                                                               mode (assoc :mode mode)))]
-    (if (= :maintain (:selected gf-branch))
-      ;; MAINTAIN — the EXPLICIT, NAMED deferred surface (no silent gap, no partial
-      ;; build). Re-house DT9's `maintain-deferred-stub`.
-      (dt/maintain-deferred-stub ctx {:ontology-id ontology-id :goal goal
-                                      :source (first sources)})
-
-      (let [;; seam defaults (production delegate; tests stub)
-            survey-fn (or survey-fn delegate-survey!)
-            derive-cqs-fn (or derive-cqs-fn delegate-derive-cqs!)
-            model-extract-fn (or model-extract-fn delegate-model-extract!)
-            reconcile-fn (or reconcile-fn delegate-reconcile!)
-            axiom-fn (or axiom-fn delegate-axiom!)
-            embed-fn (or embed-fn delegate-embed!)
-            build-fn (or build-fn skeleton/build!)
-            ;; register the per-source pipeline + route sheets once (idempotent).
-            {:keys [pipeline-sheet-id]}
-            (register-pipeline-sheets! ctx {:model model :resilient? resilient?})
-            route-sheet-id (register-route-node! ctx {:model model})]
-        ;; --- STEP 2: SURVEY each source (:delegate) ---
-        (let [surveys (mapv (fn [src] (assoc (survey-fn ctx {:source src :goal goal :model model})
-                                             :source src))
-                            sources)
-              survey-fail (first (filter #(not= :success (:status %)) surveys))]
-          (if survey-fail
-            {:status :failed-at-survey
-             :ontology-id ontology-id :goal goal
-             :branch-points {:greenfield-vs-maintain gf-branch}
-             :error (:error survey-fail)
-             :failed-source (:source survey-fail)}
-
-            (let [profiles (mapv :profile surveys)
-                  ;; --- STEP 3: DERIVE the CQs (:delegate) + persist ORSD ---
-                  derive (derive-cqs-fn ctx {:ontology-id ontology-id :goal goal
-                                             :profile profiles :consumer-cqs consumer-cqs
-                                             :model model :resilient? resilient?})]
-              (if (not= :success (:status derive))
-                {:status :failed-at-derive-cqs
-                 :ontology-id ontology-id :goal goal
-                 :branch-points {:greenfield-vs-maintain gf-branch}
-                 :survey-profiles profiles
-                 :error (:error derive)}
-
-                (let [;; --- STEP 4: per-source Model→Extract → land/reconcile/axiom
-                      ;;             → embed (the per-source loop body) ---
-                      per-source
-                      (mapv
-                       (fn [src profile]
-                         (let [mx (model-extract-fn
-                                   ctx {:source src :goal goal :profile profile
-                                        :pipeline-sheet-id pipeline-sheet-id
-                                        :model model :resilient? resilient?})]
-                           (when (= :success (:status mx))
-                             ;; LAND + RECONCILE (Reconcile lands the drafts via
-                             ;; compile-discovery-source! then entity/attr reconcile)
-                             (reconcile-fn ctx {:ontology-id ontology-id
-                                                :concept-drafts (:concept-drafts mx)
-                                                :relationship-drafts (:relationship-drafts mx)
-                                                :source-uri-sets source-uri-sets :model model})
-                             ;; AXIOM/TBox from the held candidate-axioms
-                             (axiom-fn ctx {:ontology-id ontology-id
-                                            :candidate-axioms (:candidate-axioms mx)
-                                            :model-spec (:model-spec mx) :model model})
-                             ;; EMBED+INDEX (guaranteed P2)
-                             (embed-fn ctx {:ontology-id ontology-id
-                                            :embed-fields (:embed-fields mx) :model model}))
-                           (assoc mx :source src)))
-                       sources profiles)
-                      mx-fail (first (filter #(not= :success (:status %)) per-source))
-                      ;; hold the last source's model-spec / candidate-axioms /
-                      ;; embed-fields for the focal-close re-invokes.
-                      last-ok (last (filter #(= :success (:status %)) per-source))]
-                  (if mx-fail
-                    {:status :failed-at-model-extract
-                     :ontology-id ontology-id :goal goal
-                     :branch-points {:greenfield-vs-maintain gf-branch}
-                     :survey-profiles profiles
-                     :error (:error mx-fail)
-                     :failed-source (:source mx-fail)}
-
-                    (let [;; --- STEP 5: build! (deterministic skeleton — dedup +
-                          ;;             S15 exit-criterion over the landed graph) ---
-                          build-result (build-fn ctx (cond-> {:ontology-id ontology-id
-                                                              :sources [{:type :inline-concepts
-                                                                         :concepts []}]}
-                                                       judge-fn (assoc :judge-fn judge-fn)
-                                                       exit-criterion (assoc :exit-criterion exit-criterion)))
-                          ;; --- STEP 6: the CQ-OBJECTIVE LOOP ---
-                          loop-result (cq-objective-loop!
-                                       ctx {:ontology-id ontology-id :source (first sources)
-                                            :goal goal :profile (first profiles)
-                                            :judge-fn judge-fn :exit-criterion exit-criterion
-                                            :model model :resilient? resilient?
-                                            :evolver-config evolver-config
-                                            :pipeline-sheet-id pipeline-sheet-id
-                                            :route-sheet-id route-sheet-id
-                                            :source-uri-sets source-uri-sets
-                                            :held-candidate-axioms (:candidate-axioms last-ok)
-                                            :held-model-spec (:model-spec last-ok)
-                                            :held-embed-fields (:embed-fields last-ok)
-                                            :gate-fn gate-fn :route-fn route-fn
-                                            :model-extract-fn model-extract-fn
-                                            :reconcile-fn reconcile-fn
-                                            :axiom-fn axiom-fn :embed-fn embed-fn})]
-                      (merge
-                       (select-keys loop-result [:status :graph-health :cq-verdict :cq-loop])
-                       {:ontology-id ontology-id
-                        :goal goal
-                        :branch-points {:greenfield-vs-maintain gf-branch}
-                        :survey-profiles profiles
-                        :competency-questions (:competency-questions derive)
-                        :build-result build-result}))))))))))))
+                                                               mode (assoc :mode mode)))
+        ;; EB11: BOTH arms run the SAME pipeline. The maintain arm runs it AGAINST
+        ;; THE EXISTING graph (the subbehaviors are against-graph-state by
+        ;; construction — handoff §3); the only difference is the `:mode` tag and
+        ;; the recorded branch decision. This is the FLIP of the deferred stub:
+        ;; re-orchestration (reuse the pipeline + the loop + the subbehaviors),
+        ;; NOT a rewrite (discipline 8).
+        run-mode (:selected gf-branch)]
+    (run-evolver-pipeline!
+     ctx {:ontology-id ontology-id :sources sources :goal goal :model model
+          :resilient? resilient? :judge-fn judge-fn :exit-criterion exit-criterion
+          :consumer-cqs consumer-cqs :evolver-config evolver-config
+          :mode run-mode :gf-branch gf-branch :source-uri-sets source-uri-sets
+          :survey-fn survey-fn :derive-cqs-fn derive-cqs-fn
+          :model-extract-fn model-extract-fn :reconcile-fn reconcile-fn
+          :axiom-fn axiom-fn :embed-fn embed-fn
+          :build-fn build-fn :gate-fn gate-fn :route-fn route-fn})))

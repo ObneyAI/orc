@@ -19,7 +19,9 @@
        PASS; an unanswerable / :terminate-routed CQ → honest terminate (no spin, no
        false-green, surfaced reason); budget-bounded (always terminates);
      - the greenfield-vs-maintain `:condition` selects correctly (DT9 reuse): a
-       populated graph → the EXPLICIT maintain-deferred surface (no silent gap);
+       populated graph → the MAINTAIN arm (EB11 flipped this from the deferred stub
+       to the real evolutionary-maintain composition; full EB11 behavior is in the
+       eb11-maintain-evolutionary-test ns);
      - `gate-passed?` REUSES the skeleton exit-criterion (no fork).
 
    Domain-agnostic fixtures — no education/CIP/SOC specifics (Discipline #12)."
@@ -369,35 +371,66 @@
         (is (= [{:entity-candidates ["thing"]}] (:survey-profiles result))
             "the per-source profiles are surfaced")))))
 
-(deftest maintain-selects-the-explicit-deferred-surface-test
-  (testing "MAINTAIN (a graph already exists for the ontology-id): the central
-            evolver short-circuits to the EXPLICIT, NAMED maintain-deferred surface
-            (DT9 reuse) — no silent gap, no partial build, no subbehavior runs"
+(deftest maintain-selects-the-maintain-arm-and-runs-the-real-composition-test
+  (testing "MAINTAIN (a graph already exists for the ontology-id): the front-of-tree
+            condition selects MAINTAIN (DT9 reuse) and — per EB11 — runs the REAL
+            evolutionary-maintain composition against the existing graph (NOT the
+            deferred stub). The full EB11 maintain behavior is covered in the
+            eb11-maintain-evolutionary-test ns; here we lock the EB10 branch SELECTION
+            + that the maintain arm runs the SAME subbehavior pipeline (no stub)."
     (h/with-async-test-context [ctx]
       (let [oid (random-uuid)
             _ (land-one! ctx oid "concept:pre-existing" "Pre-existing")
             survey-calls (atom 0)
             result (ce/run-central-evolver!
                     ctx {:ontology-id oid :sources [{:type :csv :path "x"}] :goal "g"
-                         :survey-fn (fn [_ _] (swap! survey-calls inc) {:status :success})})]
-        (is (= :maintain-deferred (:status result))
-            "an existing graph selects the EXPLICIT maintain-deferred surface")
-        (is (= :maintain (get-in result [:branch-points :greenfield-vs-maintain :selected])))
-        (is (zero? @survey-calls)
-            "NO subbehavior runs on the maintain arm (no silent partial build)")
-        (is (some? (:deferred result))
-            "the deferred surface carries a human-readable explanation")))))
+                         :survey-fn (fn [_ _] (swap! survey-calls inc)
+                                      {:status :success :profile {}})
+                         :derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+                         :model-extract-fn (fn [_ _] {:status :success :concept-drafts []
+                                                      :relationship-drafts [] :embed-fields []
+                                                      :model-spec {} :candidate-axioms {:axioms []}})
+                         :reconcile-fn (fn [_ _] {:status :success})
+                         :axiom-fn (fn [_ _] {:status :success})
+                         :embed-fn (fn [_ _] {:status :success})
+                         :build-fn (fn [_ _] {:status :complete})
+                         :gate-fn (fn [_ _]
+                                    {:graph-health {:pass-rate 1.0 :unknown-rate 0.0}
+                                     :evaluated [{:cq-text "Q1" :verdict :pass}]
+                                     :cq-verdict [{:cq-text "Q1" :verdict :pass}]})})]
+        (is (not= :maintain-deferred (:status result))
+            "EB11: an existing graph runs the REAL maintain composition, NOT the deferred stub")
+        (is (= :maintain (get-in result [:branch-points :greenfield-vs-maintain :selected]))
+            "the front-of-tree condition still SELECTS maintain (DT9 reuse)")
+        (is (= :maintain (:mode result)) "the maintain mode is tagged")
+        (is (pos? @survey-calls)
+            "the maintain arm RUNS the subbehavior pipeline (EB11 — no longer a stub)")))))
 
-(deftest maintain-mode-override-forces-the-deferred-surface-test
+(deftest maintain-mode-override-runs-the-maintain-composition-test
   (testing "the :mode override forces maintain even on an empty graph (HITL/test
-            override of the front-of-tree condition — DT9 reuse)"
+            override of the front-of-tree condition — DT9 reuse). EB11: the maintain
+            arm runs the real composition (the override drives it, no stub)."
     (h/with-async-test-context [ctx]
       (let [result (ce/run-central-evolver!
                     ctx {:ontology-id (random-uuid) :sources [{:type :csv :path "x"}]
                          :goal "g" :mode :maintain
-                         :survey-fn (fn [_ _] (throw (ex-info "must not run on maintain" {})))})]
-        (is (= :maintain-deferred (:status result)))
-        (is (= :maintain (get-in result [:branch-points :greenfield-vs-maintain :selected])))))))
+                         :survey-fn (fn [_ _] {:status :success :profile {}})
+                         :derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+                         :model-extract-fn (fn [_ _] {:status :success :concept-drafts []
+                                                      :relationship-drafts [] :embed-fields []
+                                                      :model-spec {} :candidate-axioms {:axioms []}})
+                         :reconcile-fn (fn [_ _] {:status :success})
+                         :axiom-fn (fn [_ _] {:status :success})
+                         :embed-fn (fn [_ _] {:status :success})
+                         :build-fn (fn [_ _] {:status :complete})
+                         :gate-fn (fn [_ _]
+                                    {:graph-health {:pass-rate 1.0 :unknown-rate 0.0}
+                                     :evaluated [{:cq-text "Q1" :verdict :pass}]
+                                     :cq-verdict [{:cq-text "Q1" :verdict :pass}]})})]
+        (is (= :maintain (:mode result)) "the override forces the maintain arm")
+        (is (= :maintain (get-in result [:branch-points :greenfield-vs-maintain :selected])))
+        (is (not= :maintain-deferred (:status result))
+            "EB11: the forced maintain arm runs the real composition, not the stub")))))
 
 ;; =============================================================================
 ;; Honest failure surfacing — a subbehavior failure is :failed-at-<step> (#5)
