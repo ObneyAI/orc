@@ -383,6 +383,54 @@
       (vec (map-indexed (fn [i s] {:name (:name s) :index i :sheet-id (:sheet-id s)})
                         sheets)))))
 
+(def ^:private header-scan-window
+  "Rows pulled from the TOP of a worksheet to detect the header. Matches the
+   window do-sheet-columns scans, so MC-2's keyed sample/stream key by the SAME
+   header sheet-columns reports (P8 — one header-detection path, no fork)."
+  20)
+
+(defn- detect-sheet-header
+  "Reuse the V05 header detection (the SAME logic do-sheet-columns uses) to find,
+   for an already-open workbook + resolved worksheet target, the column header and
+   its 0-based worksheet-row index. Returns {:header [<cell>...] :header-row-index
+   <int> :column-count <int>}. Streams only the top `header-scan-window` rows — the
+   bounded-read guarantee holds even when the caller goes on to sample deep rows."
+  [^ZipFile zf target shared]
+  (let [{:keys [rows max-col]} (stream-rows zf target shared header-scan-window)
+        hidx (detect-header-index rows)]
+    {:header (nth rows hidx nil)
+     :header-row-index hidx
+     :column-count max-col}))
+
+(defn- key-name
+  "The map key for a column: its detected header cell when present + non-blank,
+   else a positional fallback (\"column-<idx>\") so a data cell that sits past the
+   header width — or under a blank header cell — is NEVER silently dropped
+   (Discipline #5)."
+  [header idx]
+  (let [h (nth header idx nil)]
+    (if (and (string? h) (seq (str/trim h)))
+      h
+      (str "column-" idx))))
+
+(defn- key-row
+  "Project ONE positional cell vector into a column-name→value map, keyed by
+   `header`. Every cell index gets a key (header cell, or a positional fallback for
+   cells past the header width / under a blank header), so no value is lost."
+  [header row]
+  (into {} (map-indexed (fn [idx v] [(key-name header idx) v]) row)))
+
+(defn- key-rows
+  "Project the positional `rows` of a window that began at absolute worksheet row
+   `offset` into KEYED maps, DROPPING any rows at-or-above the header row (the
+   header itself + any leading title rows). A row at window position j is absolute
+   worksheet row (offset + j); it is data iff (offset + j) > header-row-index."
+  [header header-row-index offset rows]
+  (->> rows
+       (map-indexed (fn [j r] [(+ (long (or offset 0)) j) r]))
+       (filter (fn [[abs _]] (> abs (long header-row-index))))
+       (mapv (fn [[_ r]] (key-row header r)))))
+
 (defn- do-sheet-columns [path selector]
   (assert-xlsx! path)
   (with-open [zf (ZipFile. (str path))]
@@ -401,11 +449,18 @@
        :scanned-rows (vec rows)})))
 
 (defn- do-sample-rows
-  "Sample up to `n` rows from a worksheet. The optional final arg may be an
-   integer `n` OR an opts map `{:limit <int> :offset <int>}`. `:offset` SKIPS
-   that many leading worksheet rows before sampling — so a caller can reach
-   real data that sits past a large leading block (title/note rows, or
-   thousands of aggregate/subtotal rows) without ever loading the sheet."
+  "Sample up to `n` rows from a worksheet, returned as KEYED maps
+   (column-header→value) — NOT positional cell vectors. The header is detected via
+   the SAME logic sheet-columns uses (P8), so the keys are the real column headers
+   even when title/source/note lines precede the header (the PSEO/Census case); the
+   header row and any leading title rows are EXCLUDED from `:rows`.
+
+   The optional final arg may be an integer `n` OR an opts map
+   `{:limit <int> :offset <int>}`. `:offset` SKIPS that many leading worksheet rows
+   before sampling — so a caller can reach real data that sits past a large leading
+   block (title/note rows, or thousands of aggregate/subtotal rows) without ever
+   loading the sheet. `n`/`:limit` bounds the number of DATA rows returned (the
+   header/title rows it drops do not count against it)."
   ([path selector] (do-sample-rows path selector 20))
   ([path selector n-or-opts]
    (assert-xlsx! path)
@@ -429,13 +484,43 @@
        (let [target (sheet-target-for zf selector)
              shared (shared-strings zf)
              req (if (integer? n) n 20)
-             {:keys [rows max-col]} (stream-rows zf target shared req offset)]
+             {:keys [header header-row-index]} (detect-sheet-header zf target shared)
+             ;; When the sample window starts at/above the header (small offset),
+             ;; the header + any leading title rows fall INSIDE it and are dropped;
+             ;; over-fetch by that many physical rows so `req` DATA rows still come
+             ;; back. The hard cap inside stream-rows still bounds the actual pull.
+             dropped-leading (max 0 (- (inc (long header-row-index)) (long offset)))
+             fetch (+ (max 0 (long req)) dropped-leading)
+             {:keys [rows max-col]} (stream-rows zf target shared fetch offset)
+             physical (count rows)
+             keyed-all (key-rows header header-row-index offset rows)
+             keyed (vec (take req keyed-all))
+             ;; PHYSICAL worksheet rows consumed to produce `keyed` — the absolute
+             ;; offset a pager (stream-all) must RESUME from so windows tile the
+             ;; sheet without overlap or gap. It is NOT the same as :row-count once
+             ;; header/title rows are dropped: at a small offset we over-fetch and
+             ;; discard the leading block, so we resume PAST those physical rows.
+             consumed (if (<= (count keyed-all) req)
+                        physical                            ; whole window taken
+                        (+ dropped-leading (count keyed)))  ; stopped at req data rows
+             next-offset (+ (long offset) (long consumed))
+             ;; The sheet is EXHAUSTED for this window when the stream yielded
+             ;; fewer physical rows than we asked to fetch AND the hard cap did not
+             ;; truncate us. stream-all uses this (not the data-row count) to know
+             ;; when to stop, since over-fetching to refill dropped header/title
+             ;; rows can make a full window return < :limit data rows.
+             cap-limited? (>= physical max-rows-hard-cap)
+             exhausted? (and (< physical fetch) (not cap-limited?))]
          {:sheet (selector-display-name zf selector)
-          :rows rows
-          :row-count (count rows)
+          :rows keyed
+          :header header
+          :header-row-index header-row-index
+          :row-count (count keyed)
           :offset offset
+          :next-offset next-offset
+          :exhausted? exhausted?
           :column-count max-col
-          :capped? (>= (count rows) max-rows-hard-cap)}))))
+          :capped? cap-limited?}))))
   ;; V19 — a 4th positional arg (the V17 mistake) is caught with a teaching error
   ;; instead of a raw arity exception. The fix: put :offset in the opts map.
   ([path selector n-or-opts & extra]
@@ -493,8 +578,17 @@
                n (:row-count w)]
            (cond
              (zero? n) windows
-             (< n win) (conj windows w)               ; last (short) window
-             :else (recur (+ offset n) (conj windows w) (inc guard)))))))))
+             ;; Stop when the underlying stream is EXHAUSTED (not merely when this
+             ;; window returned < :limit DATA rows): over-fetching to refill dropped
+             ;; header/title rows can make a full window return fewer keyed rows than
+             ;; :limit while the sheet still has more — keying on :row-count would
+             ;; stop early and lose coverage.
+             (:exhausted? w) (conj windows w)         ; last (sheet exhausted) window
+             ;; Resume from the PHYSICAL rows consumed (:next-offset), not the
+             ;; data-row count — once header/title rows are dropped the two diverge,
+             ;; so stepping by :row-count would overlap/skip rows (MC-2 keyed
+             ;; conversion makes this distinction load-bearing).
+             :else (recur (:next-offset w) (conj windows w) (inc guard)))))))))
 
 (defn- do-excel-dir-sheets [dir]
   (let [d (File. (str dir))]

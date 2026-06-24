@@ -118,8 +118,12 @@
   f)
 
 (defn- make-overcap-xlsx!
-  "A single sheet with MANY rows (more than the hard cap) so we can assert
-   sample-rows returns a BOUNDED count and flags :capped?."
+  "A single sheet 'Big' with a STRING header on row 1 (k0/k1) + MANY data rows
+   (more than the hard cap), so we can assert sample-rows/stream-all return a
+   BOUNDED, KEYED slice and flag :capped?. Data row i has k0=i, k1=2i — so a
+   reader can recover the row index from the keyed value. (MC-2: the header is now
+   detected + used to KEY the rows, so the fixture carries a real header rather
+   than starting straight into numeric data.)"
   [^File f n-rows]
   (with-open [zos (ZipOutputStream. (FileOutputStream. f))]
     (zentry! zos "[Content_Types].xml" content-types)
@@ -127,10 +131,12 @@
     (zentry! zos "xl/workbook.xml"
              "<?xml version=\"1.0\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Big\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>")
     (zentry! zos "xl/_rels/workbook.xml.rels"
-             "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/></Relationships>")
+             "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings\" Target=\"sharedStrings.xml\"/></Relationships>")
+    (zentry! zos "xl/sharedStrings.xml" (ss-xml ["k0" "k1"]))
     (zentry! zos "xl/worksheets/sheet1.xml"
-             (sheet-xml (map (fn [i] (row-xml (inc i) [{:n i} {:n (* i 2)}]))
-                             (range n-rows)))))
+             (sheet-xml (cons (row-xml 1 [{:s 0} {:s 1}])
+                              (map (fn [i] (row-xml (+ 2 i) [{:n i} {:n (* i 2)}]))
+                                   (range n-rows))))))
   f)
 
 (defn- temp-file [suffix]
@@ -195,13 +201,18 @@
 ;; =============================================================================
 
 (deftest sample-rows-is-bounded
-  (testing "sample-rows returns at most the requested rows; the default caps."
+  (testing "sample-rows returns at most the requested DATA rows as KEYED maps
+            (MC-2 — column-header→value, header excluded from the rows); the
+            default caps."
     (let [f (make-simple-xlsx! (temp-file ".xlsx"))
           tools (ex/excel-source-tools)
           r2 ((get tools 'sample-rows) (.getAbsolutePath f) "People" 2)]
-      (is (= 2 (:row-count r2)) "exactly 2 rows requested")
+      (is (= 2 (:row-count r2)) "exactly 2 DATA rows requested")
       (is (= 2 (count (:rows r2))))
-      (is (= ["name" "age" "city"] (first (:rows r2))) "first row is the header line")
+      (is (every? map? (:rows r2)) "rows are keyed maps, not positional vectors")
+      (is (= {"name" "Alice" "age" "30" "city" "London"} (first (:rows r2)))
+          "first row is the first DATA row, keyed by the detected header")
+      (is (= ["name" "age" "city"] (:header r2)) "the detected header is surfaced")
       (is (false? (:capped? r2))))))
 
 (deftest sample-rows-default-n
@@ -209,7 +220,8 @@
     (let [f (make-simple-xlsx! (temp-file ".xlsx"))
           tools (ex/excel-source-tools)
           r ((get tools 'sample-rows) (.getAbsolutePath f) "People")]
-      (is (= 3 (:row-count r)) "sheet only has 3 rows; all returned under default 20")
+      (is (= 2 (:row-count r))
+          "sheet has 2 DATA rows (header excluded); all returned under default 20")
       (is (false? (:capped? r))))))
 
 ;; =============================================================================
@@ -237,23 +249,27 @@
 ;; the sheet.
 
 (deftest sample-rows-offset-reaches-deeper-rows
-  (testing "An {:limit N :offset K} opts map skips K leading rows and samples
-            real data past them — the overcap fixture's col0 equals the row
-            index, so an offset must surface rows whose col0 >= the offset."
+  (testing "An {:limit N :offset K} opts map skips K leading WORKSHEET rows and
+            samples real KEYED data past them. The overcap fixture has a header on
+            worksheet row 0 and data row i on worksheet row i+1 (k0 = i), so an
+            offset of K lands on worksheet row K = data row K-1 (k0 = K-1)."
     (let [f (make-overcap-xlsx! (temp-file ".xlsx") 5000)
           tools (ex/excel-source-tools)
-          ;; Without offset, the first sampled row is row 0 (col0 = 0).
+          ;; No offset: the first sampled DATA row is data row 0 (k0 = 0); the
+          ;; header (worksheet row 0) is the KEY source, not a data row.
           top ((get tools 'sample-rows) (.getAbsolutePath f) "Big" {:limit 3})
-          ;; With offset 1000, the first sampled row is row 1000 (col0 = 1000) —
-          ;; rows the default top-sample (capped at 500) could never reach.
+          ;; offset 1000 skips worksheet rows 0..999 (the header + data rows
+          ;; 0..998); the first sampled data row is worksheet row 1000 = data row
+          ;; 999 (k0 = 999) — rows the 500-row top-sample could never reach.
           deep ((get tools 'sample-rows) (.getAbsolutePath f) "Big" {:limit 3 :offset 1000})]
-      (is (= 0.0 (Double/parseDouble (str (ffirst (:rows top)))))
-          "no offset → first row is the sheet's first row (col0 = 0)")
+      (is (every? map? (:rows top)) "rows are keyed maps")
+      (is (= 0.0 (Double/parseDouble (str (get (first (:rows top)) "k0"))))
+          "no offset → first DATA row is data row 0 (k0 = 0)")
       (is (= 3 (:row-count deep)) "offset still honors the requested limit")
       (is (= 1000 (:offset deep)) "the offset is echoed back")
-      (is (= 1000.0 (Double/parseDouble (str (ffirst (:rows deep)))))
-          "offset 1000 → first sampled row is row 1000, past the 500-row ceiling")
-      (is (= 1002.0 (Double/parseDouble (str (first (nth (:rows deep) 2)))))
+      (is (= 999.0 (Double/parseDouble (str (get (first (:rows deep)) "k0"))))
+          "offset 1000 → first sampled worksheet row is 1000 = data row 999")
+      (is (= 1001.0 (Double/parseDouble (str (get (nth (:rows deep) 2) "k0"))))
           "subsequent rows continue sequentially from the offset"))))
 
 (deftest sample-rows-offset-via-keyword-n-key
@@ -263,7 +279,9 @@
           tools (ex/excel-source-tools)
           r ((get tools 'sample-rows) (.getAbsolutePath f) "Big" {:n 2 :offset 50})]
       (is (= 2 (:row-count r)))
-      (is (= 50.0 (Double/parseDouble (str (ffirst (:rows r)))))))))
+      (is (every? map? (:rows r)) "keyed rows")
+      ;; offset 50 → worksheet row 50 = data row 49 (k0 = 49).
+      (is (= 49.0 (Double/parseDouble (str (get (first (:rows r)) "k0"))))))))
 
 ;; =============================================================================
 ;; AC6 — REAL 119 MB PSEO sheet: sample under a tight heap; no full load
@@ -471,13 +489,15 @@
 ;; --- V19.3 — count affordance: cardinality WITHOUT a full load ----------------
 
 (deftest count-rows-returns-sheet-cardinality-without-loading
-  (testing "count-rows reports a sheet's total row count without loading the
-            sheet — so a specialist knows how much remains. On the 5000-row
-            over-cap fixture it returns 5000 (far above the 500-row sample cap)."
+  (testing "count-rows reports a sheet's total <row> count without loading the
+            sheet — so a specialist knows how much remains. The over-cap fixture
+            now carries a header row + 5000 data rows = 5001 raw rows (far above
+            the 500-row sample cap; count-rows counts every <row>, header
+            included)."
     (let [f (make-overcap-xlsx! (temp-file ".xlsx") 5000)
           tools (ex/excel-source-tools)
           c ((get tools 'count-rows) (.getAbsolutePath f) "Big")]
-      (is (= 5000 (:row-count c)) "full cardinality, not the sample cap")
+      (is (= 5001 (:row-count c)) "full cardinality (header + 5000 data), not the sample cap")
       (is (= "Big" (:sheet c))))
     (testing "count-rows resolves a descriptor map selector too"
       (let [f (make-simple-xlsx! (temp-file ".xlsx"))
@@ -489,32 +509,38 @@
 ;; --- V19.4 — stream-all: iterate the FULL set in bounded windows --------------
 
 (deftest stream-all-covers-every-row-exactly-once
-  (testing "stream-all iterates the FULL row set in bounded windows, covering
-            every row exactly once while honoring the per-call ceiling. The
-            5000-row fixture's col0 equals the row index, so the concatenation of
-            all windows must be exactly 0..4999, each once."
+  (testing "stream-all iterates the FULL DATA-row set in bounded windows, covering
+            every data row exactly once while honoring the per-call ceiling. The
+            fixture's 5000 data rows have k0 = the row index, so the concatenation
+            of all windows' KEYED rows must be exactly 0..4999, each once (the
+            header is the key source, excluded from the data)."
     (let [f (make-overcap-xlsx! (temp-file ".xlsx") 5000)
           tools (ex/excel-source-tools)
           stream (get tools 'stream-all)
           ;; window-size below the hard cap so multiple windows are required.
           windows (stream (.getAbsolutePath f) "Big" {:window 200})
           rows (mapcat :rows windows)
-          col0s (mapv #(long (Double/parseDouble (str (first %)))) rows)]
+          col0s (mapv #(long (Double/parseDouble (str (get % "k0")))) rows)]
       (is (> (count windows) 1) "more than one window — the set did not fit in one")
+      (is (every? map? rows) "every streamed row is a keyed map")
       (is (every? #(<= (count (:rows %)) 500) windows)
           "every window respects the per-call hard cap")
-      (is (= 5000 (count col0s)) "every row covered")
+      (is (= 5000 (count col0s)) "every DATA row covered (header excluded)")
       (is (= (range 0 5000) col0s)
-          "rows are covered in order, exactly once, no gaps or dupes"))))
+          "data rows are covered in order, exactly once, no gaps or dupes"))))
 
 (deftest stream-all-respects-the-hard-cap-as-window-ceiling
   (testing "A :window above the hard cap is clamped to the cap — stream-all never
             pulls more than the per-call ceiling in a single window, but still
-            covers the whole sheet across windows."
+            covers the whole sheet across windows (keyed rows; header excluded)."
     (let [f (make-overcap-xlsx! (temp-file ".xlsx") 1200)
           tools (ex/excel-source-tools)
           windows ((get tools 'stream-all) (.getAbsolutePath f) "Big" {:window 100000})
           rows (mapcat :rows windows)]
       (is (every? #(<= (count (:rows %)) 500) windows)
           "window clamped to the 500-row hard cap")
-      (is (= 1200 (count rows)) "all 1200 rows still covered across windows"))))
+      (is (every? map? rows) "rows are keyed maps")
+      (is (= 1200 (count rows)) "all 1200 DATA rows still covered across windows")
+      (is (= (range 0 1200)
+             (mapv #(long (Double/parseDouble (str (get % "k0")))) rows))
+          "every data row covered exactly once, in order, keyed by header"))))
