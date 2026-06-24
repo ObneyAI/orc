@@ -169,8 +169,8 @@
         (is (= [{:name "department"} {:name "employee"}]
                (vec (sort-by :name containers)))
             "list-containers wraps tables into the uniform [{:name …}] shape"))
-      ;; sample-rows -> KEYED maps (sql already keys by column keyword)
-      (let [rows ((:sample-rows c) "employee" {:limit 5})]
+      ;; MC-4 — UNIFORM (container, opts): the container's :name is the table.
+      (let [rows ((:sample-rows c) {:name "employee"} {:limit 5})]
         (is (vector? rows))
         (is (map? (first rows)) "sql sample-rows yields keyed maps, not positional")
         (is (= #{:id :name :dept_id} (set (keys (first rows))))))
@@ -190,16 +190,16 @@
       (let [containers ((:list-containers c))]
         (is (= 1 (count containers)))
         (is (str/ends-with? (:name (first containers)) ".csv")))
-      ;; sample-rows -> KEYED maps (csv keys by header string)
-      (let [{:keys [rows]} ((:sample-rows c) 2)]
+      ;; MC-4 — UNIFORM (container, opts): csv is a single container, opts only.
+      (let [{:keys [rows]} ((:sample-rows c) (first ((:list-containers c))) {:limit 2})]
         (is (map? (first rows)))
         (is (= #{"CIP_Code" "CIP_Title" "SOC_Code"} (set (keys (first rows))))))
       ;; csv has no standalone relations tool (crosswalk hints ride on peek-columns)
       (is (nil? (:relations c))
           "csv exposes no standalone relations op — the contract records that honestly"))))
 
-(deftest excel-conforms-to-container-contract-with-declared-mc2-gap
-  (testing "excel exposes list-containers across a dir; rows are POSITIONAL (MC-2 keys them)."
+(deftest excel-conforms-to-container-contract-keyed-rows
+  (testing "excel exposes list-containers across a dir; rows are KEYED maps (MC-2)."
     (let [dir (make-xlsx-dir!)
           c   (st/container-contract {:type :excel :path (.getAbsolutePath dir)})]
       (is (= :excel (:format c)))
@@ -211,11 +211,16 @@
         (is (= #{"Abilities" "Interests"} (set (map :name containers)))
             "excel list-containers enumerates the dir's sheets into uniform [{:name …}]")
         (is (every? :path containers) "each excel container carries its workbook :path"))
-      ;; DECLARED non-conformance: excel sample-rows is still POSITIONAL today.
-      ;; MC-1 records this gap; MC-2 makes it keyed. Assert the CURRENT shape so a
-      ;; future keyed change RED-flags here and forces the MC-2 conformance update.
-      (let [{:keys [path sheet]} (first ((:list-containers c)))
-            result ((:sample-rows c) path sheet 2)]
+      ;; MC-2 CONFORMANCE: excel sample-rows now returns KEYED column-header→value
+      ;; maps (the synthetic fixture's sheet header is colA/colB), uniform with
+      ;; csv/sql — the declared MC-1 non-conformance is closed. The fixture sheet
+      ;; has header row [colA colB] + one data row [val1 42].
+      (let [container (first ((:list-containers c)))
+            result ((:sample-rows c) container {:limit 5})]
         (is (vector? (:rows result)))
-        (is (vector? (first (:rows result)))
-            "excel rows are positional cell vectors TODAY — MC-2 converts to keyed maps")))))
+        (is (map? (first (:rows result)))
+            "excel rows are now KEYED maps (MC-2), not positional cell vectors")
+        (is (= #{"colA" "colB"} (set (keys (first (:rows result)))))
+            "keys are the detected column headers")
+        (is (= {"colA" "val1" "colB" "42"} (first (:rows result)))
+            "the single data row is keyed by header; the header row is excluded")))))

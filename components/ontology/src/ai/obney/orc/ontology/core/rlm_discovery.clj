@@ -1043,13 +1043,20 @@
   (let [source-tools-for (resolve-or-throw
                           'ai.obney.orc.orc-service.core.source-tools/source-tools-for
                           "the V06 source-tool registry (orc-service)")
+        container-contract (resolve-or-throw
+                            'ai.obney.orc.orc-service.core.source-tools/container-contract
+                            "the MC-1 container contract (orc-service)")
         tools (source-tools-for descriptor)
         _ (when-not (map? tools)
             (throw (ex-info (str "apply-extraction-transform!: no source tools for descriptor "
                                  (pr-str descriptor) " (a :text source has no stream-all; V20 "
                                  "scope is csv / sql / excel)")
                             {:descriptor descriptor})))
-        stream-all (get tools 'stream-all)
+        ;; MC-4 — stream the named CONTAINER through the uniform container
+        ;; contract (csv/sql/excel one code path), resolving a directory /
+        ;; explicit-:format/:type descriptor through MC-1's container-contract.
+        contract (container-contract descriptor)
+        stream-all (get contract :stream-all)
         _ (when-not (fn? stream-all)
             (throw (ex-info "apply-extraction-transform!: the source tools do not expose stream-all"
                             {:descriptor descriptor :tools (keys tools)})))
@@ -1063,7 +1070,8 @@
         ;; ""C2022_A"" syntax error), or a hallucinated name. So for sql we RESOLVE
         ;; + VALIDATE the selector against the real table list and fall back to the
         ;; largest table (the SAME default SAMPLE used — keeps sample/author/apply
-        ;; consistent) for ANY selector that doesn't name a real table.
+        ;; consistent) for ANY selector that doesn't name a real table. (MC-0 fix —
+        ;; preserved verbatim; it produces the resolved selector NAME below.)
         selector (if (= :sql (or (:type descriptor) (:format descriptor)))
                    (let [tables    (let [lt (get tools 'list-tables)]
                                      (when (fn? lt) (vec (lt))))
@@ -1090,10 +1098,32 @@
                        (and from-map (table-set from-map)) from-map
                        :else                               @largest))
                    selector)
-        ;; csv stream-all is 0/1-arg (no selector); sql/excel are selector-first.
-        windows (if (some? selector)
-                  (stream-all selector stream-opts)
-                  (stream-all stream-opts))
+        ;; MC-4 — resolve the (now sql-validated) selector to ONE CONTAINER via
+        ;; the contract's :list-containers, so the uniform :stream-all gets the
+        ;; medium-specific addressing it needs (excel: the sheet's :path+:sheet;
+        ;; sql: the table name; csv: the single container). A selector that names
+        ;; a real container resolves to that entry; otherwise we fall back to a
+        ;; default container (csv: the single file; excel/sql: the first / largest
+        ;; listed). This is the gap MC-1 deferred — one container per call (MC-5
+        ;; iterates).
+        containers (try ((:list-containers contract)) (catch Throwable _ nil))
+        sel-name (cond (string? selector) selector
+                       (map? selector) (or (:name selector) (:table selector)
+                                           (:sheet selector))
+                       :else nil)
+        container (cond
+                    ;; a selector that matches a listed container carries its
+                    ;; addressing (excel :path+:sheet); a sql table name not in the
+                    ;; listing is wrapped as a bare-name container (sql streams by
+                    ;; name, no extra addressing needed).
+                    sel-name (or (first (filter #(= sel-name (:name %)) containers))
+                                 {:name sel-name})
+                    ;; no selector → the deterministic FIRST listed container
+                    ;; (csv: the single file; excel: the first sheet). For sql the
+                    ;; selector branch above already resolved a name, so this only
+                    ;; covers csv/excel with no selector.
+                    :else (first containers))
+        windows (stream-all container stream-opts)
         ;; Present each row with BOTH keyword AND string keys so the authored
         ;; transform works whether it does (get row :UNITID) or (get row "UNITID").
         ;; The LLM author is inconsistent about key type, and a mismatch silently

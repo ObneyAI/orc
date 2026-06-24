@@ -251,12 +251,13 @@
       (is (= :excel (:format c)))
       (is (:path people))
       (is (= "People" (:sheet people)))
-      ;; sample-rows over the named container -> keyed maps
-      (let [r ((:sample-rows c) (:path people) (:sheet people) 5)]
+      ;; MC-4 — UNIFORM (container, opts) per-row call: pass the listed container
+      ;; (carrying :path + :sheet); the contract routes the excel addressing.
+      (let [r ((:sample-rows c) people {:limit 5})]
         (is (every? map? (:rows r)) "contract excel sample-rows are KEYED for a dir container")
         (is (= #{"name" "age" "city"} (set (keys (first (:rows r)))))))
       ;; stream-all over the named container -> keyed window rows
-      (let [windows ((:stream-all c) (:path people) (:sheet people) {:window 500})
+      (let [windows ((:stream-all c) people {:window 500})
             rows (mapcat :rows windows)]
         (is (every? map? rows) "contract excel stream-all windows are KEYED")
         (is (= #{"name" "age" "city"} (set (keys (first rows)))))))))
@@ -270,6 +271,7 @@
             containers ((:list-containers c))
             ab  (first (filter #(= "Abilities" (:name %)) containers))]
         (is (some? ab) "Abilities container enumerated from the O*NET dir")
-        (let [r ((:sample-rows c) (:path ab) (:sheet ab) 5)]
+        ;; MC-4 — UNIFORM (container, opts) call over the listed container.
+        (let [r ((:sample-rows c) ab {:limit 5})]
           (is (every? map? (:rows r)) "real O*NET contract sample-rows are KEYED")
           (is (contains? (set (keys (first (:rows r)))) "O*NET-SOC Code")))))))

@@ -248,6 +248,44 @@
            :stream-all      'stream-all   ; POSITIONAL today — keyed in MC-2
            :relations       nil}})        ; shared-column heuristic is MC-2
 
+(defn- container-name
+  "The container NAME a per-row op selects on, from a `list-containers` entry
+   (a map with `:name`) OR a bare name passed straight through. Tolerant so a
+   consumer may hand either the descriptor map or just the name."
+  [container]
+  (cond
+    (map? container) (or (:name container) (:table container) (:sheet container))
+    :else            container))
+
+(defn- per-row-call
+  "Route a uniform `(container, opts)` per-row call to the RAW per-format tool
+   `raw-fn` using the container's medium-specific addressing — the gap MC-1
+   deferred to MC-4. The container is one of `:list-containers`' entries (or a
+   bare name); `opts` is the format's per-call opts map ({:limit/:offset} for a
+   sample, {:window/:offset/:max-windows} for a stream).
+
+     csv   → `(raw-fn opts)`                — a csv is a single container; the
+             raw csv sample/stream are selector-less, so the container only
+             names which file (already fixed by the source :path) and is ignored.
+     sql   → `(raw-fn <table> opts)`        — the container's :name is the table.
+     excel → `(raw-fn <path> <sheet> opts)` — the container carries the workbook
+             :path + the :sheet to address one sheet across a dir/workbook.
+
+   Returns the raw tool's UNIFORM keyed-row shape verbatim (csv/sql/excel all
+   keyed since MC-2/MC-3). `nil` raw-fn → nil (the format doesn't expose this op
+   as a standalone tool)."
+  [fmt raw-fn container opts]
+  (when raw-fn
+    (case fmt
+      :csv   (raw-fn opts)
+      :sql   (raw-fn (container-name container) opts)
+      :excel (let [m (when (map? container) container)
+                   wpath (or (:path m) (:path opts))
+                   sheet (or (:sheet m) (:name m) (container-name container))]
+               (raw-fn wpath sheet opts))
+      ;; defensive: an unmapped format routes the opts straight through.
+      (raw-fn opts))))
+
 (defn container-contract
   "Resolve a descriptor to its uniform container-contract surface: a map of the
    four logical operations → the BOUND per-format fn implementing each (or nil
@@ -261,10 +299,23 @@
 
    The returned `:list-containers` is ALWAYS a 0-arg fn returning `[{:name …}]`,
    even for the single-container csv case (synthesized from the path) — so a
-   consumer never special-cases a format. The per-row operations are the bound
-   per-format fns; their UNIFORM keyed-map shape is the contract MC-2/MC-3 drive
-   the specialists to (excel rows are positional until MC-2 — the one declared
-   non-conformance)."
+   consumer never special-cases a format.
+
+   MC-4 — `:sample-rows` and `:stream-all` are UNIFORMLY `(container, opts)`-
+   callable across every format (the gap MC-1 deferred). The consumer passes ONE
+   of `:list-containers`' entries (or a bare name) + the per-call opts map; the
+   contract routes to the raw per-format tool with the container's medium-
+   specific addressing (csv: single container, opts only; sql: the container's
+   :name as the table; excel: the container's :path + :sheet). Both return the
+   UNIFORM keyed-map shape (csv keys by header string, sql/excel by column —
+   keyed since MC-2/MC-3). So a consumer streams `(orders)` / `(customers)` /
+   any container identically regardless of medium:
+
+     ((:sample-rows c) (first ((:list-containers c))) {:limit 5})
+     ((:stream-all  c) (first ((:list-containers c))) {:window 500})
+
+   `:relations` stays the bound per-format fn (sql: (container)); csv/excel
+   expose no standalone relations op (nil)."
   [{:keys [path] :as descriptor}]
   (let [fmt   (detect-format descriptor)
         tools (source-tools-for descriptor)]   ; throws on unknown / blank path
@@ -308,6 +359,16 @@
                                          (mapv (fn [{:keys [name]}]
                                                  {:name name :path path :sheet name})
                                                (list-sheets path))))))
-         :sample-rows     (tool-fn :sample-rows)
-         :stream-all      (tool-fn :stream-all)
+         ;; MC-4 — UNIFORM (container, opts) per-row surface. Each wraps the raw
+         ;; per-format tool, routing the container's addressing to it (csv: opts
+         ;; only; sql: :name as table; excel: :path + :sheet) so a consumer calls
+         ;; one signature for every format. Returns the raw keyed-row shape.
+         :sample-rows     (when-let [raw (tool-fn :sample-rows)]
+                            (fn sample-rows
+                              ([container] (per-row-call fmt raw container {}))
+                              ([container opts] (per-row-call fmt raw container (or opts {})))))
+         :stream-all      (when-let [raw (tool-fn :stream-all)]
+                            (fn stream-all
+                              ([container] (per-row-call fmt raw container {}))
+                              ([container opts] (per-row-call fmt raw container (or opts {})))))
          :relations       (tool-fn :relations)}))))

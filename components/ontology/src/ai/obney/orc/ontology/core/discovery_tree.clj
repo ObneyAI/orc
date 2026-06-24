@@ -410,21 +410,75 @@
       (and (map? sampled) (contains? sampled :rows)) (maps-only (:rows sampled))
       :else [])))
 
+(defn- contract-for
+  "Resolve a source descriptor to its MC-1 uniform container-contract surface
+   (lazy-resolved from orc-service, same discipline as the executor resolution).
+   Returns the contract map ({:format :list-containers :sample-rows :stream-all
+   :relations}) or nil for a `:text` / unresolvable descriptor."
+  [descriptor]
+  (let [cc (requiring-resolve
+            'ai.obney.orc.orc-service.core.source-tools/container-contract)]
+    (cc {:type (:type descriptor) :format (:format descriptor)
+         :path (:path descriptor)})))
+
+(defn default-container
+  "Pick a DEFAULT container for grounding when the caller gave no selector, from
+   the contract's `:list-containers`. Domain-agnostic + format-agnostic: for a
+   source whose containers expose row counts (sql tables, via `count-rows`) it
+   picks the LARGEST (the data container is the extraction target far more often
+   than a tiny lookup table); otherwise it picks the deterministic FIRST container
+   (csv's single file; excel's first sheet across the dir/workbook, sorted by file
+   name). When a selector IS given, resolve it to the matching container (by
+   :name) so the contract's per-row addressing (excel: the :path+:sheet) is
+   carried.
+
+   `contract` is the container-contract map; `selector` is a name string, a
+   descriptor map, or nil; `tools` is the raw per-format tool map (for the sql
+   `count-rows` largest-container pick). Returns ONE container map (a
+   `:list-containers` entry) or nil when the source lists no containers."
+  [contract selector tools]
+  (let [containers (try ((:list-containers contract)) (catch Throwable _ nil))
+        sel-name   (cond (string? selector) selector
+                         (map? selector) (or (:name selector) (:table selector)
+                                             (:sheet selector))
+                         :else nil)]
+    (cond
+      (empty? containers) nil
+      ;; an explicit selector resolves to the matching container (carrying its
+      ;; medium-specific addressing) — fall back to a bare-name container when the
+      ;; listing doesn't include it (e.g. a sql table the listing wrapped plainly).
+      sel-name (or (first (filter #(= sel-name (:name %)) containers))
+                   {:name sel-name})
+      ;; no selector + a count-rows tool (sql) → the largest container.
+      (and (map? tools) (fn? (get tools 'count-rows)))
+      (let [count-rows (get tools 'count-rows)]
+        (->> containers
+             (map (fn [c] [c (try (:row-count (count-rows (:name c)))
+                                  (catch Throwable _ 0))]))
+             (sort-by second >)
+             ffirst))
+      ;; otherwise the deterministic first container (csv single file; excel first
+      ;; sheet — list-containers is already sorted by file name).
+      :else (first containers))))
+
 (defn mechanical-sample-rows
-  "Pull a small set of REAL rows DIRECTLY from the source via the V06 per-format
-   source-tool registry — the SAME tools the V20 apply-step streams through, so
-   the row shape returned is EXACTLY what the transform will see at apply time.
-   This is the authoritative key-shape source: it does NOT trust the profile
-   node's emitted `:sample` (an LLM may re-key / stringify it), it reads the
-   medium's tools directly.
+  "Pull a small set of REAL rows DIRECTLY from the source via the MC-1 uniform
+   CONTAINER CONTRACT — the SAME `:sample-rows` surface the V20 apply-step's
+   `:stream-all` shares, so the row shape returned is EXACTLY what the transform
+   will see at apply time. This is the authoritative key-shape source: it does
+   NOT trust the profile node's emitted `:sample` (an LLM may re-key / stringify
+   it), it reads the medium's tools directly. Container-agnostic (MC-4): CSV / SQL
+   / EXCEL are ONE code path — there is no per-format branch and no `:else []`.
 
    `descriptor` is `{:type :csv|:sql|:excel :path <str>}`. `selector` is the
-   table/sheet name when known (sql/excel); for sql, when no selector is given we
-   pick the table with the MOST rows (the data table is the extraction target far
-   more often than a tiny lookup table) so the surfaced shape is representative.
-   Returns a vector of real row maps (capped small), or [] when the source can't
-   be sampled (the caller then falls back / renders no grounding block — never a
-   fabricated shape). Domain-agnostic: it reads keys, names no field."
+   container (table/sheet) name when known; when no selector is given we pick a
+   DEFAULT container from `:list-containers` — the LARGEST for a source with row
+   counts (sql tables: the data container is the extraction target far more often
+   than a tiny lookup table), else the deterministic FIRST container (csv's single
+   file; excel's first sheet). Returns a vector of real row maps (capped small),
+   or [] when the source can't be sampled (the caller then falls back / renders no
+   grounding block — never a fabricated shape). Domain-agnostic: it reads keys,
+   names no field."
   ([descriptor] (mechanical-sample-rows descriptor nil 5))
   ([descriptor selector] (mechanical-sample-rows descriptor selector 5))
   ([descriptor selector n]
@@ -432,37 +486,15 @@
      (let [tools-for (requiring-resolve
                       'ai.obney.orc.orc-service.core.source-tools/source-tools-for)
            tools (tools-for {:type (:type descriptor) :format (:format descriptor)
-                             :path (:path descriptor)})]
-       (if-not (map? tools)
+                             :path (:path descriptor)})
+           contract (contract-for descriptor)]
+       (if-not (and (map? contract) (fn? (:sample-rows contract)))
          []
-         (let [sample (get tools 'sample-rows)
-               fmt (or (:type descriptor) (:format descriptor))]
-           (cond
-             ;; CSV: (sample-rows N) -> {:rows [string-keyed maps]}
-             (= :csv fmt)
-             (map-rows-from-sample (sample n))
-             ;; SQL: (sample-rows table {:limit N}) -> [keyword-keyed maps]
-             (= :sql fmt)
-             (let [tbl (cond
-                         (string? selector) selector
-                         (map? selector) (or (:name selector) (:table selector))
-                         :else
-                         ;; pick the largest table as the representative target
-                         (let [list-tables (get tools 'list-tables)
-                               count-rows (get tools 'count-rows)
-                               tables (when (fn? list-tables) (list-tables))]
-                           (when (seq tables)
-                             (->> tables
-                                  (map (fn [t] [t (try (:row-count (count-rows t))
-                                                       (catch Throwable _ 0))]))
-                                  (sort-by second >)
-                                  ffirst))))]
-               (if (and tbl (fn? sample))
-                 (map-rows-from-sample (sample tbl {:limit n}))
-                 []))
-             ;; Excel: rows are positional cell vectors, not maps — no map key
-             ;; shape to surface; the caller renders no keyword/string idiom.
-             :else []))))
+         (let [container (default-container contract selector
+                                            (when (map? tools) tools))]
+           (if (nil? container)
+             []
+             (map-rows-from-sample ((:sample-rows contract) container {:limit n}))))))
      (catch Throwable _ []))))
 
 (defn sample-row-key-shape
