@@ -77,6 +77,46 @@
             [clojure.string :as str]))
 
 ;; =============================================================================
+;; MC-5 — multi-container traversal helpers
+;;
+;; A structured source is one OR MANY containers (a csv: one; a relational store:
+;; many tables; a workbook directory: many sheets). The uniform container contract
+;; (`list-containers` → `[{:name …}]`) makes every format a single code path; the
+;; per-container `sample-rows` / `stream-all` already accept a container selector
+;; by name. So the multi-container loop iterates the contract's containers and runs
+;; the SAME per-container SAMPLE → AUTHOR → APPLY unit once per container, accumu-
+;; lating the drafts — never collapsing a many-container source to its largest one.
+;; Domain-agnostic (12): it reads container names + keys, names no field/container.
+;; =============================================================================
+
+(def default-max-containers
+  "The default ceiling on how many containers the multi-container orchestrator
+   traverses in one run (MC-0 discipline — every command bounded). A source with
+   hundreds of containers would otherwise run hundreds of per-container `:llm`
+   authors; this caps it. The report records the TOTAL vs the PROCESSED count so
+   the bound is HONEST (no false-green). A caller can raise it via the optional
+   `:max-containers` input."
+  25)
+
+(defn list-source-containers
+  "Enumerate the source's containers via the uniform container contract
+   (`list-containers` → `[{:name …}]`). Returns a vector of container maps (one
+   entry for a single-container source, many for a relational store / workbook
+   directory), or `[]` when the source exposes no container contract. The result's
+   `:name` is the per-container selector the SAMPLE / APPLY steps key on. Domain-
+   agnostic + format-agnostic — one code path for every medium."
+  [source]
+  (let [container-contract (requiring-resolve
+                            'ai.obney.orc.orc-service.core.source-tools/container-contract)
+        cc (try (container-contract {:type (:type source)
+                                     :format (:format source)
+                                     :path (:path source)})
+                (catch Throwable _ nil))]
+    (if (and (map? cc) (fn? (:list-containers cc)))
+      (vec (try ((:list-containers cc)) (catch Throwable _ nil)))
+      [])))
+
+;; =============================================================================
 ;; The extract contract — the transform contract (re-housed from DT4) + the
 ;; apply-step return shape (re-housed from V20)
 ;; =============================================================================
@@ -341,6 +381,64 @@
       :errors-sample (vec (:errors-sample result))}}))
 
 ;; =============================================================================
+;; MC-5 — the per-container SAMPLE / APPLY `:code` `:fn`s. These REUSE the SAME
+;; `mechanical-sample-rows` (Node 1) + `apply-extraction-transform!` (Node 3) the
+;; single-container fns call — no fork — but key the per-row ops on the ONE
+;; container the loop is currently traversing (the `:container` map, a
+;; `list-containers` entry). The container's `:name` is the selector both ops
+;; resolve through the contract.
+;; =============================================================================
+
+(defn sample-rows-for-container-code
+  "The per-container SAMPLE `:code` `:fn`. REUSES `mechanical-sample-rows` (Node 1,
+   no fork) keyed on the CURRENT container's `:name` (a `list-containers` entry,
+   passed as `:container`) instead of letting the default-container heuristic pick
+   one — so a many-container source grounds EACH container, not just the largest.
+   Falls back to the source's own `:selector` (then the default) when no container
+   is supplied (a single-container source). Domain-agnostic: reads keys, names no
+   field."
+  [{:keys [inputs]}]
+  (let [{:keys [source container]} inputs
+        selector (or (:name container) (:selector source))
+        rows (dt/mechanical-sample-rows source selector)]
+    {:sample-rows (vec rows)}))
+
+(defn apply-transform-for-container-code
+  "The per-container APPLY `:code` `:fn`. REUSES `apply-extraction-transform!`
+   (Node 3, no fork) — same bounded `:max-windows`, same per-row error counting —
+   but FORCES the selector to the CURRENT container's `:name` so the authored
+   transform is applied to the container it was grounded on (not the author's
+   loosely-emitted selector, which is per-container irrelevant in the loop). When
+   no container is supplied (single-container source) it falls back to the author's
+   `:selector` — the original single-container behavior, unchanged. Writes the
+   per-row draft set + a flat `:concept-count` (the resilience sanity-gate key) +
+   the `:extraction-report` (the no-false-green coverage signal)."
+  [{:keys [inputs]}]
+  (let [{:keys [source transform-source selector container]} inputs
+        ;; the container's name wins (the loop is traversing it); fall back to the
+        ;; author-emitted selector for the single-container path.
+        effective-selector (or (:name container) selector)
+        result (rlm-discovery/apply-extraction-transform!
+                {:descriptor source
+                 :transform-source transform-source
+                 :selector effective-selector
+                 :max-windows 50})
+        concept-drafts (vec (:concept-drafts result))
+        relationship-drafts (vec (:relationship-drafts result))]
+    {:concept-drafts concept-drafts
+     :relationship-drafts relationship-drafts
+     :concept-count (count concept-drafts)
+     :extraction-report
+     {:selector (:selector result)
+      :rows-streamed (:rows-streamed result)
+      :rows-ok (:rows-ok result)
+      :rows-errored (:rows-errored result)
+      :windows (:windows result)
+      :concept-count (count concept-drafts)
+      :relationship-count (count relationship-drafts)
+      :errors-sample (vec (:errors-sample result))}}))
+
+;; =============================================================================
 ;; The delegatable Extract sheet — built on the EB1/EB2/EB3 registry pattern
 ;; =============================================================================
 
@@ -362,40 +460,56 @@
   []
   (dsl/sheet-id-for-name (extract-subbehavior-name)))
 
-(defn extract-subbehavior-def
-  "The Extract subbehavior workflow definition.
+(defn extract-per-container-name
+  "Canonical registry name for the PER-CONTAINER Extract unit (MC-5). The public
+   `@v1` Extract sheet is a thin orchestrator that drives THIS unit once per
+   container; this unit is the SAMPLE → AUTHOR → APPLY pass (with-resilience) over
+   ONE container. Separately versioned so the unit can evolve under its own
+   identity. Like the public sheet it bakes in NO source path — it reads the
+   source + model-spec + the one container it is pointed at, at runtime."
+  []
+  "ontology-extract/extract-per-container@v1")
+
+(defn extract-per-container-sheet-id-for
+  "Look up the deterministic sheet-id for the per-container Extract unit (pure).
+   The orchestrator resolves the name → id and drives a child tick per container."
+  []
+  (dsl/sheet-id-for-name (extract-per-container-name)))
+
+(defn extract-per-container-def
+  "The PER-CONTAINER Extract unit (MC-5) — the SAMPLE → AUTHOR → APPLY pass over
+   ONE container, the building block the multi-container orchestrator drives once
+   per container. This IS the original single-container Extract body, RE-HOUSED to
+   key its SAMPLE + APPLY on a `:container` input (a `list-containers` entry) so a
+   many-container source grounds + applies EACH container — not just the largest.
 
    Body: a `:code` → `:llm` → `:code` sequence:
-     1. `:code` sample-rows-code   — REUSE `mechanical-sample-rows` (DT4-grounding)
-     2. `:llm`  author             — re-house DT4 `transform-node-prompt` (#13)
-     3. `:code` apply-transform    — REUSE V20 `apply-extraction-transform!`
+     1. `:code` sample-rows-for-container — REUSE `mechanical-sample-rows` keyed on
+        the container (Node 1, no fork — the DT4-grounding fix).
+     2. `:llm`  author                    — re-house DT4 `transform-node-prompt`,
+        `:reasoning` FIRST (#13). The SAME author prompt — it grounds in whatever
+        sample-rows it is GIVEN, so it serves any container's columns.
+     3. `:code` apply-transform-for-container — REUSE `apply-extraction-transform!`
+        forced to the container (Node 3, no fork — the V20 apply-step).
 
-   Contract (the public `:reads`/`:writes`):
-     :reads  [:model-spec :source]
+   Contract (the per-container unit's `:reads`/`:writes`):
+     :reads  [:model-spec :source :container]
      :writes [:concept-drafts :relationship-drafts :extraction-report]
-   The internal inter-node keys (`:sample-rows`, `:reasoning`, `:transform-source`,
-   `:selector`) live on the sheet blackboard between nodes.
 
-   `key-shape` (optional) lets a caller render the DT4-grounding key-shape block
-   STATICALLY into the prompt at build time. Normally it is nil here — the prompt
-   instructs the `:llm` node to ground field access in the `sample-rows` input it
-   is GIVEN at runtime (Node 1's real sample), which is what makes ONE sheet serve
-   any source. (The static path exists for parity with DT4's seam; the runtime
-   `sample-rows` input is the load-bearing grounding.)
-
-   `resilient?` (EB9, optional) wraps the failure-prone AUTHOR→APPLY sub-pipeline
-   in a `with-resilience` sub-tree: the PRIMARY (author → apply) is gated on a
-   non-empty draft set (the 0-concept false-empty the DT4 mis-ground produces); on
-   a gate failure a ROBUST author (extra grounding emphasis) re-attempts; if BOTH
-   produce an empty set, a troubleshoot `:llm` node lands a structured `:diagnosis`
-   and the subbehavior returns a CLEAN `:failure` (never a poisoned empty success —
-   #4/#5). The public `:reads`/`:writes` contract is UNCHANGED."
-  [{:keys [model key-shape resilient?]}]
-  (let [nm (extract-subbehavior-name)
+   `resilient?` (EB9, default true here — the orchestrator wants per-container
+   gating) wraps the failure-prone AUTHOR→APPLY in a `with-resilience` sub-tree:
+   the PRIMARY (author → apply) is gated on a non-empty draft set (the 0-concept
+   false-empty); on a gate failure a ROBUST author re-attempts; if BOTH produce an
+   empty set, a troubleshoot `:llm` lands a structured `:diagnosis` and THIS
+   container's unit returns a CLEAN `:failure` (never a poisoned empty success —
+   #4/#5) — which the orchestrator records HONESTLY in the per-container report."
+  [{:keys [model key-shape resilient?] :or {resilient? true}}]
+  (let [nm (extract-per-container-name)
         mdl (or model "google/gemini-3-flash-preview")
         ;; the AUTHOR → APPLY sub-pipeline (the failure-prone unit — the
         ;; concept-count is only known AFTER apply). `author-prompt` selects the
-        ;; primary or the robust (extra-grounding) author body.
+        ;; primary or the robust (extra-grounding) author body. The APPLY node
+        ;; reads `:container` so it forces the per-container selector.
         author-apply
         (fn [path-label author-prompt]
           (dsl/sequence (str "extract-" path-label)
@@ -406,23 +520,19 @@
               ;; #13 — :reasoning FIRST (chain-of-thought before the transform).
               :writes [:reasoning :transform-source :selector])
             (dsl/code (str "extract-" path-label "-apply")
-              :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-code"
-              :reads [:source :transform-source :selector]
+              :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
+              :reads [:source :transform-source :selector :container]
               ;; EB9 — declare the FLAT :concept-count so the sanity :condition
               ;; can gate the intermediate state.
               :writes [:concept-drafts :relationship-drafts
                        :extraction-report :concept-count])))
-        ;; the RESILIENT AUTHOR→APPLY unit (only when :resilient?). When not
-        ;; resilient the original flat "author"/"apply-transform" nodes are used
-        ;; below (unchanged — EB4 contract preserved).
         resilient-author-apply
         (res/with-resilience
           {:step "extract"
            :primary (author-apply "primary" (transform-author-prompt key-shape))
            :robust  (author-apply "robust"  (robust-author-prompt key-shape))
            ;; deterministic sanity gate — a non-empty draft set (the 0-concept
-           ;; false-empty is the DT4 mis-ground failure mode). NO hardcoded
-           ;; phrase matching — a structural threshold on the declared key.
+           ;; false-empty). NO hardcoded phrase matching — a structural threshold.
            :gate {:check {:key :concept-count :op :gt :value 0}}
            :troubleshoot
            {:reads [:model-spec :sample-rows :transform-source
@@ -434,9 +544,10 @@
     (dsl/workflow nm
       (dsl/blackboard
        (merge
-        {;; public :reads — the EB3 model-spec + the source descriptor
+        {;; :reads — the EB3 model-spec + the source descriptor + the ONE container
          :model-spec [:map {:closed false}]
          :source [:map {:closed false}]
+         :container [:map {:closed false}]
          ;; internal inter-node keys
          :sample-rows [:vector [:map {:closed false}]]
          :reasoning :string
@@ -444,27 +555,25 @@
          :selector [:maybe :string]
          ;; EB9 — the flat intermediate-state count the sanity gate checks.
          :concept-count :int
-         ;; public :writes — the draft set + the coverage report
+         ;; :writes — the draft set + the coverage report (this container's)
          :concept-drafts concept-drafts-schema
          :relationship-drafts relationship-drafts-schema
          :extraction-report extraction-report-schema}
-        ;; EB9 — the resilience-internal keys (the troubleshoot's #13 reasoning +
-        ;; the structured :diagnosis + the always-fail sentinel) when resilient.
         (when resilient? (res/resilience-blackboard-keys))))
       (if resilient?
         (dsl/sequence "extract-root"
-          ;; Node 1 — SAMPLE real rows + key-shape (REUSE mechanical-sample-rows).
+          ;; Node 1 — SAMPLE this container's real rows (REUSE mechanical-sample-rows).
           (dsl/code "sample-rows"
-            :fn "ai.obney.orc.ontology.core.extract-subbehavior/sample-rows-code"
-            :reads [:source]
+            :fn "ai.obney.orc.ontology.core.extract-subbehavior/sample-rows-for-container-code"
+            :reads [:source :container]
             :writes [:sample-rows])
-          ;; Node 2/3 — the RESILIENT AUTHOR → APPLY :fallback (EB9).
+          ;; Node 2/3 — the RESILIENT AUTHOR → APPLY :fallback (EB9), per container.
           resilient-author-apply)
-        ;; the ORIGINAL flat three-node body (EB4 — unchanged contract + names).
+        ;; the flat three-node body (unchanged contract + names) — per container.
         (dsl/sequence "extract-root"
           (dsl/code "sample-rows"
-            :fn "ai.obney.orc.ontology.core.extract-subbehavior/sample-rows-code"
-            :reads [:source]
+            :fn "ai.obney.orc.ontology.core.extract-subbehavior/sample-rows-for-container-code"
+            :reads [:source :container]
             :writes [:sample-rows])
           (dsl/llm "author"
             :model mdl
@@ -472,15 +581,171 @@
             :reads [:model-spec :sample-rows]
             :writes [:reasoning :transform-source :selector])
           (dsl/code "apply-transform"
-            :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-code"
-            :reads [:source :transform-source :selector]
+            :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
+            :reads [:source :transform-source :selector :container]
             :writes [:concept-drafts :relationship-drafts :extraction-report]))))))
 
+;; =============================================================================
+;; MC-5 — the multi-container ORCHESTRATOR `:code` `:fn`. The public `@v1` Extract
+;; sheet is this ONE `:code` node: it enumerates the source's containers and drives
+;; the per-container unit (above) once per container via a CHILD TICK, accumulating
+;; the drafts across containers + an HONEST per-container report. Why a `:code`
+;; orchestrator and not `:map-each`: a `:map-each` leaf must be a PRIMITIVE
+;; (ORC-PRINCIPLES §14) — the per-container unit is irreducibly a SAMPLE→AUTHOR→
+;; APPLY composite (the AUTHOR is an `:llm`, SAMPLE/APPLY are `:code`), so it cannot
+;; be a single primitive leaf; and a `:delegate` map-each leaf was MEASURED (the
+;; MC-5 prototype) to collect EMPTY per-iteration writes — a silent false-green
+;; (status :success, 0 drafts). A `:code` orchestrator driving N child ticks keeps
+;; each container's pass in its OWN isolated blackboard (its OWN resilience gate,
+;; its OWN #13 reasoning — no cross-container trample), accumulates explicitly, and
+;; cannot scramble or bleed. A single-container source is just N=1.
+;; =============================================================================
+
+(defn orchestrate-extract-containers
+  "The MC-5 multi-container orchestrator `:code` `:fn`. REUSES the per-container
+   Extract unit (`extract-per-container-def`) — no fork — once per container:
+   `list-containers` the source, then per container drive a CHILD TICK of the
+   per-container unit (the `:code` node receives the full execution `context`,
+   which carries the event-store + registries `runtime/execute` needs), read its
+   drafts back off the child tick blackboard (discipline 7 — the projection, not a
+   bare return), and ACCUMULATE. Writes the public contract: the union of every
+   container's `:concept-drafts` / `:relationship-drafts` (verbatim, never
+   truncated — #11) + an HONEST `:extraction-report` aggregating per-container
+   coverage (containers seen / streamed / with-drafts, rows, and a per-container
+   breakdown surfacing a 0-draft OR cleanly-FAILED container — no false-green, #4).
+
+   `model` (optional, in `inputs`) lets the orchestrator pass the model down to the
+   per-container unit; defaults to gemini-3-flash-preview. Domain-agnostic (12): it
+   names no field/container — the per-container unit grounds in real keys at
+   runtime."
+  [{:keys [inputs] :as context}]
+  (let [{:keys [source model-spec max-containers]} inputs
+        ;; the execution context for child ticks = the orchestrator's context minus
+        ;; the node-scoped keys (`runtime/execute` needs the event-store + registries
+        ;; + pubsub + cache the executor threaded into this `:code` node's context).
+        child-ctx (dissoc context :inputs :execution-context)
+        sub-sheet-id (extract-per-container-sheet-id-for)
+        all-containers (list-source-containers source)
+        ;; BOUND the traversal (MC-0 discipline — every command bounded). A source
+        ;; with hundreds of containers would run hundreds of per-container :llm
+        ;; authors; the bound caps that at a sane ceiling. The report records BOTH
+        ;; the total + the processed count so the truncation is HONEST (no
+        ;; false-green) — comprehensive whole-source coverage is the deeper follow-up.
+        cap (or max-containers default-max-containers)
+        containers (vec (take cap all-containers))
+        results
+        (mapv
+         (fn [container]
+           (let [child-tick-id (random-uuid)
+                 r (dsl/execute child-ctx sub-sheet-id
+                                {"model-spec" model-spec
+                                 "source" source
+                                 "container" container}
+                                :timeout-ms 280000
+                                :tick-id child-tick-id
+                                :parent-tick-id (:tick-id context))
+                 ;; discipline 7 — read the per-container drafts back off the CHILD
+                 ;; tick blackboard (the projection), not the bare execute return.
+                 bb (dsl/get-tick-blackboard child-ctx child-tick-id)
+                 concept-drafts (vec (get-in bb [:concept-drafts :value]))
+                 relationship-drafts (vec (get-in bb [:relationship-drafts :value]))
+                 report (get-in bb [:extraction-report :value])]
+             {:container (:name container)
+              :status (:status r)
+              :concept-drafts concept-drafts
+              :relationship-drafts relationship-drafts
+              :concept-count (count concept-drafts)
+              :relationship-count (count relationship-drafts)
+              :rows-streamed (:rows-streamed report)
+              :rows-errored (:rows-errored report)
+              :diagnosis (get-in bb [:diagnosis :value])}))
+         containers)
+        all-concepts (vec (mapcat :concept-drafts results))
+        all-rels (vec (mapcat :relationship-drafts results))]
+    {:concept-drafts all-concepts
+     :relationship-drafts all-rels
+     :extraction-report
+     {:containers-total (count all-containers)
+      :containers-processed (count results)
+      ;; back-compat alias — :containers-seen is the processed count.
+      :containers-seen (count results)
+      :containers-streamed (count (filter #(pos? (or (:rows-streamed %) 0)) results))
+      :containers-with-drafts (count (filter #(pos? (or (:concept-count %) 0)) results))
+      :containers-failed (count (filter #(= :failure (:status %)) results))
+      :rows-streamed (reduce + 0 (keep :rows-streamed results))
+      :concept-count (count all-concepts)
+      :relationship-count (count all-rels)
+      ;; the HONEST per-container breakdown — a 0-draft / cleanly-FAILED container
+      ;; surfaces here (no false-green): its :concept-count is 0 and/or :status is
+      ;; :failure with a :diagnosis the troubleshoot landed.
+      :per-container (mapv #(select-keys % [:container :status :concept-count
+                                            :relationship-count :rows-streamed
+                                            :rows-errored :diagnosis])
+                           results)}}))
+
+(defn extract-subbehavior-def
+  "The Extract subbehavior workflow definition (MC-5 — MULTI-container).
+
+   The public `@v1` Extract sheet is a thin ORCHESTRATOR: ONE `:code` node that
+   enumerates the source's containers and drives the per-container SAMPLE → AUTHOR
+   → APPLY unit (`extract-per-container-def`) once per container, accumulating the
+   drafts across containers. So a relational store extracts from EVERY table and a
+   workbook directory from EVERY sheet — not just the largest container. A single-
+   container source (csv / one-table sql / one workbook) is simply N=1: the SAME
+   orchestrator, one child tick. The hard, irreducibly-composite per-container unit
+   (the `:llm` AUTHOR with `:code` SAMPLE/APPLY around it) runs in its OWN isolated
+   child blackboard — its OWN `with-resilience` gate + its OWN `:reasoning` (#13) —
+   so the per-container passes never race / bleed (the ORC-PRINCIPLES §14 hazard a
+   `:map-each` composite leaf would hit).
+
+   Contract (the public `:reads`/`:writes`) — UNCHANGED from single-container:
+     :reads  [:model-spec :source]
+     :writes [:concept-drafts :relationship-drafts :extraction-report]
+   `:concept-drafts` / `:relationship-drafts` are the UNION across containers; the
+   `:extraction-report` aggregates per-container coverage HONESTLY (a 0-draft or
+   cleanly-failed container surfaces — no false-green).
+
+   `key-shape` (optional) flows to the per-container unit's author prompt. `model`
+   (optional) flows down to the per-container `:llm` author. `resilient?` (default
+   true) gates the per-container unit (NOT the orchestrator — resilience is per
+   container, so one bad container fails CLEANLY without poisoning the others).
+
+   IMPORTANT: the per-container unit must be REGISTERED before this sheet runs —
+   `register-extract-subbehavior!` registers BOTH (the orchestrator resolves the
+   unit by its deterministic name at runtime)."
+  [{:keys [model key-shape resilient?]}]
+  (let [nm (extract-subbehavior-name)]
+    (dsl/workflow nm
+      (dsl/blackboard
+       {;; public :reads — the EB3 model-spec + the source descriptor
+        :model-spec [:map {:closed false}]
+        :source [:map {:closed false}]
+        ;; optional bound on how many containers to traverse (default ceiling
+        ;; applies when unset). Declared so a caller can pass it in via :reads.
+        :max-containers [:maybe :int]
+        ;; public :writes — the draft set (union across containers) + the report
+        :concept-drafts concept-drafts-schema
+        :relationship-drafts relationship-drafts-schema
+        :extraction-report extraction-report-schema})
+      (dsl/sequence "extract-root"
+        ;; the multi-container orchestrator — list-containers + per-container child
+        ;; ticks of the per-container unit + accumulation (REUSE, no fork).
+        (dsl/code "orchestrate-containers"
+          :fn "ai.obney.orc.ontology.core.extract-subbehavior/orchestrate-extract-containers"
+          :reads [:source :model-spec :max-containers]
+          :writes [:concept-drafts :relationship-drafts :extraction-report])))))
+
 (defn register-extract-subbehavior!
-  "REGISTER (build, idempotent) the Extract subbehavior sheet and return its
-   deterministic sheet-id. Re-registering an unchanged def is a no-op (same id).
-   The central evolver tree resolves the name → id via `extract-sheet-id-for` and
-   `:delegate`s to it."
+  "REGISTER (build, idempotent) the Extract subbehavior sheets and return the
+   PUBLIC `@v1` orchestrator's deterministic sheet-id. Registers BOTH the per-
+   container unit (the orchestrator drives it by name at runtime) AND the public
+   orchestrator sheet. Re-registering unchanged defs is a no-op (same ids). The
+   central evolver tree resolves the public name → id via `extract-sheet-id-for`
+   and `:delegate`s to it (unchanged from single-container)."
   [ctx {:keys [model key-shape resilient?]}]
+  ;; the per-container unit FIRST (the orchestrator resolves it by name at runtime).
+  (dsl/build-workflow! ctx (extract-per-container-def
+                            {:model model :key-shape key-shape :resilient? resilient?}))
+  ;; the public orchestrator sheet — its id is what the central tree delegates to.
   (dsl/build-workflow! ctx (extract-subbehavior-def
                             {:model model :key-shape key-shape :resilient? resilient?})))

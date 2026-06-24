@@ -206,16 +206,20 @@
 
 (deftest extract-subbehavior-composes-resilience-without-changing-contract-test
   (testing "Extract composes a resilient :fallback around its failure-prone author
-            step; the public :reads/:writes contract is unchanged"
+            step — now in the PER-CONTAINER unit (MC-5: @v1 is a thin orchestrator
+            that drives the per-container unit once per container; resilience gates
+            EACH container). The public contract is unchanged."
     (h/with-async-test-context [ctx]
-      (let [sid (extract/register-extract-subbehavior! ctx {:resilient? true})
-            nodes (vals (rm/get-nodes-by-id ctx sid))
+      (let [_ (extract/register-extract-subbehavior! ctx {:resilient? true})
+            ;; resilience lives in the per-container unit the orchestrator drives.
+            unit-id (extract/extract-per-container-sheet-id-for)
+            nodes (vals (rm/get-nodes-by-id ctx unit-id))
             fallbacks (filter #(= :fallback (:type %)) nodes)
             ;; the troubleshoot node + the always-fail condition are present
             ai-leaves (filter #(and (= :leaf (:type %)) (= :ai (:executor %))) nodes)
             conditions (filter #(= :condition (:type %)) nodes)]
         (is (seq fallbacks)
-            "a resilient :fallback is present in the composed Extract tree")
+            "a resilient :fallback is present in the composed per-container unit")
         ;; the troubleshoot adds a SECOND :ai leaf (the author + the troubleshoot)
         (is (>= (count ai-leaves) 2)
             "the troubleshoot :llm node is composed in alongside the author")
@@ -225,13 +229,15 @@
         ;; the always-fail sentinel condition is present
         (is (some #(= res/never-key (get-in % [:check :key])) conditions)
             "the always-fail sentinel condition (clean-failure forcer) is present"))))
-  (testing "the public Extract contract is unchanged by composing resilience"
+  (testing "the per-container SAMPLE node's contract is unchanged by composing
+            resilience (it reads the source + the one container it grounds)"
     (h/with-async-test-context [ctx]
-      (let [sid (extract/register-extract-subbehavior! ctx {:resilient? true})
+      (let [_ (extract/register-extract-subbehavior! ctx {:resilient? true})
+            unit-id (extract/extract-per-container-sheet-id-for)
             sample (first (filter #(= "sample-rows" (:name %))
-                                  (vals (rm/get-nodes-by-id ctx sid))))]
-        (is (= [:source] (vec (:reads sample)))
-            "the SAMPLE node's contract is untouched")))))
+                                  (vals (rm/get-nodes-by-id ctx unit-id))))]
+        (is (= [:source :container] (vec (:reads sample)))
+            "the SAMPLE node reads the source + the container (MC-5 contract)")))))
 
 (deftest extract-resilient-build-is-idempotent-test
   (testing "the resilient Extract sheet registers deterministically + idempotently"
