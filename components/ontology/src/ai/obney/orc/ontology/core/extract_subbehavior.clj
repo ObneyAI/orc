@@ -680,6 +680,140 @@
                 (normalize-value v)))
             attrs))))
 
+;; =============================================================================
+;; GC-1 — CANONICAL URI minting (the keystone). The per-container AUTHOR writes its
+;; OWN free-form `:uri` for each concept-draft, so two containers can mint DIFFERENT
+;; URIs for the SAME real entity (one keys `program:010000`, another keys
+;; `degree_program/01.00.00`). EB5 reconcile merges by canonical `:uri`, so those
+;; never collapse → the graph fragments and the cross-container edges strand.
+;;
+;; The fix: stop trusting the AUTHOR's free `:uri` for IDENTITY. Each concept-draft
+;; carries an explicit `:entity-type` (the model-spec `:type` it is — emitted by the
+;; AUTHOR's transform, the step that already decided "this row → a program"). This
+;; DETERMINISTIC post-step looks up that type's `:uri-keying-fields` in the
+;; model-spec, recovers the field VALUES from the draft's `:attributes` (REUSING the
+;; SAME `normalize-key-name` / `normalize-value` MC-6 uses — it deliberately does NOT
+;; parse the old URI, which would tie identity to a minting convention), and mints a
+;; canonical URI `<normalized-entity-type>/<normalized-key-1>[/<normalized-key-2>…]`
+;; in ONE format so the SAME entity is byte-identical across containers. It builds an
+;; old→canonical rewrite map from the concept-drafts and applies it to concept-draft
+;; `:uri` AND relationship-draft `:source-uri`/`:target-uri` together (no dangling
+;; edges). It runs BEFORE MC-6 cross-container relating, so MC-6 joins/edges operate
+;; on canonical URIs.
+;;
+;; HONEST DEGRADE (#4/#5): a draft with NO `:entity-type`, or an `:entity-type` not
+;; in the model-spec, or whose keying-field VALUES can't be recovered from
+;; `:attributes`, keeps its ORIGINAL `:uri` and is SURFACED in `:degraded` — NEVER
+;; given a fabricated canonical URI. Domain-agnostic (#12): the entity-type, the
+;; keying fields, and the values all come from the model-spec + the draft at runtime;
+;; this names NO domain field.
+;; =============================================================================
+
+(defn- entity-type-keying-fields
+  "Build a `{normalized-type -> [uri-keying-field …]}` index from the model-spec's
+   `:entity-types`. The lookup key is the entity-type NAME normalized the SAME way
+   `normalize-key-name` normalizes any name (case/separator-tolerant) so a draft's
+   `:entity-type` matches the spec's `:type` regardless of casing/spacing. A spec
+   entry with no `:type` or an empty `:uri-keying-fields` is dropped (it cannot key
+   a canonical URI). Reads the spec TOLERANTLY (the DT3 value-shape tolerance:
+   `:uri-keying-fields` may be a vector of strings)."
+  [model-spec]
+  (reduce
+   (fn [acc {:keys [type uri-keying-fields]}]
+     (let [t (normalize-key-name type)
+           fields (vec (remove nil? (or uri-keying-fields [])))]
+       (if (and t (seq fields))
+         (assoc acc t fields)
+         acc)))
+   {}
+   (or (:entity-types model-spec) [])))
+
+(defn- mint-canonical-uri
+  "Mint the canonical URI for a concept-draft given its entity-type's
+   `:uri-keying-fields`. Recover each field's VALUE from the draft's `:attributes`
+   (REUSE `recover-via-value` — the SAME MC-6 attribute recovery + normalization;
+   NOT parsing the old URI). The canonical URI is
+   `<normalized-entity-type>/<normalized-key-1>[/<normalized-key-2>…]` — a FIXED
+   separator (`/`), the spec's field ORDER, and per-value normalization, so the SAME
+   entity is byte-identical across containers. Returns nil when ANY keying field's
+   value cannot be recovered (an honest degrade — a partial key would mis-merge or
+   fabricate); the caller keeps the draft's original URI and surfaces it."
+  [normalized-type uri-keying-fields draft]
+  (let [values (map (fn [field] (recover-via-value draft field)) uri-keying-fields)]
+    (when (every? some? values)
+      (str normalized-type "/" (str/join "/" values)))))
+
+(defn canonicalize-drafts
+  "GC-1 — the PURE canonicalizer (model-spec + drafts → rewritten drafts). NO Grain,
+   NO LLM — unit-testable in isolation.
+
+   For each concept-draft: look up its `:entity-type`'s `:uri-keying-fields` in the
+   model-spec, recover those values from `:attributes` (MC-6 helpers — NOT the URI),
+   and mint a canonical URI in ONE deterministic format. Build an old→canonical
+   rewrite map from the concept-drafts and apply it to concept-draft `:uri` AND
+   relationship-draft `:source-uri`/`:target-uri` (so the two same-entity drafts
+   collapse AND no edge dangles).
+
+   A draft whose `:entity-type` is absent / unknown to the spec, or whose keying-field
+   values can't be recovered, KEEPS its original `:uri` and is surfaced in
+   `:degraded` (#4/#5 — never a fabricated canonical URI). Its URI is therefore NOT
+   in the rewrite map, so edges pointing at it stay pointed at its original URI.
+
+   Returns:
+     {:concept-drafts       [<draft with :uri rewritten where minted> …]
+      :relationship-drafts  [<draft with endpoints rewritten via the map> …]
+      :uri-rewrite-map      {<old-uri> <canonical-uri> …}   (only the rewrites)
+      :degraded             [{:uri <old-uri> :entity-type <as-given> :reason <kw>} …]}"
+  [model-spec concept-drafts relationship-drafts]
+  (let [type-index (entity-type-keying-fields model-spec)
+        ;; Per concept-draft: decide the canonical URI (or an honest-degrade reason).
+        decided
+        (mapv
+         (fn [draft]
+           (let [et (:entity-type draft)
+                 norm-et (normalize-key-name et)
+                 fields (get type-index norm-et)]
+             (cond
+               (nil? et)
+               {:draft draft :canonical nil :reason :no-entity-type}
+
+               (nil? fields)
+               {:draft draft :canonical nil :reason :unknown-entity-type}
+
+               :else
+               (if-let [canon (mint-canonical-uri norm-et fields draft)]
+                 {:draft draft :canonical canon}
+                 {:draft draft :canonical nil :reason :unrecoverable-keying-values}))))
+         (or concept-drafts []))
+        ;; old→canonical rewrite map — only the drafts that successfully minted a
+        ;; canonical URI (a degraded draft keeps its original URI, so it is NOT in the
+        ;; map; edges to it stay on the original URI — no fabrication, no dangling).
+        rewrite-map (reduce (fn [m {:keys [draft canonical]}]
+                              (if canonical
+                                (assoc m (:uri draft) canonical)
+                                m))
+                            {}
+                            decided)
+        rewrite (fn [uri] (get rewrite-map uri uri))
+        out-concepts (mapv (fn [{:keys [draft canonical]}]
+                             (if canonical (assoc draft :uri canonical) draft))
+                           decided)
+        out-rels (mapv (fn [r]
+                         (cond-> r
+                           (:source-uri r) (update :source-uri rewrite)
+                           (:target-uri r) (update :target-uri rewrite)))
+                       (or relationship-drafts []))
+        degraded (->> decided
+                      (remove :canonical)
+                      (mapv (fn [{:keys [draft reason]}]
+                              {:uri (:uri draft)
+                               :entity-type (:entity-type draft)
+                               :reason reason})))]
+    {:concept-drafts out-concepts
+     :relationship-drafts out-rels
+     :uri-rewrite-map rewrite-map
+     :degraded degraded}))
+
 (defn- index-by-via-value
   "Build {normalized-via-value -> [draft ...]} for a container's concept-drafts,
    keying each draft by its recovered `:via` value (drafts with no recoverable
@@ -831,12 +965,40 @@
               :rows-errored (:rows-errored report)
               :diagnosis (get-in bb [:diagnosis :value])}))
          containers)
+        ;; GC-1 — CANONICAL URI minting (the keystone), BEFORE MC-6 cross-container
+        ;; relating. Each container's AUTHOR minted its OWN free-form :uri, so two
+        ;; containers can mint DIFFERENT URIs for the SAME real entity. The pure
+        ;; `canonicalize-drafts` rewrites each container's concept-draft :uri (and its
+        ;; intra-row edge endpoints) to a canonical URI derived deterministically from
+        ;; (model-spec :entity-type + its :uri-keying-fields VALUES recovered from
+        ;; :attributes) in ONE byte-identical format — so the SAME entity collapses
+        ;; across containers when EB5 reconcile merges by URI, and MC-6 joins/edges
+        ;; operate on canonical URIs. Per-container canonicalization is globally
+        ;; consistent because the canonical URI is a pure fn of the entity's identity
+        ;; values, not of any cross-container map. A draft whose :entity-type is
+        ;; missing/unknown (or whose keying values can't be recovered) keeps its
+        ;; original URI and is surfaced in :degraded — never fabricated (#4/#5).
+        canon-per-container
+        (mapv (fn [r]
+                (let [c (canonicalize-drafts model-spec
+                                             (:concept-drafts r)
+                                             (:relationship-drafts r))]
+                  (assoc r
+                         :concept-drafts (:concept-drafts c)
+                         :relationship-drafts (:relationship-drafts c)
+                         :uri-degraded (:degraded c))))
+              results)
+        results canon-per-container
+        canon-degraded (vec (mapcat :uri-degraded results))
         all-concepts (vec (mapcat :concept-drafts results))
-        ;; the per-container INTRA-row edges (each transform only emits these).
+        ;; the per-container INTRA-row edges (each transform only emits these) — now
+        ;; with canonical endpoints (GC-1 rewrote them above).
         intra-rels (vec (mapcat :relationship-drafts results))
         ;; MC-6 — the CROSS-CONTAINER edges: join entities across containers by the
         ;; source's OWN relations (the shared :via key VALUE). Deterministic set
         ;; logic, NO :llm. nil relations-fn (csv single container) → no edges.
+        ;; Operates on the CANONICALIZED results so cross-container edges point at
+        ;; canonical URIs (no dangling against the canonical concept set).
         relations-fn (source-relations-fn source)
         cross (cross-container-relationship-drafts results relations-fn)
         cross-rels (:relationship-drafts cross)
@@ -863,6 +1025,13 @@
       {:edge-count (count cross-rels)
        :unmaterialized-count (count unmaterialized)
        :unmaterialized unmaterialized}
+      ;; GC-1 — the canonical-URI-minting summary (HONEST: surfaces how many drafts
+      ;; could NOT be canonicalized and kept their original URI, with the reason —
+      ;; a high degrade count is a signal, never a silent fabrication).
+      :canonicalization
+      {:concepts-total (count all-concepts)
+       :degraded-count (count canon-degraded)
+       :degraded canon-degraded}
       ;; the HONEST per-container breakdown — a 0-draft / cleanly-FAILED container
       ;; surfaces here (no false-green): its :concept-count is 0 and/or :status is
       ;; :failure with a :diagnosis the troubleshoot landed.
