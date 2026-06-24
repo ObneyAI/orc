@@ -253,9 +253,9 @@
 
    NOTE — this returns only FKs DECLARED in the schema. Some databases (IPEDS
    among them) declare no FKs and instead link tables by SHARED KEY COLUMNS
-   (e.g. UNITID, CIPCODE appearing in many tables). When this returns [], scan
-   table-schema across tables for repeated id/code columns and sample-rows to
-   confirm the join — those shared keys are real relationships too.
+   (e.g. UNITID, CIPCODE appearing in many tables). When this returns [], use
+   `relations` — it ADDS a shared-key heuristic on top of the declared FKs, so
+   the FK-less links surface without you scanning every table-schema by hand.
 
    EXAMPLE
      (foreign-keys \"employee\")
@@ -264,6 +264,115 @@
 
    RETURNS — a vector of edge maps {:from-table :from-column :to-table
    :to-column}. Empty vector when the table declares no foreign keys.")
+
+;; =============================================================================
+;; Tool: relations  (MC-3 — the uniform container-contract relations op)
+;; =============================================================================
+;;
+;; The container contract (source_tools.clj, MC-1) calls for a `relations`
+;; operation per container returning `[{:from :to :via}]`. For SQL a container
+;; is a table; the relations OUT OF a table come from two sources:
+;;
+;;   1. DECLARED foreign keys — reuse `foreign-keys` (P8, no fork) and reshape its
+;;      {:from-table :from-column :to-table :to-column} into the contract's
+;;      {:from "table.col" :to "table.col" :via "col"}.
+;;
+;;   2. A DOMAIN-AGNOSTIC SHARED-KEY heuristic — some databases (IPEDS) declare NO
+;;      foreign keys yet link tables by a shared CODE COLUMN that is part of the
+;;      PRIMARY KEY in many tables (the institution id). The heuristic reads each
+;;      table's `table-schema` (reuse, no fork) and treats a column that is part
+;;      of the declared primary key in >= 2 tables as a JOIN KEY, emitting a
+;;      relation from this table to every OTHER table sharing that key column.
+;;
+;; Discipline #12 — the heuristic bakes in NO field names. It keys on declared
+;; PRIMARY-KEY membership across tables, a generic structural signal, NOT on any
+;; literal column name (UNITID / CIPCODE / SOC never appear here). Keying on pk
+;; membership rather than mere co-occurrence is also what keeps a coincidentally
+;; shared DATA column (a `note`/`LINE` that is never a key anywhere) from
+;; producing a spurious relation.
+
+(defn- pk-columns-by-table
+  "Build {table-name -> #{pk-column-name ...}} for every user table, reusing
+   list-tables + table-schema (no fork). A table's pk columns are those whose
+   :primary-key is true. Empty set for a table with no declared primary key."
+  [list-tables-fn table-schema-fn]
+  (into {}
+        (map (fn [t]
+               [t (into #{}
+                        (comp (filter :primary-key) (map :name))
+                        (table-schema-fn t))]))
+        (list-tables-fn)))
+
+(defn- declared-fk-relations
+  "Reshape this table's DECLARED foreign keys into the contract {:from :to :via}
+   shape: {:from \"<from-table>.<from-column>\" :to \"<to-table>.<to-column>\"
+   :via \"<from-column>\"}."
+  [foreign-keys-fn table-name]
+  (mapv (fn [{:keys [from-table from-column to-table to-column]}]
+          {:from (str from-table "." from-column)
+           :to   (str to-table "." to-column)
+           :via  from-column})
+        (foreign-keys-fn table-name)))
+
+(defn- shared-key-relations
+  "DOMAIN-AGNOSTIC shared-key heuristic. For each column that is part of
+   `table-name`'s primary key AND is also part of the primary key of >= 1 OTHER
+   table, emit a relation from this table to that other table :via the shared
+   column. Reads only the {table -> #{pk-cols}} map — no field names baked in.
+   Deterministic order (sorted by :to then :via) so output is stable."
+  [pk-by-table table-name]
+  (let [my-pks (get pk-by-table table-name #{})]
+    (->> my-pks
+         (mapcat (fn [col]
+                   (for [[other other-pks] pk-by-table
+                         :when (and (not= other table-name)
+                                    (contains? other-pks col))]
+                     {:from (str table-name "." col)
+                      :to   (str other "." col)
+                      :via  col})))
+         (sort-by (juxt :to :via))
+         vec)))
+
+(defn- make-relations-fn [db-path]
+  ;; Build the per-table tool fns once; the heuristic needs list-tables +
+  ;; table-schema across tables, and the FK leg needs foreign-keys — all reused
+  ;; from this same specialist (P8, re-orchestrate not fork).
+  (let [list-tables-fn  (make-list-tables-fn db-path)
+        table-schema-fn (make-table-schema-fn db-path)
+        foreign-keys-fn (make-foreign-keys-fn db-path)]
+    (fn relations [table-selector]
+      (let [table-name (resolve-table-name "relations" table-selector)
+            fk-rels    (declared-fk-relations foreign-keys-fn table-name)
+            pk-by      (pk-columns-by-table list-tables-fn table-schema-fn)
+            shared     (shared-key-relations pk-by table-name)]
+        ;; Declared FKs first (authoritative), then heuristic shared-key links;
+        ;; de-dup in case a shared key also happens to be a declared FK column.
+        (into [] (distinct (concat fk-rels shared)))))))
+
+(def relations-doc
+  "PURPOSE — List the cross-table RELATIONS out of one table, in the uniform
+   contract shape {:from :to :via}. Combines TWO sources so FK-less databases
+   still surface their links: (1) the table's DECLARED foreign keys, and (2) a
+   SHARED-KEY heuristic — a column that is part of the PRIMARY KEY in this table
+   AND in another table is a join key, so a relation links the two tables via it.
+   Use this (not just foreign-keys) to discover how tables connect: many
+   real-world databases declare no FKs and link entirely by shared key columns.
+
+   EXAMPLE
+     (relations \"employee\")
+     ;; declared FK reshaped:
+     ;; => [{:from \"employee.dept_id\" :to \"department.id\" :via \"dept_id\"}]
+
+     ;; FK-less DB linked by a shared key column the heuristic finds:
+     (relations \"orders\")
+     ;; => [{:from \"orders.customer_ref\" :to \"customers.customer_ref\" :via \"customer_ref\"}
+     ;;     {:from \"orders.customer_ref\" :to \"invoices.customer_ref\" :via \"customer_ref\"} ...]
+
+   RETURNS — a vector of edge maps {:from \"<table>.<col>\" :to \"<table>.<col>\"
+   :via \"<col>\"}, sorted, de-duplicated. Empty vector when the table declares
+   no FK and shares no primary-key column with another table. The heuristic keys
+   on declared PRIMARY-KEY membership (a generic structural signal), so a column
+   that is merely co-present but never a key produces no spurious relation.")
 
 ;; =============================================================================
 ;; Tool: sample-rows
@@ -535,6 +644,7 @@
       {'list-tables  (with-doc (make-list-tables-fn db-path) list-tables-doc)
        'table-schema (with-doc (make-table-schema-fn db-path) table-schema-doc)
        'foreign-keys (with-doc (make-foreign-keys-fn db-path) foreign-keys-doc)
+       'relations    (with-doc (make-relations-fn db-path) relations-doc)
        'sample-rows  (with-doc sample-rows-fn sample-rows-doc)
        'count-rows   (with-doc (make-count-rows-fn db-path) count-rows-doc)
        'stream-all   (with-doc (make-stream-all-fn db-path sample-rows-fn) stream-all-doc)
@@ -549,6 +659,7 @@
   {'list-tables  list-tables-doc
    'table-schema table-schema-doc
    'foreign-keys foreign-keys-doc
+   'relations    relations-doc
    'sample-rows  sample-rows-doc
    'count-rows   count-rows-doc
    'stream-all   stream-all-doc

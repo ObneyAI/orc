@@ -264,10 +264,10 @@
   (testing "every tool doc has PURPOSE, EXAMPLE, RETURNS with a concrete call form"
     (let [docs sql/sql-source-tool-docs
           required ["PURPOSE" "EXAMPLE" "RETURNS"]]
-      (is (= #{'list-tables 'table-schema 'foreign-keys 'sample-rows 'count-rows
-               'stream-all 'query}
+      (is (= #{'list-tables 'table-schema 'foreign-keys 'relations 'sample-rows
+               'count-rows 'stream-all 'query}
              (set (keys docs)))
-          "all seven tools are documented (V19 added count-rows + stream-all)")
+          "all eight tools are documented (V19 added count-rows + stream-all; MC-3 added relations)")
       (doseq [[sym doc] docs]
         (testing (str sym " has all required structural elements")
           (is (string? doc))
@@ -297,7 +297,7 @@
 (deftest tool-fns-carry-docstring-metadata
   (testing "each built tool fn carries its docstring on metadata, like S19 tools"
     (let [ts (tools)]
-      (doseq [sym '[list-tables table-schema foreign-keys sample-rows query]]
+      (doseq [sym '[list-tables table-schema foreign-keys relations sample-rows query]]
         (is (string? (:doc (meta (get ts sym))))
             (str sym " fn carries :doc metadata"))))))
 
