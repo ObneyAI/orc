@@ -38,8 +38,23 @@
             [ai.obney.orc.ontology.core.extract-subbehavior :as extract]
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
+            [ai.obney.orc.ontology.interface.schemas]
+            [ai.obney.orc.ontology.core.commands]
+            [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.orc.ontology.core.reconcile-subbehavior :as recon]
+            [ai.obney.orc.ontology.core.read-models :as orm]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.query-processor.interface :as qp]
+            [ai.obney.grain.pubsub.interface :as pubsub]
+            [ai.obney.grain.kv-store.interface :as kv]
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
+            [clojure.java.io :as io]
             [clojure.string :as str]
-            [malli.core :as m]))
+            [malli.core :as m])
+  (:import [java.io File]
+           [java.sql DriverManager]))
 
 ;; A real-shaped EB3 model-spec (the CSV CIP/SOC crosswalk shape the live verify
 ;; used; grain-strategy as a keyword — the DT3 value-shape tolerance covers both).
@@ -508,3 +523,369 @@
             (is (= 0 (:concept-count c3)) "its 0-draft count is surfaced")
             (is (some? (:diagnosis c3))
                 "its troubleshoot :diagnosis crosses back into the report")))))))
+
+;; =============================================================================
+;; MC-6 — CROSS-CONTAINER relating via the relations contract (the within-source
+;; multi-table EDGES). The per-container passes (MC-5) yield concepts from N
+;; containers but relationship-count = 0 (each transform only emits intra-row
+;; edges). MC-6 uses each source's `relations` ({:from :to :via}) to JOIN entities
+;; ACROSS containers by the shared :via key VALUE — deterministic (:code set logic,
+;; NO :llm), domain-agnostic (the key comes from relations, not hardcoded).
+;;
+;; KEY-VALUE RECOVERY (the wrinkle): each cross-container edge needs each entity's
+;; :via key VALUE to match A vs B. We recover it from the concept-draft's
+;; :attributes — the AUTHOR is prompted to "carry the row's measures as
+;; :attributes", so the row's key columns live there. The match is case/type-
+;; tolerant (the :via column name from relations is normalized + compared against
+;; the draft's attribute keys), so a keyword vs string vs cased key still resolves.
+;; We do NOT parse the URI (composite/prefixed URIs make single-key extraction
+;; brittle + couple to a minting convention). When a draft carries no attribute
+;; matching the :via key, that entity contributes no edge (honest); when a whole
+;; relation materializes zero pairs it surfaces in the report as an
+;; :unmaterialized-relations entry — NEVER a fabricated edge.
+;; =============================================================================
+
+;; ---- Pure cross-container matching logic (hermetic, fast — brick gate) ----
+
+(deftest cross-container-drafts-join-different-typed-entities-by-shared-via-value-test
+  (testing "two containers' drafts sharing a :via key VALUE (carried in
+            :attributes) yield a cross-container relationship-draft per matched
+            pair; different-typed entities (different URI shapes) link"
+    (let [;; container A entities carry the join key in :attributes (the row field
+          ;; the AUTHOR carried). DIFFERENT URI shape than B (so they do NOT
+          ;; reconcile-merge — they need an EDGE).
+          a-results
+          [{:container "table_a"
+            :concept-drafts
+            [{:uri "program:p1" :label "P1" :attributes {:join_key "k100"}}
+             {:uri "program:p2" :label "P2" :attributes {:join_key "k200"}}]}]
+          b-results
+          [{:container "table_b"
+            :concept-drafts
+            [{:uri "place:k100" :label "Place 100" :attributes {:join_key "k100"}}
+             {:uri "place:k999" :label "Place 999" :attributes {:join_key "k999"}}]}]
+          ;; relations: table_a links to table_b via the shared "join_key" column.
+          relations-fn (fn [container-name]
+                         (case container-name
+                           "table_a" [{:from "table_a.join_key"
+                                       :to "table_b.join_key" :via "join_key"}]
+                           []))
+          out (extract/cross-container-relationship-drafts
+               (concat a-results b-results) relations-fn)
+          edges (:relationship-drafts out)]
+      (is (= 1 (count edges))
+          "exactly ONE edge — only k100 is shared across the two containers")
+      (let [e (first edges)]
+        (is (= "program:p1" (:source-uri e)) "the A-side entity is the edge source")
+        (is (= "place:k100" (:target-uri e)) "the B-side entity is the edge target")
+        (is (string? (:predicate e)) "a derived predicate is present")
+        (is (str/includes? (:predicate e) "join_key")
+            "the predicate is derived from the relation's :via (domain-agnostic)"))
+      (is (every? #(and (:source-uri %) (:target-uri %) (:predicate %)) edges)
+          "every cross-container edge carries source-uri + target-uri + predicate"))))
+
+(deftest cross-container-via-value-is-case-and-type-tolerant-test
+  (testing "the :via value is recovered case/type-tolerantly from :attributes —
+            a keyword key, a string key, a differently-cased key all resolve to the
+            same join value (so an AUTHOR's key representation does not break it)"
+    (let [a [{:container "a"
+              :concept-drafts [{:uri "x:1" :label "x" :attributes {:MyKey "v1"}}]}]
+          b [{:container "b"
+              :concept-drafts [{:uri "y:1" :label "y" :attributes {"mykey" "v1"}}]}]
+          rel-fn (fn [c] (if (= c "a")
+                           [{:from "a.MyKey" :to "b.MyKey" :via "MyKey"}] []))
+          edges (:relationship-drafts
+                 (extract/cross-container-relationship-drafts (concat a b) rel-fn))]
+      (is (= 1 (count edges))
+          "keyword :MyKey on A and string \"mykey\" on B match the same join value"))))
+
+(deftest cross-container-arbitrary-made-up-column-domain-agnostic-test
+  (testing "domain-agnostic: an ARBITRARY made-up join column (no domain meaning)
+            yields the cross-container edges via that column — no baked field name"
+    (let [a [{:container "left"
+              :concept-drafts [{:uri "l:a" :label "a" :attributes {:wibble "ZZ"}}
+                               {:uri "l:b" :label "b" :attributes {:wibble "QQ"}}]}]
+          b [{:container "right"
+              :concept-drafts [{:uri "r:a" :label "a" :attributes {:wibble "ZZ"}}]}]
+          rel-fn (fn [c] (if (= c "left")
+                           [{:from "left.wibble" :to "right.wibble" :via "wibble"}] []))
+          edges (:relationship-drafts
+                 (extract/cross-container-relationship-drafts (concat a b) rel-fn))]
+      (is (= 1 (count edges)) "only the shared :wibble value ZZ links across containers")
+      (is (= "l:a" (:source-uri (first edges))))
+      (is (= "r:a" (:target-uri (first edges)))))))
+
+(deftest cross-container-honest-negative-when-via-value-not-carriable-test
+  (testing "a relation whose :via key is carried by NEITHER side's :attributes
+            materializes NO edge AND surfaces in :unmaterialized-relations (an
+            honest negative, NOT a fabricated edge — #4/#5)"
+    (let [;; the drafts carry SOME attributes but NOT the relation's :via column.
+          a [{:container "a"
+              :concept-drafts [{:uri "a:1" :label "a" :attributes {:other "x"}}]}]
+          b [{:container "b"
+              :concept-drafts [{:uri "b:1" :label "b" :attributes {:other "x"}}]}]
+          rel-fn (fn [c] (if (= c "a")
+                           [{:from "a.missing_key" :to "b.missing_key"
+                             :via "missing_key"}] []))
+          out (extract/cross-container-relationship-drafts (concat a b) rel-fn)]
+      (is (empty? (:relationship-drafts out))
+          "NO edge fabricated when the join value cannot be recovered from either side")
+      (is (seq (:unmaterialized-relations out))
+          "the unmaterialized relation is surfaced HONESTLY (no silent drop)")
+      (let [u (first (:unmaterialized-relations out))]
+        (is (= "missing_key" (:via u)) "the surfaced entry names the via that failed")
+        (is (some? (:reason u)) "the entry carries a human reason")))))
+
+(deftest cross-container-same-uri-not-edged-only-different-uris-edged-test
+  (testing "two containers that mint the SAME URI for the same key already
+            reconcile-MERGE (no edge needed) — MC-6 emits NO self-edge for them;
+            only DIFFERENT-typed entities sharing the key are edged"
+    (let [a [{:container "a"
+              :concept-drafts [{:uri "shared:k1" :label "k1" :attributes {:k "k1"}}]}]
+          b [{:container "b"
+              :concept-drafts [{:uri "shared:k1" :label "k1" :attributes {:k "k1"}}]}]
+          rel-fn (fn [c] (if (= c "a") [{:from "a.k" :to "b.k" :via "k"}] []))
+          edges (:relationship-drafts
+                 (extract/cross-container-relationship-drafts (concat a b) rel-fn))]
+      (is (empty? (filter #(= (:source-uri %) (:target-uri %)) edges))
+          "no SELF-edge for entities that minted the SAME URI (they reconcile-merge)"))))
+
+(deftest cross-container-no-relations-no-edges-csv-single-container-unchanged-test
+  (testing "a source with no relations (csv single container → relations-fn nil
+            or empty) yields NO cross-container edges and is NOT an error"
+    (let [results [{:container "only" :concept-drafts [{:uri "c:1" :label "1"
+                                                        :attributes {:k "v"}}]}]]
+      ;; nil relations-fn (csv exposes no relations op) → empty, clean.
+      (is (empty? (:relationship-drafts
+                   (extract/cross-container-relationship-drafts results nil)))
+          "nil relations-fn → no cross-container edges (csv single-container path)")
+      ;; a relations-fn returning [] for the lone container → empty, clean.
+      (is (empty? (:relationship-drafts
+                   (extract/cross-container-relationship-drafts
+                    results (constantly []))))
+          "empty relations → no cross-container edges, not an error"))))
+
+;; ---- The orchestrator wires the cross-container edges into its output ----
+
+(deftest orchestrator-emits-cross-container-edges-from-relations-test
+  (testing "the MC-5 orchestrator, after accumulating per-container drafts, uses the
+            source's relations to emit CROSS-CONTAINER edges in :relationship-drafts
+            (relationship-count > 0 vs the per-container 0) — hermetic, redef'd"
+    (let [child-bbs
+          {"a" {:concept-drafts {:value [{:uri "a:1" :label "a"
+                                          :attributes {:link "shared"}}]}
+                :relationship-drafts {:value []}
+                :extraction-report {:value {:rows-streamed 10 :rows-errored 0}}}
+           "b" {:concept-drafts {:value [{:uri "b:1" :label "b"
+                                          :attributes {:link "shared"}}]}
+                :relationship-drafts {:value []}
+                :extraction-report {:value {:rows-streamed 10 :rows-errored 0}}}}
+          tick->c (atom {})]
+      (with-redefs [extract/list-source-containers
+                    (fn [_] [{:name "a"} {:name "b"}])
+                    extract/extract-per-container-sheet-id-for (fn [] (random-uuid))
+                    ;; the source's relations: a links to b via "link".
+                    extract/source-relations-fn
+                    (fn [_source]
+                      (fn [c] (if (= c "a")
+                                [{:from "a.link" :to "b.link" :via "link"}] [])))
+                    dsl/execute (fn [_ _ inputs & {:keys [tick-id]}]
+                                  (swap! tick->c assoc tick-id
+                                         (:name (get inputs "container")))
+                                  {:status :success})
+                    dsl/get-tick-blackboard
+                    (fn [_ tick-id] (get child-bbs (get @tick->c tick-id)))]
+        (let [out (extract/orchestrate-extract-containers
+                   {:inputs {:source {:type :sql :path "/tmp/x.db"}
+                             :model-spec {} :max-containers 5}
+                    :tick-id (random-uuid) :event-store :stub})
+              edges (:relationship-drafts out)
+              report (:extraction-report out)]
+          (is (pos? (count edges))
+              "cross-container edges are emitted (relationship-count > 0, vs MC-5's 0)")
+          (is (= "a:1" (:source-uri (first edges))))
+          (is (= "b:1" (:target-uri (first edges))))
+          (is (= (count edges) (:relationship-count report))
+              "the report's relationship-count reflects the cross-container edges")
+          (is (contains? report :cross-container-relations)
+              "the report surfaces the cross-container relating summary"))))))
+
+;; ---------------------------------------------------------------------------
+;; A real-Grain harness for the LAND + read-back tests (Discipline #7).
+;; ---------------------------------------------------------------------------
+
+(defn- make-grain-ctx []
+  (rmp/l1-clear!)
+  (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
+        store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
+        dir (str "/tmp/mc6-brick-" (random-uuid))
+        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir dir :db-name "test"}))]
+    {:event-store store :cache cache :tenant-id (random-uuid)
+     :command-registry (cp/global-command-registry)
+     :query-registry (qp/global-query-registry)
+     :event-pubsub ps ::cache-dir dir}))
+
+(defn- stop-grain-ctx [ctx]
+  (rmp/l1-clear!)
+  (when-let [ps (:event-pubsub ctx)] (pubsub/stop ps))
+  (when-let [c (:cache ctx)] (kv/stop c))
+  (when-let [s (:event-store ctx)] (es/stop s))
+  (when-let [d (::cache-dir ctx)]
+    (let [f (File. ^String d)]
+      (when (.exists f) (doseq [c (.listFiles f)] (.delete c)) (.delete f)))))
+
+(defmacro with-grain-ctx [[sym] & body]
+  `(let [~sym (make-grain-ctx)]
+     (try ~@body (finally (stop-grain-ctx ~sym)))))
+
+;; ---- The cross-container edges LAND as graph edges (read the projection back) ----
+
+(deftest cross-container-edges-land-and-read-back-from-projection-test
+  (testing "the cross-container relationship-drafts flow through EB5 reconcile and
+            LAND as graph edges read back from the projection (#7) — within-source
+            multi-hop path: A → B → C joined by a shared key across 3 containers"
+    (with-grain-ctx [ctx]
+      (let [oid (random-uuid)
+            ;; 3 containers, DIFFERENT-typed entities sharing a join key "K1".
+            ;; A→B→C is the within-source multi-hop traversal.
+            a [{:container "ca" :concept-drafts
+                [{:uri "alpha:1" :label "Alpha-1" :attributes {:link "K1"}}]}]
+            b [{:container "cb" :concept-drafts
+                [{:uri "beta:1" :label "Beta-1" :attributes {:link "K1"}}]}]
+            c [{:container "cc" :concept-drafts
+                [{:uri "gamma:1" :label "Gamma-1" :attributes {:link "K1"}}]}]
+            ;; relations: ca→cb, cb→cc, via "link" (the multi-hop chain).
+            rel-fn (fn [container-name]
+                     (case container-name
+                       "ca" [{:from "ca.link" :to "cb.link" :via "link"}]
+                       "cb" [{:from "cb.link" :to "cc.link" :via "link"}]
+                       []))
+            out (extract/cross-container-relationship-drafts (concat a b c) rel-fn)
+            concept-drafts (vec (mapcat :concept-drafts (concat a b c)))
+            rel-drafts (:relationship-drafts out)]
+        (is (>= (count rel-drafts) 2)
+            "≥2 cross-container edges authored (ca→cb and cb→cc) for the multi-hop chain")
+        ;; LAND via the SAME EB5 reconcile the orchestrator output flows through.
+        (recon/reconcile-drafts!
+         ctx {:ontology-id oid
+              :concept-drafts concept-drafts
+              :relationship-drafts rel-drafts
+              :source-uri-sets []
+              :probe-signals #{:graph :lexical}})
+        ;; DISCIPLINE 7 — read the EDGES back from the projection (not a return).
+        (let [edges (filter #(= oid (:ontology-id %)) (orm/get-relationships ctx))
+              by-pair (set (map (juxt :source-uri :target-uri) edges))]
+          (is (pos? (count edges))
+              "relationship-count > 0 read back from the projection (vs MC-5's 0)")
+          (is (contains? by-pair ["alpha:1" "beta:1"])
+              "the ca→cb cross-container edge landed")
+          (is (contains? by-pair ["beta:1" "gamma:1"])
+              "the cb→cc cross-container edge landed (the within-source multi-hop path)")
+          ;; multi-hop read-back: alpha → beta → gamma is traversable in the graph.
+          (let [hop1 (filter #(= "alpha:1" (:source-uri %)) edges)
+                mid (set (map :target-uri hop1))
+                hop2 (filter #(contains? mid (:source-uri %)) edges)]
+            (is (some #(= "gamma:1" (:target-uri %)) hop2)
+                "a 2-hop path alpha:1 → beta:1 → gamma:1 reads back (the traversal)")))))))
+
+;; ---- LIVE IPEDS: within-source cross-container edges from real relations ----
+
+(def ^:private ipeds-db
+  (str (System/getProperty "user.home") "/Downloads/output.db"))
+
+(defn- file-present? [^String p] (.exists (File. p)))
+
+(defn- sqlite-uri-from-attr-concepts
+  "Build per-container drafts from REAL IPEDS rows via the source's OWN tools — no
+   LLM (the cross-container relating is deterministic). For each of two real
+   relating tables, sample rows and mint one concept per row carrying the shared
+   join column in :attributes (the AUTHOR's documented contract) under a
+   container-distinct URI shape, so the two containers' same-key entities are
+   DIFFERENT-typed (they need an edge, not a merge). Returns
+   [per-container-results relations-fn] for the source — domain-agnostic: the join
+   column is read from the source's relations, never hardcoded."
+  [db-path]
+  (let [tools ((requiring-resolve
+                'ai.obney.orc.orc-service.core.source-tools-sql/sql-source-tools)
+               {:db-path db-path})
+        list-tables (get tools 'list-tables)
+        relations   (get tools 'relations)
+        sample      (get tools 'sample-rows)
+        tables (list-tables)
+        ;; find two distinct tables linked by relations + the via column.
+        rel (->> tables
+                 (mapcat (fn [t] (map #(assoc % :from-table t) (relations t))))
+                 ;; pick a relation between two DISTINCT tables.
+                 (filter (fn [{:keys [from to]}]
+                           (not= (first (str/split from #"\."))
+                                 (first (str/split to #"\.")))))
+                 first)
+        a-table (:from-table rel)
+        b-table (first (str/split (:to rel) #"\."))
+        via (:via rel)
+        via-kw (keyword via)
+        ;; sample a small bounded window from each real table.
+        a-rows (sample a-table {:limit 20})
+        b-rows (sample b-table {:limit 100})
+        ;; mint container-distinct URIs so same-key entities are DIFFERENT-typed.
+        mk (fn [prefix rows]
+             (vec (for [r rows
+                        :let [v (get r via-kw)]
+                        :when (some? v)]
+                    {:uri (str prefix ":" v)
+                     :label (str prefix " " v)
+                     :attributes {via-kw v}})))
+        a-drafts (mk a-table a-rows)
+        b-drafts (mk b-table b-rows)
+        relations-fn (fn [container-name]
+                       (if (= container-name a-table)
+                         [{:from (str a-table "." via) :to (str b-table "." via)
+                           :via via}]
+                         []))]
+    {:results [{:container a-table :concept-drafts a-drafts}
+               {:container b-table :concept-drafts b-drafts}]
+     :relations-fn relations-fn
+     :a-table a-table :b-table b-table :via via
+     :a-count (count a-drafts) :b-count (count b-drafts)}))
+
+(deftest live-ipeds-within-source-cross-container-edges-land-test
+  (testing "LIVE REAL IPEDS (skip-if-absent): the source's OWN relations join
+            entities across two real tables by the shared key VALUE; the
+            cross-container edges LAND + read back from the projection (#7) —
+            relationship-count > 0 within ONE source (vs MC-5's 0)"
+    (if-not (file-present? ipeds-db)
+      (println "[MC-6] SKIP live IPEDS within-source edges — absent at" ipeds-db)
+      (with-grain-ctx [ctx]
+        (let [{:keys [results relations-fn a-table b-table via a-count b-count]}
+              (sqlite-uri-from-attr-concepts ipeds-db)
+              oid (random-uuid)
+              out (extract/cross-container-relationship-drafts results relations-fn)
+              rel-drafts (:relationship-drafts out)
+              concept-drafts (vec (mapcat :concept-drafts results))]
+          (println "[MC-6] live IPEDS relating" a-table "->" b-table "via" via
+                   "| A-entities:" a-count "B-entities:" b-count
+                   "| cross-container edges authored:" (count rel-drafts))
+          (is (and (pos? a-count) (pos? b-count))
+              "both real tables produced entities carrying the join key")
+          (is (pos? (count rel-drafts))
+              "cross-container edges are AUTHORED from real relations (the shared key
+               actually joins entities across the two tables — not 0)")
+          ;; LAND via EB5 reconcile + read the projection back (#7).
+          (recon/reconcile-drafts!
+           ctx {:ontology-id oid
+                :concept-drafts concept-drafts
+                :relationship-drafts rel-drafts
+                :source-uri-sets []
+                :probe-signals #{:graph :lexical}})
+          (let [edges (filter #(= oid (:ontology-id %)) (orm/get-relationships ctx))]
+            (println "[MC-6] live IPEDS within-source edges LANDED:" (count edges))
+            (is (pos? (count edges))
+                "within-source relationship-count > 0 read back from the projection")
+            (is (every? #(and (:source-uri %) (:target-uri %)) edges)
+                "every landed edge carries source + target (no dangling)")
+            ;; the edge connects the two DIFFERENT tables' entities (the traversal).
+            (is (some #(and (str/starts-with? (str (:source-uri %)) (str a-table ":"))
+                            (str/starts-with? (str (:target-uri %)) (str b-table ":")))
+                      edges)
+                "a landed edge connects an A-table entity to a B-table entity
+                 (the within-source cross-container traversal)")))))))

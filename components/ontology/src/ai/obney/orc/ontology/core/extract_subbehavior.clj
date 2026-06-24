@@ -170,6 +170,9 @@
    [:windows {:optional true} :any]
    [:concept-count {:optional true} :any]
    [:relationship-count {:optional true} :any]
+   ;; MC-6 — the cross-container relating summary (edge count + honest
+   ;; unmaterialized-relation surfacing). `:any` tolerates the nested map shape.
+   [:cross-container-relations {:optional true} :any]
    [:errors-sample {:optional true} :any]])
 
 ;; =============================================================================
@@ -601,6 +604,174 @@
 ;; cannot scramble or bleed. A single-container source is just N=1.
 ;; =============================================================================
 
+;; =============================================================================
+;; MC-6 — CROSS-CONTAINER relating. The per-container passes (above) yield concepts
+;; from N containers but each per-row transform only emits INTRA-row edges, so the
+;; cross-table/cross-sheet edges are missing (relationship-count = 0 across the
+;; containers). MC-6 fills them in DETERMINISTICALLY (set logic, NO :llm): for each
+;; source-level relation {:from "A.col" :to "B.col" :via "key"} it joins entities
+;; from container A against entities from container B that share the same `key`
+;; VALUE, emitting one relationship-draft per matched pair. Domain-agnostic (#12):
+;; the join column comes from the source's OWN `relations`, never a baked field.
+;;
+;; KEY-VALUE RECOVERY (the wrinkle): each entity needs its `:via` key VALUE to be
+;; matched. We recover it from the concept-draft's `:attributes` — the AUTHOR is
+;; prompted to "carry the row's measures as :attributes", so the row's key columns
+;; live there. We match the `:via` column name case/type-tolerantly against the
+;; draft's attribute keys (a keyword vs string vs differently-cased key still
+;; resolves), and compare the VALUES as normalized strings. We deliberately do NOT
+;; parse the URI: a composite/prefixed URI ties recovery to a minting convention
+;; and to which fields are uri-keying-fields, which is brittle + couples this to a
+;; vertical. When a draft carries no attribute for the `:via` key, that entity
+;; contributes no edge (honest); when an entire relation materializes zero pairs it
+;; is surfaced in :unmaterialized-relations — NEVER a fabricated edge (#4/#5).
+;; =============================================================================
+
+(defn source-relations-fn
+  "Return a `(container-name -> [{:from :to :via} ...])` fn for the source via the
+   uniform container contract's `:relations` op (MC-3), or nil when the source
+   exposes no relations op (e.g. a csv single container — no cross-container edges,
+   not an error). Reuses `container-contract` (no fork). Domain-agnostic — it reads
+   the source's own declared/heuristic relations, names no field."
+  [source]
+  (let [container-contract (requiring-resolve
+                            'ai.obney.orc.orc-service.core.source-tools/container-contract)
+        cc (try (container-contract {:type (:type source)
+                                     :format (:format source)
+                                     :path (:path source)})
+                (catch Throwable _ nil))
+        relations (when (map? cc) (:relations cc))]
+    (when (fn? relations)
+      (fn relations-for [container-name]
+        (try (vec (relations container-name)) (catch Throwable _ []))))))
+
+(defn- normalize-key-name
+  "Normalize a column/attribute key NAME for case/type-tolerant matching: lower-case
+   the string form (a keyword's `name`, or the string itself) and strip every
+   non-alphanumeric character. So `:MyKey`, `\"my_key\"`, `\"MY-KEY\"` all collapse
+   to `\"mykey\"`. Domain-agnostic — purely structural normalization."
+  [k]
+  (when (some? k)
+    (-> (if (keyword? k) (name k) (str k))
+        (str/lower-case)
+        (str/replace #"[^a-z0-9]" ""))))
+
+(defn- normalize-value
+  "Normalize a join VALUE to a canonical comparable string: trim + lower-case its
+   string form, dropping a trailing `.0` an int-as-double picks up (so `100` and
+   `100.0` join). Returns nil for a nil/blank value (no join key → no edge)."
+  [v]
+  (when (some? v)
+    (let [s (-> (str v) str/trim)]
+      (when (seq s)
+        (-> s str/lower-case (str/replace #"\.0$" ""))))))
+
+(defn- recover-via-value
+  "Recover a concept-draft's `:via` key VALUE from its `:attributes`, matching the
+   `:via` column name case/type-tolerantly (see `normalize-key-name`). Returns the
+   normalized join value, or nil when the draft carries no attribute for that key
+   (the honest-negative signal — that entity simply contributes no edge)."
+  [draft via]
+  (let [target (normalize-key-name via)
+        attrs (:attributes draft)]
+    (when (and target (map? attrs))
+      (some (fn [[k v]]
+              (when (= target (normalize-key-name k))
+                (normalize-value v)))
+            attrs))))
+
+(defn- index-by-via-value
+  "Build {normalized-via-value -> [draft ...]} for a container's concept-drafts,
+   keying each draft by its recovered `:via` value (drafts with no recoverable
+   value are omitted — they cannot join)."
+  [drafts via]
+  (reduce (fn [acc d]
+            (if-let [v (recover-via-value d via)]
+              (update acc v (fnil conj []) d)
+              acc))
+          {} drafts))
+
+(defn- via-predicate
+  "Derive the cross-container edge predicate from the relation's `:via` column —
+   domain-agnostic (the via name comes from `relations`, not hardcoded). A stable,
+   descriptive label so the within-source join is legible in the graph."
+  [via]
+  (str "related-via-" via))
+
+(defn cross-container-relationship-drafts
+  "DETERMINISTIC cross-container relating (MC-6). Given the per-container results
+   (each `{:container <name> :concept-drafts [...]}`) and a `relations-fn`
+   (`container-name -> [{:from :to :via} ...]`, or nil for a no-relations source),
+   join entities ACROSS containers by the shared `:via` key VALUE and return
+     {:relationship-drafts        [{:source-uri :target-uri :predicate} ...]
+      :unmaterialized-relations   [{:from :to :via :reason} ...]}.
+
+   For each source relation `{:from \"A.col\" :to \"B.col\" :via \"key\"}`: index
+   container A's drafts and container B's drafts by their recovered `:via` value,
+   then for every shared value emit one edge per (A-draft × B-draft) pair. A SELF
+   pair (same URI both sides — the two containers minted the SAME URI for the same
+   key, so EB5 reconcile-MERGES them, no edge needed) is dropped. A relation that
+   yields zero pairs (no carryable value on a side) surfaces in
+   `:unmaterialized-relations` — NEVER a fabricated edge (#4/#5). The container set
+   for `:to` is matched on the table/sheet NAME prefix of `:to` (the relation's own
+   target). Deterministic order (sorted by source then target URI) so output is
+   stable. NO `:llm` — pure set logic over the drafts the per-container passes
+   already produced. Domain-agnostic — the join column is the relation's own
+   `:via`, not a baked field."
+  [per-container-results relations-fn]
+  (let [;; {container-name -> [concept-draft ...]} for the join's two sides.
+        by-container (into {}
+                           (map (juxt :container #(vec (:concept-drafts %))))
+                           per-container-results)
+        container-of (fn [table-or-sheet]
+                       ;; the relation's :from/:to carry "<container>.<col>"; the
+                       ;; container is the part before the first dot.
+                       (first (str/split (str table-or-sheet) #"\." 2)))
+        edges (atom [])
+        unmat (atom [])
+        seen (atom #{})]
+    (when (fn? relations-fn)
+      (doseq [{a-name :container} per-container-results
+              rel (relations-fn a-name)
+              :let [{:keys [from to via]} rel
+                    a-container (or (container-of from) a-name)
+                    b-container (container-of to)
+                    a-drafts (get by-container a-container)
+                    b-drafts (get by-container b-container)]
+              ;; only relate containers that are BOTH in this run's result set
+              ;; (a relation pointing at an un-processed container can't join here).
+              :when (and (seq a-drafts) (seq b-drafts) (some? via))]
+        (let [a-idx (index-by-via-value a-drafts via)
+              b-idx (index-by-via-value b-drafts via)
+              shared (filter #(contains? b-idx %) (keys a-idx))]
+          (if (seq shared)
+            (doseq [v shared
+                    a-d (get a-idx v)
+                    b-d (get b-idx v)
+                    :let [su (:uri a-d) tu (:uri b-d)
+                          ;; de-dup symmetric/duplicate edges by an UNDIRECTED
+                          ;; pair + via (relations are emitted both A->B and B->A
+                          ;; by the shared-key heuristic). A SORTED pair (not a set)
+                          ;; is the undirected key — a set of two equal URIs throws.
+                          dkey [(sort [su tu]) via]]
+                    ;; drop SELF pairs (same URI → reconcile-merge, no edge) + dups.
+                    :when (and su tu (not= su tu) (not (contains? @seen dkey)))]
+              (swap! seen conj dkey)
+              (swap! edges conj {:source-uri su :target-uri tu
+                                 :predicate (via-predicate via)}))
+            ;; honest negative — this relation materialized no pair.
+            (swap! unmat conj
+                   {:from from :to to :via via
+                    :reason (cond
+                              (empty? a-idx)
+                              "no entity in the source container carried the join key value"
+                              (empty? b-idx)
+                              "no entity in the target container carried the join key value"
+                              :else
+                              "the two containers share no join key value")})))))
+    {:relationship-drafts (vec (sort-by (juxt :source-uri :target-uri) @edges))
+     :unmaterialized-relations @unmat}))
+
 (defn orchestrate-extract-containers
   "The MC-5 multi-container orchestrator `:code` `:fn`. REUSES the per-container
    Extract unit (`extract-per-container-def`) — no fork — once per container:
@@ -661,7 +832,17 @@
               :diagnosis (get-in bb [:diagnosis :value])}))
          containers)
         all-concepts (vec (mapcat :concept-drafts results))
-        all-rels (vec (mapcat :relationship-drafts results))]
+        ;; the per-container INTRA-row edges (each transform only emits these).
+        intra-rels (vec (mapcat :relationship-drafts results))
+        ;; MC-6 — the CROSS-CONTAINER edges: join entities across containers by the
+        ;; source's OWN relations (the shared :via key VALUE). Deterministic set
+        ;; logic, NO :llm. nil relations-fn (csv single container) → no edges.
+        relations-fn (source-relations-fn source)
+        cross (cross-container-relationship-drafts results relations-fn)
+        cross-rels (:relationship-drafts cross)
+        unmaterialized (:unmaterialized-relations cross)
+        ;; union the intra-row edges with the cross-container edges.
+        all-rels (vec (concat intra-rels cross-rels))]
     {:concept-drafts all-concepts
      :relationship-drafts all-rels
      :extraction-report
@@ -675,6 +856,13 @@
       :rows-streamed (reduce + 0 (keep :rows-streamed results))
       :concept-count (count all-concepts)
       :relationship-count (count all-rels)
+      ;; MC-6 — the cross-container relating summary (HONEST: surfaces the edge
+      ;; count derived from relations AND any relation that could not be
+      ;; materialized — no fabricated edge, no silent drop).
+      :cross-container-relations
+      {:edge-count (count cross-rels)
+       :unmaterialized-count (count unmaterialized)
+       :unmaterialized unmaterialized}
       ;; the HONEST per-container breakdown — a 0-draft / cleanly-FAILED container
       ;; surfaces here (no false-green): its :concept-count is 0 and/or :status is
       ;; :failure with a :diagnosis the troubleshoot landed.
