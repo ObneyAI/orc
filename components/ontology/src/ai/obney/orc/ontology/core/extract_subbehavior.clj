@@ -814,16 +814,47 @@
      :uri-rewrite-map rewrite-map
      :degraded degraded}))
 
+;; GC-2 — the per-`:via`-value DISTINCT-ENTITY fan-out cap. After GC-1 every draft's
+;; `:uri` is canonical, so `index-by-via-value` collapses the rows-per-entity
+;; multiplication to ONE draft per distinct `:uri` BEFORE pairing (case (a) — the
+;; dominant OOM driver — disappears). This cap bounds the GENUINE distinct-entity
+;; 1:many fan-out (case (b)): if a single `:via` value pairs more than this many
+;; DISTINCT (source,target) entities, the excess is DROPPED and surfaced HONESTLY in
+;; `:truncated-relations` (never a silent top-N). Measured on the REAL IPEDS
+;; completions table (`C2022_A`): distinct entities per join key max ≈ 581, and only
+;; 3 of 6042 join values exceed 500 distinct pairs against an institution-level
+;; table — so 500 admits real fan-out while blocking the combinatorial blow-up (the
+;; naive rows×rows pairing reached 1.5M+ pairs / 2929² per single key). Domain-
+;; agnostic — a structural bound on pair count, naming no field.
+(def default-max-pairs-per-via 500)
+
 (defn- index-by-via-value
   "Build {normalized-via-value -> [draft ...]} for a container's concept-drafts,
    keying each draft by its recovered `:via` value (drafts with no recoverable
-   value are omitted — they cannot join)."
+   value are omitted — they cannot join).
+
+   GC-2: each bucket is DEDUPED to ONE draft per DISTINCT canonical `:uri` (the
+   first draft seen for a `:uri` wins — they are the SAME entity after GC-1, so the
+   choice is immaterial). This collapses the rows-per-entity multiplication BEFORE
+   the cross-container pairing, so the loop iterates distinct-entities ×
+   distinct-entities, not rows × rows — the dominant MC-6 OOM driver."
   [drafts via]
-  (reduce (fn [acc d]
-            (if-let [v (recover-via-value d via)]
-              (update acc v (fnil conj []) d)
-              acc))
-          {} drafts))
+  (reduce-kv
+   (fn [acc v ds]
+     (assoc acc v (->> ds
+                       (reduce (fn [{:keys [seen out] :as a} d]
+                                 (let [u (:uri d)]
+                                   (if (contains? seen u)
+                                     a
+                                     {:seen (conj seen u) :out (conj out d)})))
+                               {:seen #{} :out []})
+                       :out)))
+   {}
+   (reduce (fn [acc d]
+             (if-let [v (recover-via-value d via)]
+               (update acc v (fnil conj []) d)
+               acc))
+           {} drafts)))
 
 (defn- via-predicate
   "Derive the cross-container edge predicate from the relation's `:via` column —
@@ -838,11 +869,14 @@
    (`container-name -> [{:from :to :via} ...]`, or nil for a no-relations source),
    join entities ACROSS containers by the shared `:via` key VALUE and return
      {:relationship-drafts        [{:source-uri :target-uri :predicate} ...]
-      :unmaterialized-relations   [{:from :to :via :reason} ...]}.
+      :unmaterialized-relations   [{:from :to :via :reason} ...]
+      :truncated-relations        [{:from :to :via :value :distinct-pairs :cap
+                                     :dropped-pairs :reason} ...]
+      :pairs-considered           <int>}.
 
    For each source relation `{:from \"A.col\" :to \"B.col\" :via \"key\"}`: index
    container A's drafts and container B's drafts by their recovered `:via` value,
-   then for every shared value emit one edge per (A-draft × B-draft) pair. A SELF
+   then for every shared value emit one edge per (A-entity × B-entity) pair. A SELF
    pair (same URI both sides — the two containers minted the SAME URI for the same
    key, so EB5 reconcile-MERGES them, no edge needed) is dropped. A relation that
    yields zero pairs (no carryable value on a side) surfaces in
@@ -851,60 +885,109 @@
    target). Deterministic order (sorted by source then target URI) so output is
    stable. NO `:llm` — pure set logic over the drafts the per-container passes
    already produced. Domain-agnostic — the join column is the relation's own
-   `:via`, not a baked field."
-  [per-container-results relations-fn]
-  (let [;; {container-name -> [concept-draft ...]} for the join's two sides.
-        by-container (into {}
-                           (map (juxt :container #(vec (:concept-drafts %))))
-                           per-container-results)
-        container-of (fn [table-or-sheet]
-                       ;; the relation's :from/:to carry "<container>.<col>"; the
-                       ;; container is the part before the first dot.
-                       (first (str/split (str table-or-sheet) #"\." 2)))
-        edges (atom [])
-        unmat (atom [])
-        seen (atom #{})]
-    (when (fn? relations-fn)
-      (doseq [{a-name :container} per-container-results
-              rel (relations-fn a-name)
-              :let [{:keys [from to via]} rel
-                    a-container (or (container-of from) a-name)
-                    b-container (container-of to)
-                    a-drafts (get by-container a-container)
-                    b-drafts (get by-container b-container)]
-              ;; only relate containers that are BOTH in this run's result set
-              ;; (a relation pointing at an un-processed container can't join here).
-              :when (and (seq a-drafts) (seq b-drafts) (some? via))]
-        (let [a-idx (index-by-via-value a-drafts via)
-              b-idx (index-by-via-value b-drafts via)
-              shared (filter #(contains? b-idx %) (keys a-idx))]
-          (if (seq shared)
-            (doseq [v shared
-                    a-d (get a-idx v)
-                    b-d (get b-idx v)
-                    :let [su (:uri a-d) tu (:uri b-d)
-                          ;; de-dup symmetric/duplicate edges by an UNDIRECTED
-                          ;; pair + via (relations are emitted both A->B and B->A
-                          ;; by the shared-key heuristic). A SORTED pair (not a set)
-                          ;; is the undirected key — a set of two equal URIs throws.
-                          dkey [(sort [su tu]) via]]
-                    ;; drop SELF pairs (same URI → reconcile-merge, no edge) + dups.
-                    :when (and su tu (not= su tu) (not (contains? @seen dkey)))]
-              (swap! seen conj dkey)
-              (swap! edges conj {:source-uri su :target-uri tu
-                                 :predicate (via-predicate via)}))
-            ;; honest negative — this relation materialized no pair.
-            (swap! unmat conj
-                   {:from from :to to :via via
-                    :reason (cond
-                              (empty? a-idx)
-                              "no entity in the source container carried the join key value"
-                              (empty? b-idx)
-                              "no entity in the target container carried the join key value"
-                              :else
-                              "the two containers share no join key value")})))))
-    {:relationship-drafts (vec (sort-by (juxt :source-uri :target-uri) @edges))
-     :unmaterialized-relations @unmat}))
+   `:via`, not a baked field.
+
+   GC-2 — BOUNDED. `index-by-via-value` dedupes each bucket to one draft per
+   DISTINCT canonical `:uri` (post-GC-1) BEFORE pairing, so the loop iterates
+   distinct-entities × distinct-entities, not rows × rows (case (a) — pure
+   row-multiplication — collapses; the dominant MC-6 OOM driver disappears). Where a
+   single `:via` value still pairs more than `max-pairs-per-via` (default
+   `default-max-pairs-per-via`) DISTINCT entities (case (b) — a genuine 1:many
+   fan-out), the excess pairs are DROPPED and surfaced in `:truncated-relations`
+   with the dropped count + reason — an HONEST cap, never a silent top-N (#4/#5).
+   `:pairs-considered` reports the bounded distinct-pair work the loop performed."
+  ([per-container-results relations-fn]
+   (cross-container-relationship-drafts per-container-results relations-fn
+                                        default-max-pairs-per-via))
+  ([per-container-results relations-fn max-pairs-per-via]
+   (let [;; {container-name -> [concept-draft ...]} for the join's two sides.
+         by-container (into {}
+                            (map (juxt :container #(vec (:concept-drafts %))))
+                            per-container-results)
+         container-of (fn [table-or-sheet]
+                        ;; the relation's :from/:to carry "<container>.<col>"; the
+                        ;; container is the part before the first dot.
+                        (first (str/split (str table-or-sheet) #"\." 2)))
+         edges (atom [])
+         unmat (atom [])
+         truncated (atom [])
+         ;; GC-2 — HONEST accounting of the DISTINCT-entity pairs the bound let
+         ;; through (the iteration is now distinct-entities × distinct-entities, not
+         ;; rows × rows — `index-by-via-value` deduped the buckets to one draft per
+         ;; canonical :uri). Surfaced so the bound is observable, not implicit.
+         pairs-considered (atom 0)
+         seen (atom #{})]
+     (when (fn? relations-fn)
+       (doseq [{a-name :container} per-container-results
+               rel (relations-fn a-name)
+               :let [{:keys [from to via]} rel
+                     a-container (or (container-of from) a-name)
+                     b-container (container-of to)
+                     a-drafts (get by-container a-container)
+                     b-drafts (get by-container b-container)]
+               ;; only relate containers that are BOTH in this run's result set
+               ;; (a relation pointing at an un-processed container can't join here).
+               :when (and (seq a-drafts) (seq b-drafts) (some? via))]
+         (let [;; GC-2 — buckets are DEDUPED to distinct canonical :uri before
+               ;; pairing (case (a) — row-multiplication — collapsed).
+               a-idx (index-by-via-value a-drafts via)
+               b-idx (index-by-via-value b-drafts via)
+               shared (filter #(contains? b-idx %) (keys a-idx))]
+           (if (seq shared)
+             (doseq [v shared
+                     :let [a-ds (get a-idx v)
+                           b-ds (get b-idx v)
+                           ;; GC-2 — bound the GENUINE distinct-entity fan-out for
+                           ;; THIS :via value. After dedup these are distinct
+                           ;; entities; if their pair count exceeds the cap we take
+                           ;; the cap and surface the dropped count HONESTLY (#4/#5)
+                           ;; — never a silent top-N. Deterministic order (sorted by
+                           ;; :uri) so the kept pairs are stable.
+                           a-sorted (sort-by :uri a-ds)
+                           b-sorted (sort-by :uri b-ds)
+                           full-pairs (* (count a-sorted) (count b-sorted))
+                           pairs (for [a-d a-sorted b-d b-sorted] [a-d b-d])
+                           capped? (> full-pairs max-pairs-per-via)
+                           kept (if capped? (take max-pairs-per-via pairs) pairs)]]
+               (swap! pairs-considered + (count kept))
+               (when capped?
+                 (swap! truncated conj
+                        {:from from :to to :via via :value v
+                         :distinct-pairs full-pairs
+                         :cap max-pairs-per-via
+                         :dropped-pairs (- full-pairs max-pairs-per-via)
+                         :reason (str "distinct-entity fan-out " full-pairs
+                                      " for this join value exceeds the per-value cap "
+                                      max-pairs-per-via
+                                      "; the excess pairs are dropped (an entity-merge"
+                                      " hint is preferable to N×M weak edges)")}))
+               (doseq [[a-d b-d] kept
+                       :let [su (:uri a-d) tu (:uri b-d)
+                             ;; de-dup symmetric/duplicate edges by an UNDIRECTED
+                             ;; pair + via (relations are emitted both A->B and B->A
+                             ;; by the shared-key heuristic). A SORTED pair (not a
+                             ;; set) is the undirected key — a set of two equal URIs
+                             ;; throws.
+                             dkey [(sort [su tu]) via]]
+                       ;; drop SELF pairs (same URI → reconcile-merge, no edge) + dups
+                       :when (and su tu (not= su tu) (not (contains? @seen dkey)))]
+                 (swap! seen conj dkey)
+                 (swap! edges conj {:source-uri su :target-uri tu
+                                    :predicate (via-predicate via)})))
+             ;; honest negative — this relation materialized no pair.
+             (swap! unmat conj
+                    {:from from :to to :via via
+                     :reason (cond
+                               (empty? a-idx)
+                               "no entity in the source container carried the join key value"
+                               (empty? b-idx)
+                               "no entity in the target container carried the join key value"
+                               :else
+                               "the two containers share no join key value")})))))
+     {:relationship-drafts (vec (sort-by (juxt :source-uri :target-uri) @edges))
+      :unmaterialized-relations @unmat
+      :truncated-relations @truncated
+      :pairs-considered @pairs-considered})))
 
 (defn orchestrate-extract-containers
   "The MC-5 multi-container orchestrator `:code` `:fn`. REUSES the per-container
@@ -1003,6 +1086,11 @@
         cross (cross-container-relationship-drafts results relations-fn)
         cross-rels (:relationship-drafts cross)
         unmaterialized (:unmaterialized-relations cross)
+        ;; GC-2 — the HONEST truncation report: any :via value whose genuine
+        ;; distinct-entity fan-out exceeded the per-value cap, with its dropped count
+        ;; (never a silent top-N — #4/#5), plus the bounded distinct-pair work done.
+        truncated (:truncated-relations cross)
+        pairs-considered (:pairs-considered cross)
         ;; union the intra-row edges with the cross-container edges.
         all-rels (vec (concat intra-rels cross-rels))]
     {:concept-drafts all-concepts
@@ -1024,7 +1112,13 @@
       :cross-container-relations
       {:edge-count (count cross-rels)
        :unmaterialized-count (count unmaterialized)
-       :unmaterialized unmaterialized}
+       :unmaterialized unmaterialized
+       ;; GC-2 — the bounded distinct-pair work + the HONEST truncation entries (a
+       ;; high truncated-count is a signal that an entity-merge hint beats N×M weak
+       ;; edges, never a silent drop — #4/#5).
+       :pairs-considered pairs-considered
+       :truncated-count (count truncated)
+       :truncated truncated}
       ;; GC-1 — the canonical-URI-minting summary (HONEST: surfaces how many drafts
       ;; could NOT be canonicalized and kept their original URI, with the reason —
       ;; a high degrade count is a signal, never a silent fabrication).

@@ -665,6 +665,113 @@
                     results (constantly []))))
           "empty relations → no cross-container edges, not an error"))))
 
+;; =============================================================================
+;; GC-2 — BOUND within-source / cross-container relating (fix the MC-6 O(A×B) edge
+;; explosion). The MC-6 nested loop pairs EVERY row × EVERY row per shared :via
+;; value, so a completions-style table (dozens of rows per institution id) blows
+;; the edge count up combinatorially (the build-#1 9GB OOM). GC-1 made every
+;; draft's :uri CANONICAL, so two ROWS for the SAME real entity now carry the SAME
+;; :uri. GC-2 composes with that: dedupe each :via bucket to DISTINCT canonical
+;; :uri BEFORE pairing (case (a) — row-multiplication — collapses to one entity),
+;; then cap the genuine distinct-entity fan-out per :via value HONESTLY (case (b)
+;; — a real 1:many fan-out — surfaces a :truncated-relations report entry, never a
+;; silent drop). Re-orchestrate, not rewrite — the self-pair drop +
+;; :unmaterialized honesty stay.
+;; =============================================================================
+
+(deftest gc2-entity-dedup-collapses-row-multiplication-test
+  (testing "GC-2 case (a): side A has K ROWS that all share ONE canonical :uri for
+            a :via value (the post-GC-1 row-multiplication shape — many completions
+            rows for the same program), side B has 1 entity → exactly ONE edge, not
+            K. The dedup collapses the rows to one entity BEFORE pairing"
+    (let [k 40
+          ;; A: 40 rows ALL minted to the SAME canonical :uri (GC-1 collapsed them),
+          ;; all carrying the same :via value "u100" in :attributes. Pre-GC-2 this
+          ;; bucket is 40 drafts → 40 × 1 = 40 edges; after dedup it is 1 distinct
+          ;; entity → 1 edge.
+          a [{:container "completions"
+              :concept-drafts
+              (vec (for [_ (range k)]
+                     {:uri "programofstudy/01.0901" :label "Program 01.0901"
+                      :attributes {:unitid "u100"}}))}]
+          b [{:container "institutions"
+              :concept-drafts
+              [{:uri "institution/u100" :label "Inst 100"
+                :attributes {:unitid "u100"}}]}]
+          rel-fn (fn [c] (if (= c "completions")
+                           [{:from "completions.unitid" :to "institutions.unitid"
+                             :via "unitid"}] []))
+          out (extract/cross-container-relationship-drafts (concat a b) rel-fn)
+          edges (:relationship-drafts out)]
+      (is (= 1 (count edges))
+          "K rows sharing ONE canonical :uri → exactly ONE edge")
+      ;; The edge COUNT alone can't prove the dedup (the post-pairing `seen` set
+      ;; would also collapse K identical pairs to 1). The dedup-BEFORE-pairing is
+      ;; observable in the bounded WORK: with the dedup, the loop considers 1×1 = 1
+      ;; pair; reverting the dedup makes it iterate K×1 = K pairs (RED here).
+      (is (= 1 (:pairs-considered out))
+          "exactly ONE distinct-entity pair is considered — the dedup collapsed the
+           K rows to one entity BEFORE pairing (reverting the dedup → K)")
+      (let [e (first edges)]
+        (is (= "programofstudy/01.0901" (:source-uri e)))
+        (is (= "institution/u100" (:target-uri e)))))))
+
+(deftest gc2-bounded-distinct-fan-out-surfaced-honestly-test
+  (testing "GC-2 case (b): MANY DISTINCT entities share ONE :via value so the
+            distinct-entity fan-out exceeds the cap → the edge count is BOUNDED at
+            the cap AND the truncation is surfaced in :truncated-relations with the
+            dropped count (never a silent top-N — #4/#5)"
+    (let [na 30 nb 30                ;; 30 × 30 = 900 DISTINCT-entity pairs
+          cap 100                    ;; an explicit small cap (hermetic, fast)
+          ;; A: 30 DISTINCT entities (distinct canonical :uri), all carrying the
+          ;; SAME :via value "k1" — a genuine 1:many fan-out, NOT row-multiplication.
+          a [{:container "left"
+              :concept-drafts
+              (vec (for [i (range na)]
+                     {:uri (str "atype/" i) :label (str "A" i)
+                      :attributes {:k "k1"}}))}]
+          b [{:container "right"
+              :concept-drafts
+              (vec (for [j (range nb)]
+                     {:uri (str "btype/" j) :label (str "B" j)
+                      :attributes {:k "k1"}}))}]
+          rel-fn (fn [c] (if (= c "left")
+                           [{:from "left.k" :to "right.k" :via "k"}] []))
+          out (extract/cross-container-relationship-drafts (concat a b) rel-fn cap)
+          edges (:relationship-drafts out)
+          trunc (:truncated-relations out)]
+      (is (= cap (count edges))
+          "the edge count is BOUNDED at the cap (not the full 900 distinct pairs)")
+      (is (seq trunc)
+          "the truncation is SURFACED in :truncated-relations (not a silent drop)")
+      (let [t (first trunc)]
+        (is (= "k" (:via t)) "the truncated entry names the via that overflowed")
+        (is (= "k1" (:value t)) "the truncated entry names the via VALUE that overflowed")
+        (is (= (* na nb) (:distinct-pairs t))
+            "the full distinct-pair count is reported honestly")
+        (is (= cap (:cap t)) "the applied cap is reported")
+        (is (= (- (* na nb) cap) (:dropped-pairs t))
+            "the DROPPED count is visible (the honest negative — #4/#5)")
+        (is (string? (:reason t)) "a human reason accompanies the truncation")))))
+
+(deftest gc2-under-cap-fan-out-not-truncated-test
+  (testing "a genuine distinct-entity fan-out UNDER the cap materializes EVERY pair
+            and surfaces NO truncation (the cap admits real 1:many fan-out)"
+    (let [na 5 nb 4 cap 100
+          a [{:container "left"
+              :concept-drafts (vec (for [i (range na)]
+                                     {:uri (str "atype/" i) :attributes {:k "k1"}}))}]
+          b [{:container "right"
+              :concept-drafts (vec (for [j (range nb)]
+                                     {:uri (str "btype/" j) :attributes {:k "k1"}}))}]
+          rel-fn (fn [c] (if (= c "left")
+                           [{:from "left.k" :to "right.k" :via "k"}] []))
+          out (extract/cross-container-relationship-drafts (concat a b) rel-fn cap)]
+      (is (= (* na nb) (count (:relationship-drafts out)))
+          "every distinct pair under the cap is materialized")
+      (is (empty? (:truncated-relations out))
+          "no truncation surfaced when the fan-out is under the cap"))))
+
 ;; ---- The orchestrator wires the cross-container edges into its output ----
 
 (deftest orchestrator-emits-cross-container-edges-from-relations-test
@@ -708,7 +815,62 @@
           (is (= (count edges) (:relationship-count report))
               "the report's relationship-count reflects the cross-container edges")
           (is (contains? report :cross-container-relations)
-              "the report surfaces the cross-container relating summary"))))))
+              "the report surfaces the cross-container relating summary")
+          ;; GC-2 — the bounded-relating accounting surfaces at the public report.
+          (is (contains? (:cross-container-relations report) :pairs-considered)
+              "the report surfaces the bounded distinct-pair WORK (GC-2)")
+          (is (contains? (:cross-container-relations report) :truncated)
+              "the report surfaces the GC-2 truncation entries (honest, not silent)"))))))
+
+(deftest gc2-orchestrator-surfaces-truncation-in-report-test
+  (testing "GC-2: when a :via value's distinct fan-out exceeds the cap, the
+            orchestrator's PUBLIC :extraction-report surfaces it in
+            :cross-container-relations/:truncated with the dropped count — the
+            honesty loop closes at the public surface, never a silent drop (#4/#5)"
+    (let [;; container a: many DISTINCT entities all sharing ONE :via value, far over
+          ;; the default cap; container b: 1 entity on that value. So the distinct
+          ;; fan-out (na × 1) exceeds default-max-pairs-per-via.
+          na (+ extract/default-max-pairs-per-via 25)
+          child-bbs
+          {"a" {:concept-drafts
+                {:value (vec (for [i (range na)]
+                               {:uri (str "atype/" i) :label (str "A" i)
+                                :attributes {:link "shared"}}))}
+                :relationship-drafts {:value []}
+                :extraction-report {:value {:rows-streamed na :rows-errored 0}}}
+           "b" {:concept-drafts
+                {:value [{:uri "btype/1" :label "B1" :attributes {:link "shared"}}]}
+                :relationship-drafts {:value []}
+                :extraction-report {:value {:rows-streamed 1 :rows-errored 0}}}}
+          tick->c (atom {})]
+      (with-redefs [extract/list-source-containers
+                    (fn [_] [{:name "a"} {:name "b"}])
+                    extract/extract-per-container-sheet-id-for (fn [] (random-uuid))
+                    extract/source-relations-fn
+                    (fn [_source]
+                      (fn [c] (if (= c "a")
+                                [{:from "a.link" :to "b.link" :via "link"}] [])))
+                    dsl/execute (fn [_ _ inputs & {:keys [tick-id]}]
+                                  (swap! tick->c assoc tick-id
+                                         (:name (get inputs "container")))
+                                  {:status :success})
+                    dsl/get-tick-blackboard
+                    (fn [_ tick-id] (get child-bbs (get @tick->c tick-id)))]
+        (let [out (extract/orchestrate-extract-containers
+                   {:inputs {:source {:type :sql :path "/tmp/x.db"}
+                             :model-spec {} :max-containers 5}
+                    :tick-id (random-uuid) :event-store :stub})
+              edges (:relationship-drafts out)
+              ccr (get-in out [:extraction-report :cross-container-relations])]
+          (is (= extract/default-max-pairs-per-via (count edges))
+              "the edge count is BOUNDED at the cap (not the full na distinct pairs)")
+          (is (pos? (:truncated-count ccr))
+              "the report surfaces a non-zero truncated-count")
+          (let [t (first (:truncated ccr))]
+            (is (= na (:distinct-pairs t))
+                "the full distinct-pair count is reported honestly")
+            (is (= (- na extract/default-max-pairs-per-via) (:dropped-pairs t))
+                "the DROPPED count is visible at the public surface (#4/#5)")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; A real-Grain harness for the LAND + read-back tests (Discipline #7).
@@ -889,3 +1051,93 @@
                       edges)
                 "a landed edge connects an A-table entity to a B-table entity
                  (the within-source cross-container traversal)")))))))
+
+;; ---- GC-2 LIVE SCALE REGRESSION: real many-rows-per-key completions table ----
+
+(defn- query-rows
+  "Read a bounded result set from the real IPEDS sqlite as a vector of column-keyed
+   maps (no LLM — the cross-container relating is deterministic)."
+  [db-path sql]
+  (with-open [conn (DriverManager/getConnection (str "jdbc:sqlite:" db-path))
+              stmt (.createStatement conn)
+              rs (.executeQuery stmt sql)]
+    (let [md (.getMetaData rs)
+          n (.getColumnCount md)
+          cols (mapv #(.getColumnName md (inc %)) (range n))]
+      (loop [acc []]
+        (if (.next rs)
+          (recur (conj acc (into {} (map (fn [c] [c (.getString rs ^String c)]) cols))))
+          acc)))))
+
+(deftest gc2-live-scale-regression-many-rows-per-key-bounded-test
+  (testing "GC-2 LIVE (skip-if-absent): the REAL IPEDS completions table (C2022_A —
+            dozens of rows per institution id, the actual build-#1 9GB OOM driver),
+            joined against itself as two DIFFERENT-typed containers via UNITID,
+            yields a BOUNDED edge count completing at a sane heap. Post-GC-1 each row
+            mints a canonical programofstudy/<cip> (resp. award/<cip>), so the dedup
+            collapses the rows-per-entity multiplication and the cap bounds the
+            genuine distinct-entity fan-out. Reverting either blows the WORK up
+            (12M+ rows×rows iterations on just 50 institutions)."
+    (if-not (file-present? ipeds-db)
+      (println "[GC-2] SKIP live scale regression — IPEDS absent at" ipeds-db)
+      (let [;; bound the probe to a window of institutions (each carries dozens-to-
+            ;; hundreds of completions rows — the row-multiplication is real even
+            ;; within this window).
+            units (mapv #(get % "UNITID")
+                        (query-rows ipeds-db
+                                    "SELECT DISTINCT UNITID FROM C2022_A
+                                     ORDER BY UNITID LIMIT 50"))
+            in-clause (str/join "," (map #(str "'" % "'") units))
+            raw (query-rows ipeds-db
+                            (str "SELECT UNITID, CIPCODE FROM C2022_A
+                                  WHERE UNITID IN (" in-clause ")"))
+            ;; POST-GC-1 canonical shape: many rows for the same (unitid,cip) share
+            ;; ONE canonical :uri; distinct programs per unitid are distinct entities.
+            a-drafts (mapv (fn [r] {:uri (str "programofstudy/" (get r "CIPCODE"))
+                                    :attributes {:unitid (get r "UNITID")}}) raw)
+            b-drafts (mapv (fn [r] {:uri (str "award/" (get r "CIPCODE"))
+                                    :attributes {:unitid (get r "UNITID")}}) raw)
+            results [{:container "completions_a" :concept-drafts a-drafts}
+                     {:container "completions_b" :concept-drafts b-drafts}]
+            rel-fn (fn [c] (if (= c "completions_a")
+                             [{:from "completions_a.unitid"
+                               :to "completions_b.unitid" :via "unitid"}] []))
+            ;; the NAIVE rows×rows iteration count the reverted loop would perform —
+            ;; the OOM driver, computed here for the regression assertion.
+            a-by (group-by #(get-in % [:attributes :unitid]) a-drafts)
+            b-by (group-by #(get-in % [:attributes :unitid]) b-drafts)
+            naive (reduce + 0 (for [u units :when (and (a-by u) (b-by u))]
+                                (* (count (a-by u)) (count (b-by u)))))
+            out (extract/cross-container-relationship-drafts results rel-fn)
+            edges (:relationship-drafts out)
+            trunc (:truncated-relations out)]
+        (println "[GC-2] live scale: 50 UNITIDs |" (count raw) "raw completions rows |"
+                 "naive rows×rows iterations:" naive
+                 "| GREEN edges:" (count edges)
+                 "| pairs-considered:" (:pairs-considered out)
+                 "| truncated entries:" (count trunc))
+        (is (pos? (count raw))
+            "the real completions table produced rows (the live source is present)")
+        (is (> naive 1000000)
+            "the NAIVE rows×rows pairing is a genuine combinatorial blow-up (>1M
+             iterations on just 50 institutions — the real OOM driver)")
+        ;; the BOUND: the deduped+capped work is dramatically smaller than naive AND
+        ;; the per-via cap holds every edge group.
+        (is (< (:pairs-considered out) (quot naive 10))
+            "the deduped+capped WORK is >10× smaller than the naive rows×rows blow-up
+             (the dedup collapsed the row-multiplication BEFORE pairing)")
+        ;; the cap is per-via-VALUE: any value whose distinct fan-out exceeded the cap
+        ;; appears in :truncated-relations with :distinct-pairs > cap, and the kept
+        ;; pairs for it never exceed the cap. (The total edge count spans MANY via
+        ;; values, so it is legitimately larger than the per-value cap.)
+        (is (every? #(<= extract/default-max-pairs-per-via (:distinct-pairs %)) trunc)
+            "every truncated via-value genuinely exceeded the per-value cap (the bound
+             only fires on real combinatorial fan-out, not on small groups)")
+        ;; HONEST truncation: where a real institution genuinely fans out past the
+        ;; cap, the drop is SURFACED — never silent (#4/#5).
+        (when (seq trunc)
+          (is (every? #(and (pos? (:dropped-pairs %)) (string? (:reason %))) trunc)
+              "every truncation surfaces its dropped count + reason (honest, not
+               silent — #4/#5)"))
+        (is (every? #(and (:source-uri %) (:target-uri %) (:predicate %)) edges)
+            "every bounded edge carries source + target + predicate (no dangling)")))))
