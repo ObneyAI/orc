@@ -36,6 +36,10 @@
             [ai.obney.orc.ontology.core.central-evolver :as ce]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
+            ;; GC-4 — load the SQLite-v3 store impl so `(es/start {:conn {:type
+            ;; :sqlite ...}})` resolves its multimethod (the EXACT precedent in
+            ;; build_atomicity_test.clj requires this ns for the same reason).
+            [ai.obney.grain.event-store-sqlite-v3.interface]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.kv-store.interface :as kv]
@@ -140,26 +144,50 @@
 ;; driven by a todo-processor). 4 GB LMDB (default 10 MB MapFull-crashes at scale).
 ;; =============================================================================
 
-(defn- make-ctx []
-  (rmp/l1-clear!)
-  (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
-        store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
-        dir (str "/tmp/eb12-graph-b-" (random-uuid))
-        cache (kv/start (lmdb/->KV-Store-LMDB
-                         {:storage-dir dir :db-name "graph-b"
-                          :map-size (* 4 1024 1024 1024)}))
-        base-ctx {:event-store store :cache cache :tenant-id (random-uuid)
-                  :provider :openrouter :dscloj-provider :openrouter
-                  :command-registry (cp/global-command-registry)
-                  :query-registry (qp/global-query-registry)
-                  :event-pubsub ps ::cache-dir dir}
-        processors (reduce-kv
-                    (fn [acc proc-name {:keys [handler-fn topics]}]
-                      (assoc acc proc-name
-                             (tp/start {:event-pubsub ps :topics topics
-                                        :handler-fn handler-fn :context base-ctx})))
-                    {} @tp/processor-registry*)]
-    (assoc base-ctx :processors processors)))
+(defn- make-ctx
+  "Build the real-Grain harness ctx. GC-4 store knob: `:store` selects the event
+   store impl — `:sqlite` (DEFAULT — a PERSISTENT SQLite-v3 file on disk, so the
+   comprehensive build's event log does NOT live in heap and can't OOM) or
+   `:in-memory` (the original heap log, still fine for tiny smokes that don't
+   want a disk file). The SQLite db-file is placed under the same per-run dir as
+   the LMDB cache and threaded on the ctx as `::db-file` so `stop-ctx` deletes it.
+
+   The wiring MIRRORS the EXACT real precedent in
+   `orc-service/.../build_atomicity_test.clj` `sqlite-ctx` (`:conn {:type :sqlite
+   :database-file db-file :maximum-pool-size 4}`)."
+  ([] (make-ctx {}))
+  ([{:keys [store] :or {store :sqlite}}]
+   (rmp/l1-clear!)
+   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
+         dir (str "/tmp/eb12-graph-b-" (random-uuid))
+         db-file (when (= store :sqlite) (str dir "-events.db"))
+         store-impl (case store
+                      :sqlite   (es/start {:conn {:type :sqlite
+                                                  :database-file db-file
+                                                  ;; >1 so the store is genuinely
+                                                  ;; concurrent (the precedent's note).
+                                                  :maximum-pool-size 4}
+                                           :event-pubsub ps :logger nil})
+                      :in-memory (es/start {:conn {:type :in-memory}
+                                            :event-pubsub ps :logger nil})
+                      (throw (ex-info "make-ctx :store must be :sqlite or :in-memory"
+                                      {:store store})))
+         cache (kv/start (lmdb/->KV-Store-LMDB
+                          {:storage-dir dir :db-name "graph-b"
+                           :map-size (* 4 1024 1024 1024)}))
+         base-ctx (cond-> {:event-store store-impl :cache cache :tenant-id (random-uuid)
+                           :provider :openrouter :dscloj-provider :openrouter
+                           :command-registry (cp/global-command-registry)
+                           :query-registry (qp/global-query-registry)
+                           :event-pubsub ps ::cache-dir dir ::store store}
+                    db-file (assoc ::db-file db-file))
+         processors (reduce-kv
+                     (fn [acc proc-name {:keys [handler-fn topics]}]
+                       (assoc acc proc-name
+                              (tp/start {:event-pubsub ps :topics topics
+                                         :handler-fn handler-fn :context base-ctx})))
+                     {} @tp/processor-registry*)]
+     (assoc base-ctx :processors processors))))
 
 (defn- stop-ctx [ctx]
   (doseq [[_ p] (:processors ctx)] (tp/stop p))
@@ -169,7 +197,13 @@
   (when-let [s (:event-store ctx)] (es/stop s))
   (when-let [d (::cache-dir ctx)]
     (let [f (java.io.File. d)]
-      (when (.exists f) (doseq [c (.listFiles f)] (.delete c)) (.delete f)))))
+      (when (.exists f) (doseq [c (.listFiles f)] (.delete c)) (.delete f))))
+  ;; GC-4 — delete the SQLite db-file + its WAL/SHM sidecars (same cleanup the
+  ;; sqlite-ctx precedent does), so a persistent build leaves no disk residue.
+  (when-let [f (::db-file ctx)]
+    (doseq [s ["" "-wal" "-shm"]]
+      (let [file (java.io.File. (str f s))]
+        (when (.exists file) (.delete file))))))
 
 ;; =============================================================================
 ;; Read-back analysis (schema/predicate-AGNOSTIC — reads whatever the builder
@@ -350,14 +384,17 @@
 ;; =============================================================================
 
 (defn run!
-  [{:keys [model budget evolver-config only]
+  [{:keys [model budget evolver-config only store]
     :or {model default-model
          budget {:max-iterations 16 :total-budget-ms 600000 :max-retries 3}
-         evolver-config {:max-iterations 3}}}]
+         evolver-config {:max-iterations 3}
+         ;; GC-4 — the comprehensive build runs on the PERSISTENT SQLite store by
+         ;; default (event log on disk, not heap). A caller can pass :in-memory.
+         store :sqlite}}]
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (throw (ex-info "OPENROUTER_API_KEY env var required (env only)" {})))
   (register-openrouter! model)
-  (let [ctx (make-ctx)
+  (let [ctx (make-ctx {:store store})
         oid (random-uuid)
         chosen (cond->> (sources) only (filter #(some #{(:name %)} only)))
         srcs (mapv #(select-keys % [:type :path]) chosen)]
