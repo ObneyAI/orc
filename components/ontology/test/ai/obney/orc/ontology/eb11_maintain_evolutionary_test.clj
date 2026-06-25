@@ -98,6 +98,8 @@
             result (ce/run-central-evolver!
                     ctx {:ontology-id oid :sources [{:type :csv :path "b"}] :goal "g"
                          :survey-fn survey-fn :derive-cqs-fn derive-cqs-fn
+                         ;; GC-6 — the synthesize-vocab seam (new mandatory STEP 3.5).
+                         :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
                          :model-extract-fn model-extract-fn :reconcile-fn reconcile-fn
                          :axiom-fn axiom-fn :embed-fn embed-fn
                          :build-fn build-fn :gate-fn gate-fn})
@@ -152,6 +154,8 @@
                                 :model-spec {} :candidate-axioms {:axioms []}})
             seams {:survey-fn (fn [_ _] {:status :success :profile {}})
                    :derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+                   ;; GC-6 — the synthesize-vocab seam (new mandatory STEP 3.5).
+                   :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
                    :model-extract-fn model-extract-fn
                    :reconcile-fn (fn [_ _] {:status :success})
                    :axiom-fn (fn [_ _] {:status :success})
@@ -216,6 +220,8 @@
                     ctx {:ontology-id oid :sources [{:type :csv :path "b"}] :goal "g"
                          :survey-fn (fn [_ _] {:status :success :profile {}})
                          :derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+                         ;; GC-6 — the synthesize-vocab seam (new mandatory STEP 3.5).
+                         :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
                          :model-extract-fn model-extract-fn
                          :reconcile-fn reconcile-fn
                          :axiom-fn (fn [_ _] {:status :success})

@@ -359,6 +359,8 @@
             result (ce/run-central-evolver!
                     ctx {:ontology-id oid :sources [{:type :csv :path "x"}] :goal "g"
                          :survey-fn survey-fn :derive-cqs-fn derive-cqs-fn
+                         ;; GC-6 — the synthesize-vocab seam (new mandatory STEP 3.5).
+                         :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
                          :model-extract-fn model-extract-fn :reconcile-fn reconcile-fn
                          :axiom-fn axiom-fn :embed-fn embed-fn
                          :build-fn build-fn :gate-fn gate-fn})]
@@ -387,6 +389,8 @@
                          :survey-fn (fn [_ _] (swap! survey-calls inc)
                                       {:status :success :profile {}})
                          :derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+                         ;; GC-6 — the synthesize-vocab seam (new mandatory STEP 3.5).
+                         :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
                          :model-extract-fn (fn [_ _] {:status :success :concept-drafts []
                                                       :relationship-drafts [] :embed-fields []
                                                       :model-spec {} :candidate-axioms {:axioms []}})
@@ -416,6 +420,8 @@
                          :goal "g" :mode :maintain
                          :survey-fn (fn [_ _] {:status :success :profile {}})
                          :derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+                         ;; GC-6 — the synthesize-vocab seam (new mandatory STEP 3.5).
+                         :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
                          :model-extract-fn (fn [_ _] {:status :success :concept-drafts []
                                                       :relationship-drafts [] :embed-fields []
                                                       :model-spec {} :candidate-axioms {:axioms []}})

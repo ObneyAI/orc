@@ -71,6 +71,7 @@
   (:require [ai.obney.orc.orc-service.interface :as dsl]
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [ai.obney.orc.ontology.core.resilience :as res]
+            [ai.obney.orc.ontology.core.synthesize-vocab-subbehavior :as synth]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -186,9 +187,11 @@
    primitives in passing) reads correctly for an `:llm` node."
   []
   (str "*** HOW THIS NODE WORKS (read carefully) ***\n"
-       "You are a single REASONING step. You are GIVEN two inputs as context: the "
-       "GOAL (`goal`) and the source PROFILE (`profile`, the structured output of "
-       "the earlier Survey step). You do NOT call any tools, you do NOT explore the "
+       "You are a single REASONING step. You are GIVEN as context: the GOAL "
+       "(`goal`), the source PROFILE (`profile`, the structured output of the "
+       "earlier Survey step), and OPTIONALLY a shared `vocabulary` (a discovered "
+       "cross-source set of canonical entity types — see the constraint below). "
+       "You do NOT call any tools, you do NOT explore the "
        "source, and you do NOT emit a behavior tree — you THINK over the goal + "
        "profile and PRODUCE the structured outputs described below. Ignore any "
        "general guidance about tool sessions, `get-input`, `final!`, or "
@@ -235,6 +238,46 @@
        "it concerns and a short `:rationale`. Emit them as `candidate-axioms` "
        "under the key `:axioms` (a vector of these maps; empty if none are "
        "warranted)."))
+
+(defn- vocabulary-constraint-block
+  "GC-6: CONSTRAIN entity-type naming to a SHARED DISCOVERED vocabulary so the SAME
+   real entity resolves to the SAME `(:type, :uri-keying-fields)` across sources (so
+   GC-1 mints ONE canonical URI and the graph connects instead of fragmenting).
+
+   The `vocabulary` input (when present) is the cross-source vocabulary the
+   synthesize-vocab step discovered: a set of canonical entity types, each with a
+   canonical `:type`, canonical `:uri-keying-fields`, the `:aliases` the sources
+   used, and a `:description`. The constraint: when THIS source's entity matches a
+   vocabulary entry — by its `:description` + `:aliases` (NOT exact label) — the
+   model MUST use that entry's canonical `:type` + `:uri-keying-fields` (not a free
+   name of its own). A genuinely-NOVEL entity (one no vocabulary entry covers) is
+   STILL minted as a new type (the discovery-preservation guard — #10/#4: do NOT
+   suppress real discovery). Domain-agnostic (#12): the vocabulary itself is
+   discovered at runtime; this block names no vertical entity-type."
+  []
+  (str "\n\nCONSTRAIN your entity-type NAMING to the SHARED VOCABULARY (when "
+       "provided):\n"
+       "  - You may be given a `vocabulary` input: a DISCOVERED, cross-source set "
+       "of CANONICAL entity types (`:canonical-entity-types`), each with a "
+       "canonical `:type`, canonical `:uri-keying-fields`, a list of `:aliases` "
+       "(the different names other sources used for the SAME entity), and a "
+       "`:description`. It exists so the SAME real entity gets the SAME identity "
+       "across every source — do not undo that by naming your types freely.\n"
+       "  - For EACH entity you decide to model: check whether it MATCHES one of "
+       "the canonical entity types — match by the entity's MEANING against the "
+       "entry's `:description` + `:aliases` (a semantic/alias match, NOT an exact "
+       "label match; your source may call it something else). If it matches, you "
+       "MUST use that entry's canonical `:type` (verbatim) as your entity's "
+       "`:type`, and its canonical `:uri-keying-fields` — but mapped to the COLUMN "
+       "NAME this source actually carries for that key (the value must be "
+       "recoverable from THIS source's rows). Do NOT invent a different type name "
+       "for an entity the vocabulary already covers.\n"
+       "  - If an entity you find is GENUINELY NOVEL — no canonical entry covers it "
+       "by meaning or alias — STILL model it as a NEW entity type (do NOT drop real "
+       "discovery to force-fit the vocabulary). Real new entities are expected and "
+       "wanted.\n"
+       "  - If NO vocabulary is provided, name your entity types from the profile "
+       "as usual."))
 
 (defn- output-framing
   "Spell out the `:llm` node's declared `:writes` for the model — `:reasoning`
@@ -283,6 +326,8 @@
    ;; The two EB3 additions.
    (embed-fields-block)
    (candidate-axioms-block)
+   ;; GC-6 — constrain entity-type naming to the shared discovered vocabulary.
+   (vocabulary-constraint-block)
    ;; The #13 reasoning-first output framing across the three write keys.
    (output-framing)))
 
@@ -361,7 +406,8 @@
           (dsl/llm (str "model-" path-label)
             :model mdl
             :instruction prompt
-            :reads [:goal :profile]
+            ;; GC-6 — also read the shared discovered :vocabulary (when threaded in).
+            :reads [:goal :profile :vocabulary]
             ;; #13 — :reasoning FIRST (chain-of-thought before the structured spec).
             :writes [:reasoning :model-spec :candidate-axioms]))
         body
@@ -393,7 +439,8 @@
           (dsl/llm "model"
             :model mdl
             :instruction (model-prompt)
-            :reads [:goal :profile]
+            ;; GC-6 — also read the shared discovered :vocabulary (when threaded in).
+            :reads [:goal :profile :vocabulary]
             :writes [:reasoning :model-spec :candidate-axioms]))]
     (dsl/workflow nm
       (dsl/blackboard
@@ -402,6 +449,10 @@
          ;; the profile is read tolerantly; declare it structured so
          ;; it can also be delegated IN as a parsed map.
          :profile [:map {:closed false}]
+         ;; GC-6 — the shared DISCOVERED vocabulary (optional; threaded in by the
+         ;; central evolver after synthesize-vocab). STRUCTURED so it can be
+         ;; delegated IN as a parsed map; [:maybe …] tolerates the no-vocab path.
+         :vocabulary [:maybe synth/vocabulary-schema]
          :reasoning :string
          ;; C1 — STRUCTURED schemas for the map contracts that cross
          ;; :delegate; NEVER a bare :map (the :llm-node failure mode).

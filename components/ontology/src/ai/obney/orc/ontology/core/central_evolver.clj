@@ -73,6 +73,7 @@
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.survey-subbehavior :as survey]
             [ai.obney.orc.ontology.core.model-subbehavior :as model]
+            [ai.obney.orc.ontology.core.synthesize-vocab-subbehavior :as synth]
             [ai.obney.orc.ontology.core.extract-subbehavior :as extract]
             [ai.obney.orc.ontology.core.reconcile-subbehavior :as reconcile]
             [ai.obney.orc.ontology.core.axiom-tbox-subbehavior :as axiom]
@@ -127,6 +128,10 @@
         :goal :string
         :profile [:map {:closed false}]
         :source [:map {:closed false}]
+        ;; GC-6 — the shared discovered vocabulary, delegated IN to the Model so the
+        ;; same real entity gets the same canonical type/key across sources. Optional
+        ;; ([:maybe …]) so the pre-GC-6 / no-vocab path still runs.
+        :vocabulary [:maybe synth/vocabulary-schema]
         ;; Model outputs (cross :delegate as parsed maps — the EB3 C1 schemas)
         :reasoning :string
         :model-spec model/model-spec-contract-schema
@@ -136,10 +141,12 @@
         :relationship-drafts extract/relationship-drafts-schema
         :extraction-report extract/extraction-report-schema})
       (dsl/sequence "model-extract-root"
-        ;; STEP 1 — :delegate Model (goal × profile → model-spec + candidate-axioms)
+        ;; STEP 1 — :delegate Model (goal × profile × vocabulary → model-spec +
+        ;; candidate-axioms). GC-6 — the shared vocabulary is read into the Model so
+        ;; its entity-type naming is constrained to the canonical type/key.
         (dsl/delegate "delegate-model"
           :target-sheet-id model-sid
-          :reads [:goal :profile]
+          :reads [:goal :profile :vocabulary]
           :writes [:reasoning :model-spec :candidate-axioms]
           :timeout-ms 180000)
         ;; STEP 2 — :delegate Extract (model-spec × source → drafts). Reads the
@@ -158,10 +165,14 @@
   [ctx {:keys [model resilient?]}]
   (let [model-sid (model/register-model-subbehavior! ctx {:model model :resilient? resilient?})
         extract-sid (extract/register-extract-subbehavior! ctx {:model model :resilient? resilient?})
+        ;; GC-6 — register the synthesize-vocab subbehavior so the real
+        ;; `delegate-synthesize-vocab!` seam resolves its sheet by name.
+        synth-sid (synth/register-synthesize-vocab-subbehavior! ctx {:model model})
         pipeline-sid (dsl/build-workflow!
                       ctx (model-extract-pipeline-def {:model model :resilient? resilient?}))]
     {:model-sheet-id model-sid
      :extract-sheet-id extract-sid
+     :synthesize-vocab-sheet-id synth-sid
      :pipeline-sheet-id pipeline-sid}))
 
 ;; =============================================================================
@@ -328,22 +339,27 @@
   "Production Model→Extract seam: `:delegate` the fixed per-source pipeline sheet
    (Model → Extract). Returns the drafts + the model-spec + candidate-axioms +
    embed-fields the loop's land/axiom/embed steps consume."
-  [ctx {:keys [source goal profile pipeline-sheet-id]}]
+  [ctx {:keys [source goal profile vocabulary pipeline-sheet-id]}]
   (let [r (delegate-subbehavior!
            ctx {:central-name (str "ontology-central/pipeline-" (name (:type source)) "@v1")
                 :target-sheet-id pipeline-sheet-id
                 :bb-schema {:goal :string
                             :profile [:map {:closed false}]
                             :source [:map {:closed false}]
+                            ;; GC-6 — the shared discovered vocabulary (optional;
+                            ;; [:maybe …] tolerates the no-vocab path). STRUCTURED so
+                            ;; it crosses :delegate parsed into the Model.
+                            :vocabulary [:maybe synth/vocabulary-schema]
                             :model-spec model/model-spec-contract-schema
                             :candidate-axioms model/candidate-axioms-schema
                             :concept-drafts extract/concept-drafts-schema
                             :relationship-drafts extract/relationship-drafts-schema
                             :extraction-report extract/extraction-report-schema}
-                :reads [:goal :profile :source]
+                :reads [:goal :profile :source :vocabulary]
                 :writes [:model-spec :candidate-axioms
                          :concept-drafts :relationship-drafts :extraction-report]
-                :inputs {"goal" goal "profile" profile "source" source}})
+                :inputs {"goal" goal "profile" profile "source" source
+                         "vocabulary" vocabulary}})
         model-spec (get-in r [:outputs :model-spec])]
     {:status (:status r)
      :model-spec model-spec
@@ -448,6 +464,34 @@
      :tick-id (:tick-id r)
      :error (:error r)}))
 
+(defn delegate-synthesize-vocab!
+  "GC-6 production SYNTHESIZE-VOCAB seam: `:delegate` the synthesize-vocab
+   subbehavior to DISCOVER the ONE shared canonical entity-type vocabulary from the
+   goal × the FULL per-source `profiles` vector (the same aggregation precedent as
+   `delegate-derive-cqs!`). Returns the discovered `:vocabulary` map (read back off
+   the parent tick blackboard, discipline 7). A clone of `delegate-derive-cqs!` — no
+   fork; the synthesis subbehavior is just another `:delegate`d sheet."
+  [ctx {:keys [goal profile model]}]
+  (let [sub-id (synth/register-synthesize-vocab-subbehavior! ctx {:model model})
+        r (delegate-subbehavior!
+           ctx {:central-name "ontology-central/synthesize-vocab@v1"
+                :target-sheet-id sub-id
+                :bb-schema {:goal :string
+                            :profile vcq/profile-read-schema
+                            synth/vocabulary-key synth/vocabulary-schema}
+                :reads [:goal :profile]
+                :writes [synth/vocabulary-key]
+                :inputs {"goal" goal
+                         "profile" profile}})]
+    {:status (:status r)
+     ;; GC-6 robustness — NORMALIZE at the threading boundary so the Model always
+     ;; receives a clean vocabulary even when the :llm-node C1 parse arrives as an
+     ;; EDN string / double-nested (else a malformed vocab would silently drop the
+     ;; constraint and re-fragment — the exact bug GC-6 closes).
+     :vocabulary (synth/normalize-vocabulary (get-in r [:outputs synth/vocabulary-key]))
+     :tick-id (:tick-id r)
+     :error (:error r)}))
+
 ;; =============================================================================
 ;; The CQ gate — run IN-PROCESS with the judge capability (the judge fn cannot
 ;; cross :delegate). REUSE the EB8 subbehavior's `run-gate!` (S15 evaluate-cqs!).
@@ -538,7 +582,7 @@
      :axiom            → re-emit TBox axioms (Axiom/TBox) from the held candidates.
      :terminate        → no close (handled by the caller — the source lacks it).
    Returns `{:status :ok/:failed :closed <route> …}`; honest on failure (#5)."
-  [ctx {:keys [route ontology-id source goal profile model resilient?
+  [ctx {:keys [route ontology-id source goal profile vocabulary model resilient?
                pipeline-sheet-id source-uri-sets held-candidate-axioms held-model-spec
                held-embed-fields
                seams]}]
@@ -546,8 +590,9 @@
     (case route
       (:extract :model)
       ;; re-run the per-source pipeline (re-model + re-extract) → re-land + re-embed.
+      ;; GC-6 — the re-model/re-extract obeys the SAME shared vocabulary.
       (let [mx ((or model-extract-fn delegate-model-extract!)
-                ctx {:source source :goal goal :profile profile
+                ctx {:source source :goal goal :profile profile :vocabulary vocabulary
                      :pipeline-sheet-id pipeline-sheet-id :model model :resilient? resilient?})]
         (if (not= :success (:status mx))
           {:status :failed :closed route :error (:error mx) :stage :model-extract}
@@ -615,7 +660,7 @@
                   Default `route-decision!` (the :llm/decision node).
      :model-extract-fn / :reconcile-fn / :axiom-fn / :embed-fn — the focal-close
                   subbehavior seams. Defaults delegate to the real subbehaviors."
-  [ctx {:keys [ontology-id source goal profile judge-fn exit-criterion model
+  [ctx {:keys [ontology-id source goal profile vocabulary judge-fn exit-criterion model
                resilient? evolver-config pipeline-sheet-id route-sheet-id
                source-uri-sets held-candidate-axioms held-model-spec held-embed-fields
                gate-fn route-fn model-extract-fn reconcile-fn axiom-fn embed-fn]}]
@@ -695,7 +740,7 @@
               ;; a closeable route — re-invoke the subbehavior FOCALLY, re-gate.
               (let [close (focal-close!
                            ctx {:route route :ontology-id ontology-id :source source
-                                :goal goal :profile profile :model model
+                                :goal goal :profile profile :vocabulary vocabulary :model model
                                 :resilient? resilient? :pipeline-sheet-id pipeline-sheet-id
                                 :source-uri-sets source-uri-sets
                                 :held-candidate-axioms held-candidate-axioms
@@ -749,11 +794,12 @@
    Injected seams default to the production `:delegate`s; tests stub them."
   [ctx {:keys [ontology-id sources goal model resilient? judge-fn exit-criterion
                consumer-cqs evolver-config mode gf-branch source-uri-sets
-               survey-fn derive-cqs-fn model-extract-fn reconcile-fn axiom-fn embed-fn
-               build-fn gate-fn route-fn]}]
+               survey-fn derive-cqs-fn synthesize-vocab-fn model-extract-fn reconcile-fn
+               axiom-fn embed-fn build-fn gate-fn route-fn]}]
   (let [;; seam defaults (production delegate; tests stub)
         survey-fn (or survey-fn delegate-survey!)
         derive-cqs-fn (or derive-cqs-fn delegate-derive-cqs!)
+        synthesize-vocab-fn (or synthesize-vocab-fn delegate-synthesize-vocab!)
         model-extract-fn (or model-extract-fn delegate-model-extract!)
         reconcile-fn (or reconcile-fn delegate-reconcile!)
         axiom-fn (or axiom-fn delegate-axiom!)
@@ -791,13 +837,30 @@
                     :survey-profiles profiles
                     :error (:error derive)})
 
-            (let [;; --- STEP 4: per-source Model→Extract → land/reconcile/axiom
+            ;; --- STEP 3.5: SYNTHESIZE the shared DISCOVERED vocabulary (GC-6, the
+            ;; keystone) — consume the SAME full `profiles` vector STEP 3 derived
+            ;; the CQs from, DISCOVER one canonical entity-type + key vocabulary, and
+            ;; thread it into EVERY per-source Model so the same real entity gets the
+            ;; same canonical URI (→ GC-1 mints ONE → reconcile merges → connected).
+            ;; Honest terminal mirroring :failed-at-derive-cqs (#5; no model-extract
+            ;; runs after a synthesis failure — no false green).
+            (let [synth (synthesize-vocab-fn ctx {:goal goal :profile profiles
+                                                  :model model :resilient? resilient?})]
+              (if (not= :success (:status synth))
+                (merge envelope
+                       {:status :failed-at-synthesize-vocabulary
+                        :survey-profiles profiles
+                        :error (:error synth)})
+
+            (let [vocab (:vocabulary synth)
+                  ;; --- STEP 4: per-source Model→Extract → land/reconcile/axiom
                   ;;             → embed (the per-source loop body) ---
                   per-source
                   (mapv
                    (fn [src profile]
                      (let [mx (model-extract-fn
                                ctx {:source src :goal goal :profile profile
+                                    :vocabulary vocab
                                     :pipeline-sheet-id pipeline-sheet-id
                                     :model model :resilient? resilient?})]
                        (when (= :success (:status mx))
@@ -842,6 +905,10 @@
                       loop-result (cq-objective-loop!
                                    ctx {:ontology-id ontology-id :source (first sources)
                                         :goal goal :profile (first profiles)
+                                        ;; GC-6 — thread the discovered vocabulary into
+                                        ;; the focal-close re-invokes (re-model/re-extract
+                                        ;; must obey the SAME shared vocabulary).
+                                        :vocabulary vocab
                                         :judge-fn judge-fn :exit-criterion exit-criterion
                                         :model model :resilient? resilient?
                                         :evolver-config evolver-config
@@ -860,7 +927,7 @@
                    (select-keys loop-result [:status :graph-health :cq-verdict :cq-loop])
                    {:survey-profiles profiles
                     :competency-questions (:competency-questions derive)
-                    :build-result build-result}))))))))))
+                    :build-result build-result}))))))))))))
 
 ;; =============================================================================
 ;; run-central-evolver! — the keystone entry point (greenfield-vs-maintain →
@@ -923,8 +990,8 @@
    duplicate and grow the TBox). `:mode` distinguishes which arm ran."
   [ctx {:keys [ontology-id sources goal model budget resilient? judge-fn exit-criterion
                consumer-cqs evolver-config debug? mode source-uri-sets
-               survey-fn derive-cqs-fn model-extract-fn reconcile-fn axiom-fn embed-fn
-               build-fn gate-fn route-fn]
+               survey-fn derive-cqs-fn synthesize-vocab-fn model-extract-fn reconcile-fn
+               axiom-fn embed-fn build-fn gate-fn route-fn]
         :or {model "google/gemini-3-flash-preview"}}]
   (when-not ontology-id
     (throw (ex-info "run-central-evolver! requires :ontology-id (the granted scope)"
@@ -950,6 +1017,7 @@
           :consumer-cqs consumer-cqs :evolver-config evolver-config
           :mode run-mode :gf-branch gf-branch :source-uri-sets source-uri-sets
           :survey-fn survey-fn :derive-cqs-fn derive-cqs-fn
+          :synthesize-vocab-fn synthesize-vocab-fn
           :model-extract-fn model-extract-fn :reconcile-fn reconcile-fn
           :axiom-fn axiom-fn :embed-fn embed-fn
           :build-fn build-fn :gate-fn gate-fn :route-fn route-fn})))
