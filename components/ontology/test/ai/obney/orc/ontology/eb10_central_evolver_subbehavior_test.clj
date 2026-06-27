@@ -485,3 +485,142 @@
                    (ce/run-central-evolver! ctx {:ontology-id (random-uuid)
                                                  :sources [{:type :csv :path "x"}]}))
           "missing :goal throws"))))
+
+;; =============================================================================
+;; GC-8 — the Model→Extract delegate budget is SIZED TO THE SERIAL CONTAINER WORK
+;; (NOT the flat 180s default). The Extract orchestrator runs up to
+;; `default-max-containers` containers SERIALLY (~6-22s each + resilience cascade);
+;; a flat 180s ceiling cuts the build at container ~10-11, landing 0 drafts at
+;; `:failed-at-model-extract`. The fix derives the OUTER delegate `:timeout-ms`
+;; from (cap × per-container-budget) so the ceiling scales with the work + never
+;; fires on a small source (behavior-preserving).
+;; =============================================================================
+
+(deftest model-extract-timeout-derives-from-cap-and-named-budget-knob-test
+  (testing "the Model→Extract budget is a NAMED, overridable per-container knob ×
+            the container cap (+ a model/overhead allowance) — NOT a magic literal
+            and NOT the flat 180s default. It DERIVES from the cap so it stays
+            correct when the cap changes (#5 — root-cause sized, not a bump)."
+    ;; the knob exists, is named legibly (mirrors default-max-containers style),
+    ;; and is large enough to cover the observed ~22s + resilience cascade + margin.
+    (is (number? ce/default-per-container-budget-ms)
+        "the per-container budget is a named knob")
+    (is (>= ce/default-per-container-budget-ms 25000)
+        "the per-container budget covers the observed ~22s + resilience + margin")
+    ;; the derived budget at the DEFAULT cap is comfortably > the flat 180s that
+    ;; was cutting the build (the whole point of GC-8).
+    (let [default-cap extract/default-max-containers
+          budget-default (ce/model-extract-timeout-ms {:max-containers default-cap})]
+      (is (> budget-default 180000)
+          "at the default cap the budget is >> the flat 180s that was failing")
+      (is (>= budget-default (* default-cap ce/default-per-container-budget-ms))
+          "the budget is at least cap × per-container-budget (derived, not bumped)"))
+    ;; SCALES: a LARGER cap yields a LARGER budget (it scales with the work, it is
+    ;; not a fixed bump). This is the load-bearing GC-8 property.
+    (let [small (ce/model-extract-timeout-ms {:max-containers 2})
+          large (ce/model-extract-timeout-ms {:max-containers 50})]
+      (is (< small large)
+          "a larger container cap yields a larger budget (it scales)")
+      (is (= (- large small)
+             (* (- 50 2) ce/default-per-container-budget-ms))
+          "the budget grows by exactly per-container-budget per extra container"))
+    ;; absent max-containers → falls back to extract/default-max-containers (NOT 25
+    ;; hardcoded), so the central evolver's path (which does not thread a cap) is
+    ;; still sized to the real serial work.
+    (is (= (ce/model-extract-timeout-ms {:max-containers extract/default-max-containers})
+           (ce/model-extract-timeout-ms {}))
+        "absent :max-containers resolves to extract/default-max-containers")))
+
+(deftest delegate-model-extract-passes-the-scaled-timeout-to-the-delegate-test
+  (testing "delegate-model-extract! passes the DERIVED, cap-scaled :timeout-ms to
+            delegate-subbehavior! (the OUTER delegate whose deref-timeout is the
+            binding ceiling) — NOT the flat 180s default. Reverting to the default
+            (no override) makes this RED. Captured via a stubbed delegate-subbehavior!."
+    (let [captured (atom [])
+          stub (fn [_ctx opts]
+                 (swap! captured conj (:timeout-ms opts))
+                 {:status :success :outputs {} :tick-id (random-uuid)})]
+      (with-redefs [ce/delegate-subbehavior! stub]
+        ;; default cap (no :max-containers threaded — the central evolver path)
+        (ce/delegate-model-extract! :fake-ctx
+                                    {:source {:type :csv} :goal "g"
+                                     :profile {} :vocabulary nil
+                                     :pipeline-sheet-id (random-uuid)})
+        ;; a LARGER cap threaded explicitly
+        (ce/delegate-model-extract! :fake-ctx
+                                    {:source {:type :csv} :goal "g"
+                                     :profile {} :vocabulary nil
+                                     :max-containers 50
+                                     :pipeline-sheet-id (random-uuid)}))
+      (let [[default-budget large-budget] @captured]
+        (is (> default-budget 180000)
+            "the passed :timeout-ms at the default cap is >> the flat 180s")
+        (is (= default-budget
+               (ce/model-extract-timeout-ms {:max-containers extract/default-max-containers}))
+            "the passed :timeout-ms equals the derived budget at the default cap")
+        (is (> large-budget default-budget)
+            "a larger max-containers yields a larger passed :timeout-ms (it scales)")
+        (is (= large-budget (ce/model-extract-timeout-ms {:max-containers 50}))
+            "the passed :timeout-ms equals the derived budget at the threaded cap")))))
+
+(deftest pipeline-inner-delegate-extract-carries-the-scaled-timeout-test
+  (testing "the fixed Model→Extract pipeline's INNER `delegate-extract` node (the one
+            that runs the serial multi-container Extract) carries the cap-scaled
+            :timeout-ms — NOT a flat 180s. The OUTER delegate budget alone did NOT
+            help: the inner extract delegate's flat 180s fired first and cut the
+            25-container extract at ~187s with 0 drafts. `delegate-model` stays 180s
+            (the Model node is ~10s)."
+    (let [pdef (ce/model-extract-pipeline-def {})
+          nodes (atom [])
+          walk (fn walk [n]
+                 (when (map? n)
+                   (when (:timeout-ms n)
+                     (swap! nodes conj (select-keys n [:name :timeout-ms])))
+                   (doseq [v (vals n)]
+                     (cond (map? v) (walk v)
+                           (sequential? v) (doseq [x v] (walk x))))))
+          _ (walk (:root-node pdef))
+          by-name (into {} (map (juxt :name :timeout-ms)) @nodes)
+          scaled (ce/model-extract-timeout-ms {:max-containers extract/default-max-containers})]
+      (is (= scaled (get by-name "delegate-extract"))
+          "the INNER delegate-extract :timeout-ms is the cap-scaled budget (not 180s)")
+      (is (> (get by-name "delegate-extract") 180000)
+          "the inner extract ceiling is >> the flat 180s that timed out the extract")
+      (is (= 180000 (get by-name "delegate-model"))
+          "delegate-model stays 180s (the Model node is fast — no change needed)"))))
+
+(deftest small-source-budget-is-behavior-preserving-test
+  (testing "GC-8 is behavior-preserving for a SMALL source: a 1-container source's
+            derived ceiling is comfortably ABOVE its real ~12s work, so the larger
+            budget never changes the small-source SUCCESS path — the delegate still
+            returns the subbehavior's outputs unchanged (the bigger ceiling just
+            never fires)."
+    ;; a 1-container source: ceiling = (1 × 30s) + 60s overhead = 90s — far above
+    ;; the real ~12s, so the timeout never fires on a small source.
+    (let [one-container (ce/model-extract-timeout-ms {:max-containers 1})]
+      (is (>= one-container 90000)
+          "a 1-container ceiling is >= 90s — comfortably above the real ~12s work")
+      (is (< one-container 180000)
+          "a small source's ceiling is even SMALLER than the old flat 180s (it
+           tracks the real small work, not a blanket bump)"))
+    ;; the SUCCESS path is unchanged: delegate-model-extract! surfaces the delegate's
+    ;; outputs exactly as before (the :timeout-ms override is the only change).
+    (let [stub (fn [_ctx opts]
+                 ;; assert the override is present + sized to the small cap.
+                 (is (= (:timeout-ms opts)
+                        (ce/model-extract-timeout-ms {:max-containers 2}))
+                     "the small-source override is the derived 2-container budget")
+                 {:status :success
+                  :outputs {:model-spec {} :candidate-axioms []
+                            :concept-drafts [{:uri "u" :label "L"}]
+                            :relationship-drafts [] :extraction-report {}}
+                  :tick-id (random-uuid)})]
+      (with-redefs [ce/delegate-subbehavior! stub]
+        (let [r (ce/delegate-model-extract! :fake-ctx
+                                            {:source {:type :csv} :goal "g"
+                                             :profile {} :vocabulary nil
+                                             :max-containers 2
+                                             :pipeline-sheet-id (random-uuid)})]
+          (is (= :success (:status r)) "the small-source success path is unchanged")
+          (is (= 1 (count (:concept-drafts r)))
+              "the delegate's concept-drafts are surfaced unchanged"))))))

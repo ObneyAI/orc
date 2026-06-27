@@ -94,6 +94,13 @@
 ;; ISOLATED child blackboard. The central evolver runs this sheet per source (the
 ;; `:map-each` over sources; `:parallel` is the executor's per-source concurrency).
 
+;; GC-8 — forward declaration so the fixed pipeline sheet (below) can size its INNER
+;; `delegate-extract` `:timeout-ms` to the same cap-scaled budget the OUTER delegate
+;; uses (the fn + its knobs are defined later in this ns; resolved at sheet-build
+;; time, after ns load). Without this the inner Extract delegate kept a flat 180s and
+;; timed out the 25-container serial extract at ~187s BEFORE the outer 810s applied.
+(declare model-extract-timeout-ms)
+
 (def model-extract-pipeline-name
   "Canonical registry name for the fixed Model → Extract per-source pipeline sheet.
    Source-agnostic (Model + Extract are both source-agnostic @v1 sheets), so ONE
@@ -155,7 +162,12 @@
           :target-sheet-id extract-sid
           :reads [:model-spec :source]
           :writes [:concept-drafts :relationship-drafts :extraction-report]
-          :timeout-ms 180000)))))
+          ;; GC-8 — the Extract step runs up to default-max-containers SERIALLY; size
+          ;; its budget to that work (cap-scaled, = the outer delegate's budget), NOT
+          ;; a flat 180s (which cut the 25-container extract at container ~10-11 with
+          ;; 0 drafts). delegate-model above stays 180s — the Model node is ~10s.
+          :timeout-ms (model-extract-timeout-ms
+                       {:max-containers extract/default-max-containers}))))))
 
 (defn register-pipeline-sheets!
   "Register (idempotent) the Model + Extract subbehaviors AND the fixed
@@ -335,13 +347,58 @@
      :tick-id (:tick-id r)
      :error (:error r)}))
 
+(def default-per-container-budget-ms
+  "GC-8 — the per-container time budget the Model→Extract delegate sizes its
+   deref-timeout against. The Extract orchestrator runs up to
+   `extract/default-max-containers` containers SERIALLY (`extract_subbehavior.clj`
+   `orchestrate-extract-containers` — a `mapv`, NOT parallel), each ~6-22s PLUS the
+   EB9 resilience cascade's extra LLM calls on a `:failure` container. This budget
+   (30s) covers the observed worst-case ~22s container + that cascade + margin, so
+   `(cap × this)` sizes the OUTER delegate deref-timeout to the realistic serial
+   work instead of the flat 180s `delegate-subbehavior!` default — which cut the
+   build at container ~10-11 and landed 0 drafts at `:failed-at-model-extract`.
+   Named + overridable (mirrors `default-max-containers` / `default-max-extract-
+   windows`) so the budget is legible + tunable, not a magic literal. DERIVE the
+   budget from the cap (below) so it stays correct if the cap changes — do NOT bump
+   a literal."
+  30000)
+
+(def model-extract-overhead-budget-ms
+  "GC-8 — the Model node + delegation/parse overhead allowance ADDED to the
+   serial-container budget (the Model node alone is ~10s; `:delegate` build/execute
+   + blackboard read-back add a little). Keeps a small source's ceiling comfortably
+   above its real ~12s without depending on a per-container term."
+  60000)
+
+(defn model-extract-timeout-ms
+  "GC-8 — DERIVE the Model→Extract delegate's deref-timeout from the container cap:
+   `(cap × default-per-container-budget-ms) + model-extract-overhead-budget-ms`.
+   It SCALES with the cap (a larger `:max-containers` → a larger ceiling), so the
+   budget tracks the real serial work rather than a flat 180s. Absent
+   `:max-containers`, resolves the cap to `extract/default-max-containers` (NOT a
+   hardcoded 25) — the same value the Extract orchestrator reads. Pure + public so
+   the budget is assertable (and behavior-preserving: a 1-container source's ceiling
+   is `(1 × 30s) + 60s = 90s`, far above its real ~12s, so the ceiling never fires)."
+  [{:keys [max-containers]}]
+  (let [cap (or max-containers extract/default-max-containers)]
+    (+ (* cap default-per-container-budget-ms)
+       model-extract-overhead-budget-ms)))
+
 (defn delegate-model-extract!
   "Production Model→Extract seam: `:delegate` the fixed per-source pipeline sheet
    (Model → Extract). Returns the drafts + the model-spec + candidate-axioms +
-   embed-fields the loop's land/axiom/embed steps consume."
-  [ctx {:keys [source goal profile vocabulary pipeline-sheet-id]}]
+   embed-fields the loop's land/axiom/embed steps consume.
+
+   GC-8 — sizes the OUTER delegate `:timeout-ms` to the realistic SERIAL container
+   work (`model-extract-timeout-ms`, derived from the container cap) instead of
+   inheriting `delegate-subbehavior!`'s flat 180s default, which cut a multi-
+   container build at container ~10-11 and landed 0 drafts. `max-containers` is
+   threaded from the caller (the same cap the Extract orchestrator reads); absent,
+   it resolves to `extract/default-max-containers`."
+  [ctx {:keys [source goal profile vocabulary pipeline-sheet-id max-containers]}]
   (let [r (delegate-subbehavior!
-           ctx {:central-name (str "ontology-central/pipeline-" (name (:type source)) "@v1")
+           ctx {:timeout-ms (model-extract-timeout-ms {:max-containers max-containers})
+                :central-name (str "ontology-central/pipeline-" (name (:type source)) "@v1")
                 :target-sheet-id pipeline-sheet-id
                 :bb-schema {:goal :string
                             :profile [:map {:closed false}]
