@@ -248,6 +248,176 @@
                [{:uri "x" :attributes {:a 1}}] #{}))))))
 
 ;; ---------------------------------------------------------------------------
+;; GC-7 — BEHAVIOR-PRESERVING bound on attribute-links (cut the WORK, not the
+;; output). The cross-product `(new-attrs × existing-attrs)` jaro-winkler scan is
+;; replaced by KEY-PAIR memoization: jaro-winkler is computed ONCE per DISTINCT
+;; (new-key, existing-key) pair (schema-width², tiny), then the link set is
+;; expanded by pure hash-bucket iteration. NO blocking heuristic — the full
+;; key-pair similarity matrix is still computed, just deduplicated — so the
+;; emitted :links are PROVABLY identical to the pre-GC-7 cross-product, not
+;; merely empirically close. These tests guard that.
+;; ---------------------------------------------------------------------------
+
+;; The GOLDEN — captured from the PRE-GC-7 cross-product implementation on the
+;; fixture below (a handful of new + existing concepts with overlapping/near
+;; attribute keys + values: exact `:region`↔`:region`, near `:netcost`↔`:net-cost`
+;; and `:region`↔`:regions` via jaro-winkler ≥ floor, same-value + shared-key). A
+;; bucketing bug that drops/changes ANY link makes the set-equal assert RED.
+(def gc7-fixture-concepts
+  [{:uri "e:1" :attributes {:region "north" :weight 42 :net-cost 100}}
+   {:uri "e:2" :attributes {:region "south" :tier "gold" :netcost 100}}
+   {:uri "e:3" :attributes {:regions "north" :color "red"}}
+   {:uri "n:1" :attributes {:region "north" :netcost 100 :tier "gold"}}
+   {:uri "n:2" :attributes {:net-cost 100 :weight 42 :regions "south"}}])
+
+(def gc7-fixture-new-uris #{"n:1" "n:2"})
+
+(def gc7-golden-links
+  "The EXACT :links set the pre-GC-7 cross-product emitted on the fixture (12
+   links). Locked verbatim so the GC-7 bound is proven identical, not just
+   self-consistent."
+  #{{:new-uri "n:1" :new-attr-key :netcost :existing-uri "e:1" :existing-attr-key :net-cost :value 100 :kind :same-value}
+    {:new-uri "n:1" :new-attr-key :netcost :existing-uri "e:2" :existing-attr-key :netcost :value 100 :kind :same-value}
+    {:new-uri "n:1" :new-attr-key :region :existing-uri "e:1" :existing-attr-key :region :value "north" :kind :same-value}
+    {:new-uri "n:1" :new-attr-key :region :existing-uri "e:2" :existing-attr-key :region :value nil :kind :shared-key}
+    {:new-uri "n:1" :new-attr-key :region :existing-uri "e:3" :existing-attr-key :regions :value "north" :kind :same-value}
+    {:new-uri "n:1" :new-attr-key :tier :existing-uri "e:2" :existing-attr-key :tier :value "gold" :kind :same-value}
+    {:new-uri "n:2" :new-attr-key :net-cost :existing-uri "e:1" :existing-attr-key :net-cost :value 100 :kind :same-value}
+    {:new-uri "n:2" :new-attr-key :net-cost :existing-uri "e:2" :existing-attr-key :netcost :value 100 :kind :same-value}
+    {:new-uri "n:2" :new-attr-key :regions :existing-uri "e:1" :existing-attr-key :region :value nil :kind :shared-key}
+    {:new-uri "n:2" :new-attr-key :regions :existing-uri "e:2" :existing-attr-key :region :value "south" :kind :same-value}
+    {:new-uri "n:2" :new-attr-key :regions :existing-uri "e:3" :existing-attr-key :regions :value nil :kind :shared-key}
+    {:new-uri "n:2" :new-attr-key :weight :existing-uri "e:1" :existing-attr-key :weight :value 42 :kind :same-value}})
+
+;; A REFERENCE cross-product implementation — the pre-GC-7 algorithm, kept in the
+;; test ONLY, so the behavior-preserving guard can diff the bounded impl against
+;; the naive one on ARBITRARY inputs (not just the frozen golden). If GC-7's bound
+;; ever diverged from the naive cross-product, this set-equal assert goes RED.
+(defn- naive-attribute-links [concepts new-uris]
+  (let [new-set (set new-uris)
+        existing (remove #(contains? new-set (:uri %)) concepts)
+        new-concepts (filter #(contains? new-set (:uri %)) concepts)
+        existing-attrs (for [c existing [k v] (:attributes c)]
+                         {:uri (:uri c) :key k :key-str (if (keyword? k) (name k) (str k)) :value v})]
+    (set
+     (for [nc new-concepts
+           [nk nv] (:attributes nc)
+           :let [nk-str (if (keyword? nk) (name nk) (str nk))]
+           ea existing-attrs
+           :when (and (not= (:uri nc) (:uri ea))
+                      (>= (dedup/jaro-winkler-similarity nk-str (:key-str ea)) 0.92))
+           :let [same-value? (= nv (:value ea))]]
+       {:new-uri (:uri nc) :new-attr-key nk :existing-uri (:uri ea)
+        :existing-attr-key (:key ea) :value (when same-value? nv)
+        :kind (if same-value? :same-value :shared-key)}))))
+
+(deftest gc7-attribute-links-identical-to-golden-test
+  (testing "the GC-7-bounded attribute-links emits the SAME :links set as the
+            pre-GC-7 cross-product (the frozen golden) — behavior-preserving"
+    (let [r (recon/attribute-links gc7-fixture-concepts gc7-fixture-new-uris)
+          links (set (:links r))]
+      (is (= gc7-golden-links links)
+          "the bounded attribute-links MUST emit exactly the pre-GC-7 link set")
+      (is (= 9 (:same-value-link-count r)) "same-value link count preserved")
+      (is (= 3 (:shared-key-link-count r)) "shared-key link count preserved"))))
+
+(deftest gc7-attribute-links-matches-naive-cross-product-on-varied-inputs-test
+  (testing "on several varied inputs (exact keys, near keys, length-mismatched
+            near keys, transpositions, disjoint keys) the bounded attribute-links
+            is SET-EQUAL to the naive cross-product reference — proving the bound
+            preserves output beyond the single frozen golden"
+    (doseq [[label concepts new-uris]
+            [["near + exact mix" gc7-fixture-concepts gc7-fixture-new-uris]
+             ["length-mismatched near keys"
+              [{:uri "e:1" :attributes {:median_wage 5 :median-wage 9}}
+               {:uri "e:2" :attributes {:medianwage 5}}
+               {:uri "n:1" :attributes {:median_wages 5 :wage 1}}]
+              #{"n:1"}]
+             ["transposition near keys"
+              [{:uri "e:1" :attributes {:abcd 1}} {:uri "e:2" :attributes {:wxyz 2}}
+               {:uri "n:1" :attributes {:abdc 1 :acbd 1}}]
+              #{"n:1"}]
+             ["fully disjoint keys (no links)"
+              [{:uri "e:1" :attributes {:alpha 1}} {:uri "n:1" :attributes {:omega 2}}]
+              #{"n:1"}]
+             ["repeated identical keys (dense, C2022_A-shape)"
+              (vec (for [i (range 20)]
+                     {:uri (str "c/" i) :attributes {:ctotalt i :ctotalm i :unitid 5}}))
+              (set (map #(str "c/" %) (range 10 20)))]]]
+      (let [bounded (set (:links (recon/attribute-links concepts new-uris)))
+            naive (naive-attribute-links concepts new-uris)]
+        (is (= naive bounded) (str "bounded == naive cross-product for: " label))))))
+
+;; A counting reference cross-product — the PRE-GC-7 jaro-winkler call pattern (one
+;; call per new-attr × existing-attr pair). Returns the comparison COUNT so the
+;; test can prove the bounded impl does asymptotically less work on the SAME data.
+(defn- naive-jw-comparison-count [concepts new-uris]
+  (let [new-set (set new-uris)
+        existing (remove #(contains? new-set (:uri %)) concepts)
+        new-concepts (filter #(contains? new-set (:uri %)) concepts)
+        existing-attr-count (reduce + (map #(count (:attributes %)) existing))
+        new-attr-count (reduce + (map #(count (:attributes %)) new-concepts))]
+    (* existing-attr-count new-attr-count)))
+
+(deftest gc7-attribute-links-scale-bound-on-jw-work-test
+  (testing "the bounded attribute-links does a BOUNDED number of jaro-winkler
+            comparisons — O(distinct-keys²), NOT the O(new-attrs × existing-attrs)
+            cross-product the pre-GC-7 impl ran. The jaro-winkler WORK is the metric
+            GC-7 bounds; reverting to the per-attr-pair cross-product blows past it."
+    ;; Few DISTINCT keys (30) shared across many concepts is the realistic
+    ;; IPEDS-shape worst case (a wide table's columns repeated across every row).
+    ;; The pre-GC-7 impl ran ONE jaro-winkler per (new-attr × existing-attr) pair —
+    ;; quadratic in CONCEPT count. The bound runs jaro-winkler once per DISTINCT
+    ;; (new-key, existing-key) pair — quadratic only in SCHEMA WIDTH (≤ 30² = 900),
+    ;; independent of concept count. Concept count is kept modest here so the
+    ;; (genuine, dense) link set still materializes in the test heap; the WORK
+    ;; ratio is what proves the bound.
+    ;; A vocab of MUTUALLY-DISSIMILAR key names (max pairwise jaro-winkler ≈ 0.78,
+    ;; below the 0.92 floor) so links form ONLY on exact-key matches — keeping the
+    ;; genuine (shared-key) link set materializable while the jaro-winkler WORK
+    ;; metric stays the thing under test. (A shared-prefix vocab like `attr_0`…
+    ;; would cross-match every pair and explode the OUTPUT, not the work.)
+    (let [key-vocab (mapv keyword
+                          ["alpha" "bravo" "charlie" "delta" "echo" "foxtrot" "golf"
+                           "hotel" "india" "juliet" "kilo" "lima" "mike" "november"
+                           "oscar" "papa" "quebec" "romeo" "sierra" "tango" "uniform"
+                           "victor" "whiskey" "xray" "yankee" "zulu" "region" "weight"
+                           "tier" "color"])
+          n-keys (count key-vocab)
+          mk (fn [n-concepts]
+               (vec (for [i (range n-concepts)]
+                      {:uri (str "ent/" i)
+                       :attributes (into {} (for [j (range 5)]
+                                              [(nth key-vocab (mod (+ (* i 5) j) n-keys))
+                                               (str "val-" i "-" j)]))})))
+          run (fn [n]
+                (let [concepts (mk n)
+                      new-uris (set (map #(str "ent/" %) (range (quot n 2) n)))
+                      r (recon/attribute-links concepts new-uris)]
+                  {:jw (:jw-comparisons r)
+                   :naive-jw (naive-jw-comparison-count concepts new-uris)
+                   :links (count (:links r))}))
+          small (run 200)
+          big   (run 1000)]
+      (is (number? (:jw small))
+          "attribute-links reports :jw-comparisons (the work metric the bound guards)")
+      ;; distinct keys ≤ 30 → key-pair jaro-winkler calls ≤ 30×30 = 900, regardless
+      ;; of concept count. Generous ceiling 2000.
+      (is (< (:jw big) 2000)
+          (str "jaro-winkler comparisons must be BOUNDED (≈ distinct-key²), got " (:jw big)))
+      ;; the bound is INDEPENDENT of concept count: 5× the concepts must NOT 5× (or
+      ;; 25×) the jaro-winkler work. The pre-GC-7 cross-product would scale ~25× here.
+      (is (<= (:jw big) (:jw small))
+          (str "jaro-winkler work must NOT grow with concept count — small=" (:jw small)
+               " big=" (:jw big)))
+      ;; and the bound is asymptotically FAR below the pre-GC-7 cross-product on the
+      ;; SAME data — reverting to per-attr-pair jaro-winkler explodes the count.
+      (is (< (* 100 (:jw big)) (:naive-jw big))
+          (str "bounded jaro-winkler (" (:jw big) ") must be ≥100× below the naive "
+               "cross-product (" (:naive-jw big) ") on the same input"))
+      (is (pos? (:links big)) "the bounded pass still emits the genuine links"))))
+
+;; ---------------------------------------------------------------------------
 ;; The reconcile-not-duplicate seam over a REAL store (the maintain seam) — the
 ;; deterministic part (no ColBERT). Asserts events LANDED by reading the
 ;; projection back (Discipline #7).
@@ -329,6 +499,64 @@
             "entity:gamma is genuinely new → :exact-uri? false (a fresh mint)")
         (is (false? (:match? (get by-uri "entity:gamma")))
             "the probe does NOT echo entity:gamma's own URI back as a pre-existing match (no self-echo)")))))
+
+;; ---------------------------------------------------------------------------
+;; GC-7 — the check-before-mint probe's hybrid-search is BOUNDED at scale, with
+;; honest coverage reporting (never a silent skip).
+;; ---------------------------------------------------------------------------
+
+(deftest gc7-probe-hybrid-search-is-bounded-with-honest-coverage-test
+  (testing "the per-draft hybrid-search is bounded by :max-probe: at most :max-probe
+            drafts get the full P3 search; the rest get only the free :exact-uri?
+            lookup; the reduction is reported HONESTLY in :probe-coverage (no silent
+            skip — Discipline 5); and the strongest signal (:exact-uri?) is computed
+            for EVERY draft regardless of the cap (reconcile-not-duplicate preserved)"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            ;; pre-populate the graph so an exact-uri? hit exists past the cap
+            _ (land! ctx oid src-a-concepts [])
+            ;; 50 synthetic drafts; one of them re-mints a pre-existing URI placed
+            ;; PAST the cap so we prove exact-uri? is still found beyond the bound.
+            many (concat
+                  (for [i (range 49)]
+                    {:uri (str "draft:" i) :label (str "Draft " i) :description "d"})
+                  [{:uri "entity:alpha" :label "Alpha re-mint" :description "x"}])
+            cap 10
+            probe (recon/check-before-mint-probe
+                   ctx {:ontology-id oid :concept-drafts (vec many)
+                        :signals #{:graph :lexical} :max-probe cap})
+            cov (:probe-coverage probe)
+            by-uri (into {} (map (juxt :uri identity) (:entries probe)))]
+        (is (= 50 (:probed probe)) "all 50 drafts are accounted for (probed count)")
+        ;; the hybrid-search WORK is bounded to the cap
+        (is (= cap (:hybrid-probed cov))
+            (str "exactly :max-probe (" cap ") drafts got the full hybrid-search"))
+        (is (= 40 (:hybrid-skipped cov)) "the remaining 40 drafts skipped the search")
+        (is (false? (:full-coverage? cov)) "coverage is honestly reported as reduced")
+        ;; the entries record per-draft whether the full probe ran
+        (is (= cap (count (filter :hybrid-probed? (:entries probe))))
+            "exactly :max-probe entries carry :hybrid-probed? true")
+        ;; the strongest signal survives the cap: the re-minted pre-existing URI is
+        ;; the 50th draft (index 49, well past cap 10) yet :exact-uri? is still true.
+        (is (true? (:exact-uri? (get by-uri "entity:alpha")))
+            ":exact-uri? (the free, strongest signal) is computed for EVERY draft, even past the cap")
+        (is (false? (:hybrid-probed? (get by-uri "entity:alpha")))
+            "...even though that draft's hybrid-search was cap-skipped")))))
+
+(deftest gc7-probe-cap-disabled-restores-full-coverage-test
+  (testing ":max-probe nil/:all disables the cap — every draft gets the full probe
+            (the original behavior is preserved for callers that want it)"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            _ (land! ctx oid src-a-concepts [])
+            drafts (vec (for [i (range 30)]
+                          {:uri (str "d:" i) :label (str "D" i) :description "d"}))
+            probe (recon/check-before-mint-probe
+                   ctx {:ontology-id oid :concept-drafts drafts
+                        :signals #{:graph :lexical} :max-probe nil})
+            cov (:probe-coverage probe)]
+        (is (= 30 (:hybrid-probed cov)) "nil cap → all drafts fully probed")
+        (is (true? (:full-coverage? cov)) "coverage reported as full")))))
 
 (deftest reconcile-requires-ontology-id-test
   (testing "reconcile fails loudly without a granted scope (no silent empty-graph

@@ -116,6 +116,23 @@
    plausible existing match for the model/caller to weigh. Reused default."
   0.3)
 
+(def default-max-probe
+  "GC-7 — the default ceiling on how many drafts get the FULL P3 `hybrid-search`
+   probe (graph BFS + embedding + ColBERT) in one reconcile call. The probe is one
+   hybrid-search PER draft; on a comprehensive build (tens of thousands of drafts
+   per batch) that is tens of thousands of searches and the build never finishes
+   (root-caused in GC-4). This bounds the search WORK.
+
+   Crucially this does NOT weaken identity: the strongest check-before-mint signal
+   — `:exact-uri?` (the draft's URI already resolves in the REAL pre-existing
+   graph, a reconcile-not-duplicate) — is a free set lookup and is computed for
+   EVERY draft regardless of the cap; AND the deterministic S12 dedup cascade still
+   adjudicates identity AFTER landing for all drafts. Only the pre-mint
+   embedding/ColBERT SIGNAL is bounded, and the reduction is reported honestly via
+   `:probe-coverage` (never a silent skip — Discipline 5). A caller raises it with
+   `:max-probe`."
+  2000)
+
 (defn check-before-mint-probe
   "DEEPENING 1 — for each incoming concept-draft, probe the CURRENT graph via the
    reused P3 `hybrid-search` (graph BFS + embedding + ColBERT via RRF) for an
@@ -157,8 +174,22 @@
       :entries [{:uri :label
                  :existing-uri :existing-label :score
                  :match?    <bool>         ; an OTHER existing node was surfaced
-                 :exact-uri? <bool>}]}"     ; draft URI already in the graph
-  [ctx {:keys [ontology-id concept-drafts pre-existing-uris signals colbert-index-id]
+                 :exact-uri? <bool>         ; draft URI already in the graph
+                 :hybrid-probed? <bool>}]   ; the full P3 search ran (vs cap-skipped)
+      :probe-coverage {...}}                 ; GC-7 honest coverage report
+
+   GC-7 — the per-draft `hybrid-search` is bounded by `:max-probe` (default
+   `default-max-probe`): at most that many drafts get the full P3 search. The
+   strongest signal — `:exact-uri?` (the draft already resolves in the REAL graph)
+   — is a free set lookup and is computed for EVERY draft regardless of the cap, so
+   the reconcile-not-duplicate seam is never lost; and the deterministic S12 cascade
+   still adjudicates identity after landing for all drafts. Drafts beyond the cap
+   carry `:hybrid-probed? false` (their embedding/ColBERT signal was not run) and the
+   reduction is reported honestly in `:probe-coverage` (no silent skip — Discipline
+   5). `:max-probe` nil/`:all` disables the cap (the original full-probe behavior)."
+  [ctx {:keys [ontology-id concept-drafts pre-existing-uris signals colbert-index-id
+               max-probe]
+        :or {max-probe default-max-probe}
         :as _params}]
   (when-not ontology-id
     (throw (ex-info "check-before-mint-probe requires :ontology-id (the granted scope)"
@@ -170,40 +201,58 @@
         colbert-index-id (or colbert-index-id
                              (:colbert-index-id
                               (ontology/get-colbert-index-for-ontology ctx ontology-id)))
+        drafts (vec (or concept-drafts []))
+        ;; GC-7 — the hybrid-search cap. nil / :all disables it (full-probe). The
+        ;; FIRST `cap` drafts get the full P3 search; the rest get only the free
+        ;; exact-uri? lookup (honest coverage reported below).
+        cap (when (and (number? max-probe) (nat-int? max-probe)) max-probe)
         entries
-        (mapv
-         (fn [{:keys [uri label description] :as _draft}]
-           (let [res (ontology/hybrid-search
-                      ctx (cond-> {:query-text (str (or label "") " " (or description ""))
-                                   :ontology-id ontology-id
-                                   :limit 5
-                                   :min-similarity probe-min-similarity}
-                            ;; `signals` lets the caller restrict the probe's
-                            ;; signal set (default = all three P3 signals). A
-                            ;; hermetic gate can pass #{:graph :lexical} to stay off
-                            ;; the embedding model + ColBERT bridge; production
-                            ;; leaves it nil for full P3 evidence.
-                            signals (assoc :signals signals)
-                            ;; the ColBERT signal needs the per-ontology index id;
-                            ;; supply it so P3's ColBERT late-interaction fires.
-                            colbert-index-id (assoc :colbert-index-id colbert-index-id)))
-                 ;; drop the draft's OWN uri — an echo of itself is not evidence
-                 ;; of a pre-existing match.
-                 hits (remove #(= uri (:uri %)) (:results res))
-                 best (first hits)]
-             {:uri uri
-              :label label
-              :existing-uri (:uri best)
-              :existing-label (:label best)
-              :score (:score best)
-              :match? (boolean (seq hits))
-              ;; the draft's URI already resolves in the REAL pre-existing graph
-              :exact-uri? (boolean (contains? pre-existing uri))}))
-         (or concept-drafts []))]
+        (vec
+         (map-indexed
+          (fn [idx {:keys [uri label description] :as _draft}]
+            (let [run-hybrid? (or (nil? cap) (< idx cap))
+                  hits (when run-hybrid?
+                         (let [res (ontology/hybrid-search
+                                    ctx (cond-> {:query-text (str (or label "") " " (or description ""))
+                                                 :ontology-id ontology-id
+                                                 :limit 5
+                                                 :min-similarity probe-min-similarity}
+                                          ;; `signals` lets the caller restrict the probe's
+                                          ;; signal set (default = all three P3 signals). A
+                                          ;; hermetic gate can pass #{:graph :lexical} to stay off
+                                          ;; the embedding model + ColBERT bridge; production
+                                          ;; leaves it nil for full P3 evidence.
+                                          signals (assoc :signals signals)
+                                          ;; the ColBERT signal needs the per-ontology index id;
+                                          ;; supply it so P3's ColBERT late-interaction fires.
+                                          colbert-index-id (assoc :colbert-index-id colbert-index-id)))]
+                           ;; drop the draft's OWN uri — an echo of itself is not
+                           ;; evidence of a pre-existing match.
+                           (remove #(= uri (:uri %)) (:results res))))
+                  best (first hits)]
+              {:uri uri
+               :label label
+               :existing-uri (:uri best)
+               :existing-label (:label best)
+               :score (:score best)
+               :match? (boolean (seq hits))
+               :hybrid-probed? run-hybrid?
+               ;; the draft's URI already resolves in the REAL pre-existing graph
+               :exact-uri? (boolean (contains? pre-existing uri))}))
+          drafts))
+        hybrid-probed (count (filter :hybrid-probed? entries))]
     {:probed (count entries)
      :hits (count (filter :match? entries))
      :exact-uri-hits (count (filter :exact-uri? entries))
-     :entries entries}))
+     :entries entries
+     ;; GC-7 — honest coverage report (never a silent skip). When the cap bit, the
+     ;; caller can see exactly how many drafts got the full P3 signal vs only the
+     ;; free exact-uri? lookup.
+     :probe-coverage {:total (count entries)
+                      :hybrid-probed hybrid-probed
+                      :hybrid-skipped (- (count entries) hybrid-probed)
+                      :max-probe cap
+                      :full-coverage? (= hybrid-probed (count entries))}}))
 
 ;; =============================================================================
 ;; DEEPENING 2 — ATTRIBUTE/FEATURE GRANULARITY: connect a NEW entity's attributes
@@ -248,42 +297,87 @@
    value equality, NO LLM, NO hardcoded phrase list. Self/own-entity pairs are
    excluded (an entity is not linked to itself).
 
+   ## GC-7 — BOUNDED work, IDENTICAL output (scaling fix, behavior-preserving)
+
+   The naive form scanned EVERY new attribute against EVERY existing attribute,
+   calling jaro-winkler per pair — `O(new-attrs × existing-attrs)` jaro-winkler
+   comparisons. On a comprehensive build (tens of thousands of concepts × several
+   attributes) that is billions of comparisons; the comprehensive build never
+   finished (root-caused in GC-4).
+
+   The fix is KEY-PAIR MEMOIZATION, NOT a blocking heuristic: the jaro-winkler
+   key-similarity is a function of the KEY STRINGS ALONE (`nk-str` vs `key-str`),
+   so it is computed ONCE per DISTINCT (new-key-string, existing-key-string) pair
+   — at most `distinct-new-keys × distinct-existing-keys`, i.e. schema-width², a
+   few hundred, independent of how many CONCEPTS carry those keys. The link set is
+   then expanded by pure hash-bucket iteration over the existing attributes grouped
+   by key string. Because the FULL key-pair similarity matrix is still evaluated
+   (no candidate is pruned by a length/prefix heuristic), the emitted `:links` are
+   PROVABLY identical to the naive cross-product, not merely empirically close. The
+   reused S12 `jaro-winkler-similarity` + `attr-key-str` are unchanged (no fork).
+   `:jw-comparisons` is reported so the bound is observable + guardable.
+
    Returns:
      {:new-entities-with-attrs <int>
       :links [{:new-uri :new-attr-key :existing-uri :existing-attr-key
                :value :kind (:same-value | :shared-key)}]
       :same-value-link-count <int>
-      :shared-key-link-count <int>}"
+      :shared-key-link-count <int>
+      :jw-comparisons <int>}"     ; GC-7 work metric (distinct key-pairs compared)
   [concepts new-uris]
   (let [new-set (set new-uris)
         existing (remove #(contains? new-set (:uri %)) concepts)
         new-concepts (filter #(contains? new-set (:uri %)) concepts)
         ;; index existing attributes for the scan: [{:uri :key :key-str :value}]
         existing-attrs
-        (for [c existing
-              [k v] (:attributes c)]
-          {:uri (:uri c) :key k :key-str (attr-key-str k) :value v})
+        (vec (for [c existing
+                   [k v] (:attributes c)]
+               {:uri (:uri c) :key k :key-str (attr-key-str k) :value v}))
+        ;; GC-7 — group existing attributes by their NORMALIZED key string. A key
+        ;; string maps to the (possibly many) existing attribute entries carrying
+        ;; it; the jaro-winkler near-match is computed against the DISTINCT key
+        ;; strings (the bucket keys), never per attribute occurrence.
+        existing-by-key (group-by :key-str existing-attrs)
+        existing-key-strs (vec (keys existing-by-key))
+        ;; GC-7 — memoize, per DISTINCT new key string, the existing key strings
+        ;; whose jaro-winkler ≥ floor. This is the ONLY place jaro-winkler runs:
+        ;; once per (distinct-new-key × distinct-existing-key) pair. `jw-count`
+        ;; tallies the real comparison work (the GC-7 bound metric).
+        jw-count (volatile! 0)
+        match-cache (volatile! {})
+        matching-existing-keys
+        (fn [nk-str]
+          (if-let [hit (find @match-cache nk-str)]
+            (val hit)
+            (let [ms (filterv
+                      (fn [eks]
+                        (vswap! jw-count inc)
+                        ;; structural key match — reuse S12's jaro-winkler (no fork)
+                        (>= (dedup/jaro-winkler-similarity nk-str eks)
+                            attr-key-similarity-floor))
+                      existing-key-strs)]
+              (vswap! match-cache assoc nk-str ms)
+              ms)))
         links
-        (for [nc new-concepts
-              [nk nv] (:attributes nc)
-              :let [nk-str (attr-key-str nk)]
-              ea existing-attrs
-              :when (and (not= (:uri nc) (:uri ea))
-                         ;; structural key match — reuse S12's jaro-winkler (no fork)
-                         (>= (dedup/jaro-winkler-similarity nk-str (:key-str ea))
-                             attr-key-similarity-floor))
-              :let [same-value? (= nv (:value ea))]]
-          {:new-uri (:uri nc)
-           :new-attr-key nk
-           :existing-uri (:uri ea)
-           :existing-attr-key (:key ea)
-           :value (when same-value? nv)
-           :kind (if same-value? :same-value :shared-key)})
-        links (vec links)]
+        (vec
+         (for [nc new-concepts
+               [nk nv] (:attributes nc)
+               :let [nk-str (attr-key-str nk)]
+               eks (matching-existing-keys nk-str)
+               ea (get existing-by-key eks)
+               :when (not= (:uri nc) (:uri ea))
+               :let [same-value? (= nv (:value ea))]]
+           {:new-uri (:uri nc)
+            :new-attr-key nk
+            :existing-uri (:uri ea)
+            :existing-attr-key (:key ea)
+            :value (when same-value? nv)
+            :kind (if same-value? :same-value :shared-key)}))]
     {:new-entities-with-attrs (count (filter #(seq (:attributes %)) new-concepts))
      :links links
      :same-value-link-count (count (filter #(= :same-value (:kind %)) links))
-     :shared-key-link-count (count (filter #(= :shared-key (:kind %)) links))}))
+     :shared-key-link-count (count (filter #(= :shared-key (:kind %)) links))
+     :jw-comparisons @jw-count}))
 
 ;; =============================================================================
 ;; The orchestrating reconcile — land drafts, entity-reconcile (DT7), attribute-
@@ -315,8 +409,9 @@
    attribute-link pass runs over the LANDED graph (so the new entities' attributes
    are compared against the existing graph). Returns the public reconcile report."
   [ctx {:keys [ontology-id concept-drafts relationship-drafts source-uri-sets
-               llm-budget llm-fn probe-signals]
-        :or {llm-budget 0}}]
+               llm-budget llm-fn probe-signals max-probe]
+        :or {llm-budget 0}
+        :as _params}]
   (when-not ontology-id
     (throw (ex-info "reconcile-drafts! requires :ontology-id (the granted scope)"
                     {:ontology-id ontology-id})))
@@ -336,10 +431,14 @@
         ;;    pre-existing URI set we just read so :exact-uri? is grounded in the
         ;;    REAL graph (not a BFS echo).
         probe (check-before-mint-probe
-               ctx {:ontology-id ontology-id
-                    :concept-drafts concept-drafts
-                    :pre-existing-uris pre-existing-uris
-                    :signals probe-signals})
+               ctx (cond-> {:ontology-id ontology-id
+                            :concept-drafts concept-drafts
+                            :pre-existing-uris pre-existing-uris
+                            :signals probe-signals}
+                     ;; GC-7 — bound the per-draft hybrid-search at scale (honest
+                     ;; coverage reported in :probe-coverage). nil → the probe's
+                     ;; own default cap applies.
+                     (contains? _params :max-probe) (assoc :max-probe max-probe)))
 
         ;; 2. LAND the drafts (REUSE compile-discovery-source! — no fork). It
         ;;    validates the drafts, emits the create commands, runs the always-on

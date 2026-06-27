@@ -98,6 +98,26 @@
    `:max-containers` input."
   25)
 
+(def default-max-extract-windows
+  "GC-7 — the default ceiling on `stream-all` windows the per-container extract
+   consumes. Each window is one bounded read (the sql per-window hard cap is 100
+   rows), so this caps a pathologically large table (IPEDS `C2022_A` ≈ 1.6M rows)
+   to a representative sample within the node timeout rather than streaming the
+   whole table. The extraction report records `:windows`, `:rows-streamed`, AND a
+   `:truncated?` flag (windows hit the ceiling → more rows remained) so the cap is
+   HONEST (no false-green, Discipline 4). Behavior-preserving: this is the value
+   (50) the two extract apply nodes hardcoded before GC-7 named it."
+  50)
+
+(defn extract-truncated?
+  "GC-7 — HONEST truncation signal: the stream hit the `:max-windows` ceiling, so
+   the table almost certainly had more rows than were sampled. `stream-all` stops
+   either at a short/empty window (table exhausted → NOT truncated) or at the
+   `:max-windows` guard (ceiling bit → truncated). A windows count at the ceiling
+   is the ceiling-bit case."
+  [windows max-windows]
+  (boolean (and (number? windows) (number? max-windows) (>= windows max-windows))))
+
 (defn list-source-containers
   "Enumerate the source's containers via the uniform container contract
    (`list-containers` → `[{:name …}]`). Returns a vector of container maps (one
@@ -350,7 +370,10 @@
    the source is NOT aborted; the COUNT is returned so a high failure rate (or a
    0-concept result) surfaces loudly for the caller to gate on."
   [{:keys [inputs]}]
-  (let [{:keys [source transform-source selector]} inputs
+  (let [{:keys [source transform-source selector max-windows]} inputs
+        ;; GC-7 — the window ceiling is the named default (50), caller-overridable
+        ;; for an even tighter cap on a known-huge table.
+        max-windows (or max-windows default-max-extract-windows)
         result (rlm-discovery/apply-extraction-transform!
                 {:descriptor source
                  :transform-source transform-source
@@ -360,10 +383,10 @@
                  ;; SAMPLE within the node timeout rather than timing out wholesale.
                  ;; Small csv/excel sources finish in far fewer windows, so this only
                  ;; bites the huge-table case. The :extraction-report records
-                 ;; :windows + :rows-streamed so the truncation is HONEST (no
-                 ;; false-green); comprehensive multi-table SQL coverage is the
-                 ;; deeper follow-up.
-                 :max-windows 50})
+                 ;; :windows + :rows-streamed + :truncated? so the truncation is
+                 ;; HONEST (no false-green); the model's :canonical-row-filter grain
+                 ;; collapses breakdown rows, the cap is the backstop.
+                 :max-windows max-windows})
         concept-drafts (vec (:concept-drafts result))
         relationship-drafts (vec (:relationship-drafts result))]
     {:concept-drafts concept-drafts
@@ -379,6 +402,9 @@
       :rows-ok (:rows-ok result)
       :rows-errored (:rows-errored result)
       :windows (:windows result)
+      ;; GC-7 — honest truncation signal (the cap bit; more rows remained).
+      :max-windows max-windows
+      :truncated? (extract-truncated? (:windows result) max-windows)
       :concept-count (count concept-drafts)
       :relationship-count (count relationship-drafts)
       :errors-sample (vec (:errors-sample result))}}))
@@ -417,15 +443,17 @@
    per-row draft set + a flat `:concept-count` (the resilience sanity-gate key) +
    the `:extraction-report` (the no-false-green coverage signal)."
   [{:keys [inputs]}]
-  (let [{:keys [source transform-source selector container]} inputs
+  (let [{:keys [source transform-source selector container max-windows]} inputs
         ;; the container's name wins (the loop is traversing it); fall back to the
         ;; author-emitted selector for the single-container path.
         effective-selector (or (:name container) selector)
+        ;; GC-7 — named default window ceiling (caller-overridable for tighter caps).
+        max-windows (or max-windows default-max-extract-windows)
         result (rlm-discovery/apply-extraction-transform!
                 {:descriptor source
                  :transform-source transform-source
                  :selector effective-selector
-                 :max-windows 50})
+                 :max-windows max-windows})
         concept-drafts (vec (:concept-drafts result))
         relationship-drafts (vec (:relationship-drafts result))]
     {:concept-drafts concept-drafts
@@ -437,6 +465,9 @@
       :rows-ok (:rows-ok result)
       :rows-errored (:rows-errored result)
       :windows (:windows result)
+      ;; GC-7 — honest truncation signal (the cap bit; more rows remained).
+      :max-windows max-windows
+      :truncated? (extract-truncated? (:windows result) max-windows)
       :concept-count (count concept-drafts)
       :relationship-count (count relationship-drafts)
       :errors-sample (vec (:errors-sample result))}}))

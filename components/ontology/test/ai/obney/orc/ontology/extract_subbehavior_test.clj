@@ -1141,3 +1141,24 @@
                silent — #4/#5)"))
         (is (every? #(and (:source-uri %) (:target-uri %) (:predicate %)) edges)
             "every bounded edge carries source + target + predicate (no dangling)")))))
+
+;; ---------------------------------------------------------------------------
+;; GC-7 — the extract window cap is HONEST: the report flags :truncated? when the
+;; stream hit the :max-windows ceiling (a huge table sampled, not exhausted), and
+;; :max-windows is the named default (caller-overridable). Deterministic, no LLM.
+;; ---------------------------------------------------------------------------
+
+(deftest gc7-extract-truncation-signal-is-honest-test
+  (testing "extract-truncated? is the ceiling-bit signal: windows AT/ABOVE the cap
+            → truncated (table had more rows); below the cap → table exhausted"
+    ;; the cap bit — windows hit the ceiling, more rows almost certainly remained
+    (is (true? (extract/extract-truncated? 50 50)))
+    (is (true? (extract/extract-truncated? 51 50)))
+    ;; the table was exhausted before the ceiling — NOT truncated (honest)
+    (is (false? (extract/extract-truncated? 7 50)))
+    (is (false? (extract/extract-truncated? 0 50)))
+    ;; defensive: non-numbers don't claim truncation
+    (is (false? (extract/extract-truncated? nil 50))))
+  (testing "the default window ceiling is the value the apply nodes used pre-GC-7
+            (behavior-preserving), now NAMED + overridable"
+    (is (= 50 extract/default-max-extract-windows))))
