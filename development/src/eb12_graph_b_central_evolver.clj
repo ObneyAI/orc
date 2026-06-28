@@ -329,28 +329,76 @@
      :soc (pick "soc" "occ" "onet") :institution (pick "unitid" "inst" "ipeds" "opeid")
      :earnings (pick "pseo" "earn" "wage")}))
 
-(defn connectivity-proof [ctx oid]
-  (let [{:keys [concepts relationships]} (snapshot ctx oid)
-        by-uri (into {} (map (juxt :uri identity) concepts))
+(defn find-connectivity-chain
+  "GC-10 Fix B2 — the PURE program→field→occupation chain finder over a
+   `{:concepts :relationships}` snapshot (TDD-able on fixtures; no Grain/LLM/I/O).
+
+   Traverses program → field(CIP-kind) → occupation(SOC-kind), and — the Fix B2 hop
+   — when the program's directly-connected field (the FAMILY grain, e.g.
+   `fieldofstudy/01`) carries no occupation edge, follows a `skos:narrower` edge to a
+   DETAIL field (`fieldofstudy/01.0407`) and looks for the occupation edge THERE. So
+   the IPEDS family↔crosswalk detail grain split no longer dead-ends the chain. The
+   field→occupation predicate tolerates the `leads to` ↔ `prepares_for` synonym
+   variant (minor). Domain-agnostic — kinds come from `guess-kinds` over the URI
+   schemes, names no field.
+
+   Returns the chain map (with `:cip-detail` surfaced WHEN a hierarchy hop was used,
+   so the bridge is auditable) or `{:no-complete-chain true …}`."
+  [{:keys [concepts relationships]}]
+  (let [by-uri (into {} (map (juxt :uri identity) concepts))
         kind-of (fn [u] (uri-kind u))
         roles (guess-kinds (frequencies (map #(uri-kind (:uri %)) concepts)))
         programs (filter #(= (:program roles) (kind-of (:uri %))) concepts)
+        ;; the field→occupation edge for a given field URI, tolerating the
+        ;; `prepares_for` synonym of `leads to` (both are SOC-targeting field edges;
+        ;; the kind check already pins the target to the occupation kind, so the
+        ;; predicate tolerance is purely a label-variant allowance — no fabrication).
+        soc-edge-for (fn [field-uri]
+                       (first (filter #(= (:soc roles) (kind-of (:target-uri %)))
+                                      (edges-from relationships field-uri))))
+        ;; the family→detail hierarchy hop: a skos:narrower edge FROM this field.
+        narrower-fields (fn [field-uri]
+                          (->> (edges-from relationships field-uri)
+                               (filter #(= "skos:narrower" (:predicate %)))
+                               (filter #(= (:cip roles) (kind-of (:target-uri %))))
+                               (map :target-uri)))
         chain (some
                (fn [prog]
                  (let [p-uri (:uri prog)
-                       cip-edge (first (filter #(= (:cip roles) (kind-of (:target-uri %))) (edges-from relationships p-uri)))
-                       cip-uri (:target-uri cip-edge)
-                       soc-edge (when cip-uri (first (filter #(= (:soc roles) (kind-of (:target-uri %))) (edges-from relationships cip-uri))))
-                       soc-uri (:target-uri soc-edge)]
-                   (when (and cip-uri soc-uri)
-                     {:program (select-keys prog [:uri :label :attributes])
-                      :program->cip (select-keys cip-edge [:source-uri :predicate :target-uri])
-                      :cip (select-keys (get by-uri cip-uri) [:uri :label])
-                      :cip->soc (select-keys soc-edge [:source-uri :predicate :target-uri])
-                      :soc (select-keys (get by-uri soc-uri) [:uri :label :attributes])})))
+                       cip-edge (first (filter #(= (:cip roles) (kind-of (:target-uri %)))
+                                               (edges-from relationships p-uri)))
+                       cip-uri (:target-uri cip-edge)]
+                   (when cip-uri
+                     (let [;; (1) the DIRECT case — the program's field itself carries
+                           ;; the occupation edge (no grain split / no hop needed).
+                           direct-soc (soc-edge-for cip-uri)
+                           ;; (2) the Fix B2 case — the field is a FAMILY; follow a
+                           ;; skos:narrower edge to a DETAIL field that carries the
+                           ;; occupation edge.
+                           [detail-uri detail-soc]
+                           (when-not direct-soc
+                             (some (fn [d-uri]
+                                     (when-let [e (soc-edge-for d-uri)] [d-uri e]))
+                                   (narrower-fields cip-uri)))
+                           soc-edge (or direct-soc detail-soc)
+                           soc-uri (:target-uri soc-edge)]
+                       (when soc-uri
+                         (cond-> {:program (select-keys prog [:uri :label :attributes])
+                                  :program->cip (select-keys cip-edge [:source-uri :predicate :target-uri])
+                                  :cip (select-keys (get by-uri cip-uri) [:uri :label])
+                                  :cip->soc (select-keys soc-edge [:source-uri :predicate :target-uri])
+                                  :soc (select-keys (get by-uri soc-uri) [:uri :label :attributes])}
+                           ;; surface the family→detail bridge when one was traversed.
+                           detail-uri (assoc :cip-detail (select-keys (get by-uri detail-uri) [:uri :label])
+                                             :cip->cip-detail {:source-uri cip-uri
+                                                               :predicate "skos:narrower"
+                                                               :target-uri detail-uri})))))))
                programs)]
     (or chain {:no-complete-chain true :roles-detected roles :program-count (count programs)
                :note "No program->field->occupation chain — see cross-source-links for where it broke."})))
+
+(defn connectivity-proof [ctx oid]
+  (find-connectivity-chain (snapshot ctx oid)))
 
 (defn earnings-to-program-verdict [ctx oid]
   (let [{:keys [concepts relationships]} (snapshot ctx oid)

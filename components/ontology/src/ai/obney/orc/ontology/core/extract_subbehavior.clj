@@ -74,6 +74,7 @@
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
             [ai.obney.orc.ontology.core.resilience :as res]
+            [clojure.edn :as edn]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -749,6 +750,34 @@
 ;; this names NO domain field.
 ;; =============================================================================
 
+(defn normalize-model-spec
+  "GC-10 Fix A — coerce whatever the `:llm` Model node emitted for the model-spec's
+   `:entity-types` into a clean vector of entity-type maps (MIRROR GC-6's
+   `normalize-vocabulary` in `synthesize_vocab_subbehavior.clj`). The `:llm`-node
+   DSCloj parse of the `[:vector [:map …]]` `:entity-types` field is INTERMITTENT
+   for this model (the same C1-class fragility GC-6 defends): the SAME write may
+   arrive as parsed Clojure data OR as an un-parsed EDN STRING. When it arrives as a
+   STRING, the downstream `(reduce … (or (:entity-types model-spec) []))` runs over
+   the string's CHARACTERS → an empty type-index → 100% of that source's drafts
+   degrade. This coercion `edn/read-string`s a string back to a vector (tolerating a
+   non-parse → `[]`), keeps only well-formed MAP entries (drops garbage honestly,
+   #4/#5), and returns the model-spec with `:entity-types` as a clean vector.
+   Behavior-preserving for an already-parsed vector. Pure + total — never throws."
+  [model-spec]
+  (let [ets (:entity-types model-spec)
+        ets (cond
+              (vector? ets) ets
+              (sequential? ets) (vec ets)
+              (string? ets) (try (let [p (edn/read-string ets)]
+                                   (cond (vector? p) p
+                                         (sequential? p) (vec p)
+                                         :else []))
+                                 (catch Throwable _ []))
+              :else [])
+        ;; keep only well-formed entity-type MAPS (honest — drop garbage entries).
+        ets (vec (filter map? ets))]
+    (assoc model-spec :entity-types ets)))
+
 (defn- entity-type-keying-fields
   "Build a `{normalized-type -> [uri-keying-field …]}` index from the model-spec's
    `:entity-types`. The lookup key is the entity-type NAME normalized the SAME way
@@ -756,7 +785,11 @@
    `:entity-type` matches the spec's `:type` regardless of casing/spacing. A spec
    entry with no `:type` or an empty `:uri-keying-fields` is dropped (it cannot key
    a canonical URI). Reads the spec TOLERANTLY (the DT3 value-shape tolerance:
-   `:uri-keying-fields` may be a vector of strings)."
+   `:uri-keying-fields` may be a vector of strings).
+
+   GC-10 Fix A — `normalize-model-spec` coerces a STRING-form `:entity-types` (the
+   intermittent C1 parse failure) back to a vector of maps FIRST, so the reduce
+   never iterates a string's characters into an empty index (a 100%-degrade)."
   [model-spec]
   (reduce
    (fn [acc {:keys [type uri-keying-fields]}]
@@ -766,7 +799,7 @@
          (assoc acc t fields)
          acc)))
    {}
-   (or (:entity-types model-spec) [])))
+   (:entity-types (normalize-model-spec model-spec))))
 
 (defn- mint-canonical-uri
   "Mint the canonical URI for a concept-draft given its entity-type's
@@ -1026,6 +1059,145 @@
                                "the two containers share no join key value")})))))
      {:relationship-drafts (vec (sort-by (juxt :source-uri :target-uri) @edges))
       :unmaterialized-relations @unmat
+      :truncated-relations @truncated
+      :pairs-considered @pairs-considered})))
+
+;; =============================================================================
+;; GC-10 Fix B2 — family↔detail SKOS hierarchy (domain-agnostic, bounded,
+;; deterministic — NO LLM). After GC-1 canonicalizes URIs and GC-10 Fix A unifies
+;; the type name, two SAME-canonical-type concepts can sit at DIFFERENT grains of
+;; the same code system: IPEDS keys a field at the 2-digit family (`fieldofstudy/01`)
+;; while the crosswalk keys it at the 6-digit detail (`fieldofstudy/01.0407`). These
+;; never merge (different identity values — correctly distinct entities) and never
+;; relate — so the program→field(family) chain dead-ends before the
+;; field(detail)→occupation edges.
+;;
+;; This DETERMINISTIC step (mirroring GC-2's bounded `cross-container-relationship-
+;; drafts`) detects the STRUCTURAL PREFIX-CONTAINMENT between same-type concept keys
+;; at a code-system SEPARATOR boundary and emits a `skos:narrower` edge from the
+;; family (shorter prefix) to the detail (longer key). The read-model's
+;; `skos:narrower` handling sets family:narrower + detail:broader RECIPROCALLY, so
+;; the graph traversal can hop family↔detail. NO baked CIP/SOC — the separator is
+;; ANY non-alphanumeric char, the prefix is purely structural (#12). ADJACENT
+;; LEVELS ONLY (each child links to its LONGEST-prefix parent, not every ancestor) +
+;; a per-prefix fan-out CAP with an HONEST `:truncated-relations` report (#4/#5), so
+;; it cannot explode.
+;; =============================================================================
+
+(def default-max-hierarchy-children-per-parent
+  "GC-10 Fix B2 — cap on the family→detail fan-out for a SINGLE parent. A family
+   with more immediate children than this emits the cap and surfaces the dropped
+   excess in `:truncated-relations` (an honest bound, never a silent top-N — #4/#5).
+   A structural bound on edge count, naming no domain (#12)."
+  500)
+
+(defn- uri-scheme-and-tail
+  "Split a canonical URI `<scheme>/<tail>` at the FIRST `/` into `[scheme tail]`.
+   The scheme is the canonical TYPE (post-GC-1/Fix-A unified); the tail is the
+   identity value the hierarchy detection compares. Returns nil when the URI has no
+   `/` (no tail to compare). Pure structural string logic — names no domain (#12)."
+  [uri]
+  (let [u (str uri)
+        i (str/index-of u "/")]
+    (when i [(subs u 0 i) (subs u (inc i))])))
+
+(defn- prefix-at-separator?
+  "True iff `parent-tail` is a STRICT prefix of `child-tail` at a code-system
+   SEPARATOR boundary: `child-tail` starts with `parent-tail` AND the very next
+   char in `child-tail` is a SEPARATOR (any non-alphanumeric char). So `01` is a
+   prefix of `01.0407` (next char `.` is a separator) but `010` is NOT a prefix of
+   `0104` (next char `4` is alphanumeric — not a boundary). Purely structural,
+   names no domain (#12)."
+  [parent-tail child-tail]
+  (let [pn (count parent-tail)
+        cn (count child-tail)]
+    (and (< pn cn)
+         (str/starts-with? child-tail parent-tail)
+         ;; the char immediately after the shared prefix must be a SEPARATOR
+         ;; (non-alphanumeric) — that is the code-system boundary.
+         (not (re-matches #"[a-zA-Z0-9]" (subs child-tail pn (inc pn)))))))
+
+(defn hierarchy-relationship-drafts
+  "GC-10 Fix B2 — DETERMINISTIC family↔detail hierarchy relating (NO LLM). Given a
+   collection of concept-drafts (each with a canonical `:uri` `<type>/<tail>`),
+   detect the STRUCTURAL PREFIX-CONTAINMENT between SAME-TYPE concept keys at a
+   code-system SEPARATOR boundary and return
+     {:relationship-drafts  [{:source-uri :target-uri :predicate \"skos:narrower\"} …]
+      :truncated-relations  [{:parent :children-total :cap :dropped-edges :reason} …]
+      :pairs-considered      <int>}.
+
+   For each concept (the CHILD), find its PARENT = the same-type concept whose tail
+   is the LONGEST strict prefix-at-separator of the child's tail. Emit ONE
+   `skos:narrower` edge parent→child (ADJACENT LEVELS ONLY — a child links to its
+   immediate parent, never every ancestor, so a 6-digit detail links to its 4-digit
+   parent which links to the 2-digit family, a bounded chain not a transitive
+   fan-out). The read-model populates parent:narrower + child:broader reciprocally.
+
+   BOUNDED (mirror GC-2): a single parent with more children than
+   `max-children-per-parent` (default `default-max-hierarchy-children-per-parent`)
+   emits the cap (children sorted by tail for stability) and surfaces the dropped
+   excess in `:truncated-relations` with the dropped count — an HONEST cap, never a
+   silent top-N (#4/#5). `:pairs-considered` reports the candidate child×same-type
+   work the detection performed. Domain-agnostic (#12): scheme + tail + separator
+   are purely structural; names NO field/code system. Pure — no Grain, no LLM."
+  ([concepts] (hierarchy-relationship-drafts concepts default-max-hierarchy-children-per-parent))
+  ([concepts max-children-per-parent]
+   (let [;; concepts with a parseable canonical URI, grouped by TYPE (scheme).
+         parsed (keep (fn [c]
+                        (when-let [[scheme tail] (uri-scheme-and-tail (:uri c))]
+                          {:uri (:uri c) :scheme scheme :tail tail}))
+                      (or concepts []))
+         by-type (group-by :scheme parsed)
+         pairs-considered (atom 0)
+         ;; PARENT→[children …] for the WHOLE corpus first (so the cap can see the
+         ;; full fan-out and report the dropped count honestly).
+         parent->children
+         (reduce
+          (fn [acc [_type members]]
+            ;; within a single type, find each child's LONGEST-prefix parent.
+            (reduce
+             (fn [acc2 child]
+               ;; candidate parents: same-type concepts whose tail is a strict
+               ;; prefix-at-separator of the child's tail (the child×same-type work).
+               (let [candidates (filter (fn [p]
+                                          (and (not= (:uri p) (:uri child))
+                                               (prefix-at-separator? (:tail p) (:tail child))))
+                                        members)
+                     _ (swap! pairs-considered + (count members))
+                     ;; ADJACENT LEVELS ONLY — the LONGEST-tail candidate is the
+                     ;; immediate parent (a child links to its nearest ancestor, not
+                     ;; every ancestor — no transitive fan-out).
+                     parent (last (sort-by (comp count :tail) candidates))]
+                 (if parent
+                   (update acc2 (:uri parent) (fnil conj []) (:uri child))
+                   acc2)))
+             acc
+             members))
+          {}
+          by-type)
+         edges (atom [])
+         truncated (atom [])]
+     (doseq [[parent-uri child-uris] parent->children]
+       (let [;; deterministic order so the kept edges under the cap are stable.
+             sorted-children (sort child-uris)
+             total (count sorted-children)
+             capped? (> total max-children-per-parent)
+             kept (if capped? (take max-children-per-parent sorted-children) sorted-children)]
+         (when capped?
+           (swap! truncated conj
+                  {:parent parent-uri
+                   :children-total total
+                   :cap max-children-per-parent
+                   :dropped-edges (- total max-children-per-parent)
+                   :reason (str "family→detail fan-out " total " for this parent exceeds "
+                                "the per-parent cap " max-children-per-parent
+                                "; the excess narrower edges are dropped (an honest "
+                                "bound, never a silent top-N)")}))
+         (doseq [child-uri kept]
+           (swap! edges conj {:source-uri parent-uri
+                              :target-uri child-uri
+                              :predicate "skos:narrower"}))))
+     {:relationship-drafts (vec (sort-by (juxt :source-uri :target-uri) @edges))
       :truncated-relations @truncated
       :pairs-considered @pairs-considered})))
 

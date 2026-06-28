@@ -433,7 +433,13 @@
                          ;; (nil → the orchestrator/APPLY falls back to its own defaults).
                          "max-containers" max-containers
                          "max-windows" max-windows}})
-        model-spec (get-in r [:outputs :model-spec])]
+        ;; GC-10 Fix A — coerce a STRING-form `:entity-types` (the intermittent C1
+        ;; parse failure) back to a vector of maps at the model-spec read-back
+        ;; boundary, so every downstream consumer of the model-spec (the land/axiom/
+        ;; embed steps AND the Extract orchestrator's canonicalizer) sees clean data,
+        ;; never a 100%-degrade from a reduce over the string's characters.
+        ;; Behavior-preserving for an already-parsed vector.
+        model-spec (extract/normalize-model-spec (get-in r [:outputs :model-spec]))]
     {:status (:status r)
      :model-spec model-spec
      :candidate-axioms (get-in r [:outputs :candidate-axioms])
@@ -467,6 +473,48 @@
      :reconcile-report (get-in r [:outputs reconcile/reconcile-report-key])
      :tick-id (:tick-id r)
      :error (:error r)}))
+
+(defn land-family-detail-hierarchy!
+  "GC-10 Fix B2 — the GLOBAL family↔detail SKOS hierarchy step. After EVERY source
+   has landed + reconciled, the graph holds same-canonical-type concepts at
+   DIFFERENT code-system grains (e.g. IPEDS keys a field at the 2-digit family
+   `fieldofstudy/01`, the crosswalk at the 6-digit detail `fieldofstudy/01.0407`).
+   These are correctly DISTINCT entities (different identity values) but never
+   relate — so a program→field(family) chain dead-ends before the
+   field(detail)→occupation edges. This DETERMINISTIC step (NO LLM) reads the global
+   concept set, runs the pure structural prefix-at-separator detector
+   (`extract/hierarchy-relationship-drafts`), and LANDS the `skos:narrower`
+   family→detail edges via the SAME Reconcile relationship-draft path (the
+   create-relationship command), so the read-model populates family:narrower +
+   detail:broader reciprocally and the graph traversal can hop family↔detail.
+
+   Domain-agnostic (#12) + bounded (the detector caps per-parent fan-out + reports
+   honestly). Returns the detector's report `{:edge-count :truncated …}` so the
+   caller can surface it (no false-green — a high truncated count is a signal)."
+  [ctx {:keys [ontology-id model reconcile-fn source-uri-sets]}]
+  (let [reconcile-fn (or reconcile-fn delegate-reconcile!)
+        concepts (rm/get-concepts ctx {:ontology-id ontology-id})
+        ;; the read-model returns a {uri -> concept} map OR a seq of concepts;
+        ;; normalize to a seq of {:uri …} so the pure detector reads :uri uniformly.
+        concept-seq (cond
+                      (map? concepts) (mapv (fn [[uri c]]
+                                              (if (map? c) (assoc c :uri (or (:uri c) uri))
+                                                  {:uri uri}))
+                                            concepts)
+                      (sequential? concepts) (vec concepts)
+                      :else [])
+        {:keys [relationship-drafts truncated-relations pairs-considered]}
+        (extract/hierarchy-relationship-drafts concept-seq)]
+    (when (seq relationship-drafts)
+      ;; LAND via the SAME Reconcile relationship-draft path (no new concepts).
+      (reconcile-fn ctx {:ontology-id ontology-id
+                         :concept-drafts []
+                         :relationship-drafts relationship-drafts
+                         :source-uri-sets source-uri-sets :model model}))
+    {:edge-count (count relationship-drafts)
+     :truncated-count (count truncated-relations)
+     :truncated truncated-relations
+     :pairs-considered pairs-considered}))
 
 (defn delegate-axiom!
   "Production Axiom/TBox seam: `:delegate` Axiom/TBox (candidate axioms → S07)."
@@ -977,7 +1025,18 @@
                         :error (:error mx-fail)
                         :failed-source (:source mx-fail)})
 
-                (let [;; --- STEP 5: build! (deterministic skeleton — dedup +
+                (let [;; --- STEP 4.5: GC-10 Fix B2 — GLOBAL family↔detail SKOS
+                      ;;     hierarchy. Now that EVERY source has landed + reconciled,
+                      ;;     bridge same-canonical-type concepts that sit at DIFFERENT
+                      ;;     code-system grains (family `…/01` ↔ detail `…/01.0407`) so
+                      ;;     the program→field(family)→field(detail)→occupation chain
+                      ;;     connects. Deterministic (NO LLM), domain-agnostic,
+                      ;;     bounded — lands skos:narrower via the normal Reconcile path.
+                      hierarchy-report
+                      (land-family-detail-hierarchy!
+                       ctx {:ontology-id ontology-id :model model
+                            :reconcile-fn reconcile-fn :source-uri-sets source-uri-sets})
+                      ;; --- STEP 5: build! (deterministic skeleton — dedup +
                       ;;             S15 exit-criterion over the landed graph) ---
                       build-result (build-fn ctx (cond-> {:ontology-id ontology-id
                                                           :sources [{:type :inline-concepts
@@ -1014,6 +1073,9 @@
                    (select-keys loop-result [:status :graph-health :cq-verdict :cq-loop])
                    {:survey-profiles profiles
                     :competency-questions (:competency-questions derive)
+                    ;; GC-10 Fix B2 — surface the family↔detail hierarchy bridging
+                    ;; report (edge-count + honest truncation) so it is observable.
+                    :hierarchy-report hierarchy-report
                     :build-result build-result}))))))))))))
 
 ;; =============================================================================
