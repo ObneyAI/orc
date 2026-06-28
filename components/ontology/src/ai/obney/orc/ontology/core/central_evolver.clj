@@ -139,6 +139,11 @@
         ;; same real entity gets the same canonical type/key across sources. Optional
         ;; ([:maybe …]) so the pre-GC-6 / no-vocab path still runs.
         :vocabulary [:maybe synth/vocabulary-schema]
+        ;; GC-9 — the reduced-cap knobs, delegated IN to the Extract step (below) so a
+        ;; caller can bound the per-source draft volume for a reduced-cap build.
+        ;; Optional ([:maybe …]) so the unset → extract-default path still runs.
+        :max-containers [:maybe :int]
+        :max-windows [:maybe :int]
         ;; Model outputs (cross :delegate as parsed maps — the EB3 C1 schemas)
         :reasoning :string
         :model-spec model/model-spec-contract-schema
@@ -160,7 +165,9 @@
         ;; model-spec Model just wrote onto the central child blackboard.
         (dsl/delegate "delegate-extract"
           :target-sheet-id extract-sid
-          :reads [:model-spec :source]
+          ;; GC-9 — cross the reduced-cap knobs onto the Extract sheet (the Extract
+          ;; orchestrate node reads :max-containers/:max-windows; unset → its defaults).
+          :reads [:model-spec :source :max-containers :max-windows]
           :writes [:concept-drafts :relationship-drafts :extraction-report]
           ;; GC-8 — the Extract step runs up to default-max-containers SERIALLY; size
           ;; its budget to that work (cap-scaled, = the outer delegate's budget), NOT
@@ -395,7 +402,7 @@
    container build at container ~10-11 and landed 0 drafts. `max-containers` is
    threaded from the caller (the same cap the Extract orchestrator reads); absent,
    it resolves to `extract/default-max-containers`."
-  [ctx {:keys [source goal profile vocabulary pipeline-sheet-id max-containers]}]
+  [ctx {:keys [source goal profile vocabulary pipeline-sheet-id max-containers max-windows]}]
   (let [r (delegate-subbehavior!
            ctx {:timeout-ms (model-extract-timeout-ms {:max-containers max-containers})
                 :central-name (str "ontology-central/pipeline-" (name (:type source)) "@v1")
@@ -407,16 +414,25 @@
                             ;; [:maybe …] tolerates the no-vocab path). STRUCTURED so
                             ;; it crosses :delegate parsed into the Model.
                             :vocabulary [:maybe synth/vocabulary-schema]
+                            ;; GC-9 — the reduced-cap knobs (optional; [:maybe …]
+                            ;; tolerates the unset → extract-default path). STRUCTURED
+                            ;; so they cross :delegate parsed into the Extract sheet.
+                            :max-containers [:maybe :int]
+                            :max-windows [:maybe :int]
                             :model-spec model/model-spec-contract-schema
                             :candidate-axioms model/candidate-axioms-schema
                             :concept-drafts extract/concept-drafts-schema
                             :relationship-drafts extract/relationship-drafts-schema
                             :extraction-report extract/extraction-report-schema}
-                :reads [:goal :profile :source :vocabulary]
+                :reads [:goal :profile :source :vocabulary :max-containers :max-windows]
                 :writes [:model-spec :candidate-axioms
                          :concept-drafts :relationship-drafts :extraction-report]
                 :inputs {"goal" goal "profile" profile "source" source
-                         "vocabulary" vocabulary}})
+                         "vocabulary" vocabulary
+                         ;; GC-9 — forward the caps so they reach the Extract orchestrator
+                         ;; (nil → the orchestrator/APPLY falls back to its own defaults).
+                         "max-containers" max-containers
+                         "max-windows" max-windows}})
         model-spec (get-in r [:outputs :model-spec])]
     {:status (:status r)
      :model-spec model-spec
@@ -641,7 +657,7 @@
    Returns `{:status :ok/:failed :closed <route> …}`; honest on failure (#5)."
   [ctx {:keys [route ontology-id source goal profile vocabulary model resilient?
                pipeline-sheet-id source-uri-sets held-candidate-axioms held-model-spec
-               held-embed-fields
+               held-embed-fields max-containers max-windows
                seams]}]
   (let [{:keys [model-extract-fn reconcile-fn axiom-fn embed-fn]} seams]
     (case route
@@ -650,6 +666,8 @@
       ;; GC-6 — the re-model/re-extract obeys the SAME shared vocabulary.
       (let [mx ((or model-extract-fn delegate-model-extract!)
                 ctx {:source source :goal goal :profile profile :vocabulary vocabulary
+                     ;; GC-9 — the focal re-extract obeys the SAME reduced caps.
+                     :max-containers max-containers :max-windows max-windows
                      :pipeline-sheet-id pipeline-sheet-id :model model :resilient? resilient?})]
         (if (not= :success (:status mx))
           {:status :failed :closed route :error (:error mx) :stage :model-extract}
@@ -720,6 +738,7 @@
   [ctx {:keys [ontology-id source goal profile vocabulary judge-fn exit-criterion model
                resilient? evolver-config pipeline-sheet-id route-sheet-id
                source-uri-sets held-candidate-axioms held-model-spec held-embed-fields
+               max-containers max-windows
                gate-fn route-fn model-extract-fn reconcile-fn axiom-fn embed-fn]}]
   (let [{:keys [max-iterations]} (merge default-evolver-config evolver-config)
         gate-fn (or gate-fn run-cq-gate!)
@@ -799,6 +818,8 @@
                            ctx {:route route :ontology-id ontology-id :source source
                                 :goal goal :profile profile :vocabulary vocabulary :model model
                                 :resilient? resilient? :pipeline-sheet-id pipeline-sheet-id
+                                ;; GC-9 — the focal re-extract obeys the SAME reduced caps.
+                                :max-containers max-containers :max-windows max-windows
                                 :source-uri-sets source-uri-sets
                                 :held-candidate-axioms held-candidate-axioms
                                 :held-model-spec held-model-spec
@@ -851,6 +872,7 @@
    Injected seams default to the production `:delegate`s; tests stub them."
   [ctx {:keys [ontology-id sources goal model resilient? judge-fn exit-criterion
                consumer-cqs evolver-config mode gf-branch source-uri-sets
+               max-containers max-windows
                survey-fn derive-cqs-fn synthesize-vocab-fn model-extract-fn reconcile-fn
                axiom-fn embed-fn build-fn gate-fn route-fn]}]
   (let [;; seam defaults (production delegate; tests stub)
@@ -918,6 +940,10 @@
                      (let [mx (model-extract-fn
                                ctx {:source src :goal goal :profile profile
                                     :vocabulary vocab
+                                    ;; GC-9 — thread the reduced-cap knobs into EVERY
+                                    ;; per-source Model→Extract (nil → extract defaults).
+                                    :max-containers max-containers
+                                    :max-windows max-windows
                                     :pipeline-sheet-id pipeline-sheet-id
                                     :model model :resilient? resilient?})]
                        (when (= :success (:status mx))
@@ -966,6 +992,10 @@
                                         ;; the focal-close re-invokes (re-model/re-extract
                                         ;; must obey the SAME shared vocabulary).
                                         :vocabulary vocab
+                                        ;; GC-9 — the focal-close re-extracts must obey
+                                        ;; the SAME reduced caps as the initial extract.
+                                        :max-containers max-containers
+                                        :max-windows max-windows
                                         :judge-fn judge-fn :exit-criterion exit-criterion
                                         :model model :resilient? resilient?
                                         :evolver-config evolver-config
@@ -1047,6 +1077,7 @@
    duplicate and grow the TBox). `:mode` distinguishes which arm ran."
   [ctx {:keys [ontology-id sources goal model budget resilient? judge-fn exit-criterion
                consumer-cqs evolver-config debug? mode source-uri-sets
+               max-containers max-windows
                survey-fn derive-cqs-fn synthesize-vocab-fn model-extract-fn reconcile-fn
                axiom-fn embed-fn build-fn gate-fn route-fn]
         :or {model "google/gemini-3-flash-preview"}}]
@@ -1072,6 +1103,9 @@
      ctx {:ontology-id ontology-id :sources sources :goal goal :model model
           :resilient? resilient? :judge-fn judge-fn :exit-criterion exit-criterion
           :consumer-cqs consumer-cqs :evolver-config evolver-config
+          ;; GC-9 — the reduced-cap knobs (default nil → the extract uses its own
+          ;; defaults — behavior-preserving). Thread them to every per-source extract.
+          :max-containers max-containers :max-windows max-windows
           :mode run-mode :gf-branch gf-branch :source-uri-sets source-uri-sets
           :survey-fn survey-fn :derive-cqs-fn derive-cqs-fn
           :synthesize-vocab-fn synthesize-vocab-fn

@@ -136,8 +136,9 @@
         (is (= "ai.obney.orc.ontology.core.extract-subbehavior/orchestrate-extract-containers"
                (:fn (first code-leaves)))
             "the orchestrator node's :fn is the multi-container orchestrator")
-        (is (= [:source :model-spec :max-containers] (vec (:reads (first code-leaves))))
-            "the orchestrator reads the public :reads contract (+ optional :max-containers bound)")
+        (is (= [:source :model-spec :max-containers :max-windows] (vec (:reads (first code-leaves))))
+            "the orchestrator reads the public :reads contract (+ the optional GC-9
+             :max-containers/:max-windows reduced-cap bounds it forwards to each child)")
         (is (= [:concept-drafts :relationship-drafts :extraction-report]
                (vec (:writes (first code-leaves))))
             "the orchestrator writes the public draft-set contract")))))
@@ -211,7 +212,8 @@
 (deftest per-container-sample-and-apply-node-contracts-test
   (testing "the per-container SAMPLE node reads [:source :container] writes
             [:sample-rows]; the APPLY node reads [:source :transform-source
-            :selector :container] writes the draft set"
+            :selector :container :max-windows] writes the draft set (GC-9 added
+            :max-windows so the orchestrator's forwarded per-container window cap binds)"
     (h/with-async-test-context [ctx]
       (let [_ (extract/register-extract-subbehavior! ctx {})
             unit-id (extract/extract-per-container-sheet-id-for)
@@ -221,8 +223,9 @@
         (is (= [:source :container] (vec (:reads sample)))
             "the SAMPLE node reads the source + the ONE container it grounds")
         (is (= [:sample-rows] (vec (:writes sample))))
-        (is (= [:source :transform-source :selector :container] (vec (:reads apply*)))
-            "the APPLY node reads the source + transform + selector + the container it applies to")
+        (is (= [:source :transform-source :selector :container :max-windows] (vec (:reads apply*)))
+            "the APPLY node reads the source + transform + selector + the container it
+             applies to + the GC-9 :max-windows reduced-cap (absent → the :fn default)")
         (is (= [:concept-drafts :relationship-drafts :extraction-report]
                (vec (:writes apply*)))
             "the APPLY node writes the per-container draft-set contract")))))

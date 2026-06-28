@@ -555,7 +555,11 @@
               :writes [:reasoning :transform-source :selector])
             (dsl/code (str "extract-" path-label "-apply")
               :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
-              :reads [:source :transform-source :selector :container]
+              ;; GC-9 — :max-windows is the per-container window cap (caller-overridable
+              ;; for a bounded reduced-cap build). The APPLY :fn reads it from inputs;
+              ;; declared here so the orchestrator's forwarded value binds (absent →
+              ;; the :fn's `(or max-windows default-max-extract-windows)` default).
+              :reads [:source :transform-source :selector :container :max-windows]
               ;; EB9 — declare the FLAT :concept-count so the sanity :condition
               ;; can gate the intermediate state.
               :writes [:concept-drafts :relationship-drafts
@@ -582,6 +586,9 @@
          :model-spec [:map {:closed false}]
          :source [:map {:closed false}]
          :container [:map {:closed false}]
+         ;; GC-9 — optional per-container window cap (the orchestrator forwards it;
+         ;; absent → the APPLY :fn falls back to default-max-extract-windows).
+         :max-windows [:maybe :int]
          ;; internal inter-node keys
          :sample-rows [:vector [:map {:closed false}]]
          :reasoning :string
@@ -616,7 +623,9 @@
             :writes [:reasoning :transform-source :selector])
           (dsl/code "apply-transform"
             :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
-            :reads [:source :transform-source :selector :container]
+            ;; GC-9 — see the resilient path above: declare :max-windows so the
+            ;; forwarded window cap binds (absent → the :fn's default applies).
+            :reads [:source :transform-source :selector :container :max-windows]
             :writes [:concept-drafts :relationship-drafts :extraction-report]))))))
 
 ;; =============================================================================
@@ -1038,7 +1047,7 @@
    names no field/container — the per-container unit grounds in real keys at
    runtime."
   [{:keys [inputs] :as context}]
-  (let [{:keys [source model-spec max-containers]} inputs
+  (let [{:keys [source model-spec max-containers max-windows]} inputs
         ;; the execution context for child ticks = the orchestrator's context minus
         ;; the node-scoped keys (`runtime/execute` needs the event-store + registries
         ;; + pubsub + cache the executor threaded into this `:code` node's context).
@@ -1057,9 +1066,13 @@
          (fn [container]
            (let [child-tick-id (random-uuid)
                  r (dsl/execute child-ctx sub-sheet-id
+                                ;; GC-9 — FORWARD the window cap into the per-container
+                                ;; child tick so the APPLY node's `max-windows` binds to
+                                ;; the caller's value (nil → the APPLY :fn default).
                                 {"model-spec" model-spec
                                  "source" source
-                                 "container" container}
+                                 "container" container
+                                 "max-windows" max-windows}
                                 :timeout-ms 280000
                                 :tick-id child-tick-id
                                 :parent-tick-id (:tick-id context))
@@ -1205,6 +1218,11 @@
         ;; optional bound on how many containers to traverse (default ceiling
         ;; applies when unset). Declared so a caller can pass it in via :reads.
         :max-containers [:maybe :int]
+        ;; GC-9 — optional per-container window cap. The orchestrator reads it and
+        ;; forwards it into EACH per-container child tick (absent → the APPLY :fn's
+        ;; default-max-extract-windows). Caps the in-heap draft volume so a bounded
+        ;; reduced-cap build can run without OOM.
+        :max-windows [:maybe :int]
         ;; public :writes — the draft set (union across containers) + the report
         :concept-drafts concept-drafts-schema
         :relationship-drafts relationship-drafts-schema
@@ -1214,7 +1232,7 @@
         ;; ticks of the per-container unit + accumulation (REUSE, no fork).
         (dsl/code "orchestrate-containers"
           :fn "ai.obney.orc.ontology.core.extract-subbehavior/orchestrate-extract-containers"
-          :reads [:source :model-spec :max-containers]
+          :reads [:source :model-spec :max-containers :max-windows]
           :writes [:concept-drafts :relationship-drafts :extraction-report])))))
 
 (defn register-extract-subbehavior!

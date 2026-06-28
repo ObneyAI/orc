@@ -378,19 +378,97 @@
                      :results (mapv (fn [r] {:uri (:uri r) :label (:label r) :score (:score r)})))])))
 
 ;; =============================================================================
+;; GC-5 — the ACCEPTANCE VERDICT (pure, TDD-able on fixtures).
+;;
+;; Takes the captured graph analysis the driver produces (`:status`, `:stats`
+;; with `:concepts-by-kind` + `:graph-health`, and `:connectivity`) and returns
+;; an explicit {:pass? bool :reasons [...]} over the GC-5 criteria. Each reason
+;; is {:criterion kw :pass? bool :detail str}. PURE — no I/O, no LLM; reads only
+;; the captured map. This is the guard against "how could this pass while still
+;; being wrong?": a fragmented / 0-draft / no-chain build MUST read :pass? false.
+;; =============================================================================
+
+(defn- honest-terminal?
+  "An honest terminal status: a real CQ verdict, NOT a crash/timeout/fabrication.
+   `:complete` (CQ satisfied) and `:failed-cq` (a DIAGNOSED honest terminal — the
+   loop ran to a real verdict that the CQs were not met) both count. `:timeout`,
+   `:error`, nil, or an analysis-error marker do NOT."
+  [status]
+  (boolean (#{:complete :failed-cq} status)))
+
+(defn acceptance-verdict
+  "GC-5 PASS/FAIL over the captured graph analysis. `captured` is the map `run!`
+   returns (or a synthetic fixture of the same shape). Returns
+   {:pass? bool :reasons [{:criterion :detail :pass?}...]}. :pass? is the AND of
+   every criterion. Criteria:
+     :honest-terminal  — :status is :complete or :failed-cq (not crash/timeout)
+     :non-zero-build   — concept-count > 0 AND at least one kind has drafts
+     :one-connected-graph — GC-3 :graph-health/:fragmented? is false
+     :chain-reads-back — :connectivity is a real program→cip→soc chain (NOT
+                         {:no-complete-chain true})
+     :convention-agnostic-kinds — institutions ≫ 1 AND occupations present in
+                         concepts-by-kind (the real kinds, not the mis-measured
+                         :other read)."
+  [{:keys [status stats connectivity] :as _captured}]
+  (let [by-kind        (:concepts-by-kind stats)
+        concept-count  (:concept-count stats)
+        fragmented?    (get-in stats [:graph-health :fragmented?])
+        ;; institutions ≫ 1: a kind whose name carries inst/unitid/ipeds/opeid
+        inst-count     (->> by-kind
+                            (filter (fn [[k _]] (re-find #"(?i)inst|unitid|ipeds|opeid" (name k))))
+                            (map second) (reduce + 0))
+        ;; occupations present: a kind whose name carries soc/occ/onet
+        occ-count      (->> by-kind
+                            (filter (fn [[k _]] (re-find #"(?i)soc|occ|onet" (name k))))
+                            (map second) (reduce + 0))
+        no-chain?      (boolean (:no-complete-chain connectivity))
+        criteria
+        [{:criterion :honest-terminal
+          :pass? (honest-terminal? status)
+          :detail (str "status=" status (when-not (honest-terminal? status)
+                                           " (NOT :complete/:failed-cq — crash/timeout/fake)"))}
+         {:criterion :non-zero-build
+          :pass? (boolean (and (number? concept-count) (pos? concept-count)
+                               (some (fn [[_ v]] (pos? (long v))) by-kind)))
+          :detail (str "concept-count=" concept-count " kinds=" (count by-kind))}
+         {:criterion :one-connected-graph
+          :pass? (false? fragmented?)
+          :detail (str ":graph-health/:fragmented?=" fragmented?
+                       (when fragmented? " — same-label-different-canonical-type split present"))}
+         {:criterion :chain-reads-back
+          :pass? (and (map? connectivity) (not no-chain?)
+                      (some? (:program connectivity)) (some? (:soc connectivity)))
+          :detail (if no-chain?
+                    ":no-complete-chain true — program→cip→soc did NOT read back"
+                    (str "chain: " (get-in connectivity [:program :uri])
+                         " → " (get-in connectivity [:cip :uri])
+                         " → " (get-in connectivity [:soc :uri])))}
+         {:criterion :convention-agnostic-kinds
+          :pass? (and (> (long inst-count) 1) (pos? (long occ-count)))
+          :detail (str "institutions=" inst-count " occupations=" occ-count)}]]
+    {:pass? (every? :pass? criteria)
+     :reasons criteria}))
+
+;; =============================================================================
 ;; Orchestrator — ONE greenfield run-central-evolver! over all 5 sources (the
 ;; greenfield arm processes each source against the accumulating graph, so EB5
 ;; reconcile links across sources within the single pass).
 ;; =============================================================================
 
 (defn run!
-  [{:keys [model budget evolver-config only store]
+  [{:keys [model budget evolver-config only store max-containers max-windows]
     :or {model default-model
          budget {:max-iterations 16 :total-budget-ms 600000 :max-retries 3}
          evolver-config {:max-iterations 3}
          ;; GC-4 — the comprehensive build runs on the PERSISTENT SQLite store by
          ;; default (event log on disk, not heap). A caller can pass :in-memory.
-         store :sqlite}}]
+         store :sqlite
+         ;; GC-9 — the reduced-cap knobs (default nil → the extract uses its own
+         ;; defaults 25/50 — behavior-preserving). A caller passes e.g.
+         ;; {:max-containers 6 :max-windows 5} for a bounded reduced-cap build that
+         ;; fits in heap (the default-cap full build OOMs at ~148k drafts/source).
+         max-containers nil
+         max-windows nil}}]
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (throw (ex-info "OPENROUTER_API_KEY env var required (env only)" {})))
   (register-openrouter! model)
@@ -403,6 +481,8 @@
       (println "Ontology-id:" oid "  model:" model)
       (println "Sources:" (mapv :name chosen))
       (println "Budget/source:" budget "  evolver-config:" evolver-config)
+      (println "Caps (GC-9):" {:max-containers max-containers :max-windows max-windows}
+               (if (or max-containers max-windows) "(REDUCED-CAP build)" "(default 25/50)"))
       (let [safe (fn [label f] (try (f) (catch Throwable t
                                                 (println "    [analysis ERROR]" label (.getMessage t))
                                                 {:analysis-error (str label ": " (.getMessage t))})))
@@ -415,7 +495,12 @@
                          :judge-fn real-llm-judge
                          :resilient? true        ; EB9 — recover-or-fail-with-diagnosis per source
                          :budget budget
-                         :evolver-config evolver-config})
+                         :evolver-config evolver-config
+                         ;; GC-9 — the reduced-cap knobs (default nil → extract defaults).
+                         ;; A bounded reduced-cap build passes {:max-containers 6
+                         ;; :max-windows 5} to fit the connectivity proof in heap.
+                         :max-containers max-containers
+                         :max-windows max-windows})
             elapsed (- (System/currentTimeMillis) t0)
             _ (println "  central evolver status:" (:status result) " mode:" (:mode result) "(" elapsed "ms)")
             _ (println "  termination:" (get-in result [:cq-loop :termination-reason]))

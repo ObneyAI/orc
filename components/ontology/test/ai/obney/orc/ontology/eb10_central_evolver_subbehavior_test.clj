@@ -624,3 +624,226 @@
           (is (= :success (:status r)) "the small-source success path is unchanged")
           (is (= 1 (count (:concept-drafts r)))
               "the delegate's concept-drafts are surfaced unchanged"))))))
+
+;; =============================================================================
+;; GC-9 — max-containers / max-windows PASSTHROUGH so a bounded reduced-cap build
+;; can run. At the default caps (25/50) the extract makes ~148k drafts/source and
+;; the full build OOMs. GC-9 threads BOTH :max-containers + :max-windows from
+;; run!/run-central-evolver! all the way to the extract's inputs, so a caller can
+;; bound the volume (e.g. 6/5 like MC-7) for a connectivity proof. Behavior-
+;; preserving: absent caps → the extract's own defaults exactly as today.
+;; The cap crosses :delegate the SAME way GC-6 threaded :vocabulary.
+;; =============================================================================
+
+(deftest gc9-caps-reach-the-extract-via-delegate-model-extract-test
+  (testing "delegate-model-extract! FORWARDS :max-containers + :max-windows into the
+            :inputs it hands the delegate (so they cross :delegate to the extract
+            sheet), and declares BOTH in :bb-schema and :reads. Reverting any of
+            these three (inputs / bb-schema / reads) for either key makes it RED —
+            the cap would silently fall back to the extract's default (25/50)."
+    (let [captured (atom nil)
+          stub (fn [_ctx opts]
+                 (reset! captured opts)
+                 {:status :success :outputs {} :tick-id (random-uuid)})]
+      (with-redefs [ce/delegate-subbehavior! stub]
+        (ce/delegate-model-extract! :fake-ctx
+                                    {:source {:type :csv} :goal "g"
+                                     :profile {} :vocabulary nil
+                                     :max-containers 6 :max-windows 5
+                                     :pipeline-sheet-id (random-uuid)}))
+      (let [opts @captured
+            inputs (:inputs opts)
+            bb-schema (:bb-schema opts)
+            reads (set (:reads opts))]
+        ;; the cap ARRIVES at the extract inputs as 6/5 (NOT the defaults 25/50).
+        (is (= 6 (get inputs "max-containers"))
+            "the threaded :max-containers (6) arrives in the delegate :inputs — NOT default 25")
+        (is (= 5 (get inputs "max-windows"))
+            "the threaded :max-windows (5) arrives in the delegate :inputs — NOT default 50")
+        (is (not= extract/default-max-containers (get inputs "max-containers"))
+            "the arriving container cap is the threaded value, not default-max-containers")
+        (is (not= extract/default-max-extract-windows (get inputs "max-windows"))
+            "the arriving window cap is the threaded value, not default-max-extract-windows")
+        ;; declared in the bb-schema so the value crosses :delegate parsed.
+        (is (contains? bb-schema :max-containers)
+            ":max-containers is in the delegate :bb-schema (crosses :delegate)")
+        (is (contains? bb-schema :max-windows)
+            ":max-windows is in the delegate :bb-schema (crosses :delegate)")
+        ;; declared in :reads so the pipeline sheet reads them onto the child bb.
+        (is (reads :max-containers) ":max-containers is in the delegate :reads")
+        (is (reads :max-windows) ":max-windows is in the delegate :reads")))))
+
+(deftest gc9-pipeline-def-crosses-the-caps-across-the-inner-extract-delegate-test
+  (testing "model-extract-pipeline-def declares :max-containers + :max-windows in its
+            blackboard schema AND lists them on the INNER delegate-extract node's
+            :reads (so they cross :delegate onto the Extract sheet). delegate-model's
+            :reads are unchanged (the Model does not need the caps)."
+    (let [pdef (ce/model-extract-pipeline-def {})
+          bb-schema (:blackboard-schema pdef)
+          nodes (atom [])
+          walk (fn walk [n]
+                 (when (map? n)
+                   (when (:name n) (swap! nodes conj n))
+                   (doseq [v (vals n)]
+                     (cond (map? v) (walk v)
+                           (sequential? v) (doseq [x v] (walk x))))))
+          _ (walk (:root-node pdef))
+          by-name (into {} (map (juxt :name identity)) @nodes)
+          extract-reads (set (:reads (get by-name "delegate-extract")))
+          model-reads (set (:reads (get by-name "delegate-model")))]
+      ;; the schema must declare them or the :delegate read would schema-reject.
+      (is (contains? (set (keys bb-schema)) :max-containers)
+          "the pipeline blackboard declares :max-containers")
+      (is (contains? (set (keys bb-schema)) :max-windows)
+          "the pipeline blackboard declares :max-windows")
+      ;; the INNER extract delegate must READ them across to the Extract sheet.
+      (is (extract-reads :max-containers)
+          "delegate-extract :reads :max-containers (crosses to the Extract sheet)")
+      (is (extract-reads :max-windows)
+          "delegate-extract :reads :max-windows (crosses to the Extract sheet)")
+      ;; the Model delegate does NOT read the caps (unchanged — the Model is fast).
+      (is (not (model-reads :max-windows))
+          "delegate-model does NOT read :max-windows (unchanged — Model needs no cap)"))))
+
+(deftest gc9-extract-orchestrate-sheet-reads-and-forwards-the-window-cap-test
+  (testing "the PUBLIC extract orchestrate sheet declares :max-windows in its
+            blackboard + reads it on the orchestrate node, AND the per-container unit
+            declares :max-windows in its blackboard + reads it on the APPLY node — so
+            a window cap forwarded into a child tick actually reaches apply-transform."
+    ;; public orchestrate sheet
+    (let [odef (extract/extract-subbehavior-def {})
+          obb (set (keys (:blackboard-schema odef)))
+          onodes (atom [])
+          walk (fn walk [n]
+                 (when (map? n)
+                   (when (:name n) (swap! onodes conj n))
+                   (doseq [v (vals n)]
+                     (cond (map? v) (walk v)
+                           (sequential? v) (doseq [x v] (walk x))))))
+          _ (walk (:root-node odef))
+          orch (first (filter #(= "orchestrate-containers" (:name %)) @onodes))]
+      (is (contains? obb :max-windows)
+          "the public extract sheet blackboard declares :max-windows")
+      (is ((set (:reads orch)) :max-windows)
+          "the orchestrate-containers node reads :max-windows (so it can forward it)"))
+    ;; per-container unit — the APPLY node must read :max-windows or the forwarded
+    ;; value never reaches apply-transform-for-container-code (which reads it).
+    (let [pcdef (extract/extract-per-container-def {})
+          pcbb (set (keys (:blackboard-schema pcdef)))
+          pcnodes (atom [])
+          walk (fn walk [n]
+                 (when (map? n)
+                   (when (:name n) (swap! pcnodes conj n))
+                   (doseq [v (vals n)]
+                     (cond (map? v) (walk v)
+                           (sequential? v) (doseq [x v] (walk x))))))
+          _ (walk (:root-node pcdef))
+          apply-nodes (filter #(and (:name %) (re-find #"apply" (str (:name %)))) @pcnodes)]
+      (is (contains? pcbb :max-windows)
+          "the per-container unit blackboard declares :max-windows")
+      (is (seq apply-nodes) "the per-container unit has an apply node")
+      (is (every? #((set (:reads %)) :max-windows) apply-nodes)
+          "every apply node reads :max-windows (so the forwarded window cap binds)"))))
+
+(deftest gc9-caps-thread-from-run-central-evolver-to-every-per-source-extract-test
+  (testing "a run-central-evolver!-level :max-containers 6 :max-windows 5 reaches EVERY
+            per-source model-extract-fn call (STEP 4) carrying 6/5 — NOT the defaults.
+            Reverting the run-central-evolver! → run-evolver-pipeline! → STEP-4 hop
+            makes it RED (the seam receives nil)."
+    (h/with-async-test-context [ctx]
+      (let [oid (random-uuid)
+            seen (atom [])
+            survey-fn (fn [_ _] {:status :success :profile {:entity-candidates ["thing"]}})
+            derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+            model-extract-fn (fn [c p]
+                               (swap! seen conj (select-keys p [:max-containers :max-windows]))
+                               (land-one! c oid "concept:thing" "Thing")
+                               {:status :success :concept-drafts [{:uri "concept:thing"}]
+                                :relationship-drafts [] :embed-fields [] :model-spec {}
+                                :candidate-axioms {:axioms []}})
+            gate-fn (fn [_ _]
+                      {:graph-health {:pass-rate 1.0 :unknown-rate 0.0}
+                       :evaluated [{:cq-text "Q1" :verdict :pass}]
+                       :cq-verdict [{:cq-text "Q1" :verdict :pass}]})
+            result (ce/run-central-evolver!
+                    ctx {:ontology-id oid
+                         :sources [{:type :csv :path "a"} {:type :csv :path "b"}]
+                         :goal "g"
+                         :max-containers 6 :max-windows 5
+                         :survey-fn survey-fn :derive-cqs-fn derive-cqs-fn
+                         :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
+                         :model-extract-fn model-extract-fn
+                         :reconcile-fn (fn [_ _] {:status :success})
+                         :axiom-fn (fn [_ _] {:status :success})
+                         :embed-fn (fn [_ _] {:status :success})
+                         :build-fn (fn [_ _] {:status :complete})
+                         :gate-fn gate-fn})]
+        (is (= :complete (:status result)) "the evolver completed (sanity)")
+        (is (= 2 (count @seen)) "both sources hit the model-extract seam (STEP 4)")
+        (is (every? #(= 6 (:max-containers %)) @seen)
+            "EVERY per-source model-extract-fn call carries :max-containers 6 — not nil/25")
+        (is (every? #(= 5 (:max-windows %)) @seen)
+            "EVERY per-source model-extract-fn call carries :max-windows 5 — not nil/50")))))
+
+(deftest gc9-absent-caps-arrive-nil-so-extract-uses-its-defaults-test
+  (testing "BEHAVIOR-PRESERVING: absent :max-containers/:max-windows, the seam receives
+            nil → delegate-model-extract!'s defaults apply → the extract falls back to
+            default-max-containers / default-max-extract-windows EXACTLY as today.
+            Proved at BOTH levels: (a) the run-central-evolver! seam receives nil, and
+            (b) delegate-model-extract! with nil caps forwards nil to the inputs (the
+            extract's `(or max-windows default-…)` then resolves the default)."
+    ;; (a) end-to-end: no caps passed → the seam sees nil for both.
+    (h/with-async-test-context [ctx]
+      (let [oid (random-uuid)
+            seen (atom [])
+            model-extract-fn (fn [c p]
+                               (swap! seen conj (select-keys p [:max-containers :max-windows]))
+                               (land-one! c oid "concept:thing" "Thing")
+                               {:status :success :concept-drafts [{:uri "concept:thing"}]
+                                :relationship-drafts [] :embed-fields [] :model-spec {}
+                                :candidate-axioms {:axioms []}})]
+        (ce/run-central-evolver!
+         ctx {:ontology-id oid :sources [{:type :csv :path "x"}] :goal "g"
+              :survey-fn (fn [_ _] {:status :success :profile {}})
+              :derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+              :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
+              :model-extract-fn model-extract-fn
+              :reconcile-fn (fn [_ _] {:status :success})
+              :axiom-fn (fn [_ _] {:status :success})
+              :embed-fn (fn [_ _] {:status :success})
+              :build-fn (fn [_ _] {:status :complete})
+              :gate-fn (fn [_ _] {:graph-health {:pass-rate 1.0 :unknown-rate 0.0}
+                                  :evaluated [{:cq-text "Q1" :verdict :pass}]
+                                  :cq-verdict [{:cq-text "Q1" :verdict :pass}]})})
+        (is (= 1 (count @seen)) "the source hit the seam")
+        (is (nil? (:max-containers (first @seen)))
+            "absent :max-containers → the seam receives nil (extract uses its default)")
+        (is (nil? (:max-windows (first @seen)))
+            "absent :max-windows → the seam receives nil (extract uses its default)")))
+    ;; (b) delegate-model-extract! with nil caps: the inputs carry nil, NOT a fabricated
+    ;;     25/50 — the extract's own `(or … default-…)` is the single source of the default.
+    (let [captured (atom nil)
+          stub (fn [_ctx opts] (reset! captured opts)
+                 {:status :success :outputs {} :tick-id (random-uuid)})]
+      (with-redefs [ce/delegate-subbehavior! stub]
+        (ce/delegate-model-extract! :fake-ctx
+                                    {:source {:type :csv} :goal "g"
+                                     :profile {} :vocabulary nil
+                                     :pipeline-sheet-id (random-uuid)}))
+      (let [inputs (:inputs @captured)]
+        (is (nil? (get inputs "max-containers"))
+            "nil cap is forwarded as nil (the extract's default is the only source)")
+        (is (nil? (get inputs "max-windows"))
+            "nil window cap is forwarded as nil (the extract's default is the only source)")))))
+
+(deftest gc9-smaller-cap-yields-smaller-budget-gc8-unaffected-test
+  (testing "GC-8 STILL scales: the reduced container cap (6) yields a SMALLER
+            model-extract-timeout-ms budget than the default cap (25). Threading the
+            cap to the extract does not break the cap→budget derivation."
+    (let [reduced (ce/model-extract-timeout-ms {:max-containers 6})
+          default (ce/model-extract-timeout-ms {:max-containers extract/default-max-containers})]
+      (is (< reduced default)
+          "the reduced 6-container budget is smaller than the default 25-container budget")
+      (is (= (- default reduced)
+             (* (- extract/default-max-containers 6) ce/default-per-container-budget-ms))
+          "the budget shrinks by exactly per-container-budget per dropped container"))))
