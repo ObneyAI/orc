@@ -516,6 +516,77 @@
      :truncated truncated-relations
      :pairs-considered pairs-considered}))
 
+(defn land-linking-key-spine!
+  "GC-11b — the GLOBAL deterministic linking-key code-node spine (the cross-source
+   JOIN). After EVERY source has landed + reconciled, the graph holds concepts from
+   DIFFERENT sources whose `:attributes` carry the SAME cross-source linking-key
+   VALUE (GC-11a copies the discovered linking-key values into every draft's
+   `:attributes` even when the value is not the keying field). Those concepts are
+   correctly DISTINCT entities (different identity URIs) and never relate — so a
+   program→…→occupation chain that should hop on a shared code value strands.
+
+   This DETERMINISTIC step (NO LLM) AGGREGATES the discovered linking-key NAMES
+   across the per-source model-specs (`:linking-keys` — NO baked key names), reads
+   the global concept set, runs the pure spine
+   (`extract/linking-key-relationship-drafts`), and LANDS the minted CODE NODES +
+   the `identified-by` attach edges via the SAME Reconcile draft path (the
+   create-concept / create-relationship commands). The read-model lands
+   `identified-by` in `:typed-edges` (keyed by the predicate) AND `:related`, so the
+   graph traversal can hop carrier↔code↔carrier and the cross-source join is
+   traversable.
+
+   Domain-agnostic (#12) — the linking-key NAMES come from the survey/model-specs
+   at runtime; the predicate is a fixed structural label. Bounded (#4/#5) — the
+   spine caps per-code attach fan-out + reports honestly. Honest absence — a
+   concept with no recoverable linking-key value mints/attaches nothing. Returns
+   the spine's report `{:code-node-count :edge-count :linking-keys :truncated …}`
+   so the caller can surface it (no false-green — a real linking-key set that mints
+   ZERO code nodes is the GC-11a honest-gap signal, not a silent pass).
+
+   `model-specs` is the per-source model-spec seq (each may carry `:linking-keys`);
+   the aggregation is the union of their `:linking-keys`, deduped at the spine."
+  [ctx {:keys [ontology-id model reconcile-fn source-uri-sets model-specs]}]
+  (let [reconcile-fn (or reconcile-fn delegate-reconcile!)
+        ;; AGGREGATE the discovered linking-key NAMES across the per-source
+        ;; model-specs (NO baked key names — they are the survey's discovery). Union
+        ;; + dedup (order-stable); the spine normalizes/dedups again defensively.
+        linking-keys (->> (or model-specs [])
+                          (mapcat (fn [ms] (or (:linking-keys ms) [])))
+                          (remove nil?)
+                          (distinct)
+                          (vec))
+        concepts (rm/get-concepts ctx {:ontology-id ontology-id})
+        ;; the read-model returns a {uri -> concept} map OR a seq of concepts;
+        ;; normalize to a seq of {:uri … :attributes …} so the pure spine reads
+        ;; uniformly (it recovers values from :attributes, not the URI).
+        concept-seq (cond
+                      (map? concepts) (mapv (fn [[uri c]]
+                                              (if (map? c) (assoc c :uri (or (:uri c) uri))
+                                                  {:uri uri}))
+                                            concepts)
+                      (sequential? concepts) (vec concepts)
+                      :else [])
+        {:keys [concept-drafts relationship-drafts truncated-relations pairs-considered]}
+        (if (seq linking-keys)
+          (extract/linking-key-relationship-drafts concept-seq linking-keys)
+          ;; no discovered linking key on ANY source → no spine (honest no-op,
+          ;; behavior-preserving for a single-source / no-cross-source-code run).
+          {:concept-drafts [] :relationship-drafts [] :truncated-relations []
+           :pairs-considered 0})]
+    (when (or (seq concept-drafts) (seq relationship-drafts))
+      ;; LAND the code nodes + attach edges via the SAME Reconcile draft path
+      ;; (create-concept for the code nodes, create-relationship for the edges).
+      (reconcile-fn ctx {:ontology-id ontology-id
+                         :concept-drafts concept-drafts
+                         :relationship-drafts relationship-drafts
+                         :source-uri-sets source-uri-sets :model model}))
+    {:code-node-count (count concept-drafts)
+     :edge-count (count relationship-drafts)
+     :linking-keys linking-keys
+     :truncated-count (count truncated-relations)
+     :truncated truncated-relations
+     :pairs-considered pairs-considered}))
+
 (defn delegate-axiom!
   "Production Axiom/TBox seam: `:delegate` Axiom/TBox (candidate axioms → S07)."
   [ctx {:keys [ontology-id candidate-axioms model-spec model]}]
@@ -1036,6 +1107,22 @@
                       (land-family-detail-hierarchy!
                        ctx {:ontology-id ontology-id :model model
                             :reconcile-fn reconcile-fn :source-uri-sets source-uri-sets})
+                      ;; --- STEP 4.6: GC-11b — the deterministic linking-key
+                      ;;     code-node spine (the cross-source JOIN). Now that
+                      ;;     EVERY source has landed + reconciled, AGGREGATE the
+                      ;;     discovered linking-key NAMES across the per-source
+                      ;;     model-specs (GC-11a's :linking-keys carry-forward),
+                      ;;     mint ONE code node per distinct (linking-key, value),
+                      ;;     and attach every carrier via identified-by — so two
+                      ;;     concepts from DIFFERENT sources sharing a code value
+                      ;;     join through the one node. Deterministic (NO LLM),
+                      ;;     domain-agnostic, bounded — lands via the normal
+                      ;;     Reconcile create-concept / create-relationship path.
+                      linking-key-report
+                      (land-linking-key-spine!
+                       ctx {:ontology-id ontology-id :model model
+                            :reconcile-fn reconcile-fn :source-uri-sets source-uri-sets
+                            :model-specs (keep :model-spec per-source)})
                       ;; --- STEP 5: build! (deterministic skeleton — dedup +
                       ;;             S15 exit-criterion over the landed graph) ---
                       build-result (build-fn ctx (cond-> {:ontology-id ontology-id

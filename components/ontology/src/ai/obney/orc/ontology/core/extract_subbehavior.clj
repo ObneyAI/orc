@@ -1215,6 +1215,169 @@
       :truncated-relations @truncated
       :pairs-considered @pairs-considered})))
 
+;; =============================================================================
+;; GC-11b — the deterministic linking-key code-node spine (the cross-source join).
+;; NO LLM, mirroring the MC-6 cross-container + GC-10 hierarchy deterministic-
+;; relating pattern + the GC-2 bounded cap. GC-11a carries each concept's
+;; discovered linking-key VALUES in `:attributes` (present even when NOT the keying
+;; field). The discovered linking-key NAMES are aggregated from the per-source
+;; model-specs. This step recovers each concept's linking-key value via the SAME
+;; GC-1 `recover-via-value` helper (case/type-tolerant, NOT URI parsing), mints ONE
+;; canonical CODE NODE per distinct (linking-key, normalized-value), and attaches
+;; every carrier to it via a domain-agnostic `identified-by` predicate. Two
+;; concepts from DIFFERENT sources that share a linking-key value therefore JOIN
+;; through the SAME code node, robust to however the LLM modeled the carriers
+;; run-to-run.
+;;
+;; Domain-agnostic (#12): the linking-key NAMES come from the survey/model-specs at
+;; runtime and the predicate is a fixed structural label — the impl names NO domain
+;; field/code system. Bounded (#4/#5, mirror GC-2): a code value carried by a huge
+;; number of concepts caps the attach fan-out + surfaces the dropped count in
+;; `:truncated-relations` — never a silent top-N. Honest absence: a concept with no
+;; recoverable value contributes NO code-node + NO edge (never a fabricated edge).
+;; =============================================================================
+
+(def default-max-attach-per-code
+  "GC-11b — cap on the attach fan-out for a SINGLE code-node. A linking-key value
+   carried by more concepts than this attaches the cap and surfaces the dropped
+   excess in `:truncated-relations` (an honest bound, never a silent top-N —
+   #4/#5). A structural bound on edge count, naming no domain (#12)."
+  500)
+
+(def linking-key-predicate
+  "GC-11b — the domain-agnostic predicate attaching a concept to the code-node that
+   identifies it (a generic identifier/code link, NOT a baked CIP/SOC edge). A
+   non-SKOS predicate, so the read-model lands it in `:typed-edges` (keyed by this
+   predicate) AND `:related` — both views traversable by the graph."
+  "identified-by")
+
+(defn- mint-code-node-uri
+  "GC-11b — the stable, idempotent code-node URI for a (linking-key, value):
+   `<normalized-linking-key>/<normalized-value>`. The key NAME is normalized the
+   SAME way `normalize-key-name` normalizes any name (case/separator-tolerant) and
+   the value the SAME way `normalize-value` normalizes any join value — so the SAME
+   (key,value) across sources/casings/shapes is byte-identical (the cross-source
+   join + idempotence). Returns nil when either side normalizes to nil/blank (no
+   fabricated node). Purely structural — names NO domain (#12)."
+  [linking-key normalized-value]
+  (let [nk (normalize-key-name linking-key)]
+    (when (and (seq nk) (seq (str normalized-value)))
+      (str nk "/" normalized-value))))
+
+(defn linking-key-relationship-drafts
+  "GC-11b — DETERMINISTIC cross-source linking-key spine (NO LLM). Given a
+   collection of concept-drafts/landed-concepts (each `{:uri … :attributes {…}}`)
+   and the aggregated `linking-keys` (a vector of the discovered cross-source
+   code/key column NAMES — from the model-specs, NOT baked), return
+     {:concept-drafts       [{:uri :label :description :scope :attributes} …]  ; code nodes
+      :relationship-drafts  [{:source-uri :target-uri :predicate \"identified-by\"} …]
+      :truncated-relations  [{:code :carriers-total :cap :dropped-edges :reason} …]
+      :pairs-considered      <int>}.
+
+   For each linking-key NAME and each concept, recover the concept's value for that
+   key from its `:attributes` via the SAME GC-1 `recover-via-value`
+   (case/type-tolerant; NOT URI parsing). Group by the distinct (linking-key,
+   normalized-value): mint ONE canonical code node with the idempotent URI
+   `<normalized-linking-key>/<normalized-value>` (same value across sources → the
+   SAME node — the cross-source join), and emit one `identified-by` edge per
+   carrier (carrier → code node). A concept with NO recoverable value for any key
+   contributes NOTHING (no code-node, no edge — honest absence, #4/#5).
+
+   BOUNDED (mirror GC-2): a single code node carried by more than
+   `max-attach-per-code` (default `default-max-attach-per-code`) DISTINCT carrier
+   URIs attaches the cap (carriers sorted by URI for stability) and surfaces the
+   dropped excess in `:truncated-relations` with the dropped count — an HONEST cap,
+   never a silent top-N. `:pairs-considered` reports the (concept × linking-key)
+   recovery work performed. Deterministic order (sorted) so output is stable. Pure
+   — no Grain, no LLM. Domain-agnostic (#12): the key names + predicate are
+   runtime/structural; this names NO field."
+  ([concepts linking-keys] (linking-key-relationship-drafts concepts linking-keys default-max-attach-per-code))
+  ([concepts linking-keys max-attach-per-code]
+   (let [;; distinct linking-key NAMES that normalize to a real key (drop blanks/dups).
+         keys' (->> (or linking-keys [])
+                    (keep (fn [k] (when (seq (str (normalize-key-name k))) k)))
+                    (reduce (fn [{:keys [seen out]} k]
+                              (let [nk (normalize-key-name k)]
+                                (if (contains? seen nk)
+                                  {:seen seen :out out}
+                                  {:seen (conj seen nk) :out (conj out k)})))
+                            {:seen #{} :out []})
+                    :out)
+         pairs-considered (atom 0)
+         ;; code-uri -> {:code-uri :linking-key :value :carriers #{carrier-uri …}}
+         ;; first-seen linking-key + value win as the node's label material (they are
+         ;; the SAME normalized value, so the choice is immaterial — like GC-2's
+         ;; first-draft-per-uri dedup).
+         code->info
+         (reduce
+          (fn [acc concept]
+            (let [curi (:uri concept)]
+              (reduce
+               (fn [acc2 lk]
+                 (swap! pairs-considered inc)
+                 (if-let [v (recover-via-value concept lk)]
+                   (if-let [code-uri (mint-code-node-uri lk v)]
+                     (-> acc2
+                         (update-in [code-uri :carriers] (fnil conj #{}) curi)
+                         (update code-uri
+                                 (fn [info]
+                                   (merge {:code-uri code-uri :linking-key lk :value v}
+                                          info))))
+                     acc2)
+                   acc2))
+               acc
+               keys')))
+          {}
+          (or concepts []))
+         ;; only mint a code node + edges when the value actually JOINS ≥2 DISTINCT
+         ;; carriers — that is the spine's PURPOSE (a cross-source join). A value
+         ;; carried by a single concept joins nothing: it is pure overhead AND, for a
+         ;; high-cardinality linking-key (e.g. a per-row id), one code-node per unique
+         ;; value EXPLODES the graph (embed/working-set blowup). So a single-carrier
+         ;; value mints NO node (honest — it was never a join), bounding the spine to
+         ;; the genuine cross-source links.
+         infos (->> (vals code->info)
+                    (filter #(>= (count (:carriers %)) 2))
+                    (sort-by :code-uri))
+         code-nodes (mapv (fn [{:keys [code-uri linking-key value]}]
+                            {:uri code-uri
+                             ;; a legible, domain-agnostic label: the raw value as
+                             ;; the model spelled the key (the create-concept
+                             ;; contract requires a non-nil :label).
+                             :label value
+                             :description (str "Cross-source identifier (" linking-key
+                                               "): " value)
+                             :scope :reference
+                             :attributes {:linking-key (str linking-key) :value value}})
+                          infos)
+         edges (atom [])
+         truncated (atom [])]
+     (doseq [{:keys [code-uri carriers]} infos]
+       (let [;; deterministic order so the kept edges under the cap are stable;
+             ;; carriers is already a set of DISTINCT carrier URIs.
+             sorted-carriers (sort carriers)
+             total (count sorted-carriers)
+             capped? (> total max-attach-per-code)
+             kept (if capped? (take max-attach-per-code sorted-carriers) sorted-carriers)]
+         (when capped?
+           (swap! truncated conj
+                  {:code code-uri
+                   :carriers-total total
+                   :cap max-attach-per-code
+                   :dropped-edges (- total max-attach-per-code)
+                   :reason (str "identified-by fan-out " total " for this code value "
+                                "exceeds the per-code cap " max-attach-per-code
+                                "; the excess attach edges are dropped (an honest "
+                                "bound, never a silent top-N)")}))
+         (doseq [carrier-uri kept]
+           (swap! edges conj {:source-uri carrier-uri
+                              :target-uri code-uri
+                              :predicate linking-key-predicate}))))
+     {:concept-drafts code-nodes
+      :relationship-drafts (vec (sort-by (juxt :source-uri :target-uri) @edges))
+      :truncated-relations @truncated
+      :pairs-considered @pairs-considered})))
+
 (defn orchestrate-extract-containers
   "The MC-5 multi-container orchestrator `:code` `:fn`. REUSES the per-container
    Extract unit (`extract-per-container-def`) — no fork — once per container:
