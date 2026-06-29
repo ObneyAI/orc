@@ -110,6 +110,9 @@
    [:embedded-count {:optional true} :any]
    [:embeddings-read-back-count {:optional true} :any]
    [:concepts-considered {:optional true} :any]
+   ;; GC-12 — incremental embed skip accounting (honest, behavior-preserving)
+   [:skipped-already-count {:optional true} :any]
+   [:skipped-reference-count {:optional true} :any]
    ;; the registered, RESOLVABLE ColBERT index
    [:index-id {:optional true} :any]
    [:index-document-count {:optional true} :any]
@@ -192,6 +195,71 @@
   [ctx ontology-id]
   (filterv #(= ontology-id (:ontology-id %)) (rm/get-concepts ctx {})))
 
+;; =============================================================================
+;; GC-12 — incremental embed selection: skip already-embedded + structural
+;; spine code-nodes. The bottleneck this repairs: EB7 ran per-source × per
+;; CQ-iteration over the WHOLE accumulating graph, and the embed batch embeds
+;; EVERY concept handed to it (its blank-text skip is the only skip). So the
+;; graph was RE-EMBEDDED O(N × calls). GC-11's ~2,500 spine code-nodes (they
+;; carry a label+description → pass the embed filter, yet are reached only via
+;; `identified-by` graph traversal, NEVER embedding similarity) pushed embed-text
+;; volume past the time budget. This selection makes embed-text volume
+;; O(distinct NEW semantic concepts) — behavior-preserving (every semantic
+;; concept still ends up embedded exactly once), just no redundant work.
+;; =============================================================================
+
+(defn spine-code-node?
+  "True iff a LANDED concept is a GC-11b cross-source linking-key SPINE code-node
+   — a structural join node reached via the `identified-by` edge, never via
+   embedding similarity, so it must NOT be embedded.
+
+   The robust, LANDING-SURVIVING marker is `:attributes` carrying a
+   `:linking-key` — the stamp `linking-key-relationship-drafts`
+   (`extract_subbehavior.clj`) puts on every code-node it mints, and which the
+   `:ontology/create-concept` command forwards verbatim. (The draft's
+   `:scope :reference` does NOT survive landing: it is not in the `ontology-scope`
+   enum, so `compile-discovery-source!`'s `coerce-scope` maps it to `:custom` —
+   filtering on `:scope :reference` ALONE would skip nothing. We still honour an
+   explicit `:reference` scope for any draft-shaped concept that reaches embed
+   pre-landing, but the attribute marker is the load-bearing one.)
+
+   Domain-agnostic (#12): `:linking-key` is the spine's STRUCTURAL attribute key,
+   not a domain field — this names no vocabulary."
+  [concept]
+  (boolean
+   (or (= :reference (:scope concept))
+       (let [attrs (:attributes concept)]
+         (and (map? attrs)
+              (contains? attrs :linking-key))))))
+
+(defn select-concepts-to-embed
+  "GC-12 — pure incremental embed selection. Given the in-scope `concepts` and
+   the set of `already-embedded-uris` (read from the `:ontology/concept-embedded`
+   projection), return only the concepts that should be embedded THIS call, plus
+   the honest skip counts:
+
+     {:to-embed [concept …]            ; NEW semantic concepts only
+      :skipped-already-count int       ; URIs already carrying an embedding
+      :skipped-reference-count int     ; structural spine code-nodes
+      :considered-count int}
+
+   Behavior-preserving (#4): the FINAL embedded set across calls is identical —
+   every semantic concept is embedded exactly once; only redundant re-embeds and
+   the never-embed spine code-nodes are dropped. A spine code-node is excluded
+   FIRST (it is never embedded regardless of prior state); a remaining concept is
+   skipped only if its URI is already embedded."
+  [concepts already-embedded-uris]
+  (let [already (set already-embedded-uris)
+        {:keys [refs others]} (group-by (fn [c] (if (spine-code-node? c) :refs :others))
+                                         concepts)
+        skipped-reference-count (count refs)
+        to-embed (filterv #(not (contains? already (:uri %))) others)
+        skipped-already-count (- (count others) (count to-embed))]
+    {:to-embed to-embed
+     :skipped-already-count skipped-already-count
+     :skipped-reference-count skipped-reference-count
+     :considered-count (count concepts)}))
+
 (defn- embed-concepts!
   "Compute the batch embeddings (REUSE `embedding/embed-concepts-batch!`, NO
    fork — note F1: this is the per-concept embed path; batching the EVENT is the
@@ -203,18 +271,28 @@
    nothing to embed; it is skipped deterministically (using the SAME text builder
    the command uses) so no event is emitted — no fabricated vectors.
 
+   GC-12 — INCREMENTAL: only concepts that do NOT already have an embedding (read
+   from the projection) and are NOT structural spine code-nodes are embedded; the
+   honest skip counts (`:skipped-already-count`, `:skipped-reference-count`) ride
+   in the result. Behavior-preserving (#4): the final embedded set is identical —
+   every semantic concept ends up embedded exactly once.
+
    Returns `{:embedded-count int :batch-embedded-count int :concepts-considered
-   int}`. A genuine command anomaly (model-load fault, concept vanished) is
-   RAISED with the root cause attached (#5 — no silent fallback)."
-  [ctx fields concepts]
-  (let [;; REUSE the production batch-embed to compute (F1: per-concept event is
+   int :skipped-already-count int :skipped-reference-count int}`. A genuine
+   command anomaly (model-load fault, concept vanished) is RAISED with the root
+   cause attached (#5 — no silent fallback)."
+  [ctx fields concepts already-embedded-uris]
+  (let [{:keys [to-embed skipped-already-count skipped-reference-count]}
+        (select-concepts-to-embed concepts already-embedded-uris)
+        ;; REUSE the production batch-embed to compute (F1: per-concept event is
         ;; the known scale concern). We pass the resolved fields explicitly so the
-        ;; batch does NOT re-detect (EB3 already decided the fields).
+        ;; batch does NOT re-detect (EB3 already decided the fields). GC-12: only
+        ;; the NEW, non-spine concepts — never the whole accumulating graph.
         batch (embedding/embed-concepts-batch!
-               concepts {:embedding-fields fields :auto-detect? false :ctx ctx})
+               to-embed {:embedding-fields fields :auto-detect? false :ctx ctx})
         ;; HONEST EMPTY decided HERE with the command's own text builder.
         embeddable (filterv #(seq (embedding/concept->embedding-text % fields))
-                            concepts)
+                            to-embed)
         emitted
         (reduce
          (fn [n concept]
@@ -235,7 +313,9 @@
          embeddable)]
     {:embedded-count emitted
      :batch-embedded-count (:embedded-count batch)
-     :concepts-considered (count concepts)}))
+     :concepts-considered (count concepts)
+     :skipped-already-count skipped-already-count
+     :skipped-reference-count skipped-reference-count}))
 
 (defn- colbert-corpus-too-small?
   "True iff the throwable is ColBERT/FAISS's specific 'too few training points to
@@ -344,7 +424,11 @@
                     {:ontology-id ontology-id})))
   (let [concepts (scoped-concepts ctx ontology-id)
         {:keys [fields source]} (resolve-embed-fields embed-fields concepts)
-        embed-r (embed-concepts! ctx fields concepts)
+        ;; GC-12 — read the ALREADY-EMBEDDED set (discipline 7, the projection)
+        ;; BEFORE embedding, so this call embeds only the NEW semantic concepts.
+        already-embedded-uris (set (keys (rm/get-all-concept-embeddings
+                                          ctx {:ontology-id ontology-id})))
+        embed-r (embed-concepts! ctx fields concepts already-embedded-uris)
         index-r (index-concepts! ctx ontology-id fields concepts)
         ;; DISCIPLINE 7 — read the embeddings + index BACK from the projection.
         read-back (rm/get-all-concept-embeddings ctx {:ontology-id ontology-id})
@@ -355,6 +439,9 @@
      :embedded-count (:embedded-count embed-r)
      :embeddings-read-back-count (count read-back)
      :concepts-considered (:concepts-considered embed-r)
+     ;; GC-12 — honest incremental skip accounting
+     :skipped-already-count (:skipped-already-count embed-r)
+     :skipped-reference-count (:skipped-reference-count embed-r)
      :index-id (or (:colbert-index-id registered-idx) (:index-id index-r))
      :index-document-count (:index-document-count index-r)
      :index-skipped-reason (:index-skipped-reason index-r)}))
