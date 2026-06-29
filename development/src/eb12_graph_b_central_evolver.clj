@@ -247,6 +247,16 @@
       [(keyword (str/lower-case (subs u 0 i)))
        (subs u (inc i))])))
 
+(defn- spine-code-node?
+  "True for a GC-11b cross-source linking-key code-node — the deterministic spine
+   node minted per (linking-key, value) that real concepts attach to via
+   `identified-by`. Marked by the landing-surviving `:attributes {:linking-key …}`
+   stamp (the same structural marker GC-12's embed-skip keys on; the minting
+   `:scope` does NOT survive — create-concept coerces it to :custom). Structural,
+   names no domain."
+  [c]
+  (some? (get-in c [:attributes :linking-key])))
+
 (defn graph-health
   "Pure graph-health fragmentation check over a concept collection. Flags the
    structural signature of the GC-1 fragmentation: the SAME identifying value
@@ -255,6 +265,15 @@
    and `degree_program:…:01.0901`). Reports each offending identity with its
    schemes + the per-scheme concept count. A clean single-scheme graph flags
    nothing. Domain-agnostic — no baked field names or entity literals.
+
+   GC-11c — SPINE-AWARE: the GC-11b spine deliberately mints a code-node
+   (`soccode/39-2021`) that shares its identity-tail with the very concept it
+   joins (`occupation/39-2021`) — that is the cross-source JOIN, not a split.
+   Counting those as fragmentation made `:fragmented?` GUARANTEED true on any
+   spine-connected graph (empirically: all 42 flags on the EB12 acceptance
+   artifact were spine-vs-carrier tail collisions, e.g. `[:soccode :SPINE]` +
+   `[:occupation :concept]`). So spine code-nodes are EXCLUDED before the check;
+   the detector now flags only genuine AUTHOR-divergence between real concepts.
 
    DIAGNOSTIC, not a sole pass/fail gate: the tail-collision signal is over-
    sensitive — two genuinely DISTINCT entity types that reuse a bare local key
@@ -268,6 +287,7 @@
    source by the shared discovered vocabulary (GC-6), not by this detector."
   [concepts]
   (let [by-identity (->> concepts
+                         (remove spine-code-node?)            ; GC-11c: spine joins aren't splits
                          (keep (fn [c] (when-let [[scheme tail] (uri-scheme+identity (:uri c))]
                                          [tail scheme])))
                          (group-by first))
@@ -444,20 +464,54 @@
   [status]
   (boolean (#{:complete :failed-cq} status)))
 
+(defn gate-answered?
+  "GC-11c — did the CQ-GATE ANSWER the cross-source competency question? The
+   acceptance reads the S15 retrieve-then-judge runner's verdicts (`:cq-verdict`
+   — one latest entry per CQ, read back from the projection by the central
+   evolver). The gate ANSWERED when at least one CQ has a `:pass` verdict (the
+   retrieved spine evidence affirmed the cross-source link). A graph whose every
+   CQ is `:unknown`/`:fail` did NOT answer — the gate is the arbiter, NOT a
+   hand-rolled chain walk.
+
+   Domain-agnostic: reads only the verdict keyword, names no CIP/SOC/predicate."
+  [cq-verdict]
+  (boolean (some #(= :pass (:verdict %)) cq-verdict)))
+
 (defn acceptance-verdict
-  "GC-5 PASS/FAIL over the captured graph analysis. `captured` is the map `run!`
-   returns (or a synthetic fixture of the same shape). Returns
+  "GC-5/GC-11c PASS/FAIL over the captured graph analysis. `captured` is the map
+   `run!` returns (or a synthetic fixture of the same shape). Returns
    {:pass? bool :reasons [{:criterion :detail :pass?}...]}. :pass? is the AND of
    every criterion. Criteria:
      :honest-terminal  — :status is :complete or :failed-cq (not crash/timeout)
      :non-zero-build   — concept-count > 0 AND at least one kind has drafts
-     :one-connected-graph — GC-3 :graph-health/:fragmented? is false
-     :chain-reads-back — :connectivity is a real program→cip→soc chain (NOT
-                         {:no-complete-chain true})
+     :one-connected-graph — GC-3 :graph-health/:fragmented? (NON-GATING debug
+                         signal as of GC-11c — see below)
+     :cq-gate-answers  — GC-11c THE FINISH LINE: the CQ-GATE (`:cq-verdict`, the
+                         S15 retrieve-then-judge runner) ANSWERED the cross-source
+                         competency question — at least one `:pass` verdict. This
+                         is the acceptance gate; the connectivity-proof is NOT.
      :convention-agnostic-kinds — institutions ≫ 1 AND occupations present in
                          concepts-by-kind (the real kinds, not the mis-measured
-                         :other read)."
-  [{:keys [status stats connectivity] :as _captured}]
+                         :other read).
+
+   DEMOTED (GC-11c): the prior `:chain-reads-back` criterion read the
+   connectivity-proof (`find-connectivity-chain` — a hand-rolled, role-guessing
+   program→cip→soc walk). That made a domain-shaped chain-walker the arbiter of
+   success. The acceptance is now the CQ-GATE verdict. `connectivity-proof`
+   remains in the capture as a spine-aware DEBUG/observability aid (surfaced in
+   the :cq-gate-answers detail), but the :pass? decision does NOT depend on it —
+   a gate-answered graph passes whether the connectivity-proof reports a chain or
+   :no-complete-chain.
+
+   ALSO DEMOTED (GC-11c): `:one-connected-graph` (the `graph-health/:fragmented?`
+   boolean) is now NON-GATING — kept in `:reasons` for observability but excluded
+   from the `:pass?` AND. graph-health's own docstring says it is 'DIAGNOSTIC, not
+   a sole pass/fail gate' and is over-sensitive (two genuinely-distinct entity
+   types reusing a bare local key collide on the tail). Even spine-aware, it is a
+   structural proxy; per the locked D3 decision the SEMANTIC CQ-gate is THE
+   acceptance. So `:pass?` = honest-terminal ∧ non-zero-build ∧ cq-gate-answers ∧
+   convention-agnostic-kinds; graph-health informs but does not gate."
+  [{:keys [status stats connectivity cq-verdict] :as _captured}]
   (let [by-kind        (:concepts-by-kind stats)
         concept-count  (:concept-count stats)
         fragmented?    (get-in stats [:graph-health :fragmented?])
@@ -469,7 +523,17 @@
         occ-count      (->> by-kind
                             (filter (fn [[k _]] (re-find #"(?i)soc|occ|onet" (name k))))
                             (map second) (reduce + 0))
+        answered?      (gate-answered? cq-verdict)
+        ;; DEBUG-ONLY connectivity-proof read-out for the detail string — does NOT
+        ;; feed the :pass? decision (the GC-11c demotion).
         no-chain?      (boolean (:no-complete-chain connectivity))
+        conn-debug     (cond
+                         (not (map? connectivity)) " [debug: connectivity-proof absent]"
+                         no-chain? " [debug: connectivity-proof reports :no-complete-chain — NOT the gate]"
+                         :else (str " [debug: connectivity-proof chain "
+                                    (get-in connectivity [:program :uri])
+                                    " → " (get-in connectivity [:soc :uri]) "]"))
+        pass-count     (count (filter #(= :pass (:verdict %)) cq-verdict))
         criteria
         [{:criterion :honest-terminal
           :pass? (honest-terminal? status)
@@ -480,21 +544,24 @@
                                (some (fn [[_ v]] (pos? (long v))) by-kind)))
           :detail (str "concept-count=" concept-count " kinds=" (count by-kind))}
          {:criterion :one-connected-graph
+          :gating? false                                   ; GC-11c: NON-gating debug signal (see docstring)
           :pass? (false? fragmented?)
-          :detail (str ":graph-health/:fragmented?=" fragmented?
-                       (when fragmented? " — same-label-different-canonical-type split present"))}
-         {:criterion :chain-reads-back
-          :pass? (and (map? connectivity) (not no-chain?)
-                      (some? (:program connectivity)) (some? (:soc connectivity)))
-          :detail (if no-chain?
-                    ":no-complete-chain true — program→cip→soc did NOT read back"
-                    (str "chain: " (get-in connectivity [:program :uri])
-                         " → " (get-in connectivity [:cip :uri])
-                         " → " (get-in connectivity [:soc :uri])))}
+          :detail (str ":graph-health/:fragmented?=" fragmented? " [NON-GATING debug aid]"
+                       (when fragmented? " — author-divergence between real concepts (spine joins excluded)"))}
+         {:criterion :cq-gate-answers
+          :pass? answered?
+          :detail (str "cq-gate :pass verdicts=" pass-count "/" (count cq-verdict)
+                       (if answered?
+                         " — the CQ-gate ANSWERED the cross-source question over the spine"
+                         " — the CQ-gate did NOT answer (no :pass verdict)")
+                       conn-debug)}
          {:criterion :convention-agnostic-kinds
           :pass? (and (> (long inst-count) 1) (pos? (long occ-count)))
           :detail (str "institutions=" inst-count " occupations=" occ-count)}]]
-    {:pass? (every? :pass? criteria)
+    ;; GC-11c: :pass? is the AND of GATING criteria only. Non-gating reasons
+    ;; (`:gating? false`, e.g. :one-connected-graph) stay in :reasons for
+    ;; observability but do not decide acceptance — the CQ-gate is THE acceptance.
+    {:pass? (every? :pass? (remove #(false? (:gating? %)) criteria))
      :reasons criteria}))
 
 ;; =============================================================================
@@ -592,7 +659,13 @@
                  :status (:status r) :mode (:mode r)
                  :concepts (mapv #(select-keys % [:uri :label :description :scope :indicators :attributes :broader]) (::concepts r))
                  :relationships (mapv #(select-keys % [:source-uri :target-uri :predicate :confidence-class]) (::relationships r))
-                 :stats (:stats r)}))
+                 :stats (:stats r)
+                 ;; GC-11c: persist the OBJECTIVE (the CQ-gate verdict) + its debug
+                 ;; aids so the artifact round-trips `acceptance-verdict` — the A2-vs-B
+                 ;; evidence file must carry the gate result, not just structure.
+                 :cq-verdict (:cq-verdict r)
+                 :connectivity (:connectivity r)
+                 :cq-loop (:cq-loop r)}))
   artifact-path)
 
 (defn print-summary! [r]

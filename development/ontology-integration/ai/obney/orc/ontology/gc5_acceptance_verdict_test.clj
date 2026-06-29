@@ -18,9 +18,17 @@
 
 ;; -- FIXTURE A: a CONNECTED, healthy graph (should PASS) ----------------------
 ;; Single convention (slash form), non-zero, institutions ≫ 1, occupations
-;; present, graph-health clean, a real program→cip→soc chain reads back.
+;; present, graph-health clean, AND the CQ-gate ANSWERED the cross-source CQ
+;; (GC-11c: the acceptance reads the CQ-gate :pass verdict, not connectivity).
 (def connected-capture
   {:status :complete
+   :cq-verdict [{:cq-index 0
+                 :cq-text "Which occupations do the educational programs lead to?"
+                 :verdict :pass
+                 :evidence-uris ["degree_program/236753-51.3801"
+                                 "field_of_study/51.3801" "soc_occupation/29-1141"]
+                 :judged-by? true
+                 :layer :layer-2-semantic-exists}]
    :stats  {:concept-count 1842
             :concepts-by-kind {:institution 412
                                :degree_program 980
@@ -29,6 +37,7 @@
             :graph-health {:fragmented? false
                            :fragmented-identity-count 0
                            :fragmented-identities []}}
+   ;; connectivity-proof present but DEBUG-only under GC-11c.
    :connectivity {:program {:uri "degree_program/236753-51.3801"
                             :label "Registered Nursing (BSN)"
                             :attributes {}}
@@ -81,26 +90,33 @@
   (assoc connected-capture :status :error))
 
 (deftest connected-graph-passes
-  (testing "a CONNECTED graph (chain + single convention + non-zero + real kinds)
-            reads :pass? true with every criterion green"
+  (testing "a CONNECTED graph (gate-answered + single convention + non-zero + real
+            kinds) reads :pass? true with every criterion green"
     (let [{:keys [pass? reasons]} (b/acceptance-verdict connected-capture)]
       (is (true? pass?) "the connected graph must PASS")
       (is (every? :pass? reasons) "every criterion must be green")
       (is (= #{:honest-terminal :non-zero-build :one-connected-graph
-               :chain-reads-back :convention-agnostic-kinds}
+               :cq-gate-answers :convention-agnostic-kinds}
              (set (map :criterion reasons)))
-          "all five GC-5 criteria are evaluated"))))
+          "all five criteria are evaluated; the gate is the cross-source arbiter
+           (GC-11c demoted :chain-reads-back → :cq-gate-answers)")
+      (is (not (contains? (set (map :criterion reasons)) :chain-reads-back))
+          "connectivity-proof chain-reads-back is demoted out of the criteria"))))
 
-(deftest fragmented-graph-fails-on-fragmentation-and-chain
-  (testing "a FRAGMENTED graph (same-id-two-conventions + no chain) reads
-            :pass? false, failing on one-connected-graph AND chain-reads-back"
+(deftest fragmented-graph-fails-on-the-gate-not-on-fragmentation
+  (testing "a FRAGMENTED graph whose gate did NOT answer reads :pass? false — but
+            (GC-11c) it fails on the GATE, not on fragmentation: :one-connected-graph
+            is reported with :pass? false yet is NON-GATING (the spine makes
+            :fragmented? a false positive, so it no longer gates acceptance)"
     (let [{:keys [pass? reasons]} (b/acceptance-verdict fragmented-capture)
-          failing (->> reasons (remove :pass?) (map :criterion) set)]
-      (is (false? pass?) "the fragmented graph must FAIL")
-      (is (contains? failing :one-connected-graph)
-          "fragmentation (:graph-health/:fragmented? true) must fail the verdict")
-      (is (contains? failing :chain-reads-back)
-          ":no-complete-chain must fail the chain criterion"))))
+          failing (->> reasons (remove :pass?) (map :criterion) set)
+          ocg     (->> reasons (filter #(= :one-connected-graph (:criterion %))) first)]
+      (is (false? pass?) "the gate did not answer → the build must FAIL")
+      (is (contains? failing :cq-gate-answers)
+          "no :pass CQ verdict must fail the cq-gate-answers criterion (the gate)")
+      (is (and (some? ocg) (false? (:pass? ocg)) (false? (:gating? ocg)))
+          "fragmentation is still REPORTED (:one-connected-graph :pass? false) but
+           is NON-GATING — it does not by itself fail acceptance"))))
 
 (deftest zero-draft-build-fails
   (testing "a 0-concept build reads :pass? false (no 0-draft false-green)"
