@@ -1201,3 +1201,155 @@
   (testing "the default window ceiling is the value the apply nodes used pre-GC-7
             (behavior-preserving), now NAMED + overridable"
     (is (= 50 extract/default-max-extract-windows))))
+
+;; ===========================================================================
+;; GC-13 — BOUNDED-PARALLEL per-container extraction (the measured bottleneck).
+;;
+;; model-extract = 55.6% of build wall-clock; its cost is the per-container
+;; SAMPLE→AUTHOR→APPLY child ticks run SERIALLY in a `mapv`. GC-13 replaces that
+;; serial loop with a BOUNDED-concurrency parallel map over the SAME child-tick
+;; mechanism. These tests lock the helper's three load-bearing properties
+;; (order preservation, the concurrency BOUND, and honest per-item failure
+;; isolation) through its public seam, plus the orchestrator's honest surfacing
+;; of a THROWING child tick (no false-green, no silent drop). The serial vs
+;; parallel DRAFT-EQUIVALENCE is guarded by the existing
+;; `orchestrator-accumulates-and-reports-honestly-test` (same stubbed seam).
+;; ===========================================================================
+
+;; --- GC-13 cycle 1: bounded-parallel helper preserves INPUT ORDER ---
+(deftest gc13-bounded-parallel-map-preserves-order-test
+  (testing "bounded-parallel-map returns results in INPUT order even when the
+            per-item thunks complete out of order (a later item finishing first
+            must NOT scramble attribution)"
+    (let [n 12
+          ;; reverse the completion order: item 0 sleeps the longest, the last
+          ;; item returns immediately — so completion order is the reverse of
+          ;; input order. The result vector must STILL be in input order.
+          out (extract/bounded-parallel-map
+               4
+               (fn [i]
+                 (Thread/sleep (long (* 5 (- n i))))
+                 {:idx i :squared (* i i)})
+               (vec (range n)))]
+      (is (= (vec (range n)) (mapv :idx out))
+          "results are in INPUT order regardless of completion order")
+      (is (= (mapv #(* % %) (range n)) (mapv :squared out))
+          "each slot carries ITS OWN item's result (no misattribution)"))))
+
+;; --- GC-13 cycle 2: the concurrency BOUND is respected (peak ≤ K) ---
+(deftest gc13-bounded-parallel-map-respects-the-bound-test
+  (testing "with bound = K and thunks that each hold a slot briefly, the PEAK
+            number in flight at once never exceeds K (bounded, not unbounded —
+            a source with many containers must not fire dozens of :llm calls)"
+    (let [k 3
+          n 20
+          in-flight (atom 0)
+          peak (atom 0)
+          out (extract/bounded-parallel-map
+               k
+               (fn [i]
+                 (let [now (swap! in-flight inc)]
+                   (swap! peak max now)
+                   ;; hold the slot long enough that, were the bound not
+                   ;; enforced, all N would pile in and peak would blow past K.
+                   (Thread/sleep 30)
+                   (swap! in-flight dec)
+                   i))
+               (vec (range n)))]
+      (is (= (vec (range n)) out) "all items still processed + ordered")
+      (is (<= @peak k)
+          (str "peak concurrency must be <= the bound K=" k ", got " @peak))
+      ;; sanity: with N >> K and a hold, the bound was actually exercised (we
+      ;; really did run in parallel, not silently serialized).
+      (is (>= @peak 2)
+          (str "expected real parallelism (peak >= 2), got " @peak)))))
+
+;; --- GC-13 cycle 3: honest per-item FAILURE ISOLATION ---
+(deftest gc13-bounded-parallel-map-isolates-a-thrown-thunk-test
+  (testing "when ONE item's thunk throws, that slot becomes an HONEST failure
+            marker carrying the throwable; the OTHER items still complete and
+            stay correctly ordered/attributed — the batch does NOT abort (#4/#5)"
+    (let [out (extract/bounded-parallel-map
+               4
+               (fn [i]
+                 (if (= i 2)
+                   (throw (ex-info "boom in item 2" {:i i}))
+                   {:idx i}))
+               (vec (range 5)))]
+      (is (= 5 (count out)) "no item is dropped — the throwing one keeps its slot")
+      ;; the 4 healthy items completed + are correctly attributed/ordered (item 2,
+      ;; the thrown slot, has no :idx — it is the error marker checked below).
+      (is (= [0 1 nil 3 4] (mapv :idx out))
+          "the non-throwing items completed + stayed in input order; the thrown
+           slot carries no :idx (it is the error marker)")
+      (is (= 0 (:idx (nth out 0))))
+      (is (= 1 (:idx (nth out 1))))
+      (is (= 3 (:idx (nth out 3))))
+      (is (= 4 (:idx (nth out 4))))
+      ;; the throwing slot is an HONEST marker, not a silent drop or a healthy map.
+      (let [marker (nth out 2)]
+        (is (contains? marker :ai.obney.orc.ontology.core.extract-subbehavior/error)
+            "the thrown slot is tagged as an error (honest, surfaced)")
+        (is (instance? Throwable
+                       (:ai.obney.orc.ontology.core.extract-subbehavior/error marker))
+            "the marker carries the actual throwable (diagnosable, not swallowed)")))))
+
+;; --- GC-13 cycle 4: orchestrator surfaces a THROWING child tick honestly ---
+;; The same stubbed child-tick seam as orchestrator-accumulates-and-reports-
+;; honestly-test, but here ONE container's `dsl/execute` THROWS (a child tick
+;; blowing up, not a clean gate-failure). Under the serial `mapv` that would
+;; crash the whole batch; under bounded-parallel it must become that container's
+;; HONEST :failure entry — the OTHER containers' drafts still accumulate, and the
+;; throwing container is SURFACED in :extraction-report (never dropped, never
+;; misattributed). This guards attribution/accumulation with NO LLM.
+(deftest gc13-orchestrator-surfaces-a-throwing-child-tick-honestly-test
+  (testing "a child tick that THROWS becomes the container's honest :failure
+            entry; the surviving containers' drafts accumulate; nothing dropped"
+    (let [child-bbs
+          {"c-ok-1" {:concept-drafts {:value [{:uri "u1" :label "a"}
+                                              {:uri "u2" :label "b"}]}
+                     :relationship-drafts {:value [{:source-uri "u1" :target-uri "u2"
+                                                    :predicate "p"}]}
+                     :extraction-report {:value {:rows-streamed 100 :rows-errored 0}}}
+           "c-ok-2" {:concept-drafts {:value [{:uri "u3" :label "c"}]}
+                     :relationship-drafts {:value []}
+                     :extraction-report {:value {:rows-streamed 50 :rows-errored 0}}}}
+          tick->container (atom {})]
+      (with-redefs [extract/list-source-containers
+                    (fn [_source] [{:name "c-ok-1"} {:name "c-boom"} {:name "c-ok-2"}])
+                    extract/extract-per-container-sheet-id-for
+                    (fn [] (random-uuid))
+                    dsl/execute
+                    (fn [_ctx _sid inputs & {:keys [tick-id]}]
+                      (let [cname (:name (get inputs "container"))]
+                        (swap! tick->container assoc tick-id cname)
+                        (if (= cname "c-boom")
+                          ;; the child tick BLOWS UP (not a clean gate failure).
+                          (throw (ex-info "child tick exploded" {:container cname}))
+                          {:status :success})))
+                    dsl/get-tick-blackboard
+                    (fn [_ctx tick-id]
+                      (get child-bbs (get @tick->container tick-id)))]
+        (let [out (extract/orchestrate-extract-containers
+                   {:inputs {:source {:type :sql :path "/tmp/x.db"}
+                             :model-spec {:entity-types []}}
+                    :tick-id (random-uuid)
+                    :event-store :stub})
+              report (:extraction-report out)]
+          ;; the SURVIVING containers' drafts still accumulate (batch did not abort).
+          (is (= 3 (count (:concept-drafts out)))
+              "the two healthy containers' drafts (2 + 1) accumulate despite the throw")
+          (is (= #{"u1" "u2" "u3"} (set (map :uri (:concept-drafts out))))
+              "no surviving draft is lost or misattributed")
+          ;; the throwing container is SURFACED honestly — counted + reported failed.
+          (is (= 3 (:containers-total report)) "all 3 containers counted")
+          (is (= 3 (:containers-processed report))
+              "the throwing container is NOT silently dropped — still processed/counted")
+          (is (= 1 (:containers-failed report))
+              "the throwing container surfaces as a :failure (no false-green)")
+          (let [boom (first (filter #(= "c-boom" (:container %)) (:per-container report)))]
+            (is (some? boom) "the throwing container has a per-container entry (not dropped)")
+            (is (= :failure (:status boom)) "it is honestly marked :failure")
+            (is (= 0 (:concept-count boom)) "its 0-draft count is honest")
+            (is (some? (:diagnosis boom))
+                "its failure carries a diagnosis derived from the throwable")))))))

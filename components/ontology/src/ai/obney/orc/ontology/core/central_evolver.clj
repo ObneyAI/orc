@@ -169,10 +169,13 @@
           ;; orchestrate node reads :max-containers/:max-windows; unset → its defaults).
           :reads [:model-spec :source :max-containers :max-windows]
           :writes [:concept-drafts :relationship-drafts :extraction-report]
-          ;; GC-8 — the Extract step runs up to default-max-containers SERIALLY; size
-          ;; its budget to that work (cap-scaled, = the outer delegate's budget), NOT
-          ;; a flat 180s (which cut the 25-container extract at container ~10-11 with
-          ;; 0 drafts). delegate-model above stays 180s — the Model node is ~10s.
+          ;; GC-8/GC-13 — the Extract step runs up to default-max-containers
+          ;; containers (GC-13: now with BOUNDED CONCURRENCY, was serial); size its
+          ;; budget to that work (cap-scaled, = the outer delegate's budget), NOT a
+          ;; flat 180s (which cut the 25-container extract at container ~10-11 with 0
+          ;; drafts). The budget stays cap-scaled — harmlessly generous under parallel
+          ;; extract (the build just finishes sooner). delegate-model above stays 180s
+          ;; — the Model node is ~10s.
           :timeout-ms (model-extract-timeout-ms
                        {:max-containers extract/default-max-containers}))))))
 
