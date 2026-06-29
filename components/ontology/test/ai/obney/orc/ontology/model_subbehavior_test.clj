@@ -198,12 +198,16 @@
 ;; ---------------------------------------------------------------------------
 
 (deftest contract-keys-are-dt3-frozen-plus-embed-fields-test
-  (testing "the Model model-spec contract = the DT3 frozen keys + the EB3 embed-fields"
+  (testing "the Model model-spec contract = the DT3 frozen keys + the EB3 embed-fields
+            + the GC-11a linking-keys carry-forward"
     (is (= (set dt/model-contract-keys)
-           (set (remove #{model/embed-fields-key} model/model-spec-contract-keys)))
+           (set (remove #{model/embed-fields-key model/linking-keys-key}
+                        model/model-spec-contract-keys)))
         "the DT3-frozen model-contract keys are re-used verbatim (no drift)")
     (is (contains? (set model/model-spec-contract-keys) model/embed-fields-key)
         "the embed-fields signal (P2 → EB7) is part of the model-spec contract")
+    (is (contains? (set model/model-spec-contract-keys) model/linking-keys-key)
+        "the GC-11a linking-keys carry-forward is part of the model-spec contract")
     (is (= :embed-fields model/embed-fields-key))
     (is (= :candidate-axioms model/candidate-axioms-key)
         "candidate-axioms (→ EB6) is a sibling write key")))
@@ -249,6 +253,48 @@
           "the prompt frames the node as a single reasoning step")
       (is (and (str/includes? p "model-spec") (str/includes? p "candidate-axioms"))
           "the prompt names the structured write keys"))))
+
+;; ---------------------------------------------------------------------------
+;; GC-11a — the model-spec carries the discovered linking-key COLUMN NAMES forward
+;; so the Extract AUTHOR (which reads the model-spec, NOT the profile) sees them and
+;; the apply-step carries their per-row VALUES into :attributes. The schema addition
+;; is OPTIONAL/[:maybe …] so the no-linking-key path is behavior-preserving.
+;; ---------------------------------------------------------------------------
+
+(deftest gc11a-linking-keys-is-a-model-spec-contract-key-test
+  (testing "the model-spec contract carries :linking-keys (the cross-source carry-forward)"
+    (is (= :linking-keys model/linking-keys-key)
+        "the linking-keys carry-forward key is :linking-keys")
+    (is (contains? (set model/model-spec-contract-keys) model/linking-keys-key)
+        "the model-spec contract includes :linking-keys so the Extract AUTHOR sees it")))
+
+(deftest gc11a-linking-keys-schema-is-optional-and-behavior-preserving-test
+  (testing "the model-spec schema accepts a spec WITH :linking-keys and one WITHOUT
+            (nil/absent → unaffected; the no-linking-key path is preserved)"
+    ;; WITH a real linking-keys vector (the cross-source case)
+    (is (m/validate model/model-spec-contract-schema
+                    (assoc sample-model-spec :linking-keys ["CIPCODE"]))
+        "a spec carrying :linking-keys (a vector of column-name strings) validates")
+    ;; ABSENT (the existing sample has no :linking-keys) — behavior-preserving
+    (is (m/validate model/model-spec-contract-schema sample-model-spec)
+        "a spec with NO :linking-keys still validates (the field is optional)")
+    ;; nil (the explicit no-linking-key path) — [:maybe …] tolerates it
+    (is (m/validate model/model-spec-contract-schema
+                    (assoc sample-model-spec :linking-keys nil))
+        "a nil :linking-keys (no linking key discovered) validates the :maybe vector")))
+
+(deftest gc11a-prompt-instructs-copying-linking-keys-forward-test
+  (testing "the Model prompt instructs the node to COPY the profile's linking-keys
+            onto the model-spec (so the Extract AUTHOR/apply-step can carry the VALUES)"
+    (let [p (model/model-prompt)
+          lp (str/lower-case p)]
+      (is (str/includes? lp "linking")
+          "the prompt references the linking keys")
+      (is (str/includes? p "linking-keys")
+          "the prompt names the :linking-keys model-spec field to emit")
+      ;; the load-bearing instruction: a linking key is OFTEN not a keying field.
+      (is (or (str/includes? lp "uri-keying-field") (str/includes? lp "keying field"))
+          "the prompt clarifies a linking key may differ from the entity's keying field"))))
 
 (deftest prompt-is-domain-agnostic-test
   (testing "the prompt carries NO vertical/domain knowledge (discipline 12)"

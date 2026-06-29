@@ -87,6 +87,21 @@
    keeps it. A vector of field-name strings (empty if the source is all codes)."
   :embed-fields)
 
+(def linking-keys-key
+  "GC-11a addition: the cross-source LINKING-KEY column NAMES carried forward onto
+   the model-spec so the Extract AUTHOR (which reads the model-spec, NOT the
+   profile) sees them and carries their per-row VALUES into every draft's
+   `:attributes`. The Survey discovered them on the profile (`:linking-keys` —
+   CODES/KEYS that likely identify the SAME entity in OTHER sources); the Model
+   copies them here (optionally normalized to the shared vocabulary's column names
+   via its `:aliases`). The cross-source spine (GC-11b) recovers the linking VALUE
+   from `:attributes` via GC-1 `recover-via-value`, so the value MUST be carried —
+   and a linking key is often NOT the entity's own keying field (IPEDS keys a
+   program by local-num; its linking key is the CIP code), which is exactly why
+   GC-1's keying-field-only carry left it absent. A vector of field-name strings;
+   nil/absent when the survey discovered no linking key (the no-op path)."
+  :linking-keys)
+
 (def candidate-axioms-key
   "EB3 addition #2: CANDIDATE TBox/axioms that feed EB6 (the axiom step). The
    Model proposes ontology-level constraints implied by the entity model — e.g.
@@ -102,8 +117,10 @@
    frozen DT3 keys are re-used verbatim (no drift) from
    `discovery-tree/model-contract-keys`. `:candidate-axioms` is a SEPARATE
    sibling write (its own structured schema), not nested in the model-spec, so
-   EB6 can `:delegate`-read it without the rest of the spec."
-  (conj (vec dt/model-contract-keys) embed-fields-key))
+   EB6 can `:delegate`-read it without the rest of the spec. GC-11a adds the
+   `:linking-keys` carry-forward (the cross-source linking-key column NAMES the
+   Extract AUTHOR carries the VALUES of into `:attributes`)."
+  (conj (vec dt/model-contract-keys) embed-fields-key linking-keys-key))
 
 (def model-spec-contract-schema
   "C1 — the STRUCTURED Malli `[:map …]` schema for the model-spec contract. For
@@ -147,7 +164,16 @@
               [:source-type {:optional true} :any]
               [:target-type {:optional true} :any]
               [:predicate {:optional true} :any]]]]
-   [embed-fields-key {:optional true} [:vector :string]]])
+   [embed-fields-key {:optional true} [:vector :string]]
+   ;; GC-11a — the cross-source LINKING-KEY column NAMES the Model copies forward
+   ;; from the profile's discovered :linking-keys (optionally vocabulary-normalized).
+   ;; OPTIONAL [:maybe …] so the no-linking-key path is behavior-preserving: a source
+   ;; whose survey discovered no linking key carries no :linking-keys and the Extract
+   ;; AUTHOR's linking-value carry is a no-op. A CONCRETE [:vector :any] (not :any) so
+   ;; the `:llm` executor parses it into real Clojure data, not raw text (the C1
+   ;; per-field fix). Domain-agnostic: the column NAMES are the survey's runtime
+   ;; discovery — no field baked here.
+   [linking-keys-key {:optional true} [:maybe [:vector :any]]]])
 
 (def candidate-axioms-schema
   "C1 — the STRUCTURED Malli schema for the `:candidate-axioms` write (the EB6
@@ -239,6 +265,29 @@
        "under the key `:axioms` (a vector of these maps; empty if none are "
        "warranted)."))
 
+(defn- linking-keys-block
+  "GC-11a: instruct the Model to COPY the profile's discovered `:linking-keys` (the
+   cross-source code/key COLUMN NAMES that identify the SAME entity in OTHER
+   sources) forward onto the model-spec as `:linking-keys`. The Extract AUTHOR
+   reads the model-spec, NOT the profile, so unless the linking-key NAMES ride the
+   model-spec the apply-step has no list to carry the VALUES of. Domain-agnostic
+   (#12): the column names come from the profile at runtime; this names no field.
+   When the profile carries no linking-keys, emit an empty `:linking-keys` (the
+   no-op path — behavior-preserving)."
+  []
+  (str "\n\nALSO carry the LINKING KEYS forward (consumed by the extraction step "
+       "to connect this source to OTHERS):\n"
+       "  - The profile carries `:linking-keys` — the cross-source CODE/KEY column "
+       "NAME(s) that likely identify the SAME real entity in OTHER sources (a shared "
+       "code an other source would also carry). COPY those column name(s) onto your "
+       "model-spec as `:linking-keys` (a vector of the column-name strings). If a "
+       "shared `vocabulary` is provided and it canonicalizes the column name for the "
+       "matched entity, prefer the column name THIS source actually carries for that "
+       "key (the value must be recoverable from THIS source's rows). A linking key "
+       "is OFTEN a DIFFERENT column from an entity's own uri-keying-field, so carry "
+       "it EVEN WHEN it is not a keying field. Emit `:linking-keys` as part of the "
+       "model-spec map (an empty vector if the profile surfaced none)."))
+
 (defn- vocabulary-constraint-block
   "GC-6: CONSTRAIN entity-type naming to a SHARED DISCOVERED vocabulary so the SAME
    real entity resolves to the SAME `(:type, :uri-keying-fields)` across sources (so
@@ -293,7 +342,8 @@
        "structured output.\n"
        "  2. `model-spec` — a MAP with EXACTLY these keys: "
        (str/join ", " (map str model-spec-contract-keys)) ". `:entity-types`, "
-       "`:edges`, `:embed-fields` are VECTORS; `:scope-filter` is a MAP or nil. "
+       "`:edges`, `:embed-fields`, `:linking-keys` are VECTORS; `:scope-filter` is "
+       "a MAP or nil. "
        "(See the field shapes described above; `:embed-fields` as decided in the "
        "embed-worthy step.)\n"
        "  3. `candidate-axioms` — a MAP `{:axioms [<candidate maps>]}` as decided "
@@ -326,6 +376,8 @@
    ;; The two EB3 additions.
    (embed-fields-block)
    (candidate-axioms-block)
+   ;; GC-11a — copy the profile's discovered linking-keys forward onto the model-spec.
+   (linking-keys-block)
    ;; GC-6 — constrain entity-type naming to the shared discovered vocabulary.
    (vocabulary-constraint-block)
    ;; The #13 reasoning-first output framing across the three write keys.

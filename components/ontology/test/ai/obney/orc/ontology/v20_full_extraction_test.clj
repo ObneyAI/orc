@@ -263,6 +263,100 @@
              {:descriptor descriptor :transform-source "   "}))))))
 
 ;; =============================================================================
+;; GC-11a — the deterministic LINKING-KEY VALUE carry. The cross-source spine
+;; (GC-11b) recovers a concept's linking VALUE from its :attributes (GC-1
+;; recover-via-value). A linking key is OFTEN not the entity's own keying field, and
+;; the AUTHOR :llm carries only keying + measures — so a linking column it doesn't
+;; read as a measure is DROPPED. The apply-step copies the model-spec's discovered
+;; :linking-keys VALUES from the source row into every draft's :attributes
+;; DETERMINISTICALLY (no :llm trust for the load-bearing carry). These exercise that
+;; through the PUBLIC apply-step over a REAL csv stream + the pure carry fn.
+;; =============================================================================
+
+;; A transform that keys the entity by entity_id and carries ONLY :score —
+;; it DELIBERATELY does NOT carry category_code (the linking column), reproducing
+;; the IPEDS gap where the AUTHOR drops a linking column that is not the keying
+;; field. The deterministic carry must land category_code in :attributes anyway.
+(def ^:private keying-only-no-linking-transform
+  "(fn [row]
+     (let [eid (get row \"entity_id\")
+           score (get row \"score\")]
+       {:concept-drafts
+        [{:uri (str \"entity:\" eid)
+          :label (str \"Entity \" eid)
+          :scope :custom
+          :entity-type \"Entity\"
+          :attributes {\"entity_id\" eid :score score}
+          :evidence [{:source \"entity_id\" :quote (str eid)}]}]
+        :relationship-drafts []}))")
+
+(deftest gc11a-pure-carry-lands-linking-value-and-is-honest-on-absence
+  (testing "carry-linking-values puts the linking COLUMN VALUE into each draft's
+            :attributes; a row lacking the column carries no value (honest); an
+            empty :linking-keys is a no-op (behavior-preserving)"
+    (let [row {"entity_id" "E1" "category_code" "C3" "score" "10"}
+          drafts [{:uri "entity:E1" :attributes {"entity_id" "E1" :score "10"}}]
+          ;; the linking key is category_code — NOT the keying field (entity_id)
+          carried (rlm-discovery/carry-linking-values row drafts ["category_code"])]
+      (is (= "C3" (get-in (first carried) [:attributes "category_code"]))
+          "the linking column VALUE lands in :attributes (recoverable by the spine)")
+      (is (= "E1" (get-in (first carried) [:attributes "entity_id"]))
+          "the existing keying attribute is preserved (additive, not replaced)"))
+    ;; honest absence — a row genuinely lacking the linking column carries none.
+    (let [row {"entity_id" "E2" "score" "20"}
+          drafts [{:uri "entity:E2" :attributes {"entity_id" "E2"}}]
+          carried (rlm-discovery/carry-linking-values row drafts ["category_code"])]
+      (is (not (contains? (:attributes (first carried)) "category_code"))
+          "a row lacking the linking column carries NO value (no fabrication, #4/#5)"))
+    ;; behavior-preserving — no linking-keys → drafts unchanged.
+    (let [row {"entity_id" "E3" "category_code" "C1"}
+          drafts [{:uri "entity:E3" :attributes {"entity_id" "E3"}}]]
+      (is (= drafts (rlm-discovery/carry-linking-values row drafts []))
+          "empty :linking-keys is a no-op (the no-linking-key path is preserved)")
+      (is (= drafts (rlm-discovery/carry-linking-values row drafts nil))
+          "nil :linking-keys is a no-op too"))))
+
+(deftest gc11a-pure-carry-matches-column-name-case-and-type-tolerantly
+  (testing "the linking column is matched against the row keys case/type-tolerantly
+            (a keyword-keyed row, a differently-cased column name still resolves)"
+    ;; keyword-keyed row (sql/excel shape), linking-key spelled differently-cased
+    (let [row {:CIPCODE "01.0101" :LOCAL_NUM "7"}
+          drafts [{:uri "p:7" :attributes {:LOCAL_NUM "7"}}]
+          carried (rlm-discovery/carry-linking-values row drafts ["cip_code"])]
+      ;; the value is carried under the linking-keys spelling we were given
+      (is (= "01.0101" (get-in (first carried) [:attributes "cip_code"]))
+          "a case/separator-different column name still recovers the row value"))))
+
+(deftest gc11a-apply-step-carries-linking-value-over-real-source
+  (testing "over a REAL csv stream: the apply-step carries the model-spec's
+            :linking-keys VALUES into EVERY draft's :attributes even when the
+            transform does NOT carry the linking column; with NO :linking-keys the
+            value is ABSENT (the RED baseline the change closes)"
+    (let [path (write-fixture-csv! 30)
+          descriptor {:name :fixture :type :csv :path path}
+          ;; WITHOUT linking-keys → the linking column (category_code) is ABSENT.
+          before (rlm-discovery/apply-extraction-transform!
+                  {:descriptor descriptor
+                   :transform-source keying-only-no-linking-transform})
+          before-attrs (mapv :attributes (:concept-drafts before))
+          ;; WITH the discovered linking-keys → the apply-step carries the VALUE.
+          after (rlm-discovery/apply-extraction-transform!
+                 {:descriptor descriptor
+                  :transform-source keying-only-no-linking-transform
+                  :linking-keys ["category_code"]})
+          after-attrs (mapv :attributes (:concept-drafts after))]
+      (is (pos? (count after-attrs)) "the real stream produced drafts")
+      ;; RED baseline: without the carry, NO draft carries the linking column.
+      (is (not-any? #(contains? % "category_code") before-attrs)
+          "WITHOUT :linking-keys the linking column is absent (the gap)")
+      ;; GREEN: every draft now carries the linking column's VALUE from its row.
+      (is (every? #(contains? % "category_code") after-attrs)
+          "WITH :linking-keys EVERY draft carries the linking value (spine-recoverable)")
+      ;; the carried value is the row's REAL value (C0..C6 per the fixture), not faked.
+      (is (every? #(re-matches #"C[0-6]" (str (get % "category_code"))) after-attrs)
+          "the carried value is the row's REAL linking value, never fabricated"))))
+
+;; =============================================================================
 ;; V18 integration: the full draft set compiles with referential integrity
 ;; =============================================================================
 

@@ -988,6 +988,95 @@
     (sequential? window) (vec window)
     :else []))
 
+;; =============================================================================
+;; GC-11a — deterministic LINKING-KEY VALUE carry. The cross-source spine (GC-11b)
+;; recovers a concept's linking VALUE from its `:attributes` (GC-1 `recover-via-
+;; value`). But a linking key is OFTEN not the entity's own keying field (IPEDS keys
+;; a program by local-num; its linking key is the CIP code), and the AUTHOR :llm
+;; SELECTS which columns to carry (keying + measures) — so on wide tables a linking
+;; column it doesn't read as a measure is silently DROPPED → the spine has nothing
+;; to recover. We do NOT trust the :llm for this load-bearing carry (#1/#4/#5):
+;; AFTER the transform produces each row's drafts, we DETERMINISTICALLY copy the
+;; model-spec's discovered linking-key COLUMN VALUES from the SAME source row into
+;; every concept-draft's `:attributes`. Domain-agnostic (#12): the column NAMES are
+;; the survey's runtime discovery (threaded on the model-spec), never baked here.
+;; HONEST ABSENCE (#4/#5): a row genuinely lacking a linking column carries no value
+;; for it (the column is not in the row keys) — never a fabricated one.
+
+(defn- normalize-col-name
+  "Normalize a column/key NAME for case/type-tolerant matching: lower-case the
+   string form (a keyword's `name`, or the string itself) and strip every
+   non-alphanumeric char. So `:CIP_Code`, `\"cip_code\"`, `\"CIP-CODE\"` all collapse
+   to `\"cipcode\"`. The SAME normalization the GC-1/MC-6 attribute recovery uses
+   (`extract-subbehavior/normalize-key-name`) — kept self-contained here so the
+   apply-step does not depend on the extract subbehavior (the dependency runs the
+   other way). Domain-agnostic — purely structural."
+  [k]
+  (when (some? k)
+    (-> (if (keyword? k) (name k) (str k))
+        (str/lower-case)
+        (str/replace #"[^a-z0-9]" ""))))
+
+(defn carry-linking-values
+  "GC-11a — DETERMINISTICALLY copy the discovered linking-key COLUMN VALUES from a
+   source `row` into each of that row's `concept-drafts` under `:attributes`.
+
+   `row` is the (dual-keyed) source row map; `concept-drafts` are the drafts the
+   transform produced for THAT row; `linking-keys` is the model-spec's discovered
+   linking-key column NAMES (a vector of strings). For each linking column present
+   in the row (matched case/type-tolerantly via `normalize-col-name`), the column's
+   VALUE is set on every draft's `:attributes` under the linking column's name
+   (verbatim, as the linking-keys vector spells it — so the spine recovers it by
+   that name). A linking column NOT in the row (or with a nil value) carries NO
+   value (honest absence, #4/#5 — never fabricated). A draft's EXISTING attribute
+   for that name is preserved (the AUTHOR may already carry it) — we only ADD a
+   missing one, never overwrite. Pure + total — never throws.
+
+   Domain-agnostic (#12): the column names come from the runtime model-spec; this
+   names NO field. Behavior-preserving when `linking-keys` is empty/nil: the drafts
+   pass through untouched."
+  [row concept-drafts linking-keys]
+  (let [lks (->> (or linking-keys [])
+                 (keep (fn [k] (when (some? k) (str k))))
+                 (remove str/blank?)
+                 vec)]
+    (if (or (empty? lks) (not (map? row)))
+      (vec concept-drafts)
+      (let [;; index the row's keys by normalized name → the actual value (the row
+            ;; is dual-keyed, so any of its key forms resolves the same value).
+            row-by-norm (reduce-kv (fn [m k v]
+                                     (let [n (normalize-col-name k)]
+                                       (if (and n (not (contains? m n)) (some? v))
+                                         (assoc m n v)
+                                         m)))
+                                   {} row)
+            ;; the linking columns actually present in this row → {name value}.
+            present (reduce (fn [acc lk]
+                              (let [v (get row-by-norm (normalize-col-name lk))]
+                                (if (and (some? v) (seq (str v)))
+                                  (assoc acc lk v)
+                                  acc)))
+                            {} lks)]
+        (if (empty? present)
+          (vec concept-drafts)
+          (mapv (fn [d]
+                  (if (map? d)
+                    (let [attrs (or (:attributes d) {})
+                          ;; only ADD a linking name the draft doesn't already carry
+                          ;; (case/type-tolerant): never overwrite the AUTHOR's value.
+                          existing-norms (set (keep (comp normalize-col-name key) attrs))
+                          to-add (reduce-kv
+                                  (fn [m lk v]
+                                    (if (contains? existing-norms (normalize-col-name lk))
+                                      m
+                                      (assoc m lk v)))
+                                  {} present)]
+                      (if (empty? to-add)
+                        d
+                        (assoc d :attributes (merge attrs to-add))))
+                    d))
+                concept-drafts))))))
+
 (defn apply-extraction-transform!
   "V20 — the deterministic full-extraction apply-step.
 
@@ -1012,6 +1101,16 @@
                         per-call ceiling). Default: the format default.
      :max-windows       Safety bound on the number of windows streamed. Default
                         very high (covers any realistic source).
+     :linking-keys      OPTIONAL. The model-spec's discovered cross-source
+                        linking-key COLUMN NAMES (a vector of strings). When
+                        present, AFTER the transform produces each row's drafts the
+                        apply-step DETERMINISTICALLY copies each linking column's
+                        VALUE from that source row into every concept-draft's
+                        `:attributes` (GC-11a) — so the cross-source spine (GC-11b)
+                        can recover the linking VALUE even when the linking key is
+                        not the entity's own keying field (the AUTHOR carries
+                        keying + measures, which a linking key often is NOT).
+                        Absent/empty → behavior-preserving (no carry).
 
    Behavior (adversarial, Disciplines #4/#5):
      - Per-row transform errors are CAUGHT, COUNTED, and SAMPLED — a transform
@@ -1036,7 +1135,7 @@
    The returned :concept-drafts / :relationship-drafts are the SAME draft shapes
    `compile-discovery-source!` ingests — so the caller flows them through the
    existing compile + V18 referential integrity unchanged."
-  [{:keys [descriptor transform-source selector window max-windows]}]
+  [{:keys [descriptor transform-source selector window max-windows linking-keys]}]
   (when-not (map? descriptor)
     (throw (ex-info "apply-extraction-transform!: :descriptor must be a source descriptor map {:type ... :path ...}"
                     {:descriptor descriptor})))
@@ -1179,7 +1278,15 @@
               outcome (apply-row row)]
           (if-let [r (:ok outcome)]
             (recur (next rs) (inc rows-streamed) (inc rows-ok) rows-errored errors
-                   (reduce conj! concept-drafts (or (:concept-drafts r) []))
+                   ;; GC-11a — DETERMINISTICALLY carry the discovered linking-key
+                   ;; column VALUES from THIS source row into the row's concept
+                   ;; drafts' :attributes (no-op when :linking-keys is empty). The
+                   ;; row is dual-keyed (same shape the transform saw) so the carry
+                   ;; matches the column name whatever key form the source uses.
+                   (reduce conj! concept-drafts
+                           (carry-linking-values (dual-key row)
+                                                 (or (:concept-drafts r) [])
+                                                 linking-keys))
                    (reduce conj! relationship-drafts (or (:relationship-drafts r) [])))
             (recur (next rs) (inc rows-streamed) rows-ok (inc rows-errored)
                    (if (< (count errors) max-error-sample)

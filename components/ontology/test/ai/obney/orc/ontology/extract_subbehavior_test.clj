@@ -223,9 +223,11 @@
         (is (= [:source :container] (vec (:reads sample)))
             "the SAMPLE node reads the source + the ONE container it grounds")
         (is (= [:sample-rows] (vec (:writes sample))))
-        (is (= [:source :transform-source :selector :container :max-windows] (vec (:reads apply*)))
+        (is (= [:source :transform-source :selector :container :max-windows :model-spec]
+               (vec (:reads apply*)))
             "the APPLY node reads the source + transform + selector + the container it
-             applies to + the GC-9 :max-windows reduced-cap (absent → the :fn default)")
+             applies to + the GC-9 :max-windows reduced-cap + the GC-11a :model-spec
+             (for the deterministic linking-key VALUE carry)")
         (is (= [:concept-drafts :relationship-drafts :extraction-report]
                (vec (:writes apply*)))
             "the APPLY node writes the per-container draft-set contract")))))
@@ -417,6 +419,40 @@
                    :selector "author_selector"}})
         (is (= "author_selector" (:selector @captured))
             "no container → the author selector is used (single-container path)")))))
+
+;; =============================================================================
+;; GC-11a — the APPLY node threads the model-spec's :linking-keys into the apply
+;; step so the deterministic linking-key VALUE carry runs. The NAMES are runtime
+;; discovery (off the model-spec); absent → no-op (behavior-preserving).
+;; =============================================================================
+
+(deftest gc11a-apply-node-threads-model-spec-linking-keys-test
+  (testing "apply-transform-for-container-code passes the model-spec's :linking-keys
+            to apply-extraction-transform! (so the deterministic VALUE carry runs);
+            a model-spec without :linking-keys threads nil (the no-op path)"
+    (let [captured (atom nil)]
+      (with-redefs [rlm-discovery/apply-extraction-transform!
+                    (fn [args]
+                      (reset! captured args)
+                      {:concept-drafts [] :relationship-drafts []
+                       :selector (:selector args) :rows-streamed 0 :rows-ok 0
+                       :rows-errored 0 :windows 0 :errors-sample []})]
+        ;; model-spec carrying discovered linking-keys → threaded through
+        (extract/apply-transform-for-container-code
+         {:inputs {:source {:type :sql :path "/tmp/x.db"}
+                   :transform-source "(fn [row] {:concept-drafts [] :relationship-drafts []})"
+                   :container {:name "t"}
+                   :model-spec {:entity-types [] :linking-keys ["CIPCODE"]}}})
+        (is (= ["CIPCODE"] (:linking-keys @captured))
+            "the model-spec's discovered :linking-keys are threaded into the apply step")
+        ;; model-spec WITHOUT linking-keys → nil threaded (the no-op carry path)
+        (extract/apply-transform-for-container-code
+         {:inputs {:source {:type :sql :path "/tmp/x.db"}
+                   :transform-source "(fn [row] {:concept-drafts [] :relationship-drafts []})"
+                   :container {:name "t"}
+                   :model-spec {:entity-types []}}})
+        (is (nil? (:linking-keys @captured))
+            "no :linking-keys on the model-spec → nil threaded (behavior-preserving no-op)")))))
 
 ;; =============================================================================
 ;; MC-5 — list-source-containers enumerates the source's containers (the loop set)

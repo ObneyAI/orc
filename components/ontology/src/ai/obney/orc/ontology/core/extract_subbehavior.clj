@@ -371,14 +371,17 @@
    the source is NOT aborted; the COUNT is returned so a high failure rate (or a
    0-concept result) surfaces loudly for the caller to gate on."
   [{:keys [inputs]}]
-  (let [{:keys [source transform-source selector max-windows]} inputs
+  (let [{:keys [source transform-source selector max-windows model-spec]} inputs
         ;; GC-7 — the window ceiling is the named default (50), caller-overridable
         ;; for an even tighter cap on a known-huge table.
         max-windows (or max-windows default-max-extract-windows)
+        ;; GC-11a — deterministic linking-key VALUE carry (see the per-container fn).
+        linking-keys (:linking-keys model-spec)
         result (rlm-discovery/apply-extraction-transform!
                 {:descriptor source
                  :transform-source transform-source
                  :selector selector
+                 :linking-keys linking-keys
                  ;; Bound the stream so a pathologically large table (e.g. IPEDS
                  ;; national completions, millions of rows) yields a representative
                  ;; SAMPLE within the node timeout rather than timing out wholesale.
@@ -444,17 +447,25 @@
    per-row draft set + a flat `:concept-count` (the resilience sanity-gate key) +
    the `:extraction-report` (the no-false-green coverage signal)."
   [{:keys [inputs]}]
-  (let [{:keys [source transform-source selector container max-windows]} inputs
+  (let [{:keys [source transform-source selector container max-windows model-spec]} inputs
         ;; the container's name wins (the loop is traversing it); fall back to the
         ;; author-emitted selector for the single-container path.
         effective-selector (or (:name container) selector)
         ;; GC-7 — named default window ceiling (caller-overridable for tighter caps).
         max-windows (or max-windows default-max-extract-windows)
+        ;; GC-11a — the discovered cross-source linking-key COLUMN NAMES carried
+        ;; forward on the model-spec (nil/absent → no-op carry). The apply-step
+        ;; DETERMINISTICALLY copies their per-row VALUES into each draft's
+        ;; :attributes so the spine recovers them even when a linking key is not the
+        ;; entity's own keying field. Domain-agnostic: names come from the runtime
+        ;; model-spec, never baked here.
+        linking-keys (:linking-keys model-spec)
         result (rlm-discovery/apply-extraction-transform!
                 {:descriptor source
                  :transform-source transform-source
                  :selector effective-selector
-                 :max-windows max-windows})
+                 :max-windows max-windows
+                 :linking-keys linking-keys})
         concept-drafts (vec (:concept-drafts result))
         relationship-drafts (vec (:relationship-drafts result))]
     {:concept-drafts concept-drafts
@@ -560,7 +571,9 @@
               ;; for a bounded reduced-cap build). The APPLY :fn reads it from inputs;
               ;; declared here so the orchestrator's forwarded value binds (absent →
               ;; the :fn's `(or max-windows default-max-extract-windows)` default).
-              :reads [:source :transform-source :selector :container :max-windows]
+              ;; GC-11a — also read :model-spec so the apply step can carry the
+              ;; model-spec's discovered :linking-keys VALUES into :attributes.
+              :reads [:source :transform-source :selector :container :max-windows :model-spec]
               ;; EB9 — declare the FLAT :concept-count so the sanity :condition
               ;; can gate the intermediate state.
               :writes [:concept-drafts :relationship-drafts
@@ -626,7 +639,8 @@
             :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
             ;; GC-9 — see the resilient path above: declare :max-windows so the
             ;; forwarded window cap binds (absent → the :fn's default applies).
-            :reads [:source :transform-source :selector :container :max-windows]
+            ;; GC-11a — :model-spec read for the deterministic linking-key carry.
+            :reads [:source :transform-source :selector :container :max-windows :model-spec]
             :writes [:concept-drafts :relationship-drafts :extraction-report]))))))
 
 ;; =============================================================================
