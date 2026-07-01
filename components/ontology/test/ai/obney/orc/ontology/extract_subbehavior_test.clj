@@ -492,6 +492,42 @@
               "drafts come only from the processed containers (honest, not the full 10)"))))))
 
 ;; =============================================================================
+;; ER-1/ER-2 — the orchestrator NORMALIZES a string-form model-spec BEFORE it
+;; forwards it to the per-container AUTHOR. The C1 parse of `:entity-types` is
+;; intermittent (arrives as parsed data OR an un-parsed EDN STRING). The pipeline
+;; threads the RAW model-spec to Extract (central_evolver's normalize runs
+;; POST-extraction), so an un-coerced string would make the AUTHOR ground in
+;; garbage + fall back to generic keys (→ 0 concepts on a heterogeneous sheet).
+;; =============================================================================
+
+(deftest orchestrator-normalizes-string-model-spec-before-forwarding-test
+  (testing "a STRING-form :entity-types is coerced to a parsed vector-of-maps
+            BEFORE being forwarded to the per-container child tick — so the AUTHOR
+            grounds in real entity types, not the string's characters"
+    (let [captured (atom :unset)]
+      (with-redefs [extract/list-source-containers (fn [_] [{:name "sheet1"}])
+                    extract/extract-per-container-sheet-id-for (fn [] (random-uuid))
+                    dsl/execute (fn [_ _ inputs & _]
+                                  (reset! captured (get inputs "model-spec"))
+                                  {:status :success})
+                    dsl/get-tick-blackboard
+                    (fn [_ _] {:concept-drafts {:value []}
+                               :relationship-drafts {:value []}
+                               :extraction-report {:value {:rows-streamed 0 :rows-errored 0}}})]
+        (extract/orchestrate-extract-containers
+         {:inputs {:source {:type :excel :path "/tmp/x"}
+                   ;; the C1 fragility: :entity-types as an UN-PARSED EDN STRING.
+                   :model-spec {:entity-types "[{:type \"Occupation\" :uri-keying-fields [\"soc\"]}]"}
+                   :max-containers 1}
+          :tick-id (random-uuid) :event-store :stub})
+        (let [ets (:entity-types @captured)]
+          (is (vector? ets)
+              "forwarded :entity-types is a parsed VECTOR (not the raw string the AUTHOR would choke on)")
+          (is (= 1 (count ets)) "the one entity-type map survived the coercion")
+          (is (= "Occupation" (:type (first ets)))
+              "the entity-type map parsed correctly (real :type, not a nil-iterating char)"))))))
+
+;; =============================================================================
 ;; MC-5 — the orchestrator ACCUMULATES per-container drafts + an HONEST report
 ;; =============================================================================
 ;; Hermetic: redef the per-container child tick (dsl/execute + get-tick-blackboard)

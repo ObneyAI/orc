@@ -1453,8 +1453,22 @@
    names no field/container — the per-container unit grounds in real keys at
    runtime."
   [{:keys [inputs] :as context}]
-  (let [{:keys [source model-spec max-containers max-windows
+  (let [{:keys [source max-containers max-windows
                 max-extract-concurrency]} inputs
+        ;; ER-1/ER-2 — NORMALIZE the model-spec at the EXTRACT boundary, before the
+        ;; per-container AUTHOR sees it. The Model→Extract pipeline threads the RAW
+        ;; model-spec here; `normalize-model-spec` in `delegate-model-extract!` runs
+        ;; POST-extraction (on the pipeline OUTPUT, for the land/axiom/embed consumers),
+        ;; so it does NOT protect the AUTHOR. For a source whose C1 `:entity-types`
+        ;; arrived as an un-parsed EDN STRING (the intermittent parse fragility —
+        ;; observed on crosswalk/O*NET), the AUTHOR would ground in GARBAGE (a string
+        ;; iterating to nils) and fall back to GENERIC column keys, which don't match a
+        ;; heterogeneous sheet's actual columns (O*NET junction sheets: `Abilities
+        ;; Element ID` ≠ generic `Element ID`) → 0 concepts (ER-1). Coercing HERE gives
+        ;; the AUTHOR clean entity-types → it keys correctly per sheet → the junction
+        ;; sheets extract (measured: 0 → 762/278). Behavior-preserving for an already-
+        ;; parsed vector; pure + total.
+        model-spec (normalize-model-spec (:model-spec inputs))
         ;; the execution context for child ticks = the orchestrator's context minus
         ;; the node-scoped keys (`runtime/execute` needs the event-store + registries
         ;; + pubsub + cache the executor threaded into this `:code` node's context).
