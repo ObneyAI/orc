@@ -14,10 +14,14 @@ The benchmark instability had TWO independent contributors:
 
 ## Slice table + cadence
 
-| Slice | What | Type | Blocked by | /prototype | /handoff |
-|-------|------|------|-----------|-----------|----------|
-| **ER-1** | O\*NET heterogeneous-sheet key adaptation — recover from a 0-draft key mismatch by re-authoring grounded in the sheet's ACTUAL columns | HITL | — | **YES** — reproduce the junction-sheet 0-draft live; prototype the recover-with-real-columns before TDD | now (self-contained) |
-| **ER-2** | Coerce/guard model-spec `:entity-types` unparsed-string at the extract boundary | AFK | — | light | now (self-contained) |
+| Slice | What | Type | Status | /prototype | /handoff |
+|-------|------|------|--------|-----------|----------|
+| **ER-1 + ER-2** | Normalize the model-spec at the EXTRACT boundary → the AUTHOR grounds in parsed entity-types, keys correctly per sheet, O\*NET junction sheets extract | HITL | ✅ **DONE** (commit `06101ec7`) | done | done |
+| **ER-3** | Intermittent vocabulary fragmentation — the SAME entity minted under 2-3 type-names run-to-run (`institution` / `educational-institution` / `unitid`) → GC-1 keys the URI on the type-name → no merge → concept-count inflation | HITL | 🔎 next (root-cause) | YES | after root-cause |
+
+**ER-1/ER-2 resolution (2026-07-01):** root-caused (the pipeline threads the RAW model-spec to the AUTHOR; `normalize-model-spec` ran POST-extraction) and fixed with a one-boundary normalize in `orchestrate-extract-containers`. Validated LIVE (junction sheets 0 → 762/278, reliable across 2 runs) + TDD red→green + brick gate green. The two issues merged into one small fix.
+
+**ER-3 (the remaining variance):** intermittent — run 1 fragmented (`institution`/`educational-institution`/`unitid`, 3×200 → 1066 concepts), run 2 clean (`institution 309` → 575). GC-6 synthesize-vocab is supposed to give ONE canonical `:type` per entity (with source names as `:aliases`) and the Model reads `:vocabulary`, so the divergence means one of: synth-vocab didn't emit a single type, the Model/AUTHOR ignored the vocabulary and tagged a variant `:entity-type`, or GM-1's graph-context nudged variant minting. Root-cause needs instrumentation (capture synth-vocab's output + the per-draft `:entity-type` tags on a FRAGMENTED run — it's intermittent, so may need several catches). DO NOT ASSUME the cause. See [[project_graph_fragmentation_root_cause]].
 
 **Relationship:** ER-2 may partially mitigate ER-1 (a clean model-spec gives the AUTHOR better grounding, less generic-key guessing). Investigate that in ER-1's prototype; if a coerced model-spec alone fixes the junction-sheet extraction, ER-1 shrinks. Sequence: ER-1 first (the user's priority — the concrete variance fix), reusing ER-2's coercion if it lands.
 
