@@ -18,7 +18,13 @@ A diagnostic capturing synth-vocab's output + each source's model-spec `:type` n
 
 So: **empty/malformed model-spec `:entity-types` → the AUTHOR invents inconsistent `:entity-type` tags (string vs keyword, divergent names), ignoring the canonical GC-6 vocabulary → GC-1 fragments them.** Intermittent because the C1 parse of `:entity-types` is intermittent.
 
-## Fix directions (to scope — MEASURE, don't assume which is sufficient)
+## ⚠ Prototype finding (2026-07-01) — the SIMPLE backfill regresses O\*NET (consistency-vs-completeness tension)
+
+A prototype of fix direction (1) — backfill the empty model-spec `:entity-types` from the vocabulary's `:canonical-entity-types` (threaded `:vocabulary` to the Extract sheet + `orchestrate-extract-containers`) — was built and LIVE-tested (2 runs), then **reverted**. It WORKS for the core fragmentation (institutions collapse to ONE kind: `:educationalinstitution 309`, reliably) BUT it **regresses ER-1**: O\*NET produced **0 drafts both runs**. Root cause of the regression: the shared vocabulary covers only the CROSS-SOURCE entities (institution/program/occupation/field), NOT O\*NET's SOURCE-SPECIFIC types (Ability, WorkActivity). Backfilling an empty O\*NET model-spec with canonical-only types makes the AUTHOR ground in those → the ability sheets match nothing → the junction data ER-1 recovered is LOST. So a plain "replace empty entity-types with the vocabulary" backfill trades institution consistency for O\*NET completeness — a NET-NEGATIVE (silent data loss, #4/#5). NOT shipped.
+
+The real fix must be ADDITIVE: the canonical vocabulary types as a FLOOR (so cross-source entities are consistent) WITHOUT preventing the AUTHOR from modeling SOURCE-SPECIFIC types for data the vocabulary doesn't cover (so O\*NET's ability/activity — which are actually multi-qualified stats, GM-1/Observation territory — still extract). Note: O\*NET's ability×activity RATING sheets are wide-stats/reified-Observation data, so a complete fix likely COUPLES ER-3 with GM-1's grain/reify handling for the source-specific rating tables.
+
+## Fix directions (to scope — MEASURE, don't assume which is sufficient; the simple backfill above is NET-NEGATIVE)
 
 1. **AUTHOR falls back to the GC-6 canonical vocabulary for `:entity-type`.** The canonical vocabulary is CORRECT and available; when the model-spec `:type` is absent/empty, the AUTHOR (or a deterministic post-step) should map each draft to the canonical `:type` (by the vocabulary's `:aliases`/`:description`) rather than invent a name. This is the robust fix — the vocabulary is the source of truth for type naming.
 2. **Coerce `:entity-type` to ONE canonical FORM** before GC-1 canonicalization — a string `"Ability"` and a keyword `:ability` must not fragment (`normalize-key-name` already exists for type MATCHING; ensure the URI minting uses the normalized form, so string/keyword/casing variants collapse).
