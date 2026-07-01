@@ -118,14 +118,15 @@
             "the full write contract is reasoning-first, then the two structured maps")))))
 
 (deftest model-contract-is-goal-and-profile-in-spec-out-test
-  (testing "the public contract: [:goal :profile :vocabulary] in, [:reasoning
-            :model-spec :candidate-axioms] out (GC-6 widened :reads to also take the
-            shared discovered :vocabulary)"
+  (testing "the public contract: [:goal :profile :vocabulary :graph-context] in,
+            [:reasoning :model-spec :candidate-axioms] out (GC-6 widened :reads to take
+            the shared discovered :vocabulary; GM-1 widened it again to take the
+            :graph-context snapshot)"
     (h/with-async-test-context [ctx]
       (let [sid (model/register-model-subbehavior! ctx {})
             llm (first (filter #(= :ai (:executor %)) (vals (rm/get-nodes-by-id ctx sid))))]
-        (is (= [:goal :profile :vocabulary] (vec (:reads llm)))
-            "the node reads the goal + the profile + the shared vocabulary (GC-6)")
+        (is (= [:goal :profile :vocabulary :graph-context] (vec (:reads llm)))
+            "the node reads the goal + the profile + the shared vocabulary (GC-6) + the graph-context (GM-1)")
         (is (= [:reasoning :model-spec :candidate-axioms] (vec (:writes llm)))
             "the node writes reasoning-first, then the model-spec + candidate-axioms")))))
 

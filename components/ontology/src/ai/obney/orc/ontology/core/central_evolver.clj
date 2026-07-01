@@ -74,6 +74,7 @@
             [ai.obney.orc.ontology.core.survey-subbehavior :as survey]
             [ai.obney.orc.ontology.core.model-subbehavior :as model]
             [ai.obney.orc.ontology.core.synthesize-vocab-subbehavior :as synth]
+            [ai.obney.orc.ontology.core.graph-context-snapshot :as gcs]
             [ai.obney.orc.ontology.core.extract-subbehavior :as extract]
             [ai.obney.orc.ontology.core.reconcile-subbehavior :as reconcile]
             [ai.obney.orc.ontology.core.axiom-tbox-subbehavior :as axiom]
@@ -139,6 +140,10 @@
         ;; same real entity gets the same canonical type/key across sources. Optional
         ;; ([:maybe …]) so the pre-GC-6 / no-vocab path still runs.
         :vocabulary [:maybe synth/vocabulary-schema]
+        ;; GM-1 — the graph-context snapshot (existing entity types + keying + predicates
+        ;; + a sample), delegated IN to the Model so it models new data AGAINST the graph
+        ;; built so far. Optional ([:maybe …]) so the empty-graph first-source path runs.
+        gcs/graph-context-key [:maybe gcs/graph-context-schema]
         ;; GC-9 — the reduced-cap knobs, delegated IN to the Extract step (below) so a
         ;; caller can bound the per-source draft volume for a reduced-cap build.
         ;; Optional ([:maybe …]) so the unset → extract-default path still runs.
@@ -158,7 +163,8 @@
         ;; its entity-type naming is constrained to the canonical type/key.
         (dsl/delegate "delegate-model"
           :target-sheet-id model-sid
-          :reads [:goal :profile :vocabulary]
+          ;; GM-1 — also thread the graph-context snapshot into the Model.
+          :reads [:goal :profile :vocabulary gcs/graph-context-key]
           :writes [:reasoning :model-spec :candidate-axioms]
           :timeout-ms 180000)
         ;; STEP 2 — :delegate Extract (model-spec × source → drafts). Reads the
@@ -405,7 +411,7 @@
    container build at container ~10-11 and landed 0 drafts. `max-containers` is
    threaded from the caller (the same cap the Extract orchestrator reads); absent,
    it resolves to `extract/default-max-containers`."
-  [ctx {:keys [source goal profile vocabulary pipeline-sheet-id max-containers max-windows]}]
+  [ctx {:keys [source goal profile vocabulary graph-context pipeline-sheet-id max-containers max-windows]}]
   (let [r (delegate-subbehavior!
            ctx {:timeout-ms (model-extract-timeout-ms {:max-containers max-containers})
                 :central-name (str "ontology-central/pipeline-" (name (:type source)) "@v1")
@@ -417,6 +423,10 @@
                             ;; [:maybe …] tolerates the no-vocab path). STRUCTURED so
                             ;; it crosses :delegate parsed into the Model.
                             :vocabulary [:maybe synth/vocabulary-schema]
+                            ;; GM-1 — the graph-context snapshot (optional; [:maybe …]
+                            ;; tolerates the empty-graph first-source path). STRUCTURED
+                            ;; so it crosses :delegate parsed into the Model.
+                            gcs/graph-context-key [:maybe gcs/graph-context-schema]
                             ;; GC-9 — the reduced-cap knobs (optional; [:maybe …]
                             ;; tolerates the unset → extract-default path). STRUCTURED
                             ;; so they cross :delegate parsed into the Extract sheet.
@@ -427,11 +437,14 @@
                             :concept-drafts extract/concept-drafts-schema
                             :relationship-drafts extract/relationship-drafts-schema
                             :extraction-report extract/extraction-report-schema}
-                :reads [:goal :profile :source :vocabulary :max-containers :max-windows]
+                :reads [:goal :profile :source :vocabulary gcs/graph-context-key
+                        :max-containers :max-windows]
                 :writes [:model-spec :candidate-axioms
                          :concept-drafts :relationship-drafts :extraction-report]
                 :inputs {"goal" goal "profile" profile "source" source
                          "vocabulary" vocabulary
+                         ;; GM-1 — forward the graph-context snapshot to the Model.
+                         "graph-context" graph-context
                          ;; GC-9 — forward the caps so they reach the Extract orchestrator
                          ;; (nil → the orchestrator/APPLY falls back to its own defaults).
                          "max-containers" max-containers
@@ -786,8 +799,12 @@
       (:extract :model)
       ;; re-run the per-source pipeline (re-model + re-extract) → re-land + re-embed.
       ;; GC-6 — the re-model/re-extract obeys the SAME shared vocabulary.
-      (let [mx ((or model-extract-fn delegate-model-extract!)
+      ;; GM-1 — the focal re-model sees the CURRENT (now fully-built) graph in context,
+      ;; so a re-model attaches to the existing entities instead of re-minting them.
+      (let [graph-context (gcs/graph-context-snapshot ctx ontology-id)
+            mx ((or model-extract-fn delegate-model-extract!)
                 ctx {:source source :goal goal :profile profile :vocabulary vocabulary
+                     :graph-context graph-context
                      ;; GC-9 — the focal re-extract obeys the SAME reduced caps.
                      :max-containers max-containers :max-windows max-windows
                      :pipeline-sheet-id pipeline-sheet-id :model model :resilient? resilient?})]
@@ -995,12 +1012,17 @@
   [ctx {:keys [ontology-id sources goal model resilient? judge-fn exit-criterion
                consumer-cqs evolver-config mode gf-branch source-uri-sets
                max-containers max-windows
-               survey-fn derive-cqs-fn synthesize-vocab-fn model-extract-fn reconcile-fn
+               survey-fn derive-cqs-fn synthesize-vocab-fn graph-context-fn
+               model-extract-fn reconcile-fn
                axiom-fn embed-fn build-fn gate-fn route-fn]}]
   (let [;; seam defaults (production delegate; tests stub)
         survey-fn (or survey-fn delegate-survey!)
         derive-cqs-fn (or derive-cqs-fn delegate-derive-cqs!)
         synthesize-vocab-fn (or synthesize-vocab-fn delegate-synthesize-vocab!)
+        ;; GM-1 — the pre-Model graph-context step (default: the real read-only
+        ;; snapshot; tests stub it). Computed FRESH per source (below), so a source
+        ;; processed AFTER an entity-defining source sees that entity in context.
+        graph-context-fn (or graph-context-fn gcs/graph-context-snapshot)
         model-extract-fn (or model-extract-fn delegate-model-extract!)
         reconcile-fn (or reconcile-fn delegate-reconcile!)
         axiom-fn (or axiom-fn delegate-axiom!)
@@ -1059,9 +1081,18 @@
                   per-source
                   (mapv
                    (fn [src profile]
-                     (let [mx (model-extract-fn
+                     (let [;; GM-1 — snapshot the graph built SO FAR (by the sources
+                           ;; already reconciled earlier in this sequential mapv) and
+                           ;; thread it into THIS source's Model, so it models new data
+                           ;; AGAINST the existing entities (attach/reify, not mint per-row).
+                           ;; The mapv is sequential, so an entity-defining source
+                           ;; processed FIRST is already landed + in this snapshot.
+                           graph-context (graph-context-fn ctx ontology-id)
+                           mx (model-extract-fn
                                ctx {:source src :goal goal :profile profile
                                     :vocabulary vocab
+                                    ;; GM-1 — the pre-Model graph-context snapshot.
+                                    :graph-context graph-context
                                     ;; GC-9 — thread the reduced-cap knobs into EVERY
                                     ;; per-source Model→Extract (nil → extract defaults).
                                     :max-containers max-containers
@@ -1230,7 +1261,8 @@
   [ctx {:keys [ontology-id sources goal model budget resilient? judge-fn exit-criterion
                consumer-cqs evolver-config debug? mode source-uri-sets
                max-containers max-windows
-               survey-fn derive-cqs-fn synthesize-vocab-fn model-extract-fn reconcile-fn
+               survey-fn derive-cqs-fn synthesize-vocab-fn graph-context-fn
+               model-extract-fn reconcile-fn
                axiom-fn embed-fn build-fn gate-fn route-fn]
         :or {model "google/gemini-3-flash-preview"}}]
   (when-not ontology-id
@@ -1261,6 +1293,8 @@
           :mode run-mode :gf-branch gf-branch :source-uri-sets source-uri-sets
           :survey-fn survey-fn :derive-cqs-fn derive-cqs-fn
           :synthesize-vocab-fn synthesize-vocab-fn
+          ;; GM-1 — the pre-Model graph-context step (default: the real snapshot).
+          :graph-context-fn graph-context-fn
           :model-extract-fn model-extract-fn :reconcile-fn reconcile-fn
           :axiom-fn axiom-fn :embed-fn embed-fn
           :build-fn build-fn :gate-fn gate-fn :route-fn route-fn})))

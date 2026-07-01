@@ -72,6 +72,7 @@
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [ai.obney.orc.ontology.core.resilience :as res]
             [ai.obney.orc.ontology.core.synthesize-vocab-subbehavior :as synth]
+            [ai.obney.orc.ontology.core.graph-context-snapshot :as gcs]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -328,6 +329,97 @@
        "  - If NO vocabulary is provided, name your entity types from the profile "
        "as usual."))
 
+(defn- grain-reify-block
+  "GM-1 (ROUND 2 — TUNED for precision): MODEL AGAINST THE GRAPH SO FAR + a NARROW,
+   HIGH-BAR reify EXCEPTION. Round 1's block over-fired: it framed EVERY numeric
+   column as a reifiable 'measure' and read a secondary CATEGORICAL column (an
+   element/attribute label, a wide-vs-long layout artifact) as a second 'subject
+   dimension', so clean single-subject sources (an entity with many rating columns,
+   a code crosswalk, a plain entity catalog) grew spurious Observation nodes +
+   dimension edges (the 447/338 → 701/992 regression).
+
+   The tune: reification is a RARE EXCEPTION, not the default. The DEFAULT — for
+   normal entity sources and single-subject multi-numeric sources alike — is to
+   model EXACTLY as the grain/scope step above already says (entities keyed from
+   identifying-keys; numbers as flat native-number `:attributes`). Reify to an
+   Observation ONLY when a single row's numbers are genuinely co-qualified by TWO OR
+   MORE INDEPENDENT REAL-WORLD ENTITIES (not entity × attribute-category). When in
+   any doubt: do NOT reify.
+
+   The `graph-context` input (when present) previews the graph BUILT SO FAR so the
+   Model can ATTACH to existing entities (reducing duplicate mints) — it is NOT a
+   licence to ADD nodes/edges; a clean entity source models the same with or without
+   it. Deterministic code only PROVIDES this context — it NEVER rewrites the
+   decision.
+
+   Domain-agnostic (#12): names NO vertical entity-type, column, or format — the
+   discriminator is purely 'is a single row's number co-qualified by ≥2 independent
+   real-world entities?', not any column list."
+  []
+  (str "\n\nMODEL AGAINST THE GRAPH SO FAR (attach, don't duplicate):\n"
+       "  - You may be given a `graph-context` input: a preview of the graph BUILT "
+       "SO FAR — its existing entity types (`:entity-types`, each with a `:type`, a "
+       "`:count`, a `:uri-keying-sample` of real existing URIs, and the "
+       "`:attribute-fields` already on that type), the `:predicates` in use, and a "
+       "`:content-sample` of real existing concepts. These entities ALREADY EXIST. "
+       "Use it ONLY to ATTACH to them (match by meaning/key so the SAME real entity "
+       "resolves to the SAME node) — it is NOT a reason to ADD entity types, "
+       "Observation nodes, or edges you would not otherwise model. A normal entity "
+       "source is modeled the SAME whether or not a graph-context is present.\n"
+       "\n"
+       "THE DEFAULT (this is what nearly every source does — do this UNLESS the rare "
+       "reify test below clearly fires):\n"
+       "  - Model the entities the source defines exactly as the GRAIN + SCOPE step "
+       "above already tells you: one node per real entity (keyed from its "
+       "identifying-keys), edges only where a linking-key genuinely connects two "
+       "entity types. Carry EVERY numeric column (a count, rate, percentile, score, "
+       "amount, rating) as a flat native-number `:attribute` on the entity it "
+       "describes. This includes a source that is ONE kind of entity with MANY "
+       "numeric columns (e.g. one thing carrying dozens of ratings/scores): that is "
+       "a legitimate single-subject multi-numeric entity — keep it FLAT, mint NO "
+       "Observation, add NO extra edges. A wide table that lists many measure "
+       "columns for one subject, OR a long table that names the measure in one "
+       "column and its value in another (a measure/element/attribute LABEL column), "
+       "is STILL that ONE subject's own attributes — the label column is a LAYOUT "
+       "artifact, NOT a second real-world subject. Plain entity lists, code "
+       "crosswalks, and catalogs of things are all this default case; the rule "
+       "below changes NOTHING for them.\n"
+       "\n"
+       "A RELATIONSHIP BETWEEN TWO ENTITIES IS AN EDGE, NOT A NODE:\n"
+       "  - If a row simply PAIRS one entity with another (a mapping, a crosswalk, a "
+       "correspondence, a lookup between two code systems, a 'this relates to that' "
+       "link) and carries NO numeric measure of its own, it is a plain EDGE between "
+       "those two entity types — model it in `:edges`. NEVER mint a node for the "
+       "pairing itself (no 'mapping' node, no 'pathway' node, no 'correspondence' "
+       "node, no 'link' node — one node per PAIR is exactly the cross-product "
+       "explosion to avoid). A two-column code-to-code table is edges, PERIOD.\n"
+       "\n"
+       "THE RARE REIFY EXCEPTION (apply ONLY when BOTH conditions below hold — "
+       "otherwise use the default or a plain edge):\n"
+       "  - Condition 1 — there are actual NUMERIC MEASURE VALUES in the row (a "
+       "count, rate, percentile, score, amount) that need somewhere to live. If a "
+       "row has NO numeric measures, there is NOTHING to reify — it is an entity "
+       "(default) or an edge (a pairing). Reification exists ONLY to house measures "
+       "that belong to a multi-entity grain.\n"
+       "  - Condition 2 — those measures are meaningless unless you name MORE THAN "
+       "ONE INDEPENDENT REAL-WORLD ENTITY (the value is specific to entity A AND a "
+       "DIFFERENT entity B, two distinct subjects that each exist in their own right "
+       "as their own nodes), optionally plus a period/time qualifier. A category/"
+       "level/element/band that merely LABELS or SLICES ONE subject's own measures "
+       "is NOT a second entity and does NOT qualify.\n"
+       "  - ONLY when BOTH hold: model ONE Observation entity type whose ONE instance "
+       "is ONE grain-tuple (its `:uri-keying-fields` are the COMBINATION of the two "
+       "dimension keys, so each distinct pair is one node — NOT one node per raw row, "
+       "NOT a cross-product of unrelated values). Its numeric MEASURES ride as "
+       "native-number `:attributes`; its two ENTITY-dimensions become EDGES to the "
+       "EXISTING entities from `graph-context` (match them by meaning/key — do NOT "
+       "re-mint them). Any period/band qualifier rides as an attribute on the "
+       "observation, not as its own node.\n"
+       "  - WHEN IN DOUBT, DO NOT REIFY. If EITHER condition is unclear, use the "
+       "default (numbers as flat attributes on the one entity) or a plain edge (a "
+       "pairing). A missed reification is a minor loss; an over-eager one fabricates "
+       "one node per row and fragments the graph.\n"))
+
 (defn- output-framing
   "Spell out the `:llm` node's declared `:writes` for the model — `:reasoning`
    FIRST (#13), then the model-spec map (with the embed-fields folded in), then
@@ -380,6 +472,9 @@
    (linking-keys-block)
    ;; GC-6 — constrain entity-type naming to the shared discovered vocabulary.
    (vocabulary-constraint-block)
+   ;; GM-1 — model against the graph so far + the grain/reify principle (measures of a
+   ;; grain reify as Observations IFF multi-subject-qualified; single-subject → flat).
+   (grain-reify-block)
    ;; The #13 reasoning-first output framing across the three write keys.
    (output-framing)))
 
@@ -459,7 +554,8 @@
             :model mdl
             :instruction prompt
             ;; GC-6 — also read the shared discovered :vocabulary (when threaded in).
-            :reads [:goal :profile :vocabulary]
+            ;; GM-1 — also read the :graph-context snapshot (when threaded in).
+            :reads [:goal :profile :vocabulary gcs/graph-context-key]
             ;; #13 — :reasoning FIRST (chain-of-thought before the structured spec).
             :writes [:reasoning :model-spec :candidate-axioms]))
         body
@@ -492,7 +588,8 @@
             :model mdl
             :instruction (model-prompt)
             ;; GC-6 — also read the shared discovered :vocabulary (when threaded in).
-            :reads [:goal :profile :vocabulary]
+            ;; GM-1 — also read the :graph-context snapshot (when threaded in).
+            :reads [:goal :profile :vocabulary gcs/graph-context-key]
             :writes [:reasoning :model-spec :candidate-axioms]))]
     (dsl/workflow nm
       (dsl/blackboard
@@ -505,6 +602,10 @@
          ;; central evolver after synthesize-vocab). STRUCTURED so it can be
          ;; delegated IN as a parsed map; [:maybe …] tolerates the no-vocab path.
          :vocabulary [:maybe synth/vocabulary-schema]
+         ;; GM-1 — the graph-context snapshot (optional; threaded in by the central
+         ;; evolver's pre-Model step). STRUCTURED so it crosses :delegate parsed;
+         ;; [:maybe …] tolerates the empty-graph first-source path.
+         gcs/graph-context-key [:maybe gcs/graph-context-schema]
          :reasoning :string
          ;; C1 — STRUCTURED schemas for the map contracts that cross
          ;; :delegate; NEVER a bare :map (the :llm-node failure mode).

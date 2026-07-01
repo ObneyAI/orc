@@ -124,8 +124,8 @@
     (h/with-async-test-context [ctx]
       (let [sid (model/register-model-subbehavior! ctx {})
             llm (first (filter #(= :ai (:executor %)) (vals (orm/get-nodes-by-id ctx sid))))]
-        (is (= [:goal :profile :vocabulary] (vec (:reads llm)))
-            "the Model node reads :goal :profile :vocabulary")
+        (is (= [:goal :profile :vocabulary :graph-context] (vec (:reads llm)))
+            "the Model node reads :goal :profile :vocabulary (+ :graph-context, GM-1)")
         (is (= :reasoning (first (:writes llm)))
             "#13 — :reasoning still written FIRST (unchanged)")))))
 
