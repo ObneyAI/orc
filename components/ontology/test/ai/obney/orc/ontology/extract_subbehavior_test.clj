@@ -136,9 +136,11 @@
         (is (= "ai.obney.orc.ontology.core.extract-subbehavior/orchestrate-extract-containers"
                (:fn (first code-leaves)))
             "the orchestrator node's :fn is the multi-container orchestrator")
-        (is (= [:source :model-spec :max-containers :max-windows] (vec (:reads (first code-leaves))))
+        (is (= [:source :model-spec :max-containers :max-windows :selected-containers]
+               (vec (:reads (first code-leaves))))
             "the orchestrator reads the public :reads contract (+ the optional GC-9
-             :max-containers/:max-windows reduced-cap bounds it forwards to each child)")
+             :max-containers/:max-windows reduced-cap bounds + the optional MT-2
+             :selected-containers survey-driven relevance selection)")
         (is (= [:concept-drafts :relationship-drafts :extraction-report]
                (vec (:writes (first code-leaves))))
             "the orchestrator writes the public draft-set contract")))))
@@ -490,6 +492,91 @@
           (is (= 3 (:containers-processed report)) "only the capped count was processed")
           (is (= 3 (count (:concept-drafts out)))
               "drafts come only from the processed containers (honest, not the full 10)"))))))
+
+;; =============================================================================
+;; MT-2 — the orchestrator consumes an OPTIONAL `:selected-containers` (the survey-
+;; driven relevance selection) instead of the blind `(take cap …)`. When present,
+;; it drives child ticks for EXACTLY those containers (already pre-filtered + ranked
+;; + bounded upstream); when ABSENT, the existing take-cap path is UNCHANGED (back-
+;; compat — the csv single-container path + every existing extract test stays green).
+;; =============================================================================
+
+(deftest orchestrator-consumes-selected-containers-not-take-cap-test
+  (testing "given :selected-containers, the orchestrator drives child ticks for
+            EXACTLY those containers (not take-cap-first-N of the raw list)"
+    (let [;; the raw source lists c0..c9 ALPHABETICALLY; take-cap would grab c0,c1,c2.
+          raw (mapv #(hash-map :name (str "c" %)) (range 10))
+          ;; the upstream selection chose two LATER containers (never in the take-3
+          ;; prefix) — proving the orchestrator follows the SELECTION, not the raw take.
+          selected [{:name "c7" :path "/wb" :sheet "c7" :shape :entity :roles {:key "k"}}
+                    {:name "c4" :path "/wb" :sheet "c4" :shape :long-form :roles {:key "k"}}]
+          driven (atom [])
+          tick->c (atom {})]
+      (with-redefs [extract/list-source-containers (fn [_] raw)
+                    extract/extract-per-container-sheet-id-for (fn [] (random-uuid))
+                    dsl/execute (fn [_ _ inputs & {:keys [tick-id]}]
+                                  (let [c (get inputs "container")]
+                                    (swap! driven conj (:name c))
+                                    (swap! tick->c assoc tick-id (:name c))
+                                    {:status :success}))
+                    dsl/get-tick-blackboard
+                    (fn [_ tick-id]
+                      {:concept-drafts {:value [{:uri (str "u-" (get @tick->c tick-id))
+                                                 :label "x"}]}
+                       :relationship-drafts {:value []}
+                       :extraction-report {:value {:rows-streamed 5 :rows-errored 0}}})]
+        (let [out (extract/orchestrate-extract-containers
+                   {:inputs {:source {:type :excel :path "/wb"}
+                             :model-spec {} :max-containers 3
+                             :selected-containers selected}
+                    :tick-id (random-uuid) :event-store :stub})
+              report (:extraction-report out)]
+          ;; EXACTLY the selected containers were driven (child ticks run under
+          ;; GC-13 BOUNDED CONCURRENCY, so start-order is non-deterministic — assert
+          ;; the SET here; selection ORDER is asserted via the order-preserving
+          ;; concept-drafts below).
+          (is (= #{"c7" "c4"} (set @driven))
+              "child ticks ran for exactly the selected containers (not the raw take-cap)")
+          (is (= 2 (count @driven)) "no extra / duplicate containers were driven")
+          ;; the accumulated drafts are order-preserving (mapv deref in input order),
+          ;; so they follow the SELECTION order [c7 c4] — from the SELECTED containers,
+          ;; never the take-cap prefix c0/c1/c2.
+          (is (= ["u-c7" "u-c4"] (map :uri (:concept-drafts out)))
+              "drafts come from the SELECTED containers, in selection order (not c0/c1/c2)")
+          (is (= 2 (:containers-processed report))
+              "the processed count reflects the 2 selected, not the cap of 3")
+          (is (= 10 (:containers-total report))
+              "the total still counts ALL containers in the source (honest report)"))))))
+
+(deftest orchestrator-absent-selected-containers-uses-take-cap-unchanged-test
+  (testing "when :selected-containers is ABSENT, the orchestrator falls back to the
+            existing take-cap path UNCHANGED (back-compat)"
+    (let [raw (mapv #(hash-map :name (str "c" %)) (range 10))
+          driven (atom [])
+          tick->c (atom {})]
+      (with-redefs [extract/list-source-containers (fn [_] raw)
+                    extract/extract-per-container-sheet-id-for (fn [] (random-uuid))
+                    dsl/execute (fn [_ _ inputs & {:keys [tick-id]}]
+                                  (let [c (get inputs "container")]
+                                    (swap! driven conj (:name c))
+                                    (swap! tick->c assoc tick-id (:name c))
+                                    {:status :success}))
+                    dsl/get-tick-blackboard
+                    (fn [_ tick-id]
+                      {:concept-drafts {:value [{:uri (str "u-" (get @tick->c tick-id))
+                                                 :label "x"}]}
+                       :relationship-drafts {:value []}
+                       :extraction-report {:value {:rows-streamed 5 :rows-errored 0}}})]
+        (let [out (extract/orchestrate-extract-containers
+                   {:inputs {:source {:type :sql :path "/tmp/x.db"}
+                             :model-spec {} :max-containers 3}   ; NO :selected-containers
+                    :tick-id (random-uuid) :event-store :stub})]
+          (is (= #{"c0" "c1" "c2"} (set @driven))
+              "the take-cap-first-N path is UNCHANGED when no selection is supplied")
+          (is (= ["u-c0" "u-c1" "u-c2"] (map :uri (:concept-drafts out)))
+              "exactly the capped first-3 raw containers processed, in list order (back-compat)")
+          (is (= 3 (count (:concept-drafts out)))
+              "exactly the capped 3 raw containers were processed (back-compat)"))))))
 
 ;; =============================================================================
 ;; ER-1/ER-2 — the orchestrator NORMALIZES a string-form model-spec BEFORE it

@@ -76,6 +76,7 @@
             [ai.obney.orc.ontology.core.synthesize-vocab-subbehavior :as synth]
             [ai.obney.orc.ontology.core.graph-context-snapshot :as gcs]
             [ai.obney.orc.ontology.core.extract-subbehavior :as extract]
+            [ai.obney.orc.ontology.core.container-select :as csel]
             [ai.obney.orc.ontology.core.reconcile-subbehavior :as reconcile]
             [ai.obney.orc.ontology.core.axiom-tbox-subbehavior :as axiom]
             [ai.obney.orc.ontology.core.embed-index-subbehavior :as embed]
@@ -101,6 +102,11 @@
 ;; time, after ns load). Without this the inner Extract delegate kept a flat 180s and
 ;; timed out the 25-container serial extract at ~187s BEFORE the outer 810s applied.
 (declare model-extract-timeout-ms)
+
+;; MT-2 — the container relevance-RANK subbehavior registrar is defined later in this
+;; ns (alongside the other :delegate seams); `register-pipeline-sheets!` (above those
+;; defs) registers it, so forward-declare it here (same precedent as the timeout fn).
+(declare register-select-rank-subbehavior!)
 
 (def model-extract-pipeline-name
   "Canonical registry name for the fixed Model → Extract per-source pipeline sheet.
@@ -149,6 +155,11 @@
         ;; Optional ([:maybe …]) so the unset → extract-default path still runs.
         :max-containers [:maybe :int]
         :max-windows [:maybe :int]
+        ;; MT-2 — the survey-driven relevance SELECTION (structural pre-filter → LLM
+        ;; relevance rank → bounded), delegated IN to the Extract step so the
+        ;; orchestrator drives EXACTLY the selected containers. Optional ([:maybe …])
+        ;; so the no-selection / csv single-container path falls back to take-cap.
+        :selected-containers [:maybe csel/selected-containers-schema]
         ;; Model outputs (cross :delegate as parsed maps — the EB3 C1 schemas)
         :reasoning :string
         :model-spec model/model-spec-contract-schema
@@ -173,7 +184,9 @@
           :target-sheet-id extract-sid
           ;; GC-9 — cross the reduced-cap knobs onto the Extract sheet (the Extract
           ;; orchestrate node reads :max-containers/:max-windows; unset → its defaults).
-          :reads [:model-spec :source :max-containers :max-windows]
+          ;; MT-2 — also cross the :selected-containers survey-driven selection so the
+          ;; orchestrator drives exactly the selected containers (unset → take-cap).
+          :reads [:model-spec :source :max-containers :max-windows :selected-containers]
           :writes [:concept-drafts :relationship-drafts :extraction-report]
           ;; GC-8/GC-13 — the Extract step runs up to default-max-containers
           ;; containers (GC-13: now with BOUNDED CONCURRENCY, was serial); size its
@@ -196,11 +209,15 @@
         ;; GC-6 — register the synthesize-vocab subbehavior so the real
         ;; `delegate-synthesize-vocab!` seam resolves its sheet by name.
         synth-sid (synth/register-synthesize-vocab-subbehavior! ctx {:model model})
+        ;; MT-2 — register the container relevance-RANK subbehavior so the real
+        ;; `delegate-select-containers!` seam resolves its sheet by name.
+        select-rank-sid (register-select-rank-subbehavior! ctx {:model model})
         pipeline-sid (dsl/build-workflow!
                       ctx (model-extract-pipeline-def {:model model :resilient? resilient?}))]
     {:model-sheet-id model-sid
      :extract-sheet-id extract-sid
      :synthesize-vocab-sheet-id synth-sid
+     :select-rank-sheet-id select-rank-sid
      :pipeline-sheet-id pipeline-sid}))
 
 ;; =============================================================================
@@ -411,7 +428,8 @@
    container build at container ~10-11 and landed 0 drafts. `max-containers` is
    threaded from the caller (the same cap the Extract orchestrator reads); absent,
    it resolves to `extract/default-max-containers`."
-  [ctx {:keys [source goal profile vocabulary graph-context pipeline-sheet-id max-containers max-windows]}]
+  [ctx {:keys [source goal profile vocabulary graph-context pipeline-sheet-id max-containers max-windows
+               selected-containers]}]
   (let [r (delegate-subbehavior!
            ctx {:timeout-ms (model-extract-timeout-ms {:max-containers max-containers})
                 :central-name (str "ontology-central/pipeline-" (name (:type source)) "@v1")
@@ -432,13 +450,17 @@
                             ;; so they cross :delegate parsed into the Extract sheet.
                             :max-containers [:maybe :int]
                             :max-windows [:maybe :int]
+                            ;; MT-2 — the survey-driven relevance selection (optional;
+                            ;; [:maybe …] tolerates the no-select → take-cap path).
+                            ;; STRUCTURED so it crosses :delegate parsed into Extract.
+                            :selected-containers [:maybe csel/selected-containers-schema]
                             :model-spec model/model-spec-contract-schema
                             :candidate-axioms model/candidate-axioms-schema
                             :concept-drafts extract/concept-drafts-schema
                             :relationship-drafts extract/relationship-drafts-schema
                             :extraction-report extract/extraction-report-schema}
                 :reads [:goal :profile :source :vocabulary gcs/graph-context-key
-                        :max-containers :max-windows]
+                        :max-containers :max-windows :selected-containers]
                 :writes [:model-spec :candidate-axioms
                          :concept-drafts :relationship-drafts :extraction-report]
                 :inputs {"goal" goal "profile" profile "source" source
@@ -448,7 +470,10 @@
                          ;; GC-9 — forward the caps so they reach the Extract orchestrator
                          ;; (nil → the orchestrator/APPLY falls back to its own defaults).
                          "max-containers" max-containers
-                         "max-windows" max-windows}})
+                         "max-windows" max-windows
+                         ;; MT-2 — forward the survey-driven selection to the Extract
+                         ;; orchestrator (nil → the orchestrator falls back to take-cap).
+                         "selected-containers" selected-containers}})
         ;; GC-10 Fix A — coerce a STRING-form `:entity-types` (the intermittent C1
         ;; parse failure) back to a vector of maps at the model-spec read-back
         ;; boundary, so every downstream consumer of the model-spec (the land/axiom/
@@ -699,6 +724,187 @@
      :vocabulary (synth/normalize-vocabulary (get-in r [:outputs synth/vocabulary-key]))
      :tick-id (:tick-id r)
      :error (:error r)}))
+
+;; =============================================================================
+;; MT-2 — the SELECT-CONTAINERS seam: structural pre-filter (MT-1, deterministic) →
+;; LLM relevance RANK (a delegated :llm sheet, mirror synthesize-vocab) → bounded
+;; take, producing the `:selected-containers` list the Extract orchestrator consumes.
+;; =============================================================================
+
+(def select-rank-subbehavior-name
+  "Canonical registry name for the MT-2 container relevance-RANK subbehavior. Like
+   synthesize-vocab it bakes in NO source path — it ranks the containers it is handed
+   by relevance to the GOAL read at runtime, so a SINGLE sheet serves every source."
+  "ontology-select-rank/rank@v1")
+
+(defn select-rank-sheet-id-for []
+  (dsl/sheet-id-for-name select-rank-subbehavior-name))
+
+(def selected-container-names-key
+  "The rank subbehavior's OUTPUT: the container NAMES ordered most-relevant-first.
+   Relevance ONLY — the model reorders the names it is GIVEN; it never invents or
+   renames a container (the central seam reconciles against the known names)."
+  :selected-container-names)
+
+(def selected-container-names-schema
+  "C1 — the CONCRETE `[:vector :string]` schema for the `:selected-container-names`
+   write (the same load-bearing per-field-type fix competency-questions uses, so the
+   `:llm` executor parses the field into real Clojure data, not raw EDN/JSON text)."
+  [:vector :string])
+
+(def rank-candidates-schema
+  "The rank node's READ input — a vector of container SUMMARIES (name + structural
+   shape + columns + approx-row-count). The model sees the REAL column headers to
+   judge relevance, but CODE names none (#12) — every summary is discovered from the
+   source at runtime. `{:closed false}` + `:any` leaves tolerate per-medium shape."
+  [:vector [:map {:closed false}
+            [:name {:optional true} :any]
+            [:shape {:optional true} :any]
+            [:columns {:optional true} [:vector :any]]
+            [:approx-row-count {:optional true} :any]]])
+
+(defn select-rank-prompt
+  "The relevance-rank node prompt: given the GOAL + the container SUMMARIES, order the
+   containers by relevance to the goal, most relevant FIRST. `:reasoning` FIRST (#13).
+   RELEVANCE ONLY — reorder the EXACT names given, never rename / invent a container.
+   Domain-agnostic (#12): the goal + the summaries are read at runtime; no vertical
+   entity / column / table name is baked in."
+  []
+  (str
+   "*** HOW THIS NODE WORKS (read carefully) ***\n"
+   "You are a single REASONING step. You are GIVEN two inputs as context: the GOAL "
+   "(`goal`, provided at runtime) and a list of container SUMMARIES (`candidates`, "
+   "one per structurally-meaningful container that survived the deterministic "
+   "pre-filter). Each summary carries the container's `:name` (its EXACT identifier), "
+   "its structural `:shape`, its `:columns` (the real column headers), and its "
+   "`:approx-row-count`. You do NOT call tools, you do NOT explore the source, and you "
+   "do NOT emit a behavior tree — you THINK over the goal + the summaries and PRODUCE "
+   "the structured outputs below. Ignore any general guidance about tool sessions or "
+   "`emit-tree!`.\n\n"
+   "*** YOUR JOB — RANK the containers by RELEVANCE to the goal ***\n"
+   "Decide which containers are MOST relevant to answering / building the goal, and "
+   "order them most-relevant-FIRST. Judge relevance from each container's columns + "
+   "shape + name against what the goal is about. A container that is central to the "
+   "goal ranks high; a peripheral or off-topic one ranks low. You MAY omit a "
+   "container you judge clearly irrelevant (it will simply be considered last).\n"
+   "CRITICAL: this is a RELEVANCE ordering ONLY. Reorder the EXACT `:name` strings you "
+   "were given — do NOT rename a container, do NOT invent a name, do NOT merge or "
+   "split containers. Use each name verbatim exactly as it appears in the summaries.\n\n"
+   "*** YOUR OUTPUT — produce these fields, REASONING FIRST (#13) ***\n"
+   "  1. `reasoning` — FIRST, before anything else: think through which containers "
+   "the goal most needs and why, reading their columns/shape/name. Chain-of-thought "
+   "BEFORE the ordering.\n"
+   "  2. `selected-container-names` — a VECTOR (list) of the container `:name` strings "
+   "ordered MOST-RELEVANT-FIRST. Use the exact names from the summaries. Emit REAL "
+   "structured Clojure data (a vector of strings), NOT a JSON string and NOT prose."))
+
+(defn select-rank-subbehavior-def
+  "The relevance-rank subbehavior workflow definition — a single `:llm` node
+   (single-turn reasoning over goal + candidate summaries; clone of the synthesize-
+   vocab / derive-cqs node shape). NOT a `:repl-researcher`.
+
+   Contract (public `:reads`/`:writes`):
+     :reads  [:goal :candidates]
+     :writes [:reasoning :selected-container-names]     (#13 reasoning FIRST)"
+  [{:keys [model]}]
+  (let [nm select-rank-subbehavior-name
+        mdl (or model "google/gemini-3-flash-preview")]
+    (dsl/workflow nm
+      (dsl/blackboard
+       {:goal :string
+        :candidates rank-candidates-schema
+        :reasoning :string
+        selected-container-names-key selected-container-names-schema})
+      (dsl/sequence "select-rank-root"
+        (dsl/llm "rank"
+          :model mdl
+          :instruction (select-rank-prompt)
+          :reads [:goal :candidates]
+          ;; #13 — :reasoning FIRST (chain-of-thought before the ordering).
+          :writes [:reasoning selected-container-names-key])))))
+
+(defn register-select-rank-subbehavior!
+  "REGISTER (build, idempotent) the relevance-rank subbehavior sheet and return its
+   deterministic sheet-id. Re-registering an unchanged def is a no-op (same id)."
+  [ctx {:keys [model]}]
+  (dsl/build-workflow! ctx (select-rank-subbehavior-def {:model model})))
+
+(defn delegate-select-containers!
+  "MT-2 production SELECT-CONTAINERS seam: turn a source's containers into the
+   SELECTED, ranked, bounded `:selected-containers` list the Extract orchestrator
+   consumes. Runs the pure pipeline (`csel/classify-source-containers` →
+   `csel/select-containers`) with the delegated `:llm` relevance rank as `rank-fn`.
+
+   - Single-container (or empty) source → NO selection (`:selected-containers` nil),
+     so the Extract orchestrator keeps today's take-cap path unchanged (the csv N=1
+     path stays green — backward compat).
+   - The structural pre-filter drops bridge/reference noise DETERMINISTICALLY (MT-1);
+     the survivors are RANKED by the delegated `:llm` sheet, RECONCILED against the
+     known survivor names (invented names ignored, omitted survivors appended — never
+     a silent drop), and bounded by `cap`.
+   - If the rank `:delegate` FAILS, degrade HONESTLY to the structural survivors in
+     list order with the reason SURFACED in `:selection-report` (NOT a silent swallow
+     — #5). Any hard failure (no contract, unreadable source) likewise degrades to
+     NO selection with a surfaced reason (take-cap fallback), never a throw.
+
+   Returns `{:selected-containers [<container+shape+roles> …]|nil :selection-report …}`.
+   `list-fn`/`sample-fn` default to the uniform container contract; tests inject fakes."
+  [ctx {:keys [source goal model max-containers list-fn sample-fn]}]
+  (try
+    (let [list-fn (or list-fn csel/default-list-fn)
+          all (vec (list-fn source))
+          cap (or max-containers extract/default-max-containers)]
+      (if (<= (count all) 1)
+        {:selected-containers nil
+         :selection-report {:containers-total (count all)
+                            :reason (str "single-container (or empty) source — no "
+                                         "selection needed; Extract uses take-cap")}}
+        (let [candidates (csel/classify-source-containers
+                          source (cond-> {:list-fn (constantly all)}
+                                   sample-fn (assoc :sample-fn sample-fn)))
+              rank-degrade (atom nil)
+              rank-fn
+              (fn [g survivors]
+                (try
+                  (let [summaries (mapv (fn [c] {:name (:name c)
+                                                 :shape (:shape c)
+                                                 :columns (vec (:header c))
+                                                 :approx-row-count (:row-count c)})
+                                        survivors)
+                        sub-id (register-select-rank-subbehavior! ctx {:model model})
+                        r (delegate-subbehavior!
+                           ctx {:central-name "ontology-central/select-rank@v1"
+                                :target-sheet-id sub-id
+                                :bb-schema {:goal :string
+                                            :candidates rank-candidates-schema
+                                            :reasoning :string
+                                            selected-container-names-key
+                                            selected-container-names-schema}
+                                :reads [:goal :candidates]
+                                :writes [selected-container-names-key]
+                                :inputs {"goal" (or g "")
+                                         "candidates" summaries}})
+                        names (get-in r [:outputs selected-container-names-key])]
+                    (if (= :success (:status r))
+                      (mapv str (or names []))
+                      ;; honest degrade — surface the reason, return nil so
+                      ;; select-containers falls back to survivor list order (#5).
+                      (do (reset! rank-degrade (or (:error r) :rank-delegate-failed))
+                          nil)))
+                  (catch Throwable t
+                    (reset! rank-degrade (.getMessage t))
+                    nil)))
+              result (csel/select-containers candidates
+                                             {:goal goal :cap cap :rank-fn rank-fn})]
+          {:selected-containers (:selected result)
+           :selection-report (assoc (:report result)
+                                    :rank-degraded (boolean @rank-degrade)
+                                    :rank-degrade-reason @rank-degrade)})))
+    (catch Throwable t
+      {:selected-containers nil
+       :selection-report {:reason (str "container selection failed; Extract falls back "
+                                       "to take-cap (honest degrade — #5)")
+                          :error (.getMessage t)}})))
 
 ;; =============================================================================
 ;; The CQ gate — run IN-PROCESS with the judge capability (the judge fn cannot
@@ -1012,13 +1218,17 @@
   [ctx {:keys [ontology-id sources goal model resilient? judge-fn exit-criterion
                consumer-cqs evolver-config mode gf-branch source-uri-sets
                max-containers max-windows
-               survey-fn derive-cqs-fn synthesize-vocab-fn graph-context-fn
+               survey-fn derive-cqs-fn synthesize-vocab-fn graph-context-fn select-fn
                model-extract-fn reconcile-fn
                axiom-fn embed-fn build-fn gate-fn route-fn]}]
   (let [;; seam defaults (production delegate; tests stub)
         survey-fn (or survey-fn delegate-survey!)
         derive-cqs-fn (or derive-cqs-fn delegate-derive-cqs!)
         synthesize-vocab-fn (or synthesize-vocab-fn delegate-synthesize-vocab!)
+        ;; MT-2 — the survey-driven container SELECT step (default: the real
+        ;; classify→rank→bound seam; tests stub it). Runs per source (below), next
+        ;; to graph-context, producing the `:selected-containers` the Extract consumes.
+        select-fn (or select-fn delegate-select-containers!)
         ;; GM-1 — the pre-Model graph-context step (default: the real read-only
         ;; snapshot; tests stub it). Computed FRESH per source (below), so a source
         ;; processed AFTER an entity-defining source sees that entity in context.
@@ -1088,6 +1298,13 @@
                            ;; The mapv is sequential, so an entity-defining source
                            ;; processed FIRST is already landed + in this snapshot.
                            graph-context (graph-context-fn ctx ontology-id)
+                           ;; MT-2 — compute the survey-driven container SELECTION for
+                           ;; THIS source (structural pre-filter → LLM relevance rank →
+                           ;; bounded), next to graph-context. A single-container source
+                           ;; / a failed rank degrades HONESTLY to nil selection → the
+                           ;; Extract orchestrator falls back to take-cap (#5).
+                           sel (select-fn ctx {:source src :goal goal :model model
+                                               :max-containers max-containers})
                            mx (model-extract-fn
                                ctx {:source src :goal goal :profile profile
                                     :vocabulary vocab
@@ -1097,6 +1314,9 @@
                                     ;; per-source Model→Extract (nil → extract defaults).
                                     :max-containers max-containers
                                     :max-windows max-windows
+                                    ;; MT-2 — thread the selected containers into Extract
+                                    ;; (nil → the orchestrator falls back to take-cap).
+                                    :selected-containers (:selected-containers sel)
                                     :pipeline-sheet-id pipeline-sheet-id
                                     :model model :resilient? resilient?})]
                        (when (= :success (:status mx))
@@ -1117,7 +1337,10 @@
                          ;; EMBED+INDEX (guaranteed P2)
                          (embed-fn ctx {:ontology-id ontology-id
                                         :embed-fields (:embed-fields mx) :model model}))
-                       (assoc mx :source src)))
+                       ;; MT-2 — carry THIS source's selection-report (drop reasons +
+                       ;; the rank-degraded flag) so the build surfaces it honestly
+                       ;; (no false-green: a silently-degraded LLM rank is VISIBLE).
+                       (assoc mx :source src :selection-report (:selection-report sel))))
                    sources profiles)
                   mx-fail (first (filter #(not= :success (:status %)) per-source))
                   ;; hold the last source's model-spec / candidate-axioms /
@@ -1197,6 +1420,14 @@
                     ;; GC-10 Fix B2 — surface the family↔detail hierarchy bridging
                     ;; report (edge-count + honest truncation) so it is observable.
                     :hierarchy-report hierarchy-report
+                    ;; MT-2 — surface the per-source survey-driven SELECTION reports
+                    ;; (containers-total vs selected + drop reasons + rank-degraded)
+                    ;; so the dropped noise + any LLM-rank degrade is OBSERVABLE, not a
+                    ;; false-green. Keyed by source for legibility; nil for a source
+                    ;; that took the take-cap fallback (single-container / no select).
+                    :selection-reports (mapv (fn [r] {:source (:source r)
+                                                      :selection-report (:selection-report r)})
+                                             per-source)
                     :build-result build-result}))))))))))))
 
 ;; =============================================================================
@@ -1261,7 +1492,7 @@
   [ctx {:keys [ontology-id sources goal model budget resilient? judge-fn exit-criterion
                consumer-cqs evolver-config debug? mode source-uri-sets
                max-containers max-windows
-               survey-fn derive-cqs-fn synthesize-vocab-fn graph-context-fn
+               survey-fn derive-cqs-fn synthesize-vocab-fn graph-context-fn select-fn
                model-extract-fn reconcile-fn
                axiom-fn embed-fn build-fn gate-fn route-fn]
         :or {model "google/gemini-3-flash-preview"}}]
@@ -1295,6 +1526,8 @@
           :synthesize-vocab-fn synthesize-vocab-fn
           ;; GM-1 — the pre-Model graph-context step (default: the real snapshot).
           :graph-context-fn graph-context-fn
+          ;; MT-2 — the survey-driven container SELECT step (default: the real seam).
+          :select-fn select-fn
           :model-extract-fn model-extract-fn :reconcile-fn reconcile-fn
           :axiom-fn axiom-fn :embed-fn embed-fn
           :build-fn build-fn :gate-fn gate-fn :route-fn route-fn})))

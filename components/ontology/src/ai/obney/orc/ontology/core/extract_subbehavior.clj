@@ -74,6 +74,7 @@
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
             [ai.obney.orc.ontology.core.resilience :as res]
+            [ai.obney.orc.ontology.core.container-select :as csel]
             [clojure.edn :as edn]
             [clojure.string :as str]))
 
@@ -1454,7 +1455,7 @@
    runtime."
   [{:keys [inputs] :as context}]
   (let [{:keys [source max-containers max-windows
-                max-extract-concurrency]} inputs
+                max-extract-concurrency selected-containers]} inputs
         ;; ER-1/ER-2 — NORMALIZE the model-spec at the EXTRACT boundary, before the
         ;; per-container AUTHOR sees it. The Model→Extract pipeline threads the RAW
         ;; model-spec here; `normalize-model-spec` in `delegate-model-extract!` runs
@@ -1481,7 +1482,20 @@
         ;; the total + the processed count so the truncation is HONEST (no
         ;; false-green) — comprehensive whole-source coverage is the deeper follow-up.
         cap (or max-containers default-max-containers)
-        containers (vec (take cap all-containers))
+        ;; MT-2 — CONSUME the survey-driven relevance selection when present. The
+        ;; central seam already ran the structural pre-filter (MT-1 shape classify —
+        ;; bridge/reference noise dropped) → LLM relevance rank over the survivors →
+        ;; bounded take, so `selected-containers` is the SELECTED, ranked, bounded
+        ;; container list (each entry carries the medium-specific addressing +
+        ;; MT-1's :shape/:roles tags for MT-3). When ABSENT (nil/empty — the csv
+        ;; single-container path, a source with no contract, or a caller that didn't
+        ;; select), fall back to today's blind `(take cap …)` (back-compat — every
+        ;; existing extract test + the csv N=1 path stays green). The report below
+        ;; still counts the SOURCE TOTAL (`all-containers`) vs the processed count,
+        ;; so the selection is HONEST (no false-green — #4).
+        containers (if (seq selected-containers)
+                     (vec selected-containers)
+                     (vec (take cap all-containers)))
         ;; GC-13 — the per-container child ticks were MEASURED as 55.6% of build
         ;; wall-clock running SERIALLY (each AUTHOR a ~10 s :llm call → linear in
         ;; container count). Run them with BOUNDED concurrency over the SAME
@@ -1681,6 +1695,11 @@
         ;; default-max-extract-windows). Caps the in-heap draft volume so a bounded
         ;; reduced-cap build can run without OOM.
         :max-windows [:maybe :int]
+        ;; MT-2 — the OPTIONAL survey-driven relevance selection (the SELECTED,
+        ;; ranked, bounded container list). When present the orchestrator drives
+        ;; EXACTLY these containers; when absent it falls back to `(take cap …)`
+        ;; ([:maybe …] so the csv single-container / no-select path is unchanged).
+        :selected-containers [:maybe csel/selected-containers-schema]
         ;; public :writes — the draft set (union across containers) + the report
         :concept-drafts concept-drafts-schema
         :relationship-drafts relationship-drafts-schema
@@ -1690,7 +1709,7 @@
         ;; ticks of the per-container unit + accumulation (REUSE, no fork).
         (dsl/code "orchestrate-containers"
           :fn "ai.obney.orc.ontology.core.extract-subbehavior/orchestrate-extract-containers"
-          :reads [:source :model-spec :max-containers :max-windows]
+          :reads [:source :model-spec :max-containers :max-windows :selected-containers]
           :writes [:concept-drafts :relationship-drafts :extraction-report])))))
 
 (defn register-extract-subbehavior!
