@@ -240,3 +240,81 @@
         ;; The single-draft control is unaffected.
         (is (= "Assistant Widgeteer" (:label occ2)))
         (is (= ["Speaking"] (get-in occ2 [:attributes :top-skills])))))))
+
+;; ===========================================================================
+;; MT-4b — CROSS-BATCH occurrence-merge: a draft whose URI matches a concept
+;; ALREADY LANDED by a PRIOR reconcile/landing call (a LATER source enriching an
+;; entity an EARLIER source created). The URI-keyed read-model REPLACE means the
+;; second landing clobbers the first unless we fold the EXISTING projection
+;; concept into the union before re-emitting. This is the 5-source-build case.
+;; ===========================================================================
+
+(deftest union-drafts-with-existing-folds-the-current-projection-concept
+  (testing "union-drafts-with-existing unions each incoming same-URI draft WITH the
+            existing landed concept for that URI: the existing label/description +
+            attributes are preserved and the incoming attributes are added; a URI
+            with NO existing concept passes through unchanged (pure)."
+    (let [existing-by-uri
+          {"occ/1" {:uri "occ/1" :label "Chief Widgeteer"
+                    :description "Existing definition." :scope :custom
+                    :attributes {:source-code "1" :top-skills ["Critical Thinking"]}}}
+          incoming [{:uri "occ/1" :label "1" :scope :custom      ; a LATER source, bare label
+                     :attributes {:top-knowledge ["Administration"]}}
+                    {:uri "occ/9" :label "New Entity" :description "brand new" :scope :custom
+                     :attributes {:top-skills ["Speaking"]}}]     ; no existing → passthrough
+          {:keys [drafts groups-merged]} (rlm/union-drafts-with-existing incoming existing-by-uri)
+          by-uri (into {} (map (juxt :uri identity)) drafts)
+          o1 (get by-uri "occ/1")
+          o9 (get by-uri "occ/9")]
+      ;; occ/1 = existing ⊕ incoming
+      (is (= "Chief Widgeteer" (:label o1)) "existing entity-defining label preserved")
+      (is (= "Existing definition." (:description o1)) "existing description preserved")
+      (is (= ["Critical Thinking"] (get-in o1 [:attributes :top-skills])) "existing attr preserved")
+      (is (= ["Administration"] (get-in o1 [:attributes :top-knowledge])) "incoming attr added")
+      (is (= "1" (get-in o1 [:attributes :source-code])) "existing key-value preserved")
+      (is (= 1 groups-merged) "the one URI with an existing concept counts as merged")
+      ;; occ/9 has no existing concept → untouched
+      (is (= "New Entity" (:label o9)))
+      (is (= ["Speaking"] (get-in o9 [:attributes :top-skills]))))))
+
+(defn- land! [ctx oid concepts]
+  (ontology/compile-discovery-source!
+   ctx oid {:status :emitted-drafts :emitted-concepts concepts
+            :emitted-relationships [] :emitted-axioms [] :rlm-trace []}))
+
+(deftest cross-batch-landing-unions-onto-the-existing-node-not-replace
+  (testing "A second landing call for a URI already in the graph UNIONS onto the
+            existing node (label + description + prior attrs preserved, new attr
+            added) rather than REPLACING it — the 5-source cross-source enrichment
+            case. Asserted via the projection read-back."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            ;; batch 1 (source A): the entity-defining concept + a summary attribute
+            _ (land! ctx oid [{:uri "occ/1" :label "Chief Widgeteer"
+                               :description "Determine and formulate policies."
+                               :scope :custom
+                               :attributes {:source-code "1"
+                                            :top-skills ["Critical Thinking" "Active Listening"]}}])
+            after1 (get (concepts-by-uri ctx oid) "occ/1")
+            ;; batch 2 (source B, a SEPARATE landing call): same URI, a bare label,
+            ;; a NEW attribute the earlier source didn't have.
+            stub2 (land! ctx oid [{:uri "occ/1" :label "1" :scope :custom
+                                   :attributes {:top-knowledge ["Administration" "English"]}}])
+            after2 (get (concepts-by-uri ctx oid) "occ/1")
+            all (concepts-by-uri ctx oid)]
+        ;; batch 1 landed cleanly
+        (is (= "Chief Widgeteer" (:label after1)))
+        (is (= ["Critical Thinking" "Active Listening"] (get-in after1 [:attributes :top-skills])))
+        ;; still ONE node for the URI (no duplicate)
+        (is (= 1 (count all)) "still exactly one node for the URI after the second landing")
+        ;; the UNION held across the two separate landings (the cross-batch fix)
+        (is (= "Chief Widgeteer" (:label after2))
+            "the existing entity-defining label survived the second source (NOT clobbered to the code)")
+        (is (not (str/blank? (:description after2))) "the existing description survived")
+        (is (= ["Critical Thinking" "Active Listening"] (get-in after2 [:attributes :top-skills]))
+            "the prior source's top-skills survived (NOT dropped by the replace)")
+        (is (= ["Administration" "English"] (get-in after2 [:attributes :top-knowledge]))
+            "the later source's top-knowledge was added")
+        ;; provenance: the second landing surfaces the cross-batch merge
+        (is (= 1 (get-in stub2 [:discovery-provenance :occurrence-groups-merged]))
+            "the second landing reports the URI merged onto an existing node")))))

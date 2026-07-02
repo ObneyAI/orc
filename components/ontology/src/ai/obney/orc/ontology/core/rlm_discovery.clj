@@ -2058,6 +2058,38 @@
      {:drafts [] :conflicts [] :groups-merged 0}
      order)))
 
+(defn- concept->participant-draft
+  "MT-4b — project an EXISTING read-model concept into the concept-draft shape the
+   occurrence-union consumes, so an incoming same-URI draft merges WITH the graph's
+   current state. Keeps identity + representation + attributes; drops the read-model-
+   only fields (`:id` `:created-at` `:narrower` `:related` `:ontology-id`) the union /
+   create-concept path does not use. Pure."
+  [c]
+  (cond-> (select-keys c [:uri :label :description :scope :broader :indicators])
+    (seq (:attributes c)) (assoc :attributes (:attributes c))))
+
+(defn union-drafts-with-existing
+  "MT-4b — CROSS-BATCH occurrence-merge. Fold each incoming same-URI draft group
+   TOGETHER WITH the EXISTING landed concept for that URI (from the current
+   projection, `existing-by-uri` = `{uri -> concept}`), so re-emitting `create-concept`
+   lands the UNION (existing ⊕ incoming) rather than REPLACING the existing node (the
+   concepts read-model is assoc-replace-by-URI, so a later source's create-concept
+   would otherwise clobber an earlier source's label / description / attributes).
+
+   The existing concept is PREPENDED as the entity-defining base (so its label /
+   description / attributes are preserved and the incoming source's attributes are
+   ADDED; a same-key/different-value conflict is surfaced by the union, never a silent
+   overwrite). A URI with NO existing concept unions only its incoming drafts (the
+   intra-batch case — behavior-preserving). REUSES `union-concept-drafts-by-uri` (no
+   fork). Returns the SAME `{:drafts :conflicts :groups-merged}` shape. Pure + total."
+  [incoming-drafts existing-by-uri]
+  (let [incoming (vec incoming-drafts)
+        touched (distinct (keep :uri incoming))
+        existing-participants (keep (fn [u] (when-let [c (get existing-by-uri u)]
+                                              (concept->participant-draft c)))
+                                    touched)]
+    (union-concept-drafts-by-uri (into (vec existing-participants) incoming))))
+
 (defn compile-discovery-source!
   "Adapter from a `run-discovery!` output to S17-ingestible events.
 
@@ -2100,16 +2132,24 @@
                     {:status (:status discovery-output)
                      :discovery-output discovery-output})))
   (let [validated (mapv validate-concept-draft! (:emitted-concepts discovery-output))
-        ;; MT-4 — within-source occurrence-merge. Collapse same-URI drafts (the
-        ;; SAME entity arriving from different containers of one source) into ONE
-        ;; draft carrying the UNION of their attributes BEFORE the emit doseq, so
-        ;; exactly ONE :ontology/create-concept per URI lands. Without this, the
-        ;; URI-keyed concepts read-model REPLACE drops all but the last draft's
-        ;; attributes (e.g. a summary attribute silently lost). Same-key/
-        ;; different-value conflicts are surfaced (never a silent overwrite).
+        ;; MT-4 / MT-4b — occurrence-merge. Collapse same-URI drafts (the SAME entity
+        ;; arriving from different containers of one source — INTRA-batch) AND fold in
+        ;; the EXISTING landed concept for any URI already in the graph (a LATER source
+        ;; enriching an entity an earlier source created — CROSS-batch), into ONE draft
+        ;; carrying the UNION of their attributes BEFORE the emit doseq, so exactly ONE
+        ;; :ontology/create-concept per URI lands. Without this, the URI-keyed concepts
+        ;; read-model REPLACE drops all but the last draft's attributes (a summary
+        ;; attribute / the entity-defining label silently lost). Same-key/different-
+        ;; value conflicts are surfaced (never a silent overwrite). The projection read
+        ;; is empty on a fresh ontology (→ pure intra-batch, behavior-preserving).
+        touched-uris (set (keep :uri validated))
+        existing-by-uri (into {} (comp (filter #(and (= ontology-id (:ontology-id %))
+                                                     (contains? touched-uris (:uri %))))
+                                       (map (juxt :uri identity)))
+                              (rm/get-concepts ctx {:ontology-id ontology-id}))
         {concepts :drafts occurrence-conflicts :conflicts
          occurrence-groups-merged :groups-merged}
-        (union-concept-drafts-by-uri validated)
+        (union-drafts-with-existing validated existing-by-uri)
         relationships (mapv validate-relationship-draft! (:emitted-relationships discovery-output))
         axioms (:emitted-axioms discovery-output)
         rlm-trace (:rlm-trace discovery-output)]
