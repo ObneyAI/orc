@@ -1929,6 +1929,135 @@
                        :draft draft
                        :reason :unknown-axiom-type})))))
 
+;; =============================================================================
+;; MT-4 — within-source occurrence-merge (union attributes across containers)
+;; =============================================================================
+;; Drafts of the SAME real-world entity arrive from DIFFERENT containers of ONE
+;; source (an entity-defining container carrying label+description; measurement
+;; containers each carrying a top-N summary attribute), all sharing the same
+;; canonical URI (GC-1). The concepts read-model keys `:concept-created` by URI
+;; with a full REPLACE (`(assoc state uri …)`), so N same-URI create-concept
+;; events collapse to the LAST draft's attributes — earlier attributes are
+;; SILENTLY LOST. This pre-landing union collapses same-URI drafts into ONE draft
+;; carrying the UNION of their attributes, so exactly ONE create-concept per URI
+;; lands. It is PURE, TOTAL (never throws), and domain/format-agnostic (it names
+;; NO column/entity — it operates structurally on `:uri` / `:attributes`).
+
+(defn- blank-str? [x]
+  (or (nil? x) (and (string? x) (str/blank? x))))
+
+(defn- entity-defining-draft
+  "The draft in a same-URI group that best defines the entity: prefer the FIRST
+   draft carrying a non-blank `:description` (the entity-defining container),
+   else the first with a non-blank `:label`, else the first draft. Deterministic;
+   domain-agnostic (no column/entity name)."
+  [group]
+  (or (first (filter #(not (blank-str? (:description %))) group))
+      (first (filter #(not (blank-str? (:label %))) group))
+      (first group)))
+
+(defn- union-attributes-in-group
+  "Union the `:attributes` maps across a same-URI draft group. Returns
+   `{:attributes <merged-map> :conflicts [{:key k :kept v :alternatives [v …]}]}`.
+
+   A key present in one draft, or in several drafts with the SAME value → kept
+   once. A key present with DIFFERENT values across drafts → a genuine CONFLICT:
+   the value is kept DETERMINISTICALLY (the entity-defining draft's value when it
+   carries the key, else the FIRST draft in group order that carries it) and the
+   conflict is surfaced with ALL distinct values seen — NEVER a silent last-wins
+   overwrite (Discipline #5). Value equality is by `=` (verbatim, un-coerced)."
+  [group defining]
+  (let [;; ordered distinct keys across the group (first-appearance order)
+        ks (reduce (fn [acc d]
+                     (reduce (fn [a k] (if (some #{k} a) a (conj a k)))
+                             acc (keys (:attributes d))))
+                   [] group)]
+    (reduce
+     (fn [{:keys [attributes conflicts]} k]
+       (let [;; every value asserted for k, in group order (drafts that carry it)
+             carriers (filter #(contains? (:attributes %) k) group)
+             values (mapv #(get-in % [:attributes k]) carriers)
+             distinct-vals (distinct values)]
+         (if (<= (count distinct-vals) 1)
+           {:attributes (assoc attributes k (first values))
+            :conflicts conflicts}
+           ;; CONFLICT — keep the defining draft's value if it carries k, else
+           ;; the first carrier's value; surface every distinct value.
+           (let [kept (if (contains? (:attributes defining) k)
+                        (get-in defining [:attributes k])
+                        (first values))]
+             {:attributes (assoc attributes k kept)
+              :conflicts (conj conflicts
+                               {:key k :kept kept
+                                :alternatives (vec (remove #(= % kept) distinct-vals))})}))))
+     {:attributes {} :conflicts []}
+     ks)))
+
+(defn union-concept-drafts-by-uri
+  "MT-4 — collapse concept-drafts sharing `:uri` into ONE draft per URI, carrying
+   the UNION of the group's attributes. PURE + TOTAL (never throws).
+
+   For each same-URI group:
+     - `:label` / `:description` / `:scope` / `:broader` / `:indicators` (and any
+       other non-attribute field) are taken from the ENTITY-DEFINING draft — the
+       one carrying a non-blank `:description` (else the first non-blank `:label`,
+       else the first draft) — so the real title/description win over a bare-code
+       label from a measurement container.
+     - `:attributes` is the UNION across the group (see `union-attributes-in-group`).
+       A same-key / different-value CONFLICT is surfaced (never silently
+       overwritten): the merged draft's `:attributes` is stamped
+       `:requires-review? true` plus an `:attribute-conflicts` map
+       `{<key> [<all distinct values>] …}`, and the conflict is also collected in
+       the returned `:conflicts` vector for provenance.
+
+   Drafts WITHOUT a `:uri` (should not happen post-validation) are passed through
+   untouched, each as its own group, so the fn stays total.
+
+   Output order preserves each URI's FIRST appearance.
+
+   Returns:
+     {:drafts        [<one collapsed draft per URI>]
+      :conflicts     [{:uri u :key k :kept v :alternatives [v …]} …]
+      :groups-merged <int — # of URI groups that collapsed MORE THAN ONE draft>}"
+  [concept-drafts]
+  (let [drafts (vec concept-drafts)
+        ;; first-appearance order of URIs (nil-uri drafts get a unique sentinel
+        ;; so they never collapse together)
+        keyed (map-indexed (fn [i d]
+                             [(if (contains? d :uri) (:uri d) [::no-uri i]) d])
+                           drafts)
+        order (reduce (fn [acc [k _]] (if (some #{k} acc) acc (conj acc k)))
+                      [] keyed)
+        groups (reduce (fn [m [k d]] (update m k (fnil conj []) d)) {} keyed)]
+    (reduce
+     (fn [{:keys [drafts conflicts groups-merged]} uri-key]
+       (let [group (get groups uri-key)
+             defining (entity-defining-draft group)
+             {:keys [attributes] group-conflicts :conflicts}
+             (union-attributes-in-group group defining)
+             ;; on conflict, stamp the merged attributes so the node reads as
+             ;; needing review (observable through the projection) — never a
+             ;; silent overwrite.
+             attrs* (cond-> attributes
+                      (seq group-conflicts)
+                      (assoc :requires-review? true
+                             :attribute-conflicts
+                             (into {} (map (juxt :key
+                                                 (fn [c] (into [(:kept c)]
+                                                               (:alternatives c)))))
+                                   group-conflicts)))
+             merged (cond-> (assoc defining
+                                   :label (:label defining)
+                                   :description (:description defining))
+                      (seq attrs*) (assoc :attributes attrs*)
+                      (empty? attrs*) (dissoc :attributes))]
+         {:drafts (conj drafts merged)
+          :conflicts (into conflicts
+                           (map #(assoc % :uri (:uri defining)) group-conflicts))
+          :groups-merged (cond-> groups-merged (> (count group) 1) inc)}))
+     {:drafts [] :conflicts [] :groups-merged 0}
+     order)))
+
 (defn compile-discovery-source!
   "Adapter from a `run-discovery!` output to S17-ingestible events.
 
@@ -1970,7 +2099,17 @@
     (throw (ex-info "compile-discovery-source!: discovery output must have :status :emitted-drafts"
                     {:status (:status discovery-output)
                      :discovery-output discovery-output})))
-  (let [concepts (mapv validate-concept-draft! (:emitted-concepts discovery-output))
+  (let [validated (mapv validate-concept-draft! (:emitted-concepts discovery-output))
+        ;; MT-4 — within-source occurrence-merge. Collapse same-URI drafts (the
+        ;; SAME entity arriving from different containers of one source) into ONE
+        ;; draft carrying the UNION of their attributes BEFORE the emit doseq, so
+        ;; exactly ONE :ontology/create-concept per URI lands. Without this, the
+        ;; URI-keyed concepts read-model REPLACE drops all but the last draft's
+        ;; attributes (e.g. a summary attribute silently lost). Same-key/
+        ;; different-value conflicts are surfaced (never a silent overwrite).
+        {concepts :drafts occurrence-conflicts :conflicts
+         occurrence-groups-merged :groups-merged}
+        (union-concept-drafts-by-uri validated)
         relationships (mapv validate-relationship-draft! (:emitted-relationships discovery-output))
         axioms (:emitted-axioms discovery-output)
         rlm-trace (:rlm-trace discovery-output)]
@@ -2017,6 +2156,13 @@
        :concepts []
        :discovery-provenance {:status :ingested
                             :concepts-emitted (count concepts)
+                            ;; MT-4 — within-source occurrence-merge summary
+                            ;; (observable: how many same-URI groups collapsed +
+                            ;; how many same-key/different-value conflicts were
+                            ;; surfaced, never silently overwritten).
+                            :occurrence-groups-merged occurrence-groups-merged
+                            :occurrence-conflicts (count occurrence-conflicts)
+                            :occurrence-conflict-details occurrence-conflicts
                             :relationships-emitted (count relationships)
                             :axioms-emitted (count (or axioms []))
                             ;; V18 — referential-integrity report (always on).
