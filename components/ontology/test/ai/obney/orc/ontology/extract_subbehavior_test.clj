@@ -228,12 +228,13 @@
             "the SAMPLE node reads the source + the ONE container it grounds")
         (is (= [:sample-rows] (vec (:writes sample))))
         (is (= [:source :transform-source :selector :container :max-windows
-                :model-spec :aggregation-spec]
+                :model-spec :aggregation-spec :sample-rows]
                (vec (:reads apply*)))
             "the APPLY node reads the source + transform + selector + the container it
              applies to + the GC-9 :max-windows reduced-cap + the GC-11a :model-spec
              (for the deterministic linking-key VALUE carry) + the MT-3 :aggregation-spec
-             (routes the aggregating fold for a :long-form container)")
+             (routes the aggregating fold for a :long-form container) + the MT-6
+             :sample-rows (the sample-driven key-repeats? gate)")
         (is (= [:concept-drafts :relationship-drafts :extraction-report]
                (vec (:writes apply*)))
             "the APPLY node writes the per-container draft-set contract")))))

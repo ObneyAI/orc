@@ -507,7 +507,7 @@
    the `:extraction-report` (the no-false-green coverage signal)."
   [{:keys [inputs]}]
   (let [{:keys [source transform-source selector container max-windows model-spec
-                aggregation-spec]} inputs
+                aggregation-spec sample-rows]} inputs
         ;; the container's name wins (the loop is traversing it); fall back to the
         ;; author-emitted selector for the single-container path.
         effective-selector (or (:name container) selector)
@@ -520,12 +520,16 @@
         ;; entity's own keying field. Domain-agnostic: names come from the runtime
         ;; model-spec, never baked here.
         linking-keys (:linking-keys model-spec)
-        ;; MT-3 — the DETERMINISTIC routing gate. Coerce the AUTHOR's aggregation-spec
-        ;; (tolerating the C1 string form) and fire the AGGREGATING apply ONLY for a
-        ;; :long-form container with a valid spec (the same shared stream, a different
-        ;; fold — #8). Every other shape / no spec keeps the per-row apply UNCHANGED.
+        ;; MT-3/MT-6 — the DETERMINISTIC routing gate. Coerce the AUTHOR's
+        ;; aggregation-spec (tolerating the C1 string form) and fire the AGGREGATING
+        ;; apply ONLY when the AUTHOR emitted a valid spec AND the spec's key genuinely
+        ;; REPEATS in the SAMPLE (MT-6 sample-driven gate — subsumes the old :long-form
+        ;; tag, adds the list-collect case, and DECLINES a near-unique key even with a
+        ;; spec). The SAMPLE node already wrote :sample-rows; absent → the gate falls
+        ;; back to the :long-form tag (behavior-preserving). Every other outcome keeps
+        ;; the per-row apply UNCHANGED (#8).
         spec (cagg/parse-aggregation-spec aggregation-spec)
-        aggregate? (cagg/aggregating-apply? container spec)
+        aggregate? (cagg/aggregating-apply? container spec sample-rows)
         result (if aggregate?
                  (rlm-discovery/apply-aggregation-transform!
                   {:descriptor source
@@ -659,8 +663,10 @@
               ;; model-spec's discovered :linking-keys VALUES into :attributes.
               ;; MT-3 — :aggregation-spec routes the APPLY to the aggregating fold for
               ;; a :long-form container (the deterministic gate reads :container too).
+              ;; MT-6 — :sample-rows lets the gate run the SAMPLE-DRIVEN key-repeats?
+              ;; check (the SAMPLE node wrote it); absent → falls back to the tag.
               :reads [:source :transform-source :selector :container :max-windows
-                      :model-spec :aggregation-spec]
+                      :model-spec :aggregation-spec :sample-rows]
               ;; EB9 — declare the FLAT :concept-count so the sanity :condition
               ;; can gate the intermediate state.
               :writes [:concept-drafts :relationship-drafts
@@ -735,8 +741,9 @@
             ;; forwarded window cap binds (absent → the :fn's default applies).
             ;; GC-11a — :model-spec read for the deterministic linking-key carry.
             ;; MT-3 — :aggregation-spec routes to the aggregating fold for :long-form.
+            ;; MT-6 — :sample-rows drives the sample-based key-repeats? gate.
             :reads [:source :transform-source :selector :container :max-windows
-                    :model-spec :aggregation-spec]
+                    :model-spec :aggregation-spec :sample-rows]
             :writes [:concept-drafts :relationship-drafts :extraction-report]))))))
 
 ;; =============================================================================
