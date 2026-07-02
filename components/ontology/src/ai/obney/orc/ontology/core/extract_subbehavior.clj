@@ -75,6 +75,7 @@
             [ai.obney.orc.ontology.core.rlm-discovery :as rlm-discovery]
             [ai.obney.orc.ontology.core.resilience :as res]
             [ai.obney.orc.ontology.core.container-select :as csel]
+            [ai.obney.orc.ontology.core.container-aggregate :as cagg]
             [clojure.edn :as edn]
             [clojure.string :as str]))
 
@@ -505,7 +506,8 @@
    per-row draft set + a flat `:concept-count` (the resilience sanity-gate key) +
    the `:extraction-report` (the no-false-green coverage signal)."
   [{:keys [inputs]}]
-  (let [{:keys [source transform-source selector container max-windows model-spec]} inputs
+  (let [{:keys [source transform-source selector container max-windows model-spec
+                aggregation-spec]} inputs
         ;; the container's name wins (the loop is traversing it); fall back to the
         ;; author-emitted selector for the single-container path.
         effective-selector (or (:name container) selector)
@@ -518,12 +520,29 @@
         ;; entity's own keying field. Domain-agnostic: names come from the runtime
         ;; model-spec, never baked here.
         linking-keys (:linking-keys model-spec)
-        result (rlm-discovery/apply-extraction-transform!
-                {:descriptor source
-                 :transform-source transform-source
-                 :selector effective-selector
-                 :max-windows max-windows
-                 :linking-keys linking-keys})
+        ;; MT-3 — the DETERMINISTIC routing gate. Coerce the AUTHOR's aggregation-spec
+        ;; (tolerating the C1 string form) and fire the AGGREGATING apply ONLY for a
+        ;; :long-form container with a valid spec (the same shared stream, a different
+        ;; fold — #8). Every other shape / no spec keeps the per-row apply UNCHANGED.
+        spec (cagg/parse-aggregation-spec aggregation-spec)
+        aggregate? (cagg/aggregating-apply? container spec)
+        result (if aggregate?
+                 (rlm-discovery/apply-aggregation-transform!
+                  {:descriptor source
+                   :spec spec
+                   :selector effective-selector
+                   ;; MT-3 — the aggregating fold is BOUNDED-MEMORY, so it must stream
+                   ;; the WHOLE container (the per-row `max-windows` cap bounds heap
+                   ;; DRAFT-VOLUME, which doesn't apply here; inheriting it truncates
+                   ;; a large long-form → missing keys / wrong top-N — #4/#5). Take the
+                   ;; MAX so an explicit higher caller override still wins.
+                   :max-windows (max (or max-windows 0) cagg/full-coverage-max-windows)})
+                 (rlm-discovery/apply-extraction-transform!
+                  {:descriptor source
+                   :transform-source transform-source
+                   :selector effective-selector
+                   :max-windows max-windows
+                   :linking-keys linking-keys}))
         concept-drafts (vec (:concept-drafts result))
         relationship-drafts (vec (:relationship-drafts result))]
     {:concept-drafts concept-drafts
@@ -619,10 +638,17 @@
           (dsl/sequence (str "extract-" path-label)
             (dsl/llm (str "extract-" path-label "-author")
               :model mdl
-              :instruction author-prompt
-              :reads [:model-spec :sample-rows]
+              ;; MT-3 — the AUTHOR prompt carries BOTH the per-row DT4 body AND the
+              ;; :long-form aggregation-spec extension; the model reads the container's
+              ;; :shape tag and authors whichever fits.
+              :instruction (str author-prompt (cagg/aggregation-author-guidance))
+              ;; MT-3 — the AUTHOR now reads :container so it can see the MT-1 :shape
+              ;; tag (the aggregation path is gated on :long-form).
+              :reads [:model-spec :sample-rows :container]
               ;; #13 — :reasoning FIRST (chain-of-thought before the transform).
-              :writes [:reasoning :transform-source :selector])
+              ;; MT-3 — :aggregation-spec is the OPTIONAL rollup-spec write for a
+              ;; :long-form container (the model emits this OR the transform-source).
+              :writes [:reasoning :transform-source :selector :aggregation-spec])
             (dsl/code (str "extract-" path-label "-apply")
               :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
               ;; GC-9 — :max-windows is the per-container window cap (caller-overridable
@@ -631,7 +657,10 @@
               ;; the :fn's `(or max-windows default-max-extract-windows)` default).
               ;; GC-11a — also read :model-spec so the apply step can carry the
               ;; model-spec's discovered :linking-keys VALUES into :attributes.
-              :reads [:source :transform-source :selector :container :max-windows :model-spec]
+              ;; MT-3 — :aggregation-spec routes the APPLY to the aggregating fold for
+              ;; a :long-form container (the deterministic gate reads :container too).
+              :reads [:source :transform-source :selector :container :max-windows
+                      :model-spec :aggregation-spec]
               ;; EB9 — declare the FLAT :concept-count so the sanity :condition
               ;; can gate the intermediate state.
               :writes [:concept-drafts :relationship-drafts
@@ -666,6 +695,11 @@
          :reasoning :string
          :transform-source :string
          :selector [:maybe :string]
+         ;; MT-3 — the OPTIONAL model-authored rollup spec (a :long-form container's
+         ;; aggregating-transform). [:maybe …] so the per-row path (no spec) is
+         ;; unchanged; {:closed false} + tolerant leaves for the model-variable shape.
+         ;; A C1 string-form arrival is coerced back in the APPLY :fn (parse-aggregation-spec).
+         :aggregation-spec [:maybe [:map {:closed false}]]
          ;; EB9 — the flat intermediate-state count the sanity gate checks.
          :concept-count :int
          ;; :writes — the draft set + the coverage report (this container's)
@@ -690,15 +724,19 @@
             :writes [:sample-rows])
           (dsl/llm "author"
             :model mdl
-            :instruction (transform-author-prompt key-shape)
-            :reads [:model-spec :sample-rows]
-            :writes [:reasoning :transform-source :selector])
+            ;; MT-3 — the aggregation-spec extension + the :container read (see the
+            ;; resilient path above).
+            :instruction (str (transform-author-prompt key-shape) (cagg/aggregation-author-guidance))
+            :reads [:model-spec :sample-rows :container]
+            :writes [:reasoning :transform-source :selector :aggregation-spec])
           (dsl/code "apply-transform"
             :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
             ;; GC-9 — see the resilient path above: declare :max-windows so the
             ;; forwarded window cap binds (absent → the :fn's default applies).
             ;; GC-11a — :model-spec read for the deterministic linking-key carry.
-            :reads [:source :transform-source :selector :container :max-windows :model-spec]
+            ;; MT-3 — :aggregation-spec routes to the aggregating fold for :long-form.
+            :reads [:source :transform-source :selector :container :max-windows
+                    :model-spec :aggregation-spec]
             :writes [:concept-drafts :relationship-drafts :extraction-report]))))))
 
 ;; =============================================================================

@@ -204,12 +204,14 @@
             unit-id (extract/extract-per-container-sheet-id-for)
             author (first (filter #(= :ai (:executor %)) (vals (rm/get-nodes-by-id ctx unit-id))))
             writes (vec (:writes author))]
-        (is (= [:model-spec :sample-rows] (vec (:reads author)))
-            "the AUTHOR node reads the model-spec + the REAL sampled rows (Node 1's output)")
+        (is (= [:model-spec :sample-rows :container] (vec (:reads author)))
+            "the AUTHOR node reads the model-spec + the REAL sampled rows (Node 1's
+             output) + the container (MT-3 — for the :long-form :shape tag)")
         (is (= :reasoning (first writes))
             "#13: the FIRST declared write must be :reasoning (force think-before-emit)")
-        (is (= [:reasoning :transform-source :selector] writes)
-            "the AUTHOR write contract is reasoning-first, then the transform-source + selector")))))
+        (is (= [:reasoning :transform-source :selector :aggregation-spec] writes)
+            "the AUTHOR write contract is reasoning-first, then the transform-source +
+             selector + the MT-3 :aggregation-spec (the :long-form rollup spec)")))))
 
 (deftest per-container-sample-and-apply-node-contracts-test
   (testing "the per-container SAMPLE node reads [:source :container] writes
@@ -225,11 +227,13 @@
         (is (= [:source :container] (vec (:reads sample)))
             "the SAMPLE node reads the source + the ONE container it grounds")
         (is (= [:sample-rows] (vec (:writes sample))))
-        (is (= [:source :transform-source :selector :container :max-windows :model-spec]
+        (is (= [:source :transform-source :selector :container :max-windows
+                :model-spec :aggregation-spec]
                (vec (:reads apply*)))
             "the APPLY node reads the source + transform + selector + the container it
              applies to + the GC-9 :max-windows reduced-cap + the GC-11a :model-spec
-             (for the deterministic linking-key VALUE carry)")
+             (for the deterministic linking-key VALUE carry) + the MT-3 :aggregation-spec
+             (routes the aggregating fold for a :long-form container)")
         (is (= [:concept-drafts :relationship-drafts :extraction-report]
                (vec (:writes apply*)))
             "the APPLY node writes the per-container draft-set contract")))))

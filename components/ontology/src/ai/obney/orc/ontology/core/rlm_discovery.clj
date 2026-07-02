@@ -54,6 +54,7 @@
             [ai.obney.orc.ontology.core.seeds :as seeds]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
+            [ai.obney.orc.ontology.core.container-aggregate :as cagg]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -1077,6 +1078,110 @@
                     d))
                 concept-drafts))))))
 
+(defn resolve-source-stream
+  "MT-3 — the SHARED 'descriptor → lazy dual-keyed row-seq' resolution that BOTH the
+   per-row extraction fold (`apply-extraction-transform!`) and the MT-3 aggregating
+   fold (`apply-aggregation-transform!`) reuse (re-orchestrate, NOT fork — #8). It
+   resolves the descriptor → the uniform container-contract → `:stream-all`, applies
+   the sql selector validation + the MC-4 container resolution, and returns the lazy
+   row-seq (across all windows) + the `dual-key` presenter + the resolved selector +
+   the lazy windows. The ONLY difference between the two apply paths is the FOLD; the
+   stream resolution is identical, so it lives here once.
+
+   Params (a single map): `:descriptor` (required), `:selector`, `:window`,
+   `:max-windows` — the SAME shapes `apply-extraction-transform!` accepts.
+
+   Returns:
+     {:selector <resolved selector>
+      :windows  <the lazy window seq — count it for the report>
+      :rows     <lazy seq of RAW row maps across every window (un-dual-keyed)>
+      :dual-key <fn presenting a row with BOTH keyword AND string keys, so a
+                 column name resolves whatever the source's key TYPE>}"
+  [{:keys [descriptor selector window max-windows]}]
+  (when-not (map? descriptor)
+    (throw (ex-info "resolve-source-stream: :descriptor must be a source descriptor map {:type ... :path ...}"
+                    {:descriptor descriptor})))
+  (let [source-tools-for (resolve-or-throw
+                          'ai.obney.orc.orc-service.core.source-tools/source-tools-for
+                          "the V06 source-tool registry (orc-service)")
+        container-contract (resolve-or-throw
+                            'ai.obney.orc.orc-service.core.source-tools/container-contract
+                            "the MC-1 container contract (orc-service)")
+        tools (source-tools-for descriptor)
+        _ (when-not (map? tools)
+            (throw (ex-info (str "resolve-source-stream: no source tools for descriptor "
+                                 (pr-str descriptor) " (a :text source has no stream-all; V20 "
+                                 "scope is csv / sql / excel)")
+                            {:descriptor descriptor})))
+        contract (container-contract descriptor)
+        stream-all (get contract :stream-all)
+        _ (when-not (fn? stream-all)
+            (throw (ex-info "resolve-source-stream: the source tools do not expose stream-all"
+                            {:descriptor descriptor :tools (keys tools)})))
+        stream-opts (cond-> {}
+                      window     (assoc :window window)
+                      max-windows (assoc :max-windows max-windows))
+        ;; sql selector is brittle to LLM variance (the MC-0 fix — preserved verbatim):
+        ;; resolve + VALIDATE the selector against the real table list, falling back to
+        ;; the largest table for any selector that doesn't name a real table.
+        selector (if (= :sql (or (:type descriptor) (:format descriptor)))
+                   (let [tables    (let [lt (get tools 'list-tables)]
+                                     (when (fn? lt) (vec (lt))))
+                         table-set (set tables)
+                         norm      (when (string? selector)
+                                     (let [s (.trim ^String selector)]
+                                       (if (and (>= (count s) 2)
+                                                (#{\" \'} (first s))
+                                                (= (first s) (last s)))
+                                         (subs s 1 (dec (count s)))
+                                         s)))
+                         from-map  (when (map? selector)
+                                     (or (:name selector) (:table selector)))
+                         largest   (delay
+                                     (let [count-rows (get tools 'count-rows)]
+                                       (when (seq tables)
+                                         (->> tables
+                                              (map (fn [t] [t (try (:row-count (count-rows t))
+                                                                   (catch Throwable _ 0))]))
+                                              (sort-by second >)
+                                              ffirst))))]
+                     (cond
+                       (and norm (table-set norm))         norm
+                       (and from-map (table-set from-map)) from-map
+                       :else                               @largest))
+                   selector)
+        ;; MC-4 — resolve the (sql-validated) selector to ONE CONTAINER via the
+        ;; contract's :list-containers, so the uniform :stream-all gets the medium-
+        ;; specific addressing it needs.
+        containers (try ((:list-containers contract)) (catch Throwable _ nil))
+        sel-name (cond (string? selector) selector
+                       (map? selector) (or (:name selector) (:table selector)
+                                           (:sheet selector))
+                       :else nil)
+        container (cond
+                    sel-name (or (first (filter #(= sel-name (:name %)) containers))
+                                 {:name sel-name})
+                    :else (first containers))
+        windows (stream-all container stream-opts)
+        ;; Present each row with BOTH keyword AND string keys so a column name
+        ;; resolves whether the source is string-keyed (csv) or keyword-keyed
+        ;; (sql/excel). Non-map rows pass through untouched.
+        dual-key (fn [row]
+                   (if (map? row)
+                     (persistent!
+                      (reduce-kv (fn [m k v]
+                                   (let [alt (cond (keyword? k) (name k)
+                                                   (string? k) (keyword k)
+                                                   :else nil)]
+                                     (cond-> (assoc! m k v) alt (assoc! alt v))))
+                                 (transient {}) row))
+                     row))
+        all-rows (mapcat normalize-window-rows windows)]
+    {:selector selector
+     :windows windows
+     :rows all-rows
+     :dual-key dual-key}))
+
 (defn apply-extraction-transform!
   "V20 — the deterministic full-extraction apply-step.
 
@@ -1136,108 +1241,12 @@
    `compile-discovery-source!` ingests — so the caller flows them through the
    existing compile + V18 referential integrity unchanged."
   [{:keys [descriptor transform-source selector window max-windows linking-keys]}]
-  (when-not (map? descriptor)
-    (throw (ex-info "apply-extraction-transform!: :descriptor must be a source descriptor map {:type ... :path ...}"
-                    {:descriptor descriptor})))
-  (let [source-tools-for (resolve-or-throw
-                          'ai.obney.orc.orc-service.core.source-tools/source-tools-for
-                          "the V06 source-tool registry (orc-service)")
-        container-contract (resolve-or-throw
-                            'ai.obney.orc.orc-service.core.source-tools/container-contract
-                            "the MC-1 container contract (orc-service)")
-        tools (source-tools-for descriptor)
-        _ (when-not (map? tools)
-            (throw (ex-info (str "apply-extraction-transform!: no source tools for descriptor "
-                                 (pr-str descriptor) " (a :text source has no stream-all; V20 "
-                                 "scope is csv / sql / excel)")
-                            {:descriptor descriptor})))
-        ;; MC-4 — stream the named CONTAINER through the uniform container
-        ;; contract (csv/sql/excel one code path), resolving a directory /
-        ;; explicit-:format/:type descriptor through MC-1's container-contract.
-        contract (container-contract descriptor)
-        stream-all (get contract :stream-all)
-        _ (when-not (fn? stream-all)
-            (throw (ex-info "apply-extraction-transform!: the source tools do not expose stream-all"
-                            {:descriptor descriptor :tools (keys tools)})))
+  (let [;; MT-3 — REUSE the shared descriptor→lazy-row-seq resolution (no fork). The
+        ;; per-row fold below is the ONLY thing that differs from the aggregating fold.
+        {:keys [selector windows dual-key] resolved-rows :rows}
+        (resolve-source-stream {:descriptor descriptor :selector selector
+                                :window window :max-windows max-windows})
         xform (eval-transform-fn transform-source)
-        stream-opts (cond-> {}
-                      window     (assoc :window window)
-                      max-windows (assoc :max-windows max-windows))
-        ;; sql selector is brittle to LLM variance — the AUTHOR node emits table
-        ;; selectors inconsistently: the literal string "null"/"nil"/blank (→ "no
-        ;; such table: null"), a name with baked-in quotes ("\"C2022_A\"" → FROM
-        ;; ""C2022_A"" syntax error), or a hallucinated name. So for sql we RESOLVE
-        ;; + VALIDATE the selector against the real table list and fall back to the
-        ;; largest table (the SAME default SAMPLE used — keeps sample/author/apply
-        ;; consistent) for ANY selector that doesn't name a real table. (MC-0 fix —
-        ;; preserved verbatim; it produces the resolved selector NAME below.)
-        selector (if (= :sql (or (:type descriptor) (:format descriptor)))
-                   (let [tables    (let [lt (get tools 'list-tables)]
-                                     (when (fn? lt) (vec (lt))))
-                         table-set (set tables)
-                         norm      (when (string? selector)
-                                     (let [s (.trim ^String selector)]
-                                       (if (and (>= (count s) 2)
-                                                (#{\" \'} (first s))
-                                                (= (first s) (last s)))
-                                         (subs s 1 (dec (count s)))
-                                         s)))
-                         from-map  (when (map? selector)
-                                     (or (:name selector) (:table selector)))
-                         largest   (delay
-                                     (let [count-rows (get tools 'count-rows)]
-                                       (when (seq tables)
-                                         (->> tables
-                                              (map (fn [t] [t (try (:row-count (count-rows t))
-                                                                   (catch Throwable _ 0))]))
-                                              (sort-by second >)
-                                              ffirst))))]
-                     (cond
-                       (and norm (table-set norm))         norm
-                       (and from-map (table-set from-map)) from-map
-                       :else                               @largest))
-                   selector)
-        ;; MC-4 — resolve the (now sql-validated) selector to ONE CONTAINER via
-        ;; the contract's :list-containers, so the uniform :stream-all gets the
-        ;; medium-specific addressing it needs (excel: the sheet's :path+:sheet;
-        ;; sql: the table name; csv: the single container). A selector that names
-        ;; a real container resolves to that entry; otherwise we fall back to a
-        ;; default container (csv: the single file; excel/sql: the first / largest
-        ;; listed). This is the gap MC-1 deferred — one container per call (MC-5
-        ;; iterates).
-        containers (try ((:list-containers contract)) (catch Throwable _ nil))
-        sel-name (cond (string? selector) selector
-                       (map? selector) (or (:name selector) (:table selector)
-                                           (:sheet selector))
-                       :else nil)
-        container (cond
-                    ;; a selector that matches a listed container carries its
-                    ;; addressing (excel :path+:sheet); a sql table name not in the
-                    ;; listing is wrapped as a bare-name container (sql streams by
-                    ;; name, no extra addressing needed).
-                    sel-name (or (first (filter #(= sel-name (:name %)) containers))
-                                 {:name sel-name})
-                    ;; no selector → the deterministic FIRST listed container
-                    ;; (csv: the single file; excel: the first sheet). For sql the
-                    ;; selector branch above already resolved a name, so this only
-                    ;; covers csv/excel with no selector.
-                    :else (first containers))
-        windows (stream-all container stream-opts)
-        ;; Present each row with BOTH keyword AND string keys so the authored
-        ;; transform works whether it does (get row :UNITID) or (get row "UNITID").
-        ;; The LLM author is inconsistent about key type, and a mismatch silently
-        ;; yields nil for EVERY field → empty-URI/empty-label drafts (a false-green:
-        ;; "0 errors" but garbage concepts). Non-map rows pass through untouched.
-        dual-key (fn [row]
-                   (if (map? row)
-                     (persistent!
-                      (reduce-kv (fn [m k v]
-                                   (let [alt (cond (keyword? k) (name k)
-                                                   (string? k) (keyword k)
-                                                   :else nil)]
-                                     (cond-> (assoc! m k v) alt (assoc! alt v))))
-                                 (transient {}) row))
-                     row))
         ;; Apply the transform to one row; classify the outcome. A non-map result
         ;; or a non-sequential drafts field is a ROW ERROR (counted), not silently
         ;; coerced — a transform that returns a bad shape on a row is a real fault.
@@ -1255,9 +1264,9 @@
                       (catch Throwable t
                         {:error (.getMessage t)})))
         ;; Fold ALL rows (across every window) in a single flat loop — no nested
-        ;; recur. Windows are concatenated lazily so the per-call ceiling holds
-        ;; (each window is a bounded read); we never realize the whole source.
-        all-rows (mapcat normalize-window-rows windows)]
+        ;; recur. `resolved-rows` is the shared lazy row-seq (each window a bounded
+        ;; read); we never realize the whole source.
+        all-rows resolved-rows]
     (loop [rs (seq all-rows)
            rows-streamed 0
            rows-ok 0
@@ -1293,6 +1302,47 @@
                      (conj errors {:row row :error (:error outcome)})
                      errors)
                    concept-drafts relationship-drafts)))))))
+
+(defn apply-aggregation-transform!
+  "MT-3 — the deterministic AGGREGATING apply-step (the sibling of
+   `apply-extraction-transform!` for `:long-form` containers). REUSES the SAME
+   `resolve-source-stream` machinery (no fork — #8); the ONLY difference is the FOLD:
+   instead of a per-row `mapcat` of drafts, it folds the model-authored ROLLUP SPEC
+   over the lazy dual-keyed row stream keeping only per-key top-N (bounded memory =
+   distinct-keys × N — a 62k-row container never materializes whole).
+
+   Params (a single map):
+     :descriptor  REQUIRED — the source descriptor (same shape as the per-row step).
+     :spec        REQUIRED — the model-authored rollup spec (see
+                  `container-aggregate/stream-aggregate`).
+     :selector / :window / :max-windows — same as the per-row step.
+
+   Returns the SAME report SHAPE the per-row step returns (so the APPLY `:code`
+   wrapper builds an identical `:extraction-report`), mapping the aggregate's honest
+   counts: `:rows-streamed` = rows-seen, `:rows-ok` = rows-kept, `:rows-errored` =
+   in-scope rows skipped for a missing key/element/non-numeric value. The per-key
+   `:concept-drafts` flow through the SAME canonicalize / reconcile downstream. No
+   `:relationship-drafts` (a rollup emits nodes, not intra-row edges). Also surfaces
+   the boundedness witnesses `:distinct-keys` / `:peak-acc-entries` / `:rows-filtered`."
+  [{:keys [descriptor spec selector window max-windows]}]
+  (let [{:keys [selector windows dual-key] resolved-rows :rows}
+        (resolve-source-stream {:descriptor descriptor :selector selector
+                                :window window :max-windows max-windows})
+        ;; dual-key each row so the spec's column names resolve whatever the source's
+        ;; key TYPE (csv string keys vs sql/excel keyword keys) — the SAME presenter
+        ;; the per-row fold uses.
+        agg (cagg/stream-aggregate spec (map dual-key resolved-rows))]
+    {:selector selector
+     :windows (count windows)
+     :rows-streamed (:rows-seen agg)
+     :rows-ok (:rows-kept agg)
+     :rows-errored (:rows-errored agg)
+     :rows-filtered (:rows-filtered agg)
+     :distinct-keys (:distinct-keys agg)
+     :peak-acc-entries (:peak-acc-entries agg)
+     :errors-sample []
+     :concept-drafts (:concept-drafts agg)
+     :relationship-drafts []}))
 
 ;; =============================================================================
 ;; Public entry: compile-discovery-source!
