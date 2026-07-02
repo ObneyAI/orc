@@ -1078,28 +1078,27 @@
                     d))
                 concept-drafts))))))
 
-(defn resolve-source-stream
-  "MT-3 — the SHARED 'descriptor → lazy dual-keyed row-seq' resolution that BOTH the
-   per-row extraction fold (`apply-extraction-transform!`) and the MT-3 aggregating
-   fold (`apply-aggregation-transform!`) reuse (re-orchestrate, NOT fork — #8). It
-   resolves the descriptor → the uniform container-contract → `:stream-all`, applies
-   the sql selector validation + the MC-4 container resolution, and returns the lazy
-   row-seq (across all windows) + the `dual-key` presenter + the resolved selector +
-   the lazy windows. The ONLY difference between the two apply paths is the FOLD; the
-   stream resolution is identical, so it lives here once.
+(defn resolve-source-container
+  "MT-3/MT-5 — the SHARED descriptor→CONTAINER resolution (source tools → uniform
+   container-contract → sql selector validation → MC-4 container addressing → the
+   `dual-key` presenter), WITHOUT streaming. Pulling the resolution out (no eager
+   window realization) lets the aggregating apply PAGE a huge long-form container in
+   bounded chunks; the eager per-row wrapper `resolve-source-stream` (below) realizes
+   the windows for the window-capped per-row fold. Re-orchestrate, NOT fork (#8).
 
    Params (a single map): `:descriptor` (required), `:selector`, `:window`,
    `:max-windows` — the SAME shapes `apply-extraction-transform!` accepts.
 
    Returns:
      {:selector <resolved selector>
-      :windows  <the lazy window seq — count it for the report>
-      :rows     <lazy seq of RAW row maps across every window (un-dual-keyed)>
+      :container <the resolved MC-4 container (medium-specific addressing)>
+      :stream-all <the contract's bound stream-all fn — the caller pages it>
+      :stream-opts <the {:window :max-windows} opts>
       :dual-key <fn presenting a row with BOTH keyword AND string keys, so a
                  column name resolves whatever the source's key TYPE>}"
   [{:keys [descriptor selector window max-windows]}]
   (when-not (map? descriptor)
-    (throw (ex-info "resolve-source-stream: :descriptor must be a source descriptor map {:type ... :path ...}"
+    (throw (ex-info "resolve-source-container: :descriptor must be a source descriptor map {:type ... :path ...}"
                     {:descriptor descriptor})))
   (let [source-tools-for (resolve-or-throw
                           'ai.obney.orc.orc-service.core.source-tools/source-tools-for
@@ -1109,14 +1108,14 @@
                             "the MC-1 container contract (orc-service)")
         tools (source-tools-for descriptor)
         _ (when-not (map? tools)
-            (throw (ex-info (str "resolve-source-stream: no source tools for descriptor "
+            (throw (ex-info (str "resolve-source-container: no source tools for descriptor "
                                  (pr-str descriptor) " (a :text source has no stream-all; V20 "
                                  "scope is csv / sql / excel)")
                             {:descriptor descriptor})))
         contract (container-contract descriptor)
         stream-all (get contract :stream-all)
         _ (when-not (fn? stream-all)
-            (throw (ex-info "resolve-source-stream: the source tools do not expose stream-all"
+            (throw (ex-info "resolve-source-container: the source tools do not expose stream-all"
                             {:descriptor descriptor :tools (keys tools)})))
         stream-opts (cond-> {}
                       window     (assoc :window window)
@@ -1162,7 +1161,6 @@
                     sel-name (or (first (filter #(= sel-name (:name %)) containers))
                                  {:name sel-name})
                     :else (first containers))
-        windows (stream-all container stream-opts)
         ;; Present each row with BOTH keyword AND string keys so a column name
         ;; resolves whether the source is string-keyed (csv) or keyword-keyed
         ;; (sql/excel). Non-map rows pass through untouched.
@@ -1175,11 +1173,28 @@
                                                    :else nil)]
                                      (cond-> (assoc! m k v) alt (assoc! alt v))))
                                  (transient {}) row))
-                     row))
-        all-rows (mapcat normalize-window-rows windows)]
+                     row))]
+    {:selector selector
+     :container container
+     :stream-all stream-all
+     :stream-opts stream-opts
+     :dual-key dual-key}))
+
+(defn resolve-source-stream
+  "MT-3 — the EAGER wrapper over `resolve-source-container`: resolve THEN realize every
+   window. Used by the per-row apply (`apply-extraction-transform!`), which is window-
+   CAPPED (default 50), so the realization is bounded. Returns `{:selector :windows
+   :rows :dual-key}` — `:rows` a lazy seq over the realized windows. The AGGREGATING
+   apply does NOT use this — it PAGES via `resolve-source-container` so a huge long-form
+   container (O*NET Work Context = 297k rows) never materializes whole (#5 — the MT-3
+   'bounded' promise must bound the STREAM, not only the accumulator)."
+  [params]
+  (let [{:keys [selector container stream-all stream-opts dual-key]}
+        (resolve-source-container params)
+        windows (stream-all container stream-opts)]
     {:selector selector
      :windows windows
-     :rows all-rows
+     :rows (mapcat normalize-window-rows windows)
      :dual-key dual-key}))
 
 (defn apply-extraction-transform!
@@ -1303,13 +1318,24 @@
                      errors)
                    concept-drafts relationship-drafts)))))))
 
+(def ^:private aggregate-chunk-windows
+  "MT-5 — how many `stream-all` windows the aggregating fold PAGES per chunk. Each
+   excel window is ≤500 rows, so ~40 windows ≈ 20k rows held transiently per chunk —
+   BOUNDED regardless of the container's size (O*NET Work Context = 297k rows folds in
+   ~15 chunks, never materialized whole; the accumulator stays keys × N). This is what
+   makes MT-3 truly bounded at COMPREHENSIVE scale, where GC-13 extracts several huge
+   long-form containers CONCURRENTLY — the prior eager `do-stream-all` realized each
+   whole container and OOMed the comprehensive build."
+  40)
+
 (defn apply-aggregation-transform!
-  "MT-3 — the deterministic AGGREGATING apply-step (the sibling of
+  "MT-3/MT-5 — the deterministic AGGREGATING apply-step (the sibling of
    `apply-extraction-transform!` for `:long-form` containers). REUSES the SAME
-   `resolve-source-stream` machinery (no fork — #8); the ONLY difference is the FOLD:
-   instead of a per-row `mapcat` of drafts, it folds the model-authored ROLLUP SPEC
-   over the lazy dual-keyed row stream keeping only per-key top-N (bounded memory =
-   distinct-keys × N — a 62k-row container never materializes whole).
+   `resolve-source-container` resolution (no fork — #8); the ONLY difference is the
+   FOLD: instead of a per-row `mapcat` of drafts, it PAGES the container in bounded
+   chunks (`aggregate-chunk-windows`) and folds the model-authored ROLLUP SPEC into the
+   accumulator, keeping only per-key top-N (bounded memory = distinct-keys × N — a
+   297k-row container never materializes whole, at any extract concurrency).
 
    Params (a single map):
      :descriptor  REQUIRED — the source descriptor (same shape as the per-row step).
@@ -1325,15 +1351,42 @@
    `:relationship-drafts` (a rollup emits nodes, not intra-row edges). Also surfaces
    the boundedness witnesses `:distinct-keys` / `:peak-acc-entries` / `:rows-filtered`."
   [{:keys [descriptor spec selector window max-windows]}]
-  (let [{:keys [selector windows dual-key] resolved-rows :rows}
-        (resolve-source-stream {:descriptor descriptor :selector selector
-                                :window window :max-windows max-windows})
-        ;; dual-key each row so the spec's column names resolve whatever the source's
-        ;; key TYPE (csv string keys vs sql/excel keyword keys) — the SAME presenter
-        ;; the per-row fold uses.
-        agg (cagg/stream-aggregate spec (map dual-key resolved-rows))]
+  (let [{:keys [selector container stream-all dual-key]}
+        (resolve-source-container {:descriptor descriptor :selector selector
+                                   :window window :max-windows max-windows})
+        ;; MT-5 — PAGE the container in BOUNDED CHUNKS (aggregate-chunk-windows at a
+        ;; time), folding each chunk into the aggregate accumulator via the exposed
+        ;; init/step and then DISCARDING the chunk. So a 297k-row long-form container
+        ;; (O*NET Work Context) never materializes whole — heap = accumulator (keys×N)
+        ;; + one chunk (≈20k rows), regardless of container size or extract concurrency.
+        ;; `max-windows` (full-coverage from the caller) is the TOTAL window ceiling.
+        ceiling (or max-windows 100000)
+        {:keys [state windows]}
+        (loop [offset 0, state (cagg/aggregate-init), win-count 0]
+          (let [budget (min aggregate-chunk-windows (- ceiling win-count))]
+            (if (<= budget 0)
+              {:state state :windows win-count}
+              (let [ws (stream-all container (cond-> {:offset offset :max-windows budget}
+                                               window (assoc :window window)))
+                    rows (mapcat normalize-window-rows ws)
+                    ;; dual-key each row so the spec's column names resolve whatever the
+                    ;; source's key TYPE (the SAME presenter the per-row fold uses).
+                    state' (reduce (fn [s r] (cagg/aggregate-step spec s (dual-key r)))
+                                   state rows)
+                    last-w (last ws)
+                    win-count' (+ win-count (count ws))
+                    ;; do-stream-all returns UP TO `budget` windows, stopping early at a
+                    ;; short/`:exhausted?` window. Fewer than `budget` (or an exhausted
+                    ;; last window) ⇒ the container is done; else resume from :next-offset.
+                    exhausted? (or (empty? ws) (nil? last-w) (:exhausted? last-w)
+                                   (< (count ws) budget))]
+                (if exhausted?
+                  {:state state' :windows win-count'}
+                  (recur (long (or (:next-offset last-w) (+ offset (count ws))))
+                         state' win-count'))))))
+        agg (cagg/aggregate-finalize spec state)]
     {:selector selector
-     :windows (count windows)
+     :windows windows
      :rows-streamed (:rows-seen agg)
      :rows-ok (:rows-kept agg)
      :rows-errored (:rows-errored agg)

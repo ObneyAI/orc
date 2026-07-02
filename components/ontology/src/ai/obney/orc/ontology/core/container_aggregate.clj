@@ -48,7 +48,67 @@
 
 ;; ---------------------------------------------------------------------------
 ;; The deterministic executor — bounded streaming group-by-key → top-N-by-value.
+;; Exposed as init / step / finalize so the APPLY path can drive the fold CHUNK-BY-
+;; CHUNK over a paged stream (never materializing a huge container — the bound is the
+;; ACCUMULATOR `distinct-keys × N`, not the row count). `stream-aggregate` is the
+;; whole-seq convenience wrapper over the same three.
 ;; ---------------------------------------------------------------------------
+
+(defn aggregate-init
+  "The empty fold state (accumulator + honest counters)."
+  []
+  {:acc {} :rows-seen 0 :rows-kept 0 :rows-errored 0 :rows-filtered 0})
+
+(defn aggregate-step
+  "Fold ONE row into the aggregate `state` under `spec`. Off-scale rows (the scale
+   filter) increment `:rows-filtered`; in-scope rows with key+element+numeric value
+   contribute to the per-key TOP-N (pruned on every insert → bounded at N per key);
+   in-scope rows missing key/element or with a non-numeric value increment
+   `:rows-errored` (honest skip, never fabricated). Pure + total."
+  [spec state row]
+  (let [{:keys [key-col element-col value-col n filter-col filter-val]} spec
+        n (or n 10)
+        keep-topn (fn [pairs] (->> pairs (sort-by :value >) (take n) vec))
+        {:keys [acc rows-seen rows-kept rows-errored rows-filtered]} state
+        rows-seen (inc rows-seen)
+        scale-ok? (or (nil? filter-col)
+                      (= (str (get row filter-col)) (str filter-val)))]
+    (if-not scale-ok?
+      (assoc state :rows-seen rows-seen :rows-filtered (inc rows-filtered))
+      (let [k (get row key-col)
+            e (get row element-col)
+            v (coerce-num (get row value-col))]
+        (if (and (some? k) (some? e) (some? v))
+          (assoc state
+                 :acc (update acc k (fn [cur] (keep-topn (conj (or cur []) {:element e :value v}))))
+                 :rows-seen rows-seen
+                 :rows-kept (inc rows-kept))
+          (assoc state :rows-seen rows-seen :rows-errored (inc rows-errored)))))))
+
+(defn aggregate-finalize
+  "Produce the per-key concept-drafts + honest counts from a folded `state`. ONE
+   draft per key: `{:uri :label :entity-type :attributes {attr-name [top-N labels]
+   key-col <key value>}}`. `:peak-acc-entries` (== final, since top-N is pruned on
+   insert) is the boundedness witness (≤ keys × N)."
+  [spec state]
+  (let [{:keys [n attr-name entity-type key-col]} spec
+        attr-name (or attr-name :top)
+        et (or entity-type "entity")
+        acc (:acc state)
+        drafts (mapv (fn [[k pairs]]
+                       {:uri (str et "/" k)
+                        :label (str k)
+                        :entity-type et
+                        :attributes (merge {attr-name (mapv :element pairs)}
+                                           (when key-col {key-col k}))})
+                     acc)]
+    {:concept-drafts drafts
+     :distinct-keys (count acc)
+     :peak-acc-entries (reduce + 0 (map (comp count val) acc))
+     :rows-seen (:rows-seen state)
+     :rows-kept (:rows-kept state)
+     :rows-errored (:rows-errored state)
+     :rows-filtered (:rows-filtered state)}))
 
 (defn stream-aggregate
   "Bounded streaming group-by-key → top-N-by-value rollup. `spec` is the model-
@@ -86,50 +146,15 @@
                         accumulator size — the boundedness witness (≤ keys × N)
 
    Pure + total — never throws (a non-numeric value coerces to nil + counts, not an
-   exception)."
+   exception).
+
+   Implemented as `aggregate-finalize` over a `reduce` of `aggregate-step` — the SAME
+   init/step/finalize the STREAMING apply drives CHUNK-BY-CHUNK, so a caller that pages
+   a huge container never holds more than one chunk in heap (the bound is the ACCUMULATOR
+   `keys × N`, not the row count)."
   [spec rows]
-  (let [{:keys [key-col element-col value-col n attr-name filter-col filter-val entity-type]} spec
-        n (or n 10)
-        attr-name (or attr-name :top)
-        et (or entity-type "entity")
-        ;; bounded: on each insert keep only the top-N pairs by value (desc).
-        keep-topn (fn [pairs] (->> pairs (sort-by :value >) (take n) vec))
-        result
-        (reduce
-         (fn [{:keys [acc rows-seen rows-kept rows-errored rows-filtered] :as st} row]
-           (let [rows-seen (inc rows-seen)
-                 scale-ok? (or (nil? filter-col)
-                               (= (str (get row filter-col)) (str filter-val)))]
-             (if-not scale-ok?
-               ;; off-scale — legitimately not this measurement (not an error).
-               (assoc st :rows-seen rows-seen :rows-filtered (inc rows-filtered))
-               (let [k (get row key-col)
-                     e (get row element-col)
-                     v (coerce-num (get row value-col))]
-                 (if (and (some? k) (some? e) (some? v))
-                   (assoc st
-                          :acc (update acc k (fn [cur] (keep-topn (conj (or cur []) {:element e :value v}))))
-                          :rows-seen rows-seen
-                          :rows-kept (inc rows-kept))
-                   ;; in-scope but missing key/element or non-numeric value → honest skip.
-                   (assoc st :rows-seen rows-seen :rows-errored (inc rows-errored)))))))
-         {:acc {} :rows-seen 0 :rows-kept 0 :rows-errored 0 :rows-filtered 0}
-         rows)
-        acc (:acc result)
-        drafts (mapv (fn [[k pairs]]
-                       {:uri (str et "/" k)
-                        :label (str k)
-                        :entity-type et
-                        :attributes (merge {attr-name (mapv :element pairs)}
-                                           (when key-col {key-col k}))})
-                     acc)]
-    {:concept-drafts drafts
-     :distinct-keys (count acc)
-     :peak-acc-entries (reduce + 0 (map (comp count val) acc))
-     :rows-seen (:rows-seen result)
-     :rows-kept (:rows-kept result)
-     :rows-errored (:rows-errored result)
-     :rows-filtered (:rows-filtered result)}))
+  (aggregate-finalize spec (reduce (fn [st row] (aggregate-step spec st row))
+                                   (aggregate-init) rows)))
 
 ;; ---------------------------------------------------------------------------
 ;; The shape gate + the APPLY routing predicates. The aggregating path fires ONLY

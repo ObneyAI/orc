@@ -117,6 +117,32 @@
       (is (every? #(= n (count (get-in % [:attributes :top]))) concept-drafts)
           "each draft keeps exactly the top-N elements"))))
 
+(deftest chunked-folding-equals-whole-seq-aggregate
+  (testing "MT-5 — folding rows CHUNK-BY-CHUNK via aggregate-init/step/finalize
+            (the way the streaming apply pages a huge container) yields the IDENTICAL
+            result as stream-aggregate over the whole seq — so the streaming fix that
+            never materializes the container is correct, not just bounded."
+    (let [spec {:key-col "k" :element-col "el" :value-col "v" :n 5
+                :filter-col "scale" :filter-val "IM" :attr-name :top :entity-type "occ"}
+          rows (for [k ["a" "b" "c"]
+                     i (range 40)
+                     sc ["IM" "LV"]]                 ; two scales — the filter must hold across chunks
+                 {"k" k "el" (str k "-" (mod i 12)) "v" (+ i (if (= sc "LV") 100 0)) "scale" sc})
+          whole (ca/stream-aggregate spec rows)
+          ;; page the SAME rows in 3 arbitrary chunks, threading the accumulator
+          chunks (partition-all 37 rows)              ; uneven chunk boundaries
+          paged (ca/aggregate-finalize
+                 spec
+                 (reduce (fn [st chunk] (reduce (fn [s r] (ca/aggregate-step spec s r)) st chunk))
+                         (ca/aggregate-init) chunks))]
+      (is (= (:rows-seen whole) (:rows-seen paged)) "rows-seen identical")
+      (is (= (:rows-kept whole) (:rows-kept paged)) "rows-kept identical")
+      (is (= (:rows-filtered whole) (:rows-filtered paged)) "off-scale filtered identical")
+      (is (= (:distinct-keys whole) (:distinct-keys paged)))
+      (is (= (into #{} (map (juxt :uri #(get-in % [:attributes :top]))) (:concept-drafts whole))
+             (into #{} (map (juxt :uri #(get-in % [:attributes :top]))) (:concept-drafts paged)))
+          "the per-key top-N drafts are identical whether folded whole or chunk-by-chunk"))))
+
 (deftest stream-aggregate-empty-input-is-honest-zero
   (testing "empty input → honest zero counts, no crash, no fabricated drafts"
     (let [r (ca/stream-aggregate counts-spec [])]
