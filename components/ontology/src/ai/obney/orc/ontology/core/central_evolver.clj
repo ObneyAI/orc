@@ -81,6 +81,7 @@
             [ai.obney.orc.ontology.core.axiom-tbox-subbehavior :as axiom]
             [ai.obney.orc.ontology.core.embed-index-subbehavior :as embed]
             [ai.obney.orc.ontology.core.validate-cq-subbehavior :as vcq]
+            [ai.obney.orc.ontology.core.vocabulary-binding :as vb]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -417,6 +418,16 @@
     (+ (* cap default-per-container-budget-ms)
        model-extract-overhead-budget-ms)))
 
+(def max-vocabulary-recovery-retries
+  "MT-7d — the BOUND on the vocabulary-recovery retry in `delegate-model-extract!`:
+   at most ONE re-run of the pipeline delegate when a failure's read-back
+   model-spec normalizes to an EMPTY vocabulary (the diagnosed transient C1
+   `:delegate`-crossing loss — the Model authors `:entity-types` but they arrive
+   degraded to `[]` while sibling fields survive; an immediate re-run typically
+   recovers). A second empty-vocabulary failure returns the HONEST failure — the
+   MT-7a loud stop stands on recurrence (#5); never an unbounded loop."
+  1)
+
 (defn delegate-model-extract!
   "Production Model→Extract seam: `:delegate` the fixed per-source pipeline sheet
    (Model → Extract). Returns the drafts + the model-spec + candidate-axioms +
@@ -427,10 +438,26 @@
    inheriting `delegate-subbehavior!`'s flat 180s default, which cut a multi-
    container build at container ~10-11 and landed 0 drafts. `max-containers` is
    threaded from the caller (the same cap the Extract orchestrator reads); absent,
-   it resolves to `extract/default-max-containers`."
+   it resolves to `extract/default-max-containers`.
+
+   MT-7d — bounded vocabulary-recovery retry. When the delegate did NOT succeed
+   AND the read-back model-spec normalizes to an EMPTY vocabulary
+   (`vb/empty-vocabulary?` — the SAME deterministic predicate as the MT-7a hard
+   stop; NEVER matched on the error string, #7), the delegate is re-run ONCE
+   (`max-vocabulary-recovery-retries`) with identical inputs. A nil read-back is
+   covered honestly by the same predicate (a Model that never wrote a spec could
+   not have extracted either way; the retry is equally sane). The retry is
+   SURFACED, never silent (#5): every return carries `:vocabulary-retries 0|1`,
+   and a retried call also carries `:degraded-model-spec-raw` — the FIRST
+   attempt's raw PRE-normalize `:model-spec` output VERBATIM (never truncated,
+   #11: the dossier for the deeper dscloj parse root-cause fix). A failure whose
+   read-back vocabulary is NON-empty (a genuine extract-stage failure) never
+   retries — behavior-preserving apart from the surfaced `:vocabulary-retries 0`."
   [ctx {:keys [source goal profile vocabulary graph-context pipeline-sheet-id max-containers max-windows
                selected-containers]}]
-  (let [r (delegate-subbehavior!
+  (let [run-delegate!
+        (fn []
+          (delegate-subbehavior!
            ctx {:timeout-ms (model-extract-timeout-ms {:max-containers max-containers})
                 :central-name (str "ontology-central/pipeline-" (name (:type source)) "@v1")
                 :target-sheet-id pipeline-sheet-id
@@ -473,24 +500,47 @@
                          "max-windows" max-windows
                          ;; MT-2 — forward the survey-driven selection to the Extract
                          ;; orchestrator (nil → the orchestrator falls back to take-cap).
-                         "selected-containers" selected-containers}})
-        ;; GC-10 Fix A — coerce a STRING-form `:entity-types` (the intermittent C1
-        ;; parse failure) back to a vector of maps at the model-spec read-back
-        ;; boundary, so every downstream consumer of the model-spec (the land/axiom/
-        ;; embed steps AND the Extract orchestrator's canonicalizer) sees clean data,
-        ;; never a 100%-degrade from a reduce over the string's characters.
-        ;; Behavior-preserving for an already-parsed vector.
-        model-spec (extract/normalize-model-spec (get-in r [:outputs :model-spec]))]
-    {:status (:status r)
-     :model-spec model-spec
-     :candidate-axioms (get-in r [:outputs :candidate-axioms])
-     ;; embed-fields are folded into the model-spec (EB3); surface them for Embed.
-     :embed-fields (vec (or (model/embed-fields-key model-spec) []))
-     :concept-drafts (vec (or (get-in r [:outputs :concept-drafts]) []))
-     :relationship-drafts (vec (or (get-in r [:outputs :relationship-drafts]) []))
-     :extraction-report (get-in r [:outputs :extraction-report])
-     :tick-id (:tick-id r)
-     :error (:error r)}))
+                         "selected-containers" selected-containers}}))]
+    ;; MT-7d — bounded retry loop: run the delegate; when the attempt FAILED and
+    ;; its read-back model-spec normalizes to an EMPTY vocabulary (the transient
+    ;; C1 crossing loss), re-run ONCE (`max-vocabulary-recovery-retries`), keeping
+    ;; attempt 1's raw PRE-normalize spec verbatim as the dossier.
+    (loop [retries 0
+           first-degraded-raw nil]
+      (let [r (run-delegate!)
+            raw-model-spec (get-in r [:outputs :model-spec])
+            ;; GC-10 Fix A — coerce a STRING-form `:entity-types` (the intermittent C1
+            ;; parse failure) back to a vector of maps at the model-spec read-back
+            ;; boundary, so every downstream consumer of the model-spec (the land/axiom/
+            ;; embed steps AND the Extract orchestrator's canonicalizer) sees clean data,
+            ;; never a 100%-degrade from a reduce over the string's characters.
+            ;; Behavior-preserving for an already-parsed vector.
+            model-spec (extract/normalize-model-spec raw-model-spec)]
+        (if (and (< retries max-vocabulary-recovery-retries)
+                 (not= :success (:status r))
+                 ;; the retry condition is the SAME deterministic predicate as the
+                 ;; MT-7a hard stop — NEVER the error string (#7). Applied to the
+                 ;; NORMALIZED read-back (nil read-back → {:entity-types []} →
+                 ;; empty, covered honestly). A non-empty vocabulary = a GENUINE
+                 ;; extract-stage failure → no retry (never swallow a real failure).
+                 (vb/empty-vocabulary? model-spec))
+          ;; the FIRST attempt's raw pre-normalize spec is the dossier; keep it
+          ;; VERBATIM (#11) across any further attempt.
+          (recur (inc retries)
+                 (if (zero? retries) raw-model-spec first-degraded-raw))
+          (cond-> {:status (:status r)
+                   :model-spec model-spec
+                   :candidate-axioms (get-in r [:outputs :candidate-axioms])
+                   ;; embed-fields are folded into the model-spec (EB3); surface them for Embed.
+                   :embed-fields (vec (or (model/embed-fields-key model-spec) []))
+                   :concept-drafts (vec (or (get-in r [:outputs :concept-drafts]) []))
+                   :relationship-drafts (vec (or (get-in r [:outputs :relationship-drafts]) []))
+                   :extraction-report (get-in r [:outputs :extraction-report])
+                   :tick-id (:tick-id r)
+                   :error (:error r)
+                   ;; MT-7d — the retry is SURFACED on EVERY return (#5).
+                   :vocabulary-retries retries}
+            (pos? retries) (assoc :degraded-model-spec-raw first-degraded-raw)))))))
 
 (defn delegate-reconcile!
   "Production Reconcile seam: `:delegate` Reconcile (land + entity/attr reconcile)."

@@ -626,6 +626,161 @@
               "the delegate's concept-drafts are surfaced unchanged"))))))
 
 ;; =============================================================================
+;; MT-7d — bounded vocabulary-recovery retry at the delegate-model-extract! seam.
+;; The C1 :delegate-crossing intermittently degrades the Model's authored
+;; :entity-types to [] (siblings intact); MT-7a's hard stop makes that LOUD
+;; (:failed-at-model-extract), and an immediate re-run typically recovers. The
+;; seam retries ONCE (named const) when the delegate FAILED **and** the read-back
+;; model-spec normalizes to an EMPTY vocabulary (vb/empty-vocabulary? — the SAME
+;; deterministic predicate as the hard stop; NEVER the error string, #7). The
+;; retry is SURFACED (:vocabulary-retries 0|1; on a retry, :degraded-model-spec-raw
+;; = attempt 1's raw PRE-normalize spec VERBATIM — the dossier for the dscloj
+;; root-cause fix, #11). A NON-empty-vocab failure never retries (the swallowed-
+;; genuine-failure guard, #2/#9); a second empty failure returns honestly.
+;; =============================================================================
+
+(deftest mt7d-vocabulary-recovery-retry-fires-once-and-recovers-test
+  (testing "attempt 1 FAILS with a model-spec that normalizes to an EMPTY vocabulary
+            (the diagnosed C1 crossing loss — :entity-types degraded, siblings
+            intact); attempt 2 succeeds with a good spec → the seam re-runs the
+            delegate EXACTLY once and returns the recovery: :status :success,
+            :vocabulary-retries 1, :degraded-model-spec-raw = attempt 1's raw
+            PRE-normalize model-spec VERBATIM (never truncated, never normalized)."
+    (let [calls (atom 0)
+          ;; the observed degradation shape: :entity-types mangled to a STRING
+          ;; (normalizes to []), sibling fields intact. Kept UN-normalized here so
+          ;; the verbatim-raw assertion proves the capture is PRE-normalize.
+          degraded-raw {:entity-types ""
+                        :edges [{:from "Widget" :to "Part" :label "has-part"}]
+                        :embed-fields ["name"]}
+          good-spec {:entity-types [{:type "Widget" :uri-keying-fields ["id"]}]
+                     :edges [{:from "Widget" :to "Part" :label "has-part"}]}
+          stub (fn [_ctx _opts]
+                 (if (= 1 (swap! calls inc))
+                   {:status :failure
+                    :outputs {:model-spec degraded-raw}
+                    :tick-id (random-uuid)
+                    :error {:reason :empty-entity-type-vocabulary}}
+                   {:status :success
+                    :outputs {:model-spec good-spec :candidate-axioms []
+                              :concept-drafts [{:uri "u" :label "L"}]
+                              :relationship-drafts [] :extraction-report {}}
+                    :tick-id (random-uuid)}))]
+      (with-redefs [ce/delegate-subbehavior! stub]
+        (let [r (ce/delegate-model-extract! :fake-ctx
+                                            {:source {:type :csv} :goal "g"
+                                             :profile {} :vocabulary nil
+                                             :pipeline-sheet-id (random-uuid)})]
+          (is (= 2 @calls) "the delegate ran exactly twice (one bounded retry)")
+          (is (= :success (:status r)) "the second attempt's SUCCESS is returned")
+          (is (= 1 (:vocabulary-retries r)) "the retry is SURFACED, never silent")
+          (is (= degraded-raw (:degraded-model-spec-raw r))
+              "attempt 1's raw PRE-normalize model-spec is captured VERBATIM
+               (the dossier for the deeper dscloj parse fix — #11)")
+          (is (= (:entity-types good-spec) (:entity-types (:model-spec r)))
+              "the returned model-spec is the RECOVERED attempt's spec"))))))
+
+(deftest mt7d-no-retry-on-a-genuine-non-empty-vocab-failure-test
+  (testing "a failure whose read-back model-spec has a NON-empty vocabulary is a
+            GENUINE extract-stage failure — the retry must NOT fire (a retry that
+            silently swallows a real failure is the false green, #2/#9): exactly
+            ONE delegate call, the failure returned as today, :vocabulary-retries 0,
+            no :degraded-model-spec-raw key."
+    (let [calls (atom 0)
+          genuine-spec {:entity-types [{:type "Widget" :uri-keying-fields ["id"]}]}
+          stub (fn [_ctx _opts]
+                 (swap! calls inc)
+                 {:status :failure
+                  :outputs {:model-spec genuine-spec}
+                  :tick-id (random-uuid)
+                  :error "extract blew up mid-container"})]
+      (with-redefs [ce/delegate-subbehavior! stub]
+        (let [r (ce/delegate-model-extract! :fake-ctx
+                                            {:source {:type :csv} :goal "g"
+                                             :profile {} :vocabulary nil
+                                             :pipeline-sheet-id (random-uuid)})]
+          (is (= 1 @calls)
+              "a NON-empty-vocab failure does NOT retry — exactly one delegate call
+               (the swallowed-genuine-failure guard)")
+          (is (= :failure (:status r)) "the genuine failure is returned as today")
+          (is (= "extract blew up mid-container" (:error r))
+              "the failure's :error is surfaced unchanged")
+          (is (= 0 (:vocabulary-retries r)) ":vocabulary-retries 0 on the no-retry path")
+          (is (not (contains? r :degraded-model-spec-raw))
+              "no dossier key when no retry happened"))))))
+
+(deftest mt7d-double-empty-failure-returns-honestly-bounded-test
+  (testing "BOTH attempts fail with an empty-vocabulary read-back → exactly TWO
+            delegate calls (the named const bounds the retry at 1 — NEVER a third),
+            the honest failure is returned (the MT-7a loud stop stands on
+            recurrence, #5), with the retry SURFACED: :vocabulary-retries 1 and
+            the FIRST attempt's raw spec as the dossier."
+    (let [calls (atom 0)
+          first-raw {:entity-types "" :edges [{:from "A" :to "B"}]}
+          second-raw {:entity-types []}
+          stub (fn [_ctx _opts]
+                 (let [n (swap! calls inc)]
+                   {:status :failure
+                    :outputs {:model-spec (if (= 1 n) first-raw second-raw)}
+                    :tick-id (random-uuid)
+                    :error {:reason :empty-entity-type-vocabulary}}))]
+      (with-redefs [ce/delegate-subbehavior! stub]
+        (let [r (ce/delegate-model-extract! :fake-ctx
+                                            {:source {:type :csv} :goal "g"
+                                             :profile {} :vocabulary nil
+                                             :pipeline-sheet-id (random-uuid)})]
+          (is (= 2 @calls)
+              "exactly TWO delegate calls — bounded by max-vocabulary-recovery-retries,
+               never a third")
+          (is (= 1 ce/max-vocabulary-recovery-retries)
+              "the bound is the NAMED const, value 1 (no magic literal, no unbounded loop)")
+          (is (= :failure (:status r)) "the second empty failure returns HONESTLY")
+          (is (= 1 (:vocabulary-retries r)) "the exhausted retry is SURFACED")
+          (is (= first-raw (:degraded-model-spec-raw r))
+              "the dossier is the FIRST attempt's raw spec verbatim (not the second's)"))))))
+
+(deftest mt7d-clean-success-is-behavior-preserving-test
+  (testing "a clean first-attempt SUCCESS is untouched: exactly ONE delegate call,
+            the return shape is byte-identical to the pre-MT-7d contract PLUS the
+            surfaced :vocabulary-retries 0 — and NO :degraded-model-spec-raw key.
+            (The wider behavior-preservation cite is the existing
+            delegate-model-extract! tests in this ns staying green — e.g.
+            small-source-budget-is-behavior-preserving-test, the GC-9 cap tests.)"
+    (let [calls (atom 0)
+          good-spec {:entity-types [{:type "Widget" :uri-keying-fields ["id"]}]
+                     :embed-fields ["name"]}
+          tick (random-uuid)
+          stub (fn [_ctx _opts]
+                 (swap! calls inc)
+                 {:status :success
+                  :outputs {:model-spec good-spec
+                            :candidate-axioms [{:kind :subclass}]
+                            :concept-drafts [{:uri "u" :label "L"}]
+                            :relationship-drafts [{:from "u" :to "v"}]
+                            :extraction-report {:containers 1}}
+                  :tick-id tick
+                  :error nil})]
+      (with-redefs [ce/delegate-subbehavior! stub]
+        (let [r (ce/delegate-model-extract! :fake-ctx
+                                            {:source {:type :csv} :goal "g"
+                                             :profile {} :vocabulary nil
+                                             :pipeline-sheet-id (random-uuid)})]
+          (is (= 1 @calls) "a clean success never re-runs the delegate")
+          (is (= {:status :success
+                  :model-spec good-spec
+                  :candidate-axioms [{:kind :subclass}]
+                  :embed-fields ["name"]
+                  :concept-drafts [{:uri "u" :label "L"}]
+                  :relationship-drafts [{:from "u" :to "v"}]
+                  :extraction-report {:containers 1}
+                  :tick-id tick
+                  :error nil
+                  :vocabulary-retries 0}
+                 r)
+              "the FULL return is the pre-MT-7d shape plus :vocabulary-retries 0 —
+               and no :degraded-model-spec-raw key on the untouched path"))))))
+
+;; =============================================================================
 ;; GC-9 — max-containers / max-windows PASSTHROUGH so a bounded reduced-cap build
 ;; can run. At the default caps (25/50) the extract makes ~148k drafts/source and
 ;; the full build OOMs. GC-9 threads BOTH :max-containers + :max-windows from
