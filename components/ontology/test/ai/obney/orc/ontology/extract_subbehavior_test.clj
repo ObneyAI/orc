@@ -490,7 +490,7 @@
                        :extraction-report {:value {:rows-streamed 10 :rows-errored 0}}})]
         (let [out (extract/orchestrate-extract-containers
                    {:inputs {:source {:type :sql :path "/tmp/x.db"}
-                             :model-spec {} :max-containers 3}
+                             :model-spec {:entity-types [{:type "Thing" :uri-keying-fields ["id"]}]} :max-containers 3}
                     :tick-id (random-uuid) :event-store :stub})
               report (:extraction-report out)]
           (is (= 10 (:containers-total report)) "the report counts ALL containers in the source")
@@ -532,7 +532,7 @@
                        :extraction-report {:value {:rows-streamed 5 :rows-errored 0}}})]
         (let [out (extract/orchestrate-extract-containers
                    {:inputs {:source {:type :excel :path "/wb"}
-                             :model-spec {} :max-containers 3
+                             :model-spec {:entity-types [{:type "Thing" :uri-keying-fields ["id"]}]} :max-containers 3
                              :selected-containers selected}
                     :tick-id (random-uuid) :event-store :stub})
               report (:extraction-report out)]
@@ -574,7 +574,7 @@
                        :extraction-report {:value {:rows-streamed 5 :rows-errored 0}}})]
         (let [out (extract/orchestrate-extract-containers
                    {:inputs {:source {:type :sql :path "/tmp/x.db"}
-                             :model-spec {} :max-containers 3}   ; NO :selected-containers
+                             :model-spec {:entity-types [{:type "Thing" :uri-keying-fields ["id"]}]} :max-containers 3}   ; NO :selected-containers
                     :tick-id (random-uuid) :event-store :stub})]
           (is (= #{"c0" "c1" "c2"} (set @driven))
               "the take-cap-first-N path is UNCHANGED when no selection is supplied")
@@ -664,7 +664,7 @@
                       (get child-bbs (get @tick->container tick-id)))]
         (let [out (extract/orchestrate-extract-containers
                    {:inputs {:source {:type :sql :path "/tmp/x.db"}
-                             :model-spec {:entity-types []}}
+                             :model-spec {:entity-types [{:type "Thing" :uri-keying-fields ["id"]}]}}
                     :tick-id (random-uuid)
                     :event-store :stub})
               report (:extraction-report out)]
@@ -971,7 +971,7 @@
                     (fn [_ tick-id] (get child-bbs (get @tick->c tick-id)))]
         (let [out (extract/orchestrate-extract-containers
                    {:inputs {:source {:type :sql :path "/tmp/x.db"}
-                             :model-spec {} :max-containers 5}
+                             :model-spec {:entity-types [{:type "Thing" :uri-keying-fields ["id"]}]} :max-containers 5}
                     :tick-id (random-uuid) :event-store :stub})
               edges (:relationship-drafts out)
               report (:extraction-report out)]
@@ -1025,7 +1025,7 @@
                     (fn [_ tick-id] (get child-bbs (get @tick->c tick-id)))]
         (let [out (extract/orchestrate-extract-containers
                    {:inputs {:source {:type :sql :path "/tmp/x.db"}
-                             :model-spec {} :max-containers 5}
+                             :model-spec {:entity-types [{:type "Thing" :uri-keying-fields ["id"]}]} :max-containers 5}
                     :tick-id (random-uuid) :event-store :stub})
               edges (:relationship-drafts out)
               ccr (get-in out [:extraction-report :cross-container-relations])]
@@ -1460,7 +1460,7 @@
                       (get child-bbs (get @tick->container tick-id)))]
         (let [out (extract/orchestrate-extract-containers
                    {:inputs {:source {:type :sql :path "/tmp/x.db"}
-                             :model-spec {:entity-types []}}
+                             :model-spec {:entity-types [{:type "Thing" :uri-keying-fields ["id"]}]}}
                     :tick-id (random-uuid)
                     :event-store :stub})
               report (:extraction-report out)]

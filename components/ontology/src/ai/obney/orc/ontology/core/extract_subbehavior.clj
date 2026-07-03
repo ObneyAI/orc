@@ -76,6 +76,7 @@
             [ai.obney.orc.ontology.core.resilience :as res]
             [ai.obney.orc.ontology.core.container-select :as csel]
             [ai.obney.orc.ontology.core.container-aggregate :as cagg]
+            [ai.obney.orc.ontology.core.vocabulary-binding :as vb]
             [clojure.edn :as edn]
             [clojure.string :as str]))
 
@@ -253,6 +254,12 @@
    ;; MC-6 — the cross-container relating summary (edge count + honest
    ;; unmaterialized-relation surfacing). `:any` tolerates the nested map shape.
    [:cross-container-relations {:optional true} :any]
+   ;; MT-7a — the vocabulary-binding surface: drafts EXCLUDED for a freelanced
+   ;; :entity-type (`{:count n :types [<as-emitted> …]}`, plus
+   ;; `:rejected-aggregation-type` when an aggregation-spec's type didn't
+   ;; resolve). Present whenever a non-empty vocabulary was enforced — never a
+   ;; silently-landed freelanced draft (#5).
+   [:freelanced-drafts {:optional true} :any]
    [:errors-sample {:optional true} :any]])
 
 ;; =============================================================================
@@ -520,6 +527,14 @@
         ;; entity's own keying field. Domain-agnostic: names come from the runtime
         ;; model-spec, never baked here.
         linking-keys (:linking-keys model-spec)
+        ;; MT-7a — the CANONICAL ENTITY-TYPE VOCABULARY (the model-spec's own
+        ;; discovered :entity-types, ADR-0001). Non-empty → the binding below is
+        ;; ENFORCED (normalized-EXACT, snap-to-canonical-spelling, freelancing
+        ;; EXCLUDED + surfaced). Empty → no enforcement HERE (the loud stop for an
+        ;; empty vocabulary is the orchestrator's `empty-vocabulary?` hard stop;
+        ;; this seam stays behavior-preserving for direct callers/tests).
+        vocab (vb/canonical-types model-spec)
+        enforce? (boolean (seq vocab))
         ;; MT-3/MT-6 — the DETERMINISTIC routing gate. Coerce the AUTHOR's
         ;; aggregation-spec (tolerating the C1 string form) and fire the AGGREGATING
         ;; apply ONLY when the AUTHOR emitted a valid spec AND the spec's key genuinely
@@ -529,6 +544,20 @@
         ;; back to the :long-form tag (behavior-preserving). Every other outcome keeps
         ;; the per-row apply UNCHANGED (#8).
         spec (cagg/parse-aggregation-spec aggregation-spec)
+        ;; MT-7a — resolve the spec's :entity-type against the vocabulary BEFORE the
+        ;; gate: resolvable → SNAP to the canonical spelling (the fold mints every
+        ;; draft under it); unresolvable → do NOT run an aggregation with a freelanced
+        ;; type — treat as no-valid-spec (falls to the per-row branch only when a
+        ;; transform-source exists, else the container fails honestly) and SURFACE
+        ;; the rejected type in the report (#5 — never silently landed).
+        resolved-agg-type (when (and enforce? spec)
+                            (vb/resolve-entity-type vocab (:entity-type spec)))
+        rejected-agg-type (when (and enforce? spec (nil? resolved-agg-type))
+                            (:entity-type spec))
+        spec (cond
+               (not enforce?) spec
+               resolved-agg-type (assoc spec :entity-type resolved-agg-type)
+               :else nil)
         aggregate? (cagg/aggregating-apply? container spec sample-rows)
         result (if aggregate?
                  (rlm-discovery/apply-aggregation-transform!
@@ -547,23 +576,43 @@
                    :selector effective-selector
                    :max-windows max-windows
                    :linking-keys linking-keys}))
-        concept-drafts (vec (:concept-drafts result))
+        ;; MT-7a — the DETERMINISTIC binding over the produced concept-drafts:
+        ;; matching drafts SNAP to the canonical spelling; freelanced drafts are
+        ;; EXCLUDED (they would only land as unfixable fragments) + surfaced in
+        ;; :freelanced-drafts below. The AGGREGATING path's drafts were minted
+        ;; under the SNAPPED spec type, so binding them is a passthrough. If
+        ;; binding excludes ALL drafts, the flat :concept-count is 0 → the
+        ;; EXISTING EB9 0-draft resilience gate fires the re-ask (no retry loop
+        ;; here — #8). Empty vocabulary → passthrough (the orchestrator hard
+        ;; stop owns that state).
+        bound (vb/bind-draft-types vocab (vec (:concept-drafts result)))
+        concept-drafts (:drafts bound)
+        excluded (:excluded bound)
+        ;; the honest freelancing surface — present whenever the vocabulary was
+        ;; ENFORCED (count 0 is evidence binding ran clean); absent when there
+        ;; was no vocabulary to enforce (never a claimed-but-not-run check).
+        freelanced (when enforce?
+                     (cond-> {:count (reduce + 0 (map :count excluded))
+                              :types (mapv :entity-type excluded)}
+                       rejected-agg-type
+                       (assoc :rejected-aggregation-type rejected-agg-type)))
         relationship-drafts (vec (:relationship-drafts result))]
     {:concept-drafts concept-drafts
      :relationship-drafts relationship-drafts
      :concept-count (count concept-drafts)
      :extraction-report
-     {:selector (:selector result)
-      :rows-streamed (:rows-streamed result)
-      :rows-ok (:rows-ok result)
-      :rows-errored (:rows-errored result)
-      :windows (:windows result)
-      ;; GC-7 — honest truncation signal (the cap bit; more rows remained).
-      :max-windows max-windows
-      :truncated? (extract-truncated? (:windows result) max-windows)
-      :concept-count (count concept-drafts)
-      :relationship-count (count relationship-drafts)
-      :errors-sample (vec (:errors-sample result))}}))
+     (cond-> {:selector (:selector result)
+              :rows-streamed (:rows-streamed result)
+              :rows-ok (:rows-ok result)
+              :rows-errored (:rows-errored result)
+              :windows (:windows result)
+              ;; GC-7 — honest truncation signal (the cap bit; more rows remained).
+              :max-windows max-windows
+              :truncated? (extract-truncated? (:windows result) max-windows)
+              :concept-count (count concept-drafts)
+              :relationship-count (count relationship-drafts)
+              :errors-sample (vec (:errors-sample result))}
+       freelanced (assoc :freelanced-drafts freelanced))}))
 
 ;; =============================================================================
 ;; The delegatable Extract sheet — built on the EB1/EB2/EB3 registry pattern
@@ -645,7 +694,11 @@
               ;; MT-3 — the AUTHOR prompt carries BOTH the per-row DT4 body AND the
               ;; :long-form aggregation-spec extension; the model reads the container's
               ;; :shape tag and authors whichever fits.
-              :instruction (str author-prompt (cagg/aggregation-author-guidance))
+              ;; MT-7a — plus the vocabulary-binding block (static text; the canonical
+              ;; vocabulary arrives at RUNTIME as the :model-spec read).
+              :instruction (str author-prompt
+                                (cagg/aggregation-author-guidance)
+                                (vb/vocabulary-binding-guidance))
               ;; MT-3 — the AUTHOR now reads :container so it can see the MT-1 :shape
               ;; tag (the aggregation path is gated on :long-form).
               :reads [:model-spec :sample-rows :container]
@@ -731,8 +784,10 @@
           (dsl/llm "author"
             :model mdl
             ;; MT-3 — the aggregation-spec extension + the :container read (see the
-            ;; resilient path above).
-            :instruction (str (transform-author-prompt key-shape) (cagg/aggregation-author-guidance))
+            ;; resilient path above). MT-7a — plus the vocabulary-binding block.
+            :instruction (str (transform-author-prompt key-shape)
+                              (cagg/aggregation-author-guidance)
+                              (vb/vocabulary-binding-guidance))
             :reads [:model-spec :sample-rows :container]
             :writes [:reasoning :transform-source :selector :aggregation-spec])
           (dsl/code "apply-transform"
@@ -807,12 +862,13 @@
   "Normalize a column/attribute key NAME for case/type-tolerant matching: lower-case
    the string form (a keyword's `name`, or the string itself) and strip every
    non-alphanumeric character. So `:MyKey`, `\"my_key\"`, `\"MY-KEY\"` all collapse
-   to `\"mykey\"`. Domain-agnostic — purely structural normalization."
+   to `\"mykey\"`. Domain-agnostic — purely structural normalization.
+
+   MT-7a — DELEGATES to `vocabulary-binding/normalize-name` (the shared public
+   helper), so GC-1 canonical-URI identity and vocabulary-binding enforcement use
+   ONE normalization and can never drift apart (no fork — #8)."
   [k]
-  (when (some? k)
-    (-> (if (keyword? k) (name k) (str k))
-        (str/lower-case)
-        (str/replace #"[^a-z0-9]" ""))))
+  (vb/normalize-name k))
 
 (defn- normalize-value
   "Normalize a join VALUE to a canonical comparable string: trim + lower-case its
@@ -879,21 +935,14 @@
    degrade. This coercion `edn/read-string`s a string back to a vector (tolerating a
    non-parse → `[]`), keeps only well-formed MAP entries (drops garbage honestly,
    #4/#5), and returns the model-spec with `:entity-types` as a clean vector.
-   Behavior-preserving for an already-parsed vector. Pure + total — never throws."
+   Behavior-preserving for an already-parsed vector. Pure + total — never throws.
+
+   MT-7a — the coercion itself is DELEGATED to
+   `vocabulary-binding/coerce-entity-types` (the shared helper), so the
+   vocabulary the binding enforces and the entity-types the pipeline consumes
+   are coerced by ONE fn (no fork — #8)."
   [model-spec]
-  (let [ets (:entity-types model-spec)
-        ets (cond
-              (vector? ets) ets
-              (sequential? ets) (vec ets)
-              (string? ets) (try (let [p (edn/read-string ets)]
-                                   (cond (vector? p) p
-                                         (sequential? p) (vec p)
-                                         :else []))
-                                 (catch Throwable _ []))
-              :else [])
-        ;; keep only well-formed entity-type MAPS (honest — drop garbage entries).
-        ets (vec (filter map? ets))]
-    (assoc model-spec :entity-types ets)))
+  (assoc model-spec :entity-types (vb/coerce-entity-types (:entity-types model-spec))))
 
 (defn- entity-type-keying-fields
   "Build a `{normalized-type -> [uri-keying-field …]}` index from the model-spec's
@@ -1515,6 +1564,26 @@
         ;; sheets extract (measured: 0 → 762/278). Behavior-preserving for an already-
         ;; parsed vector; pure + total.
         model-spec (normalize-model-spec (:model-spec inputs))
+        ;; MT-7a — the EMPTY-VOCABULARY HARD STOP (ADR-0001). An empty/unparseable
+        ;; :entity-types used to silently proceed against [] — guaranteed 100%
+        ;; vocabulary freelancing (every per-container author invents its own type
+        ;; names → entity-type fragmentation). Extraction must NOT proceed
+        ;; container-by-container against no vocabulary: FAIL LOUDLY here (the tree
+        ;; fails; the pipeline surfaces :failed-at-model-extract). The Model
+        ;; subbehavior's own empty-entity-types re-ask gate is the recovery path
+        ;; UPSTREAM — reaching this throw means that gate's output still carried no
+        ;; usable vocabulary (#5 — a loud stop, never a silent degrade).
+        _ (when (vb/empty-vocabulary? model-spec)
+            (throw (ex-info
+                    (str "extract cannot proceed: the model-spec carries NO usable "
+                         "entity-type vocabulary (:entity-types is empty or "
+                         "unparseable after normalization). Extracting against an "
+                         "empty vocabulary guarantees 100% vocabulary freelancing "
+                         "(fragmented, never-merging entities), so this is a hard "
+                         "stop — re-run the Model step to discover a non-empty "
+                         ":entity-types.")
+                    {:reason :empty-entity-type-vocabulary
+                     :entity-types-raw (:entity-types (:model-spec inputs))})))
         ;; the execution context for child ticks = the orchestrator's context minus
         ;; the node-scoped keys (`runtime/execute` needs the event-store + registries
         ;; + pubsub + cache the executor threaded into this `:code` node's context).
