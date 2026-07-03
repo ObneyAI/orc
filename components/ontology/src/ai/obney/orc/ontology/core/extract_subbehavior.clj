@@ -260,6 +260,15 @@
    ;; resolve). Present whenever a non-empty vocabulary was enforced — never a
    ;; silently-landed freelanced draft (#5).
    [:freelanced-drafts {:optional true} :any]
+   ;; MT-7b — the PER-CONTAINER vocabulary-proposal admission outcome
+   ;; (`{:outcome :admitted/:snapped-to-existing/:rejected :admitted? … …}`,
+   ;; the `admit-proposal` return). Present only when the AUTHOR made a
+   ;; proposal.
+   [:entity-type-proposal {:optional true} :any]
+   ;; MT-7b — the AGGREGATE proposal LEDGER (orchestrator-level reconciliation:
+   ;; `{:proposed n :admitted […] :merged n :requires-review […] :rejected […]}`).
+   ;; Present only on the aggregate report of a run where ≥1 container proposed.
+   [:vocabulary-proposals {:optional true} :any]
    [:errors-sample {:optional true} :any]])
 
 ;; =============================================================================
@@ -514,7 +523,7 @@
    the `:extraction-report` (the no-false-green coverage signal)."
   [{:keys [inputs]}]
   (let [{:keys [source transform-source selector container max-windows model-spec
-                aggregation-spec sample-rows]} inputs
+                aggregation-spec sample-rows entity-type-proposal]} inputs
         ;; the container's name wins (the loop is traversing it); fall back to the
         ;; author-emitted selector for the single-container path.
         effective-selector (or (:name container) selector)
@@ -535,6 +544,21 @@
         ;; this seam stays behavior-preserving for direct callers/tests).
         vocab (vb/canonical-types model-spec)
         enforce? (boolean (seq vocab))
+        ;; MT-7b — LOCAL admission of the AUTHOR's optional vocabulary proposal
+        ;; (ADR-0001): deterministic validation against THIS container's REAL
+        ;; sample-rows + name-collision snap against the vocabulary. An ADMITTED
+        ;; proposal extends the binding vocabulary for THIS container ONLY (a
+        ;; local value — no shared mutable state across concurrent ticks; the
+        ;; orchestrator reconciles the containers' proposals post-extract). A
+        ;; REJECTED proposal leaves the vocabulary untouched, so drafts typed
+        ;; with it stay excluded as freelancing (the honest 7a path — #5). Only
+        ;; attempted when a vocabulary is being enforced (empty vocabulary is
+        ;; the orchestrator's hard stop, not this seam's).
+        admission (when enforce?
+                    (vb/admit-proposal vocab sample-rows entity-type-proposal))
+        effective-vocab (if (= :admitted (:outcome admission))
+                          (conj vocab (:proposal admission))
+                          vocab)
         ;; MT-3/MT-6 — the DETERMINISTIC routing gate. Coerce the AUTHOR's
         ;; aggregation-spec (tolerating the C1 string form) and fire the AGGREGATING
         ;; apply ONLY when the AUTHOR emitted a valid spec AND the spec's key genuinely
@@ -550,8 +574,11 @@
         ;; type — treat as no-valid-spec (falls to the per-row branch only when a
         ;; transform-source exists, else the container fails honestly) and SURFACE
         ;; the rejected type in the report (#5 — never silently landed).
+        ;; MT-7b — the spec resolves against the EFFECTIVE (locally-extended)
+        ;; vocabulary, so a long-form container can aggregate under a type it
+        ;; just legitimately proposed.
         resolved-agg-type (when (and enforce? spec)
-                            (vb/resolve-entity-type vocab (:entity-type spec)))
+                            (vb/resolve-entity-type effective-vocab (:entity-type spec)))
         rejected-agg-type (when (and enforce? spec (nil? resolved-agg-type))
                             (:entity-type spec))
         spec (cond
@@ -585,7 +612,9 @@
         ;; EXISTING EB9 0-draft resilience gate fires the re-ask (no retry loop
         ;; here — #8). Empty vocabulary → passthrough (the orchestrator hard
         ;; stop owns that state).
-        bound (vb/bind-draft-types vocab (vec (:concept-drafts result)))
+        ;; MT-7b — binding runs against the EFFECTIVE vocabulary (vocab + the
+        ;; admitted local proposal, when any), so proposed-type drafts LAND.
+        bound (vb/bind-draft-types effective-vocab (vec (:concept-drafts result)))
         concept-drafts (:drafts bound)
         excluded (:excluded bound)
         ;; the honest freelancing surface — present whenever the vocabulary was
@@ -612,7 +641,13 @@
               :concept-count (count concept-drafts)
               :relationship-count (count relationship-drafts)
               :errors-sample (vec (:errors-sample result))}
-       freelanced (assoc :freelanced-drafts freelanced))}))
+       freelanced (assoc :freelanced-drafts freelanced)
+       ;; MT-7b — the admission outcome (admitted / snapped-to-existing /
+       ;; rejected+reason), surfaced per container so the orchestrator can
+       ;; reconcile admitted proposals + the ledger can carry every outcome
+       ;; honestly. Absent when no proposal was made (never a claimed-but-
+       ;; not-made proposal).
+       admission (assoc :entity-type-proposal admission))}))
 
 ;; =============================================================================
 ;; The delegatable Extract sheet — built on the EB1/EB2/EB3 registry pattern
@@ -696,16 +731,22 @@
               ;; :shape tag and authors whichever fits.
               ;; MT-7a — plus the vocabulary-binding block (static text; the canonical
               ;; vocabulary arrives at RUNTIME as the :model-spec read).
+              ;; MT-7b — plus the vocabulary-PROPOSAL block (the one legitimate
+              ;; alternative to freelancing when the vocabulary missed a type).
               :instruction (str author-prompt
                                 (cagg/aggregation-author-guidance)
-                                (vb/vocabulary-binding-guidance))
+                                (vb/vocabulary-binding-guidance)
+                                (vb/vocabulary-proposal-guidance))
               ;; MT-3 — the AUTHOR now reads :container so it can see the MT-1 :shape
               ;; tag (the aggregation path is gated on :long-form).
               :reads [:model-spec :sample-rows :container]
               ;; #13 — :reasoning FIRST (chain-of-thought before the transform).
               ;; MT-3 — :aggregation-spec is the OPTIONAL rollup-spec write for a
               ;; :long-form container (the model emits this OR the transform-source).
-              :writes [:reasoning :transform-source :selector :aggregation-spec])
+              ;; MT-7b — :entity-type-proposal is the OPTIONAL explicit new-type
+              ;; declaration (rides the author contract exactly like :aggregation-spec).
+              :writes [:reasoning :transform-source :selector :aggregation-spec
+                       :entity-type-proposal])
             (dsl/code (str "extract-" path-label "-apply")
               :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
               ;; GC-9 — :max-windows is the per-container window cap (caller-overridable
@@ -718,8 +759,9 @@
               ;; a :long-form container (the deterministic gate reads :container too).
               ;; MT-6 — :sample-rows lets the gate run the SAMPLE-DRIVEN key-repeats?
               ;; check (the SAMPLE node wrote it); absent → falls back to the tag.
+              ;; MT-7b — :entity-type-proposal feeds the LOCAL admission at the seam.
               :reads [:source :transform-source :selector :container :max-windows
-                      :model-spec :aggregation-spec :sample-rows]
+                      :model-spec :aggregation-spec :sample-rows :entity-type-proposal]
               ;; EB9 — declare the FLAT :concept-count so the sanity :condition
               ;; can gate the intermediate state.
               :writes [:concept-drafts :relationship-drafts
@@ -759,6 +801,12 @@
          ;; unchanged; {:closed false} + tolerant leaves for the model-variable shape.
          ;; A C1 string-form arrival is coerced back in the APPLY :fn (parse-aggregation-spec).
          :aggregation-spec [:maybe [:map {:closed false}]]
+         ;; MT-7b — the OPTIONAL explicit vocabulary proposal ({:type …
+         ;; :uri-keying-fields … :description …}). [:maybe …] so the common
+         ;; no-proposal path is unchanged; a C1 string-form arrival is coerced
+         ;; back in the APPLY :fn (parse-entity-type-proposal, mirroring
+         ;; parse-aggregation-spec).
+         :entity-type-proposal [:maybe [:map {:closed false}]]
          ;; EB9 — the flat intermediate-state count the sanity gate checks.
          :concept-count :int
          ;; :writes — the draft set + the coverage report (this container's)
@@ -785,11 +833,14 @@
             :model mdl
             ;; MT-3 — the aggregation-spec extension + the :container read (see the
             ;; resilient path above). MT-7a — plus the vocabulary-binding block.
+            ;; MT-7b — plus the vocabulary-proposal block + its optional write.
             :instruction (str (transform-author-prompt key-shape)
                               (cagg/aggregation-author-guidance)
-                              (vb/vocabulary-binding-guidance))
+                              (vb/vocabulary-binding-guidance)
+                              (vb/vocabulary-proposal-guidance))
             :reads [:model-spec :sample-rows :container]
-            :writes [:reasoning :transform-source :selector :aggregation-spec])
+            :writes [:reasoning :transform-source :selector :aggregation-spec
+                     :entity-type-proposal])
           (dsl/code "apply-transform"
             :fn "ai.obney.orc.ontology.core.extract-subbehavior/apply-transform-for-container-code"
             ;; GC-9 — see the resilient path above: declare :max-windows so the
@@ -797,8 +848,9 @@
             ;; GC-11a — :model-spec read for the deterministic linking-key carry.
             ;; MT-3 — :aggregation-spec routes to the aggregating fold for :long-form.
             ;; MT-6 — :sample-rows drives the sample-based key-repeats? gate.
+            ;; MT-7b — :entity-type-proposal feeds the LOCAL admission at the seam.
             :reads [:source :transform-source :selector :container :max-windows
-                    :model-spec :aggregation-spec :sample-rows]
+                    :model-spec :aggregation-spec :sample-rows :entity-type-proposal]
             :writes [:concept-drafts :relationship-drafts :extraction-report]))))))
 
 ;; =============================================================================
@@ -1652,6 +1704,10 @@
               :relationship-count (count relationship-drafts)
               :rows-streamed (:rows-streamed report)
               :rows-errored (:rows-errored report)
+              ;; MT-7b — this container's LOCAL proposal-admission outcome (the
+              ;; APPLY seam surfaced it on the per-container report); nil when
+              ;; the author made no proposal. The reconciliation below reads it.
+              :entity-type-proposal (:entity-type-proposal report)
               :diagnosis (get-in bb [:diagnosis :value])}))
          containers)
         ;; GC-13 — render any HONEST failure marker into that container's :failure
@@ -1678,6 +1734,42 @@
                           :recoverable? false}}
              r))
          containers raw-results)
+        ;; MT-7b — POST-EXTRACT proposal reconciliation (ADR-0001, deterministic
+        ;; set logic — the concurrent child ticks admitted their proposals
+        ;; LOCALLY; this is where they meet). Container-ORDER admitted proposals
+        ;; → `reconcile-proposals`: normalized-name variants MERGE (first wins
+        ;; the spelling; variants become :aliases + the :alias-map draft snap);
+        ;; same-keying-different-names stay BOTH kept + :requires-review (never
+        ;; auto-merged — #2/#5). The reconciled admitted set extends the
+        ;; model-spec's entity-types LOCALLY (a let-binding — the pipeline's own
+        ;; :model-spec is NEVER mutated; downstream axiom/embed consumers do NOT
+        ;; see proposals) so `canonicalize-drafts` below mints canonical URIs
+        ;; for proposed-type drafts (their keying fields are declared).
+        proposal-outcomes (into [] (keep :entity-type-proposal) results)
+        admitted-proposals (into []
+                                 (comp (filter #(= :admitted (:outcome %)))
+                                       (keep :proposal))
+                                 proposal-outcomes)
+        recon (vb/reconcile-proposals admitted-proposals)
+        alias-map (:alias-map recon)
+        ;; GUARD: only genuinely NOVEL types extend the spec. The local admission
+        ;; already snaps vocab-colliding proposals (so this is unreachable via the
+        ;; real seam), but a corrupted per-container report claiming an "admitted"
+        ;; proposal that collides with an ORIGINAL vocabulary type must NOT
+        ;; override that type's declared :uri-keying-fields in the canonicalize
+        ;; index (the type index is last-entry-wins) — GC-1 identity is never
+        ;; rewritten by a proposal (#2/#5).
+        original-type-names (into #{}
+                                  (keep (comp vb/normalize-name :type))
+                                  (:entity-types model-spec))
+        novel-admitted (into []
+                             (remove #(contains? original-type-names
+                                                 (vb/normalize-name (:type %))))
+                             (:admitted recon))
+        canon-model-spec (if (seq novel-admitted)
+                           (update model-spec :entity-types
+                                   (fnil into []) novel-admitted)
+                           model-spec)
         ;; GC-1 — CANONICAL URI minting (the keystone), BEFORE MC-6 cross-container
         ;; relating. Each container's AUTHOR minted its OWN free-form :uri, so two
         ;; containers can mint DIFFERENT URIs for the SAME real entity. The pure
@@ -1691,10 +1783,22 @@
         ;; values, not of any cross-container map. A draft whose :entity-type is
         ;; missing/unknown (or whose keying values can't be recovered) keeps its
         ;; original URI and is surfaced in :degraded — never fabricated (#4/#5).
+        ;; MT-7b — name-MERGED proposal variants are snapped first: a draft whose
+        ;; :entity-type is a merged variant spelling is REWRITTEN to the winning
+        ;; spelling via the alias map (deterministic, exact — the local binding
+        ;; snapped those drafts to exactly the local proposal's spelling), and
+        ;; canonicalize runs against the LOCALLY-extended model-spec.
         canon-per-container
         (mapv (fn [r]
-                (let [c (canonicalize-drafts model-spec
-                                             (:concept-drafts r)
+                (let [drafts (if (seq alias-map)
+                               (mapv (fn [d]
+                                       (if-let [win (get alias-map (:entity-type d))]
+                                         (assoc d :entity-type win)
+                                         d))
+                                     (:concept-drafts r))
+                               (:concept-drafts r))
+                      c (canonicalize-drafts canon-model-spec
+                                             drafts
                                              (:relationship-drafts r))]
                   (assoc r
                          :concept-drafts (:concept-drafts c)
@@ -1722,11 +1826,43 @@
         truncated (:truncated-relations cross)
         pairs-considered (:pairs-considered cross)
         ;; union the intra-row edges with the cross-container edges.
-        all-rels (vec (concat intra-rels cross-rels))]
+        all-rels (vec (concat intra-rels cross-rels))
+        ;; MT-7b — the aggregate proposal LEDGER: every outcome accounted for
+        ;; (proposed = every container that made one; admitted = the reconciled
+        ;; set incl. merge aliases; merged/requires-review from reconciliation;
+        ;; rejected/snapped attributed to their container). Present only when
+        ;; ≥1 container actually proposed (never a claimed-but-empty ledger —
+        ;; the no-proposal run's report is byte-preserving).
+        vocabulary-proposals
+        (when (seq proposal-outcomes)
+          {:proposed (count proposal-outcomes)
+           :admitted (:admitted recon)
+           :merged (:merged recon)
+           :requires-review (:requires-review recon)
+           :rejected (into []
+                           (keep (fn [r]
+                                   (let [p (:entity-type-proposal r)]
+                                     (when (= :rejected (:outcome p))
+                                       (cond-> {:container (:container r)
+                                                :proposed (:proposed p)
+                                                :reason (:reason p)}
+                                         (:missing-fields p)
+                                         (assoc :missing-fields (:missing-fields p)))))))
+                           results)
+           :snapped-to-existing
+           (into []
+                 (keep (fn [r]
+                         (let [p (:entity-type-proposal r)]
+                           (when (= :snapped-to-existing (:outcome p))
+                             {:container (:container r)
+                              :proposed (:proposed p)
+                              :canonical-type (:canonical-type p)}))))
+                 results)})]
     {:concept-drafts all-concepts
      :relationship-drafts all-rels
      :extraction-report
-     {:containers-total (count all-containers)
+     (cond->
+      {:containers-total (count all-containers)
       :containers-processed (count results)
       ;; back-compat alias — :containers-seen is the processed count.
       :containers-seen (count results)
@@ -1759,10 +1895,14 @@
       ;; the HONEST per-container breakdown — a 0-draft / cleanly-FAILED container
       ;; surfaces here (no false-green): its :concept-count is 0 and/or :status is
       ;; :failure with a :diagnosis the troubleshoot landed.
+      ;; MT-7b — each entry also carries its own proposal-admission outcome.
       :per-container (mapv #(select-keys % [:container :status :concept-count
                                             :relationship-count :rows-streamed
-                                            :rows-errored :diagnosis])
-                           results)}}))
+                                            :rows-errored :diagnosis
+                                            :entity-type-proposal])
+                           results)}
+       ;; MT-7b — the aggregate proposal ledger (only when ≥1 container proposed).
+       vocabulary-proposals (assoc :vocabulary-proposals vocabulary-proposals))}))
 
 (defn extract-subbehavior-def
   "The Extract subbehavior workflow definition (MC-5 — MULTI-container).

@@ -167,6 +167,207 @@
                          appearance-order)}))))
 
 ;; ---------------------------------------------------------------------------
+;; MT-7b — the VOCABULARY PROPOSAL path (ADR-0001, CONTEXT.md §Vocabulary &
+;; identity). An author meeting an entity type the vocabulary missed does NOT
+;; freelance — it declares an explicit proposal `{:type … :uri-keying-fields …
+;; :description …}` (keying fields drawn from the REAL sampled columns).
+;; Admission is DETERMINISTIC + LOCAL to the container (no shared mutable
+;; vocabulary across concurrent ticks); the orchestrator reconciles the
+;; containers' admitted proposals post-extract (`reconcile-proposals`).
+;; ---------------------------------------------------------------------------
+
+(defn parse-entity-type-proposal
+  "Coerce the AUTHOR's optional `:entity-type-proposal` write into a clean map.
+   The `:llm` node may deliver a structured map OR — intermittently (the C1
+   map-write fragility) — an un-parsed EDN STRING; MIRROR `parse-aggregation-
+   spec`: `edn/read-string` a string back to a map. Distinguishes three states
+   honestly (#5):
+     - nil / blank string        → nil            (NO proposal was made)
+     - a map / parseable string  → the map, with `:uri-keying-fields` coerced
+                                   to a vector (a bare string/keyword field is
+                                   wrapped — the C1 single-value tolerance)
+     - garbage (unparseable non-blank string, a non-map) → `::unparseable` —
+       a proposal WAS attempted but cannot be read; the caller REJECTS it with
+       a reason (never a silent no-proposal).
+   Pure + total — never throws."
+  [raw]
+  (cond
+    (map? raw)
+    (update raw :uri-keying-fields
+            (fn [fs] (cond
+                       (vector? fs) fs
+                       (sequential? fs) (vec fs)
+                       (or (string? fs) (keyword? fs)) [fs]
+                       :else fs)))
+
+    (nil? raw) nil
+
+    (string? raw)
+    (if (str/blank? raw)
+      nil
+      (if-let [p (try (let [p (edn/read-string raw)] (when (map? p) p))
+                      (catch Throwable _ nil))]
+        (parse-entity-type-proposal p)
+        ::unparseable))
+
+    :else ::unparseable))
+
+(defn admit-proposal
+  "MT-7b — DETERMINISTIC local admission of an author's vocabulary proposal
+   against (vocab × the container's REAL sample-rows). Takes the RAW optional
+   `:entity-type-proposal` write (map | C1 string | nil). Returns:
+
+     nil — no proposal was made (nil/blank write; the common case).
+
+     {:outcome :admitted :admitted? true :proposed <type>
+      :proposal {:type <type> :uri-keying-fields [<field> …] :description <d>}}
+       — valid + novel: the caller binds THIS container's drafts against
+         `vocab + [proposal]` LOCALLY (no shared mutable state across
+         concurrent ticks); the orchestrator reconciles post-extract.
+
+     {:outcome :snapped-to-existing :admitted? false :proposed <type>
+      :canonical-type <existing canonical spelling>}
+       — the proposal's name collides with the vocabulary (normalized-EXACT,
+         `resolve-entity-type` — :type or :aliases): the proposal IS the
+         existing type; NO new type is admitted. The snap wins even over bogus
+         keying fields — the EXISTING entry's keying fields govern identity.
+
+     {:outcome :rejected :admitted? false :proposed <type|nil> :reason <kw>
+      [:missing-fields [<field> …]]}
+       — reasons: `:unparseable-proposal` (garbage write), `:blank-type`,
+         `:no-keying-fields`, `:keying-field-not-in-sample` (with the fields
+         that resolved against NO sampled column). A rejected proposal's
+         drafts stay excluded as vocabulary freelancing (the honest 7a path).
+
+   Keying-field validation MIRRORS `recover-via-value`'s matching: a field
+   resolves iff its `normalize-name` equals some sample-row key's
+   `normalize-name` (case/separator-tolerant EXACT — NO fuzz). An empty sample
+   resolves nothing → rejection (never an unvalidated admit). Pure + total."
+  [vocab sample-rows raw-proposal]
+  (let [parsed (parse-entity-type-proposal raw-proposal)]
+    (cond
+      (nil? parsed) nil
+
+      (= ::unparseable parsed)
+      {:outcome :rejected :admitted? false
+       :proposed (when (string? raw-proposal) raw-proposal)
+       :reason :unparseable-proposal}
+
+      :else
+      (let [{:keys [type uri-keying-fields description]} parsed]
+        (cond
+          (empty? (str (normalize-name type)))
+          {:outcome :rejected :admitted? false :proposed type :reason :blank-type}
+
+          ;; name collision — the proposal IS the existing type (snap, no new type;
+          ;; drafts typed with this name already resolve via bind-draft-types).
+          (some? (resolve-entity-type vocab type))
+          {:outcome :snapped-to-existing :admitted? false :proposed type
+           :canonical-type (resolve-entity-type vocab type)}
+
+          (not (and (sequential? uri-keying-fields) (seq uri-keying-fields)))
+          {:outcome :rejected :admitted? false :proposed type :reason :no-keying-fields}
+
+          :else
+          (let [sample-keys (into #{}
+                                  (comp (filter map?)
+                                        (mapcat keys)
+                                        (keep normalize-name)
+                                        (filter seq))
+                                  (or sample-rows []))
+                missing (vec (remove (fn [f]
+                                       (let [nf (normalize-name f)]
+                                         (and (seq nf) (contains? sample-keys nf))))
+                                     uri-keying-fields))]
+            (if (seq missing)
+              {:outcome :rejected :admitted? false :proposed type
+               :reason :keying-field-not-in-sample :missing-fields missing}
+              {:outcome :admitted :admitted? true :proposed type
+               :proposal (cond-> {:type type
+                                  :uri-keying-fields (vec uri-keying-fields)}
+                           description (assoc :description description))})))))))
+
+(defn reconcile-proposals
+  "MT-7b — DETERMINISTIC post-extract reconciliation of the containers' ADMITTED
+   proposals (pure set logic — NO LLM, NO fuzz). `proposals` is the admitted
+   `{:type … :uri-keying-fields … [:description …]}` maps in CONTAINER ORDER
+   (concurrent ticks admit LOCALLY; this is where their proposals meet). Returns:
+
+     {:admitted        [<deduped proposal, container order; a name-merged entry
+                         carries the variant spellings in :aliases> …]
+      :alias-map       {<variant :type spelling> <winning :type spelling> …}
+      :merged          <count of proposals that collapsed into an earlier one>
+      :requires-review [{:keying-fields [<normalized, sorted> …]
+                         :types [<spelling> …] :reason <string>} …]}
+
+   Two rules (ADR-0001):
+     1. NORMALIZED-NAME collision (`normalize-name` — the one normalization) →
+        MERGED: the FIRST proposal in container order wins entirely (spelling
+        AND keying fields — deterministic); each distinct later spelling is
+        recorded in the winner's `:aliases` and in `:alias-map` so the
+        orchestrator can snap the variant containers' draft `:entity-type`s to
+        the winning spelling before canonicalize.
+     2. Same normalized KEYING-FIELD SET under DISTINCT names → BOTH KEPT and
+        surfaced `:requires-review` — NEVER auto-merged (two distinct types can
+        legitimately share a key field, e.g. two junction roles keyed by the
+        same id column; auto-merging would silently collapse them — #2/#5. The
+        post-landing dedup cascade is the right court). Pure + total."
+  [proposals]
+  (let [props (vec (or proposals []))
+        ;; group by normalized name, first-wins, preserving first-seen order.
+        grouped (reduce
+                 (fn [acc p]
+                   (let [nk (normalize-name (:type p))]
+                     (if (contains? (:by-name acc) nk)
+                       (update-in acc [:by-name nk :variants] conj p)
+                       (-> acc
+                           (update :order conj nk)
+                           (assoc-in [:by-name nk] {:winner p :variants []})))))
+                 {:order [] :by-name {}}
+                 props)
+        merged (reduce + 0 (map (comp count :variants) (vals (:by-name grouped))))
+        admitted (mapv
+                  (fn [nk]
+                    (let [{:keys [winner variants]} (get-in grouped [:by-name nk])
+                          alias-spellings (->> variants
+                                               (map :type)
+                                               (remove #(= % (:type winner)))
+                                               distinct
+                                               vec)]
+                      (cond-> winner
+                        (seq alias-spellings)
+                        (update :aliases (fnil into []) alias-spellings))))
+                  (:order grouped))
+        alias-map (into {}
+                        (mapcat (fn [nk]
+                                  (let [{:keys [winner variants]} (get-in grouped [:by-name nk])]
+                                    (for [v variants
+                                          :when (not= (:type v) (:type winner))]
+                                      [(:type v) (:type winner)]))))
+                        (:order grouped))
+        ;; keying-collision detection over the post-merge ADMITTED set.
+        keyset (fn [p] (->> (:uri-keying-fields p)
+                            (keep normalize-name)
+                            (remove empty?)
+                            set))
+        requires-review (->> admitted
+                             (group-by keyset)
+                             (keep (fn [[ks ps]]
+                                     (when (and (seq ks) (> (count ps) 1))
+                                       {:keying-fields (vec (sort ks))
+                                        :types (mapv :type ps)
+                                        :reason (str "distinct proposed type names share the same "
+                                                     "normalized keying-field set — BOTH kept, never "
+                                                     "auto-merged (two distinct types can share a key "
+                                                     "field); review via the post-landing dedup cascade")})))
+                             (sort-by (comp str :types))
+                             vec)]
+    {:admitted admitted
+     :alias-map alias-map
+     :merged merged
+     :requires-review requires-review}))
+
+;; ---------------------------------------------------------------------------
 ;; The AUTHOR contract (static prompt, runtime enumeration)
 ;; ---------------------------------------------------------------------------
 
@@ -192,3 +393,36 @@
    "its entity's other drafts), so a freelanced type produces ZERO landed "
    "drafts. In your `reasoning`, FIRST name which of the model-spec's `:type` "
    "values this container's rows are, then author against exactly those."))
+
+(defn vocabulary-proposal-guidance
+  "MT-7b — the STATIC prompt block for the VOCABULARY PROPOSAL path, appended
+   to BOTH extraction-author prompts right after `vocabulary-binding-guidance`
+   (the same way the binding block itself is appended). It gives the author the
+   ONE legitimate alternative to freelancing when this container's rows are an
+   entity type the vocabulary genuinely missed (an unsampled container can
+   legitimately hold one — ADR-0001): declare it ONCE as an explicit
+   `entity-type-proposal` with keying fields copied from the REAL sampled
+   columns. Admission is deterministic at apply time — a keying field that is
+   not a real sampled column REJECTS the proposal. Domain-agnostic (#12): it
+   names the discipline, never a domain type or column."
+  []
+  (str
+   "\n\n*** VOCABULARY PROPOSAL — when NO vocabulary type fits (read carefully) ***\n"
+   "If, after honest inspection, this container's rows are an entity type that "
+   "is genuinely NOT in the model-spec's `:entity-types` vocabulary — not a "
+   "synonym, case variant, or renaming of an existing `:type` (those MUST reuse "
+   "the existing spelling verbatim) — do NOT freelance a type name. Instead "
+   "declare the new type ONCE via the `entity-type-proposal` output — a DATA "
+   "MAP (not code):\n"
+   "  {:type              <the new entity-type name — singular, descriptive>\n"
+   "   :uri-keying-fields <the column name(s) that uniquely identify ONE such "
+   "entity, copied CHARACTER-FOR-CHARACTER from the REAL sampled columns in "
+   "`sample-rows`>\n"
+   "   :description       <one self-contained sentence: what one instance of "
+   "this type is, in this source>}\n"
+   "Then type your concept-drafts (and any `aggregation-spec`) with EXACTLY "
+   "that proposed `:type` spelling. The proposal is validated deterministically "
+   "at apply time: a keying field that is not a real sampled column REJECTS the "
+   "proposal and every draft typed with it is EXCLUDED — so copy the keying "
+   "fields from the sample verbatim. When ANY existing vocabulary type fits, "
+   "use it and emit NO proposal (leave `entity-type-proposal` empty/absent)."))
