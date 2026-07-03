@@ -15,6 +15,11 @@ The pipeline extracts the WRONG containers from a many-table source and models t
 | **MT-3** | Model-authored aggregating transform (long-form group-by → top-N flat array attribute), streamed/bounded | HITL | MT-2 | **YES** — the aggregating-transform shape + streaming |
 | **MT-4** | Within-source occurrence-merge (verify reconcile/landing unions same-key drafts' attributes; build if absent) | AFK | MT-3 | — |
 | **MT-5** | Acceptance: comprehensive O\*NET build → occupations with populated topSkills/topKnowledge/jobZone/riasec; then A2-vs-B | HITL | MT-4 | — |
+| **MT-6** | List-valued aggregation (repeating-key attribute tables → flat bounded list, not per-row nodes) — LANDED off the MT-5 acceptance findings ([handoff](../../handoff-plan/MT-6-list-valued-aggregation-handoff.md)) | AFK | MT-5 findings | **YES** — killed the structural :list-form rule |
+| **MT-7** | ~~GC-1 keying-resolution patch~~ — SUPERSEDED ([why](MT-7-entity-type-identity-consistency.md)): the /prototype disproved it; re-designed via /grill-with-docs → [ADR-0001](../../../../components/ontology/docs/adr/0001-canonical-vocabulary-binding.md) | — | — | **YES** — disproved the patch |
+| **MT-7a** | Vocabulary binding + enforcement seam (authors bound to the canonical vocabulary; exact-match → one re-ask → honest fail; empty vocab = hard stop) | AFK | MT-6 | — |
+| **MT-7b** | Vocabulary proposal path (explicit new-type admission; local during concurrent extract; deterministic post-extract dedup; keying-collision surfaced not merged) | AFK | MT-7a | — |
+| **MT-7c** | Acceptance: unfragmented comprehensive build ×2; CQ-gate as the cross-run criterion; A2-vs-B reframed as capability | HITL | MT-7a + MT-7b | — |
 
 ## The build loop
 Each slice: **/handoff → /prototype (where flagged) → /tdd (tests FIRST, red→green) → /inspect-orc** (adversarial re-verify on REAL O\*NET data before commit). 13 Core Disciplines embedded verbatim per issue. **Run ONE bounded build at a time** with `pgrep -f` JVM hygiene.

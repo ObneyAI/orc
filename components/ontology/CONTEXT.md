@@ -17,6 +17,13 @@ Glossary only — no implementation. Terms used verbatim in code, tests, and doc
 - **Long-form container** — names a measure/element in one column and its value in another (a key column + an element/label column + a value column; the same entity repeats across many rows, once per element). The element/label column is a LAYOUT artifact, not a second entity — its values are the keyed entity's own flat attributes.
 - **Wide-stats container** — one subject per row carrying MANY measure columns. Also flat attributes on that subject (no reification) unless a single measure is co-qualified by two independent entities.
 
+## Vocabulary & identity
+
+- **Canonical entity-type vocabulary** — the single agreed set of entity-type names for a build, each carrying its identifying key field(s) and the alias names sources/containers use for it. Every modeling and extraction step names entities from this vocabulary; the same real-world entity is never minted under two type names. Authoritative across sources AND across the containers within a source.
+- **Vocabulary freelancing** — the defect where an extraction step invents an entity-type name outside the canonical vocabulary (a synonym, a case variant, a container-prefixed name) instead of reusing the canonical one.
+- **Entity-type fragmentation** — the consequence of freelancing: the same real-world entity minted under variant type names → distinct identities that never merge (defeating occurrence merge), splitting one entity across many nodes and diluting its attributes.
+- **Vocabulary proposal** — an extraction step explicitly declaring a NEW entity-type (with its identifying key fields, drawn from real sampled columns) for admission to the canonical vocabulary — checked against the existing entries before acceptance. The only legitimate way the vocabulary grows mid-build; the alternative to freelancing.
+
 ## Extraction
 
 - **Aggregating transform** — an extraction transform that emits ONE draft per GROUP of rows (group-by an entity key, then roll the group up — e.g. rank a long-form container's elements by importance and keep the top-N as a flat array attribute), as opposed to the per-row transform that emits one draft per row. Model-authored; applied streamed/bounded so a large container never materializes whole.
