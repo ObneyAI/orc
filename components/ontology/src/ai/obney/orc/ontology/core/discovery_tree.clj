@@ -2080,6 +2080,9 @@
      :shared-uri-links shared
      :implied-endpoints-minted (:implied-minted v18)
      :candidate-pairs (count pairs)
+     ;; MT-7e — HONEST blocking bound (per-bucket cap / total ceiling), surfaced
+     ;; so a comprehensive-scale cross-graph reconcile can never silently top-N.
+     :blocking-truncation (dedup/candidate-pairs-truncation pairs)
      :merges (count merge-verdicts)
      :merge-equivalences (mapv (fn [v]
                                  {:source-uri (:a-uri v)

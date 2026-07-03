@@ -342,9 +342,14 @@
    skeleton collects them but does NOT halt.
 
    Returns:
-     {:status :ok :pairs-evaluated :candidate-pairs :prefiltered :survivors
-      :merges :distinct :skipped :requires-review :verdicts [...]
-      :stage-duration-ms}."
+     {:status :ok :pairs-evaluated :candidate-pairs :blocking-truncation
+      :prefiltered :survivors :merges :distinct :skipped :requires-review
+      :verdicts [...] :stage-duration-ms}.
+
+   MT-7e — `:blocking-truncation` carries the HONEST LSH-blocking bound report
+   (`{:buckets-capped :pairs-dropped :total-cap-hit? :max-pairs-per-bucket
+      :max-candidate-pairs}`) so a comprehensive-scale run surfaces whether the
+   per-bucket cap / total ceiling bit — never a silent top-N."
   [ctx {:keys [ontology-id alignment-ontology-id llm-budget]
         :or {llm-budget 0}}]
   (let [start (System/currentTimeMillis)]
@@ -359,6 +364,10 @@
                                     (assoc :broader (vec (:broader c)))))))
             ;; (1) LSH/MinHash blocking — sub-quadratic candidate generation.
             pairs (candidate-pairs concepts)
+            ;; MT-7e — HONEST blocking-truncation signal rides on the pair
+            ;; vector's metadata (per-bucket cap / total ceiling). Surface it in
+            ;; the stage result so the build report can carry it — never silent.
+            blocking-truncation (dedup/candidate-pairs-truncation pairs)
             ;; (2) PROJECT ONCE for the whole stage (NOT per pair) — BOTH the
             ;;     S07 disjointness axioms (T1 guard) AND the S13 concept-
             ;;     evidence map. Pre-fix each per-pair command re-projected both
@@ -419,6 +428,9 @@
         {:status :ok
          :pairs-evaluated (count verdicts)
          :candidate-pairs (count pairs)
+         ;; MT-7e — the blocking bound, surfaced honestly (the reviewer's live
+         ;; comprehensive build reads this to confirm the cap bit / did not bite).
+         :blocking-truncation blocking-truncation
          :prefiltered (count @prefiltered)
          :survivors (count @survivors)
          :merges (count (get by-verdict :merge []))
@@ -944,7 +956,9 @@
                                :dedup-summary {:pairs-evaluated (:pairs-evaluated dedup-r)
                                                :merges (:merges dedup-r)
                                                :distinct (:distinct dedup-r)
-                                               :requires-review (:requires-review dedup-r)}
+                                               :requires-review (:requires-review dedup-r)
+                                               ;; MT-7e — honest blocking bound.
+                                               :blocking-truncation (:blocking-truncation dedup-r)}
                                :validation-warnings (:warnings val-r)}
 
                               :else
@@ -965,7 +979,9 @@
                                        :dedup-summary {:pairs-evaluated (:pairs-evaluated dedup-r)
                                                        :merges (:merges dedup-r)
                                                        :distinct (:distinct dedup-r)
-                                                       :requires-review (:requires-review dedup-r)}
+                                                       :requires-review (:requires-review dedup-r)
+                                                       ;; MT-7e — honest blocking bound.
+                                                       :blocking-truncation (:blocking-truncation dedup-r)}
                                        :graph-health (:graph-health exit-r)
                                        :spec-absent? (boolean (:spec-absent? exit-r))
                                        :artifacts {:shacl-ttl (serialization/export-shacl-shapes

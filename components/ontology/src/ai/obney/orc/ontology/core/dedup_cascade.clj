@@ -274,6 +274,57 @@
               [space b (subvec signature (* b rows) (* (inc b) rows))])
             (range bands)))))
 
+;; MT-7e — bounded blocking (comprehensive-scale OOM guard). The comprehensive
+;; O*NET build reaches this blocker over a very large draft set (52,910 fine-grain
+;; concepts). Element labels repeat across occupations (`deductive reasoning` ×273,
+;; …), so an LSH bucket fills with same-label-different-occupation concepts and the
+;; O(k^2) within-bucket ordered-pair enumeration accumulates into ONE candidate-pair
+;; vector → OOM. This is the SAME missing-bound family as GC-2 (bounded cross-
+;; container relating): the fix is a per-bucket ordered-pair CAP plus a total
+;; candidate-pairs CEILING, dropping the provably-wasted excess DETERMINISTICALLY
+;; and surfacing the truncation HONESTLY (never a silent top-N). A huge same-
+;; signature bucket is a low-information label collision (same label, different
+;; occupation), NOT a duplicate cluster — every one of those k^2 comparisons
+;; resolves :distinct downstream — so bounding it loses NO genuine merge. A genuine
+;; near-duplicate neighborhood is SMALL (a handful of surface variants), so the cap
+;; never bites a normal-scale graph (proven by the recall-preservation test).
+(def default-max-pairs-per-bucket
+  "Per-bucket ordered-pair enumeration cap. Within one LSH bucket, at most this
+   many ordered pairs (`a-uri < b-uri`, in the members' stable order) are
+   enumerated; the excess is DROPPED. 1000 ordered pairs ≈ a 45-member fully-
+   paired bucket — a genuine near-duplicate cluster is far smaller, so this admits
+   every real neighborhood while cutting the same-label collision blow-up (the
+   O*NET `deductive reasoning` ×273 bucket = 37,128 ordered pairs collapses to
+   1000). Domain-agnostic: a structural pair-count bound naming no field."
+  1000)
+
+(def default-max-candidate-pairs
+  "Total candidate-pair ceiling across ALL buckets. Defensive against many
+   moderate buckets summing large: once the `out` vector reaches this size no
+   further pair is admitted and the truncation is surfaced (`:total-cap-hit?`).
+   2,000,000 is far above the genuine-neighborhood pair count of any real graph
+   at this concept scale, so it is a safety ceiling, not a routine cap."
+  2000000)
+
+(defn candidate-pairs-truncation
+  "Read the HONEST truncation report attached (as metadata) to a
+   `lsh-candidate-pairs` result. Returns a map
+     {:buckets-capped        <int>   ;; buckets that hit the per-bucket cap
+      :pairs-dropped          <int>   ;; ordered-pair enumerations dropped by the
+                                      ;;   per-bucket cap + total ceiling (a work-
+                                      ;;   dropped signal; over-counts unique pairs
+                                      ;;   when identical-signature concepts share
+                                      ;;   multiple bands — the flags below are the
+                                      ;;   unambiguous signals)
+      :total-cap-hit?         <bool>  ;; the total candidate-pairs ceiling was hit
+      :max-pairs-per-bucket   <int>   ;; the EFFECTIVE per-bucket bound applied
+      :max-candidate-pairs    <int>}  ;; the EFFECTIVE total ceiling applied
+   or nil when the argument carries no truncation metadata. The pair vector itself
+   keeps the `[a b]` contract callers consume; this accessor exposes the bound so
+   it is OBSERVABLE (mirrors GC-2's `:truncated-relations`), never a silent top-N."
+  [candidate-pairs]
+  (::truncated (meta candidate-pairs)))
+
 (defn lsh-candidate-pairs
   "Real LSH/MinHash blocking. Each concept is MinHash-signed over TWO feature
    spaces — its word-tokens (handles camelCase / underscore composites, e.g.
@@ -291,12 +342,33 @@
    multi-band collision. Concepts with a missing / feature-less label are
    excluded.
 
+   MT-7e — BOUNDED (comprehensive-scale OOM guard). Within a bucket at most
+   `max-pairs-per-bucket` ordered pairs are enumerated (a huge same-signature
+   bucket is a low-information label collision, not a duplicate cluster — the
+   excess resolves :distinct downstream, so dropping it loses no genuine merge);
+   the overall `out` vector is bounded by `max-candidate-pairs`. Buckets are
+   processed in a deterministic key order so the total-ceiling truncation is
+   reproducible. The dropped excess is surfaced HONESTLY as metadata on the
+   returned vector — read it with `candidate-pairs-truncation` — never a silent
+   top-N. On a normal-scale graph the bounds do not bite, so the pair SET is
+   identical to the pre-bound result (recall preserved).
+
+   The return keeps the `[a b]` pair contract: a vector of `[a b]` concept pairs.
+   The truncation report rides as metadata (`::truncated`) so existing callers
+   iterating `[a b]` are unaffected.
+
    Pure function — no I/O. Options:
-     :perms  signature length per space (default 64)
-     :bands  bands per space            (default 32 → 2 rows)"
+     :perms                signature length per space   (default 64)
+     :bands                bands per space              (default 32 → 2 rows)
+     :max-pairs-per-bucket per-bucket ordered-pair cap  (default
+                           `default-max-pairs-per-bucket`)
+     :max-candidate-pairs  total candidate-pairs ceiling (default
+                           `default-max-candidate-pairs`)"
   ([concepts] (lsh-candidate-pairs concepts {}))
-  ([concepts {:keys [perms bands]
-              :or {perms minhash-default-perms bands minhash-default-bands}}]
+  ([concepts {:keys [perms bands max-pairs-per-bucket max-candidate-pairs]
+              :or {perms minhash-default-perms bands minhash-default-bands
+                   max-pairs-per-bucket default-max-pairs-per-bucket
+                   max-candidate-pairs default-max-candidate-pairs}}]
    (let [seeds (if (= perms minhash-default-perms) default-seeds (hash-seeds perms))
          ;; Sign every labeled concept once, in both feature spaces.
          signed (->> concepts
@@ -317,18 +389,47 @@
                   signed)
          ;; Within each bucket, enumerate ordered pairs (a-uri < b-uri),
          ;; deduping pairs that collide in more than one band via a set.
+         ;; MT-7e — BOUNDED: at most `max-pairs-per-bucket` ordered pairs are
+         ;; enumerated per bucket, and the overall `out` is capped at
+         ;; `max-candidate-pairs`; the dropped excess is surfaced honestly.
+         ;; Buckets are processed in a deterministic key order so the total-
+         ;; ceiling truncation is reproducible (the per-bucket cap is order-
+         ;; independent already — each bucket is capped in isolation).
          seen (java.util.HashSet.)
-         out (transient [])]
-     (doseq [[_ members] buckets
-             :when (> (count members) 1)
-             a members
-             b members
-             :when (neg? (compare (:uri a) (:uri b)))]
-       (let [k [(:uri a) (:uri b)]]
-         (when-not (.contains seen k)
-           (.add seen k)
-           (conj! out [(dissoc a ::wsig ::ssig) (dissoc b ::wsig ::ssig)]))))
-     (persistent! out))))
+         out (transient [])
+         buckets-capped (volatile! 0)
+         pairs-dropped  (volatile! 0)
+         total-cap-hit? (volatile! false)]
+     (doseq [[_ members] (sort-by key buckets)
+             :when (and (> (count members) 1) (not @total-cap-hit?))]
+       (let [bucket-taken   (volatile! 0)
+             bucket-capped? (volatile! false)]
+         (doseq [a members
+                 b members
+                 :when (and (neg? (compare (:uri a) (:uri b)))
+                            (not @total-cap-hit?))]
+           (if (>= @bucket-taken max-pairs-per-bucket)
+             ;; per-bucket cap reached — DROP the rest of THIS bucket's ordered
+             ;; pairs (a same-signature collision cluster; the dropped pairs are
+             ;; near-certainly non-merges — surfaced honestly, never silent).
+             (do (vreset! bucket-capped? true)
+                 (vswap! pairs-dropped inc))
+             (let [k [(:uri a) (:uri b)]]
+               (vswap! bucket-taken inc)
+               (when-not (.contains seen k)
+                 (.add seen k)
+                 (if (>= (count out) max-candidate-pairs)
+                   ;; total ceiling reached — stop admitting; surface honestly.
+                   (do (vreset! total-cap-hit? true)
+                       (vswap! pairs-dropped inc))
+                   (conj! out [(dissoc a ::wsig ::ssig) (dissoc b ::wsig ::ssig)]))))))
+         (when @bucket-capped? (vswap! buckets-capped inc))))
+     (with-meta (persistent! out)
+       {::truncated {:buckets-capped @buckets-capped
+                     :pairs-dropped  @pairs-dropped
+                     :total-cap-hit? @total-cap-hit?
+                     :max-pairs-per-bucket max-pairs-per-bucket
+                     :max-candidate-pairs max-candidate-pairs}}))))
 
 ;; =============================================================================
 ;; String similarity (Jaro-Winkler)

@@ -611,3 +611,132 @@
         "prompt carries the negation-difference KEEP rule")
     (is (str/includes? dedup/llm-keep-rule-prompt "DIFFERENT ENTITIES")
         "prompt carries the entity-disambiguation KEEP rule")))
+
+;; =============================================================================
+;; MT-7e — bounded LSH blocking (comprehensive-scale OOM guard)
+;;
+;; The comprehensive build reaches the S12 post-landing dedup cascade over a
+;; VERY large draft set (52,910 fine-grain concepts). Labels are element names
+;; repeated across occupations (`deductive reasoning` ×273, …), so an LSH bucket
+;; fills with same-label-different-occupation concepts and the O(k^2) within-
+;; bucket ordered-pair enumeration accumulates into one candidate-pair vector →
+;; OOM. `lsh-candidate-pairs` now bounds this the GC-2 way: a per-bucket ordered-
+;; pair cap + a total candidate-pairs ceiling, dropping the provably-wasted
+;; excess DETERMINISTICALLY and surfacing the truncation HONESTLY (never a
+;; silent top-N). The bound only removes excess within an already-recall-biased
+;; same-signature bucket — a dropped pair is near-certainly a non-merge (same
+;; label, different occupation) — so it loses NO genuine merge on a normal-scale
+;; graph. Bounds are overridable via the opts map.
+;; =============================================================================
+
+(defn- identical-label-bucket
+  "n concepts sharing the SAME label — the O*NET failure shape: one giant
+   same-signature LSH bucket (`deductive reasoning` repeated across occupations,
+   distinct :uri per occupation). Full ordered-pair count is n*(n-1)/2."
+  [n]
+  (mapv (fn [i]
+          {:uri (format "ex:occ%04d/deductive-reasoning" i)
+           :label "deductive reasoning"
+           :description "element measurement"
+           :type :class})
+        (range n)))
+
+(defn- pairs->uri-set [pairs]
+  (set (map (fn [[a b]] #{(:uri a) (:uri b)}) pairs)))
+
+;; Tracer 1 — per-bucket ordered-pair cap.
+(deftest lsh-candidate-pairs-caps-giant-bucket
+  (testing "A giant same-signature bucket (60 identical-label concepts →
+            60*59/2 = 1770 ordered pairs) is capped to at most
+            :max-pairs-per-bucket pairs; the truncation is surfaced honestly."
+    (let [concepts (identical-label-bucket 60)
+          pairs (dedup/lsh-candidate-pairs concepts {:max-pairs-per-bucket 100})
+          trunc (dedup/candidate-pairs-truncation pairs)]
+      ;; `[a b]` pair contract preserved — still a seq of [a b] concept pairs.
+      (is (every? (fn [p] (and (vector? p) (= 2 (count p))
+                               (:uri (first p)) (:uri (second p))))
+                  pairs)
+          "return is still a seq of [a b] concept pairs")
+      (is (<= (count pairs) 100)
+          (str "per-bucket cap must bound the giant bucket; got " (count pairs)))
+      (is (pos? (:buckets-capped trunc))
+          "at least one bucket hit the per-bucket cap")
+      (is (pos? (:pairs-dropped trunc))
+          "the dropped excess is counted honestly")))
+  (testing "A small bucket (2 identical-label concepts → 1 ordered pair) is
+            behavior-preserving: the single pair is kept, nothing truncated."
+    (let [concepts (identical-label-bucket 2)
+          pairs (dedup/lsh-candidate-pairs concepts {:max-pairs-per-bucket 100})
+          trunc (dedup/candidate-pairs-truncation pairs)]
+      (is (= 1 (count pairs)))
+      (is (zero? (:buckets-capped trunc)))
+      (is (false? (:total-cap-hit? trunc))))))
+
+;; Tracer 2 — total candidate-pairs ceiling.
+(deftest lsh-candidate-pairs-caps-total-ceiling
+  (testing "Buckets whose admissible pairs exceed the total ceiling are bounded
+            to the ceiling; the total-cap-hit flag is surfaced. (One 10-member
+            identical bucket = 45 ordered pairs; a total ceiling of 5 bites even
+            though the per-bucket default does not.)"
+    (let [concepts (identical-label-bucket 10)
+          pairs (dedup/lsh-candidate-pairs concepts {:max-candidate-pairs 5})
+          trunc (dedup/candidate-pairs-truncation pairs)]
+      (is (<= (count pairs) 5)
+          (str "total ceiling must bound the out vector; got " (count pairs)))
+      (is (true? (:total-cap-hit? trunc))
+          "the total-pairs ceiling was reached — surfaced honestly")))
+  (testing "Under the ceiling (default bounds) the same fixture is unchanged:
+            all 45 pairs, total ceiling NOT hit."
+    (let [concepts (identical-label-bucket 10)
+          pairs (dedup/lsh-candidate-pairs concepts)
+          trunc (dedup/candidate-pairs-truncation pairs)]
+      (is (= 45 (count pairs)))
+      (is (false? (:total-cap-hit? trunc))))))
+
+;; Tracer 3 — recall preserved on a normal-scale graph.
+(deftest lsh-candidate-pairs-cap-preserves-recall
+  (testing "ADVERSARIAL no-false-green: on a normal-scale graph of genuine
+            near-duplicate families the PRODUCTION cap yields the SAME candidate
+            pairs as an effectively-uncapped run — the bound does not bite a
+            normal-scale graph, so no genuine merge is lost."
+    (let [concepts [;; genuine near-dup pairs (S12 ground-truth merge shapes)
+                    {:uri "p:Director1" :label "Director" :type :class}
+                    {:uri "p:Director2" :label "director" :type :class}
+                    {:uri "p:Org1" :label "Organization" :type :class}
+                    {:uri "p:Org2" :label "Organisation" :type :class}
+                    {:uri "p:hasAuthor" :label "hasAuthor" :type :property}
+                    {:uri "p:hasWriter" :label "hasWriter" :type :property}
+                    {:uri "p:CEO1" :label "Chief Executive Officer" :type :class}
+                    {:uri "p:CEO2" :label "  Chief Executive   Officer  " :type :class}
+                    ;; token-disjoint noise that must stay pruned
+                    {:uri "ex:Agriculture" :label "Agriculture General" :type :class}
+                    {:uri "ex:Plumbing" :label "Plumbing Trades" :type :class}]
+          capped   (dedup/lsh-candidate-pairs concepts)
+          uncapped (dedup/lsh-candidate-pairs
+                    concepts {:max-pairs-per-bucket 100000000
+                              :max-candidate-pairs 1000000000})]
+      (is (= (pairs->uri-set uncapped) (pairs->uri-set capped))
+          "production cap yields the SAME pair set as uncapped on a normal graph")
+      ;; a genuine merge candidate survives
+      (is (contains? (pairs->uri-set capped) #{"p:Org1" "p:Org2"})
+          "the Organization/Organisation genuine merge candidate is kept")
+      (let [trunc (dedup/candidate-pairs-truncation capped)]
+        (is (zero? (:buckets-capped trunc))
+            "no bucket is capped on a normal-scale graph")
+        (is (false? (:total-cap-hit? trunc))
+            "the total ceiling is not hit on a normal-scale graph")))))
+
+;; Tracer 4 — bounds are overridable via the opts map.
+(deftest lsh-candidate-pairs-bounds-overridable
+  (testing "The per-bucket knob is overridable: a 30-member identical bucket
+            (435 ordered pairs) capped at 10 keeps ≤10; a generous cap keeps
+            all 435 — proving the knob, not a hardcoded ceiling."
+    (let [concepts (identical-label-bucket 30)
+          tight (dedup/lsh-candidate-pairs concepts {:max-pairs-per-bucket 10})
+          loose (dedup/lsh-candidate-pairs concepts {:max-pairs-per-bucket 1000})]
+      (is (<= (count tight) 10)
+          (str "tightened per-bucket cap bites; got " (count tight)))
+      (is (= 435 (count loose))
+          "a generous per-bucket cap keeps the whole 30-member bucket")
+      (is (= 10 (:max-pairs-per-bucket (dedup/candidate-pairs-truncation tight)))
+          "the truncation report echoes the effective per-bucket bound"))))
