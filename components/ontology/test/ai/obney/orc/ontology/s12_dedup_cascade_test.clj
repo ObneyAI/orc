@@ -26,6 +26,8 @@
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands :as cmd]
             [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
+            [ai.obney.orc.ontology.core.concept-stream :as cs]
+            [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
@@ -740,3 +742,151 @@
           "a generous per-bucket cap keeps the whole 30-member bucket")
       (is (= 10 (:max-pairs-per-bucket (dedup/candidate-pairs-truncation tight)))
           "the truncation report echoes the effective per-bucket bound"))))
+
+;; =============================================================================
+;; STREAM Slice 4 — URIs-only LSH bucket (the O(n × bands) memory fix) +
+;; streamed dedup-stage load.
+;;
+;; The pre-refactor `lsh-candidate-pairs` copied each concept's FULL map into
+;; ~2×bands buckets → O(n × bands × concept-size) heap. Slice 4 makes the
+;; buckets hold URI STRINGS and resolves them back through a compact
+;; `{uri -> light-concept + sigs}` side map at pair-emit — bucket memory drops
+;; to O(n × bands × uri-size). VERDICT-INVARIANCE is the invariant: the emitted
+;; candidate-pair SET, ORDER, MT-7e caps, and each emitted concept's CASCADE-READ
+;; fields must be byte-identical.
+;;
+;; The cascade reads EXACTLY these fields off a candidate concept (verified
+;; against `run-cascade` — :uri/:label/:description/:type; `prefilter-verdict`
+;; AND the `run-dedup-cascade` command's disjoint-pair-fn — :broader for T1
+;; disjointness). Kind-hint is NOT read here in the blocked-pair flow (both
+;; production callers project it out BEFORE blocking), so the light set is:
+;;
+;;     #{:uri :label :description :type :broader}
+;;
+;; Dropping :broader would flip a T1-disjointness verdict; dropping any of the
+;; other four would flip a T2–T9 verdict. Heavy non-cascade fields (:attributes …)
+;; are dropped — the observable memory win.
+;; =============================================================================
+
+(defn- slice4-heavy-concept
+  "A candidate concept carrying BOTH the cascade-read LIGHT fields
+   (:uri :label :description :type :broader) AND a HEAVY field (:attributes) the
+   cascade NEVER reads. The URIs-only-bucket refactor resolves each emitted pair
+   back through a LIGHT side map, so the emitted concept keeps every cascade-read
+   field but DROPS the heavy one."
+  [uri label]
+  {:uri uri :label label :description (str label " description")
+   :type :class :broader [(str "bio:" label "Parent")]
+   :attributes (vec (repeat 40 {:k label :v (apply str (repeat 32 \x))}))})
+
+;; Tracer — Part B: emitted pairs carry ONLY the light cascade-read fields
+;; (:broader preserved; heavy :attributes dropped). RED before the refactor: the
+;; pre-fix code copied the full concept into buckets and emitted :attributes.
+(deftest slice4-lsh-pairs-carry-only-light-cascade-read-fields
+  (testing "STREAM Slice 4 Part B — each emitted pair resolves to a LIGHT concept:
+            it PRESERVES every cascade-read field (:uri :label :description :type
+            :broader) so no verdict shifts, and DROPS heavy non-cascade fields
+            (:attributes) — the URIs-only-bucket memory win made observable."
+    (let [concepts [(slice4-heavy-concept "p:Organization1" "Organization")
+                    (slice4-heavy-concept "p:Organisation1" "Organisation")]
+          pairs (dedup/lsh-candidate-pairs concepts)]
+      (is (seq pairs) "the near-dup family collides into at least one candidate pair")
+      (doseq [[a b] pairs
+              c [a b]]
+        ;; ONLY light cascade-read keys survive — no heavy field, no ::wsig/::ssig.
+        (is (every? #{:uri :label :description :type :broader} (keys c))
+            (str "emitted concept carries ONLY light cascade-read fields; got "
+                 (keys c)))
+        ;; every cascade-read field is PRESENT + verbatim.
+        (is (contains? c :uri))
+        (is (contains? c :label))
+        (is (contains? c :description))
+        (is (contains? c :type))
+        (is (contains? c :broader)
+            "the T1-disjointness :broader field is PRESERVED — dropping it would
+             flip a disjointness verdict in the stage's prefilter + command")
+        (is (vector? (:broader c)))
+        (is (not (contains? c :attributes))
+            "heavy :attributes is DROPPED — buckets/side-map hold LIGHT concepts")))))
+
+;; Tracer — Part B: pair SET + ORDER + MT-7e caps are byte-unchanged on a fixture
+;; combining a giant same-signature bucket (exercises the per-bucket cap) with
+;; genuine near-dup families (recall). The URIs-only bucket must not reorder /
+;; drop / add / duplicate any pair.
+(deftest slice4-lsh-uris-only-bucket-preserves-pair-set-order-and-caps
+  (testing "STREAM Slice 4 Part B — pair URIs + ORDER + :blocking-truncation are
+            byte-identical to the reference enumeration: the URIs-only bucket
+            changes only WHAT the buckets hold, never the minhash/band-keys/caps/
+            pair-order."
+    (let [concepts (into (identical-label-bucket 60)
+                         [{:uri "p:Director1" :label "Director" :type :class}
+                          {:uri "p:Director2" :label "director" :type :class}
+                          {:uri "p:Org1" :label "Organization" :type :class}
+                          {:uri "p:Org2" :label "Organisation" :type :class}
+                          {:uri "p:CEO1" :label "Chief Executive Officer" :type :class}
+                          {:uri "p:CEO2" :label "  Chief Executive   Officer  " :type :class}])
+          opts  {:max-pairs-per-bucket 100}
+          pairs (dedup/lsh-candidate-pairs concepts opts)
+          trunc (dedup/candidate-pairs-truncation pairs)
+          uri-pairs (mapv (fn [[a b]] [(:uri a) (:uri b)]) pairs)]
+      ;; genuine near-dup merges survive (recall preserved through the URI map).
+      (is (contains? (set uri-pairs) ["p:Org1" "p:Org2"])
+          "Organization/Organisation genuine merge candidate is kept")
+      (is (contains? (set uri-pairs) ["p:CEO1" "p:CEO2"])
+          "whitespace-variant CEO merge candidate is kept")
+      (is (contains? (set uri-pairs) ["p:Director1" "p:Director2"])
+          "case-variant Director merge candidate is kept")
+      ;; the ordered-pair invariant (a-uri < b-uri) holds for EVERY emitted pair.
+      (is (every? (fn [[au bu]] (neg? (compare au bu))) uri-pairs)
+          "every emitted pair is ordered a-uri < b-uri")
+      ;; the giant same-signature bucket still hits the per-bucket cap, honestly.
+      (is (pos? (:buckets-capped trunc))
+          "the 60-member same-signature bucket still hits the per-bucket cap")
+      (is (= 100 (:max-pairs-per-bucket trunc))
+          "the effective per-bucket bound is echoed unchanged")
+      (is (false? (:total-cap-hit? trunc))
+          "the total ceiling is not hit at this scale")
+      ;; DETERMINISTIC + STABLE ORDER: re-running yields the identical ordered vector.
+      (is (= uri-pairs
+             (mapv (fn [[a b]] [(:uri a) (:uri b)])
+                   (dedup/lsh-candidate-pairs concepts opts)))
+          "the emitted pair ORDER is deterministic and stable across runs"))))
+
+;; Tracer — Part A: the dedup-stage concept load streamed via cs/reduce-concepts
+;; is byte-identical to the pre-conversion (rm/get-concepts)+filter+light-project
+;; load, on a single-ontology store (order + fields + :broader coercion).
+(deftest slice4-dedup-stage-streamed-load-is-byte-identical
+  (testing "STREAM Slice 4 Part A — cs/reduce-concepts (project-fn keeping the
+            cascade-read light fields + :ontology-id for the phantom filter) folds
+            the SAME registered reducer over the tag-scoped stream, so the light
+            concept vector it produces is byte-identical to the (rm/get-concepts)
+            projection load — same order, same fields, same :broader coercion."
+    (h/with-test-context [ctx]
+      (let [oid primary-p
+            ;; the EXACT light projection the dedup-stage applies (incl. the
+            ;; :broader vec-coercion the cascade command schema requires).
+            light (fn [c] (cond-> (select-keys c [:uri :label :description :type])
+                            (seq (:broader c)) (assoc :broader (vec (:broader c)))))]
+        ;; seed a single-ontology graph, including a concept WITH :broader.
+        (create-concept! ctx {:ontology-id oid :uri "p:Whale" :label "Whale"
+                              :description "a whale species" :scope :custom
+                              :broader ["bio:Mammal"]})
+        (create-concept! ctx {:ontology-id oid :uri "p:Organization" :label "Organization"
+                              :description "a structured group" :scope :custom})
+        (create-concept! ctx {:ontology-id oid :uri "p:Organisation" :label "Organisation"
+                              :description "a structured group" :scope :custom})
+        (let [projected (->> (rm/get-concepts ctx {})
+                             (filter #(= oid (:ontology-id %)))
+                             (mapv light))
+              streamed  (cs/reduce-concepts
+                         ctx oid
+                         (fn [acc c] (if (= oid (:ontology-id c)) (conj acc (light c)) acc))
+                         []
+                         {:project-fn #(select-keys % [:uri :ontology-id :label
+                                                       :description :type :broader])})]
+          (is (= projected streamed)
+              "streamed light load == projection light load (order + fields + broader)")
+          (is (some #(seq (:broader %)) streamed)
+              "the :broader concept survived the streamed light projection")
+          (is (= 3 (count streamed))
+              "all three single-ontology concepts are loaded"))))))

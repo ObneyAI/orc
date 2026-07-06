@@ -378,14 +378,32 @@
         :or {llm-budget 0}}]
   (let [start (System/currentTimeMillis)]
     (try
-      (let [;; The :broader field on the projection is a set; the cascade
-            ;; command schema requires `[:vector :string]`. Coerce explicitly.
-            concepts (->> (rm/get-concepts ctx {})
-                          (filter #(= ontology-id (:ontology-id %)))
-                          (mapv (fn [c]
-                                  (cond-> (select-keys c [:uri :label :description :type])
-                                    (seq (:broader c))
-                                    (assoc :broader (vec (:broader c)))))))
+      (let [;; STREAM Slice 4 — stream the dedup-stage concept load off `es/read`
+            ;; via `cs/reduce-concepts` (mirrors Slice 3's normalize-stage) so an
+            ;; uncapped-attributes graph does not OOM this stage. The `:project-fn`
+            ;; keeps ONLY the light fields the LSH signing + the cascade READ
+            ;; (:uri/:label/:description/:type + :broader for the T1 disjointness
+            ;; guard) plus :ontology-id for the phantom filter — the heavy
+            ;; :attributes/:labels/… are dropped BEFORE accumulation. The
+            ;; `:ontology-id` filter is RETAINED (not the tag scope alone): the
+            ;; concepts reducer can create PHANTOM entries for a skos edge whose
+            ;; target was never minted (an `update-in` carrying no :ontology-id);
+            ;; the pre-conversion `(filter #(= id (:ontology-id %)))` dropped
+            ;; those, so we filter identically. Byte-identical light concept set +
+            ;; fields ⇒ identical candidate pairs ⇒ identical verdicts (single-
+            ;; ontology store). The :broader set is vec-coerced (the cascade
+            ;; command schema requires `[:vector :string]`) — identical coercion.
+            concepts (cs/reduce-concepts
+                      ctx ontology-id
+                      (fn [acc c]
+                        (if (= ontology-id (:ontology-id c))
+                          (conj acc (cond-> (select-keys c [:uri :label :description :type])
+                                      (seq (:broader c))
+                                      (assoc :broader (vec (:broader c)))))
+                          acc))
+                      []
+                      {:project-fn #(select-keys % [:uri :ontology-id :label
+                                                    :description :type :broader])})
             ;; (1) LSH/MinHash blocking — sub-quadratic candidate generation.
             pairs (candidate-pairs concepts)
             ;; MT-7e — HONEST blocking-truncation signal rides on the pair

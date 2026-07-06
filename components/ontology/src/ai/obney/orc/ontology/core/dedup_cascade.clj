@@ -370,21 +370,41 @@
                    max-pairs-per-bucket default-max-pairs-per-bucket
                    max-candidate-pairs default-max-candidate-pairs}}]
    (let [seeds (if (= perms minhash-default-perms) default-seeds (hash-seeds perms))
-         ;; Sign every labeled concept once, in both feature spaces.
+         ;; Sign every labeled concept once, in both feature spaces. STREAM
+         ;; Slice 4 — the signed value is a LIGHT concept + sigs: only the
+         ;; fields the cascade READS off a candidate (`run-cascade`:
+         ;; :uri/:label/:description/:type; `prefilter-verdict` + the
+         ;; `run-dedup-cascade` command's disjoint-pair-fn: :broader for the T1
+         ;; disjointness guard). Heavy non-cascade fields (:attributes …) are
+         ;; dropped here so neither the URI side map nor an emitted pair carries
+         ;; them. Dropping any of these five would flip a verdict; dropping the
+         ;; heavy fields flips none (the memory win).
          signed (->> concepts
                      (filter :label)
                      (keep (fn [c]
                              (let [wsig (minhash-of (word-tokens (:label c)) seeds)
                                    ssig (minhash-of (shingles (:label c) 3) seeds)]
                                (when (or wsig ssig)
-                                 (assoc c ::wsig wsig ::ssig ssig))))))
-         ;; Bucket by tagged band key across both spaces.
+                                 (assoc (select-keys c [:uri :label :description :type :broader])
+                                        ::wsig wsig ::ssig ssig))))))
+         ;; STREAM Slice 4 — {uri -> light-concept + sigs}, ONE entry per concept
+         ;; (NOT one per band). The buckets below hold the URI STRING; this side
+         ;; map resolves it back at pair-emit. Together they cut bucket memory
+         ;; from O(n × bands × concept-size) full-map COPIES to
+         ;; O(n × bands × uri-size) URI strings + the O(n) side map — the
+         ;; O(n × bands) full-copy blow-up that OOM'd the comprehensive build.
+         by-uri (persistent!
+                 (reduce (fn [m c] (assoc! m (:uri c) c)) (transient {}) signed))
+         ;; Bucket by tagged band key across both spaces — storing the URI STRING
+         ;; (`(:uri c)`), not the concept map. Same band keys, same member order
+         ;; (signed order) as before — only WHAT the bucket holds changed.
          buckets (reduce
                   (fn [acc c]
-                    (reduce (fn [a k] (update a k (fnil conj []) c))
-                            acc
-                            (concat (when (::wsig c) (band-keys :w (::wsig c) bands))
-                                    (when (::ssig c) (band-keys :s (::ssig c) bands)))))
+                    (let [uri (:uri c)]
+                      (reduce (fn [a k] (update a k (fnil conj []) uri))
+                              acc
+                              (concat (when (::wsig c) (band-keys :w (::wsig c) bands))
+                                      (when (::ssig c) (band-keys :s (::ssig c) bands))))))
                   {}
                   signed)
          ;; Within each bucket, enumerate ordered pairs (a-uri < b-uri),
@@ -400,13 +420,19 @@
          buckets-capped (volatile! 0)
          pairs-dropped  (volatile! 0)
          total-cap-hit? (volatile! false)]
+     ;; STREAM Slice 4 — `members` are now URI STRINGS (the buckets hold URIs).
+     ;; The ordered-pair enumeration is byte-preserved: `(compare a b)` on the
+     ;; URIs is identical to the pre-fix `(compare (:uri a) (:uri b))`, the seen-
+     ;; dedup key `[a b]` is identical, and the emitted pair resolves each URI
+     ;; back to its LIGHT concept via `by-uri` (still `dissoc`-ing the sigs) — so
+     ;; the pair SET, ORDER, caps, and emitted cascade-read fields are unchanged.
      (doseq [[_ members] (sort-by key buckets)
              :when (and (> (count members) 1) (not @total-cap-hit?))]
        (let [bucket-taken   (volatile! 0)
              bucket-capped? (volatile! false)]
          (doseq [a members
                  b members
-                 :when (and (neg? (compare (:uri a) (:uri b)))
+                 :when (and (neg? (compare a b))
                             (not @total-cap-hit?))]
            (if (>= @bucket-taken max-pairs-per-bucket)
              ;; per-bucket cap reached — DROP the rest of THIS bucket's ordered
@@ -414,7 +440,7 @@
              ;; near-certainly non-merges — surfaced honestly, never silent).
              (do (vreset! bucket-capped? true)
                  (vswap! pairs-dropped inc))
-             (let [k [(:uri a) (:uri b)]]
+             (let [k [a b]]
                (vswap! bucket-taken inc)
                (when-not (.contains seen k)
                  (.add seen k)
@@ -422,7 +448,8 @@
                    ;; total ceiling reached — stop admitting; surface honestly.
                    (do (vreset! total-cap-hit? true)
                        (vswap! pairs-dropped inc))
-                   (conj! out [(dissoc a ::wsig ::ssig) (dissoc b ::wsig ::ssig)]))))))
+                   (conj! out [(dissoc (by-uri a) ::wsig ::ssig)
+                               (dissoc (by-uri b) ::wsig ::ssig)]))))))
          (when @bucket-capped? (vswap! buckets-capped inc))))
      (with-meta (persistent! out)
        {::truncated {:buckets-capped @buckets-capped
