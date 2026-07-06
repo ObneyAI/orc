@@ -143,7 +143,7 @@
   (let [a2 (mt5/a2-baseline)
         do-run (fn [n]
                  (println (str "\n--- RUN " n " (solo, bounded) ---"))
-                 (let [r (h/run! {:only [:onet] :max-containers 12 :store :sqlite
+                 (let [r (h/run! {:only [:onet] :max-containers 6 :max-windows 5 :store :sqlite
                                   :budget {:max-iterations 8 :total-budget-ms 900000 :max-retries 3}
                                   :evolver-config {:max-iterations 1}})
                        m (measure-run r)]

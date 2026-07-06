@@ -520,6 +520,135 @@
           (is (clojure.string/includes? txt "closed-set"))
           (is (clojure.string/includes? txt "concept:set/genres")))))))
 
+;; =============================================================================
+;; MT-8 — CQ-gate evidence must include concept ATTRIBUTES (the :unknown root
+;;        cause). The denormalized grain stores skills/knowledge/facets as flat
+;;        :attributes / legacy :properties on the concept — render-evidence-text
+;;        used to serialize concepts as label+description ONLY, discarding the
+;;        attribute half where attribute-borne facts actually live. The judge
+;;        saw labels but not facts → "graph is silent" → :unknown on every
+;;        attribute-answerable CQ. These tracers guard that attributes are now
+;;        rendered (bounded + surfaced), so the judge can answer.
+;; =============================================================================
+
+(deftest mt8-render-includes-retrieved-hit-attributes
+  (testing "MT-8 tracer 1: render-evidence-text includes each retrieved hit's
+            :attributes as readable key: value lines (values may be vectors —
+            a topSkills list — rendered fully, no mid-value truncation).
+            BEFORE MT-8 the retrieved block was uri+label+description only and
+            the attribute values were ABSENT."
+    (let [retrieved [{:uri "concept:occ/analyst" :label "Analyst"
+                      :description "an analyst occupation"
+                      :attributes {:top-skills ["Active Listening" "Critical Thinking"]}}]
+          txt (cqr/render-evidence-text {:retrieved retrieved :concepts []
+                                         :relationships [] :axioms nil
+                                         :closed-concepts []})]
+      (is (clojure.string/includes? txt "Active Listening")
+          "the skill value from :attributes must appear in the evidence text")
+      (is (clojure.string/includes? txt "Critical Thinking")
+          "the FULL list value is rendered — not truncated mid-fact")
+      (is (clojure.string/includes? txt "top-skills")
+          "the attribute KEY name is rendered so the judge knows the fact-kind"))))
+
+(deftest mt8-render-includes-properties-bag-and-skips-empty
+  (testing "MT-8 tracer 2: the legacy :properties bag is rendered like
+            :attributes; nil / empty-collection / blank-string values are
+            SKIPPED cleanly (no dangling 'key:' lines); scalar + map values
+            render readably (a map value is kept lossless via pr-str)."
+    (let [hit {:uri "concept:occ/nurse" :label "Nurse" :description "d"
+               :attributes {:job-zone 3           ;; scalar
+                            :zzz-emptylist []     ;; skipped
+                            :zzz-blankstr ""      ;; skipped
+                            :zzz-nilattr nil}     ;; skipped
+               :properties {:onet-soc "29-1141"  ;; legacy bag, scalar
+                            :riasec {:realistic 0.2 :social 0.9}}} ;; map, lossless
+          txt (cqr/render-evidence-text {:retrieved [hit] :concepts []
+                                         :relationships [] :axioms nil
+                                         :closed-concepts []})]
+      (is (clojure.string/includes? txt "job-zone: 3")
+          "scalar :attributes value renders as key: value")
+      (is (clojure.string/includes? txt "onet-soc: 29-1141")
+          "the legacy :properties bag is rendered too")
+      (is (clojure.string/includes? txt ":realistic 0.2")
+          "a map value is rendered losslessly (no mid-value truncation)")
+      (is (not (clojure.string/includes? txt "zzz-emptylist"))
+          "empty-collection attribute is SKIPPED — no dangling line")
+      (is (not (clojure.string/includes? txt "zzz-blankstr"))
+          "blank-string attribute is SKIPPED")
+      (is (not (clojure.string/includes? txt "zzz-nilattr"))
+          "nil attribute is SKIPPED"))))
+
+(deftest mt8-layer-2-judge-can-answer-attribute-borne-cq
+  (testing "MT-8 tracer 3 (end-to-end, THE root-cause proof): layer-2-or-3-verdict
+            renders evidence the injected judge actually reads. The judge here
+            returns :pass IFF the evidence text contains the skill VALUE — i.e.
+            it can only :pass when the runner surfaced the attribute-borne fact.
+            With the concept carrying the skill as an :attributes value the judge
+            RECEIVES it → :pass. Under the pre-MT-8 serializer the value was
+            absent from the evidence → this same judge returned :unknown."
+    (let [skill-value "Active Listening"
+          occ {:uri "concept:occ/analyst" :label "Analyst"
+               :ontology-id (random-uuid)
+               :attributes {:top-skills [skill-value "Critical Thinking"]}}
+          ;; Injected judge: grounded strictly in what it SEES. :pass only when
+          ;; the evidence text literally contains the skill value; else :unknown.
+          value-reading-judge
+          (fn [{:keys [evidence]}]
+            (if (clojure.string/includes? evidence skill-value)
+              {:verdict :pass
+               :reasoning (str "evidence contains '" skill-value "'")
+               :evidence-uris ["concept:occ/analyst"]
+               :gaps []}
+              {:verdict :unknown
+               :reasoning "graph is silent on this occupation's skills"
+               :evidence-uris []
+               :gaps ["skill attributes for the occupation"]}))
+          v (cqr/layer-2-or-3-verdict
+             {:ontology-id (:ontology-id occ)
+              :cq-text "What skills does the Analyst occupation have?"
+              :judge-fn value-reading-judge
+              :hybrid-search-fn (fn [_ _] {:results [occ]})
+              :get-concepts-fn (fn [_] [occ])
+              :get-relationships-fn (fn [_] [])
+              :ctx {}})]
+      (is (= :pass (:verdict v))
+          "the judge could answer the attribute-borne CQ ONLY because the
+           runner now surfaces the skill value in the evidence — pre-MT-8
+           this same judge saw a silent graph and returned :unknown")
+      (is (true? (:judged-by? v)))
+      (is (= :layer-2-semantic-exists (:layer v))))))
+
+(deftest mt8-enumeration-attributes-are-bounded-and-surfaced
+  (testing "MT-8 tracer 4: the full in-scope enumeration renders attributes for
+            at most `enum-attr-concept-cap` NON-retrieved concepts so a large
+            (1000+) graph cannot balloon the judge context. The cap is SURFACED
+            (an honest omission note), never a silent truncation, and no single
+            fact value is truncated mid-content."
+    (let [cap @#'cqr/enum-attr-concept-cap
+          ;; cap+10 attributed concepts, NONE retrieved → the enumeration-attr
+          ;; budget must cap and surface the overflow.
+          concepts (mapv (fn [i]
+                           {:uri (str "concept:occ/o" i)
+                            :label (str "Occ " i)
+                            :ontology-id (random-uuid)
+                            :attributes {:marker-skill (str "SkillFact-" i)}})
+                         (range (+ cap 10)))
+          txt (cqr/render-evidence-text {:retrieved [] :concepts concepts
+                                         :relationships [] :axioms nil
+                                         :closed-concepts []})
+          rendered-skill-facts (count (filter #(clojure.string/includes? txt (str "SkillFact-" %))
+                                              (range (+ cap 10))))]
+      (is (<= rendered-skill-facts cap)
+          (str "at most " cap " attributed concepts rendered in the enumeration; got "
+               rendered-skill-facts))
+      (is (clojure.string/includes? txt "attributes shown for the first")
+          "the cap is SURFACED honestly — not a silent truncation")
+      (is (clojure.string/includes? txt "OMITTED")
+          "the omission is named for the judge")
+      ;; Every skill fact that DID render must render in FULL (no mid-value cut).
+      (is (clojure.string/includes? txt "SkillFact-0")
+          "a rendered fact value is complete, never truncated mid-content"))))
+
 (deftest production-judge-prompt-encodes-open-world-three-way-distinction
   (testing "The production prompt encodes the OPEN-WORLD three-way distinction:
             absence ⇒ :unknown by default; :fail requires an EXPLICIT negating

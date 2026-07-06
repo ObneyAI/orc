@@ -235,6 +235,70 @@
       (str "  (none — the graph is OPEN-WORLD / incomplete: absence of a fact\n"
            "   means :unknown, NOT :fail, unless a direct negating edge is present)"))))
 
+;; -----------------------------------------------------------------------------
+;; MT-8 — attribute-borne facts in the evidence text
+;; -----------------------------------------------------------------------------
+;; The model may choose a DENORMALIZED grain: skills/knowledge/facet facts live
+;; as flat `:attributes` (a [:map-of :keyword :any]) and/or the legacy
+;; `:properties` bag on each concept, with NO separate fact-node. The judge must
+;; see those values or it correctly concludes the graph is silent (:unknown).
+;; Rendering is DOMAIN-AGNOSTIC (whatever keys exist) and never truncates a
+;; value's content mid-fact — any bound is by COUNT of attributes/concepts and
+;; is surfaced honestly (never a silent truncation).
+
+(def ^:private enum-attr-concept-cap
+  "Max number of NON-retrieved in-scope concepts whose attributes are rendered
+   in the full enumeration block, to keep the evidence text bounded on a large
+   (1000+-concept) graph. The retrieved-hits block carries the query-relevant,
+   fully-attributed subset (the load-bearing fix); this enumeration cap is a
+   secondary safety. When exceeded, the omission is SURFACED (not silent)."
+  50)
+
+(defn- attr-key-name
+  "Readable name for an attribute/property key (keyword or string)."
+  [k]
+  (if (keyword? k) (name k) (str k)))
+
+(defn- render-attr-value
+  "Render an attribute value readably for judge evidence. Scalars as-is,
+   collections expanded element-by-element, maps kept LOSSLESS via pr-str.
+   NEVER truncates a value's content — bounding happens by COUNT of
+   attributes/concepts elsewhere, never inside a single value."
+  [v]
+  (cond
+    (map? v)                    (pr-str v)
+    (or (sequential? v) (set? v)) (str/join ", " (map render-attr-value v))
+    :else                       (str v)))
+
+(defn- attr-entries
+  "The concept's attribute-borne facts as [key value] pairs — the flat
+   `:attributes` map plus the legacy `:properties` bag — with nil/empty/blank
+   values skipped. Domain-agnostic; renders whatever keys exist."
+  [m]
+  (->> (concat (seq (:attributes m)) (seq (:properties m)))
+       (remove (fn [[_ v]]
+                 (or (nil? v)
+                     (and (coll? v) (empty? v))
+                     (and (string? v) (str/blank? v)))))))
+
+(defn- render-attr-lines
+  "Indented `    · key: value` lines for a concept/hit's attribute-borne facts.
+   Returns a (possibly empty) seq of strings."
+  [m]
+  (map (fn [[k v]]
+         (str "    · " (attr-key-name k) ": " (render-attr-value v)))
+       (attr-entries m)))
+
+(defn- render-concept-line
+  "A concept/hit head line, optionally followed by its attribute-borne fact
+   lines (when `with-attrs?`). `head-fn` builds the head (uri/label[/desc])."
+  [m head-fn with-attrs?]
+  (let [head (head-fn m)
+        attr-lines (when with-attrs? (render-attr-lines m))]
+    (if (seq attr-lines)
+      (str head "\n" (str/join "\n" attr-lines))
+      head)))
+
 (defn render-evidence-text
   "Serialize the retrieved hits + the graph's CURRENT concept and
    relationship contents (OPEN-WORLD — not asserted complete) + the
@@ -243,24 +307,53 @@
    The completeness block is what lets the judge distinguish a grounded
    :fail (a direct negating edge, or an explicit closure assertion with the
    target absent) from :unknown (the graph is merely silent). Mere presence
-   of an enumeration for OTHER subjects is NOT completeness."
+   of an enumeration for OTHER subjects is NOT completeness.
+
+   MT-8: each concept's attribute-borne facts (`:attributes` + the legacy
+   `:properties` bag) are rendered under its line so the judge can answer
+   attribute-borne CQs. The retrieved-hits block renders them for the
+   query-relevant subset (load-bearing); the full enumeration renders them for
+   up to `enum-attr-concept-cap` NON-retrieved concepts and SURFACES any
+   omission (bound by COUNT, never a silent truncation, never mid-value)."
   [{:keys [retrieved concepts relationships axioms closed-concepts]}]
-  (let [retrieved-block
+  (let [retrieved-uris (set (keep :uri retrieved))
+        retrieved-head (fn [r]
+                         (str "  " (:uri r)
+                              " [label: " (or (:label r) "?") "]"
+                              " " (or (:description r) "")))
+        retrieved-block
         (if (seq retrieved)
           (str/join "\n"
-                    (mapv (fn [r]
-                            (str "  " (:uri r)
-                                 " [label: " (or (:label r) "?") "]"
-                                 " " (or (:description r) "")))
-                          retrieved))
+                    (mapv #(render-concept-line % retrieved-head true) retrieved))
           "  (no retrieved hits)")
+        concept-head (fn [c]
+                       (str "  " (:uri c)
+                            " [label: " (or (:label c) "?") "]"))
         concepts-block
         (if (seq concepts)
-          (str/join "\n"
-                    (mapv (fn [c]
-                            (str "  " (:uri c)
-                                 " [label: " (or (:label c) "?") "]"))
-                          concepts))
+          (let [;; Concepts NOT already fully-attributed in the retrieved block
+                ;; that carry attribute-borne facts — the enumeration-attr budget
+                ;; goes to concepts the retrieved block did not already cover.
+                enum-attr-candidates (->> concepts
+                                          (remove #(contains? retrieved-uris (:uri %)))
+                                          (filter #(seq (attr-entries %))))
+                n-candidates (count enum-attr-candidates)
+                capped? (> n-candidates enum-attr-concept-cap)
+                attr-uris (set (keep :uri (take enum-attr-concept-cap enum-attr-candidates)))
+                body (str/join "\n"
+                               (mapv #(render-concept-line
+                                       % concept-head (contains? attr-uris (:uri %)))
+                                     concepts))]
+            (if capped?
+              (str body
+                   "\n  (attributes shown for the first " enum-attr-concept-cap
+                   " of " n-candidates " attributed concepts in this enumeration"
+                   " to bound judge context; the remaining "
+                   (- n-candidates enum-attr-concept-cap)
+                   " concepts' attributes are OMITTED here — see the TOP RETRIEVED"
+                   " HITS block above for the query-relevant, fully-attributed"
+                   " subset. No fact value is truncated.)")
+              body))
           "  (no concepts in scope)")
         edges-block
         (if (seq relationships)

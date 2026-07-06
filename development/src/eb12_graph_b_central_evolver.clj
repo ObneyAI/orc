@@ -129,11 +129,25 @@
                                {:validate? false :with-metadata? false})
         outputs (or (:outputs result) result)
         raw (str/trim (str/lower-case (or (:verdict outputs) "")))
+        ;; ROBUST verdict parse (the harness judge is a MEASUREMENT tool, not a
+        ;; production gate): the LLM may return the :verdict field with extra text
+        ;; ("pass — the evidence shows …") or dscloj's multi-field parse may drop
+        ;; the marker (blank). Prefer the leading token, then a token scan; degrade
+        ;; a genuinely-unmappable verdict to :unknown (the open-world-safe default)
+        ;; with a VISIBLE warning + the raw outputs (never a silent swallow, never
+        ;; an abort of the whole CQ batch on one field-omission).
+        first-word (first (re-seq #"[a-z]+" raw))
         verdict (cond
-                  (#{"pass" "yes" "true"} raw) :pass
-                  (#{"fail" "no" "false"} raw) :fail
-                  (#{"unknown" "uncertain"} raw) :unknown
-                  :else (throw (ex-info "Judge returned unparseable verdict" {:raw raw})))]
+                  (#{"pass" "yes" "true"} first-word) :pass
+                  (#{"fail" "no" "false"} first-word) :fail
+                  (#{"unknown" "uncertain"} first-word) :unknown
+                  (re-find #"\bpass\b" raw) :pass
+                  (re-find #"\bfail\b" raw) :fail
+                  (re-find #"\bunknown\b" raw) :unknown
+                  :else (do (println "[JUDGE-WARN] unmappable :verdict — degrading to :unknown. raw="
+                                     (pr-str raw) " outputs=" (pr-str (select-keys outputs [:verdict :reasoning])))
+                            (flush)
+                            :unknown))]
     {:verdict verdict
      :reasoning (or (:reasoning outputs) "")
      :evidence-uris (vec (or (:evidence-uris outputs) []))
