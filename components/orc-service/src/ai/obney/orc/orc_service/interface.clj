@@ -17,11 +17,26 @@
             [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.orc.orc-service.interface.stream-schemas :as stream-schemas]
             ;; DSL for workflow building
-            [ai.obney.orc.orc-service.core.dsl :as dsl]))
+            [ai.obney.orc.orc-service.core.dsl :as dsl]
+            ;; WS-2a: the orc block-signal primitive (opaque payload)
+            [ai.obney.orc.orc-service.core.block :as block]))
 
 ;; =============================================================================
 ;; Read Models
 ;; =============================================================================
+
+;; =============================================================================
+;; WS-2a — Block signal primitive (engine)
+;;
+;; A harness raises (block! opaque-payload) from a leaf when a turn must pause
+;; (e.g. a gated tool call needs permission). The engine recognizes it via
+;; blocking-condition?, completes the node/tick :blocked (so the parent deref
+;; returns immediately), and propagates :blocked + the payload to the caller's
+;; result. orc NEVER interprets the payload — orc-sessions owns its meaning.
+;; =============================================================================
+(def block! block/block!)
+(def blocking-condition? block/blocking-condition?)
+(def block-payload block/block-payload)
 
 ;; Sheet functions
 (def get-sheet rm/get-sheet)

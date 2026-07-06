@@ -8,6 +8,7 @@
    - Update blackboard with node outputs"
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.executor :as executor]
+            [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
@@ -1085,7 +1086,7 @@
                              ;; No provider - use mock
                              :else
                              (executor/execute-leaf-mock node blackboard))
-                  {:keys [status outputs error duration-ms usage raw-response]} result
+                  {:keys [status outputs error duration-ms usage raw-response block-payload]} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
                              :node-id node-id
@@ -1107,6 +1108,10 @@
                                 :writes (normalize-output-keys (or outputs {}))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
+                         ;; WS-2a: carry the OPAQUE block payload through on a
+                         ;; :blocked completion so it propagates up the tree to
+                         ;; the caller's result. orc never interprets it.
+                         (= :blocked status) (assoc :block-payload block-payload)
                          ;; Verbatim raw LLM response on parse failures —
                          ;; persisted on the completion event so (node-output
                          ;; <node-id>) can retrieve the full text for diagnosis.
@@ -1138,17 +1143,40 @@
                                     :usage usage}
                              (seq input-profile)
                              (assoc :input-profile input-profile)))))))))
-            (catch Exception e
-              ;; Use process-command to emit failure event
-              (cp/process-command
-                (assoc context :command
-                       {:command/id (random-uuid)
-                        :command/timestamp (time/now)
-                        :command/name :sheet/fail-node-execution
-                        :sheet-id sheet-id
-                        :tick-id tick-id
-                        :node-id node-id
-                        :error (.getMessage e)})))))))
+            ;; WS-2a: catch Throwable (not just Exception) so a block signal
+            ;; that escapes execute-code's own catch (e.g. thrown from an :ai
+            ;; leaf or fn resolution) still COMPLETES the node :blocked rather
+            ;; than dying in the future and hanging the tick. Preserves today's
+            ;; behavior for everything else: an ordinary Exception -> :failure;
+            ;; a non-blocking Error/Throwable -> re-thrown exactly as before
+            ;; (it escaped the future previously too — no new swallowing).
+            (catch Throwable t
+              (cond
+                (block/blocking-condition? t)
+                (cp/process-command
+                  (assoc context :command
+                         {:command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :command/name :sheet/complete-node-execution
+                          :sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :status :blocked
+                          :writes {}
+                          :block-payload (block/block-payload t)}))
+
+                (instance? Exception t)
+                (cp/process-command
+                  (assoc context :command
+                         {:command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :command/name :sheet/fail-node-execution
+                          :sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :error (.getMessage t)}))
+
+                :else (throw t)))))))
         ;; Return nil - completion will be handled by the future via process-command
         nil))))
 
@@ -1219,7 +1247,7 @@
                   result (if provider
                            (executor/execute-repl-researcher node blackboard provider enriched-context)
                            {:status :failure :error "No DSCloj provider configured"})
-                  {:keys [status outputs error duration-ms generated-tree-raw iteration-reasonings usage iterations]} result
+                  {:keys [status outputs error duration-ms generated-tree-raw iteration-reasonings usage iterations block-payload]} result
                   ;; Track usage for this tick (RLM mode aggregates all LLM calls)
                   _ (when usage (add-usage! tick-id usage))
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
@@ -1295,6 +1323,11 @@
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
                          (seq exec-context) (assoc :inputs exec-context)
+                         ;; WS-2a: a Phase-2 leaf blocked -> the RLM loop
+                         ;; short-circuited with :status :blocked + the opaque
+                         ;; payload. Carry the payload onto the repl-researcher
+                         ;; node completion so it reaches the parent tick result.
+                         (= :blocked effective-status) (assoc :block-payload block-payload)
                          ;; Propagate :usage (including :by-node from Phase 2)
                          ;; so per-node detail bubbles up to the parent tick.
                          (seq usage) (assoc :usage usage)))))
@@ -1876,6 +1909,26 @@
                         (:error event) (assoc :error (:error event))
                         (seq exec-context) (assoc :inputs exec-context))})]}
 
+            (= child-status :blocked)
+            ;; WS-2a: a child raised the orc block signal (a gated tool call
+            ;; needs permission). Like :failure/:timeout, the sequence does not
+            ;; continue — but unlike :timeout it short-circuits regardless of
+            ;; composite kind: the whole turn must pause for permission, not
+            ;; try another sibling. Propagate :blocked + the OPAQUE payload up.
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :blocked}
+                        (contains? event :block-payload)
+                        (assoc :block-payload (:block-payload event))
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+
             (= child-status :running)
             ;; Child returned running - propagate up
             {:result/events
@@ -1961,6 +2014,25 @@
                                :tick-id tick-id
                                :node-id parent-id
                                :status :running}
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+            ;; WS-2a: a child raised the orc block signal. A block is NOT a
+            ;; "this approach failed, try the next sibling" — the turn must
+            ;; pause for permission, so the fallback short-circuits and
+            ;; propagates :blocked + the OPAQUE payload up (does NOT try the
+            ;; next child).
+            :blocked
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :blocked}
+                        (contains? event :block-payload)
+                        (assoc :block-payload (:block-payload event))
                         (seq exec-context) (assoc :inputs exec-context))})]}
             ;; Unknown status - do nothing
             nil)
@@ -2382,6 +2454,10 @@
         node-id (:node-id event)
         status (:status event)
         error (:error event)  ;; Extract error from node completion
+        ;; WS-2a: the OPAQUE block payload rides the root node's :blocked
+        ;; completion up onto the tree-tick-completed event so the delivered
+        ;; result carries it. orc never interprets it.
+        block-payload (:block-payload event)
         tick-ctx (rm/get-tick-execution-context context tick-id)
         root-node-id (:root-node-id tick-ctx)
         ;; Per-execution override from options, else global dynamic default
@@ -2452,6 +2528,8 @@
                              :iteration current-iteration
                              :root-status final-status}
                       outputs (assoc :outputs outputs)
+                      ;; WS-2a: carry the opaque payload when the tree blocked.
+                      (= :blocked final-status) (assoc :block-payload block-payload)
                       error (assoc :error error))})]})))))
 
 
@@ -2595,7 +2673,9 @@
   (let [tick-id (:tick-id event)
         root-status (:root-status event)
         outputs (:outputs event)
-        error (:error event)]
+        error (:error event)
+        ;; WS-2a: the opaque block payload, present on a :blocked tree tick.
+        block-payload (:block-payload event)]
     ;; Skip intermediate :running completions — those are re-tick signals,
     ;; not final results. complete-tree-tick converts :running to :failure
     ;; when max iterations are exhausted.
@@ -2626,6 +2706,10 @@
                              ;; can distinguish "budget exceeded mid-execution"
                              ;; from "we failed for some other reason".
                              :timeout :timeout
+                             ;; WS-2a: surface :blocked truthfully so the caller
+                             ;; (RLM loop / turn executor) can route it into the
+                             ;; blocked-turn machinery instead of a false failure.
+                             :blocked :blocked
                              :failure)
                    :outputs (or outputs {})
                    ;; Include raw tree for :tree-generated status (canonical form generated at execution time)
@@ -2634,6 +2718,8 @@
                    :error error}
             ;; Include usage if any LLM calls were made
             (pos? (:total-tokens usage 0)) (assoc :usage usage-with-breakdown)
+            ;; WS-2a: carry the opaque payload out to the caller's result.
+            (= :blocked root-status) (assoc :block-payload block-payload)
             ;; Always include :node-trace when we have any leaf events.
             (seq node-trace) (assoc :node-trace node-trace)))))
     ;; No events to emit

@@ -1042,7 +1042,7 @@
 
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage
-            node-type completion-kind raw-response]} :command
+            node-type completion-kind raw-response block-payload]} :command
     :as ctx}]
   (let [;; Gap-7: when the dispatch site didn't explicitly set
         ;; :completion-kind but the node is a recursive repl-researcher,
@@ -1083,7 +1083,11 @@
                                     ;; judge routing can pick the right grader
                                     ;; per kind.
                                     (some? effective-completion-kind)
-                                    (assoc :completion-kind effective-completion-kind))})
+                                    (assoc :completion-kind effective-completion-kind)
+                                    ;; WS-2a: carry the OPAQUE block payload onto
+                                    ;; the completion event when the node blocked.
+                                    (= :blocked status)
+                                    (assoc :block-payload block-payload))})
         ;; For tick-scoped executions with successful writes, emit bb writes atomically
         ;; Also handle :tree-generated status (RLM two-phase execution)
         tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))

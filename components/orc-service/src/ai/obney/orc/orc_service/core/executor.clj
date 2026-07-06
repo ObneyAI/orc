@@ -26,6 +26,7 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.observability :as obs]
+            [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
@@ -919,7 +920,20 @@
         (catch Exception e
           {:status :failure
            :error (.getMessage e)
-           :duration-ms (- (System/currentTimeMillis) start-time)})))))
+           :duration-ms (- (System/currentTimeMillis) start-time)})
+        ;; WS-2a: the block signal is an AssertionError SUBCLASS — an Error, NOT
+        ;; an Exception — so it skips the :failure clause above (preserving that
+        ;; ordinary Exceptions still become :failure) and lands here. A blocking
+        ;; condition becomes a first-class :blocked result carrying the OPAQUE
+        ;; payload; any OTHER non-blocking Error/Throwable is re-thrown exactly
+        ;; as before (no new swallowing). Broad-catch-after-narrow is legal: the
+        ;; Exception handler above is still reachable for Exceptions.
+        (catch Throwable t
+          (if (block/blocking-condition? t)
+            {:status :blocked
+             :block-payload (block/block-payload t)
+             :duration-ms (- (System/currentTimeMillis) start-time)}
+            (throw t)))))))
 
 ;; =============================================================================
 ;; AI Execution
@@ -2719,6 +2733,22 @@
                             (println "  error:" (:error phase2-result))
                             (println "  outputs keys:" (keys (:outputs phase2-result)))
                             (println "  duration-ms:" (:duration-ms phase2-result)))]
+                    ;; WS-2a: a Phase-2 leaf raised the orc block signal (a gated
+                    ;; tool call needs permission). SHORT-CIRCUIT the RLM loop in
+                    ;; BOTH modes and surface :blocked + the OPAQUE payload
+                    ;; immediately — there is nothing for the model to iterate on
+                    ;; until the block is resolved (that is WS-2c / the turn
+                    ;; executor's job). This also stops the recursive loop from
+                    ;; summarizing the block and burning the remaining iterations.
+                    (if (= :blocked (:status phase2-result))
+                      {:status :blocked
+                       :block-payload (:block-payload phase2-result)
+                       :outputs (:outputs phase2-result)
+                       :generated-tree-raw generated-tree-raw
+                       :iterations new-history
+                       :duration-ms (+ phase1-elapsed-ms (or (:duration-ms phase2-result) 0))
+                       :usage @total-usage
+                       :phase2-tick-id (:trace-id phase2-result)}
                     ;; R-1: When :recursive? true, DON'T return Phase 2's result —
                     ;; instead merge outputs into sandbox-vars, append a summary entry
                     ;; to :tree-results, clear :generated-tree, and recur to give the
@@ -2861,7 +2891,7 @@
                                               (:remaining-ms budget)
                                               :else nil)
                          :phase2-tick-id (:trace-id phase2-result)
-                         :budget budget})))))
+                         :budget budget}))))))
 
                   ;; Check for FINAL_ANSWER pattern (fallback)
                   (or (sci-sandbox/contains-final-answer? (:result exec-result))

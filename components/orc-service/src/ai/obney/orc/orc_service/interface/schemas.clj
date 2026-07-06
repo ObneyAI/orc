@@ -513,8 +513,16 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:status [:enum :success :failure :tree-generated :partial :timeout]]
+    ;; WS-2a: :blocked — a leaf raised the orc block signal (a gated tool call
+    ;; needs permission). The node completes (so the tick completes and the
+    ;; parent deref returns immediately) instead of the throwable escaping the
+    ;; future and hanging the Phase-2 budget.
+    [:status [:enum :success :failure :tree-generated :partial :timeout :blocked]]
     [:writes [:map-of :keyword :any]]
+    ;; WS-2a: OPAQUE payload carried on a :blocked completion. orc never
+    ;; interprets it (orc-sessions owns its meaning — WS-2c). Optional/
+    ;; backward-compatible — present only on :blocked completions.
+    [:block-payload {:optional true} :any]
     [:duration-ms {:optional true} :int]
     [:inputs {:optional true} [:map-of :keyword :any]]
     ;; Verbatim raw LLM response text, present only on parse-failure
@@ -970,8 +978,11 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:status [:enum :success :failure :running :tree-generated :partial :timeout]]
+    ;; WS-2a: :blocked — see :sheet/complete-node-execution.
+    [:status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
     [:writes {:optional true} [:map-of :keyword :any]]
+    ;; WS-2a: OPAQUE block payload, present only on :blocked completions.
+    [:block-payload {:optional true} :any]
     [:duration-ms {:optional true} :int]
     [:inputs {:optional true} [:map-of :keyword :any]]
     ;; Verbatim raw LLM response text, present only on parse-failure
@@ -1062,8 +1073,12 @@
     ;; D-008: :partial added so map-each can surface partial outcomes.
     ;; D-003: :timeout added so RLM repl-researcher can surface Phase 2
     ;; budget cancellation as a tree-level signal.
-    [:root-status [:enum :success :failure :running :tree-generated :partial :timeout]]
+    ;; WS-2a: :blocked — a leaf raised the orc block signal; the tree tick
+    ;; completes :blocked so the parent deref returns immediately.
+    [:root-status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
     [:outputs {:optional true} :map]
+    ;; WS-2a: OPAQUE block payload, present only when :root-status is :blocked.
+    [:block-payload {:optional true} :any]
     [:error {:optional true} :string]]
 
    :sheet/execution-value-written
