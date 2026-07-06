@@ -92,6 +92,27 @@
 (defn- project-concepts [ctx ont-id]
   (rmp/project ctx :ontology/concepts {:tags #{[:ontology ont-id]}}))
 
+(defn- project-relationships [ctx ont-id]
+  (rmp/project ctx :ontology/relationships {:tags #{[:ontology ont-id]}}))
+
+(defn- seed-relationships!
+  "Land 5 concepts + several relationships (mixed predicates), one of which
+   DANGLES (target endpoint has no concept). Returns the ontology-id. Used by
+   the reduce-relationships tracers (analogous to `seed!` for concepts)."
+  [ctx]
+  (let [ont-id (random-uuid)]
+    (doseq [[uri label] [["concept:alpha" "Alpha"] ["concept:beta" "Beta"]
+                         ["concept:gamma" "Gamma"] ["concept:delta" "Delta"]
+                         ["concept:epsilon" "Epsilon"]]]
+      (create-concept! ctx {:ontology-id ont-id :uri uri :label label
+                            :description label :scope :custom}))
+    (create-relationship! ctx ont-id "concept:beta"  "skos:broader" "concept:alpha")
+    (create-relationship! ctx ont-id "concept:gamma" "skos:related" "concept:delta")
+    (create-relationship! ctx ont-id "concept:delta" "immediately-follows" "concept:epsilon")
+    ;; a DANGLING edge — target concept:omega was never minted
+    (create-relationship! ctx ont-id "concept:alpha" "links-to" "concept:omega")
+    ont-id))
+
 ;; =============================================================================
 ;; Tracer 1 — State-invariance (the load-bearing correctness test)
 ;; =============================================================================
@@ -167,6 +188,57 @@
             "the vector WAS passed to rf (non-empty) each call")
         ;; accumulator shape carries no vector — it is a set of URI strings only
         (is (every? string? acc) "accumulator holds only URIs, no vector rides along")))))
+
+;; =============================================================================
+;; Tracer 6 — reduce-relationships state-invariance (the graph-build foundation)
+;; =============================================================================
+
+(deftest reduce-relationships-state-invariance-test
+  (testing "reduce-relationships (no projection, conj rf) collects the SAME
+            relationship set as (rmp/project :ontology/relationships {:tags ...})
+            — same REGISTERED reducer, same [:ontology id]-tag scope, same order"
+    (h/with-test-context [ctx]
+      (let [ont-id      (seed-relationships! ctx)
+            via-project (vals (project-relationships ctx ont-id))
+            via-stream  (cs/reduce-relationships ctx ont-id conj [])]
+        (is (= 4 (count via-stream)) "all 4 relationships folded")
+        (is (= (count via-project) (count via-stream)) "equal count")
+        (is (= (set via-project) (set via-stream))
+            "reduce-relationships state == rmp/project state (registered reducer reused, not forked)")))))
+
+;; =============================================================================
+;; Tracer 7 — reduce-relationships field-projection == the fixture's edge fields
+;; =============================================================================
+
+(deftest reduce-relationships-field-projection-test
+  (testing "with :project-fn keeping only endpoint fields, the folded values
+            carry ONLY [:source-uri :target-uri :predicate] and equal what the
+            project's values project to — heavy metadata is discarded pre-accumulation"
+    (h/with-test-context [ctx]
+      (let [ont-id    (seed-relationships! ctx)
+            fields    [:source-uri :target-uri :predicate]
+            projected (cs/reduce-relationships ctx ont-id conj []
+                                               {:project-fn #(select-keys % fields)})
+            expected  (map #(select-keys % fields) (vals (project-relationships ctx ont-id)))]
+        (is (= 4 (count projected)))
+        (is (every? #(= (set fields) (set (keys %))) projected)
+            "every projected edge carries ONLY the endpoint fields")
+        (is (= (set expected) (set projected))
+            "projected edges == the registered projection's values projected to the same fields")))))
+
+;; =============================================================================
+;; Tracer 8 — reduce-relationships windowing across pages
+;; =============================================================================
+
+(deftest reduce-relationships-windowing-across-pages-test
+  (testing "with a small WINDOW (2) over >WINDOW events, the paged relationship
+            fold equals the full single-page fold (cursor advances correctly)"
+    (h/with-test-context [ctx]
+      (let [ont-id   (seed-relationships! ctx)
+            full     (set (cs/reduce-relationships ctx ont-id conj []))
+            windowed (set (cs/reduce-relationships ctx ont-id conj [] {:window 2}))]
+        (is (= 4 (count windowed)) "all relationships survive multi-page paging")
+        (is (= full windowed) "paged fold == whole fold")))))
 
 ;; =============================================================================
 ;; Tracer 5 — Reducer-reuse (the relationship narrower-back-link update branch)

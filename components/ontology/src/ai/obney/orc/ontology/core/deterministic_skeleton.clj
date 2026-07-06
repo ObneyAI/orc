@@ -69,6 +69,7 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.orc.ontology.core.concept-stream :as cs]
             [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
             [ai.obney.orc.ontology.core.lints.queries :as lint-q]
             [ai.obney.orc.ontology.core.ttl-ingest :as ttl-ingest]
@@ -277,10 +278,33 @@
       :events-emitted-so-far :referential-integrity :stage-duration-ms}."
   [ctx {:keys [ontology-id]}]
   (let [start (System/currentTimeMillis)
-        concepts (filter #(= ontology-id (:ontology-id %))
-                         (rm/get-concepts ctx {}))
-        relationships (filter #(= ontology-id (:ontology-id %))
-                              (rm/get-relationships ctx))
+        ;; STREAM Slice 3 — stream the whole-graph reads off `es/read` instead of
+        ;; `(vals (rmp/project ...))`, so an uncapped-attributes graph does not
+        ;; OOM this stage. `reduce-concepts`/`reduce-relationships` fold the SAME
+        ;; REGISTERED reducers over a `[:ontology id]`-tag-scoped windowed stream
+        ;; (byte-identical state to the projection on a single-ontology store;
+        ;; MORE correct across ontologies — a colliding URI resolves per-ontology
+        ;; rather than last-writer-wins in the URI-keyed projection).
+        ;;
+        ;; The `:ontology-id` filter is RETAINED (not the tag scope alone): the
+        ;; concepts reducer can create PHANTOM entries for a skos edge whose
+        ;; target was never minted (an `update-in` on the target uri, carrying no
+        ;; `:uri`/`:ontology-id`). The pre-conversion `(filter #(= id (:ontology-id %))
+        ;; (rm/get-concepts ctx {}))` dropped those phantoms — so we keep
+        ;; `:ontology-id` in the light projection and filter identically. The heavy
+        ;; `:attributes`/`:labels`/`:typed-edges-meta` fields are dropped.
+        concepts (cs/reduce-concepts
+                  ctx ontology-id
+                  (fn [acc c] (if (= ontology-id (:ontology-id c)) (conj acc c) acc))
+                  []
+                  {:project-fn #(select-keys % [:uri :ontology-id])})
+        ;; Relationships carry no phantom entries (keyed by relationship-id) and
+        ;; the `[:ontology id]` tag scope selects exactly the edges created WITH
+        ;; this ontology-id — identical to the old `:ontology-id`-value filter.
+        ;; Project to the endpoint fields `referential-integrity-report` needs.
+        relationships (cs/reduce-relationships
+                       ctx ontology-id conj []
+                       {:project-fn #(select-keys % [:source-uri :target-uri :predicate])})
         ;; Read all events in scope so the build summary can carry the
         ;; emitted-event count (an observability win — the prompt's
         ;; result shape requires :events-emitted).

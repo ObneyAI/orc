@@ -1,5 +1,8 @@
 (ns ai.obney.orc.ontology.core.concept-stream
   "STREAM Slice 1 — the streaming-read foundation for whole-graph ontology ops.
+   (Slice 3 generalizes it with `reduce-relationships` / `relationships-reducible`
+   — the edge analogue of `reduce-concepts`, folding the REGISTERED
+   `:ontology/relationships` reducer over the same tag-scoped windowed stream.)
 
    The pipeline OOMs whenever a whole-graph stage does
    `(vals (rmp/project :ontology/concepts ...))` / `get-all-concept-embeddings`
@@ -143,6 +146,84 @@
   ([ctx ontology-id rf init] (reduce-concepts ctx ontology-id rf init nil))
   ([ctx ontology-id rf init opts]
    (reduce rf init (concepts-reducible ctx ontology-id opts))))
+
+;; =============================================================================
+;; Registry access + fold — relationships (STREAM Slice 3)
+;; (discipline #8: reuse the REGISTERED :ontology/relationships reducer — the
+;;  SAME `relationships*` multimethod `rmp/project` folds — do NOT fork a second
+;;  notion of edge state)
+;; =============================================================================
+
+(defn- relationships-registry-entry []
+  (:ontology/relationships (rmp/global-read-model-registry)))
+
+(defn- relationship-reducer-fn
+  "The registered `:ontology/relationships` reducer (fn [state event] -> state')."
+  []
+  (:reducer-fn (relationships-registry-entry)))
+
+(defn- relationship-event-types
+  "The registered `:ontology/relationships` event-type set
+   (= read-models/relationship-events)."
+  []
+  (:events (relationships-registry-entry)))
+
+(defn- fold-relationship-state
+  "Build the relationship-state map {relationship-id -> relationship} for
+   `ontology-id` by folding the REGISTERED relationships reducer over the
+   tag-scoped, windowed es/read stream. Same reducer + same scope + same order
+   as `(rmp/project :ontology/relationships {:tags #{[:ontology id]}})` ⇒
+   byte-identical state.
+
+   Scope note: `:ontology/relationship-created` events ARE `[:ontology id]`-tagged
+   whenever the command was given an `:ontology-id` (S06 — see
+   `commands/create-relationship`: `#{[:relationship rid]}` plus
+   `[:ontology id]` when supplied). So the `[:ontology id]` tag scope selects
+   exactly the edges whose value carries `:ontology-id id` — no body filter
+   needed (unlike embeddings, which are NOT ontology-tagged)."
+  [ctx ontology-id window]
+  (:state (reduce-scope ctx
+                        {:tags #{[:ontology ontology-id]}
+                         :types (relationship-event-types)
+                         :window window}
+                        (relationship-reducer-fn)
+                        {})))
+
+;; =============================================================================
+;; Public primitive — relationships
+;; =============================================================================
+
+(defn relationships-reducible
+  "An `IReduceInit` view over the relationship VALUES for `ontology-id`.
+   Reducing it applies `(rf acc relationship)` over each edge value in ONE pass.
+   Analogous to `concepts-reducible`.
+
+   Options:
+     :project-fn — (fn [relationship] -> projected) applied to each edge BEFORE
+                   `rf` sees it, so a whole-graph pass keeps ONLY the endpoint
+                   fields it needs (e.g. `:source-uri :target-uri :predicate`)
+                   and DISCARDS heavy edge metadata (`:evidence` / `:properties`).
+                   Default: identity (full edge, back-compat).
+     :window     — events per es/read page (default `default-window`)."
+  ([ctx ontology-id] (relationships-reducible ctx ontology-id nil))
+  ([ctx ontology-id {:keys [project-fn window]}]
+   (let [xf (or project-fn identity)]
+     (reify clojure.lang.IReduceInit
+       (reduce [_ rf init]
+         (let [state (fold-relationship-state ctx ontology-id window)]
+           (reduce (fn [acc rel] (rf acc (xf rel))) init (vals state))))))))
+
+(defn reduce-relationships
+  "Eagerly fold `rf`/`init` over the relationship VALUES for `ontology-id`,
+   streaming the registered `:ontology/relationships` reducer over a windowed
+   es/read pass. Returns the reduced value (e.g. `conj []` -> a vector of edges).
+   See `relationships-reducible` for the `:project-fn` field-projection.
+
+   `(reduce-relationships ctx ontology-id rf init)` — default = full edge.
+   `(reduce-relationships ctx ontology-id rf init {:project-fn f :window n})`."
+  ([ctx ontology-id rf init] (reduce-relationships ctx ontology-id rf init nil))
+  ([ctx ontology-id rf init opts]
+   (reduce rf init (relationships-reducible ctx ontology-id opts))))
 
 ;; =============================================================================
 ;; Public primitive — concept embeddings (vector-discarding stream)
