@@ -28,6 +28,13 @@
    ~64-row sample also gives the classifier a fine distinct-ratio signal."
   64)
 
+(def default-coverage-slack
+  "Bounded headroom above `cap` the CQ-coverage guarantee may PROMOTE into. Absolute
+   ceiling = min(count survivors, cap + slack) — promotion adds at most `slack` extra
+   per-container child ticks downstream; extract concurrency + window caps untouched, so
+   the memory/time envelope is unchanged (#2/#5)."
+  8)
+
 (def selected-containers-schema
   "The STRUCTURED shape of the `:selected-containers` list threaded from the central
    selection seam to the Extract orchestrator. Each entry is the ORIGINAL container
@@ -145,24 +152,49 @@
   [c]
   (merge (:container c) {:name (:name c) :shape (:shape c) :roles (:roles c)}))
 
+(defn- coerce-rank-entry
+  "Normalize ONE ranker output element into a `{:name :serves-cqs}` coverage entry,
+   tolerating BOTH ranker output shapes: the SLICE-2 coverage MAP element
+   `{:name … :serves-cqs [<int> …] …}`, and the OLD flat NAME element (a bare
+   string/keyword survivor name) → `{:name <name> :serves-cqs []}`. Nothing is
+   invented — `:serves-cqs` defaults empty (no coverage signal)."
+  [x]
+  (if (map? x)
+    {:name (:name x) :serves-cqs (or (:serves-cqs x) [])}
+    {:name x :serves-cqs []}))
+
 (defn select-containers
-  "Turn classified candidates into a SELECTED, ranked, bounded container list.
+  "Turn classified candidates into a SELECTED, ranked, bounded, CQ-COVERAGE-AWARE
+   container list.
 
    1. DETERMINISTIC PRE-FILTER — drop every `:keep? false` candidate (structural
       noise: bridge/reference/unreadable), the drop `:reason` = its `:shape`.
-   2. RELEVANCE RANK — `rank-fn` (injected; the real one is the delegated `:llm`
-      rank sheet) orders the SURVIVORS by relevance to `goal`, returning a vector of
-      survivor NAMES. RECONCILE its output against the KNOWN survivor names: keep
-      only known names (an LLM-invented name is IGNORED — never an invented
-      identity), preserve first-occurrence order, then APPEND any survivor the
-      ranker omitted at the END (an omitted survivor is NEVER silently dropped —
-      honest, #5). `rank-fn` nil / a failed rank → list order (the honest degrade).
-   3. BOUND — `take cap` (nil cap → all survivors).
+   2. RELEVANCE RANK + RECONCILE — `rank-fn` (injected; the real one is the delegated
+      `:llm` coverage sheet) orders the SURVIVORS by relevance to `goal`. It may return
+      (a) a coverage MAP `[{:name … :serves-cqs [<int> …] :relevance …} …]` (vector
+      order = relevance rank), (b) the OLD flat NAME vector `[\"name\" …]` (each →
+      `:serves-cqs []`), or (c) nil / throw (honest degrade). RECONCILE against the
+      KNOWN survivor names: keep only known names (an LLM-invented name is IGNORED —
+      never an invented identity), first-occurrence order, `:serves-cqs` CLAMPED to the
+      valid index range `[0,(count cqs))` + de-duped, then APPEND any omitted survivor
+      at the END with `:serves-cqs []` (never a silent drop, #5). Result = `ordered`.
+   3. BASE TAKE — `base = take cap ordered` (nil cap → all survivors). Today's behavior.
+   4. COVERAGE CHECK — `covered = ⋃ :serves-cqs over base`; `uncovered = CQ indices −
+      covered`.
+   5. BOUNDED PROMOTION — `ceiling = min(count ordered, cap + (coverage-slack |
+      default-coverage-slack))`. For each still-uncovered CQ (index order) promote the
+      highest-ranked not-yet-selected `ordered` entry serving it. HARD BOUND — selected
+      NEVER exceeds `ceiling`, even if CQs remain uncovered; a CQ no survivor serves is
+      honestly uncoverable. `cqs` nil/empty → `uncovered` empty → NO promotion → base
+      == today's take-cap (back-compat).
 
    Returns `{:selected [<container+shape+roles> …] :dropped [{:name :shape :reason}]
-             :report {:containers-total :survivors :selected :dropped}}`. The report
-   is the total-vs-selected honesty signal (no false-green, #4). Pure + total."
-  [candidates {:keys [goal cap rank-fn]}]
+             :report {…}}`. The report is the total-vs-selected honesty signal (no
+   false-green, #4): on top of `:containers-total :survivors :selected :dropped` it
+   carries `:containers-truncated?`, `:over-cap-dropped` (every cut survivor, with
+   `:rank`), `:promoted` (every over-cap lift, with `:for-cqs`), and `:cq-coverage`
+   (`:total-cqs :covered :uncovered :complete?`). Pure + total."
+  [candidates {:keys [goal cqs cap coverage-slack rank-fn]}]
   (let [candidates (vec candidates)
         survivors (filterv :keep? candidates)
         dropped (mapv (fn [c] {:name (:name c) :shape (:shape c) :reason (:shape c)})
@@ -170,25 +202,86 @@
         survivor-names (mapv :name survivors)
         survivor-name-set (set survivor-names)
         survivor-by-name (into {} (map (juxt :name identity)) survivors)
-        ;; the ranker's ordered names, RECONCILED — known-only, de-duped, order-stable.
+        n-cqs (count cqs)
+        clamp-cqs (fn [idxs]
+                    (->> idxs
+                         (filter integer?)
+                         (filter #(and (<= 0 %) (< % n-cqs)))
+                         (distinct)
+                         (vec)))
+        ;; the ranker's output, RECONCILED — known-only, de-duped, order-stable,
+        ;; carrying each survivor's clamped :serves-cqs coverage.
         ranked (when rank-fn
                  (try (rank-fn goal survivors) (catch Throwable _ nil)))
-        known-order (->> (or ranked [])
-                         (filter survivor-name-set)
-                         (distinct)
-                         (vec))
+        known (->> (or ranked [])
+                   (map coerce-rank-entry)
+                   (filter #(survivor-name-set (:name %)))
+                   (reduce (fn [acc e]
+                             (if (contains? (:seen acc) (:name e))
+                               acc
+                               (-> acc
+                                   (update :seen conj (:name e))
+                                   (update :order conj {:name (:name e)
+                                                        :serves-cqs (clamp-cqs (:serves-cqs e))}))))
+                           {:seen #{} :order []})
+                   :order)
+        known-name-set (set (map :name known))
         ;; survivors the ranker OMITTED (or dropped by a nil/failed rank) → appended
-        ;; at the END in their original list order (never lost).
+        ;; at the END in their original list order with NO coverage (never lost, #5).
         omitted (->> survivor-names
-                     (remove (set known-order))
-                     (vec))
-        final-order (into known-order omitted)
-        ordered-survivors (mapv survivor-by-name final-order)
-        bounded (if cap (vec (take cap ordered-survivors)) ordered-survivors)
-        selected (mapv selected-entry bounded)]
-    {:selected selected
+                     (remove known-name-set)
+                     (mapv (fn [n] {:name n :serves-cqs []})))
+        ordered (into (vec known) omitted)
+        serves-of (fn [entry] (set (:serves-cqs entry)))
+        covered-by (fn [sel] (reduce into #{} (map serves-of sel)))
+        base (if cap (vec (take cap ordered)) (vec ordered))
+        ceiling (if cap
+                  (min (count ordered) (+ cap (or coverage-slack default-coverage-slack)))
+                  (count ordered))
+        ;; BOUNDED PROMOTION — lift the highest-ranked unselected entry serving the
+        ;; first uncovered CQ that has an available candidate; stop at ceiling / when
+        ;; no uncovered CQ is servable. HARD BOUND — never exceeds `ceiling`.
+        {:keys [selected promoted]}
+        (loop [selected base
+               promoted []]
+          (let [covered (covered-by selected)
+                sel-names (set (map :name selected))
+                pick (first (for [cq (remove covered (range n-cqs))
+                                  :let [cand (first (filter
+                                                     (fn [e] (and (not (sel-names (:name e)))
+                                                                  (contains? (serves-of e) cq)))
+                                                     ordered))]
+                                  :when cand]
+                              {:cq cq :cand cand :covered covered}))]
+            (if (or (nil? pick) (>= (count selected) ceiling))
+              {:selected selected :promoted promoted}
+              (recur (conj selected (:cand pick))
+                     (conj promoted
+                           {:name (:name (:cand pick))
+                            :for-cqs (vec (sort (remove (:covered pick)
+                                                        (serves-of (:cand pick)))))})))))
+        selected-names (set (map :name selected))
+        final-covered (covered-by selected)
+        final-uncovered (vec (remove final-covered (range n-cqs)))
+        over-cap-dropped (->> ordered
+                              (map-indexed (fn [idx e] (assoc e :rank idx)))
+                              (remove #(selected-names (:name %)))
+                              (mapv (fn [e]
+                                      {:name (:name e)
+                                       :shape (:shape (survivor-by-name (:name e)))
+                                       :reason :over-cap
+                                       :rank (:rank e)})))
+        selected-out (mapv (fn [e] (selected-entry (survivor-by-name (:name e)))) selected)]
+    {:selected selected-out
      :dropped dropped
      :report {:containers-total (count candidates)
               :survivors (count survivors)
-              :selected (count selected)
-              :dropped dropped}}))
+              :selected (count selected-out)
+              :dropped dropped
+              :containers-truncated? (> (count ordered) (count selected))
+              :over-cap-dropped over-cap-dropped
+              :promoted promoted
+              :cq-coverage {:total-cqs n-cqs
+                            :covered (vec (sort final-covered))
+                            :uncovered final-uncovered
+                            :complete? (empty? final-uncovered)}}}))

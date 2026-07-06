@@ -224,3 +224,167 @@
     (let [out (sel/select-containers survivors-only {:goal "g" :cap 10 :rank-fn nil})]
       (is (= ["s1" "s2" "s3" "s4"] (mapv :name (:selected out)))
           "list order is preserved when there is no ranker"))))
+
+;; ===========================================================================
+;; MT-12 — CQ-COVERAGE-AWARE selection: bounded promotion over a coverage map.
+;; A larger survivor pool c0..c7 (runtime names only, NO domain literals) and a
+;; coverage-map rank-fn (the SLICE-2 output shape): a vector of
+;; {:name … :serves-cqs [<idx> …] :relevance …}, vector order = relevance rank.
+;; ===========================================================================
+
+(defn- cov-candidate
+  "A survivor candidate (all :keep? true) named by its runtime id — no domain name."
+  [name]
+  {:name name :container {:name name :path "/wb" :sheet name}
+   :shape :entity :keep? true :roles {:key "k"} :header [] :row-count 100})
+
+(def ^:private eight-survivors
+  (mapv cov-candidate ["c0" "c1" "c2" "c3" "c4" "c5" "c6" "c7"]))
+
+;; Five generic competency questions (runtime strings; the code reasons on INDICES).
+(def ^:private five-cqs
+  ["cq-0" "cq-1" "cq-2" "cq-3" "cq-4"])
+
+(defn- coverage-rank-fn
+  "Returns a coverage MAP (the SLICE-2 shape): each survivor mapped to the CQ indices
+   it serves, in a fixed relevance order = the given `cov-spec` order. `cov-spec` is
+   [[name [cq-idx …]] …]."
+  [cov-spec]
+  (fn [_goal _survivors]
+    (mapv (fn [[nm idxs]] {:name nm :serves-cqs (vec idxs) :relevance "high"}) cov-spec)))
+
+(deftest select-containers-promotes-a-starved-facet-cq-into-selection-test
+  (testing "at cap=6 the base take starves the only container serving CQ 3 (ranked
+            7th), but bounded promotion over the coverage map LIFTS it into
+            :selected; :promoted records it :for-cqs [3]; coverage is complete; and
+            the selected count never exceeds the ceiling"
+    (let [;; base c0..c5 covers CQs {0,1,2,4}; ONLY c6 (rank idx 6, beyond cap) serves CQ 3.
+          cov-spec [["c0" [0]] ["c1" [1]] ["c2" [2]] ["c3" [0]]
+                    ["c4" [1]] ["c5" [2 4]] ["c6" [3]] ["c7" [0]]]
+          out (sel/select-containers eight-survivors
+                                     {:goal "g" :cqs five-cqs :cap 6 :coverage-slack 8
+                                      :rank-fn (coverage-rank-fn cov-spec)})
+          names (mapv :name (:selected out))
+          report (:report out)
+          coverage (:cq-coverage report)]
+      ;; the starved facet container is PROMOTED into the selection.
+      (is (some #{"c6"} names) "the only container serving CQ 3 is promoted into :selected")
+      ;; :promoted records the promotion honestly, with the facet CQ it was pulled for.
+      (is (= [{:name "c6" :for-cqs [3]}] (:promoted report))
+          "the promotion is surfaced with :for-cqs recording the uncovered CQ it served")
+      ;; coverage is now COMPLETE — every CQ has a serving container in the selection.
+      (is (true? (:complete? coverage)) "all five CQs are covered after promotion")
+      (is (= [] (:uncovered coverage)) "no CQ is left uncovered")
+      (is (= [0 1 2 3 4] (:covered coverage)) "every CQ index is covered")
+      (is (= 5 (:total-cqs coverage)) "the CQ total is reported")
+      ;; the HARD BOUND — selected never exceeds cap + slack.
+      (is (<= (count names) (+ 6 8)) "selected count never exceeds cap + slack (the ceiling)")
+      (is (= 7 (count names)) "base 6 + exactly one promotion for the single starved CQ"))))
+
+(deftest select-containers-promotion-is-bounded-by-cap-plus-slack-test
+  (testing "when MANY uncovered CQs are each served only by a distinct low-ranked
+            container, promotion stops HARD at cap + slack; the still-uncovered CQs
+            are SURFACED in :uncovered with :complete? false — never silently swallowed"
+    (let [;; 8 survivors. base c0 (cap=1) covers CQ 0. CQs 1..4 are each served ONLY by
+          ;; a distinct later container (c1→1, c2→2, c3→3, c4→4). slack=2 → ceiling=3 →
+          ;; only TWO promotions possible; CQs 3 and 4 must remain uncovered.
+          cov-spec [["c0" [0]] ["c1" [1]] ["c2" [2]] ["c3" [3]]
+                    ["c4" [4]] ["c5" []] ["c6" []] ["c7" []]]
+          out (sel/select-containers eight-survivors
+                                     {:goal "g" :cqs five-cqs :cap 1 :coverage-slack 2
+                                      :rank-fn (coverage-rank-fn cov-spec)})
+          names (mapv :name (:selected out))
+          report (:report out)
+          coverage (:cq-coverage report)]
+      ;; the HARD BOUND — selected is EXACTLY cap + slack, never more.
+      (is (= (+ 1 2) (count names)) "selected count == cap + slack exactly (the ceiling)")
+      (is (<= (count names) (+ 1 2)) "selected count never exceeds cap + slack")
+      ;; two promotions were made (c1, c2), lifting CQs 1 and 2.
+      (is (= 2 (count (:promoted report))) "exactly slack-many promotions, no more")
+      ;; the CQs promotion could NOT reach are surfaced honestly — not swallowed.
+      (is (false? (:complete? coverage)) "coverage is honestly INCOMPLETE, not faked")
+      (is (= [3 4] (:uncovered coverage)) "the unreachable CQs are surfaced in :uncovered")
+      (is (= [0 1 2] (:covered coverage)) "only the reachable CQs are marked covered"))))
+
+(deftest select-containers-honest-truncation-surfaces-over-cap-drops-test
+  (testing "with more survivors than cap and every CQ already covered by the base take,
+            NOTHING is promoted, the surplus survivors are TRUNCATED, and each cut is
+            surfaced in :over-cap-dropped with :reason :over-cap + its 0-based :rank"
+    (let [;; base c0..c3 (cap=4) already covers all five CQs; c4..c7 are surplus.
+          cov-spec [["c0" [0 1]] ["c1" [2]] ["c2" [3]] ["c3" [4]]
+                    ["c4" [0]] ["c5" [1]] ["c6" [2]] ["c7" [3]]]
+          out (sel/select-containers eight-survivors
+                                     {:goal "g" :cqs five-cqs :cap 4 :coverage-slack 8
+                                      :rank-fn (coverage-rank-fn cov-spec)})
+          names (mapv :name (:selected out))
+          report (:report out)
+          over (:over-cap-dropped report)]
+      ;; base already covers every CQ → NO promotion.
+      (is (= [] (:promoted report)) "nothing is promoted — the base already covers all CQs")
+      (is (true? (:complete? (:cq-coverage report))) "coverage complete from the base alone")
+      ;; the cap truncates — only 4 selected, honestly flagged.
+      (is (= 4 (count names)) "the cap bounds the selection to 4")
+      (is (true? (:containers-truncated? report)) "truncation is honestly flagged")
+      ;; every surplus survivor is surfaced with its reason + rank (no silent drop).
+      (is (= #{"c4" "c5" "c6" "c7"} (set (map :name over))) "all four surplus survivors surfaced")
+      (is (every? #(= :over-cap (:reason %)) over) "each cut's reason is :over-cap")
+      (is (= #{4 5 6 7} (set (map :rank over))) "each cut carries its 0-based rank in the ordering")
+      (is (= :entity (:shape (first over))) "the cut survivor's shape is carried for the record"))))
+
+(deftest select-containers-reconciles-coverage-map-invented-omitted-out-of-range-test
+  (testing "a coverage map is reconciled against known survivors: an INVENTED name is
+            ignored, an OMITTED survivor is appended at the END with :serves-cqs [],
+            and an OUT-OF-RANGE :serves-cqs index is dropped (never invents a CQ)"
+    (let [survivors (mapv cov-candidate ["c0" "c1" "c2"])
+          ;; c1 carries an out-of-range CQ index (9, valid range is [0,3)) + a valid 2.
+          ;; "ghost" is no survivor. c2 is OMITTED entirely by the ranker.
+          rank-fn (fn [_goal _survivors]
+                    [{:name "c1" :serves-cqs [0 9 2] :relevance "high"}
+                     {:name "ghost" :serves-cqs [1] :relevance "high"}
+                     {:name "c0" :serves-cqs [1] :relevance "medium"}])
+          out (sel/select-containers survivors
+                                     {:goal "g" :cqs ["cq-0" "cq-1" "cq-2"] :cap 10
+                                      :coverage-slack 8 :rank-fn rank-fn})
+          names (mapv :name (:selected out))
+          coverage (:cq-coverage (:report out))]
+      ;; the invented name never appears; every real survivor is present exactly once.
+      (is (not (some #{"ghost"} names)) "the invented name is ignored — no fabricated identity")
+      (is (= #{"c0" "c1" "c2"} (set names)) "every survivor present exactly once")
+      ;; ranker order for known names (c1, c0), then the omitted c2 appended at the END.
+      (is (= ["c1" "c0" "c2"] names) "known order preserved; the omitted survivor appended last")
+      ;; the out-of-range index 9 is DROPPED; only valid CQ indices remain covered.
+      ;; covered = c1{0,2} ∪ c0{1} ∪ c2{} = {0,1,2}; index 9 never leaks in.
+      (is (= [0 1 2] (:covered coverage)) "only valid CQ indices are covered — the out-of-range 9 dropped")
+      (is (not (some #{9} (:covered coverage))) "the out-of-range index never leaks into coverage")
+      (is (true? (:complete? coverage)) "the three valid CQs are fully covered"))))
+
+(deftest select-containers-back-compat-no-cqs-is-exactly-take-cap-test
+  (testing "the no-CQ / old-caller path is EXACTLY today's take-cap behavior: nil cqs
+            → no promotion, selected = take cap, :cq-coverage :total-cqs 0 :complete?
+            true; a flat NAME vector ranker is tolerated (each :serves-cqs []); a nil
+            ranker degrades to list order — all with no coverage signal"
+    ;; (a) nil cqs, coverage-map ranker present but IGNORED for promotion → pure take-cap.
+    (let [cov-spec [["c0" [0]] ["c1" [1]] ["c2" [2]] ["c3" [3]]
+                    ["c4" [4]] ["c5" [0]] ["c6" [1]] ["c7" [2]]]
+          out (sel/select-containers eight-survivors
+                                     {:goal "g" :cqs nil :cap 6
+                                      :rank-fn (coverage-rank-fn cov-spec)})
+          coverage (:cq-coverage (:report out))]
+      (is (= 6 (count (:selected out))) "nil cqs → selected = take cap (today's behavior)")
+      (is (= ["c0" "c1" "c2" "c3" "c4" "c5"] (mapv :name (:selected out)))
+          "the first cap survivors in rank order — no promotion pulls a later one")
+      (is (= [] (:promoted (:report out))) "no CQs → nothing promoted")
+      (is (= 0 (:total-cqs coverage)) ":cq-coverage :total-cqs is 0 with no CQs")
+      (is (true? (:complete? coverage)) "vacuously complete when there are no CQs"))
+    ;; (b) a flat NAME-vector ranker (the OLD output) is tolerated → take-cap.
+    (let [flat-rank (fn [_goal survivors] (mapv :name survivors))
+          out (sel/select-containers eight-survivors
+                                     {:goal "g" :cqs five-cqs :cap 3 :rank-fn flat-rank})]
+      (is (= ["c0" "c1" "c2"] (mapv :name (:selected out)))
+          "a flat name vector is tolerated (each :serves-cqs []) → take-cap")
+      (is (= [] (:promoted (:report out))) "no coverage signal from a flat vector → no promotion"))
+    ;; (c) a nil ranker degrades to list order, take-cap.
+    (let [out (sel/select-containers eight-survivors
+                                     {:goal "g" :cqs five-cqs :cap 3 :rank-fn nil})]
+      (is (= ["c0" "c1" "c2"] (mapv :name (:selected out)))
+          "a nil ranker keeps survivors in list order, take-cap"))))
