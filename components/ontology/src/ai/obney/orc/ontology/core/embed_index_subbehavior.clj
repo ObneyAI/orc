@@ -73,6 +73,7 @@
    STRUCTURED schema for it (the EB2-EB6 defense-in-depth)."
   (:require [ai.obney.orc.orc-service.interface :as dsl]
             [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.orc.ontology.core.concept-stream :as concept-stream]
             [ai.obney.orc.ontology.core.embedding :as embedding]
             [ai.obney.orc.ontology.core.colbert-indexer :as colbert-indexer]
             [ai.obney.orc.ontology.interface :as ontology]
@@ -191,7 +192,27 @@
 
 (defn- scoped-concepts
   "The ontology's concepts from the URI-keyed projection, scoped to
-   `ontology-id` (mirrors the deterministic-skeleton helper — same shape)."
+   `ontology-id` (mirrors the deterministic-skeleton helper — same shape).
+
+   STREAM Slice 2 scope note (field-projection DEFERRED — the two embedding reads
+   in `embed+index!` are the load-bearing OOM win and are already streamed):
+   converting THIS read to `concept-stream/reduce-concepts` + a `:project-fn`
+   was deliberately deferred to keep this slice byte-preserving, for two reasons:
+     (a) `resolve-embed-fields`'s no-signal branch scans ALL of each concept's
+         keys/values through `detect-embeddable-fields-heuristic`; pre-projecting
+         the concept to a pinned field set could change which fields the heuristic
+         resolves — a real behavior-change risk the handoff flagged.
+     (b) this helper reads the UNSCOPED URI-keyed projection then filters by
+         `:ontology-id` (last-writer-wins across ontologies), whereas
+         `reduce-concepts` folds the `[:ontology id]`-TAG-scoped event stream;
+         the two diverge under cross-ontology URI collision (canonical-URI
+         direction) — not byte-identical in the general case.
+   When taken up, the `:project-fn` should keep the UNION the three consumers
+   need — `:uri`, `:label`, `:description`, the embeddable text fields
+   (`:indicators`/`:triggers`), `:scope`, and `(select-keys attributes
+   [:linking-key])` for the spine skip — and DROP the heavy collect-mode attribute
+   lists; `resolve-embed-fields` must run on FULL concepts (or the heuristic scan
+   be proven projection-invariant) first."
   [ctx ontology-id]
   (filterv #(= ontology-id (:ontology-id %)) (rm/get-concepts ctx {})))
 
@@ -426,18 +447,27 @@
         {:keys [fields source]} (resolve-embed-fields embed-fields concepts)
         ;; GC-12 — read the ALREADY-EMBEDDED set (discipline 7, the projection)
         ;; BEFORE embedding, so this call embeds only the NEW semantic concepts.
-        already-embedded-uris (set (keys (rm/get-all-concept-embeddings
-                                          ctx {:ontology-id ontology-id})))
+        ;; STREAM Slice 2: STREAM the embedded URIs off the `:ontology/concept-
+        ;; embedded` event log and DISCARD every vector — byte-identical to
+        ;; `(set (keys (get-all-concept-embeddings …)))` but never materializes the
+        ;; whole per-uri vector map (the proven OOM win).
+        already-embedded-uris (concept-stream/reduce-concept-embeddings
+                               ctx ontology-id
+                               (fn [acc uri _vec] (conj acc uri)) #{})
         embed-r (embed-concepts! ctx fields concepts already-embedded-uris)
         index-r (index-concepts! ctx ontology-id fields concepts)
         ;; DISCIPLINE 7 — read the embeddings + index BACK from the projection.
-        read-back (rm/get-all-concept-embeddings ctx {:ontology-id ontology-id})
+        ;; STREAM Slice 2: a STREAMED COUNT of the embedded events — byte-identical
+        ;; to `(count (get-all-concept-embeddings …))` with NO vector materialized.
+        read-back-count (concept-stream/reduce-concept-embeddings
+                         ctx ontology-id
+                         (fn [n _uri _vec] (inc n)) 0)
         registered-idx (ontology/get-colbert-index-for-ontology ctx ontology-id)]
     {:ontology-id ontology-id
      :embed-fields-used (vec (sort fields))
      :embed-fields-source source
      :embedded-count (:embedded-count embed-r)
-     :embeddings-read-back-count (count read-back)
+     :embeddings-read-back-count read-back-count
      :concepts-considered (:concepts-considered embed-r)
      ;; GC-12 — honest incremental skip accounting
      :skipped-already-count (:skipped-already-count embed-r)

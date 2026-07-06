@@ -1,0 +1,29 @@
+# Handoff — STREAM Slice 2: embed-diff streaming (kill the resident vector set)
+
+**Parent plan:** `/Users/darylroberts/.claude/plans/precious-sleeping-kurzweil.md`. **Foundation landed** (`18e114b0`, Slice 1) — `concept-stream/reduce-concepts` (+ `:project-fn`) and `reduce-concept-embeddings` are proven (byte-identical to project; embedding stream 64 MB vs ≥896 MB). This slice converts the FIRST consumer (embed+index) to them — the easiest, highest-leverage: it eliminates the resident embedding-vector set from the embed path.
+**Branch:** `feature/ontology-architecture` · commit-LOCAL only, NEVER push. `pgrep -f` hygiene; detached `nohup … &` for gate.
+
+## The targets — `components/ontology/src/ai/obney/orc/ontology/core/embed_index_subbehavior.clj` `embed+index!` (~421-447)
+1. **Line 429 (the proven win):** `already-embedded-uris (set (keys (rm/get-all-concept-embeddings ctx {:ontology-id id})))` — materializes the ENTIRE vector map just to take its KEYS. Replace with `(concept-stream/reduce-concept-embeddings ctx id (fn [acc uri _vec] (conj acc uri)) #{})` — streams the embedded URIs, DISCARDS every vector. Same set, zero resident vectors.
+2. **Line 434/440:** `read-back (rm/get-all-concept-embeddings …)` used ONLY for `(count read-back)` at `:embeddings-read-back-count` (line 440). Replace with a streamed COUNT: `(concept-stream/reduce-concept-embeddings ctx id (fn [n _uri _vec] (inc n)) 0)` — never materializes vectors. (If `read-back` is used for nothing else — confirm — drop the binding.)
+3. **Line 425 `scoped-concepts` (`:192-196`):** `(filterv #(= id (:ontology-id %)) (rm/get-concepts ctx {}))` — full concept projection. Convert to `concept-stream/reduce-concepts` with a **`:project-fn`** that keeps ONLY the fields the downstream consumers need and DROPS the heavy collect-mode attribute lists (so a Slice-7 uncap can't bloat this path). Determine the needed fields by READING the three consumers of `concepts`: `resolve-embed-fields` (auto-detects embed fields from concept shape — needs the label/description/text fields), `embed-concepts!`→`select-concepts-to-embed`+`spine-code-node?` (needs `:uri`, `:scope`, and `:attributes` **`:linking-key`** for the spine check — keep ONLY that attribute key, not the heavy lists) + the embed text builder (`embedding/concept->embedding-text` on the resolved `fields` — needs those fields), and `index-concepts!` (the ColBERT corpus — needs `:uri`/`:label`/`:description`/the text fields). Project-fn keeps the union of those (uri, label, description, the embeddable text fields, scope, and `(select-keys attributes [:linking-key])`); drop everything heavy. If pinning the exact field set is risky, keep full concepts for THIS slice and note the field-projection as a follow-up — but the two embedding reads (#1/#2) are the load-bearing win and MUST land.
+
+## Correctness (behavior-preserving — the invariant)
+The embedded SET and all reported counts (`:embedded-count :embeddings-read-back-count :skipped-already-count :concepts-considered`) are IDENTICAL to before. `reduce-concept-embeddings`'s URI set == `(set (keys (get-all-concept-embeddings …)))`; the streamed count == `(count (get-all-concept-embeddings …))`. The spine skip + honest-empty skip are unchanged.
+
+## TDD (tests FIRST, red→green — extend the embed subbehavior test ns; find it, e.g. `embed_index*_test` / a GC-12 test)
+1. **`already-embedded-uris` via streaming == via the vector map:** land some concepts + embeddings; assert the streamed URI set equals `(set (keys (rm/get-all-concept-embeddings …)))`, and that a second `embed+index!` call skips exactly the already-embedded (GC-12 incremental behavior preserved).
+2. **`:embeddings-read-back-count` unchanged:** equals the real embedding count via the streamed counter.
+3. **Field-projection (if done):** the concepts handed to embed carry `:uri`/label/text/scope/`:linking-key` but NOT the heavy collect-mode attribute lists; the embedded set + spine skips are unchanged (a spine code-node with `:attributes {:linking-key …}` is still skipped).
+4. **Behavior-preserving end-to-end:** the existing embed subbehavior tests stay green (same embedded set/counts). The `reduce-concept-embeddings` vector-discard contract already has its Slice-1 unit test.
+
+## Do NOT
+Touch `concept_stream` (Slice 1, done); the caps/ingestion (Slices 6-7); other consumers (Slices 3-5); the ColBERT indexer internals. Reuse `concept-stream/*` — do NOT re-implement streaming. No domain names.
+
+## Gate + hygiene
+`clj -M:poly test brick:ontology` green (detached). ONE JVM at a time; 0 orphan this-repo JVMs after; consolidator flake — isolate ×3 if sole red.
+
+## Deliverable — final message: the tracers red→green (final gate line, exit 0); the `embed+index!` diff (the two vector reads → `reduce-concept-embeddings`; scoped-concepts → `reduce-concepts` + the project-fn field set, or a note deferring it); quote the assertion that the streamed URI set/count == the vector-map version (proving no behavior change) + that vectors are never materialized in these reads; existing embed tests green; anything not verified; no commit/push; 0 orphan JVMs.
+
+## Core Disciplines (verbatim)
+1. NEVER assume; root-cause any behavior change. 2. Verify QUALITY: a conversion that changes the embedded SET or counts is wrong — assert equality to the pre-conversion values. 3. Instrument if a symptom resists. 4. Live/real is the floor; the brick gate on the real read models is the proof. 5. No silent fallback. 6. TDD, tests first, behavior through public fns. 7. No hardcoded domain matching. 8. Re-orchestrate — reuse `concept-stream/*`, don't fork or re-implement streaming. 9. Adversarial: confirm the streamed set/count EQUALS the vector-map version on a real fixture (not just "runs"). 10. Deterministic streaming — verify equality + vector-discard. 11. Key = env var (embeddings); JVM hygiene (detached, one at a time, `pgrep -f`, 0 orphans). 12. Domain-agnostic. 13. n/a.

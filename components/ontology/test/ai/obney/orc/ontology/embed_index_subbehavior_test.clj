@@ -38,6 +38,7 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.embed-index-subbehavior :as ei]
             [ai.obney.orc.ontology.core.embedding :as embedding]
+            [ai.obney.orc.ontology.core.concept-stream :as cs]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
@@ -85,6 +86,27 @@
    ctx oid {:status :emitted-drafts
             :emitted-concepts concepts
             :emitted-relationships []}))
+
+(defn- land-embedding!
+  "Append a `:ontology/concept-embedded` event EXACTLY as the real embed-concept
+   command tags it (only a `[:concept id]` tag, `:ontology-id` in the body) — the
+   DJL-free way to simulate an ALREADY-embedded concept. Mirrors the Slice-1
+   `concept-stream-test` fixture, so BOTH the `:ontology/concept-embeddings`
+   read model (`get-all-concept-embeddings`) and the streaming
+   `reduce-concept-embeddings` fold see it identically."
+  [ctx oid uri]
+  (es/append (:event-store ctx)
+             {:tenant-id (:tenant-id ctx)
+              :events [(es/->event
+                        {:type :ontology/concept-embedded
+                         :tags #{[:concept (random-uuid)]}
+                         :body {:uri uri
+                                :ontology-id oid
+                                :text-embedded (str "text for " uri)
+                                :field-source "label+description"
+                                :embedding (vec (repeatedly 8 #(double (rand))))
+                                :model-id "test-model"
+                                :embedded-at "2026-01-01T00:00:00Z"}})]}))
 
 ;; GATE HYGIENE — the DJL/PyTorch native engine is NOT on the fast `poly test`
 ;; classpath (only on `:dev:test` / the integration lane), so `embedding/embed-text`
@@ -286,6 +308,66 @@
     (with-ctx [ctx]
       (is (thrown? clojure.lang.ExceptionInfo
                    (ei/embed+index! ctx {:ontology-id nil :embed-fields []}))))))
+
+;; ---------------------------------------------------------------------------
+;; STREAM Slice 2 — the embed path's two whole-graph embedding reads are STREAMED
+;; (vector-discarding) instead of materializing the full vector map. These lock
+;; the BYTE-PRESERVING invariant on the fast gate (no DJL): the streamed URI set /
+;; count are IDENTICAL to `(set (keys (get-all-concept-embeddings …)))` /
+;; `(count …)`, and the streaming fold retains NO vector.
+;; ---------------------------------------------------------------------------
+
+(deftest streamed-embedding-reads-equal-the-vector-map-reads-test
+  (testing "STREAM Slice 2 — the two embed-path reads are byte-preserving:
+            `reduce-concept-embeddings` yields the SAME already-embedded URI set
+            and the SAME read-back count as `(set (keys (get-all-concept-embeddings
+            …)))` / `(count …)` — the exact expressions embed+index! now inlines"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            _ (land! ctx oid embeddable-concepts)
+            ;; DJL-free: directly land embeddings for TWO of the three concepts
+            _ (land-embedding! ctx oid "entity:nurse")
+            _ (land-embedding! ctx oid "entity:engineer")
+            ;; the vector-map reads being REPLACED (materialize the whole map)
+            vector-map (rm/get-all-concept-embeddings ctx {:ontology-id oid})
+            uris-via-map (set (keys vector-map))
+            count-via-map (count vector-map)
+            ;; the streaming replacements (#1 already-embedded-uris, #2 read-back count)
+            uris-via-stream (cs/reduce-concept-embeddings
+                             ctx oid (fn [acc uri _vec] (conj acc uri)) #{})
+            count-via-stream (cs/reduce-concept-embeddings
+                              ctx oid (fn [n _uri _vec] (inc n)) 0)]
+        (is (= #{"entity:nurse" "entity:engineer"} uris-via-map)
+            "precondition: two concepts are embedded in the projection")
+        (is (= uris-via-map uris-via-stream)
+            "#1 byte-preserving: streamed already-embedded URI set == vector-map keys")
+        (is (= count-via-map count-via-stream)
+            "#2 byte-preserving: streamed read-back count == vector-map count")
+        (is (every? string? uris-via-stream)
+            "the streaming accumulator holds ONLY URIs — NO vector is materialized")))))
+
+(deftest embed-plus-index-streamed-reads-preserve-counts-end-to-end-test
+  (testing "STREAM Slice 2 — end-to-end over a REAL store WITHOUT DJL: with EVERY
+            in-scope concept already embedded (directly-landed events), embed+index!
+            reads the already-embedded set + read-back count via the STREAMING folds
+            and reports the SAME counts a materialized vector-map would — 3 already,
+            0 new, read-back 3 (this exercises the converted reads on the fast gate)"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            _ (land! ctx oid embeddable-concepts)
+            _ (doseq [c embeddable-concepts] (land-embedding! ctx oid (:uri c)))
+            vector-map (rm/get-all-concept-embeddings ctx {:ontology-id oid})
+            report (ei/embed+index! ctx {:ontology-id oid
+                                         :embed-fields ["label" "description"]})]
+        (is (= 3 (count vector-map)) "precondition: all three concepts pre-embedded")
+        (is (= 0 (:embedded-count report))
+            "nothing new to embed — the streamed already-embedded set skipped all three")
+        (is (= 3 (:skipped-already-count report))
+            "all three counted as already-embedded via the STREAMED URI set (#1)")
+        (is (= (count vector-map) (:embeddings-read-back-count report))
+            "#2 byte-preserving: streamed read-back count == the vector-map count (3)")
+        (is (= 3 (:concepts-considered report))
+            "all three concepts considered — behavior-preserving")))))
 
 ;; ---------------------------------------------------------------------------
 ;; GC-12 — the PURE selection logic: skip already-embedded + structural spine
