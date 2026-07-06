@@ -26,6 +26,7 @@
    agnostic (#12): the vocabulary is the runtime model-spec's own discovery;
    this ns names no domain type or column."
   (:require [clojure.edn :as edn]
+            [clojure.data.json :as json]
             [clojure.string :as str]))
 
 ;; ---------------------------------------------------------------------------
@@ -53,25 +54,70 @@
 ;; The vocabulary (from the model-spec)
 ;; ---------------------------------------------------------------------------
 
+(defn- keywordize-entry-keys
+  "Defensively keywordize a kept entry MAP's TOP-LEVEL keys, so downstream
+   (`canonical-types`, GC-1) always reads `:type` / `:uri-keying-fields` as
+   keywords regardless of the parse path (a residual string key `\"type\"` →
+   `:type`). Non-maps pass through untouched (they are filtered out anyway).
+   Existing keyword keys are preserved verbatim. Pure + total."
+  [m]
+  (if (map? m)
+    (reduce-kv (fn [acc k v]
+                 (assoc acc (if (keyword? k) k (keyword (str k))) v))
+               {} m)
+    m))
+
 (defn coerce-entity-types
   "Coerce whatever the `:llm` Model node emitted for `:entity-types` into a
    clean vector of entity-type MAPS — the GC-10 Fix A coercion, housed here as
    the shared helper (`normalize-model-spec` in the extract subbehavior
    delegates to it — one coercion, never two). The C1 parse fragility means the
-   SAME write may arrive as parsed Clojure data OR an un-parsed EDN STRING;
-   a string is `edn/read-string`d back (a non-parse → `[]`, honest — #4/#5),
-   and only well-formed MAP entries are kept. Pure + total — never throws."
+   SAME write may arrive as parsed Clojure data OR an un-parsed STRING, and the
+   string may be EITHER EDN (keyword keys) OR JSON (string keys — the MT-10
+   diagnostic-PROVEN crossing shape, e.g. `\"[{\\\"type\\\": \\\"Occupation\\\"}]\"`
+   — which `edn/read-string` CANNOT parse because of JSON's `\"key\":` colon).
+   A string is recovered by trying, in order: (1) EDN (`edn/read-string`);
+   (2) clean JSON (`json/read-str` with `:key-fn keyword`, so object keys become
+   keywords); (3) the JSON/EDN HYBRID (the MT-10 REVISION live-PROVEN shape —
+   JSON object syntax with string keys `\"type\":` carrying a BARE EDN keyword
+   VALUE `:canonical-row-filter`, which NEITHER parser accepts: EDN chokes on
+   the `\"key\":` colon, JSON chokes on the unquoted `:keyword`); (4) `[]`
+   (honest — genuinely-unparseable → the loud hard stop stands, #4/#5). The
+   hybrid step deterministically drops the JSON field-separator colon after each
+   quoted KEY (`\"k\":` → `\"k\" `), turning the hybrid into valid EDN (EDN
+   allows string keys + keyword values), then reads it as EDN. All parses are
+   GUARDED (never throw). Only well-formed MAP entries are kept, and each kept
+   entry's top-level keys are keywordized so downstream reads
+   `:type`/`:uri-keying-fields` as keywords on EVERY path. Pure + total — never
+   throws."
   [ets]
-  (let [ets (cond
-              (vector? ets) ets
-              (sequential? ets) (vec ets)
-              (string? ets) (try (let [p (edn/read-string ets)]
-                                   (cond (vector? p) p
-                                         (sequential? p) (vec p)
-                                         :else []))
-                                 (catch Throwable _ []))
-              :else [])]
-    (vec (filter map? ets))))
+  (letfn [(seq->vec [p] (cond (vector? p) p
+                              (sequential? p) (vec p)
+                              :else nil))
+          (try-edn [s] (try (seq->vec (edn/read-string s)) (catch Throwable _ nil)))
+          (try-json [s] (try (seq->vec (json/read-str s :key-fn keyword))
+                             (catch Throwable _ nil)))
+          ;; HYBRID recovery. Drop the field-separator colon after each quoted
+          ;; JSON KEY so the string becomes valid EDN, then read as EDN. The
+          ;; regex matches a WHOLE quoted string (escaped-quote-aware:
+          ;; `"(?:[^"\\]|\\.)*"`) followed by optional whitespace and `:`; the
+          ;; colon is the match's last char, dropped + replaced with a space.
+          ;; It CANNOT corrupt a colon inside a quoted VALUE: a value string is
+          ;; always followed by `,`/`}`/`]` (never `:`), and any colon WITHIN a
+          ;; value lives BETWEEN the matched quotes, never after the closing one
+          ;; — so only a genuine `"key":` separator is ever rewritten.
+          (try-hybrid [s]
+            (try (-> (str/replace s #"\"(?:[^\"\\]|\\.)*\"\s*:"
+                                  (fn [m] (str (subs m 0 (dec (count m))) " ")))
+                     (edn/read-string)
+                     (seq->vec))
+                 (catch Throwable _ nil)))]
+    (let [ets (cond
+                (vector? ets) ets
+                (sequential? ets) (vec ets)
+                (string? ets) (or (try-edn ets) (try-json ets) (try-hybrid ets) [])
+                :else [])]
+      (mapv keywordize-entry-keys (filter map? ets)))))
 
 (defn canonical-types
   "The declared CANONICAL ENTITY-TYPE VOCABULARY from a model-spec:

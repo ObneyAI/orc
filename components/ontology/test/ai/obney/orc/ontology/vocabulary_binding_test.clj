@@ -53,6 +53,98 @@
            (mapv :type (vb/canonical-types
                         {:entity-types [{:type "Occupation"} {:uri-keying-fields ["x"]} {:type "   "}]}))))))
 
+;; ---------------------------------------------------------------------------
+;; MT-10 — coerce-entity-types recovers a JSON-STRING `:entity-types` (the
+;; diagnostic-PROVEN empty-vocab root cause). The Model's `:entity-types`
+;; intermittently crosses the delegate as a JSON string with STRING keys
+;; (`"type":`) that edn/read-string can't parse → today coerces to [] → empty
+;; vocabulary → hard stop. Parsing the JSON (key-fn keyword) recovers it.
+;; ---------------------------------------------------------------------------
+
+(deftest coerce-entity-types-recovers-json-string-with-string-keys
+  (testing "a JSON-string :entity-types (string keys — the crossing shape) is
+            parsed to KEYWORD-keyed maps (\"type\"→:type, not string-keyed)"
+    (let [json-str "[{\"type\": \"Occupation\", \"uri-keying-fields\": [\"O*NET-SOC Code\"]}]"]
+      (is (= [{:type "Occupation" :uri-keying-fields ["O*NET-SOC Code"]}]
+             (vb/coerce-entity-types json-str))
+          "JSON object keys become KEYWORDS, values preserved")))
+  (testing "QUALITY gate (#2/#9): the parsed result is USABLE by canonical-types —
+            a keyword :type reads through, empty-vocabulary? is FALSE (not merely
+            non-[]; a string-keyed-map parse would be a false green here)"
+    (let [model-spec {:entity-types
+                      "[{\"type\": \"Occupation\", \"uri-keying-fields\": [\"O*NET-SOC Code\"]}]"}]
+      (is (= ["Occupation"] (mapv :type (vb/canonical-types model-spec)))
+          "canonical-types reads the keyword :type through — a usable vocabulary")
+      (is (false? (vb/empty-vocabulary? model-spec))
+          "empty-vocabulary? is FALSE — the hard stop no longer fires on this shape"))))
+
+;; MT-10 REVISION — the LIVE-PROVEN failing shape is a JSON/EDN HYBRID: JSON
+;; object syntax (string keys `"type":`) carrying a BARE EDN keyword VALUE
+;; (`:canonical-row-filter`, unquoted). edn/read-string rejects the `"key":`
+;; colon; json/read-str rejects the bare `:keyword` value → today → [] → the
+;; empty-vocab hard stop kills the whole build. The hybrid recovery drops the
+;; JSON field-separator colon after each quoted key so it becomes valid EDN.
+(deftest coerce-entity-types-recovers-json-edn-hybrid-with-bare-keyword-value
+  (testing "the LIVE-captured hybrid (JSON string keys + a BARE EDN keyword
+            value) is recovered to a keyword-keyed map, keyword value intact"
+    (let [hybrid "[{\"type\": \"Occupation\", \"uri-keying-fields\": [\"O*NET-SOC Code\"], \"grain-strategy\": :canonical-row-filter}]"]
+      (is (= [{:type "Occupation"
+               :uri-keying-fields ["O*NET-SOC Code"]
+               :grain-strategy :canonical-row-filter}]
+             (vb/coerce-entity-types hybrid))
+          "string keys → keywords; the bare :canonical-row-filter keyword value survives")))
+  (testing "QUALITY gate (#2/#9): the hybrid recovery is USABLE by canonical-types
+            — a keyword :type reads through, empty-vocabulary? is FALSE (this is
+            the #1 reliability blocker: hybrid → [] → hard stop → dead build)"
+    (let [model-spec {:entity-types
+                      "[{\"type\": \"Occupation\", \"uri-keying-fields\": [\"O*NET-SOC Code\"], \"grain-strategy\": :canonical-row-filter}]"}]
+      (is (= ["Occupation"] (mapv :type (vb/canonical-types model-spec)))
+          "canonical-types reads the keyword :type through — a usable vocabulary")
+      (is (false? (vb/empty-vocabulary? model-spec))
+          "empty-vocabulary? is FALSE — the hard stop no longer fires on the hybrid"))))
+
+(deftest coerce-entity-types-hybrid-colon-in-value-survives
+  (testing "the colon-drop must NOT corrupt a colon INSIDE a quoted VALUE — a
+            value string is followed by ,/}/] (never :), and an internal colon
+            lives inside the matched quotes, so it is left verbatim"
+    (let [hybrid "[{\"type\": \"Occupation\", \"description\": \"role: important\", \"grain-strategy\": :canonical-row-filter}]"]
+      (is (= [{:type "Occupation"
+               :description "role: important"
+               :grain-strategy :canonical-row-filter}]
+             (vb/coerce-entity-types hybrid))
+          "the value \"role: important\" keeps its embedded colon intact"))))
+
+(deftest coerce-entity-types-still-recovers-edn-string
+  (testing "backward-compat (#8/#10): an EDN-string :entity-types (keyword keys,
+            the pre-MT-10 recovery path) still parses to keyword-keyed maps"
+    (is (= [{:type "Occupation" :uri-keying-fields ["id"]}]
+           (vb/coerce-entity-types "[{:type \"Occupation\" :uri-keying-fields [\"id\"]}]"))
+        "EDN is tried FIRST — its keyword keys pass through unchanged")))
+
+(deftest coerce-entity-types-already-parsed-vector-passthrough
+  (testing "the common success path: an already-parsed keyword-keyed vector passes
+            through unchanged (only map? entries kept)"
+    (let [ets [{:type "Occupation" :uri-keying-fields ["code"]}
+               {:type "Scale" :aliases ["rating-scale"]}]]
+      (is (= ets (vb/coerce-entity-types ets)) "byte-identical passthrough"))
+    (is (= [{:type "Thing"}]
+           (vb/coerce-entity-types [{:type "Thing"} "junk" 42]))
+        "non-map entries in a parsed vector are dropped (as today)")))
+
+(deftest coerce-entity-types-unparseable-and-scalar-are-empty
+  (testing "a genuinely-unparseable string honestly → [] (the loud hard stop
+            stands — #5); neither EDN nor JSON can read it"
+    (is (= [] (vb/coerce-entity-types "{not-parseable-edn")))
+    (is (= [] (vb/coerce-entity-types "not json or edn at all"))))
+  (testing "a JSON scalar / non-sequential parse → [] (not a vocabulary)"
+    (is (= [] (vb/coerce-entity-types "42")) "a bare JSON/EDN number is not a vocabulary")
+    (is (= [] (vb/coerce-entity-types "\"just a string\"")) "a JSON string scalar → []")
+    (is (= [] (vb/coerce-entity-types "{\"type\": \"Occupation\"}"))
+        "a JSON OBJECT (non-sequential) is not a vocabulary vector → []"))
+  (testing "degenerate non-string inputs (pure + total)"
+    (is (= [] (vb/coerce-entity-types nil)))
+    (is (= [] (vb/coerce-entity-types 42)))))
+
 (deftest resolve-entity-type-exact-match-returns-canonical-spelling
   (testing "an exact canonical :type resolves to itself (the common case)"
     (is (= "Occupation" (vb/resolve-entity-type vocab "Occupation")))
