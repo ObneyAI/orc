@@ -25,7 +25,7 @@
             _ (println "survey:" (:status sv) "\n")
             outcomes
             (doall
-             (for [i (range 5)]
+             (for [i (range 10)]
                (do (println (str "\n----- CALL " (inc i) " -----"))
                    (let [mx (ce/delegate-model-extract!
                              ctx {:source onet :goal goal :profile (:profile sv)

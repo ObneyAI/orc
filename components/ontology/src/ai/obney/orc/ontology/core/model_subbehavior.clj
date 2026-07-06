@@ -151,20 +151,34 @@
   [:map {:closed false}
    ;; concrete VECTOR-OF-MAPS so DSCloj parses it (not :any → raw string)
    [:entity-types {:optional true}
-    [:vector [:map {:closed false}
-              [:type {:optional true} :any]
-              [:uri-keying-fields {:optional true} [:vector :any]]
-              [:grain-strategy {:optional true} :any]]]]
-   ;; a MAP or nil — :maybe keeps the structural parse while allowing no-scope
+    [:vector {:description "The entity types discovered in this source"}
+     [:map {:closed false}
+      [:type {:optional true} [:string {:description "The entity type name, e.g. Occupation"}]]
+      [:uri-keying-fields {:optional true}
+       [:vector {:description "Column name(s) that uniquely identify this entity"} :string]]
+      ;; PROTOTYPE — string :enum (not :any / bare keyword): the model emits a QUOTED
+      ;; string value (valid in JSON AND EDN), killing the bare-keyword-in-JSON hybrid
+      ;; that broke both parsers. normalize-grain-strategy already accepts the string form.
+      [:grain-strategy {:optional true}
+       [:enum "canonical-row-filter" "breakdown-as-entity"]]]]]
+   ;; a MAP or nil — :maybe keeps the structural parse while allowing no-scope.
+   ;; MT-11 — concrete leaf types + descriptions (not :any): an :any leaf comes
+   ;; back as raw EDN/JSON TEXT (the same parse root the :entity-types prototype
+   ;; fixed), so DSCloj must be told the field is a string / a vector of strings.
    [:scope-filter {:optional true}
     [:maybe [:map {:closed false}
-             [:field {:optional true} :any]
-             [:values {:optional true} [:vector :any]]]]]
+             [:field {:optional true}
+              [:string {:description "The column/field the scope filters on"}]]
+             [:values {:optional true}
+              [:vector {:description "The value(s) the goal restricts the scope to"} :string]]]]]
    [:edges {:optional true}
     [:vector [:map {:closed false}
-              [:source-type {:optional true} :any]
-              [:target-type {:optional true} :any]
-              [:predicate {:optional true} :any]]]]
+              [:source-type {:optional true}
+               [:string {:description "The entity type this edge points FROM"}]]
+              [:target-type {:optional true}
+               [:string {:description "The entity type this edge points TO"}]]
+              [:predicate {:optional true}
+               [:string {:description "The relationship name connecting the two entity types"}]]]]]
    [embed-fields-key {:optional true} [:vector :string]]
    ;; GC-11a — the cross-source LINKING-KEY column NAMES the Model copies forward
    ;; from the profile's discovered :linking-keys (optionally vocabulary-normalized).

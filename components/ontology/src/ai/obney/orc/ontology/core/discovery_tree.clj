@@ -363,12 +363,12 @@
        "Clojure data structures — :entity-types a VECTOR of MAPS, :edges a VECTOR "
        "of MAPS, :scope-filter a MAP (or nil) — NOT a JSON string and NOT a prose "
        "string. CRITICAL: each entity's :grain-strategy MUST be EXACTLY one of "
-       "these two keywords — " (pr-str (vec valid-grain-strategies)) " — a bare "
-       "keyword, NOT a sentence describing it. The downstream transform step reads "
-       "the grain-strategy keyword directly; a prose description there is unusable."
+       "these two STRING values — \"canonical-row-filter\" OR \"breakdown-as-entity\" "
+       "— a quoted string, NOT a sentence describing it. The downstream transform "
+       "step reads the grain-strategy value directly; a prose description is unusable."
        (contract-block
         model-contract-keys
-        "  :entity-types  — VECTOR of MAPS: [{:type <str> :uri-keying-fields [<field> ...] :grain-strategy <EXACTLY :canonical-row-filter OR :breakdown-as-entity, a bare keyword>} ...]\n                   (you MAY add :canonical-row-marker <field/value note> for a :canonical-row-filter entity, or :breakdown-key <field> for a :breakdown-as-entity entity — the transform step reads these)\n  :scope-filter  — nil if the goal states no scope, else a MAP {:field <scope-field from the profile> :values [<value(s) the GOAL names>]}; the value comes from the GOAL, never invented\n  :edges         — VECTOR of MAPS: [{:source-type <str> :target-type <str> :predicate <str>} ...]")))
+        "  :entity-types  — VECTOR of MAPS: [{:type <str> :uri-keying-fields [<field> ...] :grain-strategy <EXACTLY the string \"canonical-row-filter\" OR \"breakdown-as-entity\">} ...]\n                   (you MAY add :canonical-row-marker <field/value note> for a canonical-row-filter entity, or :breakdown-key <field> for a breakdown-as-entity entity — the transform step reads these)\n  :scope-filter  — nil if the goal states no scope, else a MAP {:field <scope-field from the profile> :values [<value(s) the GOAL names>]}; the value comes from the GOAL, never invented\n  :edges         — VECTOR of MAPS: [{:source-type <str> :target-type <str> :predicate <str>} ...]")))
 
 ;; =============================================================================
 ;; DT4-grounding — surface the REAL sampled-row key shape into the transform seam

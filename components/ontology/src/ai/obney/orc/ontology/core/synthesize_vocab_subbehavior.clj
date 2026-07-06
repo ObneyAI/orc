@@ -90,12 +90,20 @@
      :description        — a self-contained description (no file paths / slice
                            codenames / SHAs — the model can't dereference them)."
   [:map {:closed false}
+   ;; MT-11 — concrete leaf types + descriptions (not :any): an :any leaf comes
+   ;; back from DSCloj as raw EDN/JSON TEXT (the intermittent-parse root this
+   ;; twin shares with the model-spec path); a concrete string / vector-of-string
+   ;; spec tells the parser to produce real Clojure data.
    [:canonical-entity-types {:optional true}
     [:vector [:map {:closed false}
-              [:type {:optional true} :any]
-              [:uri-keying-fields {:optional true} [:vector :any]]
-              [:aliases {:optional true} [:vector :any]]
-              [:description {:optional true} :any]]]]])
+              [:type {:optional true}
+               [:string {:description "The ONE canonical name for this entity type"}]]
+              [:uri-keying-fields {:optional true}
+               [:vector {:description "The canonical key field(s), drawn from real reported columns"} :string]]
+              [:aliases {:optional true}
+               [:vector {:description "The different names the sources used for this same entity"} :string]]
+              [:description {:optional true}
+               [:string {:description "A self-contained description of what this entity is and how to recognize it"}]]]]]])
 
 (defn normalize-vocabulary
   "GC-6 robustness — coerce whatever the `:llm` node emitted for `:vocabulary` into a

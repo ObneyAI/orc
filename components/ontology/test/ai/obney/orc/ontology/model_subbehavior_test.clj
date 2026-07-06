@@ -32,21 +32,25 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.ontology.core.model-subbehavior :as model]
             [ai.obney.orc.ontology.core.discovery-tree :as dt]
             [clojure.string :as str]
             [malli.core :as m]))
 
 ;; A real-shaped model-spec contract map (the shape the live verify produced;
-;; grain-strategy comes back as a STRING — the DT3 value-shape tolerance).
+;; MT-11 — grain-strategy comes back as the QUOTED ENUM STRING "canonical-row-filter"
+;; / "breakdown-as-entity", valid in JSON AND EDN — no longer the JSON-invalid bare
+;; keyword / colon-prefixed hybrid that broke the parse; normalize-grain-strategy
+;; still round-trips it to the frozen keyword).
 (def sample-model-spec
   {:entity-types
    [{:type "Postsecondary Institution"
      :uri-keying-fields ["UNITID"]
-     :grain-strategy ":canonical-row-filter"}
+     :grain-strategy "canonical-row-filter"}
     {:type "Award Conferral"
      :uri-keying-fields ["UNITID" "CIPCODE" "AWLEVEL"]
-     :grain-strategy ":breakdown-as-entity"
+     :grain-strategy "breakdown-as-entity"
      :breakdown-key "AWLEVEL"}]
    :scope-filter {:field "STABBR" :values ["AL"]}
    :edges [{:source-type "Award Conferral"
@@ -177,6 +181,112 @@
             axiom-spec (let [[_ & r] axiom-field] (if (map? (first r)) (second r) (first r)))]
         (is (= :vector (first axiom-spec))
             "candidate-axioms :axioms is a concrete [:vector …], not :any")))))
+
+;; ---------------------------------------------------------------------------
+;; MT-11 — the model-spec FAMILY leaves are CONCRETELY typed (not :any) with
+;; descriptions, and :grain-strategy is a STRING [:enum …]. A JSON-invalid bare
+;; keyword / an :any leaf arrives UNPARSED (raw text) → empty-vocab hard stop.
+;; These guard the DECLARATION so it can't silently regress to :any.
+;; ---------------------------------------------------------------------------
+
+(defn- map-field-schema
+  "From a [:map … [:k opts schema] …] schema, return field k's LEAF schema
+   (stripping an {:optional true}/props map if present). nil when absent."
+  [map-schema k]
+  (when-let [entry (first (filter #(and (vector? %) (= k (first %)))
+                                  (rest map-schema)))]
+    (let [r (rest entry)]
+      (if (map? (first r)) (second r) (first r)))))
+
+(defn- collection-inner
+  "The inner element schema of a [:vector … inner] / [:maybe … inner] (skips a
+   leading props map)."
+  [coll-schema]
+  (let [[_ & args] coll-schema
+        args (if (map? (first args)) (rest args) args)]
+    (first args)))
+
+(defn- leaf-type
+  "The Malli TYPE of a leaf schema — :string for [:string {…}] or :string,
+   :vector for [:vector …], :enum for [:enum …], :any for :any."
+  [s]
+  (m/type (m/schema s)))
+
+(defn- all-leaf-types
+  "Every LEAF (non-collection, non-map) Malli type reachable inside `schema`,
+   used to prove NO leaf is a bare :any. Map children are `[key props schema]`
+   entry triples; collection children are bare child schemas."
+  [schema]
+  (let [s (m/schema schema)]
+    (case (m/type s)
+      :map (mapcat (fn [entry] (all-leaf-types (nth entry 2))) (m/children s))
+      (:vector :maybe :sequential :set :tuple :or :and)
+      (mapcat all-leaf-types (m/children s))
+      [(m/type s)])))
+
+(deftest model-spec-family-leaves-are-concretely-typed-not-any-test
+  (testing "MT-11: the entity-types / edges / scope-filter LEAVES are concrete
+            types (string / [:vector :string] / string [:enum …]) — NONE is a
+            bare :any (an :any leaf comes back as raw text → empty-vocab)"
+    (let [entity-map (collection-inner (map-field-schema model/model-spec-contract-schema :entity-types))
+          edges-map  (collection-inner (map-field-schema model/model-spec-contract-schema :edges))
+          scope-map  (collection-inner (map-field-schema model/model-spec-contract-schema :scope-filter))]
+      ;; --- entity-types leaves ---
+      (is (= :string (leaf-type (map-field-schema entity-map :type)))
+          ":type is a concrete string leaf")
+      (is (= :vector (leaf-type (map-field-schema entity-map :uri-keying-fields)))
+          ":uri-keying-fields is a concrete [:vector …]")
+      (is (= :string (leaf-type (collection-inner (map-field-schema entity-map :uri-keying-fields))))
+          ":uri-keying-fields elements are strings ([:vector :string])")
+      (is (= :enum (leaf-type (map-field-schema entity-map :grain-strategy)))
+          ":grain-strategy is a string [:enum …] (the load-bearing JSON-valid change)")
+      (is (= ["canonical-row-filter" "breakdown-as-entity"]
+             (vec (m/children (m/schema (map-field-schema entity-map :grain-strategy)))))
+          ":grain-strategy enum carries the two frozen STRING values")
+      ;; --- edges leaves (MT-11 A) ---
+      (is (= :string (leaf-type (map-field-schema edges-map :source-type)))
+          ":source-type is a concrete string leaf (was :any)")
+      (is (= :string (leaf-type (map-field-schema edges-map :target-type)))
+          ":target-type is a concrete string leaf (was :any)")
+      (is (= :string (leaf-type (map-field-schema edges-map :predicate)))
+          ":predicate is a concrete string leaf (was :any)")
+      ;; --- scope-filter leaves (MT-11 A) ---
+      (is (= :string (leaf-type (map-field-schema scope-map :field)))
+          "scope-filter :field is a concrete string leaf (was :any)")
+      (is (= :vector (leaf-type (map-field-schema scope-map :values)))
+          "scope-filter :values is a concrete [:vector …] (was [:vector :any])")
+      (is (= :string (leaf-type (collection-inner (map-field-schema scope-map :values))))
+          "scope-filter :values elements are strings ([:vector :string])")
+      ;; --- the family carries NO bare :any leaf ---
+      (doseq [[label sub] [[:entity-types (map-field-schema model/model-spec-contract-schema :entity-types)]
+                           [:edges (map-field-schema model/model-spec-contract-schema :edges)]
+                           [:scope-filter (map-field-schema model/model-spec-contract-schema :scope-filter)]]]
+        (is (not (some #{:any} (all-leaf-types sub)))
+            (str "no bare :any leaf may survive in " label))))))
+
+(deftest entity-types-enum-renders-exact-grain-values-test
+  (testing "MT-11: executor/malli-schema->description renders the grain-strategy
+            enum as the EXACT allowed values — the mechanism that tells the model
+            the two strings (not \"any value\"), which is what fixes the parse"
+    (let [entity-types-schema (map-field-schema model/model-spec-contract-schema :entity-types)
+          entity-map (collection-inner entity-types-schema)
+          grain-schema (map-field-schema entity-map :grain-strategy)
+          rendered (executor/malli-schema->description grain-schema)
+          rendered-entity (executor/malli-schema->description entity-types-schema)]
+      (is (= "one of: canonical-row-filter, breakdown-as-entity" rendered)
+          "the enum leaf renders the two allowed strings, not \"any value\"")
+      (is (str/includes? rendered-entity "one of: canonical-row-filter, breakdown-as-entity")
+          "the enum rendering surfaces through the full entity-types schema description")
+      (is (not (str/includes? rendered-entity "any value"))
+          "no leaf renders as \"any value\" (the :any failure mode)"))))
+
+(deftest grain-strategy-enum-string-round-trips-to-frozen-keyword-test
+  (testing "MT-11: the enum STRING value normalizes onto the frozen keyword (the
+            model now emits the quoted string; it must still read as the decision)"
+    (is (= :canonical-row-filter (dt/normalize-grain-strategy "canonical-row-filter"))
+        "the un-colon'd enum string (as JSON delivers it) normalizes to the keyword")
+    (is (= :breakdown-as-entity (dt/normalize-grain-strategy "breakdown-as-entity"))
+        "the second enum string normalizes to its frozen keyword")))
 
 (deftest model-spec-schema-validates-a-real-contract-map-test
   (testing "the structured model-spec schema accepts a real, model-variable spec map"
