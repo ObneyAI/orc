@@ -213,6 +213,12 @@
         ;; carrying each survivor's clamped :serves-cqs coverage.
         ranked (when rank-fn
                  (try (rank-fn goal survivors) (catch Throwable _ nil)))
+        ;; DEFENSIVE — only a SEQUENTIAL rank output is iterated. A degraded string
+        ;; (e.g. an unparsed `:delegate`-crossing coverage map) is NOT char-iterated
+        ;; into bogus per-char entries; it is treated as no-rank → honest list order.
+        ;; (The production seam also coerces the read-back, MT-12; this is the pure
+        ;; fn's own guard so a direct caller/test can't trip the char-iteration bug.)
+        ranked (when (sequential? ranked) ranked)
         known (->> (or ranked [])
                    (map coerce-rank-entry)
                    (filter #(survivor-name-set (:name %)))

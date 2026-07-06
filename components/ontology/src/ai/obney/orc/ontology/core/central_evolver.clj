@@ -810,8 +810,33 @@
 (def selected-container-names-schema
   "C1 — the CONCRETE `[:vector :string]` schema for the `:selected-container-names`
    write (the same load-bearing per-field-type fix competency-questions uses, so the
-   `:llm` executor parses the field into real Clojure data, not raw EDN/JSON text)."
+   `:llm` executor parses the field into real Clojure data, not raw EDN/JSON text).
+   MT-12 — SUPERSEDED as the ranker's output by `container-coverage-schema` (the
+   coverage MAP); kept for the SLICE-1 back-compat flat-name path + old-caller docs."
   [:vector :string])
+
+(def container-coverage-key
+  "MT-12 — the coverage-aware ranker's OUTPUT key: the container COVERAGE MAP (a
+   vector of `{:name … :serves-cqs [<idx> …] :relevance …}` entries, vector ORDER =
+   relevance ranking, most-relevant FIRST). Replaces the flat `selected-container-
+   names-key` so the ranker reports, per container, WHICH numbered competency
+   questions it helps answer — the signal SLICE-1 `select-containers` promotes on."
+  :container-coverage)
+
+(def container-coverage-schema
+  "MT-12 — the coverage-aware ranker output schema. A CONCRETE `[:vector [:map …]]`
+   with CONCRETE leaf types + `:description`s + a STRING `:enum` (the MT-11 C1 lesson,
+   VERBATIM — a bare `:any`/keyword leaf would render \"any value\" and the `:llm`
+   executor would hand back a raw string instead of parsed data). Vector ORDER =
+   relevance ranking (most-relevant FIRST); each entry names the container + the
+   0-based indices of the numbered competency-questions it helps ANSWER.
+   Domain-agnostic (#12): names + indices are runtime-discovered — CODE names none."
+  [:vector [:map {:closed false}
+            [:name [:string {:description "the container's EXACT :name, copied verbatim from the candidates"}]]
+            [:serves-cqs [:vector {:description "0-based indices of the numbered competency-questions this container helps ANSWER (may be empty)"}
+                          :int]]
+            [:relevance {:optional true}
+             [:enum {:description "overall relevance of this container to the goal"} "high" "medium" "low"]]]])
 
 (def rank-candidates-schema
   "The rank node's READ input — a vector of container SUMMARIES (name + structural
@@ -825,70 +850,105 @@
             [:approx-row-count {:optional true} :any]]])
 
 (defn select-rank-prompt
-  "The relevance-rank node prompt: given the GOAL + the container SUMMARIES, order the
-   containers by relevance to the goal, most relevant FIRST. `:reasoning` FIRST (#13).
-   RELEVANCE ONLY — reorder the EXACT names given, never rename / invent a container.
-   Domain-agnostic (#12): the goal + the summaries are read at runtime; no vertical
+  "MT-12 — the COVERAGE-AWARE relevance-rank node prompt: given the GOAL, a NUMBERED
+   list of COMPETENCY QUESTIONS the built ontology must be able to answer, and the
+   container SUMMARIES, for EACH container decide its overall relevance + WHICH of the
+   numbered competency questions it helps ANSWER (by 0-based index), and order the
+   containers most-relevant-FIRST. `:reasoning` FIRST (#13). RELEVANCE + COVERAGE only —
+   use the EXACT names given, never rename / invent / merge a container.
+
+   `cq-list` — the CQ strings, rendered into a numbered list here at sheet-build so the
+   0-based indices are UNAMBIGUOUS (the same list is ALSO a runtime `:competency-
+   questions` read; the SLICE-0 prototype proved rendering + reading both parses).
+   nil/empty `cq-list` → NO numbered questions → pure relevance ranking with empty
+   `:serves-cqs` (back-compat: SLICE-1 then no-ops promotion → today's take-cap).
+
+   Domain-agnostic (#12): the goal + CQs + summaries are runtime data; no vertical
    entity / column / table name is baked in."
-  []
-  (str
-   "*** HOW THIS NODE WORKS (read carefully) ***\n"
-   "You are a single REASONING step. You are GIVEN two inputs as context: the GOAL "
-   "(`goal`, provided at runtime) and a list of container SUMMARIES (`candidates`, "
-   "one per structurally-meaningful container that survived the deterministic "
-   "pre-filter). Each summary carries the container's `:name` (its EXACT identifier), "
-   "its structural `:shape`, its `:columns` (the real column headers), and its "
-   "`:approx-row-count`. You do NOT call tools, you do NOT explore the source, and you "
-   "do NOT emit a behavior tree — you THINK over the goal + the summaries and PRODUCE "
-   "the structured outputs below. Ignore any general guidance about tool sessions or "
-   "`emit-tree!`.\n\n"
-   "*** YOUR JOB — RANK the containers by RELEVANCE to the goal ***\n"
-   "Decide which containers are MOST relevant to answering / building the goal, and "
-   "order them most-relevant-FIRST. Judge relevance from each container's columns + "
-   "shape + name against what the goal is about. A container that is central to the "
-   "goal ranks high; a peripheral or off-topic one ranks low. You MAY omit a "
-   "container you judge clearly irrelevant (it will simply be considered last).\n"
-   "CRITICAL: this is a RELEVANCE ordering ONLY. Reorder the EXACT `:name` strings you "
-   "were given — do NOT rename a container, do NOT invent a name, do NOT merge or "
-   "split containers. Use each name verbatim exactly as it appears in the summaries.\n\n"
-   "*** YOUR OUTPUT — produce these fields, REASONING FIRST (#13) ***\n"
-   "  1. `reasoning` — FIRST, before anything else: think through which containers "
-   "the goal most needs and why, reading their columns/shape/name. Chain-of-thought "
-   "BEFORE the ordering.\n"
-   "  2. `selected-container-names` — a VECTOR (list) of the container `:name` strings "
-   "ordered MOST-RELEVANT-FIRST. Use the exact names from the summaries. Emit REAL "
-   "structured Clojure data (a vector of strings), NOT a JSON string and NOT prose."))
+  ([] (select-rank-prompt nil))
+  ([cq-list]
+   (let [cqs (vec cq-list)
+         numbered (if (seq cqs)
+                    (str/join "\n" (map-indexed (fn [i q] (str "  " i ". " q)) cqs))
+                    "  (none provided — rank on relevance alone; leave :serves-cqs empty)")]
+     (str
+      "*** HOW THIS NODE WORKS (read carefully) ***\n"
+      "You are a single REASONING step. You are GIVEN three inputs as context: the GOAL "
+      "(`goal`, provided at runtime), a NUMBERED list of COMPETENCY QUESTIONS the built "
+      "ontology must be able to answer (`competency-questions`, provided at runtime and "
+      "reproduced below), and a list of container SUMMARIES (`candidates`, one per "
+      "structurally-meaningful container that survived the deterministic pre-filter). "
+      "Each summary carries the container's `:name` (its EXACT identifier), its "
+      "structural `:shape`, its `:columns` (the real column headers), and its "
+      "`:approx-row-count`. You do NOT call tools, you do NOT explore the source, and "
+      "you do NOT emit a behavior tree — you THINK over the goal + questions + summaries "
+      "and PRODUCE the structured output below. Ignore any general guidance about tool "
+      "sessions or `emit-tree!`.\n\n"
+      "*** THE NUMBERED COMPETENCY QUESTIONS (0-based) ***\n"
+      numbered
+      "\n\n*** YOUR JOB — RANK by RELEVANCE + map each container to the questions it serves ***\n"
+      "Order the containers MOST-RELEVANT-FIRST (judge relevance from each container's "
+      "columns + shape + name against what the goal is about — central ranks high, "
+      "peripheral/off-topic ranks low). For EACH container, ALSO decide WHICH of the "
+      "numbered competency questions it helps ANSWER — by their 0-based indices. Judge "
+      "coverage from the container's columns + shape + name: a container may serve zero, "
+      "one, or several questions. You MAY omit a container you judge clearly irrelevant "
+      "(it will simply be considered last).\n"
+      "CRITICAL: this is a RELEVANCE + COVERAGE judgment ONLY. Use the EXACT `:name` "
+      "strings you were given — do NOT rename a container, do NOT invent a name, do NOT "
+      "merge or split containers. Use each name verbatim exactly as it appears in the "
+      "summaries.\n\n"
+      "*** YOUR OUTPUT — produce these fields, REASONING FIRST (#13) ***\n"
+      "  1. `reasoning` — FIRST, before anything else: think through, per question, "
+      "which containers can answer it, and which containers the goal most needs and why "
+      "(reading their columns/shape/name). Chain-of-thought BEFORE the ordering.\n"
+      "  2. `container-coverage` — a VECTOR of {:name <exact> :serves-cqs [<int idx> …] "
+      ":relevance \"high\"|\"medium\"|\"low\"}, ordered MOST-RELEVANT-FIRST. Use the "
+      "exact `:name` from the summaries; `:serves-cqs` is the 0-based indices of the "
+      "numbered questions above (may be empty). Emit REAL structured Clojure data (a "
+      "vector of maps), NOT a JSON string and NOT prose."))))
 
 (defn select-rank-subbehavior-def
-  "The relevance-rank subbehavior workflow definition — a single `:llm` node
-   (single-turn reasoning over goal + candidate summaries; clone of the synthesize-
-   vocab / derive-cqs node shape). NOT a `:repl-researcher`.
+  "MT-12 — the COVERAGE-AWARE relevance-rank subbehavior workflow definition — a
+   single `:llm` node (single-turn reasoning over goal + numbered CQs + candidate
+   summaries; clone of the synthesize-vocab / derive-cqs node shape). NOT a
+   `:repl-researcher`.
+
+   `competency-questions` — the runtime CQ set, rendered into the prompt's numbered
+   list at sheet-build (unambiguous 0-based indices) AND declared as a runtime
+   `:competency-questions` read (the SLICE-0 prototype proved both). nil/empty →
+   pure relevance ranking with empty `:serves-cqs` (back-compat).
 
    Contract (public `:reads`/`:writes`):
-     :reads  [:goal :candidates]
-     :writes [:reasoning :selected-container-names]     (#13 reasoning FIRST)"
-  [{:keys [model]}]
+     :reads  [:goal :competency-questions :candidates]
+     :writes [:reasoning :container-coverage]           (#13 reasoning FIRST)"
+  [{:keys [model competency-questions]}]
   (let [nm select-rank-subbehavior-name
         mdl (or model "google/gemini-3-flash-preview")]
     (dsl/workflow nm
       (dsl/blackboard
        {:goal :string
+        :competency-questions [:vector :string]
         :candidates rank-candidates-schema
         :reasoning :string
-        selected-container-names-key selected-container-names-schema})
+        container-coverage-key container-coverage-schema})
       (dsl/sequence "select-rank-root"
         (dsl/llm "rank"
           :model mdl
-          :instruction (select-rank-prompt)
-          :reads [:goal :candidates]
-          ;; #13 — :reasoning FIRST (chain-of-thought before the ordering).
-          :writes [:reasoning selected-container-names-key])))))
+          :instruction (select-rank-prompt competency-questions)
+          :reads [:goal :competency-questions :candidates]
+          ;; #13 — :reasoning FIRST (chain-of-thought before the coverage map).
+          :writes [:reasoning container-coverage-key])))))
 
 (defn register-select-rank-subbehavior!
   "REGISTER (build, idempotent) the relevance-rank subbehavior sheet and return its
-   deterministic sheet-id. Re-registering an unchanged def is a no-op (same id)."
-  [ctx {:keys [model]}]
-  (dsl/build-workflow! ctx (select-rank-subbehavior-def {:model model})))
+   deterministic sheet-id. `competency-questions` (MT-12) is threaded into the def so
+   the numbered CQ list renders into the prompt; nil/empty → the pure-relevance sheet.
+   Re-registering an unchanged def is a no-op (same id); a changed CQ set rebuilds the
+   sheet in place (build-workflow! is idempotent + serialized per sheet-id)."
+  [ctx {:keys [model competency-questions]}]
+  (dsl/build-workflow! ctx (select-rank-subbehavior-def
+                            {:model model :competency-questions competency-questions})))
 
 (defn delegate-select-containers!
   "MT-2 production SELECT-CONTAINERS seam: turn a source's containers into the
@@ -908,13 +968,23 @@
      — #5). Any hard failure (no contract, unreadable source) likewise degrades to
      NO selection with a surfaced reason (take-cap fallback), never a throw.
 
+   MT-12 — `competency-questions` (the runtime CQ set) is threaded into the ranker
+   sheet (the numbered list + a `:competency-questions` read), the rank returns the
+   coverage MAP (`:container-coverage`), and `:cqs` is passed to SLICE-1
+   `select-containers` so an under-served CQ can PROMOTE its serving container above
+   the flat take-cap. nil/empty CQs → empty `:serves-cqs` → no promotion (back-compat).
+
    Returns `{:selected-containers [<container+shape+roles> …]|nil :selection-report …}`.
    `list-fn`/`sample-fn` default to the uniform container contract; tests inject fakes."
-  [ctx {:keys [source goal model max-containers list-fn sample-fn]}]
+  [ctx {:keys [source goal model max-containers list-fn sample-fn competency-questions]}]
   (try
     (let [list-fn (or list-fn csel/default-list-fn)
           all (vec (list-fn source))
-          cap (or max-containers extract/default-max-containers)]
+          cap (or max-containers extract/default-max-containers)
+          ;; MT-12 — normalize the runtime CQ set to a vector ONCE (nil → []), so the
+          ;; sheet input satisfies the `[:vector :string]` bb-schema and SLICE-1
+          ;; `select-containers` sees a concrete `:cqs` (empty → no-op promotion).
+          cqs (vec competency-questions)]
       (if (<= (count all) 1)
         {:selected-containers nil
          :selection-report {:containers-total (count all)
@@ -932,22 +1002,53 @@
                                                  :columns (vec (:header c))
                                                  :approx-row-count (:row-count c)})
                                         survivors)
-                        sub-id (register-select-rank-subbehavior! ctx {:model model})
+                        sub-id (register-select-rank-subbehavior!
+                                ctx {:model model :competency-questions cqs})
                         r (delegate-subbehavior!
                            ctx {:central-name "ontology-central/select-rank@v1"
                                 :target-sheet-id sub-id
                                 :bb-schema {:goal :string
+                                            :competency-questions [:vector :string]
                                             :candidates rank-candidates-schema
                                             :reasoning :string
-                                            selected-container-names-key
-                                            selected-container-names-schema}
-                                :reads [:goal :candidates]
-                                :writes [selected-container-names-key]
+                                            container-coverage-key
+                                            container-coverage-schema}
+                                :reads [:goal :competency-questions :candidates]
+                                :writes [container-coverage-key]
                                 :inputs {"goal" (or g "")
+                                         "competency-questions" cqs
                                          "candidates" summaries}})
-                        names (get-in r [:outputs selected-container-names-key])]
+                        ;; MT-12 — the coverage MAP is a `[:vector [:map …]]` write that
+                        ;; crosses `:delegate`, so (like the model-spec, MT-10) it
+                        ;; INTERMITTENTLY arrives as an unparsed STRING (measured ~1/6).
+                        ;; Coerce the read-back with the SAME generic string→vector-of-maps
+                        ;; coercion (EDN → JSON → hybrid → []; keywordizes keys) so
+                        ;; select-containers always sees a real vector, never char-iterates
+                        ;; a degraded string. A genuinely-unparseable string → [] (honest
+                        ;; degrade → list order), never garbage.
+                        ;; MT-12 — the coverage MAP is a `[:vector [:map …]]` write that
+                        ;; crosses `:delegate`, so (like model-spec, MT-10) it intermittently
+                        ;; degrades in TWO C1-family ways (both measured live): (1) it arrives
+                        ;; as an unparsed STRING; (2) it arrives as a vector whose entry keys
+                        ;; are NAMESPACED (`::name` instead of `:name`), so plain-key reads
+                        ;; return nil. Coerce the string (EDN → JSON → hybrid → []) AND
+                        ;; normalize every entry key to a PLAIN keyword (strip any namespace),
+                        ;; so select-containers always reads `:name`/`:serves-cqs`. A
+                        ;; genuinely-unparseable value → [] (honest degrade → list order).
+                        plain-keys (fn [m]
+                                     (if (map? m)
+                                       (into {} (map (fn [[k v]]
+                                                       [(if (or (keyword? k) (string? k)) (keyword (name k)) k) v]))
+                                             m)
+                                       m))
+                        coverage (mapv plain-keys
+                                       (vb/coerce-entity-types
+                                        (get-in r [:outputs container-coverage-key])))]
                     (if (= :success (:status r))
-                      (mapv str (or names []))
+                      ;; the COVERAGE MAP (vector of {:name :serves-cqs …}); SLICE-1
+                      ;; select-containers coerces + reconciles it. nil-on-success →
+                      ;; select-containers falls back to survivor list order.
+                      coverage
                       ;; honest degrade — surface the reason, return nil so
                       ;; select-containers falls back to survivor list order (#5).
                       (do (reset! rank-degrade (or (:error r) :rank-delegate-failed))
@@ -956,7 +1057,8 @@
                     (reset! rank-degrade (.getMessage t))
                     nil)))
               result (csel/select-containers candidates
-                                             {:goal goal :cap cap :rank-fn rank-fn})]
+                                             {:goal goal :cqs cqs :cap cap
+                                              :rank-fn rank-fn})]
           {:selected-containers (:selected result)
            :selection-report (assoc (:report result)
                                     :rank-degraded (boolean @rank-degrade)

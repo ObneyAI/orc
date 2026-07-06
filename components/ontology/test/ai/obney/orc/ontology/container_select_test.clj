@@ -147,6 +147,24 @@
   [_goal survivors]
   (mapv :name survivors))
 
+(deftest select-containers-string-rank-output-degrades-to-list-order-not-char-iterated-test
+  (testing "a rank-fn that returns a STRING (a degraded :delegate-crossing coverage map
+            that reached the pure fn unparsed) is NOT char-iterated into bogus per-
+            character entries — the sequential? guard treats it as no-rank → honest
+            survivor list order + take-cap. (The production seam also coerces the read-
+            back; this guards the pure fn against a direct string.)"
+    (let [string-rank-fn (fn [_g _s] "[{:name \"ent-a\" :serves-cqs [0]}]")
+          out (sel/select-containers mixed-candidates
+                                     {:goal "g" :cqs ["cq0"] :cap 2 :rank-fn string-rank-fn})
+          names (mapv :name (:selected out))]
+      (is (= 2 (count names)) "bounded to cap")
+      (is (every? #{"ent-a" "long-b" "ent-c"} names)
+          "selected are REAL survivor names in list order — NOT single-character names
+           from iterating the string")
+      (is (= {:total-cqs 1 :covered [] :uncovered [0] :complete? false}
+             (get-in out [:report :cq-coverage]))
+          "no coverage from a degraded string — honestly uncovered, not faked"))))
+
 (deftest select-containers-prefilters-noise-and-bounds-honestly-test
   (testing "select-containers drops :keep? false containers (with the shape as the
             reason), keeps the survivors with their shape tags, applies the cap, and
