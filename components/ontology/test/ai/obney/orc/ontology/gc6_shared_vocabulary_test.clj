@@ -92,6 +92,40 @@
     (is (not (m/validate synth/vocabulary-schema "a json string"))
         "a STRING does not validate the structured vocabulary schema")))
 
+(deftest synth-vocabulary-leaves-are-concretely-typed-not-any-test
+  (testing "MT-11 (the twin): the :canonical-entity-types LEAVES are concrete
+            types (string / [:vector :string]), NOT :any — an :any leaf comes back
+            from DSCloj as raw text (the intermittent parse this twin shares with
+            the model-spec path)"
+    (let [cet-field (->> (rest synth/vocabulary-schema)
+                         (filter #(and (vector? %) (= :canonical-entity-types (first %))))
+                         first)
+          ;; [:canonical-entity-types {:optional true} [:vector [:map …]]]
+          cet-vector (let [r (rest cet-field)] (if (map? (first r)) (second r) (first r)))
+          entity-map (let [[_ & args] cet-vector
+                           args (if (map? (first args)) (rest args) args)]
+                       (first args))
+          leaf-type (fn [k]
+                      (let [entry (first (filter #(and (vector? %) (= k (first %)))
+                                                 (rest entity-map)))
+                            r (rest entry)
+                            leaf (if (map? (first r)) (second r) (first r))]
+                        (m/type (m/schema leaf))))
+          inner-type (fn [k]
+                       (let [entry (first (filter #(and (vector? %) (= k (first %)))
+                                                  (rest entity-map)))
+                             r (rest entry)
+                             leaf (if (map? (first r)) (second r) (first r))
+                             [_ & args] leaf
+                             args (if (map? (first args)) (rest args) args)]
+                         (m/type (m/schema (first args)))))]
+      (is (= :string (leaf-type :type)) ":type is a concrete string leaf (was :any)")
+      (is (= :vector (leaf-type :uri-keying-fields)) ":uri-keying-fields is a [:vector …] (was [:vector :any])")
+      (is (= :string (inner-type :uri-keying-fields)) ":uri-keying-fields elements are strings")
+      (is (= :vector (leaf-type :aliases)) ":aliases is a [:vector …] (was [:vector :any])")
+      (is (= :string (inner-type :aliases)) ":aliases elements are strings")
+      (is (= :string (leaf-type :description)) ":description is a concrete string leaf (was :any)"))))
+
 (deftest synth-prompt-is-domain-agnostic-and-keys-from-real-columns-test
   (testing "the synthesis prompt carries NO vertical knowledge (#12) and BAKES IN
             the locked decision — canonical keys drawn from REAL reported columns,
