@@ -275,3 +275,34 @@
       (is (some? inputs) "dscloj/predict should have been called (inputs captured)")
       (is (not (contains? inputs :available-code-nodes))
           "runtime inputs map should NOT contain :available-code-nodes when unconfigured"))))
+
+;; =============================================================================
+;; WS-5b — Phase-1 inline tool calls thread the tick :tool-context to the gate
+;; =============================================================================
+;;
+;; The SCI sandbox invokes MCP tools via a two-arg (tool-name args) caller, so
+;; the raw :call-tool-fn never sees the tick :tool-context — an inline (Phase-1)
+;; mutate fail-closes on a missing tool-context, and a granted resume never
+;; re-applies (the WS-5b FALSE SUCCESS). phase1-call-tool-fn wraps the raw
+;; caller to FORWARD the tick :tool-context as the third arg — the same 3-arity
+;; gate contract the Phase-2 :code leaf uses (make-stub-call-tool-fn above).
+
+(deftest ws5b-phase1-call-tool-fn-threads-tool-context
+  (testing "with :tool-context present, the Phase-1 caller forwards it as the 3rd gate arg"
+    (let [seen (atom nil)
+          raw  (fn
+                 ([tn args] (reset! seen {:arity 2 :tn tn :args args}) :two)
+                 ([tn args tc] (reset! seen {:arity 3 :tn tn :args args :tc tc}) :three))
+          tc   {:marker :STUB-TOOL-CONTEXT}
+          ctf  (executor/phase1-call-tool-fn {:call-tool-fn raw :tool-context tc})]
+      ;; the sandbox still calls it two-arg; the wrapper adds the tool-context.
+      (is (= :three (ctf "apply_patch" {:patch "p"}))
+          "the wrapped caller routed to the 3-arity gate arm")
+      (is (= {:arity 3 :tn "apply_patch" :args {:patch "p"} :tc tc} @seen)
+          "the gate saw the SAME tick tool-context the wrapper forwarded")))
+  (testing "without :tool-context, the raw caller is returned UNCHANGED (backward-compatible)"
+    (let [raw (fn ([tn args] :two))]
+      (is (identical? raw (executor/phase1-call-tool-fn {:call-tool-fn raw}))
+          "no tool-context -> no wrapping (non-coding hosts unaffected)")))
+  (testing "without :call-tool-fn, returns nil (sandbox binds no tools)"
+    (is (nil? (executor/phase1-call-tool-fn {:tool-context {:marker :X}})))))

@@ -1429,6 +1429,30 @@
                         "- Do NOT use require, eval, slurp, or any I/O functions\n\n"
                         "Your task: " (:instruction node))}))
 
+(defn phase1-call-tool-fn
+  "The effective Phase-1 sandbox tool caller for a repl-researcher context.
+
+   The SCI sandbox invokes MCP tools via a two-arg (tool-name args) caller.
+   When the execution context carries an OPAQUE :tool-context (ADR 0018 G1 —
+   the per-tick value the host threads across the async command boundary and
+   which the Phase-2 tree :code path already re-threads to every leaf), wrap
+   the raw :call-tool-fn so each INLINE Phase-1 tool call FORWARDS that
+   tool-context as the third argument (the same 3-arity gate contract the
+   Phase-2 :code leaf uses, e.g. ce2's gated-tool-leaf-fn). This lets the host
+   gate an inline mutate with the SAME context Phase-2 receives, instead of
+   the inline call fail-closing on a missing tool-context (the WS-5b resumed
+   FALSE SUCCESS: a granted inline apply_patch that never re-applied).
+
+   Absent :tool-context (or absent :call-tool-fn) -> the raw fn unchanged
+   (backward-compatible; non-coding hosts and tool-context-free contexts see
+   no change)."
+  [context]
+  (let [raw (:call-tool-fn context)
+        tool-context (:tool-context context)]
+    (if (and raw tool-context)
+      (fn [tool-name args] (raw tool-name args tool-context))
+      raw)))
+
 (defn execute-repl-researcher
   "Execute a repl-researcher node using iterative LLM+SCI code execution.
 
@@ -1467,7 +1491,9 @@
           max-iterations (or (:max-iterations node) 10)
         mcp-tools (or (:mcp-tools node) [])
         browser-tools (or (:browser-tools node) [])
-        call-tool-fn (:call-tool-fn context)
+        ;; WS-5b: thread the tick :tool-context into inline Phase-1 tool calls
+        ;; (see phase1-call-tool-fn) so an inline mutate is gated like Phase-2.
+        call-tool-fn (phase1-call-tool-fn context)
 
         ;; Build SCI context with MCP and browser tools injected
         sci-ctx (sci-sandbox/build-sci-context
@@ -2244,7 +2270,9 @@
         max-iterations (or (:max-iterations node) 10)
         mcp-tools (or (:mcp-tools node) [])
         browser-tools (or (:browser-tools node) [])
-        call-tool-fn (:call-tool-fn context)
+        ;; WS-5b: thread the tick :tool-context into inline Phase-1 tool calls
+        ;; (see phase1-call-tool-fn) so an inline mutate is gated like Phase-2.
+        call-tool-fn (phase1-call-tool-fn context)
         declared-writes (:writes node)
         ;; Extract debug? from node's :rlm config (can be {:debug? true}) or from options
         rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
