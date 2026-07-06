@@ -710,18 +710,23 @@
               "no dossier key when no retry happened"))))))
 
 (deftest mt7d-double-empty-failure-returns-honestly-bounded-test
-  (testing "BOTH attempts fail with an empty-vocabulary read-back → exactly TWO
-            delegate calls (the named const bounds the retry at 1 — NEVER a third),
+  (testing "EVERY attempt fails with an empty-vocabulary read-back → exactly
+            (inc max-vocabulary-recovery-retries) delegate calls — 1 initial + N
+            bounded retries, NEVER one more (the const bites; no unbounded loop);
             the honest failure is returned (the MT-7a loud stop stands on
-            recurrence, #5), with the retry SURFACED: :vocabulary-retries 1 and
-            the FIRST attempt's raw spec as the dossier."
+            recurrence, #5), with the retry SURFACED: :vocabulary-retries = the
+            exhausted const and the FIRST attempt's raw spec as the dossier.
+            CONST-DRIVEN — no magic literal, so it survives any future bound change."
     (let [calls (atom 0)
-          first-raw {:entity-types "" :edges [{:from "A" :to "B"}]}
-          second-raw {:entity-types []}
+          ;; per-call-distinct raw (all normalize to [] via the ""), so the FIRST
+          ;; attempt's raw is provably distinct from every later attempt's — the
+          ;; \"first, not last\" capture stays proven regardless of the bound.
+          raw-for (fn [n] {:entity-types "" :edges [{:from "A" :to "B"}] :call n})
+          first-raw (raw-for 1)
           stub (fn [_ctx _opts]
                  (let [n (swap! calls inc)]
                    {:status :failure
-                    :outputs {:model-spec (if (= 1 n) first-raw second-raw)}
+                    :outputs {:model-spec (raw-for n)}
                     :tick-id (random-uuid)
                     :error {:reason :empty-entity-type-vocabulary}}))]
       (with-redefs [ce/delegate-subbehavior! stub]
@@ -729,15 +734,14 @@
                                             {:source {:type :csv} :goal "g"
                                              :profile {} :vocabulary nil
                                              :pipeline-sheet-id (random-uuid)})]
-          (is (= 2 @calls)
-              "exactly TWO delegate calls — bounded by max-vocabulary-recovery-retries,
-               never a third")
-          (is (= 1 ce/max-vocabulary-recovery-retries)
-              "the bound is the NAMED const, value 1 (no magic literal, no unbounded loop)")
-          (is (= :failure (:status r)) "the second empty failure returns HONESTLY")
-          (is (= 1 (:vocabulary-retries r)) "the exhausted retry is SURFACED")
+          (is (= (inc ce/max-vocabulary-recovery-retries) @calls)
+              "exactly (1 initial + N retries) delegate calls — bounded by the
+               named const, NEVER one more (the bound bites; no unbounded loop)")
+          (is (= :failure (:status r)) "the final empty failure returns HONESTLY")
+          (is (= ce/max-vocabulary-recovery-retries (:vocabulary-retries r))
+              "the EXHAUSTED retry count is SURFACED = the const")
           (is (= first-raw (:degraded-model-spec-raw r))
-              "the dossier is the FIRST attempt's raw spec verbatim (not the second's)"))))))
+              "the dossier is the FIRST attempt's raw spec verbatim (not the last's)"))))))
 
 (deftest mt7d-clean-success-is-behavior-preserving-test
   (testing "a clean first-attempt SUCCESS is untouched: exactly ONE delegate call,

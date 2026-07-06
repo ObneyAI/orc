@@ -420,13 +420,23 @@
 
 (def max-vocabulary-recovery-retries
   "MT-7d — the BOUND on the vocabulary-recovery retry in `delegate-model-extract!`:
-   at most ONE re-run of the pipeline delegate when a failure's read-back
+   at most N re-runs of the pipeline delegate when a failure's read-back
    model-spec normalizes to an EMPTY vocabulary (the diagnosed transient C1
    `:delegate`-crossing loss — the Model authors `:entity-types` but they arrive
    degraded to `[]` while sibling fields survive; an immediate re-run typically
-   recovers). A second empty-vocabulary failure returns the HONEST failure — the
-   MT-7a loud stop stands on recurrence (#5); never an unbounded loop."
-  1)
+   recovers).
+
+   MT-9 — raised 1 → 3 (4 total attempts). The retry mechanism is probe-confirmed
+   to fire and recover, but the per-attempt C1 loss rate is high (~0.4–0.6), so a
+   double loss at bound=1 killed ~1-in-3 comprehensive runs at
+   `:failed-at-model-extract`; 4 attempts drop the all-empty rate to ~6–13%. This
+   is the interim reliability lever while the durable dscloj `[:vector [:map]]`
+   parse root fix is queued.
+
+   After N empty-vocabulary failures the HONEST failure is returned — the MT-7a
+   loud stop stands on recurrence (#5); the exhausted retry count is surfaced;
+   never an unbounded loop."
+  3)
 
 (defn delegate-model-extract!
   "Production Model→Extract seam: `:delegate` the fixed per-source pipeline sheet
@@ -443,11 +453,12 @@
    MT-7d — bounded vocabulary-recovery retry. When the delegate did NOT succeed
    AND the read-back model-spec normalizes to an EMPTY vocabulary
    (`vb/empty-vocabulary?` — the SAME deterministic predicate as the MT-7a hard
-   stop; NEVER matched on the error string, #7), the delegate is re-run ONCE
-   (`max-vocabulary-recovery-retries`) with identical inputs. A nil read-back is
+   stop; NEVER matched on the error string, #7), the delegate is re-run up to
+   `max-vocabulary-recovery-retries` times with identical inputs. A nil read-back is
    covered honestly by the same predicate (a Model that never wrote a spec could
    not have extracted either way; the retry is equally sane). The retry is
-   SURFACED, never silent (#5): every return carries `:vocabulary-retries 0|1`,
+   SURFACED, never silent (#5): every return carries `:vocabulary-retries`
+   (0..`max-vocabulary-recovery-retries`),
    and a retried call also carries `:degraded-model-spec-raw` — the FIRST
    attempt's raw PRE-normalize `:model-spec` output VERBATIM (never truncated,
    #11: the dossier for the deeper dscloj parse root-cause fix). A failure whose
@@ -503,7 +514,7 @@
                          "selected-containers" selected-containers}}))]
     ;; MT-7d — bounded retry loop: run the delegate; when the attempt FAILED and
     ;; its read-back model-spec normalizes to an EMPTY vocabulary (the transient
-    ;; C1 crossing loss), re-run ONCE (`max-vocabulary-recovery-retries`), keeping
+    ;; C1 crossing loss), re-run up to `max-vocabulary-recovery-retries` times, keeping
     ;; attempt 1's raw PRE-normalize spec verbatim as the dossier.
     (loop [retries 0
            first-degraded-raw nil]
