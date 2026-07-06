@@ -1466,8 +1466,16 @@
                            ;; bounded), next to graph-context. A single-container source
                            ;; / a failed rank degrades HONESTLY to nil selection → the
                            ;; Extract orchestrator falls back to take-cap (#5).
+                           ;; MT-12 SLICE 3 — thread the STEP-3-derived competency
+                           ;; questions into selection so it is CQ-COVERAGE-AWARE: the
+                           ;; ranker judges which CQ each container serves, and a
+                           ;; bounded promotion guarantees the selected set covers the
+                           ;; goal's facets (any residual uncovered CQ is surfaced in
+                           ;; the :selection-report, feeding the STEP-6 CQ-gate loop).
+                           ;; nil/empty CQs → today's take-cap (back-compat).
                            sel (select-fn ctx {:source src :goal goal :model model
-                                               :max-containers max-containers})
+                                               :max-containers max-containers
+                                               :competency-questions (:competency-questions derive)})
                            mx (model-extract-fn
                                ctx {:source src :goal goal :profile profile
                                     :vocabulary vocab

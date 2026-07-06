@@ -373,6 +373,37 @@
         (is (= [{:entity-candidates ["thing"]}] (:survey-profiles result))
             "the per-source profiles are surfaced")))))
 
+(deftest mt12-slice3-threads-step3-cqs-into-step4-selection-test
+  (testing "STEP 4 container selection receives the STEP-3-derived :competency-questions
+            (MT-12 SLICE 3) — so selection is CQ-coverage-aware end-to-end. Captured via
+            a stubbed select-fn."
+    (h/with-async-test-context [ctx]
+      (let [oid (random-uuid)
+            captured-select (atom ::unset)
+            result (ce/run-central-evolver!
+                    ctx {:ontology-id oid :sources [{:type :csv :path "x"}] :goal "g"
+                         :survey-fn (fn [_ _] {:status :success :profile {}})
+                         :derive-cqs-fn (fn [_ _] {:status :success
+                                                   :competency-questions ["CQ-A" "CQ-B"]})
+                         :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
+                         :select-fn (fn [_ opts]
+                                      (reset! captured-select opts)
+                                      {:selected-containers nil :selection-report {}})
+                         :model-extract-fn (fn [_ _] {:status :success :concept-drafts []
+                                                      :relationship-drafts [] :embed-fields []
+                                                      :model-spec {} :candidate-axioms {:axioms []}})
+                         :reconcile-fn (fn [_ _] {:status :success})
+                         :axiom-fn (fn [_ _] {:status :success})
+                         :embed-fn (fn [_ _] {:status :success})
+                         :build-fn (fn [_ _] {:status :complete})
+                         :gate-fn (fn [_ _] {:graph-health {:pass-rate 1.0 :unknown-rate 0.0}
+                                             :evaluated []
+                                             :cq-verdict [{:cq-text "CQ-A" :verdict :pass}]})})]
+        (is (= :complete (:status result)) "the pipeline completed")
+        (is (= ["CQ-A" "CQ-B"] (:competency-questions @captured-select))
+            "the STEP-3 derived CQs are threaded into the STEP-4 select-fn call")
+        (is (= "g" (:goal @captured-select)) "the goal is still threaded to selection")))))
+
 (deftest maintain-selects-the-maintain-arm-and-runs-the-real-composition-test
   (testing "MAINTAIN (a graph already exists for the ontology-id): the front-of-tree
             condition selects MAINTAIN (DT9 reuse) and — per EB11 — runs the REAL
