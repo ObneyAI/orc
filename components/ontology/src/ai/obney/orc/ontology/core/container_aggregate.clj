@@ -212,8 +212,12 @@
    1. `:concept-drafts` — DISTINCT element concept-drafts across ALL keys (canonical
       URI `<element-entity-type>/<element>` keyed on the element VALUE, so the SAME
       element from many keys is ONE node — dedup is the anti-over-mint invariant). Each
-      carries the element value in `:attributes` under the element-col name so GC-1
-      canonicalize / MC-6 can recover its identity. Order = first-appearance (#10).
+      carries the element value in `:attributes` under its identity column so GC-1
+      canonicalize / MC-6 can recover its identity — the element-entity-type's DECLARED
+      keying field when the seam resolved one (`:element-key-field`, CONNECT-3e: so a
+      REFERENCE element like a related occupation MERGES with the referenced entity's
+      canonical node instead of orphaning), else the raw element-col. Order =
+      first-appearance (#10).
       CONNECT-3d: PLUS one bare KEY (source) concept-draft per distinct key, carrying
       the key VALUE in `:attributes` under the key-col — so GC-1 `canonicalize-drafts`
       mints it to the SAME canonical URI the per-row occupation path produces AND
@@ -238,7 +242,8 @@
    Plus the SAME honest counts + boundedness witnesses the attribute finalize returns.
    Pure + total."
   [spec state]
-  (let [{:keys [element-entity-type key-entity-type value-col element-col key-col]} spec
+  (let [{:keys [element-entity-type key-entity-type value-col element-col key-col
+                element-key-field]} spec
         predicate (str (:predicate spec))
         elem-et (str/trim (str element-entity-type))
         ;; CONNECT-3c — the SOURCE (key) node scheme. Prefer an explicit
@@ -256,6 +261,17 @@
         vcol (when (seq (str/trim (str value-col))) value-col)
         ecol (when (seq (str/trim (str element-col))) element-col)
         kcol (when (seq (str/trim (str key-col))) key-col)
+        ;; CONNECT-3e — the column under which to record the ELEMENT's IDENTITY
+        ;; value in its draft. When the element-entity-type is an existing vocab
+        ;; type keyed by a single field, the extract seam resolves that field into
+        ;; `:element-key-field` (via `association-element-key-field`) — recording
+        ;; the value there (NOT under the raw source `:element-col`) lets GC-1
+        ;; recover it and mint the element's CANONICAL URI, so a REFERENCE element
+        ;; (e.g. a related occupation) MERGES with the referenced entity instead of
+        ;; orphaning under a variant scheme. Absent → the raw element-col (today's
+        ;; behavior; e.g. a fresh element type whose proposal keys on element-col).
+        elem-id-col (or (when (seq (str/trim (str element-key-field))) element-key-field)
+                        ecol)
         acc (:acc state)
         elem-uri (fn [e] (str elem-et "/" e))
         key-uri (fn [k] (str key-et "/" k))
@@ -272,7 +288,7 @@
                                {:uri (elem-uri e)
                                 :label (str e)
                                 :entity-type elem-et
-                                :attributes (if ecol {ecol e} {})})
+                                :attributes (if elem-id-col {elem-id-col e} {})})
                              distinct-elems)
         ;; CONNECT-3d — one bare KEY (source) concept-draft per distinct key, carrying
         ;; the key VALUE under the key-col so GC-1 `canonicalize-drafts` mints it to the

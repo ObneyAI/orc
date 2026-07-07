@@ -511,6 +511,40 @@
         rows (dt/mechanical-sample-rows source selector)]
     {:sample-rows (vec rows)}))
 
+(defn association-element-key-field
+  "CONNECT-3e — for an ASSOCIATION spec whose `:element-entity-type` resolves
+   (normalized-EXACT, `vb/resolve-entity-type`) to a vocabulary entry with EXACTLY
+   ONE `:uri-keying-fields`, return that keying field NAME. The association fold
+   stores the element's identity VALUE under this field (instead of the raw
+   `:element-col` name), so GC-1 `canonicalize-drafts` recovers it and mints the
+   element's CANONICAL URI — the element then MERGES with the referenced entity's
+   canonical node (or becomes a proper new canonical node) instead of ORPHANING
+   under a variant scheme.
+
+   The failure this fixes (proven live on O*NET `Related Occupations`, an
+   occupation→occupation junction): the element value (a related-occupation SOC)
+   lands under the source column `Related O*NET-SOC Code`, but the Occupation type
+   is keyed on `O*NET-SOC Code` → GC-1 can't recover it → honest-degrade → 920
+   orphan `Occupation/<SOC>` duplicates of the canonical `occupation/<SOC>` nodes.
+   It ALSO makes the Skills/Knowledge associations correct BY DESIGN rather than by
+   the naming coincidence that their element column already equals the element
+   type's keying field.
+
+   Returns nil when the spec is not an association, the element type is unknown to
+   the vocab, or its key is compound/empty (a compound key cannot be reconstructed
+   from a single element value — honest degrade, the draft keeps today's behavior).
+   Pure + total. Domain-agnostic (#12): the type, field, and value all come from
+   the runtime vocab + spec; names no domain field. `vocab` is `canonical-types`
+   output (`[{:type … :uri-keying-fields … :aliases …} …]`, incl. admitted proposals)."
+  [vocab spec]
+  (when (cagg/association-mode? spec)
+    (when-let [canon (vb/resolve-entity-type vocab (:element-entity-type spec))]
+      (let [entry  (first (filter #(= canon (:type %)) vocab))
+            fields (when (sequential? (:uri-keying-fields entry))
+                     (vec (remove #(empty? (str/trim (str %))) (:uri-keying-fields entry))))]
+        (when (= 1 (count fields))
+          (first fields))))))
+
 (defn apply-transform-for-container-code
   "The per-container APPLY `:code` `:fn`. REUSES `apply-extraction-transform!`
    (Node 3, no fork) — same bounded `:max-windows`, same per-row error counting —
@@ -585,6 +619,18 @@
                (not enforce?) spec
                resolved-agg-type (assoc spec :entity-type resolved-agg-type)
                :else nil)
+        ;; CONNECT-3e — when the association's :element-entity-type is a known vocab
+        ;; type keyed by a SINGLE field, record the element identity under THAT field
+        ;; (`:element-key-field`) so a REFERENCE element (e.g. a related occupation)
+        ;; canonicalizes + MERGES with the referenced entity instead of orphaning
+        ;; under a variant scheme. Resolved against the EFFECTIVE vocab (incl. the
+        ;; admitted local proposal, so a just-proposed Occupation resolves). nil →
+        ;; the raw element-col (behavior-preserving for non-reference elements).
+        spec (if (and spec (seq effective-vocab))
+               (if-let [ekf (association-element-key-field effective-vocab spec)]
+                 (assoc spec :element-key-field ekf)
+                 spec)
+               spec)
         aggregate? (cagg/aggregating-apply? container spec sample-rows)
         result (if aggregate?
                  (rlm-discovery/apply-aggregation-transform!
