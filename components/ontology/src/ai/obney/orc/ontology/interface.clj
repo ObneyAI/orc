@@ -43,6 +43,8 @@
             ;; S15 — CQ runner (registers the :ontology/record-cq-evaluation
             ;; command + the :ontology/cq-evaluations read-model on require).
             [ai.obney.orc.ontology.core.cq-runner :as cq-runner]
+            ;; STREAM Slice 5 — streamed CQ concept load (bounded, single-ontology).
+            [ai.obney.orc.ontology.core.concept-stream :as concept-stream]
             ;; ColBERT is resolved lazily via `colbert-fn` (optional Layer-5
             ;; upgrade) — no direct compile-time require (see main's packaging).
             [ai.obney.grain.event-store-v3.interface :as event-store]
@@ -280,6 +282,16 @@
   [ctx ontology-id]
   (rm/get-graph-health ctx ontology-id))
 
+(defn cq-concept-projection
+  "STREAM Slice 5: the field-projection applied to each streamed concept before it
+   reaches the CQ evidence layer. Keeps EXACTLY the fields cq-runner reads —
+   `:uri`/`:label`/`:labels` (layer-1 label+URI match), `:ontology-id` (scope
+   filter), `:closed?` (S11 closure signal), and `:attributes`/`:properties` (MT-8
+   attribute-borne facts the judge must see) — and DISCARDS the rest (`:description`,
+   `:broader`, `:indicators`, `:narrower`, …). Byte-identical CQ evidence + verdicts."
+  [concept]
+  (select-keys concept [:uri :label :labels :ontology-id :closed? :attributes :properties]))
+
 (defn evaluate-cqs!
   "S15: run the CQ-runner pass for the given ontology-id against its
    stored ORSD spec. Each CQ is routed through the three-layer negation
@@ -329,7 +341,16 @@
     :get-ontology-spec-fn rm/get-ontology-spec
     :get-graph-health-fn  rm/get-graph-health
     :hybrid-search-fn     retrieval/hybrid-search
-    :get-concepts-fn      (fn [opts] (rm/get-concepts ctx opts))
+    ;; STREAM Slice 5: stream the CQ concept load (bounded, windowed es/read scoped
+    ;; to THIS ontology-id) instead of `(rm/get-concepts ctx {})` (which materializes
+    ;; the whole cross-ontology concept map). `:project-fn` keeps only the fields the
+    ;; CQ evidence layer reads (labels/uri/scope-id/closed?/attribute-borne facts).
+    ;; cq-runner already filters `(= ontology-id (:ontology-id %))`, so scoping the
+    ;; stream to the same id yields a byte-identical concept set (single-ontology).
+    :get-concepts-fn      (fn [_opts]
+                            (concept-stream/reduce-concepts
+                             ctx ontology-id conj []
+                             {:project-fn cq-concept-projection}))
     :get-relationships-fn rm/get-relationships
     ;; S15 open-world: the grounded closure signal (S07 disjointness + S11
     ;; :closed? markers) the judge uses to justify a :fail on an absent fact.

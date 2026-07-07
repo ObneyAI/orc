@@ -14,6 +14,7 @@
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.embedding :as embedding]
+            [ai.obney.orc.ontology.core.concept-stream :as concept-stream]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [clojure.string :as str]))
 
@@ -683,6 +684,61 @@
 ;; Semantic Search with Embeddings
 ;; =============================================================================
 
+;; STREAM Slice 5 — bounded, byte-invariant top-K cosine over the embedding stream.
+;; Replaces materializing the ENTIRE concept-embedding vector map (the heaviest
+;; resident set) with a fold that scores each streamed (uri, vector) using the SAME
+;; cosine fn `search-concepts-by-embedding` uses (`embedding/cosine-similarity`),
+;; discards the vector, and keeps only a bounded top-`limit` set. Because every
+;; concept is embedded exactly once (GC-12 incremental embed) and cosine
+;; similarities over distinct float vectors are distinct, the retained top-K — and
+;; the final `(sort-by :similarity >)` order — are IDENTICAL to the full-map scan.
+
+(defn- top-k-similarity-comparator
+  "Total order for the bounded top-K sorted-set: ASCENDING by :similarity so the
+   WEAKEST entry sorts FIRST (O(log n) eviction via `first` + `disj`). :uri breaks
+   an (astronomically rare, distinct-float) exact-similarity tie so two concepts
+   stay distinct SET members. This comparator only governs WHICH K survive; the
+   emitted ORDER is produced by the SAME `(sort-by :similarity >)`
+   `search-concepts-by-embedding` uses — and top-K by distinct similarity is
+   order-invariant."
+  [a b]
+  (let [c (compare (:similarity a) (:similarity b))]
+    (if (zero? c) (compare (:uri a) (:uri b)) c)))
+
+(defn- top-k-conj
+  "Bounded top-K fold step: add `entry` ({:uri :similarity}) to sorted-set `acc`,
+   evicting the WEAKEST when the size exceeds `limit`. The accumulator holds ≤
+   `limit` entries — never the full scored list, never an embedding vector."
+  [limit acc entry]
+  (let [acc' (conj acc entry)]
+    (if (> (count acc') limit)
+      (disj acc' (first acc'))
+      acc')))
+
+(defn- stream-top-k-concept-similarities
+  "Fold `concept-stream/reduce-concept-embeddings` for each id in `ontology-ids`,
+   scoring each streamed (uri, vector) with `embedding/cosine-similarity` (the SAME
+   metric `search-concepts-by-embedding` uses), discarding the vector, and keeping a
+   bounded top-`limit` set of {:uri :similarity} ≥ `min-similarity`. Returns
+   `{:top <vec of {:uri :similarity} in search-concepts-by-embedding order> :seen n}`
+   where `seen` = number of embeddings visited (mirrors `(seq concept-embeddings)`
+   for the nil-vs-[] contract)."
+  [ctx query-embedding ontology-ids limit min-similarity]
+  (let [rf (fn [{:keys [top seen]} uri vector]
+             (let [sim (embedding/cosine-similarity query-embedding vector)]
+               {:seen (inc seen)
+                :top  (if (>= sim min-similarity)
+                        (top-k-conj limit top {:uri uri :similarity sim})
+                        top)}))
+        init {:top (sorted-set-by top-k-similarity-comparator) :seen 0}
+        {:keys [top seen]} (reduce (fn [acc id]
+                                     (concept-stream/reduce-concept-embeddings ctx id rf acc))
+                                   init
+                                   ontology-ids)]
+    {:seen seen
+     ;; MATCH search-concepts-by-embedding's tail EXACTLY: sort desc, take limit.
+     :top  (->> top (sort-by :similarity >) (take limit) vec)}))
+
 (defn semantic-search-concepts
   "Search concepts using embedding similarity.
 
@@ -711,32 +767,46 @@
           query-embedding (embedding/embed-text query-text
                                                  (when model-id {:model-id model-id}))
 
-          ;; Get stored concept embeddings (filtered by scope and/or ontology-id)
-          filter-opts (cond-> {}
-                        scope (assoc :scope scope)
-                        ontology-id (assoc :ontology-id ontology-id)
-                        ontology-ids (assoc :ontology-ids ontology-ids))
-          concept-embeddings (rm/get-all-concept-embeddings ctx
-                                                             (when (seq filter-opts) filter-opts))]
+          ;; Enrich a top-K hit with concept metadata from the static ontology
+          ;; (IDENTICAL for the streaming + fallback paths — byte-invariant shape).
+          enrich (fn [{:keys [uri similarity]}]
+                   (let [concept (static/get-concept-by-uri uri)]
+                     {:uri uri
+                      :similarity similarity
+                      :label (:label concept)
+                      :description (:description concept)
+                      :scope (:scope concept)}))
 
-      (when (and query-embedding (seq concept-embeddings))
-        ;; Search using embedding similarity
-        (->> (embedding/search-concepts-by-embedding
-               query-embedding
-               concept-embeddings
-               :limit limit
-               :min-similarity min-similarity)
-
-             ;; Enrich with concept metadata from static ontology
-             (map (fn [{:keys [uri similarity]}]
-                    (let [concept (static/get-concept-by-uri uri)]
-                      {:uri uri
-                       :similarity similarity
-                       :label (:label concept)
-                       :description (:description concept)
-                       :scope (:scope concept)})))
-
-             vec)))))
+          ;; STREAM Slice 5: when the scope is ontology-id / ontology-ids (and NOT
+          ;; the vestigial :scope filter), stream a BOUNDED top-K cosine instead of
+          ;; materializing the whole vector map. `get-all-concept-embeddings
+          ;; {:ontology-ids ids}` body-filters on the stored :ontology-id — the SAME
+          ;; predicate `reduce-concept-embeddings` applies — so membership is
+          ;; byte-identical. The :scope path (a read-model tag filter the stream
+          ;; can't replicate) and the whole-store path keep the exact map version.
+          stream-ids (cond
+                       (seq ontology-ids) (vec ontology-ids)
+                       ontology-id        [ontology-id]
+                       :else              nil)]
+      (when query-embedding
+        (if (and (nil? scope) stream-ids)
+          ;; --- streaming bounded top-K (no vector map materialized) ---
+          (let [{:keys [top seen]} (stream-top-k-concept-similarities
+                                    ctx query-embedding stream-ids limit min-similarity)]
+            (when (pos? seen)                 ;; mirror `(seq concept-embeddings)`: nil vs []
+              (mapv enrich top)))
+          ;; --- fallback: :scope filter or whole-store (exact pre-conversion path) ---
+          (let [filter-opts (cond-> {}
+                              scope (assoc :scope scope)
+                              ontology-id (assoc :ontology-id ontology-id)
+                              ontology-ids (assoc :ontology-ids ontology-ids))
+                concept-embeddings (rm/get-all-concept-embeddings
+                                    ctx (when (seq filter-opts) filter-opts))]
+            (when (seq concept-embeddings)
+              (->> (embedding/search-concepts-by-embedding
+                     query-embedding concept-embeddings
+                     :limit limit :min-similarity min-similarity)
+                   (mapv enrich)))))))))
 
 (defn semantic-search-tree-profiles
   "Search tree profiles using embedding similarity.
@@ -1427,8 +1497,10 @@
                 :or {signals #{:graph :embedding :colbert}}
                 :as opts}]
   (let [;; Check if embeddings are available and enabled
+        ;; STREAM Slice 5: existence WITHOUT materializing the vector map — reads
+        ;; at most one :ontology/concept-embedded event (byte-invariant boolean).
         has-embeddings? (and (contains? signals :embedding)
-                             (seq (rm/get-all-concept-embeddings ctx)))
+                             (concept-stream/any-concept-embedding? ctx))
 
         ;; Check if ColBERT is available and enabled
         has-colbert? (and (contains? signals :colbert)

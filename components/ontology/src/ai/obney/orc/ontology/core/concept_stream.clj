@@ -253,3 +253,19 @@
                       (rf acc (:uri ev) (:embedding ev))
                       acc))
                   init))))
+
+(defn any-concept-embedding?
+  "True iff the store holds ≥1 `:ontology/concept-embedded` event (ANY ontology).
+   Reads at most ONE event (`es/read :limit 1`, early-exit via `reduced`) — the
+   BOUNDED, byte-invariant replacement for `(seq (get-all-concept-embeddings ctx))`,
+   which folds EVERY embedding event (RETAINING every vector) just to answer the
+   existence boolean. Scope-agnostic on purpose: mirrors the unscoped
+   `(seq (get-all-concept-embeddings ctx))` it replaces."
+  [ctx]
+  (boolean
+   (reduce (fn [_ _ev] (reduced true))
+           false
+           (es/read (:event-store ctx)
+                    {:tenant-id (:tenant-id ctx)
+                     :types #{:ontology/concept-embedded}
+                     :limit 1}))))
