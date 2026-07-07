@@ -14,9 +14,9 @@
             [ai.obney.orc.ontology.core.read-models] ;; registers :ontology/concepts + concept-embeddings read models (defreadmodel side-effect)
             [clojure.string :as str]))
 
-(def db-file "/tmp/eb12-graph-b-ad57ff55-ec3c-4b0e-b969-03f5366f802c-events.db")
-(def tenant #uuid "d3350b96-d190-4fdf-8db0-2fc70eb40911")
-(def oid    #uuid "9b5532f2-8a2b-4fe5-a42c-b66ad2b95604")
+(def db-file "/tmp/eb12-graph-b-e6cb8887-2e83-45da-901e-12232b27c0c4-events.db")
+(def tenant #uuid "47a376ec-272a-4f02-8c99-ad1b71053a24")
+(def oid    #uuid "398a54e1-12a9-4260-afc4-25efb8badb81")
 
 (defn- uri-scheme
   "The leading scheme/kind token of a URI: the substring before the first

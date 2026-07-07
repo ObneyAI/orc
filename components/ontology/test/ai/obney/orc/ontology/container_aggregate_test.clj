@@ -408,8 +408,11 @@
       (is (str/includes? lg "list") "describes the LIST-collect mode (no value-col)")
       ;; #13 — reasoning first
       (is (str/includes? lg "reasoning") "insists on reasoning FIRST (#13)")
+      ;; CONNECT-3b — match the domain TOKEN on WORD BOUNDARIES, not as a bare
+      ;; substring: the association-mechanism term "association" legitimately contains
+      ;; "soc" (as-soc-iation), which is NOT the O*NET SOC domain leak this guards.
       (doseq [leak ["o*net" "onet" "scale id" "occupation" "topskills" "importance" "cip" "soc"]]
-        (is (not (str/includes? lg leak))
+        (is (not (re-find (re-pattern (str "\\b" (java.util.regex.Pattern/quote leak) "\\b")) lg))
             (str "the aggregation guidance must not bake in the vertical term: " leak))))))
 
 ;; ===========================================================================

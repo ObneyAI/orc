@@ -112,22 +112,27 @@
           "the three edges originate from the three distinct occupations"))))
 
 ;; ===========================================================================
-;; Tracer 3 — the edge carries the value-col rating in :attributes.
+;; Tracer 3 — the edge carries the value-col rating in keyword-keyed :properties.
+;; CONNECT-3b moved the rating from the string-keyed :attributes (dropped by the
+;; create-relationship compile path) to keyword-keyed :properties (forwarded).
 ;; ===========================================================================
 
-(deftest edge-carries-the-value-col-rating-in-attributes
+(deftest edge-carries-the-value-col-rating-in-properties
   (testing "the numeric rating (the :value-col value) rides the occupation→skill EDGE
-            under the value-col name in :attributes (a literal on the edge, not a node)"
+            under the value-col name as a KEYWORD in :properties (CONNECT-3b — so it
+            survives relationship-draft->command into the landed edge)"
     (let [{:keys [relationship-drafts]} (ca/stream-aggregate association-spec junction-rows)
           edge (fn [src tgt]
                  (first (filter #(and (= src (:source-uri %)) (= tgt (:target-uri %)))
                                 relationship-drafts)))]
-      (is (= {"DataValue" 5} (:attributes (edge "occupation/occA" "skill/skillShared")))
-          "the occA→skillShared edge carries its rating (5) under the value-col name")
-      (is (= {"DataValue" 3} (:attributes (edge "occupation/occB" "skill/skillShared")))
+      (is (= {(keyword "DataValue") 5} (:properties (edge "occupation/occA" "skill/skillShared")))
+          "the occA→skillShared edge carries its rating (5) in keyword-keyed :properties")
+      (is (= {(keyword "DataValue") 3} (:properties (edge "occupation/occB" "skill/skillShared")))
           "the occB→skillShared edge carries its own rating (3)")
-      (is (= {"DataValue" 1} (:attributes (edge "occupation/occC" "skill/skillShared")))
-          "the occC→skillShared edge carries its own rating (1)"))))
+      (is (= {(keyword "DataValue") 1} (:properties (edge "occupation/occC" "skill/skillShared")))
+          "the occC→skillShared edge carries its own rating (1)")
+      (is (nil? (:attributes (edge "occupation/occA" "skill/skillShared")))
+          "the rating no longer rides :attributes (that string-keyed map was dropped)"))))
 
 ;; ===========================================================================
 ;; Tracer 4 — the collect/top-N ATTRIBUTE modes are byte-identical: association is
@@ -200,13 +205,12 @@
 (defn- land-relationship-draft!
   [ctx draft]
   ;; Mirror the REAL `relationship-draft->command` compile path: it lands
-  ;; source/target/predicate + `:properties (or (:properties draft) {})`. Our
-  ;; association drafts carry the rating under `:attributes` (a string-keyed column
-  ;; name — the MC-6/CONNECT-3b recovery surface), NOT `:properties`, so the real
-  ;; edge lands with empty properties. (The relationship-created `:properties` schema
-  ;; is [:map-of :keyword :any] — forwarding a string-keyed attribute map would fail
-  ;; append-time Malli validation and be silently dropped.) BFS traversal needs the
-  ;; EDGE, not the rating; tracer 3 already proves the rating rides the draft.
+  ;; source/target/predicate + `:properties (or (:properties draft) {})`. CONNECT-3b:
+  ;; the association drafts now carry the rating under keyword-keyed `:properties`
+  ;; (the value-col name as a keyword), so it SURVIVES into the landed edge (the
+  ;; relationship-created `:properties` schema is [:map-of :keyword :any]). BFS
+  ;; traversal below needs only the EDGE; the rating-survives-landing proof lives in
+  ;; the CONNECT-3b test.
   (h/run-and-apply! ctx
                     (fn [c]
                       (cmd/ontology-create-relationship

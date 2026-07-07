@@ -216,8 +216,12 @@
       canonicalize / MC-6 can recover its identity. Order = first-appearance (#10).
    2. `:relationship-drafts` — ONE edge per (key,element) pair:
       `{:source-uri <key-entity>/<key> :target-uri <element-entity>/<element>
-        :predicate <predicate> :attributes {<value-col> <value>}}` — the rating rides
-      the edge (omitted when the fold carried no value).
+        :predicate <predicate> :properties {<:value-col-as-keyword> <value>}}` — the
+      rating rides the edge in KEYWORD-KEYED `:properties` (CONNECT-3b: this is the
+      field `relationship-draft->command` forwards + the relationship-created
+      `:properties [:map-of :keyword :any]` schema accepts, so the rating SURVIVES
+      into the landed edge — a string-keyed `:attributes` map was dropped by the
+      compile path, CONNECT-3a's noted gap). Omitted when the fold carried no value.
 
    Plus the SAME honest counts + boundedness witnesses the attribute finalize returns.
    Pure + total."
@@ -255,7 +259,12 @@
                                (cond-> {:source-uri (key-uri k)
                                         :target-uri (elem-uri e)
                                         :predicate predicate}
-                                 (and (some? v) vcol) (assoc :attributes {vcol v}))))]
+                                 ;; CONNECT-3b — the rating rides KEYWORD-KEYED
+                                 ;; :properties (the value-col NAME becomes the
+                                 ;; property key) so relationship-draft->command
+                                 ;; forwards it into the landed edge (a string-keyed
+                                 ;; :attributes map is dropped by the compile path).
+                                 (and (some? v) vcol) (assoc :properties {(keyword vcol) v}))))]
     {:concept-drafts concept-drafts
      :relationship-drafts relationship-drafts
      :distinct-keys (count acc)
@@ -451,18 +460,46 @@
            (key-repeats? sample (:key-col spec))
            (long-form-container? container))))))
 
+(defn normalize-spec-keys
+  "CONNECT-3b — normalize the AUTHOR's key-spelling variance to the canonical
+   HYPHEN field names. The structured-output round-trip lets the model emit the
+   nested aggregation-spec's keys with UNDERSCORES (`:key_col`, `:attr_name`,
+   `:element_entity_type`) or a near-synonym (`:field` for the element column) —
+   the live CONNECT-3b prototype observed both. This RENAMES every key's
+   underscores to hyphens (so `:element_entity_type` → `:element-entity-type`,
+   the association-mode trigger, and `:key_col` → `:key-col`, the validity trigger,
+   BOTH resolve) and folds the `:field` → `:element-col` synonym when no
+   `:element-col` is present. Deterministic field-synonym normalization (#10) — the
+   VALUES are untouched (a predicate value `\"requires_skill\"` keeps its
+   underscore); only KEYS are canonicalized. Pure + total."
+  [m]
+  (when (map? m)
+    (let [hyphenated (reduce-kv (fn [acc k v]
+                                  (let [k' (if (keyword? k)
+                                             (keyword (str/replace (name k) "_" "-"))
+                                             k)]
+                                    (assoc acc k' v)))
+                                {} m)]
+      (cond-> hyphenated
+        (and (not (contains? hyphenated :element-col)) (contains? hyphenated :field))
+        (-> (assoc :element-col (:field hyphenated)) (dissoc :field))))))
+
 (defn parse-aggregation-spec
   "Coerce the AUTHOR's `:aggregation-spec` write into a clean spec map. The `:llm`
    node may deliver a structured map OR — intermittently (the C1 map-write
    fragility, cf. GC-10 Fix A's `:entity-types`) — an un-parsed EDN STRING; this
    `edn/read-string`s a string back to a map (garbage → nil, never a fabricated
-   spec — #5), coerces `:n` from a string, and nils a blank `:filter-col` (so a
-   spec with no scale dimension carries no filter). Pure + total — never throws."
+   spec — #5), NORMALIZES the model's key-spelling variance (underscore→hyphen +
+   the `:field` synonym via `normalize-spec-keys`, CONNECT-3b), coerces `:n` from a
+   string, and nils a blank `:filter-col`. The association fields `:predicate` +
+   `:element-entity-type` (CONNECT-3b) pass through untouched once normalized — so a
+   model-authored `{:key_col … :predicate … :element_entity_type …}` becomes a valid
+   association spec. Pure + total — never throws."
   [raw]
   (let [m (cond
-            (map? raw) raw
+            (map? raw) (normalize-spec-keys raw)
             (and (string? raw) (seq (str/trim raw)))
-            (try (let [p (edn/read-string raw)] (when (map? p) p))
+            (try (let [p (edn/read-string raw)] (when (map? p) (normalize-spec-keys p)))
                  (catch Throwable _ nil))
             :else nil)]
     (when m
@@ -504,49 +541,90 @@
 (defn aggregation-author-guidance
   "The prompt EXTENSION the AUTHOR reads on every container. MT-6: the decision is
    SAMPLE-DRIVEN, not shape-tag-gated. It tells the model to INSPECT the sample: if
-   the ENTITY key appears in MANY rows (a tall table — many rows per entity, one row
-   per entity×element), ROLL IT UP into ONE record per key via an `:aggregation-spec`
-   — with a numeric `:value-col` for a ranked TOP-N when the element rows carry a real
-   measure, OR NO `:value-col` for a LIST-collect (a flat list of the descriptive
-   element labels) when they don't. If each row is a DISTINCT entity (one row per
-   key), author the per-row `transform-source` instead. Reasoning FIRST (#13).
-   Domain-agnostic (#12): the model picks every column + the mode + the scale filter
-   from the SAMPLE (role hints are ADVISORY — it VERIFIES a value column is a real
-   MEASURE against the sample, never trusting a hint that points at an id column)."
+   the ENTITY key appears in MANY rows (a tall table — many rows per entity), ROLL IT
+   UP via an `:aggregation-spec`. CONNECT-3b: there are now THREE cases the model must
+   distinguish —
+     (A) ATTRIBUTE — the element value is an ENTITY-SPECIFIC label/measure (unique to
+         one key: an alternate name, a one-off string) → roll it onto the entity as an
+         attribute (ranked TOP-N with a numeric `:value-col`, or a flat LIST without);
+     (C) ASSOCIATION — the element value is itself a GENERAL, REFERENCEABLE ENTITY that
+         MANY different keys would share (a capability, category, activity, standard) →
+         a many-to-many RELATION; author an association-spec (the same map PLUS
+         `:predicate` + `:element-entity-type` in place of `:attr-name`) so the element
+         MINTS as a SHARED node + a key→element EDGE (the value-col rating rides the
+         edge). Burying a shareable entity in a per-key list yields 0 shared nodes / 0
+         edges — a BFS-dead graph;
+     (B) one row per entity (near-unique key) → author the per-row `transform-source`.
+   Reasoning FIRST (#13). Domain-agnostic (#12): the model picks every column + the
+   mode + the predicate + the element-entity-type from the SAMPLE; this text names NO
+   domain column/type/predicate. The A↔C distinction is the element's NATURE (a
+   shareable, referenceable KIND OF THING vs a one-entity label) — the structural
+   'recurs across many keys' signal is often NOT visible in a small contiguous sample
+   (which shows one key's rows), so the model judges by the element's KIND."
   []
   (str
    "\n\n*** REPEATING-KEY TABLES — AUTHOR AN AGGREGATION-SPEC INSTEAD (read carefully) ***\n"
    "INSPECT the provided sample-rows. Ask: does ONE entity key value appear in MANY "
-   "rows? There are two cases:\n\n"
-   "(A) MANY ROWS PER ENTITY (a tall table — the key repeats; each row is one "
-   "entity×element pair, e.g. an entity plus one of its measurements, or an entity "
-   "plus one of its descriptive labels). Emitting one concept per raw row would "
-   "SHATTER each entity into dozens of fragments. Instead ROLL IT UP: do NOT author a "
-   "`transform-source`; author an `aggregation-spec` — a DATA MAP (not code) — with:\n"
+   "rows? If so, emitting one concept per raw row would SHATTER each entity into "
+   "dozens of fragments — roll it up with an `aggregation-spec` (a DATA MAP, not "
+   "code) instead of a per-row `transform-source`. There are THREE cases — decide "
+   "which the element column is:\n\n"
+
+   "(A) MANY ROWS PER ENTITY, and each row's ELEMENT value is an ENTITY-SPECIFIC "
+   "LABEL/MEASURE — a value that BELONGS TO this one entity and would NOT be shared "
+   "verbatim by many other entities (an alternate name/title, a one-off descriptive "
+   "string, a code specific to this row). These have no independent identity worth a "
+   "node of their own. ROLL THEM UP onto the entity as an ATTRIBUTE with:\n"
    "  {:key-col      <the ENTITY key column to group by (the one that REPEATS)>\n"
-   "   :element-col  <the column whose values are the element LABELS to collect>\n"
-   "   :value-col    <OPTIONAL — the NUMERIC column to RANK elements by. Include it "
-   "ONLY when the element rows carry a REAL measure/score you VERIFIED in the sample "
-   "(NOT an id/code) → you get a ranked TOP-N. If the elements are DESCRIPTIVE labels "
-   "with no ranking measure (e.g. alternate names, tasks, related items), OMIT "
-   "`value-col` entirely → you get a bounded flat LIST of the label values (no rank).>\n"
-   "   :n            <how many top elements to keep per entity for the top-N, e.g. 10 "
-   "(ignored for a list-collect)>\n"
+   "   :element-col  <the column whose values are the labels to collect>\n"
+   "   :value-col    <OPTIONAL — the NUMERIC column to RANK by. Include ONLY when the "
+   "rows carry a REAL measure/score you VERIFIED in the sample (NOT an id/code) → a "
+   "ranked TOP-N. If the elements are descriptive labels with no ranking measure, "
+   "OMIT it → a bounded flat LIST of the label values.>\n"
+   "   :n            <how many top elements to keep per entity for the top-N (ignored "
+   "for a list-collect)>\n"
    "   :attr-name    <the flat array attribute name to hold them, e.g. topElements>\n"
    "   :entity-type  <the model-spec entity-type this key names>\n"
-   "   :filter-col   <OPTIONAL — if the SAME entity×element appears more than once "
-   "under different measurement SCALES/subsets (a scale/subset column), name that "
-   "column here so only ONE scale is ranked; otherwise omit it>\n"
+   "   :filter-col   <OPTIONAL — a scale/subset column; see the scale-filter note below>\n"
    "   :filter-val   <OPTIONAL — the single scale/subset VALUE to KEEP>}\n\n"
-   "The SCALE FILTER is critical for a top-N: if the table repeats each "
-   "entity×element under multiple scales (e.g. two different measurements of the same "
-   "pair), a top-N WITHOUT the filter MIXES scales and is garbage — inspect the sample "
-   "for a repeated-pair/scale column and set `filter-col`/`filter-val` to the one "
-   "scale you are ranking by. Pick a value that occurs in the real sampled rows.\n\n"
+
+   "(C) MANY ROWS PER ENTITY, but each row's ELEMENT value is itself a GENERAL, "
+   "REFERENCEABLE ENTITY — a reusable 'thing' with its OWN identity that MANY "
+   "DIFFERENT entities would share (a capability, category, topic, standard, "
+   "activity, component, requirement — a value you would expect to see attached to "
+   "lots of other keys too, and that you'd want to REACH AS A NODE and compare "
+   "ACROSS entities). This is a MANY-TO-MANY RELATION, not an attribute: burying it "
+   "in a per-entity list yields ZERO shared nodes and ZERO edges (a graph you cannot "
+   "traverse from one entity to another through the shared thing). Instead MINT the "
+   "element as a SHARED node + a key->element EDGE by authoring an ASSOCIATION-spec — "
+   "the SAME map as (A) but with TWO extra fields IN PLACE OF `:attr-name`:\n"
+   "   :predicate            <the relationship VERB from the key entity to the element "
+   "entity — how the key RELATES to the element (author it yourself from the meaning; "
+   "a verb like uses / performs / belongs-to / depends-on)>\n"
+   "   :element-entity-type  <the element's OWN entity-type — the type of thing each "
+   "element value IS (propose a new type here if the model-spec has none for it)>\n"
+   " Keep `:key-col` `:element-col` and (when the rows carry a real measure you "
+   "verified) `:value-col` + the scale `:filter-col`/`:filter-val` — the value-col "
+   "rating RIDES THE EDGE. Do NOT set `:attr-name` for an association.\n"
+   " HOW TO TELL (A) FROM (C): ask 'would this exact element value plausibly appear "
+   "for MANY OTHER entity keys, and is it a general thing I'd want as its own node to "
+   "traverse to?' — YES → (C) association; or is it a label/measure specific to THIS "
+   "entity → (A) attribute. NOTE: a small contiguous sample often shows only ONE key's "
+   "rows, so you may NOT literally SEE the element repeat across keys — judge by the "
+   "element's NATURE (a shareable, referenceable kind of thing vs a one-entity label).\n\n"
+
    "(B) ONE ROW PER ENTITY (each row is a DISTINCT entity — the key is near-unique). "
-   "This is NOT an aggregation: leave `aggregation-spec` empty/absent and author the "
-   "per-row `transform-source` exactly as described above.\n\n"
-   "Write your `reasoning` FIRST (#13): state whether the key repeats in the sample "
-   "(many rows per entity vs one), and for a roll-up name the key/element columns and "
-   "whether you are using a ranked top-N (with the value column you verified is a real "
-   "measure, and any scale filter) or a flat LIST (no value column), and why."))
+   "NOT an aggregation: leave `aggregation-spec` empty/absent and author the per-row "
+   "`transform-source` exactly as described above.\n\n"
+
+   "The SCALE FILTER is critical whenever you rank a top-N: if the table repeats each "
+   "entity×element under multiple scales/subsets, a top-N WITHOUT the filter MIXES "
+   "scales and is garbage — inspect the sample for a scale/subset column and set "
+   "`filter-col`/`filter-val` to the one scale you rank by. Pick a value that occurs "
+   "in the real sampled rows.\n\n"
+
+   "Write your `reasoning` FIRST (#13): state whether the key repeats (many rows per "
+   "entity vs one); if it repeats, state whether the element is an ENTITY-SPECIFIC "
+   "label/measure (→ A, attribute) or a GENERAL REFERENCEABLE entity many keys would "
+   "share (→ C, association) and name the predicate + element-entity-type; then name "
+   "the key/element columns and any value column + scale filter, and why."))
