@@ -82,17 +82,30 @@
             occupation attribute list (which is 0 edges / 0 element nodes / BFS-dead)"
     (let [{:keys [concept-drafts relationship-drafts distinct-keys]}
           (ca/stream-aggregate association-spec junction-rows)
-          skills (set (map :label concept-drafts))]
+          element-drafts (filter #(= "skill" (:entity-type %)) concept-drafts)
+          key-drafts (filter #(= "occupation" (:entity-type %)) concept-drafts)
+          skills (set (map :label element-drafts))]
       ;; ELEMENT NODES: one DISTINCT element concept per skill value (3 distinct
       ;; skills across the 5 rows), each a shared canonical node with :entity-type "skill".
-      (is (= 3 (count concept-drafts))
-          "one concept-draft per DISTINCT element value (shared skill node), not per row")
+      (is (= 3 (count element-drafts))
+          "one element concept-draft per DISTINCT element value (shared skill node), not per row")
       (is (= #{"skillShared" "skillA" "skillB"} skills)
           "the element nodes are the distinct skill labels")
-      (is (every? #(= "skill" (:entity-type %)) concept-drafts)
+      (is (every? #(= "skill" (:entity-type %)) element-drafts)
           "every element node carries the :element-entity-type")
-      (is (contains? (set (map :uri concept-drafts)) "skill/skillShared")
+      (is (contains? (set (map :uri element-drafts)) "skill/skillShared")
           "the element node carries a canonical URI keyed on the element value")
+      ;; CONNECT-3d — the association fold ALSO emits the KEY (source) entity as a
+      ;; concept-draft (one per distinct key), so GC-1 canonicalize reconciles the
+      ;; edge source-uri to the canonical occupation node (was: 0 key nodes → the
+      ;; edge stranded on a case/scheme-variant stub).
+      (is (= 3 (count key-drafts))
+          "CONNECT-3d: one KEY (occupation) concept-draft per distinct key")
+      (is (= #{"occupation/occA" "occupation/occB" "occupation/occC"}
+             (set (map :uri key-drafts)))
+          "the key nodes carry the source-entity canonical URI (pre-GC-1 scheme)")
+      (is (= "occupation" (:entity-type (first key-drafts)))
+          "the key node carries the source :entity-type, not the element type")
       ;; EDGES: one occupation→skill edge per raw (key,element) row (5 rows → 5 edges).
       (is (= 5 (count relationship-drafts))
           "one occupation→element edge per (key,element) row (5 rows → 5 edges)")

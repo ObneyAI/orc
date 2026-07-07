@@ -214,6 +214,18 @@
       element from many keys is ONE node — dedup is the anti-over-mint invariant). Each
       carries the element value in `:attributes` under the element-col name so GC-1
       canonicalize / MC-6 can recover its identity. Order = first-appearance (#10).
+      CONNECT-3d: PLUS one bare KEY (source) concept-draft per distinct key, carrying
+      the key VALUE in `:attributes` under the key-col — so GC-1 `canonicalize-drafts`
+      mints it to the SAME canonical URI the per-row occupation path produces AND
+      rewrites the edge `:source-uri` (now a LOCAL draft) to match. Without this, the
+      edge source keeps the fold's raw `<:entity-type>/<raw-key>` scheme (canonical-
+      cased type + un-normalized value) while the rich per-row node lands at
+      `<normalize-key-name type>/<normalize-value key>` — two schemes for one entity, so
+      the edge strands on a case/scheme-variant stub (the CONNECT-4 live finding). The
+      bare key draft carries only its identity; EB5 `union-concept-drafts-by-uri` picks
+      the entity-DEFINING draft (the rich per-row one with a description), so this NEVER
+      clobbers the real occupation title — it is the designed-for measurement-container
+      identity merge (the same reason a bare-code label loses to a real title).
    2. `:relationship-drafts` — ONE edge per (key,element) pair:
       `{:source-uri <key-entity>/<key> :target-uri <element-entity>/<element>
         :predicate <predicate> :properties {<:value-col-as-keyword> <value>}}` — the
@@ -226,7 +238,7 @@
    Plus the SAME honest counts + boundedness witnesses the attribute finalize returns.
    Pure + total."
   [spec state]
-  (let [{:keys [element-entity-type key-entity-type value-col element-col]} spec
+  (let [{:keys [element-entity-type key-entity-type value-col element-col key-col]} spec
         predicate (str (:predicate spec))
         elem-et (str/trim (str element-entity-type))
         ;; CONNECT-3c — the SOURCE (key) node scheme. Prefer an explicit
@@ -243,6 +255,7 @@
                  (if (seq k) k "entity"))
         vcol (when (seq (str/trim (str value-col))) value-col)
         ecol (when (seq (str/trim (str element-col))) element-col)
+        kcol (when (seq (str/trim (str key-col))) key-col)
         acc (:acc state)
         elem-uri (fn [e] (str elem-et "/" e))
         key-uri (fn [k] (str key-et "/" k))
@@ -255,12 +268,24 @@
                             (remove nil?)
                             distinct
                             vec)
-        concept-drafts (mapv (fn [e]
+        element-drafts (mapv (fn [e]
                                {:uri (elem-uri e)
                                 :label (str e)
                                 :entity-type elem-et
                                 :attributes (if ecol {ecol e} {})})
                              distinct-elems)
+        ;; CONNECT-3d — one bare KEY (source) concept-draft per distinct key, carrying
+        ;; the key VALUE under the key-col so GC-1 `canonicalize-drafts` mints it to the
+        ;; SAME canonical URI the per-row path produces (and rewrites the edge
+        ;; :source-uri, now LOCAL, to match). Key order = accumulator (first-appearance)
+        ;; order. EB5 unions this bare identity draft under the rich per-row node.
+        key-drafts (mapv (fn [k]
+                           {:uri (key-uri k)
+                            :label (str k)
+                            :entity-type key-et
+                            :attributes (if kcol {kcol k} {})})
+                         (keys acc))
+        concept-drafts (into element-drafts key-drafts)
         ;; ONE key→element edge per (key,element) entry — the rating rides the edge.
         relationship-drafts (vec
                              (for [[k entries] acc
