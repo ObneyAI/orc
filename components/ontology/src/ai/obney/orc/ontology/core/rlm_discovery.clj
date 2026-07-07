@@ -1393,6 +1393,9 @@
      :rows-filtered (:rows-filtered agg)
      :distinct-keys (:distinct-keys agg)
      :peak-acc-entries (:peak-acc-entries agg)
+     ;; STREAM Slice 7 — surface whether an OPT-IN cap actually FIRED (never silent).
+     :list-truncated? (:list-truncated? agg)
+     :topn-truncated? (:topn-truncated? agg)
      :errors-sample []
      :concept-drafts (:concept-drafts agg)
      :relationship-drafts []}))

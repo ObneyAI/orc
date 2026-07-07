@@ -162,42 +162,92 @@
 ;; existing top-N path (a spec WITH :value-col) is unchanged.
 ;; ===========================================================================
 
-(deftest collect-mode-collects-distinct-bounded-list-when-no-value-col
-  (testing "a spec with NO :value-col COLLECTS the element values into a per-key
-            FLAT LIST (no ranking); the list is DISTINCT and BOUNDED at
-            max-list-size — feeding >max distinct elements for one key CAPS it,
-            never an unbounded blowup (this is the whole point — it prevents the OOM)"
-    (let [collect-spec {:key-col "k" :element-col "el"   ; NO :value-col
+(deftest collect-mode-keeps-all-distinct-values-by-default-uncapped
+  (testing "STREAM Slice 7 (THE PAYOFF) — a collect spec with NO :max-list-size keeps
+            ALL distinct element values for a key (the >25 the old hard 25-cap DROPPED
+            — the exact drop the user flagged), still DISTINCT-deduped (lossless); the
+            accumulator witness reflects the real (>25) per-key size, honestly"
+    (let [n-distinct 60                                  ; far more than the old 25 cap
+          collect-spec {:key-col "k" :element-col "el"   ; NO :value-col, NO :max-list-size
                         :attr-name :altTitles :entity-type "occupation"}
           rows (concat
-                ;; k1 — 3 distinct titles + a DUPLICATE (must collapse to distinct)
-                [{"k" "occ1" "el" "Analyst"}
-                 {"k" "occ1" "el" "Consultant"}
-                 {"k" "occ1" "el" "Analyst"}          ; duplicate — deduped
-                 {"k" "occ1" "el" "Advisor"}]
-                ;; k2 — FAR more distinct elements than the cap (must bound at max)
-                (for [i (range (* 3 ca/max-list-size))]
-                  {"k" "occ2" "el" (str "title-" i)}))
-          {:keys [concept-drafts distinct-keys peak-acc-entries]}
+                ;; occ1 — 60 DISTINCT titles + a DUPLICATE (must collapse to distinct)
+                (for [i (range n-distinct)] {"k" "occ1" "el" (str "title-" i)})
+                [{"k" "occ1" "el" "title-0"}])          ; duplicate — deduped, not counted
+          {:keys [concept-drafts distinct-keys peak-acc-entries list-truncated?]}
           (ca/stream-aggregate collect-spec rows)
-          by-uri (into {} (map (juxt :uri identity)) concept-drafts)]
-      (is (= 2 (count concept-drafts))
-          "one draft per entity KEY (not one per raw attribute row)")
-      (is (= 2 distinct-keys))
-      ;; occ1 — the flat list is DISTINCT (the duplicate 'Analyst' collapsed)
-      (is (= ["Analyst" "Consultant" "Advisor"]
-             (get-in by-uri ["occupation/occ1" :attributes :altTitles]))
-          "collect mode yields a distinct flat list of the element values, no ranking")
-      ;; occ2 — BOUNDED at max-list-size regardless of how many distinct rows arrive
-      (is (= ca/max-list-size
-             (count (get-in by-uri ["occupation/occ2" :attributes :altTitles])))
-          "the per-key list is CAPPED at max-list-size — never a 25k-row blowup")
+          by-uri (into {} (map (juxt :uri identity)) concept-drafts)
+          lst (get-in by-uri ["occupation/occ1" :attributes :altTitles])]
+      (is (= 1 distinct-keys) "one draft per entity KEY (not one per raw attribute row)")
+      ;; THE PAYOFF — ALL 60 distinct values are kept by default (not capped at 25)
+      (is (= n-distinct (count lst))
+          "collect keeps ALL >25 distinct values by default — NOTHING dropped (the payoff)")
+      ;; DISTINCT dedup is preserved (lossless — the duplicate collapsed)
+      (is (= (count lst) (count (distinct lst)))
+          "the list is DISTINCT — the duplicate collapsed (dedup is lossless, not a drop)")
       ;; the key value is still carried in :attributes (GC-1 identity recovery)
       (is (= "occ1" (get-in by-uri ["occupation/occ1" :attributes "k"]))
           "the key value is carried under the key column name for identity recovery")
-      ;; boundedness witness — the whole accumulator is ≤ keys × max-list-size
-      (is (<= peak-acc-entries (* distinct-keys ca/max-list-size))
-          "the accumulator is bounded to keys × max-list-size (never the row count)"))))
+      ;; witness honesty — the accumulator reflects the real (>25) size, not a capped 25
+      (is (= n-distinct peak-acc-entries)
+          "the accumulator witness reflects the real (>25) per-key size, honestly")
+      (is (not list-truncated?)
+          "no opt-in cap set → :list-truncated? is false (nothing was truncated)"))))
+
+(deftest collect-mode-opt-in-max-list-size-caps-and-surfaces-truncation
+  (testing "STREAM Slice 7 — an OPT-IN :max-list-size caps the per-key list at N AND
+            surfaces :list-truncated? true (a cap that FIRES is never silent, #5)"
+    (let [collect-spec {:key-col "k" :element-col "el" :max-list-size 25
+                        :attr-name :altTitles :entity-type "occupation"}
+          rows (for [i (range 60)] {"k" "occ1" "el" (str "title-" i)})
+          {:keys [concept-drafts list-truncated? peak-acc-entries distinct-keys]}
+          (ca/stream-aggregate collect-spec rows)
+          lst (get-in (first concept-drafts) [:attributes :altTitles])]
+      (is (= 25 (count lst)) "the opt-in :max-list-size 25 caps the list at 25")
+      (is (true? list-truncated?)
+          "the fired opt-in cap is SURFACED via :list-truncated? — never a silent drop")
+      (is (<= peak-acc-entries (* distinct-keys 25))
+          "the accumulator is bounded by the opt-in cap when it is set")
+      ;; a cap NOT exceeded must NOT falsely flag truncation (honest)
+      (let [{:keys [list-truncated?]}
+            (ca/stream-aggregate (assoc collect-spec :max-list-size 100) rows)]
+        (is (not list-truncated?)
+            "a cap larger than the distinct count does NOT flag truncation (honest)")))))
+
+(deftest top-n-keeps-all-ranked-pairs-by-default-no-n
+  (testing "STREAM Slice 7 — a top-N spec (has :value-col) with NO :n keeps ALL ranked
+            pairs, sorted by value DESC (order preserved, nothing dropped); the old
+            default-of-10 no longer silently drops the 11th+ ranked element"
+    (let [spec {:key-col "k" :element-col "el" :value-col "v"   ; NO :n
+                :attr-name :top :entity-type "e"}
+          ;; 30 distinct elements, distinct values → an unambiguous descending order
+          rows (for [i (range 30)] {"k" "e1" "el" (str "el-" i) "v" i})
+          {:keys [concept-drafts topn-truncated? peak-acc-entries]}
+          (ca/stream-aggregate spec rows)
+          top (get-in (first concept-drafts) [:attributes :top])]
+      (is (= 30 (count top)) "ALL 30 ranked elements kept by default (not just top-10)")
+      (is (= (mapv #(str "el-" %) (reverse (range 30))) top)
+          "the list is sorted by value DESC — deterministic order preserved (#10)")
+      (is (= 30 peak-acc-entries) "the accumulator witness reflects the real size")
+      (is (not topn-truncated?) "no :n → :topn-truncated? false (nothing dropped)"))))
+
+(deftest top-n-opt-in-n-caps-and-surfaces-truncation
+  (testing "STREAM Slice 7 — an OPT-IN :n caps to the top-N (the existing behavior, now
+            explicit) AND surfaces :topn-truncated? true when it fires"
+    (let [spec {:key-col "k" :element-col "el" :value-col "v" :n 10
+                :attr-name :top :entity-type "e"}
+          rows (for [i (range 30)] {"k" "e1" "el" (str "el-" i) "v" i})
+          {:keys [concept-drafts topn-truncated?]} (ca/stream-aggregate spec rows)
+          top (get-in (first concept-drafts) [:attributes :top])]
+      (is (= 10 (count top)) ":n 10 caps to the top-10 ranked elements")
+      (is (= (mapv #(str "el-" %) (reverse (range 20 30))) top)
+          "the top-10 are the 10 HIGHEST-valued elements, sorted desc")
+      (is (true? topn-truncated?)
+          "the fired :n cap is SURFACED via :topn-truncated? — never silent")
+      ;; :n larger than the element count must NOT falsely flag truncation
+      (let [{:keys [topn-truncated?]} (ca/stream-aggregate (assoc spec :n 100) rows)]
+        (is (not topn-truncated?)
+            "an :n above the element count does not flag truncation (honest)")))))
 
 (deftest collect-mode-and-top-n-mode-coexist-on-value-col-presence
   (testing "the SAME public stream-aggregate keeps the existing TOP-N behavior for a
@@ -330,6 +380,11 @@
       (is (nil? (:filter-col p)) "a blank filter-col → nil (no scale filter)"))
     (let [p (ca/parse-aggregation-spec {:key-col "k" :element-col "el" :value-col "v" :n "7"})]
       (is (= 7 (:n p)) "a map passes through with :n coerced"))
+    ;; STREAM Slice 7 — an opt-in :max-list-size string coerces like :n; absent → nil (unbounded)
+    (let [p (ca/parse-aggregation-spec {:key-col "k" :element-col "el" :max-list-size "25"})]
+      (is (= 25 (:max-list-size p)) "an opt-in :max-list-size string coerces to a number"))
+    (let [p (ca/parse-aggregation-spec {:key-col "k" :element-col "el"})]
+      (is (nil? (:max-list-size p)) "no :max-list-size → nil (UNBOUNDED default, keep everything)"))
     (is (nil? (ca/parse-aggregation-spec "not edn {{{"))
         "unparseable garbage → nil (never a fabricated spec, #5)")
     (is (nil? (ca/parse-aggregation-spec nil)))))

@@ -52,24 +52,35 @@
 ;; tasks) carries a REPEATING entity key + a DESCRIPTIVE element column but NO
 ;; numeric measure to rank by. There is nothing to top-N — the right rollup is ONE
 ;; record per key carrying its element values as a FLAT LIST. Collect mode fires
-;; when the spec has NO `:value-col` (blank/absent). The list is DISTINCT + BOUNDED
-;; at `max-list-size` so a 25k-row attribute table can NEVER blow the accumulator
-;; up (the whole reason MT-6 exists — those per-row nodes shouldn't exist).
+;; when the spec has NO `:value-col` (blank/absent). The list is ALWAYS DISTINCT
+;; (dedup is lossless); it is UNBOUNDED by default (keep ALL distinct values — the
+;; STREAM Slice 7 payoff: the projections field-project the heavy lists away, so the
+;; accumulator is the irreducible "keep all distinct values" working set the user
+;; wants retained) and only capped when a caller OPTS IN via `:max-list-size`.
 ;; ---------------------------------------------------------------------------
 
-(def max-list-size
-  "Collect-mode (list) cap: at most this many DISTINCT element values kept per key.
-   Boundedness is load-bearing (#2/#5) — once a key's list reaches this cap, further
-   distinct elements are IGNORED, so the accumulator stays keys × max-list-size no
-   matter how many rows a repeating-key attribute table carries (never a 25k blowup).
-   Mirrors the top-N mode's per-key bound; a modest cap keeps a node's list readable."
-  25)
+(defn list-cap
+  "STREAM Slice 7 — the OPT-IN collect-mode (list) cap. Returns a POSITIVE INT when
+   the `spec` carries a positive-int (or positive numeric-string) `:max-list-size`,
+   else NIL = UNBOUNDED (keep ALL distinct element values per key, deduped). The old
+   hard 25-cap (which silently DROPPED the 26th+ distinct value — the drop the user
+   flagged) is now this opt-in field; the default keeps everything. A cap that is set
+   and FIRES is surfaced via `:list-truncated?` (never a silent drop). Pure + total."
+  [spec]
+  (let [c (:max-list-size spec)]
+    (cond
+      (and (integer? c) (pos? c)) (long c)
+      (and (string? c) (re-matches #"\s*\d+\s*" (str c)) (pos? (Long/parseLong (str/trim c))))
+      (Long/parseLong (str/trim c))
+      :else nil)))
 
 (defn collect-mode?
   "True iff `spec` is a COLLECT (list) spec — it has NO `:value-col` (blank/absent),
    so there is no numeric column to RANK by. Collect mode gathers the element values
-   into a per-key flat list (bounded at `max-list-size`) instead of a top-N-by-value.
-   A spec WITH a non-blank `:value-col` keeps the existing top-N path. Pure + total."
+   into a per-key flat list (DISTINCT; UNBOUNDED by default, capped only via an opt-in
+   `:max-list-size`) instead of a top-N-by-value. A spec WITH a non-blank `:value-col`
+   keeps the top-N path (also UNBOUNDED by default, capped only via an opt-in `:n`).
+   Pure + total."
   [spec]
   (not (seq (str/trim (str (:value-col spec))))))
 
@@ -82,40 +93,40 @@
 ;; ---------------------------------------------------------------------------
 
 (defn aggregate-init
-  "The empty fold state (accumulator + honest counters)."
+  "The empty fold state (accumulator + honest counters). `:list-truncated?` /
+   `:topn-truncated?` start false and flip true only when an OPT-IN cap actually
+   DROPS a value (STREAM Slice 7 — a fired cap is surfaced, never silent)."
   []
-  {:acc {} :rows-seen 0 :rows-kept 0 :rows-errored 0 :rows-filtered 0})
+  {:acc {} :rows-seen 0 :rows-kept 0 :rows-errored 0 :rows-filtered 0
+   :list-truncated? false :topn-truncated? false})
 
 (defn aggregate-step
   "Fold ONE row into the aggregate `state` under `spec`. Off-scale rows (the scale
    filter) increment `:rows-filtered`. Then, gated on the spec's MODE:
 
    TOP-N mode (spec HAS a `:value-col`): in-scope rows with key+element+numeric value
-   contribute to the per-key TOP-N (pruned on every insert → bounded at N per key);
-   in-scope rows missing key/element or with a non-numeric value increment
-   `:rows-errored` (honest skip, never fabricated).
+   contribute to the per-key ranked pairs. By default (NO `:n`) ALL ranked pairs are
+   KEPT (STREAM Slice 7 — nothing dropped; finalize sorts by value desc). An OPT-IN
+   `:n` caps to the per-key top-N (pruned on every insert, bounded at N) and sets
+   `:topn-truncated?` when it actually drops a pair. In-scope rows missing key/element
+   or with a non-numeric value increment `:rows-errored` (honest skip, never fabricated).
 
    COLLECT mode (MT-6, spec has NO `:value-col`): in-scope rows with key+element
-   collect the ELEMENT value into the per-key flat list — DISTINCT and BOUNDED at
-   `max-list-size` (once at the cap, further distinct elements are ignored so the
-   accumulator can never blow up); no numeric value is required. Rows missing
-   key/element increment `:rows-errored`. A duplicate/over-cap element is still a
-   valid in-scope row (`:rows-kept`), just deduped/dropped — never an error.
+   collect the ELEMENT value into the per-key flat list — ALWAYS DISTINCT (dedup is
+   lossless), UNBOUNDED by default (keep ALL distinct values — the Slice 7 payoff). An
+   OPT-IN `:max-list-size` caps the list and sets `:list-truncated?` when a new distinct
+   value is DROPPED because the cap is reached (never silent). No numeric value is
+   required. Rows missing key/element increment `:rows-errored`. A duplicate (or an
+   over-an-opt-in-cap) element is still a valid in-scope row (`:rows-kept`), just
+   deduped/dropped — never an error.
 
    Pure + total."
   [spec state row]
   (let [{:keys [key-col element-col n filter-col filter-val]} spec
-        n (or n 10)
         collect? (collect-mode? spec)
-        keep-topn (fn [pairs] (->> pairs (sort-by :value >) (take n) vec))
-        add-distinct-bounded (fn [cur e]
-                               ;; keep at most max-list-size DISTINCT elements per key
-                               (let [cur (or cur [])]
-                                 (if (or (>= (count cur) max-list-size)
-                                         (some #(= % e) cur))
-                                   cur
-                                   (conj cur e))))
-        {:keys [acc rows-seen rows-kept rows-errored rows-filtered]} state
+        cap (list-cap spec)                    ; OPT-IN collect cap (nil = UNBOUNDED)
+        {:keys [acc rows-seen rows-kept rows-errored rows-filtered
+                list-truncated? topn-truncated?]} state
         rows-seen (inc rows-seen)
         scale-ok? (or (nil? filter-col)
                       (= (str (get row filter-col)) (str filter-val)))]
@@ -124,27 +135,44 @@
       (let [k (get row key-col)
             e (get row element-col)]
         (if collect?
-          ;; MT-6 COLLECT (list) mode — no numeric value needed.
+          ;; MT-6 COLLECT (list) mode — DISTINCT always; UNBOUNDED unless :max-list-size.
           (if (and (some? k) (some? e))
-            (assoc state
-                   :acc (update acc k add-distinct-bounded e)
-                   :rows-seen rows-seen
-                   :rows-kept (inc rows-kept))
+            (let [cur (or (get acc k) [])
+                  present? (boolean (some #(= % e) cur))
+                  at-cap? (boolean (and cap (>= (count cur) cap)))
+                  ;; a NEW distinct value blocked by the opt-in cap = a real truncation
+                  dropped? (and at-cap? (not present?))]
+              (assoc state
+                     :acc (if (or present? at-cap?) acc (assoc acc k (conj cur e)))
+                     :rows-seen rows-seen
+                     :rows-kept (inc rows-kept)
+                     :list-truncated? (or list-truncated? dropped?)))
             (assoc state :rows-seen rows-seen :rows-errored (inc rows-errored)))
-          ;; TOP-N-by-value mode (existing behavior — a numeric value is required).
+          ;; TOP-N-by-value mode — keep ALL ranked pairs by default; cap only via :n.
           (let [v (coerce-num (get row (:value-col spec)))]
             (if (and (some? k) (some? e) (some? v))
-              (assoc state
-                     :acc (update acc k (fn [cur] (keep-topn (conj (or cur []) {:element e :value v}))))
-                     :rows-seen rows-seen
-                     :rows-kept (inc rows-kept))
+              (let [cur (or (get acc k) [])
+                    ;; with an opt-in :n at capacity, adding one pair evicts one = truncation
+                    dropped? (boolean (and n (>= (count cur) n)))
+                    pairs (conj cur {:element e :value v})
+                    ;; :n present → prune to sorted top-N per insert (bounded); else keep all
+                    pairs (if n (->> pairs (sort-by :value >) (take n) vec) pairs)]
+                (assoc state
+                       :acc (assoc acc k pairs)
+                       :rows-seen rows-seen
+                       :rows-kept (inc rows-kept)
+                       :topn-truncated? (or topn-truncated? dropped?)))
               (assoc state :rows-seen rows-seen :rows-errored (inc rows-errored)))))))))
 
 (defn aggregate-finalize
   "Produce the per-key concept-drafts + honest counts from a folded `state`. ONE
-   draft per key: `{:uri :label :entity-type :attributes {attr-name [top-N labels]
-   key-col <key value>}}`. `:peak-acc-entries` (== final, since top-N is pruned on
-   insert) is the boundedness witness (≤ keys × N)."
+   draft per key: `{:uri :label :entity-type :attributes {attr-name [labels] key-col
+   <key value>}}`. TOP-N entries are sorted by value DESC HERE (so the default no-`:n`
+   path keeps ALL ranked pairs in deterministic order, #10; the opt-in `:n` path was
+   already pruned+sorted per insert — the re-sort is idempotent). `:peak-acc-entries`
+   is the honest boundedness witness — the REAL accumulator size (unbounded by default,
+   possibly >25), NOT a capped figure. `:list-truncated?` / `:topn-truncated?` surface
+   whether an OPT-IN cap actually FIRED (STREAM Slice 7 — a fired cap is never silent)."
   [spec state]
   (let [{:keys [attr-name entity-type key-col]} spec
         attr-name (or attr-name :top)
@@ -156,15 +184,18 @@
                         :label (str k)
                         :entity-type et
                         ;; COLLECT mode entries are the element values themselves (a
-                        ;; flat list); TOP-N entries are {:element :value} pairs.
+                        ;; flat list, dedup-preserving insertion order); TOP-N entries
+                        ;; are {:element :value} pairs sorted by value DESC here.
                         :attributes (merge {attr-name (if collect?
                                                         (vec entries)
-                                                        (mapv :element entries))}
+                                                        (mapv :element (sort-by :value > entries)))}
                                            (when key-col {key-col k}))})
                      acc)]
     {:concept-drafts drafts
      :distinct-keys (count acc)
      :peak-acc-entries (reduce + 0 (map (comp count val) acc))
+     :list-truncated? (boolean (:list-truncated? state))
+     :topn-truncated? (boolean (:topn-truncated? state))
      :rows-seen (:rows-seen state)
      :rows-kept (:rows-kept state)
      :rows-errored (:rows-errored state)
@@ -176,8 +207,9 @@
 
      {:key-col     <col>  ; the ENTITY key to group by
       :element-col <col>  ; the element LABEL to collect
-      :value-col   <col>  ; the numeric column to RANK by
-      :n           <int>  ; how many top elements to keep (default 10)
+      :value-col   <col>  ; the numeric column to RANK by (top-N mode; omit → collect)
+      :n           <int>  ; OPT-IN top-N cap; absent → keep ALL ranked pairs (Slice 7)
+      :max-list-size <int>; OPT-IN collect-list cap; absent → keep ALL distinct values
       :attr-name   <k>    ; the flat array attribute name (e.g. :topSkills)
       :entity-type <str>  ; the concept's :entity-type (for URI + GC-1 canonicalize)
       :filter-col  <col>  ; OPTIONAL — the SCALE column to filter on
@@ -202,8 +234,11 @@
      :rows-errored  in-scope rows MISSING key/element or with a non-numeric value —
                     SKIPPED + COUNTED, never fabricated
      :distinct-keys entities that produced a draft
-     :peak-acc-entries  the FINAL (== peak, since the top-N is pruned on every insert)
-                        accumulator size — the boundedness witness (≤ keys × N)
+     :peak-acc-entries  the FINAL accumulator size — the HONEST witness of the real
+                        per-key list sizes (UNBOUNDED by default, possibly >25; only
+                        ≤ keys × N / keys × max-list-size when a cap is opt-in-applied)
+     :list-truncated?   true iff an OPT-IN :max-list-size actually DROPPED a distinct value
+     :topn-truncated?   true iff an OPT-IN :n actually DROPPED a ranked pair
 
    Pure + total — never throws (a non-numeric value coerces to nil + counts, not an
    exception).
@@ -323,6 +358,11 @@
           (update :n (fn [n] (cond (number? n) (long n)
                                    (and (string? n) (re-matches #"\s*\d+\s*" n)) (Long/parseLong (str/trim n))
                                    :else nil)))
+          ;; STREAM Slice 7 — the OPT-IN collect cap coerces like :n (string→long,
+          ;; else nil = UNBOUNDED default). Absent → nil (keep everything).
+          (update :max-list-size (fn [n] (cond (number? n) (long n)
+                                               (and (string? n) (re-matches #"\s*\d+\s*" n)) (Long/parseLong (str/trim n))
+                                               :else nil)))
           (update :filter-col (fn [c] (when (seq (str/trim (str c))) c)))))))
 
 ;; ---------------------------------------------------------------------------
