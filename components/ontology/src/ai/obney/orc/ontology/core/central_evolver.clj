@@ -1035,10 +1035,18 @@
                         ;; normalize every entry key to a PLAIN keyword (strip any namespace),
                         ;; so select-containers always reads `:name`/`:serves-cqs`. A
                         ;; genuinely-unparseable value → [] (honest degrade → list order).
+                        ;; CONNECT-1 — the C1 crossing ALSO mangles keys to
+                        ;; `(keyword ":name")` (prints `::name`), which the old
+                        ;; `(keyword (name k))` did NOT repair (name is still
+                        ;; ":name") → `(:name entry)` nil → ranking DROPPED →
+                        ;; alphabetical extract → disconnected graph. Reuse the ONE
+                        ;; shared leading-colon-stripping normalizer (no fork).
                         plain-keys (fn [m]
                                      (if (map? m)
                                        (into {} (map (fn [[k v]]
-                                                       [(if (or (keyword? k) (string? k)) (keyword (name k)) k) v]))
+                                                       [(if (or (keyword? k) (string? k))
+                                                          (vb/normalize-entry-key k) k)
+                                                        v]))
                                              m)
                                        m))
                         coverage (mapv plain-keys

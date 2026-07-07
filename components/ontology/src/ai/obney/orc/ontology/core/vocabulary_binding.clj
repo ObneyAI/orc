@@ -54,16 +54,44 @@
 ;; The vocabulary (from the model-spec)
 ;; ---------------------------------------------------------------------------
 
+(defn normalize-entry-key
+  "The ONE shared, robust normalizer for a MAP KEY that crossed a `:delegate`
+   boundary (or arrived from a JSON parse) into a clean, plain keyword. The C1
+   fragility: a keyword key `:name` JSON-round-trips to the string `\":name\"`
+   which `:key-fn keyword` reads back as `(keyword \":name\")` — namespace nil,
+   NAME the literal `\":name\"` (it PRINTS `::name`) — so `(:name entry)` reads
+   nil and the ranking / vocabulary read silently drops. Strip leading colon(s)
+   from the key's NAME (a keyword's `name`, DROPPING any namespace —
+   coverage/entity-type keys are non-namespaced; or a string key's own text) and
+   re-keywordize:
+     (keyword \":name\") → :name   ; the C1 mangled shape — the fix
+     ::ns/name           → :name   ; a namespaced crossing key → plain name
+     :name               → :name   ; a clean keyword — value UNCHANGED
+     \"name\"            → :name   ; a string key (JSON parse) — as today
+     \":name\"           → :name   ; a string with a stray leading colon
+   A non-keyword, non-string key keywordizes via `str` (today's behavior). Pure
+   + total, never throws. Domain-agnostic (#12): a general leading-colon strip,
+   no sheet/column names. Reused at BOTH crossing seams (the coverage map in
+   central-evolver's delegate-select-containers! + this ns's entry keywordize)."
+  [k]
+  (cond
+    (keyword? k) (keyword (str/replace (name k) #"^:+" ""))
+    (string? k)  (keyword (str/replace k #"^:+" ""))
+    :else        (keyword (str k))))
+
 (defn- keywordize-entry-keys
-  "Defensively keywordize a kept entry MAP's TOP-LEVEL keys, so downstream
-   (`canonical-types`, GC-1) always reads `:type` / `:uri-keying-fields` as
-   keywords regardless of the parse path (a residual string key `\"type\"` →
-   `:type`). Non-maps pass through untouched (they are filtered out anyway).
-   Existing keyword keys are preserved verbatim. Pure + total."
+  "Defensively normalize a kept entry MAP's TOP-LEVEL keys (via the shared
+   `normalize-entry-key`), so downstream (`canonical-types`, GC-1) always reads
+   `:type` / `:uri-keying-fields` as PLAIN keywords regardless of the parse path
+   — a residual string key `\"type\"` → `:type`, AND a C1-crossing
+   `(keyword \":type\")` (prints `::type`) → `:type` (CONNECT-1: previously this
+   already-keyword key was passed through untouched, so the crossing shape read
+   nil). Non-maps pass through untouched (they are filtered out anyway). A clean
+   keyword key is unchanged. Pure + total."
   [m]
   (if (map? m)
     (reduce-kv (fn [acc k v]
-                 (assoc acc (if (keyword? k) k (keyword (str k))) v))
+                 (assoc acc (normalize-entry-key k) v))
                {} m)
     m))
 

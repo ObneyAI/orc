@@ -1,0 +1,29 @@
+# Handoff — CONNECT-1: fix the C1 `:delegate`-crossing key mangling (`::name`) that drops the container ranking
+
+**Root cause (PROVEN, repro: `development/src/onet_selection_repro.clj`):** the MT-12 coverage map crosses the `:delegate` boundary and its keyword keys get JSON-round-trip-mangled — each `:name` becomes `(keyword ":name")` (namespace=nil, name=`":name"` — the literal colon-prefixed string; it PRINTS as `::name`). So `(:name entry)` is **nil** for every entry → `select-containers` reconciliation (`container_select.clj:224`, keeps only entries whose `:name` ∈ survivor-name-set) **drops the entire ranking** → containers extract in **alphabetical** order → the budget-cut extract never reaches the occupation-connecting sheets (Task Statements/Skills/Knowledge) → **disconnected graph** (occupations = 0 edges).
+**Proven fix:** strip a leading colon from the key name — `(keyword ":name")` → `:name`. Repro shows `select-containers` then returns RELEVANCE order (Occupation Data, Task Statements, Knowledge, Skills, …) with the connecting sheets FIRST.
+**Branch:** `feature/ontology-architecture` · commit-LOCAL only, NEVER push. `pgrep -f` hygiene; detached `nohup … &` for the gate.
+
+## Why the seam, not the render (don't chase the LLM)
+The executor renders map keys cleanly (`executor.clj:481` `(name field-key)` → "name"); the mangling is the LLM emitting `":name"` in JSON, parsed with `:key-fn keyword` → `(keyword ":name")`. LLM output varies — the established architecture absorbs exactly this fragility with **defensive coercion at the seam** (`vocabulary_binding/coerce-entity-types` + `keywordize-entry-keys`, built in MT-10/MT-11). Those currently keywordize STRING keys but pass an already-keyword `::name` through UNTOUCHED (`keywordize-entry-keys` line 66: `(if (keyword? k) k …)`). This slice completes that defense.
+
+## The change — a robust, SHARED key normalizer that strips leading colons
+1. **`vocabulary_binding.clj`** — add/upgrade a normalizer so a key `(keyword ":name")` (name starts with `:`) → `:name`. Fix `keywordize-entry-keys` (line 57-68): for a keyword key whose `(name k)` starts with one-or-more `:`, strip them and re-keywordize; string keys keep their existing behavior; a clean `:name` stays `:name`. E.g. `(keyword (str/replace (name (if (keyword? k) k (keyword (str k)))) #"^:+" ""))`. Pure + total, never throws. This also protects the `coerce-entity-types` value path (entity-type maps cross the SAME boundary → the model-spec `:unparseable-proposal` is likely the same family).
+2. **`central_evolver.clj`** delegate-select-containers! (the `plain-keys` local ~line 1038) — replace its `(keyword (name k))` with the same colon-stripping normalizer (reuse the vocabulary_binding one — do NOT fork). This is the coverage-map path that the repro proved.
+
+## TDD (tests FIRST, red→green)
+1. **Normalizer unit (`vocabulary_binding` test):** `keywordize-entry-keys` on `{(keyword ":name") "x" (keyword ":serves-cqs") [1] :relevance "high" "type" "T"}` → `{:name "x" :serves-cqs [1] :relevance "high" :type "T"}`. Assert a clean `:name` is unchanged and a namespaced-legit key isn't destroyed if that matters (coverage/entity-type keys are non-namespaced — a leading-colon strip is safe). RED first (current code leaves `::name`).
+2. **select-containers ranking survives the crossing (`container_select` test):** feed a coverage map whose keys are `(keyword ":name")`/`(keyword ":serves-cqs")`/`(keyword ":relevance")` (the crossing shape) through the production normalization path → `select-containers` returns the entries in RELEVANCE order (a high-relevance late-alphabet name like "Task Statements" ranks ABOVE an early-alphabet low one), NOT survivor/alphabetical order. RED against current (ranking dropped → alphabetical).
+3. **coerce-entity-types (value side):** an entity-types write arriving with `(keyword ":type")` keys → coerced entries read `:type`/`:uri-keying-fields` correctly (same family as `:unparseable-proposal`).
+4. Existing container_select + vocabulary_binding + MT-12 tests stay green (no regression on the clean-key and string-key paths).
+
+## Do NOT
+Touch the executor/render (it's clean), the streaming slices, the caps. Reuse ONE normalizer (no fork). No domain names. Keep the existing string-key + clean-keyword behavior byte-identical.
+
+## Gate + hygiene
+`clj -M:poly test brick:ontology` green (detached). ONE JVM at a time; 0 orphan this-repo JVMs; consolidator flake — isolate ×3 if sole red.
+
+## Deliverable — final message: tracers red→green (final gate line, exit 0); the normalizer diff + both call-sites (vocabulary_binding + central_evolver, one shared fn); quote the red-then-green assertion that a `(keyword ":name")`-keyed coverage map yields RELEVANCE order (not alphabetical); confirm clean-key/string-key paths unchanged; existing MT-12/container_select/vocab tests green; anything not verified; no commit/push; 0 orphan JVMs.
+
+## Core Disciplines (verbatim)
+1. NEVER assume — the fix must make `select-containers` produce RELEVANCE order on the crossing-shape keys (prove it), not just "keys look nicer". 2. Verify QUALITY: red first against the real `(keyword ":name")` shape. 3. Instrument if a case resists. 4. Live/real is the floor — the brick gate + (orchestrator will run) a bounded O*NET build. 5. No silent fallback. 6. TDD, tests first, behavior through public fns. 7. No hardcoded domain matching — a general leading-colon strip, no sheet names. 8. Re-orchestrate — ONE shared normalizer reused at both seams; don't fork. 9. Adversarial: try a clean `:name`, a string `"name"`, a `(keyword ":name")`, and (if relevant) a genuinely-namespaced key — the normalizer must do the right thing on each. 10. Deterministic. 11. JVM hygiene (detached, one at a time, `pgrep -f`, 0 orphans). 12. Domain-agnostic. 13. n/a.

@@ -5,7 +5,8 @@
    proof (real O*NET selects the occupation-centric tables, junctions dropped, goal
    discriminates the rank order) is the /inspect-orc, not a unit test."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.ontology.core.container-select :as sel]))
+            [ai.obney.orc.ontology.core.container-select :as sel]
+            [ai.obney.orc.ontology.core.vocabulary-binding :as vb]))
 
 ;; ---------------------------------------------------------------------------
 ;; A controlled 4-container source, addressed through the UNIFORM container
@@ -164,6 +165,56 @@
       (is (= {:total-cqs 1 :covered [] :uncovered [0] :complete? false}
              (get-in out [:report :cq-coverage]))
           "no coverage from a degraded string — honestly uncovered, not faked"))))
+
+;; ---------------------------------------------------------------------------
+;; CONNECT-1 (the LOAD-BEARING tracer) — the coverage RANKING must survive the C1
+;; `:delegate`-crossing key mangling. When the ranker's coverage map crosses
+;; `:delegate` its keyword keys arrive as `(keyword ":name")` (prints `::name`);
+;; `(:name entry)` then reads nil, so select-containers' name-reconciliation drops
+;; the ENTIRE ranking and containers fall back to survivor/alphabetical list order
+;; — the occupation-connecting sheets (Task Statements/Skills/Knowledge) never make
+;; the budget cut → disconnected graph. Feeding the mangled coverage map through
+;; the PRODUCTION normalization (vb/keywordize-entry-keys — the ONE shared fix)
+;; must restore RELEVANCE order: a high-relevance LATE-alphabet name ranks ABOVE
+;; an early-alphabet low one, NOT alphabetical.
+;; ---------------------------------------------------------------------------
+
+(defn- mangle-keys
+  "Reproduce the C1 crossing shape on a coverage-map entry: every key's NAME
+   gets a literal leading colon, so `:name` → `(keyword \":name\")`."
+  [m]
+  (into {} (map (fn [[k v]] [(keyword (str ":" (name k))) v])) m))
+
+(def ^:private ranking-candidates
+  ;; two kept survivors in ALPHABETICAL (list) order — the order select-containers
+  ;; falls back to when the ranking is dropped.
+  [(candidate "Alpha Sheet"     :entity true {:key "k"})
+   (candidate "Task Statements" :entity true {:key "k"})])
+
+(deftest select-containers-coverage-ranking-survives-delegate-crossing-key-mangling-test
+  (testing "CONNECT-1 LOAD-BEARING: a coverage map whose keys crossed as
+            `(keyword \":name\")`/`(keyword \":serves-cqs\")`/`(keyword \":relevance\")`,
+            normalized through the PRODUCTION path (vb/keywordize-entry-keys), yields
+            select-containers' RELEVANCE order — Task Statements (high relevance,
+            LATE alphabet) ranks ABOVE Alpha Sheet (low, early alphabet) — NOT the
+            alphabetical/survivor-list order the dropped-ranking bug produces"
+    (let [;; relevance-ranked coverage (vector order = relevance): the connecting
+          ;; sheet FIRST, the low-relevance early-alphabet sheet second.
+          clean-coverage [{:name "Task Statements" :serves-cqs [0] :relevance "high"}
+                          {:name "Alpha Sheet"     :serves-cqs []  :relevance "low"}]
+          ;; the C1 crossing shape, then repaired by the SHARED normalizer (exactly
+          ;; the production seam's coverage read-back).
+          crossed-coverage (mapv (comp #'vb/keywordize-entry-keys mangle-keys) clean-coverage)
+          rank-fn (fn [_g _survivors] crossed-coverage)
+          out (sel/select-containers ranking-candidates
+                                     {:goal "connect occupations to skills/tasks"
+                                      :cqs ["cq0"] :cap 25 :rank-fn rank-fn})
+          names (mapv :name (:selected out))]
+      (is (= ["Task Statements" "Alpha Sheet"] names)
+          "the coverage map's RELEVANCE order survives the (keyword \":name\") crossing —
+           the connecting sheet ranks first, the ranking was NOT dropped")
+      (is (not= (vec (sort names)) names)
+          "and the order is NOT alphabetical (the dropped-ranking failure signature)"))))
 
 (deftest select-containers-prefilters-noise-and-bounds-honestly-test
   (testing "select-containers drops :keep? false containers (with the shape as the

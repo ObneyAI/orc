@@ -145,6 +145,62 @@
     (is (= [] (vb/coerce-entity-types nil)))
     (is (= [] (vb/coerce-entity-types 42)))))
 
+;; ===========================================================================
+;; CONNECT-1 — the SHARED leading-colon key normalizer. The C1 `:delegate`-
+;; crossing fragility: a keyword MAP KEY `:name` JSON-round-trips to the string
+;; `":name"` which `:key-fn keyword` reads back as `(keyword ":name")` —
+;; namespace nil, NAME the literal `":name"` (it PRINTS `::name`). So `(:name
+;; entry)` reads nil and the read silently drops. `keywordize-entry-keys` used to
+;; pass an already-keyword key through UNTOUCHED, so it did NOT repair this
+;; shape. It now strips leading colon(s) from the key NAME (dropping any
+;; namespace — coverage/entity-type keys are non-namespaced) and re-keywordizes,
+;; the ONE normalizer central_evolver's coverage seam also reuses. Domain-
+;; agnostic (#7/#12): a general leading-colon strip, no sheet/column names.
+;; ===========================================================================
+
+(defn- mangle-keys
+  "Reproduce the C1 crossing shape: keywordize every key's NAME with a literal
+   leading colon, so `:name` → `(keyword \":name\")` (prints `::name`)."
+  [m]
+  (into {} (map (fn [[k v]] [(keyword (str ":" (name k))) v])) m))
+
+(deftest keywordize-entry-keys-strips-leading-colon-crossing-shape
+  (testing "CONNECT-1 (the C1 `(keyword \":name\")` shape): the leading colon is
+            stripped from the key name so downstream reads `:name` (not the
+            nil-reading `::name`); string keys keywordize as before; a clean
+            keyword key is unchanged"
+    (is (= {:name "x" :serves-cqs [1] :relevance "high" :type "T"}
+           (#'vb/keywordize-entry-keys
+            {(keyword ":name") "x" (keyword ":serves-cqs") [1] :relevance "high" "type" "T"}))
+        "the `(keyword \":name\")`/`(keyword \":serves-cqs\")` keys normalize to
+         plain :name/:serves-cqs; the clean :relevance and string \"type\" stay/keywordize"))
+  (testing "adversarial (#9): a CLEAN keyword key is byte-identical; a string key
+            keywordizes as today; a namespaced crossing key normalizes to its
+            plain name (the shape MT-12's coverage seam already relies on)"
+    (is (= {:name "x"} (#'vb/keywordize-entry-keys {:name "x"}))
+        "a clean :name key is unchanged (no regression on the healthy path)")
+    (is (= {:type "T"} (#'vb/keywordize-entry-keys {"type" "T"}))
+        "a string \"type\" key keywordizes to :type exactly as before")
+    (is (= {:name "x"} (#'vb/keywordize-entry-keys {::name "x"}))
+        "a namespaced ::name key normalizes to plain :name (namespace dropped)")
+    (is (= 42 (#'vb/keywordize-entry-keys 42))
+        "a non-map passes through untouched (pure + total)")))
+
+(deftest coerce-entity-types-repairs-crossing-shape-value-keys
+  (testing "CONNECT-1 value side: an entity-types vector whose entry keys crossed
+            as `(keyword \":type\")`/`(keyword \":uri-keying-fields\")` is repaired
+            so canonical-types reads :type — the same family as the model-spec
+            :unparseable-proposal (not just the coverage map)"
+    (let [mangled [(mangle-keys {:type "Occupation" :uri-keying-fields ["code"]})]]
+      (is (= ["Occupation"] (mapv :type (vb/coerce-entity-types mangled)))
+          "the crossing-shape :type key is repaired → readable canonical type")
+      (is (= [["code"]] (mapv :uri-keying-fields (vb/coerce-entity-types mangled)))
+          "the crossing-shape :uri-keying-fields key is repaired too")
+      (is (= ["Occupation"] (mapv :type (vb/canonical-types {:entity-types mangled})))
+          "canonical-types reads the repaired vocabulary through (not dropped as no-:type)")
+      (is (false? (vb/empty-vocabulary? {:entity-types mangled}))
+          "the vocabulary is usable — no false empty-vocab hard stop on the crossing shape"))))
+
 (deftest resolve-entity-type-exact-match-returns-canonical-spelling
   (testing "an exact canonical :type resolves to itself (the common case)"
     (is (= "Occupation" (vb/resolve-entity-type vocab "Occupation")))
