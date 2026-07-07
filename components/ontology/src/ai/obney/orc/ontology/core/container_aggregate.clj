@@ -164,6 +164,110 @@
                        :topn-truncated? (or topn-truncated? dropped?)))
               (assoc state :rows-seen rows-seen :rows-errored (inc rows-errored)))))))))
 
+;; ---------------------------------------------------------------------------
+;; CONNECT-3a — the ASSOCIATION mode. A junction/associative table (SOC + Element
+;; + rating: O*NET `Skills`/`Knowledge`/`Abilities`) is NOT an entity to enrich with
+;; an attribute LIST — it is a many-to-many RELATION. Aggregating it onto the key as
+;; an attribute list yields 0 edges / 0 element nodes → a BFS-DEAD graph (the
+;; observation build's finding). The right extraction MINTS the element as a SHARED
+;; canonical node (deduped — one skill node across all occupations, embeddable) + a
+;; key→element EDGE per (key,element) pair carrying the rating.
+;;
+;; It REUSES the SAME group-by fold (`aggregate-step`) — no fork. The ONLY difference
+;; is `aggregate-finalize`: instead of ONE attribute draft per key, `associate-finalize`
+;; emits DISTINCT element concept-drafts + one relationship-draft per (key,element).
+;; Signalled by the spec carrying `:predicate` + `:element-entity-type` (in place of
+;; `:attr-name`). Absent → today's collect/top-N attribute behavior is byte-identical
+;; (association is strictly opt-in). Domain-agnostic (#12): the predicate + both
+;; entity-types come from the runtime spec, names no O*NET/SOC column.
+;; ---------------------------------------------------------------------------
+
+(defn association-mode?
+  "True iff `spec` is an ASSOCIATION spec — it carries a non-blank `:predicate` AND
+   `:element-entity-type` (in place of `:attr-name`). CONNECT-3a: the finalize then
+   emits SHARED element concept-drafts (deduped, canonical) + one key→element
+   relationship-draft per (key,element) pair (the value-col rating rides the edge)
+   INSTEAD of one per-key attribute draft. Absent → today's collect/top-N attribute
+   behavior is byte-identical (association is opt-in). Pure + total."
+  [spec]
+  (boolean (and (map? spec)
+                (seq (str/trim (str (:predicate spec))))
+                (seq (str/trim (str (:element-entity-type spec)))))))
+
+(defn- entry->element+value
+  "Normalize ONE accumulator entry to `[element value]`. Top-N-mode entries are
+   `{:element :value}` maps (the value-col rating preserved); collect-mode entries are
+   the bare element value (no rating). So association works over EITHER fold mode —
+   with a value-col the rating rides the edge, without one the edge carries no rating."
+  [entry]
+  (if (map? entry)
+    [(:element entry) (:value entry)]
+    [entry nil]))
+
+(defn associate-finalize
+  "CONNECT-3a — the ASSOCIATION finalize (sibling of the attribute finalize; driven by
+   the SAME `aggregate-step` accumulator `{key -> [entries]}`). Emits, from the folded
+   `state`:
+
+   1. `:concept-drafts` — DISTINCT element concept-drafts across ALL keys (canonical
+      URI `<element-entity-type>/<element>` keyed on the element VALUE, so the SAME
+      element from many keys is ONE node — dedup is the anti-over-mint invariant). Each
+      carries the element value in `:attributes` under the element-col name so GC-1
+      canonicalize / MC-6 can recover its identity. Order = first-appearance (#10).
+   2. `:relationship-drafts` — ONE edge per (key,element) pair:
+      `{:source-uri <key-entity>/<key> :target-uri <element-entity>/<element>
+        :predicate <predicate> :attributes {<value-col> <value>}}` — the rating rides
+      the edge (omitted when the fold carried no value).
+
+   Plus the SAME honest counts + boundedness witnesses the attribute finalize returns.
+   Pure + total."
+  [spec state]
+  (let [{:keys [element-entity-type key-entity-type value-col element-col]} spec
+        predicate (str (:predicate spec))
+        elem-et (str/trim (str element-entity-type))
+        key-et (let [k (str/trim (str key-entity-type))] (if (seq k) k "entity"))
+        vcol (when (seq (str/trim (str value-col))) value-col)
+        ecol (when (seq (str/trim (str element-col))) element-col)
+        acc (:acc state)
+        elem-uri (fn [e] (str elem-et "/" e))
+        key-uri (fn [k] (str key-et "/" k))
+        ;; DISTINCT element values across ALL keys (first-appearance order, #10) → one
+        ;; SHARED concept-draft each (canonical dedup — Active Listening = ONE node).
+        distinct-elems (->> acc
+                            vals
+                            (mapcat identity)
+                            (map (comp first entry->element+value))
+                            (remove nil?)
+                            distinct
+                            vec)
+        concept-drafts (mapv (fn [e]
+                               {:uri (elem-uri e)
+                                :label (str e)
+                                :entity-type elem-et
+                                :attributes (if ecol {ecol e} {})})
+                             distinct-elems)
+        ;; ONE key→element edge per (key,element) entry — the rating rides the edge.
+        relationship-drafts (vec
+                             (for [[k entries] acc
+                                   entry entries
+                                   :let [[e v] (entry->element+value entry)]
+                                   :when (and (some? k) (some? e))]
+                               (cond-> {:source-uri (key-uri k)
+                                        :target-uri (elem-uri e)
+                                        :predicate predicate}
+                                 (and (some? v) vcol) (assoc :attributes {vcol v}))))]
+    {:concept-drafts concept-drafts
+     :relationship-drafts relationship-drafts
+     :distinct-keys (count acc)
+     :distinct-elements (count distinct-elems)
+     :peak-acc-entries (reduce + 0 (map (comp count val) acc))
+     :list-truncated? (boolean (:list-truncated? state))
+     :topn-truncated? (boolean (:topn-truncated? state))
+     :rows-seen (:rows-seen state)
+     :rows-kept (:rows-kept state)
+     :rows-errored (:rows-errored state)
+     :rows-filtered (:rows-filtered state)}))
+
 (defn aggregate-finalize
   "Produce the per-key concept-drafts + honest counts from a folded `state`. ONE
    draft per key: `{:uri :label :entity-type :attributes {attr-name [labels] key-col
@@ -172,9 +276,17 @@
    already pruned+sorted per insert — the re-sort is idempotent). `:peak-acc-entries`
    is the honest boundedness witness — the REAL accumulator size (unbounded by default,
    possibly >25), NOT a capped figure. `:list-truncated?` / `:topn-truncated?` surface
-   whether an OPT-IN cap actually FIRED (STREAM Slice 7 — a fired cap is never silent)."
+   whether an OPT-IN cap actually FIRED (STREAM Slice 7 — a fired cap is never silent).
+
+   CONNECT-3a: when `spec` is an ASSOCIATION spec (`association-mode?` — it carries a
+   `:predicate` + `:element-entity-type`), this DELEGATES to `associate-finalize`,
+   which emits SHARED element concept-drafts + key→element relationship-drafts (a
+   traversable graph) INSTEAD of one per-key attribute draft. The SAME `aggregate-step`
+   accumulator feeds both — no fork. A non-association spec is byte-identical."
   [spec state]
-  (let [{:keys [attr-name entity-type key-col]} spec
+  (if (association-mode? spec)
+    (associate-finalize spec state)
+    (let [{:keys [attr-name entity-type key-col]} spec
         attr-name (or attr-name :top)
         et (or entity-type "entity")
         collect? (collect-mode? spec)
@@ -199,7 +311,7 @@
      :rows-seen (:rows-seen state)
      :rows-kept (:rows-kept state)
      :rows-errored (:rows-errored state)
-     :rows-filtered (:rows-filtered state)}))
+     :rows-filtered (:rows-filtered state)})))
 
 (defn stream-aggregate
   "Bounded streaming group-by-key → top-N-by-value rollup. `spec` is the model-

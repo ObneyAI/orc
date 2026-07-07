@@ -1398,7 +1398,11 @@
      :topn-truncated? (:topn-truncated? agg)
      :errors-sample []
      :concept-drafts (:concept-drafts agg)
-     :relationship-drafts []}))
+     ;; CONNECT-3a — an ASSOCIATION spec's finalize emits key→element EDGES alongside
+     ;; the shared element nodes; pass them through to landing (they flow through the
+     ;; SAME reconcile/compile path). An attribute (collect/top-N) spec carries no
+     ;; :relationship-drafts → [] (byte-identical to the prior hardcoded []).
+     :relationship-drafts (vec (or (:relationship-drafts agg) []))}))
 
 ;; =============================================================================
 ;; Public entry: compile-discovery-source!
