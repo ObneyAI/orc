@@ -229,7 +229,18 @@
   (let [{:keys [element-entity-type key-entity-type value-col element-col]} spec
         predicate (str (:predicate spec))
         elem-et (str/trim (str element-entity-type))
-        key-et (let [k (str/trim (str key-entity-type))] (if (seq k) k "entity"))
+        ;; CONNECT-3c — the SOURCE (key) node scheme. Prefer an explicit
+        ;; `:key-entity-type`, but FALL BACK to the model's `:entity-type` (the
+        ;; field the AUTHOR actually emits for the key entity — it authors
+        ;; `:entity-type "occupation"`, NOT `:key-entity-type`). Without this the
+        ;; edges keyed off the "entity" default → `entity/<key>` STUBS, fragmented
+        ;; from the canonical `occupation/<key>` profiles (0 traversal from the rich
+        ;; occupation node). Falling back to `:entity-type` attaches the edges to the
+        ;; canonical occupation nodes (same `<entity-type>/<key>` scheme the attribute
+        ;; finalize + per-row mint use). "entity" only as the last-resort default.
+        key-et (let [k (str/trim (str key-entity-type))
+                     k (if (seq k) k (str/trim (str (:entity-type spec))))]
+                 (if (seq k) k "entity"))
         vcol (when (seq (str/trim (str value-col))) value-col)
         ecol (when (seq (str/trim (str element-col))) element-col)
         acc (:acc state)

@@ -51,6 +51,26 @@
   {:key-col "SOC" :element-col "Element" :value-col "DataValue"
    :predicate "requires" :element-entity-type "skill" :key-entity-type "occupation"})
 
+(def ^:private association-spec-model-shape
+  "CONNECT-3c — the spec shape the MODEL actually authors (CONNECT-3b prototype
+   proved it emits `:entity-type`, NOT `:key-entity-type`). The source node must key
+   off `:entity-type` so edges attach to the canonical `occupation/<key>` nodes."
+  {:key-col "SOC" :element-col "Element" :value-col "DataValue"
+   :predicate "requires" :element-entity-type "skill" :entity-type "occupation"})
+
+(deftest connect3c-source-keys-off-entity-type-when-key-entity-type-absent
+  (testing "CONNECT-3c — with the model's real spec shape (:entity-type, NO
+            :key-entity-type), edge source-uris are occupation/<key> (the CANONICAL
+            scheme), NOT entity/<key> stubs — so edges attach to the rich canonical
+            occupation nodes (the fragmentation gap CONNECT-3b flagged)"
+    (let [{:keys [relationship-drafts]}
+          (ca/stream-aggregate association-spec-model-shape junction-rows)
+          src-schemes (set (map #(namespace (keyword (:source-uri %))) relationship-drafts))]
+      (is (= #{"occupation"} src-schemes)
+          "source keys off :entity-type → occupation/<key>, the canonical scheme")
+      (is (not (contains? src-schemes "entity"))
+          "NO entity/<key> stubs — the fragmentation CONNECT-3c removes"))))
+
 ;; ===========================================================================
 ;; Tracer 1 — associative finalize → element NODES + occupation→element EDGES.
 ;; ===========================================================================
