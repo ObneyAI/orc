@@ -246,7 +246,10 @@
    :excel {:list-containers 'excel-dir-sheets ; or list-sheets for one workbook
            :sample-rows     'sample-rows  ; POSITIONAL today — keyed in MC-2
            :stream-all      'stream-all   ; POSITIONAL today — keyed in MC-2
-           :relations       nil}})        ; shared-column heuristic is MC-2
+           :relations       nil}})        ; CONNECT-2 builds it directly over the
+                                          ; source path (make-excel-relations-fn) —
+                                          ; a shared-key cross-sheet heuristic, not a
+                                          ; single per-sheet tool symbol.
 
 (defn- container-name
   "The container NAME a per-row op selects on, from a `list-containers` entry
@@ -371,4 +374,10 @@
                             (fn stream-all
                               ([container] (per-row-call fmt raw container {}))
                               ([container opts] (per-row-call fmt raw container (or opts {})))))
-         :relations       (tool-fn :relations)}))))
+         ;; CONNECT-2 — excel exposes a shared-key cross-sheet relations op (built
+         ;; over the whole source path, not a single per-sheet tool symbol), so
+         ;; MC-6's cross-container edge-derivation fires for O*NET (it was nil). sql
+         ;; keeps its per-format symbol; csv has none.
+         :relations       (case fmt
+                            :excel (excel/make-excel-relations-fn path)
+                            (tool-fn :relations))}))))

@@ -608,6 +608,154 @@
                                    {:error (.getMessage e)}))}))))))
 
 ;; =============================================================================
+;; CONNECT-2 — the container-contract `relations` op: a DOMAIN-AGNOSTIC shared-key
+;; cross-sheet heuristic.
+;;
+;; The uniform container contract (source_tools.clj MC-1) calls for a `relations`
+;; operation per container returning `[{:from :to :via}]`, which MC-6
+;; (extract_subbehavior) consumes to derive CROSS-CONTAINER edges (it joins entities
+;; across containers sharing the `:via` key VALUE). SQL derives it from declared FKs
+;; + a shared-PRIMARY-KEY heuristic; excel exposed NOTHING (nil), so for an O*NET
+;; directory MC-6 never fired and occupations got 0 cross-sheet edges.
+;;
+;; This op MATCHES the SQL relations SHAPE exactly — `{:from "<sheet>.<col>"
+;; :to "<other-sheet>.<col>" :via "<col>"}` (source_tools_sql make-relations-fn) —
+;; so MC-6 consumes it unchanged. It reads each sheet's HEADER columns (REUSING the
+;; V05 header capability, injected + faked in tests — NO fork of excel reading) and
+;; treats a column that is (a) shared across >= 2 sheets AND (b) ID/code-SHAPED by
+;; NAME as a JOIN KEY, emitting a relation from the queried sheet to every OTHER
+;; sheet carrying that key column.
+;;
+;; Discipline #7/#12 — the heuristic bakes in NO field name. The key-shape test keys
+;; on a GENERIC identifier vocabulary token ("id"/"code"/"key"/…) carried by the
+;; column name, the universal language of join keys (mirroring the csv peek-columns
+;; code/identifier inference), NOT on any literal column ("O*NET-SOC Code" qualifies
+;; only because it carries the generic token "code" — never because "soc" is baked
+;; in). Biasing toward id/code names over mere co-occurrence is what keeps a column
+;; that co-occurs everywhere but is a free-text label or a measure ("Title",
+;; "Description", "Data Value", "Date") from producing a spurious relation.
+;; =============================================================================
+
+(def ^:private id-like-name-tokens
+  "Generic, DOMAIN-AGNOSTIC identifier vocabulary. A column whose NAME carries one
+   of these as a token is ID/code-shaped — the universal language of join keys. This
+   names NO specific column."
+  #{"id" "code" "key" "ref" "uuid" "guid"})
+
+(defn- name-tokens
+  "Tokenize a column NAME for the key-shape test: split camelCase boundaries, then
+   split on every non-alphanumeric run, lower-cased. So `O*NET-SOC Code` ->
+   [\"o\" \"net\" \"soc\" \"code\"], `widget_id` -> [\"widget\" \"id\"],
+   `customerId` -> [\"customer\" \"id\"]."
+  [col-name]
+  (->> (-> (str col-name)
+           (str/replace #"([a-z])([A-Z])" "$1 $2")
+           str/lower-case)
+       (#(str/split % #"[^a-z0-9]+"))
+       (remove str/blank?)))
+
+(defn- id-like-column?
+  "Structural key-shape test: TRUE when the column NAME carries a generic identifier
+   token (see `id-like-name-tokens`). Domain-agnostic — biases toward id/code
+   columns and AWAY from free-text/measure columns (`Description`, `Data Value`,
+   `Title`, `Date` carry no such token, so they never become spurious join keys)."
+  [col-name]
+  (boolean (some id-like-name-tokens (name-tokens col-name))))
+
+(defn- normalize-col-name
+  "Normalize a column NAME for case/whitespace-tolerant cross-sheet grouping: lower
+   the string form and strip every non-alphanumeric character, so `O*NET-SOC Code`,
+   `o*net-soc code`, `ONETSOCCode` all collapse to `onetsoccode`. Purely structural."
+  [col-name]
+  (-> (str col-name) str/lower-case (str/replace #"[^a-z0-9]+" "")))
+
+(defn- read-dir-sheet-headers
+  "The DEFAULT (real) header-reader capability: enumerate every sheet across the
+   excel SOURCE (a DIRECTORY of workbooks via `do-excel-dir-sheets`, or a single
+   workbook via `do-list-sheets`) and return its detected HEADER column names,
+   REUSING `do-sheet-columns` (the V05 header detection — NO fork). Returns
+   `[{:sheet <name> :columns [<col-name> …]} …]`; a sheet whose header can't be read
+   contributes empty `:columns` (honest, never a crash). Streams only each sheet's
+   header window — the bounded-read guarantee holds."
+  [source-path]
+  (let [f (File. (str source-path))
+        sheet-refs (if (.isDirectory f)
+                     (for [{:keys [path sheets]} (do-excel-dir-sheets source-path)
+                           :when (sequential? sheets)
+                           s sheets]
+                       {:path path :sheet s})
+                     (for [{:keys [name]} (do-list-sheets source-path)]
+                       {:path (str source-path) :sheet name}))]
+    (mapv (fn [{:keys [path sheet]}]
+            {:sheet sheet
+             :columns (try
+                        (->> (:header (do-sheet-columns path sheet))
+                             (filter (fn [h] (and (string? h) (seq (str/trim h)))))
+                             vec)
+                        (catch Throwable _ []))})
+          sheet-refs)))
+
+(defn- container-name-of
+  "The sheet NAME a relations call selects on, from a bare name string OR a
+   `list-containers` entry map. Tolerant so the contract may hand either."
+  [container]
+  (cond
+    (map? container) (or (:name container) (:sheet container) (:table container))
+    :else container))
+
+(defn make-excel-relations-fn
+  "CONNECT-2 — build the excel container-contract `:relations` op for an excel
+   SOURCE at `source-path` (a directory of workbooks, or a single workbook). Returns
+   a `(container-name) -> [{:from :to :via} …]` fn matching the SQL relations SHAPE
+   MC-6 consumes: `:from \"<sheet>.<col>\"`, `:to \"<other-sheet>.<col>\"`,
+   `:via \"<col>\"`.
+
+   Deterministic, DOMAIN-AGNOSTIC shared-key heuristic (see the section comment): a
+   column whose NAME is id/code-shaped (`id-like-column?`) and appears in >= 2 sheets
+   is a JOIN KEY; for the queried sheet, emit one relation to every OTHER sheet
+   carrying that key column, sorted by (:to :via) for stable output. Returns [] when
+   the sheet shares no key column (honest — never a fabricated edge). Names NO domain
+   column.
+
+   `headers-reader` is the injected header capability (defaults to the real
+   `read-dir-sheet-headers`; faked in tests): `(source-path) -> [{:sheet :columns}]`.
+   The headers are read ONCE (lazily, on first call) and cached, so repeated
+   per-container calls do not re-scan the workbooks."
+  ([source-path] (make-excel-relations-fn source-path read-dir-sheet-headers))
+  ([source-path headers-reader]
+   (let [;; normalized-col -> {sheet-name -> display-col-name}, built once, keeping
+         ;; only ID/code-shaped columns SHARED across >= 2 sheets (a join needs both
+         ;; sides). Deterministic — pure set logic over the header names.
+         key-index
+         (delay
+           (let [by-norm (reduce
+                          (fn [acc {:keys [sheet columns]}]
+                            (reduce
+                             (fn [a col]
+                               (if (id-like-column? col)
+                                 (update a (normalize-col-name col)
+                                         (fnil assoc {}) sheet col)
+                                 a))
+                             acc
+                             columns))
+                          {}
+                          (headers-reader source-path))]
+             (into {} (filter (fn [[_ sheet->col]] (>= (count sheet->col) 2)) by-norm))))]
+     (fn relations [container-selector]
+       (let [sheet (container-name-of container-selector)]
+         (->> @key-index
+              (mapcat (fn [[_ sheet->col]]
+                        (when-let [my-col (get sheet->col sheet)]
+                          (for [[other other-col] sheet->col
+                                :when (not= other sheet)]
+                            {:from (str sheet "." my-col)
+                             :to   (str other "." other-col)
+                             :via  my-col}))))
+              (remove nil?)
+              (sort-by (juxt :to :via))
+              vec))))))
+
+;; =============================================================================
 ;; Docstrings (self-contained: PURPOSE / EXAMPLE / RETURNS)
 ;; =============================================================================
 
