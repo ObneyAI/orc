@@ -3,7 +3,9 @@
 **Type:** AFK · **Blocked by:** CONNECT-2 + CONNECT-3 — craft after both land.
 
 ## What to build
-A durable acceptance (pure verdict fn + a bounded live O*NET driver) that proves graph B is CONNECTED: occupations participate in cross-sheet edges to their skills/knowledge/tasks/abilities (not 0 edges as measured today via `onet_overmint_forensics` edge-scan). Measured directly from the build store (occupation edge-participation count > 0; a sampled occupation reaches ≥1 skill/task/knowledge across sheets). Bounded caps (6 containers is fine — enough now that the ranking works + relations exist) so it completes in minutes, not the 100-min default-cap run.
+A durable acceptance (pure verdict fn + a bounded live O*NET driver) that proves graph B is CONNECTED **and confirms CONNECT-3c on a REAL build** — the edges must attach to the CANONICAL `occupation/<SOC>` nodes (the unit test proved the SCHEME; the live build confirms the full URI matches the canonical occupation minted from Occupation Data). Measured directly from the post-CONNECT-3c build store via `onet_overmint_forensics` edge-scan: occupation cross-sheet edge-participation > 0; edges' source-uris are `occupation/<SOC>` (canonical), NOT `entity/<SOC>` stubs; a sampled canonical occupation reaches ≥1 skill AND ≥1 task/knowledge across sheets; BFS `occupation/<SOC>` → element → a DIFFERENT `occupation/<SOC>` traverses.
+
+**Perf caveat (known, separate):** the CQ loop re-embeds the whole graph ~13× per iteration, so a full build is slow to terminate. Connectivity edges come from EXTRACTION+LANDING (upstream of the CQ loop), so the driver runs the bounded build, waits for extraction+landing to complete (embedding begins), then reads the edges forensically from the persisted store — it does NOT depend on the CQ loop finishing. Bounded caps (`:max-containers 10 :max-windows 5`).
 
 ## Acceptance criteria
 - [ ] Pure verdict fn: given a graph summary, PASS iff occupation cross-sheet edge-participation exceeds a threshold (occupations are not isolated).
