@@ -134,6 +134,38 @@
     :else
     (pr-str v)))
 
+(def ^:private iteration-result-char-limit
+  "Character cap for the :result / :stdout strings re-inlined into every
+   Phase-1 RLM iteration prompt by `build-iteration-history`.
+
+   RB-1: that function re-inlines each prior iteration's result and stdout
+   into every subsequent prompt. One large intermediate value (e.g. a data
+   dump) is therefore re-paid once per remaining iteration → the prompt
+   grew to 4.28M tokens, exceeded the model context limit, and crashed the
+   request. Bounding these two strings is safe: the full untruncated value
+   stays retrievable via `(get-var :key)`, which reads the sandbox-vars
+   atom (rlm_sandbox.clj) — NOT this rendered history. Cap mirrors
+   streaming/value-size-limit — generous enough that all normal reasoning
+   results render verbatim.
+
+   Deliberately NOT applied to :code (model-authored output — no-truncation
+   discipline) or :error (small and critical)."
+  16384)
+
+(defn- preview-for-prompt
+  "Bound a STRING for re-inlining into the iteration-history prompt.
+
+   Returns `s` verbatim when it is not a string, or is within
+   `iteration-result-char-limit`; otherwise returns the head plus a marker
+   that reports the true full length and points the model at `(get-var …)`
+   for the complete value (which this cap does not affect)."
+  [s]
+  (if (and (string? s) (> (count s) iteration-result-char-limit))
+    (str (subs s 0 iteration-result-char-limit)
+         "…(truncated, full " (count s)
+         " chars — retrieve the full value with (get-var …))")
+    s))
+
 (defn detect-nil-writes
   "Return the subset of :writes-declared whose value in :outputs is nil or empty.
 
@@ -1310,11 +1342,17 @@
 (defn- build-iteration-history
   "Format iteration history for LLM context.
 
-   The model sees its own prior code, results, stdout, errors, and the
-   variables each iteration created — VERBATIM. Truncating any of this
-   second-guesses the model and hides what it actually did, degrading
-   its ability to reason across iterations (and, in recursive mode,
-   to see the full trees it has already emitted).
+   The model sees its own prior code, errors, and the variables each
+   iteration created — VERBATIM. Truncating :code or :error would
+   second-guess the model and hide what it actually did.
+
+   RB-1: :result and :stdout ARE bounded via `preview-for-prompt`
+   (a generous 16384-char cap). This function re-inlines each prior
+   iteration's result/stdout into EVERY subsequent prompt, so one large
+   intermediate value is re-paid once per remaining iteration — the path
+   that produced a 4.28M-token prompt and crashed the request. When a
+   value is truncated, the marker points the model at `(get-var …)`, which
+   still returns the full untruncated value from the sandbox-vars atom.
 
    R-6: When an iteration's :error is a SCI parse error with a [line col]
    marker, the formatted history also includes the offending line + a
@@ -1329,7 +1367,7 @@
                     (fn [idx {:keys [code result stdout error vars-created tree-outcome]}]
                       (str "### Iteration " (inc idx) "\n"
                            "Code:\n```clojure\n" code "\n```\n"
-                           (when (seq stdout) (str "Output:\n" stdout "\n"))
+                           (when (seq stdout) (str "Output:\n" (preview-for-prompt stdout) "\n"))
                            (cond
                              error (format-error-with-context code error)
                              ;; Tree iterations: the eval result is just the
@@ -1339,7 +1377,7 @@
                              ;; with previews, nil-writes, failed-leaf errors,
                              ;; surviving vars.
                              tree-outcome (str "Result: " tree-outcome)
-                             :else (str "Result: " result))
+                             :else (str "Result: " (preview-for-prompt result)))
                            (when (seq vars-created)
                              (str "\nVariables created: " (str/join ", " (map str vars-created))))))
                     history)))))

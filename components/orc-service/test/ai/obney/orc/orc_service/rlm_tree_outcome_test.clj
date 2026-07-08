@@ -132,3 +132,70 @@
                     :vars-created []}]
           rendered (#'executor/build-iteration-history history)]
       (is (str/includes? rendered "Result: \"42\"")))))
+
+;; =============================================================================
+;; RB-1: bound :result / :stdout in the prompt history (4.28M-token crash fix)
+;;
+;; build-iteration-history re-inlines each prior iteration's :result and
+;; :stdout into every subsequent prompt. One large intermediate value is
+;; re-paid once per remaining iteration → a multi-million-token prompt that
+;; exceeds the model context limit and crashes the request. These pin that
+;; ONLY :result and :stdout are bounded (with a get-var pointer), while the
+;; small-value and code/error verbatim semantics are preserved.
+;; =============================================================================
+
+(deftest history-bounds-huge-result
+  (testing "a huge :result is truncated with a marker pointing at (get-var …)"
+    (let [huge (pr-str (vec (range 100000)))   ; ~600k chars
+          history [{:code "(get-var :dump)"
+                    :result huge
+                    :stdout ""
+                    :error nil
+                    :vars-created [:dump]}]
+          rendered (#'executor/build-iteration-history history)]
+      (is (> (count huge) 500000) "sanity: the result really is huge")
+      (is (str/includes? rendered (str "(truncated, full " (count huge) " chars"))
+          "reports the true full length")
+      (is (str/includes? rendered "retrieve the full value with (get-var")
+          "points the model at the full-value retrieval primitive")
+      (is (< (count rendered) 20000)
+          "the rendered history is bounded, not ~600k chars")
+      (is (not (str/includes? rendered "99999]"))
+          "the truncated tail of the result is NOT inlined"))))
+
+(deftest history-renders-small-result-verbatim
+  (testing "a small :result is rendered verbatim (no marker)"
+    (let [history [{:code "(get-var :answer)"
+                    :result "\"42\""
+                    :stdout ""
+                    :error nil
+                    :vars-created []}]
+          rendered (#'executor/build-iteration-history history)]
+      (is (str/includes? rendered "Result: \"42\""))
+      (is (not (str/includes? rendered "truncated"))))))
+
+(deftest history-bounds-huge-stdout
+  (testing "a huge :stdout is truncated with the get-var marker"
+    (let [huge (apply str (repeat 200000 "x"))  ; 200k chars of println output
+          history [{:code "(println (get-var :dump))"
+                    :result "nil"
+                    :stdout huge
+                    :error nil
+                    :vars-created []}]
+          rendered (#'executor/build-iteration-history history)]
+      (is (str/includes? rendered "(truncated, full 200000 chars"))
+      (is (str/includes? rendered "retrieve the full value with (get-var"))
+      (is (< (count rendered) 20000)
+          "the rendered history is bounded, not ~200k chars"))))
+
+(deftest history-keeps-long-code-verbatim
+  (testing "model-authored :code is NEVER truncated, even at 50k chars"
+    (let [long-code (str "(do " (apply str (repeat 50000 "y")) ")")
+          history [{:code long-code
+                    :result "42"
+                    :stdout ""
+                    :error nil
+                    :vars-created []}]
+          rendered (#'executor/build-iteration-history history)]
+      (is (str/includes? rendered long-code)
+          "the full code appears verbatim in the rendered history"))))
