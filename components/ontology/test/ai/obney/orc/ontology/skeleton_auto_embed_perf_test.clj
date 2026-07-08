@@ -114,3 +114,25 @@
                    (#'ds/auto-index! {} (random-uuid)
                                      [{:uri "occupation/1" :label "X" :description "y"}] 1))
           "an unrecognized fault is NOT masked"))))
+
+;; ---------------------------------------------------------------------------
+;; ColBERT corpus-size guard — a single-request PLAID index over a large corpus
+;; stalls the python bridge (one huge JSON line over the pipe), parking the JVM
+;; indefinitely (this is what hung the full O*NET build). index-concepts! now SKIPS
+;; above the threshold with a clean skip result (no create-index call), so the build
+;; completes — ColBERT is rebuildable (invariant #3). DJL/ColBERT-free: short-circuits
+;; before the bridge.
+;; ---------------------------------------------------------------------------
+
+(deftest colbert-index-skips-large-corpus-test
+  (testing "index-concepts! SKIPS an over-threshold corpus (nil index-id, 0 docs,
+            :corpus-too-large-for-single-index) WITHOUT calling create-index"
+    (let [big (mapv (fn [i] {:uri (str "c/" i) :label (str "Concept " i)
+                             :description "some indexable content here"})
+                    (range (inc colbert-indexer/colbert-max-single-index-corpus)))
+          r (colbert-indexer/index-concepts! {} big {:colbert-fields [:label]
+                                                     :auto-detect-colbert-fields false})]
+      (is (nil? (:index-id r)) "no index built for an over-threshold corpus")
+      (is (= 0 (:document-count r)) "zero documents indexed")
+      (is (= :corpus-too-large-for-single-index (:skipped-reason r))
+          "surfaced as a clean skip, not a stall or a throw"))))

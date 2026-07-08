@@ -154,6 +154,17 @@
 ;; ColBERT Index Creation
 ;; =============================================================================
 
+(def colbert-max-single-index-corpus
+  "The largest corpus (post-blank-filter document count) that ColBERT's SINGLE-REQUEST
+   PLAID indexer handles here. A create_index sends the WHOLE collection as one JSON
+   line over the bridge pipe; at large scale (observed stall at ~36k docs; empty index,
+   0% CPU) that line-protocol/memory ceiling parks the JVM indefinitely. Above this we
+   SKIP indexing (non-fatally — ColBERT is a REBUILDABLE retrieval accelerator, invariant
+   #3; the graph + embedding signals are unaffected). The real large-scale fix is CHUNKED
+   incremental indexing (add-to-index). Set well below the observed stall, above the
+   proven small/mid builds."
+  10000)
+
 (defn index-concepts!
   "Create a ColBERT index from concepts with auto-detected fields.
 
@@ -199,42 +210,46 @@
 
         ;; Generate index name if not provided
         final-index-name (or index-name
-                             (str "ontology-" (subs (str (random-uuid)) 0 8)))
-
-        ;; SCALE the ColBERT bridge timeout to the corpus size, but FAIL-FAST with a
-        ;; sane CAP. The bridge's create-index defaults to 60s — too short for a real
-        ;; large index — but at large scale the python PLAID indexer stalls (a bridge
-        ;; line-protocol / memory limit on a huge single request), so an unbounded
-        ;; scale-up just parks the JVM for many minutes (which, under memory contention,
-        ;; invites the OS OOM-killer). ~40ms/doc, clamped to [2 min, 6 min]: enough for
-        ;; a genuine small/mid index, short enough that a stall is skipped promptly.
-        ;; A still-exceeded timeout is surfaced NON-fatally by
-        ;; `deterministic-skeleton/auto-index!` (ColBERT is a REBUILDABLE retrieval
-        ;; accelerator, not the graph — ARCHITECTURE invariant #3), and the true
-        ;; large-scale fix is chunked incremental indexing (add-to-index). Best-effort:
-        ;; the var lives in the OPTIONAL colbert component, so guard resolution.
-        _ (when-let [tv (try (requiring-resolve
-                              'ai.obney.orc.colbert.core.bridge/default-timeout-ms)
-                             (catch Throwable _ nil))]
-            (alter-var-root tv (constantly (-> (* 40 (count valid-docs))
-                                               (max 120000) (min 360000)))))
-
-        ;; Create ColBERT index
-        index-id ((require-colbert (quote create-index!)) ctx
-                   {:collection (mapv :content valid-docs)
-                    :document-ids (mapv :document-id valid-docs)
-                    :index-name final-index-name})]
-
-    (mu/log ::index-created
-            :index-id index-id
-            :document-count (count valid-docs)
-            :index-name final-index-name)
-
-    {:index-id index-id
-     :index-name final-index-name
-     :document-count (count valid-docs)
-     :colbert-fields fields-to-use
-     :detected-confidence (when detected (:confidence-scores detected))}))
+                             (str "ontology-" (subs (str (random-uuid)) 0 8)))]
+    ;; CORPUS-SIZE GUARD (the reliable large-scale fix). A single-request PLAID index
+    ;; over a LARGE corpus stalls the python bridge (the whole collection is one JSON
+    ;; line over the pipe — a line-protocol/memory ceiling), parking the JVM
+    ;; indefinitely. Above the threshold we SKIP with a clean skip result (no throw, no
+    ;; create-index call): callers treat a nil index-id / 0 document-count as "no index"
+    ;; and proceed. ColBERT is a REBUILDABLE retrieval accelerator (invariant #3); the
+    ;; graph + embedding signals are unaffected. Chunked incremental indexing
+    ;; (add-to-index) is the real large-scale fix.
+    (if (> (count valid-docs) colbert-max-single-index-corpus)
+      (do (mu/log ::skipped-large-corpus
+                  :valid-docs (count valid-docs)
+                  :threshold colbert-max-single-index-corpus)
+          {:index-id nil
+           :index-name final-index-name
+           :document-count 0
+           :colbert-fields fields-to-use
+           :skipped-reason :corpus-too-large-for-single-index})
+      (do
+        ;; SUB-THRESHOLD: scale the bridge timeout to corpus size (best-effort) — a
+        ;; mid-size index still exceeds the 60s default. The var lives in the optional
+        ;; colbert component, so guard resolution.
+        (when-let [tv (try (requiring-resolve
+                            'ai.obney.orc.colbert.core.bridge/default-timeout-ms)
+                           (catch Throwable _ nil))]
+          (alter-var-root tv (constantly (-> (* 40 (count valid-docs))
+                                             (max 120000) (min 360000)))))
+        (let [index-id ((require-colbert (quote create-index!)) ctx
+                        {:collection (mapv :content valid-docs)
+                         :document-ids (mapv :document-id valid-docs)
+                         :index-name final-index-name})]
+          (mu/log ::index-created
+                  :index-id index-id
+                  :document-count (count valid-docs)
+                  :index-name final-index-name)
+          {:index-id index-id
+           :index-name final-index-name
+           :document-count (count valid-docs)
+           :colbert-fields fields-to-use
+           :detected-confidence (when detected (:confidence-scores detected))})))))
 
 (defn index-with-related-data!
   "Create enriched ColBERT index with related data.
