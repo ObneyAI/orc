@@ -71,3 +71,94 @@
                        " [NON-GATING dedup diagnostic — shared elements collapse to canonical nodes]")}]]
     {:pass? (every? :pass? (remove #(false? (:gating? %)) criteria))
      :reasons criteria}))
+
+;; ME-5 — the PURE, durable memory-efficiency verdict (the /tdd deliverable).
+;;
+;; Given a MEASURED store event-type histogram of a completed build, decide
+;; whether the ME-1..ME-3 slimming actually landed (embed once, write-only
+;; dedup ledgers gated off, evidence rolled once-per-concept) AND the CONSUMED
+;; sets are intact. Same shape/style as `connectivity-verdict` above: PURE — no
+;; I/O, no LLM, no Grain. The live bounded O*NET build (the QA) reads the
+;; histogram from the persisted store and feeds it here; this fn is guarded on
+;; every `poly test brick:ontology` run.
+;;
+;; Domain-agnostic: the fn names NO O*NET column, SOC, skill, or predicate — it
+;; reads only event-type counts off the histogram map.
+
+(defn memory-efficiency-verdict
+  "Pure PASS/FAIL over a MEASURED store event-type histogram of a built graph.
+
+   `histogram` is a map `{event-type-keyword count}` (absent key ⇒ 0 events).
+   Keyed event types:
+     :ontology/concept-created              N — concepts minted (the concept count).
+     :ontology/concept-embedded             N — embed events (ME-1: exactly 1× per concept).
+     :ontology/concept-pair-co-occurrence   N — write-only dedup ledger (ME-2: gated ⇒ 0).
+     :ontology/dedup-distinct-recorded      N — write-only dedup ledger (ME-2: gated ⇒ 0).
+     :ontology/concept-evidence-aggregated  N — evidence rollups (ME-3: ≤ concepts, once per
+                                                participating concept — NOT ~2×candidate-pairs).
+     :ontology/relationship-created         N — consumed set (must be > 0).
+     :ontology/equivalence-recorded         N — consumed set (key must be PRESENT; count may be 0).
+
+   Gating PASS iff ALL:
+     1. concept-embedded = concept-created                (ME-1: 1× embed, not 2× re-embed)
+     2. concept-pair-co-occurrence = 0 AND
+        dedup-distinct-recorded = 0                       (ME-2: write-only ledgers gated off)
+     3. concept-evidence-aggregated <= concept-created    (ME-3: one rollup per participating
+                                                           concept, ≤ concepts since not every
+                                                           concept enters a dedup comparison)
+     4. concept-created > 0 AND relationship-created > 0
+        AND :ontology/equivalence-recorded key present    (consumed sets intact)
+
+   Returns {:pass? bool :reasons [{:criterion kw :pass? bool :detail str} ...]}."
+  [histogram]
+  (let [g          (fn [k] (or (get histogram k) 0))
+        created    (g :ontology/concept-created)
+        embedded   (g :ontology/concept-embedded)
+        co-occ     (g :ontology/concept-pair-co-occurrence)
+        distinct-r (g :ontology/dedup-distinct-recorded)
+        evidence   (g :ontology/concept-evidence-aggregated)
+        rel        (g :ontology/relationship-created)
+        equiv?     (contains? histogram :ontology/equivalence-recorded)
+        equiv      (g :ontology/equivalence-recorded)
+        criteria
+        [{:criterion :one-embed-per-concept
+          ;; ME-1: at most ONE embed per concept. The failure mode is the 2× RE-EMBED
+          ;; (embedded > created). `<= created` rejects that while NOT false-failing when
+          ;; a blank-text concept is honestly skipped (embedded < created) — every semantic
+          ;; concept is still embedded exactly once. `pos?` guards the nothing-embedded case.
+          :pass? (and (pos? embedded) (<= embedded created))
+          :detail (str embedded " concept-embedded vs " created
+                       " concept-created — expected 0 < embedded <= created (1× embed per"
+                       " concept, ME-1)"
+                       (when (> embedded created)
+                         (if (and (pos? created) (= embedded (* 2 created)))
+                           " — 2× RE-EMBED (auto-embed! duplicating embed+index!)"
+                           " — embed count EXCEEDS the concept count (re-embed)"))
+                       (when (zero? embedded) " — NOTHING embedded"))}
+         {:criterion :writeonly-ledgers-gated
+          :pass? (and (zero? co-occ) (zero? distinct-r))
+          :detail (str co-occ " concept-pair-co-occurrence + " distinct-r
+                       " dedup-distinct-recorded — expected BOTH 0"
+                       " (write-only dedup ledgers gated off, ME-2)"
+                       (when-not (and (zero? co-occ) (zero? distinct-r))
+                         " — a write-only ledger is STILL emitting"))}
+         {:criterion :evidence-once-per-concept
+          :pass? (<= evidence created)
+          :detail (str evidence " concept-evidence-aggregated vs " created
+                       " concept-created — expected <= concepts (one rollup per"
+                       " participating concept, NOT ~2×candidate-pairs, ME-3)"
+                       (when (> evidence created)
+                         " — evidence EXCEEDS concepts (per-pair cascade write-amplification)"))}
+         {:criterion :consumed-sets-intact
+          :pass? (and (pos? created) (pos? rel) equiv?)
+          :detail (str created " concept-created, " rel " relationship-created, "
+                       (if equiv? equiv "MISSING") " equivalence-recorded"
+                       " — expected concept-created>0, relationship-created>0,"
+                       " equivalence-recorded key present"
+                       (cond
+                         (not (pos? created)) " — NO concepts created (consumed set empty)"
+                         (not (pos? rel))     " — NO relationships created (consumed set empty)"
+                         (not equiv?)         " — equivalence-recorded key ABSENT (consumed set dropped)"
+                         :else                " — consumed sets intact"))}]]
+    {:pass? (every? :pass? criteria)
+     :reasons criteria}))
