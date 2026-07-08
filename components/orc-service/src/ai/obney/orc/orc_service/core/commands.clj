@@ -510,7 +510,7 @@
 (defcommand :sheet set-map-each-config
   {:authorized? authenticated?}
   "Set configuration for a map-each node."
-  [{{:keys [sheet-id node-id source-key item-key output-key max-concurrency]} :command
+  [{{:keys [sheet-id node-id source-key item-key output-key max-concurrency preserve-failures?]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
         blackboard (rm/get-blackboard-by-key ctx sheet-id)]
@@ -547,6 +547,7 @@
                          :item-key item-key
                          :output-key output-key}
                   max-concurrency (assoc :max-concurrency max-concurrency)
+                  (some? preserve-failures?) (assoc :preserve-failures? preserve-failures?)
                   (:source-key node) (assoc :previous-source-key (:source-key node))
                   (:item-key node) (assoc :previous-item-key (:item-key node))
                   (:output-key node) (assoc :previous-output-key (:output-key node))
@@ -929,7 +930,8 @@
   "Start a tree tick (execute from root).
    When inputs are provided, builds a full execution snapshot for
    independent async execution with tick-scoped blackboard isolation."
-  [{{:keys [sheet-id tick-id parent-tick-id inputs use-version force-draft options]} :command
+  [{{:keys [sheet-id tick-id parent-tick-id inputs use-version force-draft options
+            tool-context]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))]
     (if inputs
@@ -956,7 +958,11 @@
                              :execution-snapshot snapshot}
                       parent-tick-id (assoc :parent-tick-id parent-tick-id)
                       (:version-number snapshot) (assoc :version-number (:version-number snapshot))
-                      options (assoc :options options))})]}))
+                      options (assoc :options options)
+                      ;; G1 (ADR 0018): carry the opaque :tool-context across the
+                      ;; async boundary so the tick-execution-context read model
+                      ;; can surface it back at the Phase-2 leaf.
+                      tool-context (assoc :tool-context tool-context))})]}))
       ;; Legacy UI tick: no snapshot, reads live sheet state
       (let [read-ctx (if (not= (:system-tenant-id context) (:tenant-id context))
                        (assoc context :tenant-id (:system-tenant-id context))
@@ -980,7 +986,10 @@
                       [:tick new-tick-id]}
               :body (cond-> {:sheet-id sheet-id
                              :tick-id new-tick-id}
-                      parent-tick-id (assoc :parent-tick-id parent-tick-id))})]})))))
+                      parent-tick-id (assoc :parent-tick-id parent-tick-id)
+                      ;; G1 (ADR 0018): opaque :tool-context also rides the
+                      ;; legacy (snapshot-less) tick path for symmetry.
+                      tool-context (assoc :tool-context tool-context))})]})))))
 (defcommand :sheet tick-node
   {:authorized? authenticated?}
   "Start a single node tick (for testing or manual execution)."
@@ -1034,7 +1043,7 @@
 
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage
-            node-type completion-kind raw-response]} :command
+            node-type completion-kind raw-response block-payload]} :command
     :as ctx}]
   (let [;; Gap-7: when the dispatch site didn't explicitly set
         ;; :completion-kind but the node is a recursive repl-researcher,
@@ -1075,7 +1084,11 @@
                                     ;; judge routing can pick the right grader
                                     ;; per kind.
                                     (some? effective-completion-kind)
-                                    (assoc :completion-kind effective-completion-kind))})
+                                    (assoc :completion-kind effective-completion-kind)
+                                    ;; WS-2a: carry the OPAQUE block payload onto
+                                    ;; the completion event when the node blocked.
+                                    (= :blocked status)
+                                    (assoc :block-payload block-payload))})
         ;; For tick-scoped executions with successful writes, emit bb writes atomically
         ;; Also handle :tree-generated status (RLM two-phase execution)
         tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
@@ -1129,7 +1142,7 @@
    reads :tree-fingerprint from the event body directly (tag values must
    be UUIDs in event-store-v3, so we don't tag with the string fingerprint)."
   [{{:keys [sheet-id tick-id trajectory total-usage task-fingerprint
-            tree-fingerprint status duration-ms]} :command
+            tree-fingerprint status duration-ms generated-tree source-sheet-id]} :command
     :as _ctx}]
   {:command-result/events
    [(->event
@@ -1144,7 +1157,15 @@
                       :task-fingerprint task-fingerprint}}
         (some? tree-fingerprint) (assoc-in [:body :tree-fingerprint] tree-fingerprint)
         (some? status)           (assoc-in [:body :status] status)
-        (some? duration-ms)      (assoc-in [:body :duration-ms] duration-ms)))]})
+        (some? duration-ms)      (assoc-in [:body :duration-ms] duration-ms)
+        ;; CV-2 (ADR 0017 decision 3): carry the emitted worked-DSL + the
+        ;; SOURCE (host/classified) sheet-id so the post-emit enrichment
+        ;; processor can resolve the tree-class (sheet->class join) and
+        ;; record the DSL as a :strengths[].:recommended-pattern. Both
+        ;; optional/backward-compatible — a turn that times out before emit
+        ;; carries neither, so no enrichment fires (CV-1 floor still stands).
+        (some? generated-tree)   (assoc-in [:body :generated-tree] generated-tree)
+        (some? source-sheet-id)  (assoc-in [:body :source-sheet-id] source-sheet-id)))]})
 
 (defcommand :sheet fail-node-execution
   {:authorized? authenticated?}
@@ -1267,7 +1288,8 @@
                    (:source-key node) (assoc :source-key (:source-key node))
                    (:item-key node) (assoc :item-key (:item-key node))
                    (:output-key node) (assoc :output-key (:output-key node))
-                   (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))))
+                   (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))
+                   (some? (:preserve-failures? node)) (assoc :preserve-failures? (:preserve-failures? node))))
           ;; Children for composite nodes
           (seq (:children-ids node))
           (assoc :children

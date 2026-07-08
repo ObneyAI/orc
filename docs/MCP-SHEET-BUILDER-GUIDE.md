@@ -1,5 +1,66 @@
 # MCP Sheet Builder: Complete Architecture Guide
 
+## Start Here: The Story
+
+You have access to MCP tool servers — Linear, GitHub, a database, an nREPL, whatever speaks the [Model Context Protocol](https://modelcontextprotocol.io). Normally, to put those tools to work inside a behavior tree, you'd **hand-wire the tree yourself**: decide which tool feeds which, lift each tool's schema onto the blackboard, choose the control nodes, and connect it all up by hand.
+
+The **MCP Sheet Builder** writes that first draft for you. Point it at an MCP server and it reads the server's tool schemas and **generates an ORC behavior tree** — a real, runnable workflow — automatically. Think of it as a bootstrapper: it gets you from *"here are some tools"* to *"here is a working tree"* in a single call. And the tree it hands back is a perfectly normal ORC tree that you then **refine by hand**.
+
+### The simplest path
+
+Four conceptual steps — connect, analyze, generate, execute:
+
+```clojure
+(require '[ai.obney.orc.mcp-sheet-builder.interface :as msb]
+         '[ai.obney.orc.orc-service.interface :as sheet])
+
+;; 1. CONNECT to an MCP server (a built-in preset, or any HTTP MCP endpoint)
+(def conn (msb/connect {:preset :nrepl}))
+;; or: (msb/connect {:type :http :url "https://your-mcp-server.example/mcp"})
+
+;; 2. ANALYZE its tools — capabilities, relationships, candidate patterns
+(def analysis (msb/analyze-tools conn))
+
+;; 3. GENERATE + build an ORC behavior tree from those tools, in the event store.
+;;    build-sheet-from-mcp! collapses steps 1–3 into one call.
+(def result (msb/build-sheet-from-mcp! ctx {:preset :nrepl}))
+;; => {:sheet-id #uuid "..." :workflow-name "mcp-workflow-..."
+;;     :pattern :research-compilation :tools [...] :analysis {...}}
+
+;; 4. EXECUTE the generated tree like any other ORC sheet
+(sheet/execute ctx (:sheet-id result) {:query "..."})
+```
+
+That's the whole loop. `build-sheet-from-mcp!` is the one-call shortcut; `connect` + `analyze-tools` are there when you want to inspect the analysis before committing to a tree.
+
+### This is Layer 8 — standalone
+
+The MCP Sheet Builder is **Layer 8 in [COMPONENT-MAP.md](COMPONENT-MAP.md)**: a standalone capability. You do **not** need the ontology, ColBERT, or the self-improving loop to use it. It connects to any MCP server, analyzes tool schemas, and emits executable ORC behavior-tree workflows — and nothing more is required.
+
+That's not a claim, it's the dependency list. Source: `components/mcp-sheet-builder/deps.edn` lists only `clj-http`, `cheshire`, and `sci` — no `orc/ontology`, no Python:
+
+```clojure
+;; components/mcp-sheet-builder/deps.edn (verbatim)
+{:paths ["src" "resources"]
+ :deps {clj-http/clj-http {:mvn/version "3.12.3"}
+        cheshire/cheshire {:mvn/version "5.13.0"}
+        org.babashka/sci {:mvn/version "0.8.43"}}
+ :aliases {:test {:extra-paths ["test"]
+                  :extra-deps {}}}}
+```
+
+### The output is just an ORC tree
+
+The generated sheet is **not a black box**. It's an ordinary ORC behavior tree — the same shape you'd build by hand with the orc DSL. So once it's generated you can:
+
+- **Edit it** — tweak instructions, swap models, add or remove leaves.
+- **Compose it into a larger tree** — drop the generated sheet in as a subtree of a bigger workflow (e.g. via a `:delegate` node), so the bootstrapped tool-calling logic becomes one step in a richer pipeline.
+- **Attach judges to it** — wire in LLM-as-judge evaluation around its outputs to gate quality.
+
+The MCP Sheet Builder gives you the first draft; ORC gives you everything you'd do with any other tree afterward.
+
+---
+
 This document explains the MCP Sheet Builder system - a meta-system that generates behavior tree workflows from MCP tool schemas.
 
 ---
@@ -8,7 +69,7 @@ This document explains the MCP Sheet Builder system - a meta-system that generat
 
 We built a **"sheet that builds sheets"** - a meta-system that:
 
-1. **Connects to any MCP server** (HTTP/SSE, Claude's built-in, or static presets)
+1. **Connects to any MCP server** (HTTP/SSE, your MCP client's pre-loaded tools, or static presets)
 2. **Analyzes tools** to understand capabilities and relationships
 3. **Matches patterns** (Google's 8 Agent Patterns)
 4. **Generates ORC behavior trees** automatically
@@ -19,7 +80,7 @@ The REPL Researcher node adds **iterative reasoning** - LLM generates code, exec
 **Test Results:**
 - 41/41 POC tests passed (100%)
 - Average quality score: 1.00
-- Live execution verified with Langfuse and nREPL MCP servers
+- Live execution verified against an nREPL MCP server and a documentation-search MCP server
 
 ---
 
@@ -39,7 +100,7 @@ The REPL Researcher node adds **iterative reasoning** - LLM generates code, exec
 }
 ```
 
-Restart Claude Code after creating this file.
+Restart your MCP client after creating this file.
 
 ### 2. Build and Execute a Sheet
 
@@ -47,21 +108,24 @@ Restart Claude Code after creating this file.
 (require '[ai.obney.orc.mcp-sheet-builder.interface :as msb]
          '[ai.obney.orc.orc-service.interface :as sheet])
 
+;; No ctx with ontology needed — this is Layer 8 standalone
 ;; Build sheet from MCP tools
-(def result (msb/build-sheet-from-mcp! ctx {:preset :langfuse}))
+(def result (msb/build-sheet-from-mcp! ctx {:preset :nrepl}))
 
 ;; Execute it
-(sheet/execute ctx (:sheet-id result) {:query "How do I trace LLM calls?"})
+(sheet/execute ctx (:sheet-id result) {:query "What namespaces are loaded?"})
 ```
 
 ### 3. Using MCP Tools in Other Projects
 
-**Option A: Copy `.mcp.json`** to other project, restart Claude Code
+**Option A: Copy `.mcp.json`** to the other project, restart your MCP client
 
 **Option B: Import component** via deps.edn:
 ```clojure
-{:deps {ai.obney.orc/mcp-sheet-builder
-        {:local/root "/path/to/daryls-area51/components/mcp-sheet-builder"}}}
+{:deps {obneyai/orc
+        {:git/url "https://github.com/ObneyAI/orc.git"
+         :git/sha "..."
+         :deps/root "components/mcp-sheet-builder"}}}
 ```
 
 **Option C: Export sheet as EDN** for portable workflows:
@@ -166,7 +230,7 @@ map-each    : Iterate over collection
 
 LEAF NODES
 ----------
-llm             : Call LLM via DSCloj
+llm             : Call LLM via orc's structured LLM provider
                   Reads blackboard keys -> LLM -> Writes outputs
 
 code            : Call Clojure function
@@ -220,9 +284,9 @@ Node A (writes :result)  ->  Blackboard  ->  Node B (reads :result)
 (def sheet-id (sheet/build-workflow! ctx workflow))
 
 ;; Execute it
-(sheet/execute ctx sheet-id {:question "What is Langfuse?"})
+(sheet/execute ctx sheet-id {:question "What is a behavior tree?"})
 ;; => {:status :success
-;;     :outputs {:answer "Langfuse is an observability platform..."}
+;;     :outputs {:answer "A behavior tree is a tree of control and leaf nodes..."}
 ;;     :duration-ms 1234}
 ```
 
@@ -263,8 +327,8 @@ The `repl-researcher` node implements the **RLM (Recursive Language Model)** pat
 2. **MCP Tool Injection**
    ```clojure
    ;; MCP tools become callable in SCI namespace
-   (searchLangfuseDocs {:query "tracing"})
-   (getLangfuseDocsPage {:pathOrUrl "/docs/tracing"})
+   (searchDocs {:query "tracing"})
+   (getDocsPage {:pathOrUrl "/docs/tracing"})
    ```
 
 3. **Convergence Detection**
@@ -281,10 +345,10 @@ The `repl-researcher` node implements the **RLM (Recursive Language Model)** pat
 ```clojure
 (sheet/repl-researcher "research"
   :model "google/gemini-2.5-flash"
-  :instruction "Research how to trace LLM calls in Langfuse"
+  :instruction "Research how to trace LLM calls and write a how-to"
   :reads [:question]           ;; Blackboard keys (metadata only)
   :writes [:answer]            ;; Output key for final result
-  :mcp-tools ["searchLangfuseDocs" "getLangfuseDocsPage"]
+  :mcp-tools ["searchDocs" "getDocsPage"]
   :max-iterations 10)
 ```
 
@@ -306,7 +370,7 @@ executor.clj:execute-repl-researcher
     |
 loop [iteration 0, history []]
     |
-dscloj/predict -> generate code
+llm-provider/predict -> generate code
     |
 sci-sandbox/execute-code -> run in sandbox
     |
@@ -322,13 +386,13 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 ```
 +-------------------------------------------------------------+
 | 1. MCP CONNECTION                                            |
-| connect({:preset :langfuse})                                |
+| connect({:preset :nrepl})                                   |
 | connect({:type :http :url "https://mcp.example.com"})       |
 +------------------------+------------------------------------+
                          |
 +------------------------v------------------------------------+
 | 2. TOOL DISCOVERY                                            |
-| list-tools(mcp-conn) -> [{:name "searchLangfuseDocs"        |
+| list-tools(mcp-conn) -> [{:name "searchDocs"                |
 |                          :description "Semantic search..."   |
 |                          :inputSchema {...}}]                |
 +------------------------+------------------------------------+
@@ -344,8 +408,8 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 +------------------------v------------------------------------+
 | 4. RELATIONSHIP DETECTION                                    |
 | detect-relationships() -> [{:type :sequential               |
-|                            :from "searchLangfuseDocs"        |
-|                            :to "getLangfuseDocsPage"         |
+|                            :from "searchDocs"               |
+|                            :to "getDocsPage"                |
 |                            :confidence 0.8}]                 |
 +------------------------+------------------------------------+
                          |
@@ -374,8 +438,7 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 
 **1. Static Presets** (for testing/POC)
 ```clojure
-(msb/connect {:preset :langfuse})  ;; Pre-defined tools, no network
-(msb/connect {:preset :nrepl})
+(msb/connect {:preset :nrepl})  ;; Pre-defined tools, no network
 ```
 
 **2. HTTP/SSE** (for real MCP servers)
@@ -385,7 +448,7 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
               :api-key "sk-..."})
 ```
 
-**3. Claude MCP** (via Claude Code's built-in tools)
+**3. Pre-loaded client tools** (`:claude-mcp` type — tools already loaded by your MCP client)
 ```clojure
 (msb/connect {:type :claude-mcp
               :tools [...pre-loaded tool definitions...]})
@@ -426,8 +489,8 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 ;; Build a repl-researcher sheet that iteratively calls tools
 (def researcher
   (msb/build-repl-researcher-sheet! ctx
-    {:preset :langfuse}
-    "Research everything about Langfuse tracing and provide a comprehensive guide"
+    {:type :http :url "https://your-docs-mcp-server.example/mcp"}
+    "Research everything about LLM tracing and provide a comprehensive guide"
     {:max-iterations 5}))
 
 ;; Execute - the LLM will generate code, call tools, iterate
@@ -441,7 +504,7 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 | 1. CONFIGURE MCP SERVER                                      |
 |    - URL: https://your-mcp-server.com                       |
 |    - API Key: sk-...                                        |
-|    - Or use preset: :langfuse, :nrepl, etc.                 |
+|    - Or use preset: :nrepl, etc.                            |
 +------------------------+------------------------------------+
                          |
 +------------------------v------------------------------------+
@@ -473,8 +536,8 @@ To add support for a new MCP server:
    - Edit `mcp_client.clj` lines 109-154
    - Add tool definitions to `known-servers` map
 
-3. **Option C: Claude MCP Adapter**
-   - For tools already available in Claude Code
+3. **Option C: Pre-loaded Client Tools (`:claude-mcp` adapter)**
+   - For tools already loaded by your MCP client
    - Wrap as callable functions
 
 ---
@@ -487,9 +550,8 @@ To add support for a new MCP server:
    - Malli schemas with descriptions -> LLMs know exactly what to output
    - No `:any` types -> no ambiguity
 
-2. **DSCloj Integration**
-   - Output flattening matches Python DSPy patterns
-   - Automatic reassembly of nested structures
+2. **Structured-Output Integration**
+   - Output flattening into structured fields, then automatic reassembly of nested structures
    - Structured `[[ ## field ## ]]` markers for reliable parsing
 
 3. **Pattern-Based Generation**
@@ -511,7 +573,7 @@ To add support for a new MCP server:
 | Q-001: Trace LLM calls             Score: 0.72     |
 | Q-002: Traces vs Spans             Score: 0.72     |
 | Q-003: Python SDK Install          Score: 0.72     |
-| Q-004: LangChain Integration       Score: 1.00     |
+| Q-004: Framework Integration       Score: 1.00     |
 +----------------------------------------------------+
 | Average Quality Score: 0.79                        |
 | Tests Passing (>0.6): 4/4                          |
@@ -658,17 +720,17 @@ Export MCP-generated sheets as **standalone `.clj` files** that work with only `
 ;; Complete pipeline: MCP → analyze → build → export
 (def result
   (msb/build-and-export-portable! ctx
-    {:preset :langfuse}           ;; MCP connection options
+    {:type :http :url "https://your-docs-mcp-server.example/mcp"}  ;; MCP connection options
     "exports/"                    ;; Output directory
     {:pattern :research-compilation
-     :name "langfuse-research"})) ;; Optional: custom name
+     :name "docs-research"}))     ;; Optional: custom name
 
 ;; Result:
 ;; {:sheet-id #uuid "..."
-;;  :workflow-name "langfuse-research"
-;;  :sheet-file "exports/langfuse-research.clj"
-;;  :executors-file "exports/langfuse-research-executors.clj"
-;;  :tools ["searchLangfuseDocs" "getLangfuseDocsPage" "getLangfuseOverview"]}
+;;  :workflow-name "docs-research"
+;;  :sheet-file "exports/docs-research.clj"
+;;  :executors-file "exports/docs-research-executors.clj"
+;;  :tools ["searchDocs" "getDocsPage" "getOverview"]}
 ```
 
 ### Using Exported Sheets
@@ -677,14 +739,14 @@ In any project with `orc-service`:
 
 ```clojure
 ;; 1. Load the exported files
-(load-file "exports/langfuse-research-executors.clj")
-(load-file "exports/langfuse-research.clj")
+(load-file "exports/docs-research-executors.clj")
+(load-file "exports/docs-research.clj")
 
 ;; 2. Require the workflow namespace
-(require 'langfuse-research)
+(require 'docs-research)
 
 ;; 3. Build the sheet
-(def sheet-id (langfuse-research/build! ctx))
+(def sheet-id (docs-research/build! ctx))
 
 ;; 4. Execute with MCP session in context
 (sheet/execute ctx sheet-id
@@ -764,14 +826,14 @@ Generated code includes checksums for tamper detection:
 ;; Build sheet AND persist executors to event store
 (def result
   (msb/build-sheet-with-executors! ctx
-    {:preset :langfuse}
+    {:type :http :url "https://your-docs-mcp-server.example/mcp"}
     {:pattern :research-compilation}))
 
 ;; Returns:
 ;; {:sheet-id #uuid "..."
 ;;  :workflow-name "..."
 ;;  :pattern :research-compilation
-;;  :executors [{:tool-id #uuid "..." :tool-name "searchLangfuseDocs" :fn-reference "..."}]
+;;  :executors [{:tool-id #uuid "..." :tool-name "searchDocs" :fn-reference "..."}]
 ;;  :load-results [{:success? true :namespace ...}]
 ;;  :mcp-connection {...}}
 ```

@@ -264,6 +264,133 @@
                             output-results)
                     "No output item should carry :__status :failure marker")))))))))
 
+(defn fail-on-boom
+  "Test fn: throws when :current-item is the string \"BOOM\", echoes otherwise.
+   Used by the :preserve-failures? alignment tests. The :code executor catches
+   the throw and produces a :status :failure slot."
+  [{:keys [inputs]}]
+  (let [item (get inputs :current-item)]
+    (if (= "BOOM" item)
+      (throw (ex-info "Intentional BOOM failure" {:item item}))
+      {:current-item item})))
+
+;; =============================================================================
+;; Slice O: :preserve-failures? opt-in (aligned vs successes-only :into)
+;; =============================================================================
+
+(defn- run-preserve-failures-sheet
+  "Build [:map-each (fail-on-boom) :into :results] over `items`, optionally with
+   :preserve-failures? and :max-concurrency, execute, and return the full result.
+   :results is declared as [:vector :any] so failure markers (maps) and plain
+   string successes can coexist on the blackboard."
+  [ctx items & {:keys [preserve-failures? max-concurrency]}]
+  (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Map Each Preserve"))
+        sheet-id (-> sheet-result :command-result/events first :sheet-id)]
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :any]))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :any))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :any]))
+    (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
+          map-id (-> map-result :command-result/events first :node-id)]
+      (h/run-and-apply! ctx (apply h/make-set-map-each-config-command sheet-id map-id
+                                   :items :current-item :results
+                                   (cond-> []
+                                     preserve-failures? (conj :preserve-failures? preserve-failures?)
+                                     max-concurrency (conj :max-concurrency max-concurrency))))
+      (let [leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id map-id))
+            leaf-id (-> leaf-result :command-result/events first :node-id)]
+        (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id leaf-id :code
+                                :fn "ai.obney.orc.orc-service.map-each-node-test/fail-on-boom"))
+        (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [:current-item] [:current-item]))
+        {:sheet-id sheet-id :map-id map-id
+         :result (sheet/execute ctx sheet-id {:items items})}))))
+
+(defn- map-each-completion-event
+  "Find the node-execution-completed event for the map-each parent in the tick."
+  [ctx result map-id]
+  (let [tick-id (:trace-id result)
+        events (when tick-id
+                 (into [] (es/read (:event-store ctx)
+                            {:tags #{[:tick tick-id]}
+                             :tenant-id (:tenant-id ctx)})))]
+    (->> events
+         (filter #(= :sheet/node-execution-completed (:event/type %)))
+         (filter #(= map-id (:node-id %)))
+         first)))
+
+(deftest map-each-preserve-failures-aligns-into
+  (testing "with :preserve-failures? true, :into is the aligned full-length vector with failure markers"
+    (h/with-async-test-context [ctx]
+      (let [{:keys [result]} (run-preserve-failures-sheet
+                               ctx ["a" "BOOM" "c" "d"]
+                               :preserve-failures? true :max-concurrency 3)
+            into-val (get-in result [:outputs :results])]
+        (is (= 4 (count into-val))
+            "Aligned :into keeps all N slots (no compaction)")
+        (is (= "a" (nth into-val 0)))
+        (is (= "c" (nth into-val 2)))
+        (is (= "d" (nth into-val 3)))
+        (let [marker (nth into-val 1)]
+          (is (map? marker) "Failed slot at index 1 holds a marker map")
+          (is (= :failure (:__status marker))
+              "Failed slot carries :__status :failure")
+          (is (contains? marker :__error)
+              "Failed slot carries :__error"))))))
+
+(deftest map-each-default-strips-failures-from-into
+  (testing "WITHOUT the flag, :into is successes-only (byte-identical to D-008 behavior)"
+    (h/with-async-test-context [ctx]
+      (let [{:keys [result]} (run-preserve-failures-sheet
+                               ctx ["a" "BOOM" "c" "d"]
+                               :max-concurrency 3)
+            into-val (get-in result [:outputs :results])]
+        (is (= 3 (count into-val))
+            "Default :into is compacted (failure stripped)")
+        (is (= ["a" "c" "d"] into-val)
+            "Successes only, in original relative order")
+        (is (every? (fn [r] (not (and (map? r) (= :failure (:__status r))))) into-val)
+            "No failure markers in the default :into")))))
+
+(deftest map-each-preserve-failures-leaves-status-and-summary-unchanged
+  (testing "the flag changes only :into; sheet status stays :partial and :partial-summary is unchanged"
+    ;; Separate contexts: each full sheet/execute drives the async pipeline; one
+    ;; per context keeps the two runs from sharing a tick worker pool.
+    (let [{ps :summary p-status :status}
+          (h/with-async-test-context [ctx]
+            (let [{preserve-result :result preserve-map :map-id}
+                  (run-preserve-failures-sheet ctx ["a" "BOOM" "c" "d"]
+                                               :preserve-failures? true :max-concurrency 3)
+                  completion (map-each-completion-event ctx preserve-result preserve-map)]
+              {:status (:status completion) :summary (:partial-summary completion)}))
+          {ds :summary d-status :status}
+          (h/with-async-test-context [ctx]
+            (let [{default-result :result default-map :map-id}
+                  (run-preserve-failures-sheet ctx ["a" "BOOM" "c" "d"]
+                                               :max-concurrency 3)
+                  completion (map-each-completion-event ctx default-result default-map)]
+              {:status (:status completion) :summary (:partial-summary completion)}))]
+      (is (= :partial p-status))
+      (is (= :partial d-status))
+      (is (= 4 (:total ps)))
+      (is (= 3 (:succeeded ps)))
+      (is (= 1 (:failed ps)))
+      (is (= [1] (:failure-indices ps)) "BOOM is at index 1")
+      (is (= (dissoc ds :failure-reasons) (dissoc ps :failure-reasons))
+          "summary (minus reasons) identical with/without the flag")
+      (is (some? (get-in ps [:failure-reasons 1]))))))
+
+(deftest map-each-preserve-failures-index-0-and-multiple-failures
+  (testing "index 0 failure + multiple failures align correctly under the flag"
+    (h/with-async-test-context [ctx]
+      (let [{:keys [result]} (run-preserve-failures-sheet
+                               ctx ["BOOM" "b" "BOOM" "d"]
+                               :preserve-failures? true :max-concurrency 3)
+            into-val (get-in result [:outputs :results])]
+        (is (= 4 (count into-val)))
+        (is (= :failure (:__status (nth into-val 0))) "index 0 is a failure marker")
+        (is (= "b" (nth into-val 1)))
+        (is (= :failure (:__status (nth into-val 2))) "index 2 is a failure marker")
+        (is (= "d" (nth into-val 3)))))))
+
 (defn count-results
   "Test fn: writes a single :count value (the size of :results) to the blackboard.
    Used by D-008 sequence-parent-continuation test."

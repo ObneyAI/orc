@@ -28,7 +28,7 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [seed-descriptions :as seeds]))
+            [ai.obney.orc.ontology.test-support.seed-descriptions :as seeds]))
 
 ;; =============================================================================
 ;; RED #1 — etl-pipeline-task-class-id under sequential-pipeline-fp

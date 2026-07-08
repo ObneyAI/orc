@@ -59,7 +59,8 @@
                   (:source-key tree-node) (assoc :source-key (:source-key tree-node))
                   (:item-key tree-node) (assoc :item-key (:item-key tree-node))
                   (:output-key tree-node) (assoc :output-key (:output-key tree-node))
-                  (:max-concurrency tree-node) (assoc :max-concurrency (:max-concurrency tree-node)))]
+                  (:max-concurrency tree-node) (assoc :max-concurrency (:max-concurrency tree-node))
+                  (some? (:preserve-failures? tree-node)) (assoc :preserve-failures? (:preserve-failures? tree-node)))]
        (swap! nodes-atom assoc node-id node)
        {:node-id node-id :nodes-atom nodes-atom}))))
 
@@ -211,7 +212,8 @@
                    (:source-key node) (assoc :source-key (:source-key node))
                    (:item-key node) (assoc :item-key (:item-key node))
                    (:output-key node) (assoc :output-key (:output-key node))
-                   (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))))
+                   (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))
+                   (some? (:preserve-failures? node)) (assoc :preserve-failures? (:preserve-failures? node))))
           ;; Children for composite nodes
           (seq (:children-ids node))
           (assoc :children
@@ -473,7 +475,8 @@
   (let [fields-to-compare [:type :name :executor :model :instruction :fn
                            :reads :writes :check :on-fail
                            :success-policy :failure-policy
-                           :source-key :item-key :output-key :max-concurrency]]
+                           :source-key :item-key :output-key :max-concurrency
+                           :preserve-failures?]]
     (for [field fields-to-compare
           :let [from-val (get from-node field)
                 to-val (get to-node field)]

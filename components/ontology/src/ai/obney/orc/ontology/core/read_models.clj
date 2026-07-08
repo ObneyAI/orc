@@ -761,6 +761,100 @@
       0))
 
 ;; =============================================================================
+;; EL-4 (ADR 0015) — tree-class judge-averages STANDING read-model
+;; =============================================================================
+;;
+;; The consolidator computes per-tree-class judge-averages on demand by
+;; scanning the event store (consolidator.clj tree-class-aggregate-metrics),
+;; but that private scan is NOT queryable at harvest time. This standing
+;; read-model projects the same signal so the harvest gate can read a
+;; per-[:tree-class id] per-judge running mean cheaply.
+;;
+;; It does the sheet -> tree-class JOIN in the reducer by accumulating two
+;; order-independent maps:
+;;   :sheet->class  {source-sheet-id -> assigned-tree-id}   (task-classified)
+;;   :sheet-judge   {sheet-id -> {judge-name -> {:sum :count}}}  (score-emitted)
+;; The per-class projection is computed by the accessor, joining the two.
+;; This is order-independent: a score seen before its classification (or
+;; after) both land correctly, exactly as the aggregate's post-hoc scan does.
+;;
+;; PARITY ORACLE (el4-harvest-test): the projected per-class mean EQUALS
+;; consolidator's tree-class-aggregate-metrics :judge-averages for the same
+;; event stream.
+
+(defmulti tree-class-judge-averages*
+  (fn [_state event] (:event/type event)))
+
+(defmethod tree-class-judge-averages* :default [state _] state)
+
+(defmethod tree-class-judge-averages* :ontology/task-classified
+  [state event]
+  (if-let [class-id (:assigned-tree-id event)]
+    (assoc-in state [:sheet->class (:source-sheet-id event)] class-id)
+    state))
+
+(defmethod tree-class-judge-averages* :judge/score-emitted
+  [state event]
+  (let [{:keys [sheet-id judge-name score]} event]
+    (if (and sheet-id judge-name (number? score))
+      (-> state
+          (update-in [:sheet-judge sheet-id judge-name :sum] (fnil + 0.0) score)
+          (update-in [:sheet-judge sheet-id judge-name :count] (fnil inc 0)))
+      state)))
+
+(defn tree-class-judge-averages-projection
+  "Join the two accumulated maps into {class-id -> {judge-name -> {:sum :count}}}.
+   A score whose sheet has no classification yet is excluded (exactly as the
+   aggregate scan filters score sheet-ids to the class's task-classified
+   sheet-ids)."
+  [state]
+  (let [{:keys [sheet->class sheet-judge]} state]
+    (reduce-kv
+      (fn [acc sheet-id judges]
+        (if-let [class-id (get sheet->class sheet-id)]
+          (reduce-kv
+            (fn [a judge-name {:keys [sum count]}]
+              (-> a
+                  (update-in [class-id judge-name :sum] (fnil + 0.0) (or sum 0.0))
+                  (update-in [class-id judge-name :count] (fnil + 0) (or count 0))))
+            acc judges)
+          acc))
+      {} sheet-judge)))
+
+(defreadmodel :ontology tree-class-judge-averages
+  {:events #{:judge/score-emitted :ontology/task-classified}
+   :version 1}
+  [state event] (tree-class-judge-averages* state event))
+
+(defn get-tree-class-for-sheet
+  "CV-2 (ADR 0017 decision 3): return the :tree-class id assigned to
+   `source-sheet-id`, or nil when the sheet was never classified.
+
+   Reuses the tree-class-judge-averages read-model's :sheet->class map,
+   which the :ontology/task-classified reducer populates UNCONDITIONALLY
+   (independent of any judge scores) — exactly the sheet->class join the
+   EL-4 read-model already performs. The post-emit enrichment processor
+   uses this to route an emitted tree's worked-DSL onto the class the task
+   was assigned to."
+  [ctx source-sheet-id]
+  (get-in (rmp/project ctx :ontology/tree-class-judge-averages)
+          [:sheet->class source-sheet-id]))
+
+(defn get-tree-class-judge-averages
+  "EL-4: return {judge-name -> mean-score} across this tree-class's lifetime,
+   or nil when no scores exist for the class. Parity target: the
+   consolidator's tree-class-aggregate-metrics :judge-averages."
+  [ctx tree-class-id]
+  (let [state (rmp/project ctx :ontology/tree-class-judge-averages)
+        by-class (tree-class-judge-averages-projection state)]
+    (when-let [judges (get by-class tree-class-id)]
+      (not-empty
+        (into {}
+              (map (fn [[judge-name {:keys [sum count]}]]
+                     [judge-name (/ sum (double count))]))
+              judges)))))
+
+;; =============================================================================
 ;; Node Experiences Projection
 ;; =============================================================================
 ;; Aggregates patterns by node type across all nodes

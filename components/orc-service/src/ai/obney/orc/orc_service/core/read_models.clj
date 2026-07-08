@@ -255,6 +255,7 @@
                 :item-key nil
                 :output-key nil
                 :max-concurrency nil
+                :preserve-failures? nil
                 ;; Execution tracking
                 :last-error nil})
         ;; Add to parent's children if parent exists
@@ -364,11 +365,13 @@
 
 (defmethod nodes* :sheet/map-each-config-set
   [state event]
-  (-> state
-      (assoc-in [(:node-id event) :source-key] (:source-key event))
-      (assoc-in [(:node-id event) :item-key] (:item-key event))
-      (assoc-in [(:node-id event) :output-key] (:output-key event))
-      (assoc-in [(:node-id event) :max-concurrency] (:max-concurrency event))))
+  (cond-> state
+    true (assoc-in [(:node-id event) :source-key] (:source-key event))
+    true (assoc-in [(:node-id event) :item-key] (:item-key event))
+    true (assoc-in [(:node-id event) :output-key] (:output-key event))
+    true (assoc-in [(:node-id event) :max-concurrency] (:max-concurrency event))
+    (some? (:preserve-failures? event))
+    (assoc-in [(:node-id event) :preserve-failures?] (:preserve-failures? event))))
 
 (defmethod nodes* :sheet/llm-condition-config-set
   [state event]
@@ -946,7 +949,12 @@
                       :version-number (:version-number snapshot)
                       :options (:options event)}
                (:instruction-overrides snapshot)
-               (assoc :instruction-overrides (:instruction-overrides snapshot)))))
+               (assoc :instruction-overrides (:instruction-overrides snapshot))
+               ;; G1 (ADR 0018): surface the opaque :tool-context per tick so
+               ;; execute-leaf-node can assoc it onto the leaf's context at any
+               ;; depth. Absent -> not stored (backward-compatible).
+               (:tool-context event)
+               (assoc :tool-context (:tool-context event)))))
     ;; No snapshot - legacy tick, no context stored
     state))
 

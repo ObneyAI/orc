@@ -154,11 +154,11 @@
 ;; =============================================================================
 
 (deftest benchmark-seeds-carry-parent-tree-id
-  ;; The seed-descriptions ns lives under development/src; pull it in via
-  ;; requiring-resolve so the test ns doesn't take a hard dep on a dev-only
-  ;; ns at load time.
-  (let [_ (require 'seed-descriptions)
-        seeds-ns (find-ns 'seed-descriptions)
+  ;; The seed-descriptions fixture is a brick test-support ns; pull it in via
+  ;; requiring-resolve so the test ns doesn't take a static dep on the fixture
+  ;; at load time.
+  (let [_ (require 'ai.obney.orc.ontology.test-support.seed-descriptions)
+        seeds-ns (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions)
         seed (fn [sym] @(ns-resolve seeds-ns sym))
         all-tf (seed 'all-tree-fingerprint-seeds)
         all-nt (seed 'all-node-type-seeds)
@@ -305,11 +305,11 @@
 
 (deftest end-to-end-seeding-builds-expected-tree-class-graph
   (testing "After running seed-all! + the processor, the concept graph has the expected hierarchy"
-    (require 'seed-descriptions)
-    (let [seed-fn (ns-resolve (find-ns 'seed-descriptions) 'seed-all!)
-          chunked-extraction-fp (deref (ns-resolve (find-ns 'seed-descriptions) 'chunked-extraction-fp))
-          parallel-independent-fp (deref (ns-resolve (find-ns 'seed-descriptions) 'parallel-independent-fp))
-          chunked-extraction-task-id (deref (ns-resolve (find-ns 'seed-descriptions) 'chunked-extraction-task-class-id))]
+    (require 'ai.obney.orc.ontology.test-support.seed-descriptions)
+    (let [seed-fn (ns-resolve (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions) 'seed-all!)
+          chunked-extraction-fp (deref (ns-resolve (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions) 'chunked-extraction-fp))
+          parallel-independent-fp (deref (ns-resolve (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions) 'parallel-independent-fp))
+          chunked-extraction-task-id (deref (ns-resolve (find-ns 'ai.obney.orc.ontology.test-support.seed-descriptions) 'chunked-extraction-task-class-id))]
       (with-test-ctx [ctx]
         (seed-fn ctx)
         (Thread/sleep 500)

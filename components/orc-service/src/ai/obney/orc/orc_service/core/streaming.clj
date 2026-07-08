@@ -555,7 +555,19 @@
                                                    max-ticks (assoc :max-ticks max-ticks)
                                                    llm-call-budget (assoc :llm-call-budget llm-call-budget))}
                                  use-version (assoc :use-version use-version)
-                                 force-draft (assoc :force-draft force-draft))))]
+                                 force-draft (assoc :force-draft force-draft)
+                                 ;; CE-5b FIX A (ADR 0018): carry the OPAQUE
+                                 ;; :tool-context off the execute-stream context
+                                 ;; onto the root :sheet/tick-tree command so it
+                                 ;; survives the async command -> event ->
+                                 ;; tick-execution-context read model boundary
+                                 ;; and can be read back at node/leaf depth.
+                                 ;; Mirrors rlm_tree_executor.clj's child-tick
+                                 ;; threading. Absent -> not carried
+                                 ;; (backward-compatible; non-coding turns see
+                                 ;; no change).
+                                 (:tool-context context)
+                                 (assoc :tool-context (:tool-context context)))))]
         (if (:cognitect.anomalies/category cmd-result)
           (do (runtime/deregister-completion! tick-id)
               (emit! tick-id {:orc.stream/type :error

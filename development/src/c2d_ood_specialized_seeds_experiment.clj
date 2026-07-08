@@ -45,7 +45,7 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.core.todo-processors :as ont-tp]
             [c2d-ood-stress-live :as live]
-            [c2d-ood-stress-test :as ood]
+            [ai.obney.orc.ontology.test-support.c2d-ood-stress-test :as ood]
             [runner]))
 
 ;; =============================================================================

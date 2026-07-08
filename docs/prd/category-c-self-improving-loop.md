@@ -12,7 +12,7 @@ This PRD builds directly on foundations already on `main`:
 - **`docs/prd/phase2-observability-layer.md` (O01-O03 — DONE):** Per-node usage events, `:rlm-tree-node-completed` with `:input-profile`, `:rlm-tree-execution-completed` bookend with `:trajectory`. These are the per-tree-execution evidence that any future automated principle-extractor in C-3 will consume.
 - **`docs/prd/category-d-resilience.md` (D-003, D-008 — DONE):** `:partial` status from map-each failures with `:failure-indices`/`:failure-reasons`; budget-aware Phase 2 timeout. These are the failure-mode evidence sources that hand-authored principles in C-1 will reference.
 - **`docs/FUTURE-VISION.md`:** Phase 4a (Ontology Knowledge System — Anterior-inspired) is the architectural target. B.3 (Tree-Level Ontology Profile) defines the strengths/weaknesses/domain-knowledge shape. Category C is Phase 4a's first concrete implementation pass.
-- **`docs/SELF-LEARNING-MANUAL.md`:** Already-shipped `:ontology/record-tree-strength` and `:ontology/record-tree-weakness` commands plus the `ontology/get-tree-profile` read-model API. These are the storage + retrieval primitives this PRD reuses verbatim.
+- **`docs/PATTERN-RECORDING.md`:** Already-shipped `:ontology/record-tree-strength` and `:ontology/record-tree-weakness` commands plus the `ontology/get-tree-profile` read-model API. These are the storage + retrieval primitives this PRD reuses verbatim.
 - **`docs/FEEDBACK-LOOP.md`:** Describes the continuous improvement cycle (execution → evaluation → classification → ontology learning → context retrieval → context injection → improved execution). C-1 wires the *context retrieval + injection* legs into RLM specifically; C-3 wires the *evaluation + classification* legs.
 - **`docs/GEPA-INTEGRATION-PLAN.md`:** GEPA's reflection (`gepa/core/reflection.clj`, `ReflectiveExample` builder) and proposer (`gepa/core/proposer.clj`, `propose-new-instruction`) are the reuse candidates for C-3's automated principle extraction. C-1 does NOT touch GEPA; C-3 does.
 
@@ -313,11 +313,11 @@ The following are *explicitly out of scope for C-1 specifically* (will likely la
 **R1 — Hand-authored principles may not actually move model behavior.**
 Mitigation: Q7's 3-way live-verify forces us to prove they do. If Run Y fails to differ from Run X, we iterate on the principle text + injection format BEFORE claiming C-1 done. The HITL audit checkpoint is the first guard; the 3-way comparison is the second.
 
-**R2 — The `record-tree-strength`/`record-tree-weakness` command surface was originally designed for one example domain (sales-outreach, per SELF-LEARNING-MANUAL). Reusing it for "rlm-tree-design" via domain-agnostic fields may strain the shape.**
+**R2 — The `record-tree-strength`/`record-tree-weakness` command surface was originally designed for one example domain (sales-outreach, per PATTERN-RECORDING.md). Reusing it for "rlm-tree-design" via domain-agnostic fields may strain the shape.**
 Mitigation: `build-rlm-principles-section` is a thin layer. If the field mapping doesn't compose well, we have one place to revise (the injection function), not a full schema migration. If the strain is severe, we revisit C-1's Q4 decision and possibly add a dedicated `:ontology/record-rlm-principle` command — but only after concrete pain emerges.
 
 **R3 — The default `:principles-fn` queries `ontology/get-tree-profile`, a read model. First-call latency may be non-trivial.**
-Mitigation: Time the call during live-verify. Per SELF-LEARNING-MANUAL's L2-cache notes, this is likely a non-issue. If it becomes hot, add a memoization layer.
+Mitigation: Time the call during live-verify. Per PATTERN-RECORDING.md's L2-cache notes, this is likely a non-issue. If it becomes hot, add a memoization layer.
 
 **R4 — C-1's live-verify depends on a real reproducible failure. If recent benchmark runs are all `:success`, C-1 cannot 3-way-verify.**
 Mitigation: Scope the failure reproduction INTO C-1 — not as a prerequisite. The failure can be manufactured (e.g., a task with bounded budget that forces `:timeout`, or unbounded `:map-each` on a known rate-limited model) without compromising the verification logic.

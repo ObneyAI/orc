@@ -5,7 +5,7 @@ description: Build an ORC behavior tree workflow using the DSL
 
 # Build an ORC Workflow
 
-Build a behavior tree workflow using the ORC DSL. Read `docs/dsl-tutorial.md` for the full reference.
+Build a behavior tree workflow using the ORC DSL. Read `docs/DSL-REFERENCE.md` for the full reference.
 
 ## Require
 
@@ -135,5 +135,5 @@ Every workflow has three parts:
 ```
 
 ## Reference
-- `docs/dsl-tutorial.md` — Full DSL tutorial with examples
+- `docs/DSL-REFERENCE.md` — Full DSL reference with examples
 - `docs/ORC-SERVICE-GUIDE.md` — Execution engine internals

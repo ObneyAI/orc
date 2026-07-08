@@ -34,6 +34,10 @@
             [ai.obney.orc.evaluation.core.sheets :as sheets]
             ;; Gap-1: per-event evaluator runtime + judge-scores read-model
             [ai.obney.orc.evaluation.core.judge-runtime :as judge-runtime]
+            ;; Load the score-recording command handlers so they register
+            ;; in the global command registry (the judge runtime dispatches
+            ;; them via cp/process-command from its background future).
+            [ai.obney.orc.evaluation.core.commands]
             ;; Load schemas to register them
             [ai.obney.orc.evaluation.interface.schemas]))
 

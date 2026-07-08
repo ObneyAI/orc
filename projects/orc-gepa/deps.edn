@@ -1,0 +1,22 @@
+{:paths []
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+
+        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
+                               :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
+                               :deps/root "projects/grain-core-v2"}
+
+        ;; The optimization stack — explicitly self-describing:
+        ;;   gepa        → Pareto-frontier instruction optimization
+        ;;   evaluation  → the judges gepa uses as its scoring metric
+        ;;   orc-service → the engine that runs the sheet being optimized
+        ;;   langfuse    → orc-service's tracing layer
+        ;; NO ontology, NO colbert, NO DJL, NO Python. GEPA optimizes static
+        ;; :llm instructions; it has zero dependency on the ontology/self-
+        ;; improving loop. (The evaluation gate stays lazily resolved.)
+        orc/gepa        {:local/root "../../components/gepa"}
+        orc/evaluation  {:local/root "../../components/evaluation"}
+        orc/orc-service {:local/root "../../components/orc-service"}
+        orc/langfuse    {:local/root "../../components/langfuse"}}
+
+ :aliases {:test {:extra-paths []
+                  :extra-deps {}}}}

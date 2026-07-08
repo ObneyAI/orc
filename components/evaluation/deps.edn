@@ -1,9 +1,20 @@
 {:paths ["src" "resources"]
  :deps {cheshire/cheshire {:mvn/version "5.13.0"}
-        ;; DSCloj for LLM judge calls
+        ;; DSCloj for LLM judge calls — pinned to the raw-response-on-main-pin
+        ;; fork branch tip (41ef3e20), matching orc-service so the dscloj
+        ;; version is consistent across the dep tree.
         io.github.ObneyAI/DSCloj {:git/url "https://github.com/ObneyAI/DSCloj.git"
-                                  :git/sha "7948a27c367c8928d167750f0da285cec8c87215"}
+                                  :git/sha "41ef3e20b9bab6e0939ce5486aca38c9b329c18a"}
         ;; ORC service for evaluation workflow sheets
         orc/orc-service {:local/root "../orc-service"}}
  :aliases {:test {:extra-paths ["test"]
-                  :extra-deps {}}}}
+                  ;; TEST-ONLY: the shipped evaluation component has NO ontology
+                  ;; dependency — judge_runtime.clj consults the living-
+                  ;; description flag via a lazy requiring-resolve, so Layer-1
+                  ;; judges run with no ontology/DJL/Python on the runtime
+                  ;; classpath (see PACKAGES.md / orc-evaluation). judge_runtime
+                  ;; _test is an evaluation×ontology INTEGRATION test that drives
+                  ;; the real `:ontology/set-living-description-enabled` gate, so
+                  ;; the *test* classpath needs ontology. This does not change
+                  ;; what consumers of orc-evaluation pull in (`:deps`).
+                  :extra-deps {orc/ontology {:local/root "../ontology"}}}}}

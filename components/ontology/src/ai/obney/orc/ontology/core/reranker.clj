@@ -31,12 +31,31 @@ INPUTS DESCRIBED
                   content (the description's summary text),
                   score (raw ColBERT similarity),
                   document-id (stable id you must echo back),
-                  document-metadata {granularity, target-id, confidence, last-update}.
+                  document-metadata {granularity, target-id, confidence, last-update},
+                  avoid-when (OPTIONAL — a vector of judge-grounded DOMAIN
+                    guards: contexts where this candidate is the WRONG choice
+                    even if its summary/shape looks similar),
+                  strengths (OPTIONAL — vector of {trait, good-when,
+                    recommended-pattern}: when this candidate is the RIGHT fit),
+                  weaknesses (OPTIONAL — vector of {trait, avoid-when,
+                    recommended-alternative}).
 
 YOUR JOB
 Rank the candidates by how well they FIT THE INTENT, not by raw lexical
 overlap with the query. Cross-reference each candidate's CONTENT
-against what the caller is actually trying to accomplish.
+against what the caller is actually trying to accomplish. Weight DOMAIN /
+subject-matter fit (what the task IS), not just structural shape (what the
+task LOOKS like).
+
+AVOID-WHEN IS A HARD RULE — NOT A HINT.
+For each candidate that carries an avoid-when list, read it FIRST, before its
+content/strengths. If ANY avoid-when entry describes what the task is actually
+doing, DOWN-rank that candidate sharply (assign a low fitness_score) EVEN IF
+its structural shape or summary fits well — a strong shape match does NOT
+override a matching domain guard. When an avoid-when entry fires, your
+reasoning MUST quote it and say the task matches it. Prefer a more general
+candidate that has no firing guard over an over-specific one whose avoid-when
+matches the task.
 
 PRODUCE a JSON string of a vector, descending by fitness_score. Each
 element is an object with EXACTLY these three keys:

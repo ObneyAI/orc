@@ -169,7 +169,7 @@ None — can start immediately.
 - Prior data layer (DONE): [`docs/prd/rlm-recursive-emit-tree.md`](../../prd/rlm-recursive-emit-tree.md) (R-1, R-2)
 - Prior observability layer (DONE): [`docs/prd/phase2-observability-layer.md`](../../prd/phase2-observability-layer.md) (O01-O03)
 - Prior resilience layer (DONE): [`docs/prd/category-d-resilience.md`](../../prd/category-d-resilience.md) (D-003, D-008)
-- Existing storage surface: [`docs/SELF-LEARNING-MANUAL.md`](../../SELF-LEARNING-MANUAL.md)
+- Existing storage surface: [`docs/PATTERN-RECORDING.md`](../../PATTERN-RECORDING.md)
 - Feedback loop architecture: [`docs/FEEDBACK-LOOP.md`](../../FEEDBACK-LOOP.md)
 - Future automation: [`docs/GEPA-INTEGRATION-PLAN.md`](../../GEPA-INTEGRATION-PLAN.md)
 - Architectural target: [`docs/FUTURE-VISION.md`](../../FUTURE-VISION.md) Phase 4a + B.3

@@ -1,4 +1,21 @@
 {:paths ["src" "resources"]
- :deps {com.brunobonacci/mulog {:mvn/version "0.9.0"}}
+ :deps {com.brunobonacci/mulog {:mvn/version "0.9.0"}
+        ;; gepa's make-judge-metric runs the tier-1 evaluation judges as the
+        ;; real GEPA metric (grounding/instruction-following/reasoning/
+        ;; completeness), so it depends on the evaluation component.
+        orc/evaluation {:local/root "../evaluation"}
+        ;; gepa also executes workflows directly via the orc-service interface
+        ;; (optimization runs the sheet under test), so declare it explicitly.
+        orc/orc-service {:local/root "../orc-service"}}
  :aliases {:test {:extra-paths ["test"]
-                  :extra-deps {}}}}
+                  ;; gepa's tests drive commands/queries through the grain
+                  ;; command/query processors via the shared test harness, and
+                  ;; some integration tests stand up the grain control plane, so
+                  ;; the test classpath needs grain-test-utils + control-plane.
+                  ;; (Declared here rather than relying on the umbrella :dev
+                  ;; alias so that `poly test brick:gepa` runs the brick in
+                  ;; isolation in any project context.)
+                  :extra-deps {orc/grain-test-utils {:local/root "../grain-test-utils"}
+                               obneyai/grain-control-plane {:git/url "https://github.com/ObneyAI/grain.git"
+                                                            :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
+                                                            :deps/root "projects/grain-control-plane"}}}}}

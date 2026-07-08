@@ -976,7 +976,8 @@
    agent-minted and human-authored entries breaks the audit trail for
    future C-3 review queues."
   [{{:keys [name body parent-behavior provenance
-            minted-by-sheet-id minted-by-tick-id]} :command}]
+            minted-by-sheet-id minted-by-tick-id
+            harvested-from-tree-class]} :command}]
   (let [body-scope (:scope body)]
     (when (and (some? body-scope) (not= body-scope :behavioral-subtree))
       (throw (ex-info
@@ -994,25 +995,46 @@
         target-id (java.util.UUID/nameUUIDFromBytes identity-bytes)
         minted-at (now-str)
         stamped-body (cond-> (assoc body :scope :behavioral-subtree)
-                       parent-behavior (assoc :parent-behavior parent-behavior))]
-    {:command-result/events
-     [(->event
-        {:type :ontology/behavioral-subtree-minted
-         :tags #{[:behavioral-subtree-minted target-id]}
-         :body (cond-> {:target-id target-id
-                        :name name
-                        :provenance provenance
-                        :minted-at minted-at}
-                 parent-behavior   (assoc :parent-behavior parent-behavior)
-                 minted-by-sheet-id (assoc :minted-by-sheet-id minted-by-sheet-id)
-                 minted-by-tick-id  (assoc :minted-by-tick-id minted-by-tick-id))})
-      (->event
-        {:type :ontology/tree-description-updated
-         :tags #{[:description-target target-id]}
-         :body {:target-type :tree-fingerprint
-                :target-id target-id
-                :body stamped-body
-                :recorded-at minted-at}})]}))
+                       parent-behavior (assoc :parent-behavior parent-behavior))
+        ;; EL-4 (ADR 0015): the harvested path fires from a per-event
+        ;; processor, so N concurrent handlers within one gate-crossing
+        ;; window can all reach the mint before any prior append is visible
+        ;; to their read of the guard. Enforce exactly-once-per-tree-class
+        ;; via Grain CAS on a stable [:harvested-tree-class <uuid>] tag —
+        ;; the first append wins; the rest get ::anom/conflict and emit
+        ;; nothing. Only on the :harvested path; hand-authored + agent mints
+        ;; keep their append-always semantics (their idempotency is the
+        ;; stable derived target-id + latest-wins description projection).
+        harvest-crossing (when harvested-from-tree-class
+                           (stable-uuid-from
+                             (str "harvested-tree-class:" harvested-from-tree-class)))]
+    (cond->
+      {:command-result/events
+       [(->event
+          {:type :ontology/behavioral-subtree-minted
+           :tags (cond-> #{[:behavioral-subtree-minted target-id]}
+                   harvest-crossing (conj [:harvested-tree-class harvest-crossing]))
+           :body (cond-> {:target-id target-id
+                          :name name
+                          :provenance provenance
+                          :minted-at minted-at}
+                   parent-behavior   (assoc :parent-behavior parent-behavior)
+                   minted-by-sheet-id (assoc :minted-by-sheet-id minted-by-sheet-id)
+                   minted-by-tick-id  (assoc :minted-by-tick-id minted-by-tick-id)
+                   harvested-from-tree-class (assoc :harvested-from-tree-class
+                                                    harvested-from-tree-class))})
+        (->event
+          {:type :ontology/tree-description-updated
+           :tags #{[:description-target target-id]}
+           :body {:target-type :tree-fingerprint
+                  :target-id target-id
+                  :body stamped-body
+                  :recorded-at minted-at}})]}
+      harvest-crossing
+      (assoc :command-result/cas
+             {:types #{:ontology/behavioral-subtree-minted}
+              :tags #{[:harvested-tree-class harvest-crossing]}
+              :predicate-fn (fn [existing] (empty? (into [] existing)))}))))
 
 ;; =============================================================================
 ;; Site Registry Commands (Generic Site Pattern Learning)

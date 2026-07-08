@@ -109,8 +109,11 @@
     (testing "block contains an honest framing line (examples, not mandates)"
       (is (re-find #"(?i)examples retrieved from the seed corpus" instruction)
           "Explicit 'examples' framing")
-      (is (re-find #"(?i)not mandates" instruction)
-          "Explicit non-mandate framing"))
+      ;; E2 reframed the block copy from "not mandates" to the explicit
+      ;; four-way menu, but the honest non-mandate framing is preserved
+      ;; ("not a mandate" + "evidence, not gospel"). Assert on the intent.
+      (is (re-find #"(?i)not a mandate|not mandates|not gospel" instruction)
+          "Explicit non-mandate framing preserved"))
 
     (testing "structural section appears with confidence + reasoning verbatim + content verbatim"
       (is (re-find #"### Structural pattern" instruction))
@@ -633,3 +636,280 @@
           "No body found → no strengths section rendered")
       (is (re-find #"Pattern guidance" instruction)
           "Summary-driven 'Pattern guidance' section still renders from the candidate's :content"))))
+
+;; =============================================================================
+;; E2 — Decouple R-Inject: references INFORM, not GATE (ADR 0014, RG-3)
+;;
+;; The defeat condition is ANY branch that suppresses the specialize/mint
+;; invitation when a match is found. Before E2 the FOUND behavioral branch
+;; offered only adopt/adapt (no specialize-a-child, no mint-adjacent), and the
+;; block copy said "Mimic / modify / design from scratch" — so a coding task
+;; matching a shape-broad parent at >= threshold was never invited to deepen
+;; the corpus. These tests pin the always-available adopt/adapt/specialize/mint
+;; menu on BOTH branches, asserting on the rendered string (pure fns, no mocks
+;; beyond the description-body read stub the existing tests already use).
+;; =============================================================================
+
+(def ^:private e2-found-body
+  "A rich body for a FOUND (above-threshold) behavioral match — the shape the
+   consolidator writes. Its :summary resolves to seed name 'Code-building'."
+  {:summary "Code-building turns a typed spec into executable code with imports and a file path."
+   :capabilities ["write executable code from a spec"]
+   :strengths [{:trait "separate the spec read from the code emit"
+                :good-when "the task names an explicit signature or schema"
+                :recommended-pattern "[:sequence [:llm {:writes [:plan]}] [:code {:writes [:impl]}]]"
+                :confidence 0.9
+                :evidence-count 3}]
+   :weaknesses [{:trait "single-pass emit skips the failing-test reproduction"
+                 :avoid-when "the task is a bug fix with an existing repro"
+                 :recommended-alternative "reproduce first in a :code stage, then fix"
+                 :confidence 0.8
+                 :evidence-count 2}]
+   :representative-uses ["add a pure helper to a namespace"]
+   :avoid-when ["the task is pure analysis with no code emit"]
+   :version 3
+   :consolidated-from-event-count 7})
+
+(deftest e2-found-entry-offers-specialize-and-mint-invitation
+  ;; RED before E2: the FOUND branch rendered adopt/adapt only. This asserts the
+  ;; invitation to specialize a CHILD of the matched behavior (mint-behavior!
+  ;; with :parent <matched id>) and to mint an adjacent behavior is present even
+  ;; when a match cleared threshold.
+  (testing "an above-threshold (FOUND) behavioral match still surfaces a specialize/mint invitation"
+    (let [b-id (random-uuid)
+          payload {:structural {:assigned-tree-id (random-uuid)
+                                :confidence 0.92
+                                :was-fresh-mint? false
+                                :reasoning "Top-1 high-confidence."
+                                :top-candidates [(mk-structural-candidate
+                                                   (random-uuid) "ok" "..." 0.92)]
+                                :rerank-fallback? false}
+                   :behavioral {:behaviors [(mk-behavioral-entry
+                                              b-id 0.88
+                                              "Code-building is a broad fit for this add-function task.")]
+                                :rerank-fallback? false}}
+          node (mk-node "Add a function summarize-line-items ..." payload)
+          result (with-redefs [ontology/get-description
+                               (fn [_ _ id] (when (= id b-id) e2-found-body))]
+                   (tp/apply-r05-classifier-context node {}))
+          instruction (:instruction result)]
+
+      (testing "FOUND entry still renders the matched seed (references inform)"
+        (is (re-find #"Behavioral: Code-building" instruction)
+            "Matched seed surfaced by name")
+        (is (str/includes? instruction "Code-building is a broad fit")
+            "Matched reasoning verbatim")
+        (is (re-find #"(?m)^Strengths \(proven" instruction)
+            "Matched seed's strengths render as evidence that informs the choice"))
+
+      (testing "FOUND entry offers SPECIALIZE — a child of THIS matched behavior"
+        (is (re-find #"(?i)specialize" instruction)
+            "Found path mentions specializing")
+        (is (re-find #"mint-behavior!" instruction)
+            "Found path offers the mint affordance (specialize/mint), not adopt/adapt only")
+        (is (str/includes? instruction (str ":parent " b-id))
+            "The specialize affordance names the matched behavior-id as :parent (the waterfall hook)"))
+
+      (testing "FOUND entry offers MINT-ADJACENT for a related-but-distinct task"
+        (is (re-find #"(?i)adjacent" instruction)
+            "Found path invites minting an adjacent behavior when the task is related-but-distinct")))))
+
+(deftest e2-not-found-entry-still-mints
+  ;; The not-found path must NOT regress: it still surfaces the BEHAVIORALLY-
+  ;; NOVEL signal + the mint-behavior! affordance.
+  (testing "the not-found (fresh-mint) behavioral branch still invites mint-behavior!"
+    (let [b-mint-id (random-uuid)
+          payload {:structural {:assigned-tree-id (random-uuid)
+                                :confidence 0.0
+                                :was-fresh-mint? true
+                                :reasoning "minting fresh"
+                                :top-candidates []
+                                :rerank-fallback? false}
+                   :behavioral {:behaviors [(mk-behavioral-entry
+                                              b-mint-id 0.0
+                                              "No candidate above threshold; minting fresh"
+                                              :reranker true)]
+                                :rerank-fallback? false}}
+          node (mk-node "Task: novel OOD" payload)
+          result (tp/apply-r05-classifier-context node {})
+          instruction (:instruction result)]
+      (is (re-find #"(?i)no candidate above threshold" instruction)
+          "Not-found branch still signals the fresh-mint condition")
+      (is (re-find #"mint-behavior!" instruction)
+          "Not-found branch still offers the mint affordance")
+      (is (re-find #":parent" instruction)
+          "Not-found branch still mentions :parent (now can specialize under nearest, not only root)"))))
+
+(deftest e2-both-branches-render-references-block
+  ;; No suppression: BOTH the found and not-found paths render the references
+  ;; block (the "## Suggested patterns from corpus" header + the always-present
+  ;; 4-way adopt/adapt/specialize/mint menu in the block copy).
+  (testing "FOUND path renders references block + 4-way menu"
+    (let [b-id (random-uuid)
+          payload {:structural {:assigned-tree-id (random-uuid)
+                                :confidence 0.92 :was-fresh-mint? false
+                                :reasoning "ok"
+                                :top-candidates [(mk-structural-candidate
+                                                   (random-uuid) "ok" "..." 0.92)]
+                                :rerank-fallback? false}
+                   :behavioral {:behaviors [(mk-behavioral-entry b-id 0.88 "Code-building fits.")]
+                                :rerank-fallback? false}}
+          node (mk-node "Add a function ..." payload)
+          result (with-redefs [ontology/get-description
+                               (fn [_ _ id] (when (= id b-id) e2-found-body))]
+                   (tp/apply-r05-classifier-context node {}))
+          instruction (:instruction result)]
+      (is (str/starts-with? instruction "## Suggested patterns from corpus")
+          "References block header present")
+      (is (re-find #"(?i)\badopt\b" instruction) "menu: adopt")
+      (is (re-find #"(?i)\badapt\b" instruction) "menu: adapt")
+      (is (re-find #"(?i)\bspecialize\b" instruction) "menu: specialize")
+      (is (re-find #"(?i)\bmint\b" instruction) "menu: mint")
+      (is (not (re-find #"(?i)design from scratch" instruction))
+          "Old 'design from scratch' framing replaced by the explicit 4-way choice")))
+
+  (testing "NOT-found path renders references block + 4-way menu"
+    (let [b-mint-id (random-uuid)
+          payload {:structural {:assigned-tree-id (random-uuid)
+                                :confidence 0.0 :was-fresh-mint? true
+                                :reasoning "minting fresh"
+                                :top-candidates [] :rerank-fallback? false}
+                   :behavioral {:behaviors [(mk-behavioral-entry
+                                              b-mint-id 0.0
+                                              "No candidate above threshold; minting fresh"
+                                              :reranker true)]
+                                :rerank-fallback? false}}
+          node (mk-node "Task: novel OOD" payload)
+          result (tp/apply-r05-classifier-context node {})
+          instruction (:instruction result)]
+      (is (str/starts-with? instruction "## Suggested patterns from corpus")
+          "References block header present on not-found path too")
+      (is (re-find #"(?i)\bspecialize\b" instruction)
+          "specialize option present even when nothing cleared threshold"))))
+
+;; =============================================================================
+;; E3 Part 1 — behavioral body fetch reads the :tree-fingerprint scope
+;;
+;; ROOT CAUSE (verified live): a FOUND behavioral entry rendered NO
+;; strengths/weaknesses in the live R-Inject prepend — only the reranker
+;; reasoning. The FOUND branch of format-behavioral-entry called
+;; `fetch-tree-body`, which is hardcoded to read the :tree-class scope (the
+;; structural Living-Description read path, C-Loop-1). But behavioral bodies
+;; are NOT under :tree-class — they are emitted via :ontology/record-tree-
+;; description (seed-baseline-corpus!) and :ontology/mint-behavioral-subtree,
+;; BOTH of which stamp :target-type :tree-fingerprint on the description-
+;; updated event (commands.clj record-tree-description:705 + mint-behavioral-
+;; subtree:1012). So get-description keys the behavioral body under
+;; (:tree-fingerprint, behavior-id). A read against :tree-class MISSES → the
+;; body is nil → format-seed-body returns nil → no strengths section.
+;;
+;; The existing E2/happy-path tests masked this because their get-description
+;; stub IGNORES the granularity argument ((fn [_ _ id] ...)), so the body came
+;; back regardless of which scope was requested. These tests use a
+;; granularity-DISCRIMINATING stub (body only under :tree-fingerprint, nil for
+;; :tree-class) — the production read-model semantics — so they fail RED on the
+;; bug and prove the fix reads the correct scope WITHOUT disturbing the
+;; structural :tree-class path.
+;; =============================================================================
+
+(def ^:private e3-behavioral-body
+  "A rich behavioral body as record-tree-description / mint-behavioral-subtree
+   land it. :summary resolves to seed name 'Code-building'."
+  {:summary "Code-building turns a typed spec into executable code with imports and a file path."
+   :scope :behavioral-subtree
+   :capabilities ["write executable code from a spec"]
+   :strengths [{:trait "separate the spec read from the code emit"
+                :good-when "the task names an explicit signature or schema"
+                :recommended-pattern "[:sequence [:llm {:writes [:plan]}] [:code {:writes [:impl]}]]"
+                :confidence 0.9
+                :evidence-count 3}]
+   :weaknesses [{:trait "single-pass emit skips the failing-test reproduction"
+                 :avoid-when "the task is a bug fix with an existing repro"
+                 :recommended-alternative "reproduce first in a :code stage, then fix"
+                 :confidence 0.8
+                 :evidence-count 2}]
+   :representative-uses ["add a pure helper to a namespace"]
+   :avoid-when ["the task is pure analysis with no code emit"]
+   :version 1
+   :consolidated-from-event-count 0})
+
+(deftest behavioral-body-fetched-under-tree-fingerprint-scope
+  ;; RED before E3 Part 1: the FOUND branch read :tree-class, where the
+  ;; behavioral body does NOT live, so a granularity-discriminating stub
+  ;; returns nil and no strengths render.
+  (testing "a FOUND behavioral entry fetches its body under :tree-fingerprint and renders its strengths"
+    (let [b-id (random-uuid)
+          captured-calls (atom [])
+          payload {:structural {:assigned-tree-id (random-uuid)
+                                :confidence 0.92
+                                :was-fresh-mint? false
+                                :reasoning "Top-1 structural."
+                                :top-candidates [(mk-structural-candidate
+                                                   (random-uuid) "ok" "structural summary" 0.92)]
+                                :rerank-fallback? false}
+                   :behavioral {:behaviors [(mk-behavioral-entry
+                                              b-id 0.88
+                                              "Code-building is the clearest behavioral fit.")]
+                                :rerank-fallback? false}}
+          node (mk-node "Implement summarize-line-items from the spec." payload)
+          result (with-redefs [ontology/get-description
+                               (fn [_ctx granularity target-id]
+                                 (swap! captured-calls conj [granularity target-id])
+                                 ;; Production read-model semantics: the
+                                 ;; behavioral body lives ONLY under
+                                 ;; :tree-fingerprint. Reading it under
+                                 ;; :tree-class (the structural path) misses.
+                                 (when (and (= granularity :tree-fingerprint)
+                                            (= target-id b-id))
+                                   e3-behavioral-body))]
+                   (tp/apply-r05-classifier-context node {}))
+          instruction (:instruction result)]
+
+      (testing "the behavioral body is read under :tree-fingerprint (the scope it actually lands under)"
+        (is (some (fn [[g id]] (and (= g :tree-fingerprint) (= id b-id)))
+                  @captured-calls)
+            "fetch-behavioral-body calls get-description with :tree-fingerprint for the behavior-id"))
+
+      (testing "the behavioral body is NOT read under :tree-class for the behavior-id (that scope holds structural bodies only)"
+        (is (not-any? (fn [[g id]] (and (= g :tree-class) (= id b-id)))
+                      @captured-calls)
+            "the behavioral fetch does not request :tree-class for the behavior-id"))
+
+      (testing "with production read-model semantics, the matched behavioral seed's strengths render"
+        (is (re-find #"(?m)^   Strengths \(proven|(?m)^Strengths \(proven" instruction)
+            "Behavioral strengths section renders in the prepend (was empty before the scope fix)")
+        (is (str/includes? instruction "separate the spec read from the code emit")
+            "The strength trait text renders")
+        (is (str/includes? instruction "single-pass emit skips the failing-test reproduction")
+            "The weakness trait text renders")))))
+
+(deftest structural-body-fetch-still-reads-tree-class-scope
+  ;; Guard: the Part-1 fix must NOT disturb the structural read path. A
+  ;; structural candidate's body must still be fetched under :tree-class
+  ;; (C-Loop-1), where the Living-Description consolidator + dual-emitted
+  ;; seeds write it. A discriminating stub (body only under :tree-class)
+  ;; proves the structural path is untouched.
+  (testing "a structural candidate's body is still fetched under :tree-class"
+    (let [s-id (random-uuid)
+          captured-calls (atom [])
+          payload {:structural {:assigned-tree-id s-id
+                                :confidence 0.92
+                                :was-fresh-mint? false
+                                :reasoning "Top-1 structural."
+                                :top-candidates [(mk-structural-candidate
+                                                   s-id "Top-1" "structural summary" 0.92)]
+                                :rerank-fallback? false}
+                   :behavioral {:behaviors [] :rerank-fallback? false}}
+          node (mk-node "Some task" payload)
+          result (with-redefs [ontology/get-description
+                               (fn [_ctx granularity target-id]
+                                 (swap! captured-calls conj [granularity target-id])
+                                 (when (and (= granularity :tree-class)
+                                            (= target-id s-id))
+                                   rich-body-with-strengths))]
+                   (tp/apply-r05-classifier-context node {}))
+          instruction (:instruction result)]
+      (is (some (fn [[g id]] (and (= g :tree-class) (= id s-id))) @captured-calls)
+          "structural body still read under :tree-class")
+      (is (re-find #"(?m)^Strengths \(proven" instruction)
+          "structural strengths still render via the :tree-class path"))))

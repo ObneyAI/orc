@@ -33,7 +33,7 @@
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]
-            [seed-descriptions :as seeds]))
+            [ai.obney.orc.ontology.test-support.seed-descriptions :as seeds]))
 
 (defn- create-context []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
@@ -240,6 +240,6 @@
                          synthesis-behavior-id ideation-behavior-id design-behavior-id
                          critique-behavior-id validation-behavior-id code-building-behavior-id
                          transformation-behavior-id classification-behavior-id]]
-          (let [bh-id @(ns-resolve 'seed-descriptions bh-sym)]
+          (let [bh-id @(ns-resolve 'ai.obney.orc.ontology.test-support.seed-descriptions bh-sym)]
             (is (contains? concepts (str "behavioral-subtree:" bh-id))
                 (str bh-sym " concept preserved after R07's additive landing"))))))))

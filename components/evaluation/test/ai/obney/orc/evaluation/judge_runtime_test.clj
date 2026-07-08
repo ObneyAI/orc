@@ -6,6 +6,11 @@
             [malli.core :as m]
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.evaluation.core.judge-runtime]
+            ;; Load the score-recording command handlers so the judge
+            ;; runtime's background future can dispatch them (they are the
+            ;; sole writers of :judge/score-emitted /
+            ;; :judge/composite-score-computed).
+            [ai.obney.orc.evaluation.core.commands]
             [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
@@ -99,8 +104,25 @@
         processors (reduce-kv
                      (fn [acc proc-name {:keys [handler-fn topics]}]
                        (assoc acc proc-name
-                              (tp/start {:event-pubsub ps :topics topics
-                                         :handler-fn handler-fn :context base-ctx})))
+                              ;; Only the evaluation judge processors take a
+                              ;; :processor-name. They use the :result/effect
+                              ;; path, which checkpoints per-event — a distinct
+                              ;; name keeps each processor's replay-guard
+                              ;; watermark separate (mirrors production, where
+                              ;; the control plane assigns names) so a slow
+                              ;; effect isn't skipped. The other (pure-path)
+                              ;; processors stay name-less exactly as before:
+                              ;; naming them would switch their pure
+                              ;; :result/events path into the checkpointed
+                              ;; branch, whose monotonic replay-guard
+                              ;; FALSE-POSITIVES under the concurrent sub-ticks
+                              ;; that custom-judge orc/execute fans out (e.g.
+                              ;; complete-tree-tick getting :already-processed
+                              ;; and never delivering the completion promise).
+                              (tp/start (cond-> {:event-pubsub ps :topics topics
+                                                 :handler-fn handler-fn :context base-ctx}
+                                          (= "evaluation" (namespace proc-name))
+                                          (assoc :processor-name proc-name)))))
                      {} @tp/processor-registry*)]
     (assoc base-ctx :processors processors)))
 
@@ -123,6 +145,54 @@
   (count (into [] (es/read (:event-store ctx)
                            {:types #{:judge/score-emitted}
                             :tenant-id (:tenant-id ctx)}))))
+
+;; Post-async refactor (2026-06-17): the judge runtime no longer emits
+;; score events synchronously inside the processor handler. It returns a
+;; non-blocking :result/effect that spawns a background future which runs
+;; the judges and dispatches the record-judge-score / record-composite-
+;; score commands. Emission is therefore EVENTUAL — observers must POLL
+;; rather than sleep-once. (The old fixed-sleep-then-read pattern was
+;; calibrated to the old blocking handler and is now racy under the
+;; extra async hop + load from the other registered processors.) These
+;; helpers poll for the expected event count with a generous bound, the
+;; same discipline the Gap-4/Gap-8 tests already used.
+
+(defn- wait-for-score-events
+  "Poll until at least `n` :judge/score-emitted events exist for the
+   tenant (optionally filtered by `tick-id`), or the timeout elapses.
+   Returns the matching events vector."
+  ([ctx n] (wait-for-score-events ctx n nil))
+  ([ctx n tick-id]
+   (let [deadline (+ (System/currentTimeMillis) 15000)
+         match (fn []
+                 (cond->> (into [] (es/read (:event-store ctx)
+                                            {:types #{:judge/score-emitted}
+                                             :tenant-id (:tenant-id ctx)}))
+                   tick-id (filterv #(= tick-id (:tick-id %)))))]
+     (loop []
+       (let [evts (match)]
+         (if (or (>= (count evts) n)
+                 (>= (System/currentTimeMillis) deadline))
+           evts
+           (do (Thread/sleep 50) (recur))))))))
+
+(defn- wait-for-composite-events
+  "Poll until at least `n` :judge/composite-score-computed events exist
+   for the given tick, or the timeout elapses. Returns the matching
+   events vector."
+  [ctx n tick-id]
+  (let [deadline (+ (System/currentTimeMillis) 15000)
+        match (fn []
+                (filterv #(= tick-id (:tick-id %))
+                         (into [] (es/read (:event-store ctx)
+                                           {:types #{:judge/composite-score-computed}
+                                            :tenant-id (:tenant-id ctx)}))))]
+    (loop []
+      (let [evts (match)]
+        (if (or (>= (count evts) n)
+                (>= (System/currentTimeMillis) deadline))
+          evts
+          (do (Thread/sleep 50) (recur)))))))
 
 (defn- set-living-description-enabled! [ctx enabled?]
   (cp/process-command
@@ -382,10 +452,7 @@
                                             {:type :grounding})
               tick-id (random-uuid)]
           (emit-node-execution-completed! ctx sheet-id tick-id node-id)
-          (Thread/sleep 500)
-          (let [events (into [] (es/read (:event-store ctx)
-                                         {:types #{:judge/score-emitted}
-                                          :tenant-id (:tenant-id ctx)}))]
+          (let [events (wait-for-score-events ctx 1 tick-id)]
             (is (= 1 (count events))
                 "Exactly one :judge/score-emitted event should land")
             (when (seq events)
@@ -423,10 +490,7 @@
                  ["i" {:type :instruction-following}]])
               tick-id (random-uuid)]
           (emit-node-execution-completed! ctx sheet-id tick-id node-id)
-          (Thread/sleep 600)
-          (let [events (into [] (es/read (:event-store ctx)
-                                         {:types #{:judge/score-emitted}
-                                          :tenant-id (:tenant-id ctx)}))]
+          (let [events (wait-for-score-events ctx 4 tick-id)]
             (is (= 4 (count events))
                 "All four judges should emit exactly one event each")
             (is (= #{"g" "r" "c" "i"}
@@ -460,10 +524,7 @@
                  ["r" {:type :reasoning}]])
               tick-id (random-uuid)]
           (emit-node-execution-completed! ctx sheet-id tick-id node-id)
-          (Thread/sleep 500)
-          (let [events (into [] (es/read (:event-store ctx)
-                                         {:types #{:judge/score-emitted}
-                                          :tenant-id (:tenant-id ctx)}))]
+          (let [events (wait-for-score-events ctx 1 tick-id)]
             (is (= 1 (count events))
                 "Only the surviving (reasoning) judge should have emitted")
             (when (seq events)
@@ -488,10 +549,7 @@
             tick-id (random-uuid)
             tree-dsl [:sequence [:llm {}] [:final {}]]]
         (emit-node-execution-with-tree-output! ctx sheet-id tick-id node-id tree-dsl)
-        (Thread/sleep 400)
-        (let [events (into [] (es/read (:event-store ctx)
-                                       {:types #{:judge/score-emitted}
-                                        :tenant-id (:tenant-id ctx)}))]
+        (let [events (wait-for-score-events ctx 1 tick-id)]
           (is (= 1 (count events))
               "Heuristic-structural judge emits when tree is present in :writes")
           (when (seq events)
@@ -524,10 +582,7 @@
                  ["mycustom" {:type :custom :sheet-id (random-uuid)}]])
               tick-id (random-uuid)]
           (emit-node-execution-completed! ctx sheet-id tick-id node-id)
-          (Thread/sleep 500)
-          (let [events (into [] (es/read (:event-store ctx)
-                                         {:types #{:judge/score-emitted}
-                                          :tenant-id (:tenant-id ctx)}))]
+          (let [events (wait-for-score-events ctx 1 tick-id)]
             (is (= 1 (count events))
                 "Exactly one event — the LLM judge emits; the :custom judge no-ops in Gap-1")
             (when (seq events)
@@ -555,7 +610,7 @@
                  ["r" {:type :reasoning}]])
               tick-id (random-uuid)]
           (emit-node-execution-completed! ctx sheet-id tick-id node-id)
-          (Thread/sleep 500)
+          (wait-for-score-events ctx 2 tick-id)
           (let [scores ((requiring-resolve
                           'ai.obney.orc.evaluation.interface/get-judge-scores)
                         ctx sheet-id node-id tick-id)]
@@ -682,10 +737,7 @@
               ;; Use a tree-bearing event so heuristic-structural can score
               tree-dsl [:sequence [:llm {}] [:final {}]]]
           (emit-node-execution-with-tree-output! ctx sheet-id tick-id node-id tree-dsl)
-          (Thread/sleep 800)
-          (let [events (into [] (es/read (:event-store ctx)
-                                         {:types #{:judge/score-emitted}
-                                          :tenant-id (:tenant-id ctx)}))]
+          (let [events (wait-for-score-events ctx 5 tick-id)]
             (is (= 5 (count events))
                 "All 5 default judges (heuristic-structural + 4 LLM) fired")
             (is (= #{"heuristic-structural" "grounding" "reasoning"
@@ -803,10 +855,7 @@
                             [:aggregate {:from :results :writes [:out]}]
                             [:final {:keys [:out]}]]]
         (emit-node-execution-with-tree-output! ctx sheet-id tick-id node-id excellent-tree)
-        (Thread/sleep 400)
-        (let [events (into [] (es/read (:event-store ctx)
-                                       {:types #{:judge/score-emitted}
-                                        :tenant-id (:tenant-id ctx)}))]
+        (let [events (wait-for-score-events ctx 1 tick-id)]
           (is (= 1 (count events))
               "Heuristic judge emitted once")
           (when (seq events)
@@ -871,7 +920,7 @@
           (is (= [] (get-scores ctx sheet-id node-id tick-id))
               "Before execution, no scores exist for this tick/node")
           (emit-node-execution-with-tree-output! ctx sheet-id tick-id node-id tree-dsl)
-          (Thread/sleep 600)
+          (wait-for-score-events ctx 3 tick-id)
           ;; Post-condition: 3 scores, all queryable
           (let [scores (get-scores ctx sheet-id node-id tick-id)]
             (is (= 3 (count scores))
@@ -1054,9 +1103,9 @@
                   :writes {:generated-tree-raw tree-dsl}
                   :completion-kind :tree-iteration
                   :duration-ms 100}))
-        (Thread/sleep 400)
-        (is (= 1 (count-score-emitted-events ctx))
-            "Judge fires for matching :completion-kind")))))
+        (let [events (wait-for-score-events ctx 1 tick-iter)]
+          (is (= 1 (count events))
+              "Judge fires for matching :completion-kind"))))))
 
 ;; =============================================================================
 ;; Gap-7 RED#5 — default judges routed by completion kind
@@ -2106,16 +2155,17 @@
                   :node-type :leaf
                   :status :success
                   :writes {:answer "Hello world"}}))
-        ;; Wait for both judges to settle
+        ;; Wait for both judges to settle AND for the eventually-consistent
+        ;; :evaluation/judge-scores read-model to reflect both. Poll the
+        ;; read-model directly (it lags the raw events under load — the
+        ;; async command path makes the two custom-judge emissions land at
+        ;; slightly different times).
         (loop [waited 0]
-          (let [matching (filter #(= tick-id (:tick-id %))
-                                 (into [] (es/read (:event-store ctx)
-                                                    {:types #{:judge/score-emitted}
-                                                     :tenant-id (:tenant-id ctx)})))]
+          (let [scores (get-judge-scores ctx host-sheet-id host-node-id tick-id)]
             (cond
-              (>= (count matching) 2) :done
-              (>= waited 15000) :timeout
-              :else (do (Thread/sleep 500) (recur (+ waited 500))))))
+              (>= (count scores) 2) :done
+              (>= waited 20000) :timeout
+              :else (do (Thread/sleep 250) (recur (+ waited 250))))))
         (let [scores (get-judge-scores ctx host-sheet-id host-node-id tick-id)]
           (is (= 2 (count scores))
               (str "get-judge-scores returns both custom judge entries. Got: " (count scores)))

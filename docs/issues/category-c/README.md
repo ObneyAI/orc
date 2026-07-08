@@ -103,7 +103,7 @@ Category C builds on:
 - [`docs/prd/phase2-observability-layer.md`](../../prd/phase2-observability-layer.md) — O01-O03 (DONE). Per-node usage, `:input-profile`, trajectory bookend. The per-tree evidence C-3 will consume.
 - [`docs/prd/category-d-resilience.md`](../../prd/category-d-resilience.md) — D-008 + D-003 (DONE). `:partial-summary`, budget-aware Phase 2 timeout. The failure-mode evidence sources hand-authored principles in C-1 reference.
 - [`docs/FUTURE-VISION.md`](../../FUTURE-VISION.md) — Phase 4a (Ontology Knowledge System) + Theme 6 (Tree Hierarchy & Self-Description) + Theme 9 (ColBERT/RAGatouille integration).
-- [`docs/SELF-LEARNING-MANUAL.md`](../../SELF-LEARNING-MANUAL.md) — Existing `:ontology/record-tree-strength`/`record-tree-weakness` command surface that C-1 reuses verbatim and C-2 extends with description events.
+- [`docs/PATTERN-RECORDING.md`](../../PATTERN-RECORDING.md) — Existing `:ontology/record-tree-strength`/`record-tree-weakness` command surface that C-1 reuses verbatim and C-2 extends with description events.
 - [`docs/FEEDBACK-LOOP.md`](../../FEEDBACK-LOOP.md) — The 7-stage continuous improvement cycle. C-1 wires stages 5-6; C-2's consolidator wires stages 2-4; C-3 enriches stages 2-4 further.
 - [`docs/GEPA-INTEGRATION-PLAN.md`](../../GEPA-INTEGRATION-PLAN.md) — Existing GEPA proposer + reflection infrastructure. The reuse candidate for C-3's automated extraction.
 

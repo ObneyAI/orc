@@ -11,6 +11,14 @@
                                                            :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
                                                            :deps/root "projects/grain-control-plane"}
 
+                              ;; Test/dev only: SQLite event store, so the
+                              ;; build-atomicity regression test can verify the
+                              ;; store-agnostic fix on a durable backend as well
+                              ;; as the in-memory store.
+                              obneyai/grain-event-store-sqlite-v3 {:git/url "https://github.com/ObneyAI/grain.git"
+                                                                   :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
+                                                                   :deps/root "projects/grain-event-store-sqlite-v3"}
+
                               ;; Base
                               orc/orc-dev           {:local/root "bases/orc-dev"}
 

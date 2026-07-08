@@ -1,5 +1,6 @@
 (ns ai.obney.orc.ontology.c2a-live-verify-test
-  "Tests for the C-2a live-verify orchestrator (development/src/c2a_live_verify.clj).
+  "Tests for the C-2a live-verify orchestrator
+   (ai.obney.orc.ontology.test-support.c2a-live-verify).
 
    The orchestrator runs three scenarios:
      A — 3-run regression (control → failure-burst → recovery)
@@ -11,7 +12,7 @@
    against gemini-3-flash-preview with `OPENROUTER_API_KEY` set."
   (:require [clojure.test :refer [deftest testing is]]
             [dscloj.core :as dscloj]
-            [c2a-live-verify :as live-verify]))
+            [ai.obney.orc.ontology.test-support.c2a-live-verify :as live-verify]))
 
 ;; =============================================================================
 ;; RED #1 — Driver script exists and runs with fake LLM

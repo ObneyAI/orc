@@ -1,0 +1,21 @@
+{:paths []
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+
+        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
+                               :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
+                               :deps/root "projects/grain-core-v2"}
+
+        ;; The ontology / general-memory stack — explicitly self-describing:
+        ;;   ontology    → event-sourced concept graph + DJL embeddings +
+        ;;                 evolutionary builder + self-improving write-side
+        ;;   orc-service → the engine its discovery/builder sheets run on
+        ;;   langfuse    → orc-service's tracing layer
+        ;; NO colbert, NO Python. Retrieval runs on graph BFS + DJL embeddings.
+        ;; ColBERT (Layer 5) is resolved lazily — add the orc-colbert package
+        ;; to light up the third retrieval signal.
+        orc/ontology    {:local/root "../../components/ontology"}
+        orc/orc-service {:local/root "../../components/orc-service"}
+        orc/langfuse    {:local/root "../../components/langfuse"}}
+
+ :aliases {:test {:extra-paths []
+                  :extra-deps {}}}}

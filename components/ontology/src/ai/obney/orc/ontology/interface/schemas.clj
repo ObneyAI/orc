@@ -385,9 +385,15 @@
     [:target-id          :uuid]
     [:name               :string]
     [:parent-behavior    {:optional true} [:or :uuid :string]]
-    [:provenance         [:enum :agent-minted :human-authored]]
+    ;; :harvested (EL-4, ADR 0015) is a DISTINCT provenance so the audit
+    ;; trail separates auto-harvested behaviors from human-authored seeds
+    ;; and runtime agent-minted behaviors.
+    [:provenance         [:enum :agent-minted :human-authored :harvested]]
     [:minted-by-sheet-id {:optional true} :uuid]
     [:minted-by-tick-id  {:optional true} :uuid]
+    ;; EL-4: the source :tree-class this behavior was harvested from
+    ;; (present only when :provenance :harvested).
+    [:harvested-from-tree-class {:optional true} [:or :uuid :string]]
     [:minted-at          :string]]
 
    ;; -------------------------------------------------------------------------
@@ -816,14 +822,19 @@
     [:name               :string]
     [:body               description-body]
     [:parent-behavior    {:optional true} [:or :uuid :string]]
-    ;; :provenance is MANDATORY — never default. Mixing the two
-    ;; provenance classes would break the audit trail for future review.
-    [:provenance         [:enum :agent-minted :human-authored]]
+    ;; :provenance is MANDATORY — never default. Mixing the provenance
+    ;; classes would break the audit trail for future review.
+    ;; :harvested (EL-4, ADR 0015) is the auto evidence-grounded path.
+    [:provenance         [:enum :agent-minted :human-authored :harvested]]
     ;; Sandbox-only fields; absent on hand-authored mints. The sandbox
     ;; primitive (mint-behavior! ...) populates these from the
     ;; build-rlm-context's :sheet-id / :tick-id opts.
     [:minted-by-sheet-id {:optional true} :uuid]
-    [:minted-by-tick-id  {:optional true} :uuid]]
+    [:minted-by-tick-id  {:optional true} :uuid]
+    ;; EL-4: the source :tree-class id this behavior is harvested from.
+    ;; Present only on the :harvested path; the mint command forwards it
+    ;; onto the audit event for the fire-once/provenance trail.
+    [:harvested-from-tree-class {:optional true} [:or :uuid :string]]]
 
    ;; -------------------------------------------------------------------------
    ;; C-2a-3a — Consolidation trigger commands

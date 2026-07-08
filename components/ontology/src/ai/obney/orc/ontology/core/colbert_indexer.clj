@@ -12,12 +12,25 @@
    - build-documents-from-concepts: Build documents for all concepts
    - index-concepts!: Create ColBERT index from concepts
    - index-with-related-data!: Create enriched index with tasks/skills/knowledge"
-  (:require [ai.obney.orc.colbert.interface :as colbert]
-            [ai.obney.orc.ontology.core.field-analyzer :as fa]
+  (:require [ai.obney.orc.ontology.core.field-analyzer :as fa]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
             [clojure.string :as str]
             [com.brunobonacci.mulog :as mu]))
+
+(defn- require-colbert
+  "Resolve a fn from the colbert component, or throw a clear error.
+   colbert-indexer's index/search functions inherently need the colbert
+   component (an optional Layer-5 upgrade). This namespace LOADS without
+   colbert on the classpath — so the ontology builds colbert-free — but
+   calling these functions without it is a clear, named error rather than
+   an obscure NPE."
+  [fn-name]
+  (or (try (requiring-resolve (symbol "ai.obney.orc.colbert.interface" (name fn-name)))
+           (catch Throwable _ nil))
+      (throw (ex-info (str "ColBERT indexing requires the colbert component on the "
+                           "classpath (optional Layer-5 upgrade — see COMPONENT-MAP.md).")
+                      {:fn fn-name}))))
 
 ;; =============================================================================
 ;; Document Building
@@ -189,7 +202,7 @@
                              (str "ontology-" (subs (str (random-uuid)) 0 8)))
 
         ;; Create ColBERT index
-        index-id (colbert/create-index! ctx
+        index-id ((require-colbert (quote create-index!)) ctx
                    {:collection (mapv :content valid-docs)
                     :document-ids (mapv :document-id valid-docs)
                     :index-name final-index-name})]
@@ -257,7 +270,7 @@
                              (str "ontology-enriched-" (subs (str (random-uuid)) 0 8)))
 
         ;; Create index
-        index-id (colbert/create-index! ctx
+        index-id ((require-colbert (quote create-index!)) ctx
                    {:collection (mapv :content valid-docs)
                     :document-ids (mapv :document-id valid-docs)
                     :index-name final-index-name})]
@@ -293,7 +306,7 @@
      [{:uri \"concept-uri\" :score 0.92 :rank 1}]"
   [ctx {:keys [query index-id k normalize?]
         :or {k 20 normalize? true}}]
-  (let [results (colbert/search ctx {:query query :index-id index-id :k k})
+  (let [results ((require-colbert (quote search)) ctx {:query query :index-id index-id :k k})
         max-score (if (seq results)
                     (apply max (map :score results))
                     1.0)]

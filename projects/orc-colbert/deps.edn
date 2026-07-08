@@ -1,0 +1,16 @@
+{:paths []
+ :deps {org.clojure/clojure {:mvn/version "1.12.0"}
+
+        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
+                               :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
+                               :deps/root "projects/grain-core-v2"}
+
+        ;; ColBERT late-interaction retrieval — the optional Layer-5 upgrade.
+        ;; A leaf component (its ontology reference is resolved lazily). Add this
+        ;; alongside orc-ontology to light up the third retrieval signal in
+        ;; hybrid-search. REQUIRES a Python venv (.venv-colbert) at runtime —
+        ;; this is the one package that pulls Python.
+        orc/colbert {:local/root "../../components/colbert"}}
+
+ :aliases {:test {:extra-paths []
+                  :extra-deps {}}}}

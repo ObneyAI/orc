@@ -757,13 +757,25 @@
                              'get-description get-description-fn}
                             drill-bindings)
 
-        ;; Combine all bindings
-        all-bindings (merge rlm-bindings)
+        ;; MCP tool bindings — make :mcp-tools callable as bare fns in the RLM
+        ;; sandbox, exactly as the plain (sci-sandbox) researcher does. Before
+        ;; this, build-rlm-context destructured :call-tool-fn/:mcp-tools but never
+        ;; bound them, so a recursive agent calling e.g. (get-index) hit
+        ;; "Could not resolve symbol" and got NO tool data (and then fabricated).
+        ;; Flat tool names join the user ns + bindings; namespaced ('server/tool)
+        ;; tools get their own ns — mirroring build-sci-context. No-ops when
+        ;; call-tool-fn is nil (build-tool-bindings returns empty maps).
+        {tool-flat :flat tool-namespaces :namespaces}
+        (base-sandbox/build-tool-bindings call-tool-fn mcp-tools)
+
+        ;; Combine all bindings (rlm primitives + flat MCP tools)
+        all-bindings (merge rlm-bindings tool-flat)
 
         ;; Create SCI context with all bindings
         sci-ctx (sci/init
-                 {:namespaces {'clojure.core safe-core
-                               'user rlm-bindings}
+                 {:namespaces (merge {'clojure.core safe-core
+                                      'user (merge rlm-bindings tool-flat)}
+                                     tool-namespaces)
                   :bindings all-bindings})]
 
     ;; Return context with final-output atom accessible

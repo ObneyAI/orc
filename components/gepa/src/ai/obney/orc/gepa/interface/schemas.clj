@@ -141,6 +141,10 @@
     [:scores [:vector :double]]
     [:aggregate-score :double]
     [:trace-ids [:vector :uuid]]
+    ;; Per-instance RICH judge feedback (instance-idx -> feedback string).
+    [:feedbacks {:optional true} [:map-of :int :string]]
+    ;; Per-instance generated OUTPUT (instance-idx -> output map).
+    [:outputs {:optional true} [:map-of :int [:map-of :any :any]]]
     [:metric-calls :int]
     [:evaluated-at :any]]
 
@@ -327,6 +331,10 @@
     [:candidate-id :uuid]
     [:scores [:vector :double]]
     [:trace-ids [:vector :uuid]]
+    ;; Per-instance RICH judge feedback (instance-idx -> feedback string).
+    [:feedbacks {:optional true} [:map-of :int :string]]
+    ;; Per-instance generated OUTPUT (instance-idx -> output map).
+    [:outputs {:optional true} [:map-of :int [:map-of :any :any]]]
     [:metric-calls :int]]
 
    :gepa/update-frontier

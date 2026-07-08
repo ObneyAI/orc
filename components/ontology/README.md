@@ -7,7 +7,7 @@ Three-layer semantic knowledge system combining **static foundation** with **dyn
 - [Full Documentation](../../docs/ONTOLOGY.md) - Complete API reference and architecture
 - [MCP Server Guide](../../docs/ONTOLOGY-MCP.md) - External tool access (13 tools)
 - [Feedback Loop Architecture](../../docs/FEEDBACK-LOOP.md) - End-to-end improvement cycle
-- [DSL Tutorial - Context Injection](../../docs/dsl-tutorial.md#ontology-context-injection)
+- [DSL Reference - Context Injection](../../docs/DSL-REFERENCE.md#ontology-context-injection)
 
 ## Overview
 

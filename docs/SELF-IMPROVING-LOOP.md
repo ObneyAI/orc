@@ -1,18 +1,56 @@
 # Self-Improving Workflows in ORC
 
-> **For developers building LLM workflows on top of ORC.** This guide
-> explains how to write workflows that get better as they run — without
-> writing any extra learning code yourself.
+> **For developers who already have a behavior tree** — ideally one with a
+> `:repl-researcher` node — and want it to get better the more it runs,
+> without writing any learning code yourself.
 
 > **⚠ Alpha — read this before adopting in production.**
 > The self-improving loop ships as alpha-stage capability. It works
 > well for in-distribution workflows that align with the shipped seed
-> corpus, and it's worth using today for those. Workflows that fall
-> far outside the corpus's covered domains will see honest-but-thin
-> classifications and rare behavioral mints. See
-> [Current capabilities and known limitations](#current-capabilities-and-known-limitations)
-> below for what's solid, what's rough, and what's actively being
-> investigated.
+> corpus, and it's worth using today for those. For out-of-distribution
+> work the runtime now **detects** novelty and **defers** durable
+> creation to the evidence-grounded emergence loop, rather than minting a
+> task class on the spot — see
+> [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop)
+> and [Honest status today](#honest-status-today--solid-vs-rough)
+> in this doc.
+
+---
+
+## Start here: the same tree, now learning
+
+You already have a behavior tree. Maybe it reviews contracts, triages
+tickets, or extracts structured data. Right now it runs the same way
+every single time — the model sees the same instruction, designs (or
+follows) the same shape, and yesterday's thousand executions taught it
+nothing.
+
+**The self-improving loop changes that: turn on two flags, and the tree
+learns from every execution — picking proven patterns when it designs
+sub-trees, recording what worked, and getting better at recurring tasks
+without you writing any learning code.**
+
+Here's the journey this guide walks you through, starting from the tree
+you already have:
+
+1. **[The smallest opt-in](#the-smallest-opt-in)** — two flags on a
+   `:repl-researcher` node you already have.
+2. **[What fires when you flip them](#what-each-flag-does--and-the-exact-opt-in-boundary)** —
+   the exact opt-in boundary, so there are no surprises.
+3. **[Honest alpha-state framing](#honest-status-today--solid-vs-rough)** —
+   what's solid, what's rough, kept near the top on purpose.
+4. **[How it composes](#how-it-composes-delegated-child-sheets-join-the-loop)** —
+   a delegated child sheet that uses `:repl-researcher` joins the loop too.
+5. **[How it relates to GEPA](#two-orthogonal-improvement-actuators)** —
+   a different actuator aimed at a different part of your tree.
+6. **[Operations and debugging](#operations-and-debugging)** — how to
+   watch, verify, and troubleshoot the loop in a running system.
+
+The mechanism is event-sourced and runs in the background. You flip the
+flags; you read the outputs. The rest of this section explains what those
+outputs are.
+
+---
 
 ## What ORC's self-improving loop gives you
 
@@ -30,10 +68,14 @@ that:
    weaknesses, and recommended-patterns. The next task that hits the
    same pattern sees a richer prompt with the new content.
 
-3. **Adds genuinely-new patterns to the corpus when needed.** If the
-   model encounters work no existing pattern fits, it can contribute a
-   new pattern that persists for future retrieval. New domains can grow
-   the corpus organically.
+3. **Detects genuinely-new work and lets the corpus grow from evidence.**
+   When no existing pattern fits, the runtime classifies the task as
+   *novel* (or *uncertain*) and DEFERS — it does not fabricate a durable
+   behavior on the spot. The tree the model actually emits becomes a
+   retrievable, domain-aware candidate that accrues judge evidence on a
+   stable identity; recurring, well-scored candidates are the raw material
+   for promotion into named behaviors. See
+   [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop).
 
 4. **Recovers from mid-tree failures gracefully.** When a leaf in an
    emitted tree throws, the model sees the specific failure detail and
@@ -42,6 +84,28 @@ that:
 
 You get all four by setting a couple of flags on your workflow. The
 loop runs in the background; you read the outputs.
+
+---
+
+## Two orthogonal improvement actuators
+
+ORC has **two** independent ways to make a workflow better over time.
+They aim at different parts of your tree, use different mechanisms, and
+neither requires the other:
+
+| | **`:auto-classify?`** (this guide) | **GEPA** ([GEPA-GUIDE.md](GEPA-GUIDE.md)) |
+|---|---|---|
+| **What it tunes** | The *tree the model designs* at runtime | The *instruction string* inside a node |
+| **Where it applies** | `:repl-researcher` nodes (RLM tree design) | Static `orc/llm` nodes with a fixed shape |
+| **Mechanism** | Prepends matched corpus patterns before the researcher designs a tree; the corpus body evolves from observed runs | Pareto selection + reflective mutation over a held-out trainset, offline |
+| **When it improves** | Continuously, from production traffic | In a dedicated optimization run you trigger |
+
+If your workflow is an RLM researcher that designs its own structure,
+`:auto-classify?` is your actuator — and the rest of this guide is for
+you. If your workflow is a fixed pipeline of `:llm` nodes whose *prompts*
+you want tightened, reach for GEPA instead. Many real workflows use both:
+GEPA-tuned `:llm` leaves inside a tree that an `:auto-classify?` researcher
+designed. They plug into separate parts of the system and compose cleanly.
 
 ---
 
@@ -71,7 +135,12 @@ node:
   (orc/execute ctx sheet-id {:document "..."}))
 ```
 
-That's it. With these two flags:
+That's it. The node already existed in your tree; you added a four-key
+`:rlm` map. Everything below happens because of those two keys.
+
+---
+
+## What each flag does — and the exact opt-in boundary
 
 - **`:auto-classify? true`** — before the model starts designing, ORC
   classifies your task against the seed corpus and prepends the top-fitting
@@ -83,6 +152,167 @@ That's it. With these two flags:
   `(final! ...)` when ready. If a leaf in its emitted tree fails, the
   model can emit a smaller tree to recover rather than abandoning the
   partial progress.
+
+**The exact opt-in boundary — what fires the moment you flip the flags,
+and what does *not*:**
+
+- `:auto-classify? true` on a `:repl-researcher` is what turns on the
+  **read side** of the loop: classification (`classify-task` +
+  `classify-behaviors`), the LLM reranker, and the corpus prepend before
+  Phase 1. Without it, the researcher runs exactly as before — no
+  classification, no prepend.
+- `:recursive? true` is what turns on **iteration and mid-tree
+  failure recovery** (Phase 1 ↔ Phase 2 looping). Without it the
+  researcher emits one tree and returns the Phase-2 result directly.
+- The **write side** — judges firing, strength/weakness counts
+  incrementing, and the consolidator rewriting a pattern body — is gated
+  *separately* by a system-level boolean opt-in,
+  `get-living-description-enabled?` (set via the
+  `:ontology/set-living-description-enabled` command; default `false`).
+  Reading (`:auto-classify?`) and writing (Living Descriptions) are
+  independent: you can prepend from the corpus without evolving it, or
+  evolve it without a researcher reading from it. The full loop needs
+  both turned on.
+- Nothing fires for nodes **other than** `:repl-researcher`. A static
+  `:llm` node in the same tree is untouched by `:auto-classify?` — that's
+  GEPA's territory (see
+  [Two orthogonal improvement actuators](#two-orthogonal-improvement-actuators)).
+- Structural classification (`classify-task`) is **detect-and-defer**:
+  it never creates a durable behavior at runtime. A *novel* task accrues
+  evidence on a tree-class identity (or bundles onto a near one); an
+  *uncertain* task (reranker fallback) is skipped entirely — no class is
+  assigned (see
+  [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop)).
+  The behavioral `mint-behavior!` primitive remains **model-initiated**,
+  not flag-initiated — enabling the flags makes it *possible*, and the
+  references the prepend surfaces *inform* (not gate) when the model uses
+  it. References inform new and adjacent behaviors regardless of whether a
+  match cleared threshold.
+
+---
+
+## How it composes: delegated child sheets join the loop
+
+The loop is not limited to a top-level researcher. Because
+`:auto-classify?` fires per `:repl-researcher` node — wherever that node
+lives — a workflow that **delegates** to a child sheet containing a
+`:repl-researcher` gets the same behavior inside the child.
+
+`orc/delegate` runs another sheet with an isolated blackboard, mapping a
+slice of the parent's keys in and the child's outputs back out:
+
+```clojure
+(require '[ai.obney.orc.orc-service.interface :as orc])
+
+;; A reusable child sheet: a self-improving researcher for one sub-task.
+(def risk-subworkflow
+  (orc/workflow "risk-assessment"
+    (orc/blackboard
+      {:clause     [:string {:description "A single contract clause"}]
+       :risk-notes [:vector :any {:description "Risks with severity + rationale"}]})
+    (orc/repl-researcher "risk-researcher"
+      :model "google/gemini-3-flash-preview"
+      :instruction "Assess the legal risk of the provided clause."
+      :reads [:clause]
+      :writes [:risk-notes]
+      :rlm {:auto-classify? true     ; ← the child researcher joins the loop
+            :recursive? true})))
+
+(def parent-workflow
+  (orc/workflow "contract-review"
+    (orc/blackboard
+      {:clause     [:string]
+       :risk-notes [:vector :any]
+       :summary    [:string]})
+    (orc/sequence "review"
+      ;; The delegate node runs risk-subworkflow as a sub-behavior.
+      (orc/delegate "assess-risk"
+        :target-sheet-id risk-sheet-id   ; built from risk-subworkflow
+        :reads  [:clause]
+        :writes [:risk-notes]
+        :inherit-ontology? true)         ; default; shares corpus context downward
+      (orc/llm "write-summary"
+        :reads [:risk-notes]
+        :writes [:summary]))))
+```
+
+When the parent hits the `assess-risk` delegate node, the child sheet
+executes; its `risk-researcher` node fires its own classification +
+corpus prepend exactly as a top-level researcher would, and its
+execution events feed the same Living Description loop. The result:
+
+- **Sub-behaviors improve independently.** A delegated researcher
+  classifies to whatever pattern fits *its* sub-task — which may differ
+  from the parent's — and evolves that pattern from its own traffic.
+- **Reuse multiplies the learning.** If three different parent workflows
+  all delegate to the same `risk-assessment` child sheet, every run from
+  all three feeds the same pattern body. The child gets better faster
+  than any single caller would drive it.
+- **`:inherit-ontology? true`** (the `delegate` default) shares the
+  parent's corpus context with the child so classification is consistent
+  across the boundary.
+
+So "turn on two flags" scales from a single node to a tree of delegated
+sub-behaviors: put the flags on whichever `:repl-researcher` nodes you
+want to learn, at whatever depth they live. For the composition mechanics
+of `:repl-researcher` as a node inside a larger tree, see
+[`RLM-GUIDE.md`](RLM-GUIDE.md).
+
+---
+
+## Honest status today — solid vs rough
+
+The self-improving loop is **alpha-stage**. The components that compose
+the loop work as documented. The earlier OOD symptom — a "mint fires on
+1 of 21 deliberately-OOD tasks" reluctance, and an OOD task force-fitting
+the structurally-closest pattern — is the **resolved** symptom that the
+emergence loop addresses (ADRs 0014,
+0015,
+0016); it is no
+longer the runtime's behavior. The framing below is what's solid vs.
+rough on the current loop.
+
+| **Solid** (use without hesitation) | **Rough** (know before you commit) |
+|---|---|
+| In-distribution classification — tasks resembling shipped seed patterns (legal-issue-detection, contract-comparison, risk-analysis, chunked-extraction) match at confidence 1.00; prepend carries the full worked-example DSL | Hierarchical seed gaps — the abstract behavioral seeds describe shape; domain-specialized children accrue from evidence rather than shipping pre-authored |
+| Recursive RLM with drill-down — `(tree-detail)`, `(tree-failures)`, `(node-output node-id)` all work; model recovers mid-tree failures via focused single-node resume trees without rebuilding the whole pipeline | Harvest (durable promotion) is the *designed* terminus of the emergence loop and not yet shipped on this branch — novel candidates accrue evidence today; crystallizing a recurring, well-scored candidate into a named behavior is the next pulled step |
+| Detect-and-defer + grounded domain rank — `classify-task` retrieves on the instruction-aware `:tree-class` axis, an OOD task is classified *novel*/*uncertain* (not force-minted), and the reranker reads + a deterministic contrastive penalty enforces each candidate's judge-grounded `:avoid-when` | |
+| Consolidator-driven body evolution — repeated traffic on a pattern increments the body version with new strengths grounded in observed execution; history is append-only | |
+
+### How the emergence loop closes the OOD gap
+
+The OOD limits surfaced by the earlier evidence sweep are addressed by
+the emergence loop, which makes behavior emergence a **closed,
+evidence-grounded loop** (ADR 0015):
+
+- **Detect-and-defer, not force-mint.** `classify-task` returns a
+  three-state `:outcome` (`:matched` / `:novel` / `:uncertain`). A
+  reranker fallback is *uncertain* and skips assignment; a confident
+  no-match is *novel* and either bundles onto a near tree-class or
+  records a provisional one — never a fabricated durable behavior.
+- **Grounded domain rank.** The reranker now READS each candidate's
+  judge-grounded `:avoid-when` and a deterministic contrastive penalty
+  ENFORCES it after the rerank, so a strong shape match no longer
+  overrides a firing domain guard (ADR 0016). See
+  [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop).
+
+### What this means for your workflow
+
+- If your workflow runs tasks that align with the shipped seed corpus,
+  expect the loop to feel useful from day one.
+- If your workflow runs tasks far outside the shipped corpus, expect
+  to author your own corpus seeds via `:ontology/record-tree-description`
+  (and possibly `:ontology/mint-behavioral-subtree` if your work needs
+  new behavioral categories). The mint affordance is real and works;
+  it just rarely fires from the agent side today without curator
+  involvement.
+- The loop is improving over time. New seeds, judge-grounded
+  classification refinements, and consolidator improvements are
+  expected to land additively without breaking the consumer API.
+
+If you hit a specific OOD failure mode that matters to your workflow,
+file it with a concrete reproduction case — your evidence is the
+highest-leverage input to the corpus and classifier roadmap.
 
 ---
 
@@ -242,36 +472,54 @@ You can read the current body at any time:
 ;; => {:summary "..." :strengths [...] :weaknesses [...] :version 3 ...}
 ```
 
-### 2. New patterns get minted when the model encounters genuinely-new work
+> For the consolidation architecture, description granularities
+> (tree-class, node-instance, node-type), and the four anti-recency
+> safeguards that prevent single-bad-burst overcorrection, see
+> [`LIVING-DESCRIPTIONS.md`](LIVING-DESCRIPTIONS.md).
 
-If a task arrives that doesn't fit any existing pattern at meaningful
-confidence, the model can contribute a new pattern via the sandbox
-primitive `(mint-behavior! ...)`. The minted behavior persists in the
-corpus and is retrievable for future tasks that share its behavioral
-shape — even when the future tasks are in different domains.
+### 2. How novelty is handled — detect-and-defer + the emergence loop
 
-An example: a task in domain X (say, game balance playtesting) gets
-solved with an iterative parameter-adjustment pattern. The model
-explicitly mints the pattern. Months later, a different consumer's task
-in domain Y (say, ML hyperparameter tuning) arrives — completely
-different vocabulary, different metrics — but the same behavioral shape
-(iterate parameter adjustments driven by measured feedback). The new
-task's classify-behaviors call retrieves the minted pattern from
-domain X at high confidence with the reranker explaining:
+When a task doesn't fit any existing pattern, the runtime does **not**
+fabricate a durable behavior on the spot. A behavior is *earned by a tree
+that worked*, not *asserted by a description*. Structural classification
+is **detect-and-defer** (ADRs
+0014
+and 0015):
 
-> _"This candidate perfectly matches the task's iterative tuning
-> requirements. The pattern of pairing a trusted oracle (the 5-fold CV
-> score/latency) with LLM-driven heuristics for parameter adjustment
-> directly implements the core logic of the search loop described in
-> the prompt."_
+- **`classify-task` returns a three-state `:outcome`** —
+  `:matched` (a confident corpus match), `:novel` (a confident no-match),
+  or `:uncertain` (the LLM reranker fell back to raw ColBERT, so the fit
+  is unknown). It retrieves across BOTH the canonical `:tree-fingerprint`
+  shape axis and the instruction-aware `:tree-class` identity axis, so a
+  prior task's recorded class is reachable for a second similar task.
+- **`:uncertain` defers completely.** A reranker fallback is *explicit
+  uncertainty*, never a score-0 no-match — the auto-classify wedge SKIPS
+  the class-assign dispatch entirely (no fresh class, nothing fabricated;
+  the R-Inject caution still surfaces to the model).
+- **`:novel` converges instead of scattering.** Before recording a fresh
+  identity, the classifier probes the recurred `:tree-class` candidates
+  (an RRF fusion of reranker fitness + ColBERT semantic score) and, when
+  the best near-miss lands in a bundle band, BUNDLES the task onto that
+  existing class so variants converge on one stable identity rather than
+  scattering a new id per occurrence. Only genuinely-distinct work below
+  the band records a provisional class of its own.
 
-The model sees the minted pattern's prose summary plus its
-recommended-pattern DSL and adapts it.
+So when no behavior fits, the **tree the model emits IS the candidate**.
+It accrues judge evidence on its `:tree-class` identity (the same counter
+the consolidator reads), and the recurring, well-scored candidates are
+the raw material for **harvest** — the evidence-grounded promotion of a
+recurring candidate into a named, durable behavior. Harvest is the
+designed terminus of this loop (ADR 0015) and is the path that *creates*
+durable behaviors; it is pulled when there is volume to harvest, and is
+not yet shipped on this branch.
 
-You don't decide when to mint. The model does — based on whether any
-existing pattern in the corpus offers a credible match for the task. As
-the corpus grows, the bar for minting rises (more existing patterns to
-fit against), so mint events get rarer as the corpus matures.
+The references the prepend surfaces **inform** the design — they do not
+gate it. The behavioral `(mint-behavior! ...)` primitive remains
+available for the model to contribute an adjacent or specialized behavior
+informed by those references (see
+[`RLM-GUIDE.md`](RLM-GUIDE.md#behavioral-mints--contributing-new-patterns-to-the-corpus)),
+but the corpus grows primarily by capturing emitted trees and accruing
+evidence, not by a runtime mint firing on not-finding.
 
 ---
 
@@ -413,94 +661,256 @@ new description. The history is append-only; nothing is overwritten.
 
 ---
 
-## Current capabilities and known limitations
+## Operations and debugging
 
-The self-improving loop is **alpha-stage** as of this writing. The
-components that compose the loop work as documented — but the
-*aggregate behavior on workflows far outside the shipped seed corpus
-is honest-but-thin*, not what a "self-improving" label would imply
-at maturity. The framing in this section comes from a real 21-task
-OOD evidence-gathering sweep, not from marketing.
+### The self-improving pipeline — 7 stages
 
-### Solid (use without hesitation)
+The diagram below shows the end-to-end loop for `:repl-researcher` nodes
+with `:auto-classify? true`. This supersedes the pre-RLM version in
+[`archived/FEEDBACK-LOOP.md`](archived/FEEDBACK-LOOP.md), which described a manual `:context`-parameter
+injection flow rather than the current corpus-driven prepend loop.
 
-- **In-distribution classification.** Tasks that resemble shipped seed
-  patterns (legal-issue-detection, contract-comparison, risk-analysis,
-  chunked-extraction, etc.) match at confidence 1.00 and the prepend
-  carries the seed's full worked-example DSL.
-- **Recursive RLM with drill-down primitives.** `(tree-detail)`,
-  `(tree-failures)`, `(node-output ...)` all work; the model uses
-  them to recover from mid-tree failures via smaller resume trees.
-- **Consolidator-driven body evolution for stable patterns.** When
-  the same pattern gets repeated traffic, the body version increments
-  with new strengths grounded in observed execution.
-- **`mint-behavior!` mechanics.** The defcommand path, persistence,
-  ColBERT re-index, and same-iteration lookup all work as documented.
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│         SELF-IMPROVING LOOP PIPELINE (RLM / auto-classify aware)        │
+└─────────────────────────────────────────────────────────────────────────┘
 
-### Rough today
+     ┌──────────────────────────────────────────────────────────────────┐
+     │ OPT-IN GATE: :rlm {:auto-classify? true} on :repl-researcher    │
+     │  ↳ activates Stage 2 (classification) and Stage 3 (corpus       │
+     │    prepend). Without this flag task goes directly to Stage 4.   │
+     └──────┬───────────────────────────────────────────────────────────┘
+            │ on each task arrival
+            ▼
+    ┌───────────────────────────┐
+    │ 1. TASK ARRIVAL           │◄──────────────────────────────────────────┐
+    │  :repl-researcher fires;  │                                           │
+    │  emit-tree! dispatched    │                                           │
+    └──────┬────────────────────┘                                           │
+           │ task signature (blackboard schema + instruction)               │
+           ▼                                                                │
+    ┌───────────────────────────┐                                           │
+    │ 2. CLASSIFICATION         │                                           │
+    │  classify-task            │                                           │
+    │  classify-behaviors       │                                           │
+    │  LLM reranker             │                                           │
+    └──────┬────────────────────┘                                           │
+           │ top-N matched patterns + fitness-scores + reasoning            │
+           ▼                                                                │
+    ┌───────────────────────────┐                                           │
+    │ 3. R-INJECT PREPEND       │                                           │
+    │  top-fitting corpus body  │                                           │
+    │  prepended to instruction │                                           │
+    └──────┬────────────────────┘                                           │
+           │ enriched instruction (capabilities + DSL snippets +            │
+           │   proven strengths + observed weaknesses)                      │
+           ▼                                                                │
+    ┌───────────────────────────┐                                           │
+    │ 4. TREE DESIGN (Phase 1)  │                                           │
+    │  model emits tree DSL     │                                           │
+    │  informed by corpus match │                                           │
+    └──────┬────────────────────┘                                           │
+           │ emitted tree DSL                                               │
+           ▼                                                                │
+    ┌───────────────────────────┐                                           │
+    │ 5. EXECUTION (Phase 2)    │                                           │
+    │  emit-tree! runs the DSL  │                                           │
+    │  in sandbox; model can    │                                           │
+    │  iterate / recover        │                                           │
+    └──────┬────────────────────┘                                           │
+           │ :rlm/tree-execution-completed + node events                    │
+           ▼                                                                │
+    ┌───────────────────────────┐                                           │
+    │ 6. EVALUATION             │                                           │
+    │  5 auto-attached judges   │                                           │
+    │  (heuristic-structural +  │                                           │
+    │   grounding + reasoning + │                                           │
+    │   completeness +          │                                           │
+    │   instruction-following)  │                                           │
+    └──────┬────────────────────┘                                           │
+           │ :judge/score-emitted events                                    │
+           ▼                                                                │
+    ┌──────────────────────────────────────────────────────────────────┐    │
+    │ 7. LIVING DESCRIPTION CONSOLIDATION                              │    │
+    │  rolling aggregator (threshold: ~10 events) fires consolidator   │    │
+    │  LLM → :ontology/*-description-updated → ColBERT async re-index │────┘
+    │  Pattern body version increments; next matching task sees a      │
+    │  richer prepend with updated strengths, weaknesses, and DSL      │
+    └──────────────────────────────────────────────────────────────────┘
+```
 
-- **Out-of-distribution classification.** Tasks whose semantics fall
-  outside the shipped 23 tree-class + 12 behavioral seeds tend to
-  force-fit to the structurally-closest pattern at confidence 0.85-0.95,
-  with mechanically-plausible reranker reasoning that ignores domain
-  specialization. The classifier isn't broken — it's matching on
-  structural shape because that's what the corpus exposes — but the
-  prepend the model receives doesn't tell it that the pattern is a
-  shape-approximation, not a domain match.
+**What `:auto-classify? true` activates** (stages 2–3):
 
-- **Mint-behavior! firing rate in practice.** In the OOD evidence
-  sweep, the agent's mint-behavior! affordance fired on 1 of 21
-  deliberately-OOD tasks, and that 1 was triggered by a reranker
-  failure rather than a quality judgment. Today's classifier does
-  not surface "no candidate is a good semantic match" as a strong
-  signal to the model — it surfaces top-N matches with reasoning,
-  and the model treats those as coverage.
+1. **Classification**: `classify-task` (structural tree-class match,
+   retrieving across both the `:tree-fingerprint` and `:tree-class` axes)
+   and `classify-behaviors` (behavioral-subtree match) run against the
+   seeded corpus. `classify-task` returns a three-state `:outcome`
+   (`:matched` / `:novel` / `:uncertain`) — detect-and-defer, no runtime
+   creation of a durable behavior (see
+   [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop)).
+2. **Grounded domain rank**: top-N candidates are reranked by an LLM that
+   READS each candidate's judge-grounded `:avoid-when`, then a
+   deterministic contrastive domain penalty ENFORCES the same guard after
+   the rerank (ADR 0016) — each candidate ends with a fitness-score and a
+   reasoning string.
+3. **Corpus prepend**: the top-fitting pattern's full body is prepended to
+   the model's instruction before Phase 1 starts.
+4. **Post-execution body evolution** (stage 7): after the tree runs,
+   execution events and judge scores feed the Living Description loop.
+   Strength/weakness confidence counts increment; when the pattern hits
+   the consolidation threshold a consolidator cycle updates the pattern
+   body so the next matching task sees enriched examples.
 
-- **Hierarchical specialization is missing from the behavioral seed
-  layer.** The 12 abstract behaviors (Research / Extraction / Analysis
-  / Synthesis / Ideation / Design / Critique / Validation /
-  Code-building / Transformation / Classification / Investigation)
-  describe shape but not domain. There's no "Analysis-of-source-code"
-  or "Validation-of-schedule-against-hard-constraints" child entries
-  yet. Whether adding them would solve the OOD force-fit pattern is
-  an open question being investigated (see HANDOFF below).
+**What `:recursive? true` activates** (stage 5):
 
-### Active investigation
+The model can iterate: design a tree, run it, inspect results via
+drill-down primitives (`tree-detail`, `tree-failures`, `node-output`),
+refine, and call `(final! ...)` when satisfied. Mid-tree failures are
+recoverable via focused single-node resume trees rather than a full
+rebuild.
 
-The R04 OOD verification work in
-`development/bench/ood-stress-results/` is an evidence gathering
-arc that surfaced the above limits. Two paths forward are being
-considered:
+### Batch evaluation workflows
 
-- **Hierarchical/specialized seeds:** author N specializations per
-  abstract behavior (Analysis-of-legal-documents,
-  Analysis-of-source-code, etc.) so the classifier can discriminate
-  on domain.
-- **Judge-grounded rerank discrimination:** add a meta-judge that
-  scores classification confidence against the matched seed's actual
-  domain coverage (high shape-fit + low domain-fit → DOWN-weight).
+These workflows are useful for retrospective analysis — auditing judge
+scores, investigating low-scoring traces, and verifying that the corpus
+body is evolving as expected after a run.
 
-The HANDOFF document at
-`development/bench/ood-stress-results/HANDOFF.md` is the entry point
-for a future agent picking up this investigation.
+**In the normal loop, judge firing and body evolution are automatic** (Stage
+6 + Stage 7 above). You don't need to trigger them manually. The workflows
+below are for investigation and debugging.
 
-### What this means for your workflow
+**Batch evaluation — analyze historical traces:**
 
-- If your workflow runs tasks that align with the shipped seed corpus,
-  expect the loop to feel useful from day one.
-- If your workflow runs tasks far outside the shipped corpus, expect
-  to author your own corpus seeds via `:ontology/record-tree-description`
-  (and possibly `:ontology/mint-behavioral-subtree` if your work needs
-  new behavioral categories). The mint affordance is real and works;
-  it just rarely fires from the agent side today without curator
-  involvement.
-- The loop is improving over time. New seeds, judge-grounded
-  classification refinements, and consolidator improvements are
-  expected to land additively without breaking the consumer API.
+```clojure
+(require '[ai.obney.orc.evaluation.interface :as eval])
+(require '[ai.obney.orc.orc-service.interface :as orc])
 
-If you hit a specific OOD failure mode that matters to your workflow,
-file it with a concrete reproduction case — your evidence is the
-highest-leverage input to the corpus and classifier roadmap.
+;; Get last 50 traces for a specific node
+(def traces (eval/get-llm-traces ctx {:sheet-id sheet-id
+                                       :node-id "analyze-lead"
+                                       :since #inst "2024-01-01"
+                                       :limit 50}))
+
+;; Run batch evaluation
+(def batch-result (orc/execute ctx (eval/batch-evaluation-suite)
+                    {:traces traces}))
+
+;; Analyze results
+(let [results (get-in batch-result [:outputs :results])
+      scores (map :aggregate-score results)]
+  {:count (count scores)
+   :avg (/ (reduce + scores) (count scores))
+   :min (apply min scores)
+   :max (apply max scores)
+   :below-threshold (count (filter #(< % 0.7) scores))})
+
+;; Find low-scoring traces for investigation
+(->> results
+     (filter #(< (:aggregate-score %) 0.7))
+     (map #(select-keys % [:trace-id :aggregate-score :feedback-summary]))
+     (take 5))
+```
+
+**Consumer pattern — watch low-score evaluations for alerting:**
+
+The automated judge firing (Stage 6) is shipped and runs without this.
+If you want additional downstream handling — custom alerting, routing
+low-score events to your own ontology workflows — you can add a todo
+processor:
+
+```clojure
+(require '[ai.obney.grain.command-processor.interface :as cp])
+
+;; Consumer-owned todo processor for custom low-score routing.
+;; Not required — body evolution via Living Descriptions is automatic.
+(deftodo :your-domain on-low-score-rlm-eval
+  "Route low-scoring RLM evaluations to custom handling"
+  {:event-types #{:judge/score-emitted}}
+  (fn [ctx event]
+    (when (< (get-in event [:body :score]) 0.7)
+      ;; Your custom handling here — e.g., alert, record to a separate
+      ;; ontology, or trigger a manual curator review workflow.
+      (cp/run-command! ctx :your-domain/flag-for-review
+        {:trace-id (get-in event [:body :trace-id])
+         :score    (get-in event [:body :score])}))))
+```
+
+### Troubleshooting
+
+#### Corpus prepend not appearing
+
+**Symptoms:** Researcher's prompt does not include a
+"## Suggested patterns from corpus" block; the R-Inject trace file is
+missing or empty.
+
+**Check:**
+
+1. Is `:auto-classify? true` set on the `:repl-researcher`'s `:rlm` config?
+2. Has `seed-baseline-corpus!` been called? Without seeds, the classifier
+   has nothing to retrieve against.
+3. Has the ColBERT index been built? Call `bootstrap-reindex!` after
+   seeding. Without a built index, `search-descriptions` returns `[]` and
+   the prepend is silently skipped — the researcher still runs, just
+   without a corpus prepend.
+4. Check the R-Inject trace file at
+   `/tmp/r-inject-trace-<sheet-id>.edn`. It records which pattern was
+   matched, the reranker's reasoning verbatim, and the full prepend block
+   actually sent to the model.
+
+```clojure
+(require '[ai.obney.orc.ontology.interface :as ontology])
+
+;; Verify the corpus has been seeded and a known pattern is readable
+(ontology/get-description ctx :tree-class some-known-pattern-id)
+;; Should return a non-nil body; nil means corpus is empty or unseeded.
+
+;; Trigger index rebuild if the index is stale or missing
+(ontology/bootstrap-reindex! ctx)
+```
+
+#### Pattern body not evolving after runs
+
+**Symptoms:** `ontology/get-description` returns the same `:version`
+after multiple runs of the workflow; the body does not update with new
+strengths or weaknesses.
+
+**Check:**
+
+1. Are judges firing? Check the event store for `:judge/score-emitted`
+   events tagged with the sheet's tick. If no judge events exist,
+   the Living Description opt-in may not be on, or the judges may not
+   be auto-attached.
+2. Has the consolidation threshold been hit? The default is ~10 events
+   accumulated per pattern target before a consolidation cycle fires.
+   Early runs may not trigger a cycle — check the event count.
+3. Read the description history to see the last consolidation timestamp.
+
+```clojure
+;; Check version and history
+(ontology/get-description-history ctx :tree-class pattern-target-id)
+;; If history shows only 1 entry, consolidation hasn't fired yet.
+;; The system needs ~10 relevant events before a cycle triggers.
+
+;; Check judge events for a specific tick
+(es/read event-store {:tags #{[:tick tick-id]}
+                      :event-types #{:judge/score-emitted}})
+;; Should show score-emitted events if judges are wired correctly.
+```
+
+#### Event store empty after commands
+
+**Symptoms:** Commands return success but read models show no data.
+
+**Check:**
+
+1. Are events being appended? Check event store state.
+2. Is the event type registered in schemas?
+3. Are tags using UUIDs only (not strings)?
+
+```clojure
+;; Check total event count in the store
+(count (:events @(:state event-store)))
+```
 
 ---
 
@@ -543,10 +953,18 @@ shapes side-by-side in the same codebase.
 - [`RLM-GUIDE.md`](RLM-GUIDE.md) — recursive RLM mode in depth: tree DSL,
   sandbox primitives, drill-down, sub-LLM cost control, vision inputs,
   output schemas
-- [`LIVING-DESCRIPTIONS.md`](LIVING-DESCRIPTIONS.md) — how the corpus
-  builds and protects itself; safeguards against over-reacting to recent
-  runs; description granularities (tree-class, node-instance, node-type)
-- [`FEEDBACK-LOOP.md`](FEEDBACK-LOOP.md) — the larger continuous-
-  improvement cycle ORC fits into
+- [`LIVING-DESCRIPTIONS.md`](LIVING-DESCRIPTIONS.md) — consolidation
+  architecture, description granularities (tree-class, node-instance,
+  node-type), the four anti-recency safeguards, and the judge integration
+  that feeds the consolidator
+- [`GETTING-STARTED.md`](GETTING-STARTED.md) — Phase 4 (GEPA prompt
+  optimization) and Phase 6 (self-improving loop setup with seed corpus
+  and ColBERT index bootstrapping)
+- [`GEPA-GUIDE.md`](GEPA-GUIDE.md) — the *other* improvement actuator:
+  optimizing static `:llm` instruction strings via Pareto selection and
+  reflective mutation (orthogonal to `:auto-classify?`; see
+  [Two orthogonal improvement actuators](#two-orthogonal-improvement-actuators))
+- [`archived/FEEDBACK-LOOP.md`](archived/FEEDBACK-LOOP.md) — the pre-RLM
+  continuous-improvement framing; archived as of DOC-18 (content migrated here)
 - [`ORC-SERVICE-GUIDE.md`](ORC-SERVICE-GUIDE.md) — the foundation:
   building behavior trees, blackboard schemas, node types

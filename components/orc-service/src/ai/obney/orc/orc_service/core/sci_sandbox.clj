@@ -89,14 +89,17 @@
      (symbol (subs tool-name (inc idx)))]
     [nil (symbol tool-name)]))
 
-(defn- build-tool-bindings
+(defn build-tool-bindings
   "Build SCI bindings for MCP tools.
 
    Flat names ('lookup') are bound in the user namespace (backward compat).
    Namespaced names ('linear/list_issues') are bound in per-server SCI namespaces,
    enabling namespace-qualified calls like (linear/list_issues {:project \"abc\"}).
 
-   Returns {:flat {sym fn} :namespaces {ns-sym {fn-sym fn}}}"
+   Returns {:flat {sym fn} :namespaces {ns-sym {fn-sym fn}}}
+
+   Public so the recursive RLM sandbox (rlm_sandbox.clj) can wire the SAME MCP
+   tool bindings the plain researcher gets — see build-rlm-context."
   [call-tool-fn mcp-tools]
   (if (nil? call-tool-fn)
     {:flat {} :namespaces {}}

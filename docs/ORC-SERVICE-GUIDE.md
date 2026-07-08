@@ -2,6 +2,27 @@
 
 A comprehensive guide to the orc-service component, which provides the ORC (Orchestration Runtime for Clojure) behavior tree engine for building and executing AI workflows.
 
+> For a progressive introduction see [GETTING-STARTED.md](GETTING-STARTED.md). This doc is the complete DSL and execution reference.
+
+## You build a workflow by composing nodes into a tree
+
+Everything in ORC starts from one idea: **you build a workflow by composing nodes into a tree.** There is no special "workflow object" to learn — there is a small palette of nodes, and you nest them.
+
+- **Start with a `:sequence` of `:llm` and `:code` nodes.** A sequence runs its children in order; an `:llm` node calls a model; a `:code` node runs a Clojure function. That's a complete, runnable workflow. Most workflows begin exactly here.
+- **As your methodology grows, factor reusable pieces into their own sheets and `:delegate` to them.** A step that has become its own little methodology — "summarize a document", "score a candidate", "extract entities" — graduates into its own sheet. Your central tree then `:delegate`s to it. Your primary tree becomes a *composition of subbehaviors* rather than one giant flat list of leaves. This is the same move you make when you extract a function out of a long block of code.
+- **When one step is genuinely open-ended, reach for `:repl-researcher`.** Some work can't be laid out as a fixed tree ahead of time — the right shape depends on what the data turns out to be. That's where the exploratory `:repl-researcher` node earns its weight: the model designs (and re-designs) a tree at runtime.
+
+Read the rest of the guide in that order — it goes from simple, to composed, to exploratory, then to the cross-cutting concerns you add on top.
+
+### How to read this guide
+
+1. **Simple trees first.** [Control Nodes](#control-nodes) (`sequence`, `parallel`, `fallback`, `map-each`) and [Leaf Nodes](#leaf-nodes) (`llm`, `code`, `condition`, `llm-condition`). Compose these and you can already build real workflows.
+2. **Composition next.** [`delegate`](#delegate) is how you compose reusable subbehaviors into a primary tree — the heart of how ORC workflows grow. See ORC-PRINCIPLES Principles 2–3.
+3. **The heavy exploratory node.** [`repl-researcher`](#repl-researcher) for genuinely open-ended steps. Powerful, but reach for it only when a fixed tree truly can't express the work.
+4. **Cross-cutting concerns, each gated by an opt-in layer.** [Judges](#attaching-judges-to-nodes) (Layer 1 — needs `evaluation`), [GEPA optimization](#gepa-integration) (Layer 3 — needs `gepa` + `evaluation`), and [live streaming](STREAMING.md). These layer *on top of* a working tree; you add them when you need them, never to get started.
+
+> **New here?** Walk [GETTING-STARTED.md](GETTING-STARTED.md) first — it's the gentle, hand-held on-ramp that builds your first tree step by step. Come back here for the full node palette. For the exhaustive, every-option-listed node reference, see [DSL-REFERENCE.md](DSL-REFERENCE.md).
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -19,12 +40,14 @@ A comprehensive guide to the orc-service component, which provides the ORC (Orch
 
 ## Overview
 
+> **Layer 0** — `orc-service` only, no Python. See [COMPONENT-MAP.md](COMPONENT-MAP.md).
+
 The orc-service component is the core of ORC's behavior tree execution engine. It provides:
 
 - **Declarative Workflow DSL** - Define AI workflows as composable data structures
 - **Event-Sourced Persistence** - All workflow definitions and executions are stored as events
 - **Behavior Tree Semantics** - Industry-standard control flow (sequence, parallel, fallback)
-- **Integrated LLM Execution** - First-class support for LLM nodes via DSCloj
+- **Integrated LLM Execution** - First-class support for LLM nodes
 - **Comprehensive Tracing** - Full observability of every execution
 
 ### Architecture
@@ -96,6 +119,8 @@ The orc-service component is the core of ORC's behavior tree execution engine. I
 ---
 
 ## Workflow DSL Reference
+
+> **Layer 0** — `orc-service` only, no Python. See [COMPONENT-MAP.md](COMPONENT-MAP.md).
 
 ### `workflow`
 
@@ -174,6 +199,18 @@ Iterate over a collection.
   (sheet/llm "process" ...))
 ```
 
+> **Parallel-safety — the leaf must be a primitive.** `map-each` collects each iteration from the
+> leaf's **explicit `:writes`, isolated per iteration** — that's what makes `:parallel` safe. A
+> **composite** leaf (`fallback`/`sequence`) completes with *empty* parent writes, so the engine
+> instead reads **all non-special keys off the per-iteration blackboard**; under `:parallel` that
+> **scrambles results across items**, and even sequentially a key written by only one branch
+> **bleeds** to later items. Keep a parallel `map-each` leaf a **primitive** (`llm`/`code`) with
+> explicit `:writes`; do **not** wrap it in a `fallback` whose writes you depend on. On a leaf
+> failure the engine isolates it — status `:partial`, the failed item **dropped and the result
+> vector compacted** (no index gap), and top-level `:failure-indices` is nil — so recover *which*
+> item failed from the event/trace channel and re-run/surface it at the parent (never ship a
+> compacted partial as complete). See ORC-PRINCIPLES Principle 14.
+
 ### Leaf Nodes
 
 #### `llm`
@@ -215,8 +252,7 @@ Check a boolean expression on the blackboard.
 
 ```clojure
 (sheet/condition "check-valid"
-  :expression :valid?    ;; Blackboard key that holds boolean
-  :reads [:valid?])
+  :check {:key :valid? :op :equals :value true})  ;; True when :valid? blackboard key is true
 ```
 
 #### `llm-condition`
@@ -232,6 +268,56 @@ Use an LLM for yes/no decisions.
 
 #### `delegate`
 
+**This is how you compose subbehaviors into a primary tree.** `:delegate` executes another workflow (a separate sheet, with its own isolated blackboard) as a node inside the current tree. When a step in your workflow has grown into its own little methodology, you factor it into its own sheet and `:delegate` to it — and your central tree becomes a *composition of subbehaviors* rather than one flat list of leaves. This is the same instinct as extracting a function: the subbehavior is durable, independently testable, independently optimizable, and reusable across many parent trees. See ORC-PRINCIPLES [Principle 2 — *Compose complex behavior as durable, delegatable subtrees*](ORC-PRINCIPLES.md#2-compose-complex-behavior-as-durable-delegatable-subtrees) and [Principle 3 — *`:delegate` is the composition mechanism*](ORC-PRINCIPLES.md#3-delegate-is-the-composition-mechanism).
+
+A primary tree composing two reusable subbehaviors via `:delegate`:
+
+```mermaid
+flowchart TB
+  root["<b>primary</b><br/>SEQUENCE"]:::seq
+  root --> a["<b>prepare</b><br/>LLM · leaf"]:::llm
+  root --> subA[["<b>delegate → enrich</b><br/>subbehavior sheet"]]:::sub
+  root --> subB[["<b>delegate → score</b><br/>subbehavior sheet"]]:::sub
+  root --> fin["<b>finalize</b><br/>CODE · leaf"]:::code
+  subA -. reusable .-> EA
+  subB -. reusable .-> EB
+  subgraph EA["enrich · own sheet + blackboard"]
+    direction TB
+    ea["<b>enrich</b><br/>SEQUENCE"]:::seq
+    ea --> ea1["<b>lookup</b><br/>LLM · leaf"]:::llm
+    ea --> ea2["<b>classify</b><br/>LLM · leaf"]:::llm
+  end
+  subgraph EB["score · own sheet + blackboard"]
+    direction TB
+    eb["<b>score</b><br/>SEQUENCE"]:::seq
+    eb --> eb1["<b>compute grade</b><br/>CODE · leaf"]:::code
+  end
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+  classDef code fill:#0f766e,stroke:#5eead4,color:#fff;
+  classDef sub fill:#1f2937,stroke:#94a3b8,color:#e5e7eb,stroke-dasharray:4 3;
+```
+
+Each `:delegate` is a clean seam — the child runs against its own isolated blackboard, and only the declared `:reads`/`:writes` cross the boundary:
+
+```mermaid
+flowchart TB
+  parent["<b>parent tree</b><br/>blackboard · { order, … , result }"]:::seq
+  parent --> del[["<b>delegate → fulfil-order</b><br/>only reads/writes cross the seam"]]:::sub
+  del -->|"reads: order ▸ copied IN"| child
+  child -->|"writes: result ◂ copied OUT"| del
+  subgraph CHILD["fulfil-order · ISOLATED blackboard { order, picked, packed, result }"]
+    direction TB
+    child["<b>fulfil-order</b><br/>SEQUENCE"]:::seq
+    child --> c1["<b>pick items</b><br/>LLM · leaf"]:::llm
+    child --> c2["<b>pack & label</b><br/>CODE · leaf"]:::code
+  end
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+  classDef code fill:#0f766e,stroke:#5eead4,color:#fff;
+  classDef sub fill:#1f2937,stroke:#94a3b8,color:#e5e7eb,stroke-dasharray:4 3;
+```
+
 Execute another workflow with isolated blackboard.
 
 ```clojure
@@ -240,6 +326,18 @@ Execute another workflow with isolated blackboard.
   :reads [:input-data]           ;; Pass to child
   :writes [:result]              ;; Receive from child
   :timeout-ms 60000)             ;; Optional timeout
+```
+
+```mermaid
+flowchart TB
+  seq["<b>parent</b><br/>SEQUENCE"]:::seq
+  seq --> a["<b>load</b><br/>CODE · leaf<hr/>◂ writes&nbsp;&nbsp;input-data"]:::code
+  seq --> del[["<b>run-subworkflow</b><br/>DELEGATE → child sheet<hr/>▸ reads&nbsp;&nbsp;input-data<br/>◂ writes&nbsp;&nbsp;result<br/>⏱ timeout 60s"]]:::sub
+  seq --> b["<b>use result</b><br/>LLM · leaf<hr/>▸ reads&nbsp;&nbsp;result"]:::llm
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+  classDef code fill:#0f766e,stroke:#5eead4,color:#fff;
+  classDef sub fill:#1f2937,stroke:#94a3b8,color:#e5e7eb,stroke-dasharray:4 3;
 ```
 
 **Options:**
@@ -251,6 +349,35 @@ Execute another workflow with isolated blackboard.
 | `:writes` | Blackboard keys to receive as outputs |
 | `:timeout-ms` | Execution timeout (default: 300000ms) |
 | `:inherit-ontology?` | Share ontology context (default: true) |
+
+> **Map-parsing across the seam (Principle 10).** `:delegate` passes values **verbatim** — values are not type-coerced. Whether a map contract arrives parsed (vs. as a JSON string) depends on the **producing node type**: an `:llm` node produces a JSON string unless you declare a structured `[:map …]` Malli schema on the blackboard key; a `:code` node returns native Clojure, so maps arrive parsed naturally; a `:repl-researcher` node finalizes with real EDN (parsed) when prompted to emit a Clojure map. Declare structural Malli schemas on keys that cross the seam. See [ORC-PRINCIPLES.md § Principle 10](ORC-PRINCIPLES.md).
+
+#### `repl-researcher`
+
+Execute a two-phase recursive research loop. In Phase 1 the model inspects the task context and emits a behavior tree DSL. In Phase 2 that tree runs against the sandbox. In recursive mode (the default) Phase 2 outputs are merged back into the sandbox and control returns to Phase 1 — the model can iterate, drill down, emit follow-up trees, and call `(final! ...)` to terminate.
+
+```clojure
+(sheet/repl-researcher "researcher"
+  :model "google/gemini-2.5-flash"
+  :instruction "Research the topic and produce a structured analysis."
+  :reads  [:input-data]
+  :writes [:research-result]
+  :rlm    {:recursive? true})   ;; recursive is the default; omit for same effect
+```
+
+> **Recursive is the default.** `:rlm true`, `:rlm {}`, and `:rlm {:debug? true}` all default to recursive mode (`:rlm {:recursive? true}`). Terminal mode (`:rlm {:recursive? false}`) is **deprecated** — preserved for backward compatibility; migrate by dropping the `:recursive? false` key. Source: `executor.clj:2172-2176`.
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `:model` | LLM model identifier (OpenRouter format) |
+| `:instruction` | Task instruction for the researcher's Phase 1 |
+| `:reads` | Blackboard keys passed to the Phase 1 context |
+| `:writes` | Blackboard keys to receive from `(final! ...)` |
+| `:rlm` | RLM config map, or `true` for defaults (recursive mode) |
+
+See [RLM-GUIDE.md](RLM-GUIDE.md) for the complete recursive-mode reference, drill-down primitives (`tree-detail`, `tree-failures`, `node-output`), budget controls, and how to compose `:repl-researcher` inside a larger tree.
 
 ---
 
@@ -270,16 +397,24 @@ LLMs need explicit field structure to generate reliable outputs.
   {:analysis [:map-of :keyword :any]})
 ```
 
-#### Good Pattern (explicit fields)
+#### Good Pattern (explicit fields + descriptions)
 
 ```clojure
-;; DO THIS - Each field becomes a separate LLM output marker
+;; DO THIS — each field is explicit AND carries a :description.
+;; The explicit structure gives the LLM a reliable output shape;
+;; the descriptions tell it what each field means. Both matter:
+;; structure prevents nulls, descriptions improve field quality.
 (sheet/blackboard
   {:analysis [:map
-              [:score :double]
-              [:reasoning :string]
-              [:keyFactors [:vector :string]]]})
+              [:score      [:double {:description "Overall fit score from 0.0 (poor) to 1.0 (excellent)"}]]
+              [:reasoning  [:string {:description "Step-by-step justification for the score, written before the score is decided"}]]
+              [:keyFactors [:vector {:description "The 3-5 factors that most influenced the score"} :string]]]})
 ```
+
+Describe **every** key you care about — top-level keys and nested fields alike.
+A field with a description consistently produces better output than the same field
+without one, because the description is injected into the LLM's output signature
+(see [Field Descriptions](#field-descriptions) below).
 
 ### Field Descriptions
 
@@ -300,20 +435,24 @@ Your output fields are:
 
 ### Nested Map Schemas
 
+Descriptions work at every level of nesting — describe the nested fields too:
+
 ```clojure
 (sheet/blackboard
   {:student-analysis
    [:map
-    [:academicStrengths [:vector :string]]
-    [:careerInterests [:vector :string]]
+    [:academicStrengths [:vector {:description "Subjects/skills the student excels at"} :string]]
+    [:careerInterests   [:vector {:description "Career fields the student has expressed interest in"} :string]]
     [:preferenceWeights [:map
-                         [:costSensitivity :double]
-                         [:locationPreference :double]]]]})
+                         [:costSensitivity   [:double {:description "How much cost matters, 0.0-1.0"}]]
+                         [:locationPreference [:double {:description "How much location matters, 0.0-1.0"}]]]]]})
 ```
 
 ---
 
 ## Execution Model
+
+> **Layer 0** — `orc-service` only, no Python. See [COMPONENT-MAP.md](COMPONENT-MAP.md).
 
 ### Execution Flow
 
@@ -405,6 +544,8 @@ Prevent runaway workflows in nested iteration scenarios by setting an LLM call l
 
 ## Event Store Integration
 
+> **Layer 0** — `orc-service` only, no Python. See [COMPONENT-MAP.md](COMPONENT-MAP.md).
+
 The orc-service uses Grain's event store for persistence and observability.
 
 ### Events Emitted
@@ -483,6 +624,8 @@ See [EVENT-STORE-PATTERNS.md](./EVENT-STORE-PATTERNS.md) for detailed query patt
 
 ## Code Executors
 
+> **Layer 0** — `orc-service` only, no Python. See [COMPONENT-MAP.md](COMPONENT-MAP.md).
+
 Code nodes execute Clojure functions. The function receives an inputs map and returns an outputs map.
 
 ### Basic Executor
@@ -522,6 +665,8 @@ Reference executors by fully-qualified function name:
 ---
 
 ## Testing Workflows
+
+> **Layer 0** — `orc-service` only, no Python. See [COMPONENT-MAP.md](COMPONENT-MAP.md).
 
 ### Test Context Setup
 
@@ -590,7 +735,9 @@ Create deterministic executors for testing:
 
 ## Attaching Judges to Nodes
 
-Judges are evaluators that grade a node's outputs after execution and emit `:judge/score-emitted` events. The judge system is **general** — any `:leaf` or `:repl-researcher` node can have judges attached. RLM-specific defaults (the 5 default judges auto-attached to `:repl-researcher` when the Living Description opt-in flag is on) are covered separately in [`RLM-GUIDE.md`](RLM-GUIDE.md#attaching-judges-to-your-behavior-trees); this section is the general attachment surface.
+> **Layer 1** — requires `evaluation` component. See [COMPONENT-MAP.md](COMPONENT-MAP.md) and [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md).
+
+Judges are evaluators that grade a node's outputs after execution and emit `:judge/score-emitted` events. The judge system is **general** — any `:leaf` or `:repl-researcher` node can have judges attached. RLM-specific defaults (the 5 default judges auto-attached to `:repl-researcher` when the Living Description opt-in flag is on) are covered separately in [`RLM-GUIDE.md`](RLM-GUIDE.md#judges-on-repl-researcher-nodes-rlm-specific-defaults--living-description-loop); this section is the general attachment surface.
 
 ### Two-step attachment
 
@@ -632,6 +779,8 @@ Judges attach in two steps via existing commands (no DSL change needed):
 | `:completeness` | LLM judge — does the output cover all required aspects? | `judges/completeness-judge` |
 | `:heuristic-structural` | Deterministic — grades shape of `:writes :generated-tree-raw` if present | `heuristic-structural/evaluate-tree-structure` |
 | `:custom` | Consumer-defined ORC workflow as judge — see below | `invoke-custom-judge` |
+
+> The four built-in LLM judges (`:grounding`, `:instruction-following`, `:reasoning`, `:completeness`) run the **tier-1 shape** (ADR 0011): a decoupled discrete **1–5 `Scale`**, an adversarial reviewer stance, **reason-before-score**, typed-blackboard output (no `:output-schemas`, no JSON-in-prompt), and a no-run-through gate. The emitted `:score` is `[0,1]` derived deterministically from the band. See [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#tier-1-judge-model-2026-06-decoupled-discrete-scale--reason-before-score--all-four-llm-judges).
 
 ### When judges fire
 
@@ -751,6 +900,8 @@ When the host node's `:sheet/node-execution-completed` event fires, the runtime 
 
 ## GEPA Integration
 
+> **Layer 3** — requires `gepa` + `evaluation`. See [COMPONENT-MAP.md](COMPONENT-MAP.md).
+
 Make workflows optimizable by GEPA (Genetic-Pareto Prompt Optimizer).
 
 ### GEPA-Compatible Pattern
@@ -841,7 +992,7 @@ See [GEPA-GUIDE.md](./GEPA-GUIDE.md) for comprehensive GEPA documentation.
 
 ## Related Documentation
 
-- [dsl-tutorial.md](./dsl-tutorial.md) - Complete DSL tutorial with examples
+- [DSL-REFERENCE.md](./DSL-REFERENCE.md) - Complete DSL reference with examples
 - [ARCHITECTURE.md](./ARCHITECTURE.md) - System architecture overview
 - [GEPA-GUIDE.md](./GEPA-GUIDE.md) - GEPA prompt optimization
 - [EVENT-STORE-PATTERNS.md](./EVENT-STORE-PATTERNS.md) - Event store query patterns
