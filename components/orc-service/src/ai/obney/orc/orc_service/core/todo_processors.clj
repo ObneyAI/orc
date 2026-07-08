@@ -1271,7 +1271,18 @@
                                       ;; per iteration. Surfaced so bench reports can show the model's
                                       ;; full Phase 1 work (including syntax-error retries) alongside
                                       ;; its reasoning + the final tree.
-                                      (seq iterations) (assoc :iterations (vec iterations)))]
+                                      (seq iterations) (assoc :iterations (vec iterations))
+                                      ;; CJ-5b: carry the OPAQUE :tool-context onto the terminal
+                                      ;; completion's :writes so a downstream per-event judge (e.g.
+                                      ;; the coding-outcome judge) recovers the turn-id via
+                                      ;; build-trace-data and grounds on the turn's captured effect.
+                                      ;; On a :success terminal the completion otherwise carried only
+                                      ;; the declared writes (+ RLM internals) — never the reads — so
+                                      ;; the turn-id was unreachable and the judge grounded empty. The
+                                      ;; :tool-context is the SAME one FIX B (above) reads from this
+                                      ;; tick's execution-context read model; orc does not interpret
+                                      ;; it. Absent -> not carried (backward-compatible).
+                                      tool-context (assoc :tool-context tool-context))]
               ;; Emit :rlm/tree-generated event when tree is generated
               ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
               (when (some? generated-tree-raw)

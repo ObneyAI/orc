@@ -536,14 +536,30 @@
 
 (defn- applies-to?
   "Predicate: does this judge config apply to the given completion-kind?
-   When the judge has no :applies-to-completion-kinds set OR when the
-   caller didn't supply a kind, the judge applies (backwards-compat
-   default). Otherwise the kind must be present in the set."
+
+   A judge with NO :applies-to-completion-kinds set applies to EVERY
+   completion (backwards-compat — the default 5 judges are unfiltered and
+   must keep firing on all completions, including nil-kind events).
+
+   A judge that DOES specify :applies-to-completion-kinds is opting into
+   kind-scoping: it applies ONLY when the event carries a matching kind. A
+   nil-completion-kind event does NOT match — the judge asked for a
+   specific kind and the event doesn't declare one.
+
+   CJ-5b (live root cause): the coding-outcome judge is declared
+   :applies-to-completion-kinds #{:terminal} so it fires EXACTLY ONCE, on
+   the repl-researcher's terminal completion. A :blocked completion (a
+   tool-permission pause, BEFORE any edit) carries :completion-kind nil —
+   orc derives :terminal only for #{:success :failure :timeout}, not
+   :blocked. The previous `(nil? completion-kind) true` branch let the
+   kind-filtered judge fire on that premature :blocked completion and score
+   a false band-1 'no file changes'. Checking the judge's filter FIRST
+   fixes this without changing the unfiltered-judge default."
   [judge-config completion-kind]
   (let [applies (:applies-to-completion-kinds judge-config)]
     (cond
-      (nil? completion-kind) true
       (nil? applies) true
+      (nil? completion-kind) false
       :else (contains? applies completion-kind))))
 
 (defn get-effective-judges-for-node
@@ -560,12 +576,22 @@
    The 4-arg arity filters by Gap-7's :applies-to-completion-kinds. A
    judge config carrying e.g. `:applies-to-completion-kinds #{:terminal}`
    is excluded from the effective list when the resolver is called
-   with completion-kind `:tree-iteration`. Backwards-compat: 3-arg arity
-   and judges without :applies-to-completion-kinds always apply.
+   with completion-kind `:tree-iteration` — or, per CJ-5b, with a nil
+   completion-kind (a :blocked completion carries no kind). Backwards-compat:
+   the 3-arg arity is UNFILTERED (returns every effective judge regardless
+   of kind — the 'what judges are attached' query), and judges WITHOUT
+   :applies-to-completion-kinds always apply.
+
+   CJ-5b: the 3-arg 'unfiltered' intent and a real event's nil kind used to
+   collapse to the same `nil` argument, so making applies-to? exclude nil
+   would have broken the 3-arg query. We disambiguate with an explicit
+   ::all-kinds sentinel: the 3-arg arity passes it (skip filtering), while
+   the 4-arg arity from `on-node-execution-completed` passes the event's
+   real (possibly nil) kind (filter — nil excludes kind-scoped judges).
 
    Public — callers can query 'what judges WILL run for this node'."
   ([ctx sheet-id node-id]
-   (get-effective-judges-for-node ctx sheet-id node-id nil))
+   (get-effective-judges-for-node ctx sheet-id node-id ::all-kinds))
   ([ctx sheet-id node-id completion-kind]
    (let [node (when (and sheet-id node-id) (orc/get-node ctx sheet-id node-id))
          all-effective
@@ -587,8 +613,10 @@
            default-judges
 
            :else [])]
-     (filterv #(applies-to? (:judge-config %) completion-kind)
-              all-effective))))
+     (if (= ::all-kinds completion-kind)
+       all-effective
+       (filterv #(applies-to? (:judge-config %) completion-kind)
+                all-effective)))))
 
 ;; =============================================================================
 ;; Processor — async judge execution + command-only emission

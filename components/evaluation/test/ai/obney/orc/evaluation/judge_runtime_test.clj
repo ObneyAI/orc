@@ -1015,6 +1015,56 @@
               "Retained judge's name preserved"))))))
 
 ;; =============================================================================
+;; CJ-5b — a kind-filtered judge must EXCLUDE a nil-completion-kind event
+;; =============================================================================
+;;
+;; Live root cause (orc-sessions coding-outcome judge): the judge is
+;; declared :applies-to-completion-kinds #{:terminal} so it fires EXACTLY
+;; ONCE, on the repl-researcher's terminal completion. But a :blocked
+;; completion (a tool-permission pause) carries :completion-kind nil —
+;; orc derives :terminal only for #{:success :failure :timeout}, not
+;; :blocked. The old applies-to? treated a nil-kind event as "applies to
+;; everything", so the kind-filtered judge FIRED on the premature :blocked
+;; completion (before any edit existed) and scored a false band-1
+;; "no file changes". The fix: when a judge SPECIFIES kinds, a nil-kind
+;; event does NOT match. Judges with NO filter still apply to everything.
+
+(deftest cj5b-kind-filtered-judge-excludes-nil-completion-kind
+  (testing "a judge with :applies-to-completion-kinds is excluded when the event's completion-kind is nil (the :blocked completion), but a no-filter judge still applies"
+    (with-test-ctx [ctx]
+      (set-living-description-enabled! ctx true)
+      (let [{:keys [sheet-id node-id]}
+            (setup-sheet-with-judges! ctx "coding-outcome"
+                                       {:type :custom
+                                        :sheet-id (random-uuid)
+                                        :applies-to-completion-kinds #{:terminal}})
+            resolver @#'ai.obney.orc.evaluation.core.judge-runtime/get-effective-judges-for-node]
+        ;; nil completion-kind (a :blocked completion) — the kind-filtered
+        ;; judge is EXCLUDED (was the bug: it fired).
+        (is (= 0 (count (resolver ctx sheet-id node-id nil)))
+            "kind-filtered judge is excluded when the event carries no completion-kind")
+        ;; :terminal completion — the judge fires (its declared kind).
+        (is (= 1 (count (resolver ctx sheet-id node-id :terminal)))
+            "kind-filtered judge fires on its declared :terminal kind")
+        ;; :tree-iteration — excluded (not its kind).
+        (is (= 0 (count (resolver ctx sheet-id node-id :tree-iteration)))
+            "kind-filtered judge is excluded on a non-matching kind")))))
+
+(deftest cj5b-no-filter-judge-still-applies-to-nil-completion-kind
+  (testing "backward-compat: a judge WITHOUT :applies-to-completion-kinds still applies to a nil-completion-kind event"
+    (let [applies-to? @#'ai.obney.orc.evaluation.core.judge-runtime/applies-to?]
+      (is (true? (applies-to? {:type :grounding} nil))
+          "no-filter judge applies to nil-kind (default judges unaffected)")
+      (is (true? (applies-to? {:type :grounding} :terminal))
+          "no-filter judge applies to any kind")
+      (is (false? (applies-to? {:type :custom :applies-to-completion-kinds #{:terminal}} nil))
+          "kind-filtered judge excluded on nil-kind (the fix)")
+      (is (true? (applies-to? {:type :custom :applies-to-completion-kinds #{:terminal}} :terminal))
+          "kind-filtered judge applies on matching kind")
+      (is (false? (applies-to? {:type :custom :applies-to-completion-kinds #{:terminal}} :tree-iteration))
+          "kind-filtered judge excluded on non-matching kind"))))
+
+;; =============================================================================
 ;; Gap-7 RED#3 — :sheet/node-execution-completed event schema accepts :completion-kind
 ;; =============================================================================
 
