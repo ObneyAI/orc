@@ -511,27 +511,47 @@
 
    Args:
    - uri: The concept URI to embed
-   - fields: Optional set of fields to include (:label :description :indicators :triggers)"
-  [{{:keys [uri fields]} :command
+   - fields: Optional set of fields to include (:label :description :indicators :triggers)
+   - embedding: OPTIONAL precomputed embedding vector — when supplied, the command
+     LANDS it verbatim and SKIPS the DJL embed-text recompute (the caller already
+     computed it, e.g. via a single batched pass). Kills the double-embed (2× DJL).
+   - text-embedded: OPTIONAL text that produced the precomputed embedding (recorded
+     verbatim on the event); defaults to the fields text when absent.
+   - concept-id / ontology-id / scope: OPTIONAL concept metadata. When BOTH a
+     precomputed :embedding AND :concept-id + :ontology-id are supplied, the command
+     SKIPS the `get-concept-by-uri` projection entirely — the caller (which already
+     holds the concept) provides identity, so landing is O(1) per concept instead of
+     projecting the whole concepts read-model each call (the O(n²) embed-landing the
+     inspect pass surfaced). Absent → today's lookup path (back-compat)."
+  [{{:keys [uri fields embedding text-embedded concept-id ontology-id scope]} :command
     :keys [event-store] :as ctx}]
-  (let [;; Get the concept from static ontology or event store
-        concept (or (static/get-concept-by-uri uri)
-                    (rm/get-concept-by-uri ctx uri))
-        _ (when-not concept
+  (let [;; PERF: skip the per-concept full-projection lookup when the caller supplied
+        ;; the identity metadata alongside a precomputed embedding (the single-pass
+        ;; landing path). Otherwise fall back to the projection lookup (back-compat).
+        have-meta? (and (seq embedding) concept-id ontology-id)
+        concept (when-not have-meta?
+                  (or (static/get-concept-by-uri uri)
+                      (rm/get-concept-by-uri ctx uri)))
+        _ (when (and (not have-meta?) (not concept))
             (throw (ex-info "Concept not found" {:uri uri
                                                  ::anom/category ::anom/not-found})))
 
-        ;; Prepare text for embedding
+        ;; Prepare text for embedding — the precomputed text when supplied.
         fields-set (or (when fields (set fields)) #{:label :description})
-        text (embedding/concept->embedding-text concept fields-set)
+        text (or text-embedded
+                 (when concept (embedding/concept->embedding-text concept fields-set)))
 
-        ;; Generate embedding
-        embedding-vec (embedding/embed-text text)
-        _ (when-not embedding-vec
+        ;; Generate embedding — REUSE a precomputed vector when the caller supplied
+        ;; one (the single-pass path, no double-embed); else compute via DJL.
+        embedding-vec (or embedding (embedding/embed-text text))
+        _ (when-not (seq embedding-vec)
             (throw (ex-info "Failed to generate embedding" {:uri uri
                                                             ::anom/category ::anom/fault})))
 
-        concept-id (or (:id concept) (generate-uuid))
+        ;; identity from the supplied metadata (O(1) path) or the looked-up concept.
+        concept-id (or concept-id (:id concept) (generate-uuid))
+        final-ontology-id (or ontology-id (:ontology-id concept))
+        final-scope (or scope (:scope concept))
         now (now-str)]
     {:command-result/data {:uri uri
                             :dimensions (count embedding-vec)
@@ -542,8 +562,8 @@
         :tags #{[:concept concept-id]}  ;; Only UUID-based tags allowed
         :body {:concept-id concept-id
                :uri uri
-               :ontology-id (:ontology-id concept)
-               :scope (:scope concept)
+               :ontology-id final-ontology-id
+               :scope final-scope
                :text-embedded text
                :field-source (name (first fields-set))
                :embedding embedding-vec

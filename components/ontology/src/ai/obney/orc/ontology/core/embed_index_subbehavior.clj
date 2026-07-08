@@ -282,61 +282,80 @@
      :considered-count (count concepts)}))
 
 (defn- embed-concepts!
-  "Compute the batch embeddings (REUSE `embedding/embed-concepts-batch!`, NO
-   fork — note F1: this is the per-concept embed path; batching the EVENT is the
-   open scale follow-up) over the in-scope concepts on the resolved fields, then
-   LAND each `:ontology/concept-embedded` event via the public
-   `:ontology/embed-concept` command (NO bare event-store append — discipline 7).
+  "SINGLE-PASS embed. Compute the batch embeddings ONCE (REUSE
+   `embedding/embed-concepts-batch!`) over the in-scope concepts on the resolved
+   fields, then LAND each `:ontology/concept-embedded` event via the public
+   `:ontology/embed-concept` command carrying the PRECOMPUTED vector (`:embedding`
+   + `:text-embedded`) — so the command does NOT re-embed. This kills the
+   DOUBLE-EMBED (measured 2× DJL waste: the batch used to be computed then thrown
+   away while the command re-embedded every concept).
 
-   HONEST EMPTY (#4): a concept whose resolved-field text is blank carries
-   nothing to embed; it is skipped deterministically (using the SAME text builder
-   the command uses) so no event is emitted — no fabricated vectors.
+   HONEST EMPTY (#4): a concept whose resolved-field text is blank carries nothing
+   to embed, so `embed-concepts-batch!` drops it from `:embeddings`; it is then
+   absent from the per-uri precompute map and skipped — no event, no fabricated
+   vector.
 
    GC-12 — INCREMENTAL: only concepts that do NOT already have an embedding (read
    from the projection) and are NOT structural spine code-nodes are embedded; the
    honest skip counts (`:skipped-already-count`, `:skipped-reference-count`) ride
    in the result. Behavior-preserving (#4): the final embedded set is identical —
-   every semantic concept ends up embedded exactly once.
+   every semantic concept ends up embedded exactly once (now with ONE compute).
+
+   `embed-batch-fn` is an INJECTED capability (default the production batch-embed)
+   so tests can drive the single-pass landing WITHOUT the DJL native engine.
 
    Returns `{:embedded-count int :batch-embedded-count int :concepts-considered
    int :skipped-already-count int :skipped-reference-count int}`. A genuine
-   command anomaly (model-load fault, concept vanished) is RAISED with the root
-   cause attached (#5 — no silent fallback)."
-  [ctx fields concepts already-embedded-uris]
-  (let [{:keys [to-embed skipped-already-count skipped-reference-count]}
-        (select-concepts-to-embed concepts already-embedded-uris)
-        ;; REUSE the production batch-embed to compute (F1: per-concept event is
-        ;; the known scale concern). We pass the resolved fields explicitly so the
-        ;; batch does NOT re-detect (EB3 already decided the fields). GC-12: only
-        ;; the NEW, non-spine concepts — never the whole accumulating graph.
-        batch (embedding/embed-concepts-batch!
-               to-embed {:embedding-fields fields :auto-detect? false :ctx ctx})
-        ;; HONEST EMPTY decided HERE with the command's own text builder.
-        embeddable (filterv #(seq (embedding/concept->embedding-text % fields))
-                            to-embed)
-        emitted
-        (reduce
-         (fn [n concept]
-           (let [result (cp/process-command
-                         (assoc ctx :command
-                                {:command/name :ontology/embed-concept
-                                 :command/id (random-uuid)
-                                 :command/timestamp (time/now)
-                                 :uri (:uri concept)
-                                 :fields fields}))]
-             (when (:cognitect.anomalies/category result)
-               (throw (ex-info "embed-concepts!: embed-concept command returned anomaly"
-                               {:anomaly result :uri (:uri concept)})))
-             (cond-> n
-               (pos? (or (get-in result [:command-result/data :dimensions]) 0))
-               inc)))
-         0
-         embeddable)]
-    {:embedded-count emitted
-     :batch-embedded-count (:embedded-count batch)
-     :concepts-considered (count concepts)
-     :skipped-already-count skipped-already-count
-     :skipped-reference-count skipped-reference-count}))
+   command anomaly (concept vanished) is RAISED with the root cause attached
+   (#5 — no silent fallback)."
+  ([ctx fields concepts already-embedded-uris]
+   (embed-concepts! ctx fields concepts already-embedded-uris
+                    embedding/embed-concepts-batch!))
+  ([ctx fields concepts already-embedded-uris embed-batch-fn]
+   (let [{:keys [to-embed skipped-already-count skipped-reference-count]}
+         (select-concepts-to-embed concepts already-embedded-uris)
+         ;; ONE compute pass over the NEW, non-spine concepts (GC-12). Pass the
+         ;; resolved fields explicitly so the batch does NOT re-detect (EB3 already
+         ;; decided them). Blank-text concepts are dropped from `:embeddings` here.
+         batch (embed-batch-fn
+                to-embed {:embedding-fields fields :auto-detect? false :ctx ctx})
+         ;; the precomputed vectors, keyed by uri — the ONLY embed pass.
+         precomputed (into {} (map (juxt :uri identity)) (:embeddings batch))
+         emitted
+         (reduce
+          (fn [n concept]
+            (if-let [pre (get precomputed (:uri concept))]
+              (let [result (cp/process-command
+                            (assoc ctx :command
+                                   {:command/name :ontology/embed-concept
+                                    :command/id (random-uuid)
+                                    :command/timestamp (time/now)
+                                    :uri (:uri concept)
+                                    :fields fields
+                                    ;; LAND the precomputed vector — no re-embed.
+                                    :embedding (:embedding pre)
+                                    :text-embedded (:text-embedded pre)
+                                    ;; PERF: supply identity so the command skips the
+                                    ;; per-concept get-concept-by-uri projection (the
+                                    ;; O(n²) embed-landing) — we already hold it.
+                                    :concept-id (:id concept)
+                                    :ontology-id (:ontology-id concept)
+                                    :scope (:scope concept)}))]
+                (when (:cognitect.anomalies/category result)
+                  (throw (ex-info "embed-concepts!: embed-concept command returned anomaly"
+                                  {:anomaly result :uri (:uri concept)})))
+                (cond-> n
+                  (pos? (or (get-in result [:command-result/data :dimensions]) 0))
+                  inc))
+              ;; blank-text / non-embeddable concept — honestly skipped (#4).
+              n))
+          0
+          to-embed)]
+     {:embedded-count emitted
+      :batch-embedded-count (:embedded-count batch)
+      :concepts-considered (count concepts)
+      :skipped-already-count skipped-already-count
+      :skipped-reference-count skipped-reference-count})))
 
 (defn- colbert-corpus-too-small?
   "True iff the throwable is ColBERT/FAISS's specific 'too few training points to

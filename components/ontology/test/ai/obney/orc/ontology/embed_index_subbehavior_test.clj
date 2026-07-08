@@ -523,3 +523,121 @@
         (is (= #{"entity:nurse" "entity:engineer" "entity:teacher"}
                (set (keys embs)))
             "every semantic concept embedded exactly once"))))))
+
+;; ---------------------------------------------------------------------------
+;; PERF — kill the DOUBLE-EMBED. Root cause (measured): embed-concepts! computes
+;; the batch vectors then the :ontology/embed-concept command RE-EMBEDS every
+;; concept a second time via embed-text (2× DJL). Fix: the command accepts a
+;; PRECOMPUTED :embedding (+ :text-embedded) and lands it verbatim, so the batch
+;; result can be landed WITHOUT a second embed pass. This test is DJL-FREE (the
+;; caller supplies the vector) so it runs on the FAST brick gate.
+;; ---------------------------------------------------------------------------
+
+(deftest embed-concept-command-uses-precomputed-embedding-test
+  (testing "PERF (no double-embed) — :ontology/embed-concept lands a PRECOMPUTED
+            :embedding VERBATIM without re-embedding via embed-text (DJL-free)"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            uri "entity:nurse"
+            sentinel (vec (repeatedly 384 #(double (rand))))]
+        (land! ctx oid [{:uri uri :label "Registered Nurse"
+                         :description "Provides direct patient care."}])
+        (let [r (cp/process-command
+                 (assoc ctx :command
+                        {:command/name :ontology/embed-concept
+                         :command/id (random-uuid)
+                         :command/timestamp (time/now)
+                         :uri uri
+                         :embedding sentinel
+                         :text-embedded "precomputed text"}))]
+          (is (not (:cognitect.anomalies/category r))
+              "the command lands with a precomputed embedding (no embed-text needed)")
+          (let [landed (get (rm/get-all-concept-embeddings ctx {:ontology-id oid}) uri)]
+            (is (= sentinel (:embedding landed))
+                "the LANDED vector is the caller's precomputed vector, NOT a recompute")
+            (is (= "precomputed text" (:text-embedded landed))
+                "the precomputed text rides too")
+            (is (= (count sentinel) (get-in r [:command-result/data :dimensions]))
+                "dimensions reported from the precomputed vector")))))))
+
+(deftest embed-concepts-single-pass-lands-batch-vectors-test
+  (testing "PERF single-pass — embed-concepts! computes vectors ONCE via the (injected)
+            batch capability and LANDS them through the precompute command; the landed
+            vectors ARE the batch's output (no second embed pass). DJL-free via the
+            injected batch-fn returning sentinels."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            _ (land! ctx oid embeddable-concepts)
+            sentinels (into {} (map (fn [c] [(:uri c) (vec (repeatedly 384 #(double (rand))))])
+                                    embeddable-concepts))
+            calls (atom 0)
+            ;; injected batch capability — the ONLY embed pass; returns a sentinel per
+            ;; concept in the embed-concepts-batch! shape {:embedded-count :embeddings}.
+            fake-batch (fn [to-embed _opts]
+                         (swap! calls inc)
+                         {:embedded-count (count to-embed)
+                          :embeddings (mapv (fn [c] {:uri (:uri c)
+                                                     :embedding (get sentinels (:uri c))
+                                                     :text-embedded (str "t:" (:uri c))})
+                                            to-embed)})
+            r (#'ei/embed-concepts! ctx #{:label :description} embeddable-concepts #{}
+                                    fake-batch)
+            embs (rm/get-all-concept-embeddings ctx {:ontology-id oid})]
+        (is (= 1 @calls)
+            "the batch embed ran EXACTLY ONCE (single pass — no double-embed)")
+        (is (= 3 (:embedded-count r)) "all three concepts landed")
+        (doseq [c embeddable-concepts]
+          (is (= (get sentinels (:uri c)) (:embedding (get embs (:uri c))))
+              (str "landed vector for " (:uri c)
+                   " is the batch's precomputed vector — the command did NOT recompute")))))))
+
+;; ---------------------------------------------------------------------------
+;; PERF — BATCHED INFERENCE. embed-texts-batch now runs ONE predictor +
+;; .batchPredict over the batch (measured ~4.5x vs a new predictor + single
+;; .predict per text). This guard locks BYTE-INVARIANCE (the batch vectors must
+;; equal the per-text vectors within fp tolerance) + order/blank handling, so the
+;; refactor can never silently change embeddings. DJL-gated (drives real inference).
+;; ---------------------------------------------------------------------------
+
+(deftest embed-concept-command-skips-projection-with-metadata-test
+  (testing "PERF (O(n^2)→O(n)) — with concept metadata (:concept-id :ontology-id
+            :scope) + a precomputed :embedding, embed-concept lands WITHOUT projecting
+            the whole concepts read-model (get-concept-by-uri). PROVEN by landing a URI
+            that is NOT present as a concept in the projection (today: 'Concept not
+            found'). DJL-free."
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            uri "occupation/never-landed-as-a-concept"
+            cid (random-uuid)
+            sentinel (vec (repeatedly 384 #(double (rand))))
+            r (cp/process-command
+               (assoc ctx :command
+                      {:command/name :ontology/embed-concept
+                       :command/id (random-uuid) :command/timestamp (time/now)
+                       :uri uri :concept-id cid :ontology-id oid :scope :custom
+                       :embedding sentinel :text-embedded "metadata-provided text"}))]
+        (is (not (:cognitect.anomalies/category r))
+            "lands with supplied metadata even though the concept is NOT in the projection")
+        (let [landed (get (rm/get-all-concept-embeddings ctx {:ontology-id oid}) uri)]
+          (is (some? landed) "landed under the PROVIDED ontology-id (no lookup)")
+          (is (= sentinel (:embedding landed)) "the precomputed vector landed verbatim"))))))
+
+(deftest embed-texts-batch-matches-per-text-test
+  (testing "PERF batched inference — embed-texts-batch produces vectors byte-invariant
+            (fp tolerance) with embed-text per text; order preserved; a blank text maps
+            to nil IN PLACE"
+    (if-not @djl-available?
+      (is true "DJL native engine unavailable on this classpath — runs on :dev:test / orchestrator gate")
+      (let [texts ["Registered Nurse provides direct patient care in hospitals."
+                   "Software Engineer designs and builds large scale systems."
+                   ""  ;; blank → nil in place (mirrors embed-text)
+                   "Elementary School Teacher educates young children."]
+            batch (embedding/embed-texts-batch texts)
+            per   (mapv #(embedding/embed-text %) texts)]
+        (is (= (count texts) (count batch)) "order + count preserved")
+        (is (nil? (nth batch 2)) "the blank text maps to nil in place")
+        (doseq [i [0 1 3]]
+          (let [b (nth batch i) p (nth per i)]
+            (is (= (count p) (count b)) (str "text " i ": same dimensions"))
+            (is (< (reduce max 0.0 (map (fn [x y] (Math/abs (double (- x y)))) b p)) 1e-5)
+                (str "text " i ": batch vector ≈ per-text vector (fp tolerance)"))))))))
