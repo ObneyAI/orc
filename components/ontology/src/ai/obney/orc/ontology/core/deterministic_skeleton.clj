@@ -709,6 +709,22 @@
      (or (re-find #"Number of training points" msg)
          (re-find #"nx >= static_cast" msg)))))
 
+(defn- colbert-index-timeout?
+  "True iff the throwable is the ColBERT BRIDGE exceeding its request timeout while
+   building a large PLAID index, or the bridge process dying mid-index. ColBERT is a
+   REBUILDABLE retrieval accelerator (ARCHITECTURE-ONTOLOGY invariant #3), NOT the
+   graph — so at scale a timeout is surfaced NON-fatally: the build completes on the
+   graph + embedding signals and the index can be (re)built incrementally later
+   (`colbert-indexer` already scales the bridge timeout to corpus size; this is the
+   safety net when even that is exceeded). Matched on the TimeoutException type + the
+   bridge's message text ONLY — every other failure still propagates (#5)."
+  [^Throwable t]
+  (let [msg (str (.getMessage t) " " (some-> t .getCause .getMessage))]
+    (boolean
+     (or (instance? java.util.concurrent.TimeoutException t)
+         (instance? java.util.concurrent.TimeoutException (.getCause t))
+         (re-find #"(?i)timed out|Bridge process died" msg)))))
+
 (defn- register-colbert-index!
   "Resolve the bare index-id UUID from `index-concepts!`'s result and
    register it via the public `record-colbert-index` command.
@@ -777,14 +793,17 @@
                     ctx concepts
                     {:auto-detect-colbert-fields true})
                    (catch Exception e
-                     ;; Recognize ONLY ColBERT's training-points floor; any
-                     ;; other failure re-throws untouched.
-                     (if (colbert-corpus-too-small? e)
-                       ::corpus-too-small
-                       (throw e))))]
-      (if (= result ::corpus-too-small)
-        {:indexed? false :reason :corpus-below-colbert-minimum}
-        (register-colbert-index! ctx ontology-id result)))))
+                     ;; Recognize ColBERT's training-points floor AND a bridge
+                     ;; timeout at scale as NON-fatal; any other failure re-throws
+                     ;; untouched (#5 — no blanket swallow).
+                     (cond
+                       (colbert-corpus-too-small? e) ::corpus-too-small
+                       (colbert-index-timeout? e)    ::index-timeout
+                       :else (throw e))))]
+      (cond
+        (= result ::corpus-too-small) {:indexed? false :reason :corpus-below-colbert-minimum}
+        (= result ::index-timeout)    {:indexed? false :reason :colbert-index-timeout}
+        :else (register-colbert-index! ctx ontology-id result)))))
 
 (defn- index-stage
   "ColBERT-index the ontology's concepts.

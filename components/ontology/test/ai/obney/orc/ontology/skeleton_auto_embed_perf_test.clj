@@ -13,6 +13,7 @@
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.deterministic-skeleton :as ds]
+            [ai.obney.orc.ontology.core.colbert-indexer :as colbert-indexer]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -79,3 +80,37 @@
           (is (= (get sentinels (:uri c)) (:embedding (get embs (:uri c))))
               (str "landed vector for " (:uri c)
                    " is the batch's precomputed vector — no re-embed")))))))
+
+;; ---------------------------------------------------------------------------
+;; ColBERT indexing at scale — the full O*NET build (36k concepts) stalled because
+;; the bridge's 60s default create-index timeout can't fit a large PLAID index
+;; (~14 min). auto-index! now surfaces a bridge TIMEOUT (or process-died) NON-fatally
+;; so the build COMPLETES on the graph + embedding signals (ColBERT is a rebuildable
+;; retrieval accelerator, not the graph). Every OTHER fault still propagates.
+;; ---------------------------------------------------------------------------
+
+(deftest auto-index-nonfatal-on-colbert-timeout-test
+  (testing "a ColBERT bridge TIMEOUT is surfaced non-fatally (:reason
+            :colbert-index-timeout), NOT thrown — the build completes"
+    (with-redefs [colbert-indexer/index-concepts!
+                  (fn [& _]
+                    (throw (java.util.concurrent.TimeoutException.
+                            "Bridge call timed out after 60000ms for method create_index")))]
+      (let [r (#'ds/auto-index! {} (random-uuid)
+                                [{:uri "occupation/1" :label "X" :description "y"}] 1)]
+        (is (= false (:indexed? r)) "not indexed")
+        (is (= :colbert-index-timeout (:reason r))
+            "the timeout is surfaced as a NON-fatal reason, not a thrown exception"))))
+  (testing "a bridge process-died is likewise non-fatal (a wrapped ex-info message)"
+    (with-redefs [colbert-indexer/index-concepts!
+                  (fn [& _] (throw (ex-info "Bridge process died unexpectedly" {})))]
+      (let [r (#'ds/auto-index! {} (random-uuid)
+                                [{:uri "occupation/1" :label "X" :description "y"}] 1)]
+        (is (= :colbert-index-timeout (:reason r)) "process-died → non-fatal"))))
+  (testing "any OTHER ColBERT fault still PROPAGATES (no blanket swallow, #5)"
+    (with-redefs [colbert-indexer/index-concepts!
+                  (fn [& _] (throw (ex-info "some unexpected colbert fault" {})))]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (#'ds/auto-index! {} (random-uuid)
+                                     [{:uri "occupation/1" :label "X" :description "y"}] 1))
+          "an unrecognized fault is NOT masked"))))

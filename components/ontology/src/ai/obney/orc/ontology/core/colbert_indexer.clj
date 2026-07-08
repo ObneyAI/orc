@@ -201,6 +201,19 @@
         final-index-name (or index-name
                              (str "ontology-" (subs (str (random-uuid)) 0 8)))
 
+        ;; SCALE the ColBERT bridge timeout to the corpus size. The bridge's
+        ;; create-index call defaults to a 60s timeout — far too short for a large
+        ;; PLAID index (36k concepts ≈ 14 min of python compute), which otherwise
+        ;; ALWAYS TimeoutExceptions. Set it to ~40ms/doc (min 10 min) via the bridge's
+        ;; own timeout var. Best-effort: the var lives in the OPTIONAL colbert
+        ;; component (Layer-5), so guard resolution; a still-exceeded timeout is
+        ;; surfaced NON-fatally by `deterministic-skeleton/auto-index!` (ColBERT is a
+        ;; rebuildable retrieval accelerator, not the graph — ARCHITECTURE invariant #3).
+        _ (when-let [tv (try (requiring-resolve
+                              'ai.obney.orc.colbert.core.bridge/default-timeout-ms)
+                             (catch Throwable _ nil))]
+            (alter-var-root tv (constantly (max 600000 (* 40 (count valid-docs))))))
+
         ;; Create ColBERT index
         index-id ((require-colbert (quote create-index!)) ctx
                    {:collection (mapv :content valid-docs)
