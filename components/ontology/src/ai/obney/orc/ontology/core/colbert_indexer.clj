@@ -201,18 +201,23 @@
         final-index-name (or index-name
                              (str "ontology-" (subs (str (random-uuid)) 0 8)))
 
-        ;; SCALE the ColBERT bridge timeout to the corpus size. The bridge's
-        ;; create-index call defaults to a 60s timeout — far too short for a large
-        ;; PLAID index (36k concepts ≈ 14 min of python compute), which otherwise
-        ;; ALWAYS TimeoutExceptions. Set it to ~40ms/doc (min 10 min) via the bridge's
-        ;; own timeout var. Best-effort: the var lives in the OPTIONAL colbert
-        ;; component (Layer-5), so guard resolution; a still-exceeded timeout is
-        ;; surfaced NON-fatally by `deterministic-skeleton/auto-index!` (ColBERT is a
-        ;; rebuildable retrieval accelerator, not the graph — ARCHITECTURE invariant #3).
+        ;; SCALE the ColBERT bridge timeout to the corpus size, but FAIL-FAST with a
+        ;; sane CAP. The bridge's create-index defaults to 60s — too short for a real
+        ;; large index — but at large scale the python PLAID indexer stalls (a bridge
+        ;; line-protocol / memory limit on a huge single request), so an unbounded
+        ;; scale-up just parks the JVM for many minutes (which, under memory contention,
+        ;; invites the OS OOM-killer). ~40ms/doc, clamped to [2 min, 6 min]: enough for
+        ;; a genuine small/mid index, short enough that a stall is skipped promptly.
+        ;; A still-exceeded timeout is surfaced NON-fatally by
+        ;; `deterministic-skeleton/auto-index!` (ColBERT is a REBUILDABLE retrieval
+        ;; accelerator, not the graph — ARCHITECTURE invariant #3), and the true
+        ;; large-scale fix is chunked incremental indexing (add-to-index). Best-effort:
+        ;; the var lives in the OPTIONAL colbert component, so guard resolution.
         _ (when-let [tv (try (requiring-resolve
                               'ai.obney.orc.colbert.core.bridge/default-timeout-ms)
                              (catch Throwable _ nil))]
-            (alter-var-root tv (constantly (max 600000 (* 40 (count valid-docs))))))
+            (alter-var-root tv (constantly (-> (* 40 (count valid-docs))
+                                               (max 120000) (min 360000)))))
 
         ;; Create ColBERT index
         index-id ((require-colbert (quote create-index!)) ctx
