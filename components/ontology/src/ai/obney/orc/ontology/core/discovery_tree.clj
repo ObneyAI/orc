@@ -2031,7 +2031,11 @@
                                  (dedup/prefilter-verdict
                                   {:a a :b b :disjointness-map disjointness})))
                        vec)
-        survivor-verdicts
+        ;; ME-3 — the cascade no longer emits evidence per pair; it RETURNS
+        ;; each side's contribution on :command-result/data. Collect the full
+        ;; data IN pair-processing ORDER (order-preserving) so we can fold +
+        ;; emit ONE accumulated evidence event per concept after the loop.
+        survivor-data
         (mapv (fn [[a b]]
                 (let [result (cp/process-command
                               (assoc ctx :command
@@ -2047,9 +2051,20 @@
                   (when (:cognitect.anomalies/category result)
                     (throw (ex-info "reconcile-graph!: cascade command returned anomaly"
                                     {:anomaly result :a a :b b})))
-                  (assoc (get-in result [:command-result/data :verdict])
-                         :a-uri (:uri a) :b-uri (:uri b))))
+                  {:data (:command-result/data result) :a a :b b}))
               survivors)
+        survivor-verdicts
+        (mapv (fn [{:keys [data a b]}]
+                (assoc (:verdict data) :a-uri (:uri a) :b-uri (:uri b)))
+              survivor-data)
+        ;; ME-3 — fold ordered survivor contributions per concept (seeded from
+        ;; the pre-stage snapshot) and emit ONE accumulated evidence event per
+        ;; concept — the SAME shared orchestration the intra-source dedup-stage
+        ;; uses (no forked evidence path).
+        _ (skeleton/emit-accumulated-evidence!
+           ctx ontology-id existing-evidence
+           (into [] (keep (comp :evidence-contribution :data) survivor-data))
+           (str (time/now)))
         merge-verdicts (filterv #(= :merge (:verdict %)) survivor-verdicts)
         review-verdicts (filterv #(= :requires-review (:verdict %)) survivor-verdicts)
 

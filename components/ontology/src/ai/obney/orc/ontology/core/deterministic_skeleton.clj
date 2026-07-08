@@ -71,6 +71,7 @@
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.concept-stream :as cs]
             [ai.obney.orc.ontology.core.dedup-cascade :as dedup]
+            [ai.obney.orc.ontology.core.evidence :as evidence]
             [ai.obney.orc.ontology.core.lints.queries :as lint-q]
             [ai.obney.orc.ontology.core.ttl-ingest :as ttl-ingest]
             [ai.obney.orc.ontology.core.serialization :as serialization]
@@ -337,6 +338,44 @@
   [concepts]
   (dedup/lsh-candidate-pairs concepts))
 
+(defn emit-accumulated-evidence!
+  "ME-3 shared evidence orchestration — used by BOTH the intra-source
+   `dedup-stage` and the cross-graph reconcile (`discovery-tree/
+   reconcile-graph!`); their dedup orchestration is identical.
+
+   Folds the ORDERED survivor `contributions` (each `{:a-uri :b-uri
+   :a-source-ref :b-source-ref :verdict :alignment-id}`, as returned by
+   `run-dedup-cascade` on `:command-result/data`) into ONE accumulated
+   aggregate per concept — seeding each URI's first touch from the pre-stage
+   `snapshot` — then issues ONE `:ontology/record-concept-evidence` command
+   per participating concept, in deterministic URI order.
+
+   This REPLACES the per-pair `concept-evidence-aggregated` emission the
+   cascade used to do: 927k → ~59k events, and — because the fold
+   accumulates in memory rather than reading a frozen snapshot per pair — it
+   ALSO fixes the degenerate DTscale-1 count-1 ledger (proven correct in
+   `evidence-fold-equivalence-test`). `now` is stamped as each aggregate's
+   `:computed-at`; supply `:evidence-now` to inject it deterministically.
+
+   Returns the number of concepts for which an event was emitted."
+  [ctx ontology-id snapshot contributions now]
+  (let [folded (evidence/fold-contributions snapshot contributions now)]
+    (doseq [[uri agg] (sort-by key folded)]
+      (let [r (cp/process-command
+               (assoc ctx :command
+                      {:command/name :ontology/record-concept-evidence
+                       :command/id (random-uuid)
+                       :command/timestamp (time/now)
+                       :ontology-id ontology-id
+                       :concept-uri uri
+                       :aggregate agg}))]
+        ;; Discipline #5 — no silent fallback; surface a rejected evidence
+        ;; write loudly (a dropped evidence event is a real defect).
+        (when (:cognitect.anomalies/category r)
+          (throw (ex-info "emit-accumulated-evidence!: record-concept-evidence anomaly"
+                          {:anomaly r :uri uri})))))
+    (count folded)))
+
 (defn- dedup-stage
   "Run S12's cascade over the blocked candidate pairs in scope.
 
@@ -375,7 +414,8 @@
    (`{:buckets-capped :pairs-dropped :total-cap-hit? :max-pairs-per-bucket
       :max-candidate-pairs}`) so a comprehensive-scale run surfaces whether the
    per-bucket cap / total ceiling bit — never a silent top-N."
-  [ctx {:keys [ontology-id alignment-ontology-id llm-budget persist-pair-ledger?]
+  [ctx {:keys [ontology-id alignment-ontology-id llm-budget persist-pair-ledger?
+               evidence-now]
         :or {llm-budget 0 persist-pair-ledger? false}}]
   (let [start (System/currentTimeMillis)]
     (try
@@ -444,7 +484,12 @@
                   (swap! survivors conj [a b])))
             ;; (4) Only survivors hit the full cascade command — threaded with
             ;;     the SHARED projected state so the command does NOT re-project.
-            survivor-verdicts
+            ;;     ME-3 — the cascade no longer emits evidence per pair; it
+            ;;     RETURNS each side's contribution on :command-result/data. We
+            ;;     collect those IN pair-processing ORDER (order-preserving —
+            ;;     :equivalence-history is a vector) and fold + emit once per
+            ;;     concept AFTER the loop.
+            survivor-data
             (mapv (fn [[a b]]
                     (let [result (cp/process-command
                                   (assoc ctx :command
@@ -466,8 +511,16 @@
                       (when (:cognitect.anomalies/category result)
                         (throw (ex-info "dedup-stage: cascade command returned anomaly"
                                         {:anomaly result :a a :b b})))
-                      (get-in result [:command-result/data :verdict])))
+                      (:command-result/data result)))
                   @survivors)
+            survivor-verdicts (mapv :verdict survivor-data)
+            ;; ME-3 — fold the ordered survivor contributions per concept (in
+            ;; memory, seeded from the pre-stage snapshot) and emit ONE
+            ;; accumulated evidence event per concept.
+            evidence-contributions (into [] (keep :evidence-contribution survivor-data))
+            _ (emit-accumulated-evidence! ctx ontology-id existing-evidence
+                                          evidence-contributions
+                                          (or evidence-now (str (time/now))))
             ;; The verdict vector unifies the pre-filtered (cheap) verdicts and
             ;; the survivor (full-cascade) verdicts — the stage's reported
             ;; counts cover BOTH so no decision is silently lost.

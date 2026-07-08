@@ -1583,56 +1583,34 @@
                  :verdict (:verdict verdict)
                  :recorded-at now}})
         ;; --------------------------------------------------------
-        ;; S13 — always-on evidence aggregation for BOTH sides.
+        ;; S13 evidence — ME-3: NO per-pair emission here.
         ;; --------------------------------------------------------
-        ;; Pull the existing evidence projection ONCE and derive each
-        ;; side's aggregate via the pure `evidence/aggregate-from-
-        ;; cascade` helper. The same helper produces both events so
-        ;; the math lives in ONE place (binding: any weight tweak
-        ;; happens in `evidence.clj`, never inline here).
+        ;; The cascade no longer emits a `concept-evidence-aggregated`
+        ;; event per side (that was the 927k → ~868k write-amplification
+        ;; AND — under DTscale-1's frozen snapshot — a DEGENERATE
+        ;; last-wins ledger reflecting only ONE comparison per concept).
+        ;; Instead it RETURNS each comparison's evidence CONTRIBUTION on
+        ;; `:command-result/data`; the dedup orchestration (S17 dedup-stage
+        ;; / cross-graph reconcile) folds these IN ORDER per concept (pure
+        ;; `evidence/fold-contributions`, in memory — no re-projection) and
+        ;; emits ONE accumulated `record-concept-evidence` per concept at
+        ;; the end. Byte-identity of the fold vs the per-pair running
+        ;; projection is proven in `evidence-fold-equivalence-test`.
         ;;
-        ;; Not R-Inject-gated — mechanism-level functionality. Every
-        ;; cascade invocation emits one of these per side.
-        ;; DTscale-1 — project-once: reuse the stage-supplied evidence map when
-        ;; present; otherwise project here (self-sufficient for direct callers).
-        existing-evidence (or existing-evidence
-                              (rmp/project ctx :ontology/concept-evidence))
-        a-agg (evidence/aggregate-from-cascade
-               {:existing     (get existing-evidence a-uri {})
-                :verdict      verdict
-                :source-ref   a-source-ref
-                :computed-at  now
-                :alignment-id (when (= :merge (:verdict verdict))
-                                alignment-ontology-id)})
-        b-agg (evidence/aggregate-from-cascade
-               {:existing     (get existing-evidence b-uri {})
-                :verdict      verdict
-                :source-ref   b-source-ref
-                :computed-at  now
-                :alignment-id (when (= :merge (:verdict verdict))
-                                alignment-ontology-id)})
-        evidence-event
-        (fn [uri agg]
-          (->event
-           {:type :ontology/concept-evidence-aggregated
-            :tags #{[:ontology ontology-id]}
-            :body (cond->
-                    {:ontology-id           ontology-id
-                     :concept-uri           uri
-                     :tier                  (or (:tier verdict) :unknown-tier)
-                     :verdict               (:verdict verdict)
-                     :tier-contributions    (:tier-contributions agg)
-                     :sources-count         (:sources-count agg)
-                     :dedup-decisions-count (:dedup-decisions-count agg)
-                     :evidence-score        (:evidence-score agg)
-                     :computed-at           (:computed-at agg)}
-                    (seq (:source-refs agg))
-                    (assoc :source-refs (vec (:source-refs agg)))
-                    (seq (:equivalence-history agg))
-                    (assoc :equivalence-history (vec (:equivalence-history agg))))}))
-        a-evidence-event (evidence-event a-uri a-agg)
-        b-evidence-event (evidence-event b-uri b-agg)
-        evidence-events [a-evidence-event b-evidence-event]]
+        ;; `existing-evidence` is no longer consulted for emission; it stays
+        ;; as an accepted (now-vestigial) command input so existing callers
+        ;; threading it do not break. Fold-time `:existing` is the stage's
+        ;; running per-concept aggregate seeded from the pre-stage snapshot.
+        evidence-contribution
+        {:a-uri        a-uri
+         :b-uri        b-uri
+         :a-source-ref a-source-ref
+         :b-source-ref b-source-ref
+         :verdict      verdict
+         :alignment-id (when (= :merge (:verdict verdict))
+                         alignment-ontology-id)}
+        result-data {:verdict verdict
+                     :evidence-contribution evidence-contribution}]
     (case (:verdict verdict)
       :merge
       (if-not alignment-ontology-id
@@ -1648,11 +1626,13 @@
                                         [(when-let [d (:detail verdict)] d)
                                          (when-let [r (:reason verdict)] (str r))
                                          (str (:tier verdict))]))]
-          {:command-result/data {:verdict verdict}
+          {:command-result/data result-data
            :command-result/events
            ;; The equivalence event is CONSUMED (S08/reconcile) — always emitted.
            ;; The co-occurrence LEDGER is write-only — ME-2 gates it behind the
-           ;; opt-in flag (order preserved when opted in).
+           ;; opt-in flag (order preserved when opted in). ME-3 — evidence rides
+           ;; on :command-result/data (folded once-per-concept downstream), NOT
+           ;; as a per-pair event here.
            (-> [(->event
                  {:type :ontology/equivalence-recorded
                   :tags #{[:ontology alignment-ontology-id]
@@ -1664,15 +1644,15 @@
                          :kind (:kind verdict)
                          :evidence evidence-vec
                          :recorded-at now}})]
-               (cond-> persist-pair-ledger? (conj co-occurrence-event))
-               (into evidence-events))}))
+               (cond-> persist-pair-ledger? (conj co-occurrence-event)))}))
 
       :distinct
-      {:command-result/data {:verdict verdict}
+      {:command-result/data result-data
        :command-result/events
        ;; ME-2 — both the dedup-distinct LEDGER and the co-occurrence LEDGER are
        ;; write-only (no reader). Emitted ONLY when opted in; order preserved.
-       ;; The S13 evidence events (CONSUMED) always ride.
+       ;; ME-3 — evidence rides on :command-result/data (folded once-per-concept
+       ;; downstream), NOT as a per-pair event here.
        (-> []
            (cond-> persist-pair-ledger?
              (conj (->event
@@ -1685,21 +1665,19 @@
                                     :reason (:reason verdict)
                                     :recorded-at now}
                              (:detail verdict) (assoc :evidence (:detail verdict)))})
-                   co-occurrence-event))
-           (into evidence-events))}
+                   co-occurrence-event)))}
 
-      ;; :skip and :requires-review emit the evidence-aggregated events (every
-      ;; cascade run counts as evidence — even an undecided one tells us
-      ;; something about the concept's neighborhood). Neither carries an
-      ;; equivalence event (no merge claim) nor a dedup-distinct event (the
-      ;; cascade declined to decide). The co-occurrence LEDGER (write-only)
+      ;; :skip and :requires-review — every cascade run STILL counts as evidence
+      ;; (even an undecided one tells us something about the concept's
+      ;; neighborhood); its contribution rides on :command-result/data. Neither
+      ;; carries an equivalence event (no merge claim) nor a dedup-distinct event
+      ;; (the cascade declined to decide). The co-occurrence LEDGER (write-only)
       ;; rides ONLY when opted in (ME-2).
       (:skip :requires-review)
-      {:command-result/data {:verdict verdict}
+      {:command-result/data result-data
        :command-result/events
        (-> []
-           (cond-> persist-pair-ledger? (conj co-occurrence-event))
-           (into evidence-events))})))
+           (cond-> persist-pair-ledger? (conj co-occurrence-event)))})))
 
 ;; =============================================================================
 ;; S13 — Concept contradiction recording
@@ -1747,6 +1725,46 @@
              :existing-source existing-source
              :incoming-source incoming-source
              :recorded-at     (now-str)}})]})
+
+;; =============================================================================
+;; ME-3 — Record the ACCUMULATED per-concept evidence (once per concept)
+;; =============================================================================
+;;
+;; Replaces `run-dedup-cascade`'s per-pair `concept-evidence-aggregated`
+;; emission. The dedup orchestration folds every survivor comparison a
+;; concept participated in (via `evidence/fold-contributions`, IN pair-
+;; processing order, in memory) into ONE final aggregate body, then issues
+;; ONE of these commands per concept. The projection (`concept-evidence*`)
+;; is last-wins — with exactly one event per concept, the last IS the fully
+;; accumulated aggregate (fixing both the 927k write-amplification AND the
+;; degenerate DTscale-1 count-1 ledger).
+;;
+;; The event REUSES `:ontology/concept-evidence-aggregated` so the read-model
+;; + replay determinism are untouched. `:tier`/`:verdict` (per-pair scalars
+;; that don't apply to a rollup) are omitted — the projection never read
+;; them; the schema now makes them optional.
+(defcommand :ontology record-concept-evidence
+  "ME-3: emit ONE accumulated evidence event for a concept at the end of a
+   dedup stage. `:aggregate` is the final per-concept body produced by
+   `evidence/fold-contributions` (the same shape `aggregate-from-cascade`
+   returns and `concept-evidence*` reads). Pure passthrough — the math was
+   already done by the fold; this command only wraps it in an event."
+  [{{:keys [ontology-id concept-uri aggregate]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/concept-evidence-aggregated
+      :tags #{[:ontology ontology-id]}
+      :body (cond-> {:ontology-id           ontology-id
+                     :concept-uri           concept-uri
+                     :tier-contributions    (:tier-contributions aggregate)
+                     :sources-count         (:sources-count aggregate)
+                     :dedup-decisions-count (:dedup-decisions-count aggregate)
+                     :evidence-score        (:evidence-score aggregate)
+                     :computed-at           (:computed-at aggregate)}
+              (seq (:source-refs aggregate))
+              (assoc :source-refs (vec (:source-refs aggregate)))
+              (seq (:equivalence-history aggregate))
+              (assoc :equivalence-history (vec (:equivalence-history aggregate))))})]})
 
 ;; =============================================================================
 ;; S15 — Record CQ evaluation result (per-CQ per-run)

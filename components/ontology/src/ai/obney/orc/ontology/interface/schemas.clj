@@ -963,9 +963,12 @@
    [:map
     [:ontology-id           :uuid]
     [:concept-uri           :string]
-    ;; The cascade tier that closed THIS aggregation's verdict.
-    [:tier                  :keyword]
-    [:verdict               [:enum :merge :distinct :skip :requires-review]]
+    ;; ME-3 — the event is now emitted ONCE per concept (an accumulated
+    ;; rollup over all its cascade comparisons), not per-pair. :tier /
+    ;; :verdict are per-comparison scalars that do not apply to a rollup, so
+    ;; they are OPTIONAL. The projection (concept-evidence*) never read them.
+    [:tier                  {:optional true} :keyword]
+    [:verdict               {:optional true} [:enum :merge :distinct :skip :requires-review]]
     ;; Cumulative tier counts. Map from tier-keyword → count.
     [:tier-contributions    [:map-of :keyword :int]]
     [:sources-count         :int]
@@ -1692,6 +1695,24 @@
     [:incoming-value  [:or :string :int :double :boolean :keyword]]
     [:existing-source :string]
     [:incoming-source :string]]
+
+   ;; ME-3 — emit ONE accumulated evidence event per concept at the end of a
+   ;; dedup stage (replaces run-dedup-cascade's per-pair emission). The
+   ;; :aggregate is the folded per-concept body; the command wraps it in a
+   ;; :ontology/concept-evidence-aggregated event verbatim.
+   :ontology/record-concept-evidence
+   [:map
+    [:ontology-id :uuid]
+    [:concept-uri :string]
+    [:aggregate
+     [:map
+      [:tier-contributions    [:map-of :keyword :int]]
+      [:sources-count         :int]
+      [:dedup-decisions-count :int]
+      [:evidence-score        :double]
+      [:computed-at           :string]
+      [:source-refs           {:optional true} [:set :string]]
+      [:equivalence-history   {:optional true} [:vector :any]]]]]
 
    ;; S15 — record a single competency-question evaluation result for an
    ;; ontology. The CQ runner emits ONE command per CQ per evaluation

@@ -38,8 +38,10 @@
             [ai.obney.orc.ontology.test-helpers :as h]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands :as cmd]
+            [ai.obney.orc.ontology.core.deterministic-skeleton :as skeleton]
             [ai.obney.orc.ontology.core.evidence :as ev]
             [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [ai.obney.grain.event-store-v3.interface :as es]))
 
 (def primary-p #uuid "5130000a-0000-0000-0000-000000000001")
@@ -55,6 +57,28 @@
   (h/run-and-apply! ctx
                     (fn [c]
                       (cmd/ontology-run-dedup-cascade (assoc c :command body)))))
+
+;; ME-3 — evidence is no longer emitted per-pair by the cascade; the dedup
+;; STAGE folds each concept's ordered contributions and emits ONE accumulated
+;; `record-concept-evidence` per concept. This helper mirrors that production
+;; orchestration (`skeleton/emit-accumulated-evidence!`) so these tests drive
+;; evidence through the REAL once-per-concept path and assert the PROJECTION
+;; result (via `get-concept-evidence`), never the per-pair event shape.
+;; `ontology-id` scopes the emitted events; `now` is injected for determinism.
+(defn- run-stage!
+  "Run one dedup 'stage': execute each cascade `body` (applying its own
+   events), collect the returned evidence contributions IN ORDER, then fold +
+   emit ONE evidence event per participating concept. The pre-stage snapshot
+   is projected here (so a SECOND stage sees the first stage's accumulated
+   evidence — the incremental case)."
+  [ctx ontology-id now bodies]
+  (let [snapshot (rmp/project ctx :ontology/concept-evidence)
+        contribs (mapv (fn [body]
+                         (-> (run-cascade! ctx body)
+                             :command-result/data
+                             :evidence-contribution))
+                       bodies)]
+    (skeleton/emit-accumulated-evidence! ctx ontology-id snapshot contribs now)))
 
 (defn- record-contradiction!
   [ctx body]
@@ -186,14 +210,15 @@
         (is (= 0 (count (:contradictions r))))))))
 
 (deftest get-concept-evidence-reflects-cascade-events
-  (testing "After one compare-to-existing run that emits a co-occurrence
-            event AND a dedup-distinct event, get-concept-evidence's
+  (testing "After a stage with ONE comparison, get-concept-evidence's
             :tier-contributions surfaces the cascade tier and the
-            :dedup-decisions-count is 1."
+            :dedup-decisions-count is 1. (ME-3: evidence now lands via the
+            stage's once-per-concept fold+emit, not per-pair from the cascade —
+            but a single comparison still yields decisions-count 1.)"
     (h/with-test-context [ctx]
-      (run-cascade! ctx
-                    {:ontology-id primary-p
-                     :a number-3-vs-30-a :b number-3-vs-30-b})
+      (run-stage! ctx primary-p "2026-01-01T00:00:00Z"
+                  [{:ontology-id primary-p
+                    :a number-3-vs-30-a :b number-3-vs-30-b}])
       (let [ev-a (rm/get-concept-evidence ctx (:uri number-3-vs-30-a))
             ev-b (rm/get-concept-evidence ctx (:uri number-3-vs-30-b))]
         (is (= 1 (:dedup-decisions-count ev-a))
@@ -208,20 +233,25 @@
 ;; Always-on aggregation (deliverable 2)
 ;; =============================================================================
 
-(deftest cascade-emits-evidence-aggregated-events
-  (testing "Every compare-to-existing call emits a
-            :ontology/concept-evidence-aggregated event — one per
-            affected concept (i.e. two: one per side of the candidate
-            pair)."
+(deftest stage-emits-one-evidence-event-per-concept
+  (testing "ME-3 (was `cascade-emits-evidence-aggregated-events`, which
+            asserted the per-pair COMMAND output — now obsolete): a dedup
+            stage emits exactly ONE :ontology/concept-evidence-aggregated
+            event PER affected concept (two here: one per side of the pair),
+            NOT one per pair-side per comparison. Asserted on the LANDED events
+            in the store (the projection's inputs), not the cascade result."
     (h/with-test-context [ctx]
-      (let [r (run-cascade! ctx
-                            {:ontology-id primary-p
-                             :a number-3-vs-30-a :b number-3-vs-30-b})
-            evs (h/get-result-events r)
-            aggs (filter #(= :ontology/concept-evidence-aggregated
-                             (:event/type %)) evs)]
+      (run-stage! ctx primary-p "2026-01-01T00:00:00Z"
+                  [{:ontology-id primary-p
+                    :a number-3-vs-30-a :b number-3-vs-30-b}])
+      (let [aggs (->> (es/read (:event-store ctx)
+                               {:tags #{[:ontology primary-p]}
+                                :tenant-id (:tenant-id ctx)})
+                      (into [])
+                      (filter #(= :ontology/concept-evidence-aggregated
+                                  (:event/type %))))]
         (is (= 2 (count aggs))
-            "exactly two evidence-aggregated events (one per side)")
+            "exactly two evidence-aggregated events (one per concept)")
         (is (= #{(:uri number-3-vs-30-a) (:uri number-3-vs-30-b)}
                (into #{} (map :concept-uri aggs))))
         (is (every? :computed-at aggs))
@@ -231,24 +261,25 @@
 (deftest always-on-aggregation-emits-with-r-inject-disabled
   (testing "Mechanism-not-opt-in invariant: with no :auto-classify? /
             R-Inject configuration anywhere in scope, evidence-aggregated
-            events STILL fire from the cascade. The ctx carries nothing
-            R-Inject-related; the events still land."
+            events STILL land. The ctx carries nothing R-Inject-related; the
+            once-per-concept events still land (ME-3: via the stage fold+emit,
+            not per-pair from the cascade)."
     (h/with-test-context [ctx]
       (let [;; Explicit R-Inject-disabled marker (no such gate exists by
             ;; design; this test guards against ever adding one).
-            ctx-no-r-inject (assoc ctx :auto-classify? false :rlm? false)
-            r (h/run-and-apply!
-               ctx-no-r-inject
-               (fn [c]
-                 (cmd/ontology-run-dedup-cascade
-                  (assoc c :command {:ontology-id primary-p
-                                     :a case-variant-a :b case-variant-b
-                                     :alignment-ontology-id align-pq}))))
-            evs (h/get-result-events r)
-            aggs (filter #(= :ontology/concept-evidence-aggregated
-                             (:event/type %)) evs)]
-        (is (= 2 (count aggs))
-            "evidence-aggregated lands regardless of R-Inject posture")))))
+            ctx-no-r-inject (assoc ctx :auto-classify? false :rlm? false)]
+        (run-stage! ctx-no-r-inject primary-p "2026-01-01T00:00:00Z"
+                    [{:ontology-id primary-p
+                      :a case-variant-a :b case-variant-b
+                      :alignment-ontology-id align-pq}])
+        (let [aggs (->> (es/read (:event-store ctx)
+                                 {:tags #{[:ontology primary-p]}
+                                  :tenant-id (:tenant-id ctx)})
+                        (into [])
+                        (filter #(= :ontology/concept-evidence-aggregated
+                                    (:event/type %))))]
+          (is (= 2 (count aggs))
+              "evidence-aggregated lands regardless of R-Inject posture"))))))
 
 ;; =============================================================================
 ;; Binding slice criterion (a) — second-source re-encounter bumps + appends
@@ -259,15 +290,18 @@
             a new source' case): :dedup-decisions-count and
             :sources-count both climb; :last-reinforced-at advances."
     (h/with-test-context [ctx]
-      (run-cascade! ctx
-                    {:ontology-id primary-p
-                     :a number-3-vs-30-a :b number-3-vs-30-b})
+      ;; Two SEPARATE stages model 'compared again from a new source': the
+      ;; second stage projects the first stage's accumulated evidence as its
+      ;; snapshot, so the count climbs across stages (incremental case).
+      (run-stage! ctx primary-p "2026-01-01T00:00:00Z"
+                  [{:ontology-id primary-p
+                    :a number-3-vs-30-a :b number-3-vs-30-b}])
       (let [ev1 (rm/get-concept-evidence ctx (:uri number-3-vs-30-a))]
-        (run-cascade! ctx
-                      {:ontology-id primary-p
-                       :a number-3-vs-30-a
-                       :b {:uri "p:Model300" :label "Model 300"
-                           :description "Tesla Model 300" :type :class}})
+        (run-stage! ctx primary-p "2026-01-02T00:00:00Z"
+                    [{:ontology-id primary-p
+                      :a number-3-vs-30-a
+                      :b {:uri "p:Model300" :label "Model 300"
+                          :description "Tesla Model 300" :type :class}}])
         (let [ev2 (rm/get-concept-evidence ctx (:uri number-3-vs-30-a))]
           (is (= 1 (:dedup-decisions-count ev1)))
           (is (= 2 (:dedup-decisions-count ev2))
@@ -353,11 +387,12 @@
   (testing "Replaying the event stream reconstructs the same evidence
             state. No mutation occurs without a corresponding event."
     (h/with-test-context [ctx]
-      (run-cascade! ctx {:ontology-id primary-p
-                         :a number-3-vs-30-a :b number-3-vs-30-b})
-      (run-cascade! ctx {:ontology-id primary-p
-                         :a case-variant-a :b case-variant-b
-                         :alignment-ontology-id align-pq})
+      (run-stage! ctx primary-p "2026-01-01T00:00:00Z"
+                  [{:ontology-id primary-p
+                    :a number-3-vs-30-a :b number-3-vs-30-b}
+                   {:ontology-id primary-p
+                    :a case-variant-a :b case-variant-b
+                    :alignment-ontology-id align-pq}])
       (record-contradiction! ctx
                              {:ontology-id primary-p
                               :concept-uri "p:Director1"
@@ -391,9 +426,10 @@
             (S08 + S12 check-before-mint) contributes evidence to BOTH
             sides — but EXACTLY ONCE per side, not doubled."
     (h/with-test-context [ctx]
-      (run-cascade! ctx {:ontology-id primary-p
-                         :alignment-ontology-id align-pq
-                         :a case-variant-a :b case-variant-b})
+      (run-stage! ctx primary-p "2026-01-01T00:00:00Z"
+                  [{:ontology-id primary-p
+                    :alignment-ontology-id align-pq
+                    :a case-variant-a :b case-variant-b}])
       (let [ev-a (rm/get-concept-evidence ctx (:uri case-variant-a))
             ev-b (rm/get-concept-evidence ctx (:uri case-variant-b))]
         (is (= 1 (count (:equivalence-history ev-a)))

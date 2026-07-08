@@ -244,6 +244,64 @@
      :last-reinforced-at computed-at
      :computed-at computed-at}))
 
+(defn fold-contributions
+  "ME-3 — fold an ORDERED seq of survivor evidence CONTRIBUTIONS into ONE
+   final aggregate body per concept, replacing the per-pair emission that
+   `run-dedup-cascade` used to do.
+
+   This is the in-memory running-projection fold. It is BYTE-IDENTICAL to
+   the per-pair live-reproject path (each `run-dedup-cascade` re-reading the
+   running `concept-evidence` projection and last-wins keeping the last
+   cumulative event) — proven in `evidence-fold-equivalence-test`
+   (`path-A-running == path-B-fold-once`). It is NOT the old dedup-stage
+   behavior (DTscale-1 project-once froze the snapshot so every per-pair
+   event saw the SAME `:existing`, degenerating the ledger to a single
+   comparison per concept — the bug ME-3 fixes). Doing the fold in memory
+   keeps DTscale-1's speed (no per-pair re-projection) AND correct
+   accumulation.
+
+   Order matters: `:equivalence-history` is an order-dependent `conj`
+   vector, so the fold walks `contributions` in the SAME order the stage
+   processed the pairs. The FIRST time a URI is touched it starts from its
+   pre-stage `snapshot` entry (so an incremental build carries prior
+   evidence forward); subsequent touches fold onto the running value.
+
+   Inputs:
+   - snapshot       {uri entry} — the pre-stage `:ontology/concept-evidence`
+                                  projection (per-URI starting point). `{}`
+                                  on a fresh build.
+   - contributions  ordered seq of
+                      {:a-uri :b-uri :a-source-ref :b-source-ref
+                       :verdict :alignment-id}
+                    — one per survivor comparison (as returned by
+                      `run-dedup-cascade` on `:command-result/data`).
+   - now            str — the ISO `:computed-at` timestamp to stamp on every
+                          folded aggregate (injected; not read from a clock
+                          here — this fn stays pure).
+
+   Returns: {uri final-agg-body} for every URI that participated in >=1
+   comparison. Each body is exactly what `aggregate-from-cascade` returns —
+   the shape `record-concept-evidence` emits and `concept-evidence*` reads."
+  [snapshot contributions now]
+  (letfn [(fold-side [acc uri source-ref verdict alignment-id]
+            (if (nil? uri)
+              acc
+              (update acc uri
+                      (fn [cur]
+                        (aggregate-from-cascade
+                         {:existing     (or cur (get snapshot uri {}))
+                          :verdict      verdict
+                          :source-ref   source-ref
+                          :computed-at  now
+                          :alignment-id alignment-id})))))]
+    (reduce
+     (fn [acc {:keys [a-uri b-uri a-source-ref b-source-ref verdict alignment-id]}]
+       (-> acc
+           (fold-side a-uri a-source-ref verdict alignment-id)
+           (fold-side b-uri b-source-ref verdict alignment-id)))
+     {}
+     contributions)))
+
 (defn ledger-record
   "Shape a projection entry as the public ledger record `get-concept-evidence`
    returns. Pure shaping with defaulted-zeros for the unknown-URI case.
