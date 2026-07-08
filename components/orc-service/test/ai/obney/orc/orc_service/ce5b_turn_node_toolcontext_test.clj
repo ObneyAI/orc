@@ -196,6 +196,47 @@
                 "a distinct CHILD tick-tree-started also carries the same :tool-context (threaded onward to the leaf's tick)")))))))
 
 ;; =============================================================================
+;; CJ-5b — the repl-researcher's terminal completion carries :tool-context in
+;; :writes, so a downstream per-event judge (e.g. the coding-outcome judge) can
+;; recover the turn-id and ground on the turn's captured effect.
+;;
+;; Root cause: on a :success terminal the completion :writes carried only the
+;; node's declared writes (+ RLM internals) — NOT the :tool-context — so
+;; build-trace-data delivered no turn-id to the judge and it grounded empty
+;; ("no file changes") even though the turn landed edits keyed on that turn-id.
+;; (A :blocked completion happened to dump the full blackboard incl
+;; :tool-context, which is why the bug hid behind the intermittent block path.)
+;; FIX B: the RLM completion now assoc's the tick's :tool-context onto :writes
+;; whenever it is present.
+;; =============================================================================
+
+(deftest cj5b-repl-researcher-terminal-carries-tool-context-in-writes
+  (testing "the repl-researcher :success completion event carries :tool-context in :writes (so a judge can recover the turn-id)"
+    (h/with-async-test-context [ctx]
+      (with-redefs [dscloj/predict mock-predict-emitting-recorder]
+        (let [marker       (str "CE5B-COMPLETE-MARKER-" (random-uuid))
+              tool-context {:marker marker :workspace "/ws"}
+              {:keys [sheet-id node-id]} (setup-repl-researcher-sheet! ctx)
+              stream       (sheet/execute-stream (assoc ctx :tool-context tool-context)
+                                                 sheet-id {:question "go"}
+                                                 :timeout-ms 30000)
+              result       (deref (:result stream) 30000 ::timeout)]
+          (drain-close! stream)
+          (is (= :success (:status result))
+              (str "turn should succeed; got " (:status result) " error " (:error result)))
+          (let [completions (events-of-type ctx :sheet/node-execution-completed)
+                rr-complete (first (filter #(and (= node-id (:node-id %))
+                                                 (= :success (:status %)))
+                                           completions))]
+            (is (some? rr-complete)
+                "the repl-researcher emitted a :success node-execution-completed event")
+            (is (= tool-context (get-in rr-complete [:writes :tool-context]))
+                (str "the terminal completion's :writes carries the turn's "
+                     ":tool-context (FIX B) so build-trace-data delivers the "
+                     "turn-id to the judge; got writes keys: "
+                     (pr-str (keys (:writes rr-complete)))))))))))
+
+;; =============================================================================
 ;; Cycle 3 — Backward-compat: absent :tool-context changes nothing
 ;; =============================================================================
 
