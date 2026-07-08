@@ -598,55 +598,75 @@
    SAME text builder the command uses) so no event is emitted and
    `:embedded-count` is 0 — no fabricated vectors, no false error.
 
+   PERF (mirrors embed+index!'s single-pass path): the embeddings are computed
+   ONCE via BATCHED DJL inference (`embed-concepts-batch!` → `.batchPredict`), then
+   each is LANDED via the command carrying the PRECOMPUTED vector + the concept's
+   identity metadata (`:concept-id`/`:ontology-id`/`:scope`) — so the command
+   neither re-embeds a single item NOR projects the whole concepts read-model per
+   concept (the O(n²) `get-concept-by-uri` this path used to hit for every concept).
+   `embed-batch-fn` is an injected capability (default the production batch-embed)
+   so the single-pass landing is testable WITHOUT the DJL native engine.
+
    Returns `{:embedded-count int :fields-used [...] :detected-fields [...]}`."
-  [ctx ontology-id concepts detect-mode]
-  (let [detection (if (= detect-mode :llm)
-                    (field-analyzer/detect-embedding-fields ctx concepts)
-                    (field-analyzer/detect-embedding-fields concepts))
-        ;; The embed-concept command's text builder + schema understand only
-        ;; these four concept fields. Intersect the detector's choices with
-        ;; that enum so an exotic detected field (e.g. a free-form semantic
-        ;; string column) doesn't blow the command's schema — and fall back
-        ;; to the canonical pair when the intersection is empty so a concept
-        ;; with only a label/description is still embedded.
-        embeddable-enum #{:label :description :indicators :triggers}
-        detected (set (:embedding-fields detection))
-        fields-set (let [hit (set/intersection detected embeddable-enum)]
-                     (if (seq hit) hit #{:label :description}))
-        fields (vec fields-set)
-        ;; HONEST EMPTY decision is made HERE, deterministically: a concept
-        ;; whose detected-field text is blank carries nothing to embed, so we
-        ;; do NOT call the command for it (the command would fault on a nil
-        ;; embedding, conflating "no content" with "model error"). This uses
-        ;; the SAME text builder the command uses, so the skip decision is
-        ;; faithful — no fabricated vectors, no false error.
-        embeddable (filterv #(seq (embedding/concept->embedding-text % fields-set))
-                            concepts)
-        embedded
-        (reduce
-         (fn [acc concept]
-           (let [result (cp/process-command
-                         (assoc ctx :command
-                                {:command/name :ontology/embed-concept
-                                 :command/id (random-uuid)
-                                 :command/timestamp (time/now)
-                                 :uri (:uri concept)
-                                 :fields fields-set}))]
-             ;; Disciplines #5 — no silent fallback. Any anomaly here is a
-             ;; GENUINE fault (model load failure, concept vanished mid-build)
-             ;; — raise with the root cause attached rather than mask it.
-             (when (:cognitect.anomalies/category result)
-               (throw (ex-info "auto-embed!: embed-concept command returned anomaly"
-                               {:anomaly result :uri (:uri concept)})))
-             (cond-> acc
-               (pos? (or (get-in result [:command-result/data :dimensions]) 0))
-               inc)))
-         0
-         embeddable)]
-    {:embedded-count embedded
-     :fields-used fields
-     :detected-fields fields
-     :detection-method (:method detection)}))
+  ([ctx ontology-id concepts detect-mode]
+   (auto-embed! ctx ontology-id concepts detect-mode embedding/embed-concepts-batch!))
+  ([ctx ontology-id concepts detect-mode embed-batch-fn]
+   (let [detection (if (= detect-mode :llm)
+                     (field-analyzer/detect-embedding-fields ctx concepts)
+                     (field-analyzer/detect-embedding-fields concepts))
+         ;; The embed-concept command's text builder + schema understand only
+         ;; these four concept fields. Intersect the detector's choices with
+         ;; that enum so an exotic detected field (e.g. a free-form semantic
+         ;; string column) doesn't blow the command's schema — and fall back
+         ;; to the canonical pair when the intersection is empty so a concept
+         ;; with only a label/description is still embedded.
+         embeddable-enum #{:label :description :indicators :triggers}
+         detected (set (:embedding-fields detection))
+         fields-set (let [hit (set/intersection detected embeddable-enum)]
+                      (if (seq hit) hit #{:label :description}))
+         fields (vec fields-set)
+         ;; HONEST EMPTY: a concept whose detected-field text is blank carries
+         ;; nothing to embed — `embed-concepts-batch!` drops it from `:embeddings`,
+         ;; so it is absent from the precompute map and skipped (no fabricated vector).
+         embeddable (filterv #(seq (embedding/concept->embedding-text % fields-set))
+                             concepts)
+         ;; ONE batched compute pass over the embeddable concepts.
+         batch (embed-batch-fn embeddable {:embedding-fields fields-set
+                                           :auto-detect? false :ctx ctx})
+         precomputed (into {} (map (juxt :uri identity)) (:embeddings batch))
+         embedded
+         (reduce
+          (fn [acc concept]
+            (if-let [pre (get precomputed (:uri concept))]
+              (let [result (cp/process-command
+                            (assoc ctx :command
+                                   {:command/name :ontology/embed-concept
+                                    :command/id (random-uuid)
+                                    :command/timestamp (time/now)
+                                    :uri (:uri concept)
+                                    :fields fields-set
+                                    ;; PRECOMPUTED vector — no re-embed.
+                                    :embedding (:embedding pre)
+                                    :text-embedded (:text-embedded pre)
+                                    ;; identity — skip the O(n²) get-concept-by-uri.
+                                    :concept-id (:id concept)
+                                    :ontology-id (:ontology-id concept)
+                                    :scope (:scope concept)}))]
+                ;; Disciplines #5 — no silent fallback. Any anomaly here is a
+                ;; GENUINE fault — raise with the root cause attached.
+                (when (:cognitect.anomalies/category result)
+                  (throw (ex-info "auto-embed!: embed-concept command returned anomaly"
+                                  {:anomaly result :uri (:uri concept)})))
+                (cond-> acc
+                  (pos? (or (get-in result [:command-result/data :dimensions]) 0))
+                  inc))
+              acc))
+          0
+          embeddable)]
+     {:embedded-count embedded
+      :fields-used fields
+      :detected-fields fields
+      :detection-method (:method detection)})))
 
 (defn- embed-stage
   "Embed the ontology's concepts.
