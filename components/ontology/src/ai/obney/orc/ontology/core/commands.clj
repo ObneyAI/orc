@@ -1500,11 +1500,24 @@
 ;; events the verdict requires:
 ;;
 ;;   :verdict :merge              → :ontology/equivalence-recorded
-;;                                  + :ontology/concept-pair-co-occurrence
-;;   :verdict :distinct           → :ontology/dedup-distinct-recorded
-;;                                  + :ontology/concept-pair-co-occurrence
-;;   :verdict :skip               → :ontology/concept-pair-co-occurrence ONLY
-;;   :verdict :requires-review    → :ontology/concept-pair-co-occurrence ONLY
+;;                                  (+ :ontology/concept-pair-co-occurrence *)
+;;   :verdict :distinct           → (:ontology/dedup-distinct-recorded *)
+;;                                  (+ :ontology/concept-pair-co-occurrence *)
+;;   :verdict :skip               → (:ontology/concept-pair-co-occurrence * ONLY)
+;;   :verdict :requires-review    → (:ontology/concept-pair-co-occurrence * ONLY)
+;;
+;; Every verdict ALSO emits the S13 :ontology/concept-evidence-aggregated
+;; events (one per side) — see below.
+;;
+;; ME-2 — the events marked (*) are the write-only pair LEDGERS
+;; (`concept-pair-co-occurrence` + `dedup-distinct-recorded`). VERIFIED: no
+;; read-model / query / reconcile / dedup consumer reads either — they are
+;; aspirational incremental-dedup ledgers (~723k events in the real O*NET
+;; build) of pure write-only bloat. They are now gated behind the OPT-IN
+;; `:persist-pair-ledger?` command flag (default FALSE): a normal build does
+;; NOT persist them; a future incremental-dedup caller opts in. The dedup
+;; VERDICT (on `:command-result/data`) and the CONSUMED events (equivalence on
+;; :merge, the S13 evidence events) are byte-identical in both modes.
 ;;
 ;; The T1 disjointness guard reads the S07 :ontology/axioms projection;
 ;; the merge case emits an equivalence event tagged to the alignment-
@@ -1530,7 +1543,8 @@
   [{{:keys [ontology-id alignment-ontology-id a b
             llm-budget string-merge-threshold string-ambiguity-lo lsh-jaccard-min
             a-source-ref b-source-ref
-            disjointness existing-evidence]} :command
+            disjointness existing-evidence
+            persist-pair-ledger?]} :command
     :as ctx}]
   (let [;; DTscale-1 — project-once: when the caller (dedup-stage) threads the
         ;; per-section disjointness map (projected ONCE for the whole stage),
@@ -1636,47 +1650,56 @@
                                          (str (:tier verdict))]))]
           {:command-result/data {:verdict verdict}
            :command-result/events
-           (into
-            [(->event
-              {:type :ontology/equivalence-recorded
-               :tags #{[:ontology alignment-ontology-id]
-                       [:equivalence equivalence-id]}
-               :body {:equivalence-id equivalence-id
-                      :ontology-id alignment-ontology-id
-                      :source-uri a-uri
-                      :target-uri b-uri
-                      :kind (:kind verdict)
-                      :evidence evidence-vec
-                      :recorded-at now}})
-             co-occurrence-event]
-            evidence-events)}))
+           ;; The equivalence event is CONSUMED (S08/reconcile) — always emitted.
+           ;; The co-occurrence LEDGER is write-only — ME-2 gates it behind the
+           ;; opt-in flag (order preserved when opted in).
+           (-> [(->event
+                 {:type :ontology/equivalence-recorded
+                  :tags #{[:ontology alignment-ontology-id]
+                          [:equivalence equivalence-id]}
+                  :body {:equivalence-id equivalence-id
+                         :ontology-id alignment-ontology-id
+                         :source-uri a-uri
+                         :target-uri b-uri
+                         :kind (:kind verdict)
+                         :evidence evidence-vec
+                         :recorded-at now}})]
+               (cond-> persist-pair-ledger? (conj co-occurrence-event))
+               (into evidence-events))}))
 
       :distinct
       {:command-result/data {:verdict verdict}
        :command-result/events
-       (into
-        [(->event
-          {:type :ontology/dedup-distinct-recorded
-           :tags #{[:ontology ontology-id]}
-           :body (cond-> {:ontology-id ontology-id
-                          :source-uri a-uri
-                          :target-uri b-uri
-                          :tier (:tier verdict)
-                          :reason (:reason verdict)
-                          :recorded-at now}
-                   (:detail verdict) (assoc :evidence (:detail verdict)))})
-         co-occurrence-event]
-        evidence-events)}
+       ;; ME-2 — both the dedup-distinct LEDGER and the co-occurrence LEDGER are
+       ;; write-only (no reader). Emitted ONLY when opted in; order preserved.
+       ;; The S13 evidence events (CONSUMED) always ride.
+       (-> []
+           (cond-> persist-pair-ledger?
+             (conj (->event
+                    {:type :ontology/dedup-distinct-recorded
+                     :tags #{[:ontology ontology-id]}
+                     :body (cond-> {:ontology-id ontology-id
+                                    :source-uri a-uri
+                                    :target-uri b-uri
+                                    :tier (:tier verdict)
+                                    :reason (:reason verdict)
+                                    :recorded-at now}
+                             (:detail verdict) (assoc :evidence (:detail verdict)))})
+                   co-occurrence-event))
+           (into evidence-events))}
 
-      ;; :skip and :requires-review emit the co-occurrence event PLUS
-      ;; the evidence-aggregated events (every cascade run counts as
-      ;; evidence — even an undecided one tells us something about the
-      ;; concept's neighborhood). Neither carries an equivalence event
-      ;; (no merge claim) nor a dedup-distinct event (the cascade
-      ;; declined to decide).
+      ;; :skip and :requires-review emit the evidence-aggregated events (every
+      ;; cascade run counts as evidence — even an undecided one tells us
+      ;; something about the concept's neighborhood). Neither carries an
+      ;; equivalence event (no merge claim) nor a dedup-distinct event (the
+      ;; cascade declined to decide). The co-occurrence LEDGER (write-only)
+      ;; rides ONLY when opted in (ME-2).
       (:skip :requires-review)
       {:command-result/data {:verdict verdict}
-       :command-result/events (into [co-occurrence-event] evidence-events)})))
+       :command-result/events
+       (-> []
+           (cond-> persist-pair-ledger? (conj co-occurrence-event))
+           (into evidence-events))})))
 
 ;; =============================================================================
 ;; S13 — Concept contradiction recording

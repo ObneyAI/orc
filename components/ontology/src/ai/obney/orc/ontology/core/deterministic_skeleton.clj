@@ -75,6 +75,7 @@
             [ai.obney.orc.ontology.core.ttl-ingest :as ttl-ingest]
             [ai.obney.orc.ontology.core.serialization :as serialization]
             [ai.obney.orc.ontology.core.field-analyzer :as field-analyzer]
+            [ai.obney.orc.ontology.core.embed-index-subbehavior :as eis]
             [ai.obney.orc.ontology.core.colbert-indexer :as colbert-indexer]
             [ai.obney.orc.ontology.core.embedding :as embedding]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -374,8 +375,8 @@
    (`{:buckets-capped :pairs-dropped :total-cap-hit? :max-pairs-per-bucket
       :max-candidate-pairs}`) so a comprehensive-scale run surfaces whether the
    per-bucket cap / total ceiling bit — never a silent top-N."
-  [ctx {:keys [ontology-id alignment-ontology-id llm-budget]
-        :or {llm-budget 0}}]
+  [ctx {:keys [ontology-id alignment-ontology-id llm-budget persist-pair-ledger?]
+        :or {llm-budget 0 persist-pair-ledger? false}}]
   (let [start (System/currentTimeMillis)]
     (try
       (let [;; STREAM Slice 4 — stream the dedup-stage concept load off `es/read`
@@ -455,7 +456,12 @@
                                           :a a :b b
                                           :llm-budget llm-budget
                                           :disjointness disjointness
-                                          :existing-evidence existing-evidence}))]
+                                          :existing-evidence existing-evidence
+                                          ;; ME-2 — the write-only pair ledgers
+                                          ;; (co-occurrence + dedup-distinct) are
+                                          ;; opt-in; a normal build threads FALSE
+                                          ;; so they are not persisted.
+                                          :persist-pair-ledger? persist-pair-ledger?}))]
                       ;; Disciplines #5 — no silent fallback. Surface anomalies.
                       (when (:cognitect.anomalies/category result)
                         (throw (ex-info "dedup-stage: cascade command returned anomaly"
@@ -625,11 +631,24 @@
          fields-set (let [hit (set/intersection detected embeddable-enum)]
                       (if (seq hit) hit #{:label :description}))
          fields (vec fields-set)
+         ;; GC-12 (ME-1) — read the ALREADY-EMBEDDED URI set from the
+         ;; `:ontology/concept-embedded` projection BEFORE embedding (the SAME
+         ;; primitive + fold `embed+index!` uses), then REUSE the shared
+         ;; `select-concepts-to-embed` so this pass embeds ONLY the NEW,
+         ;; non-spine-code-node concepts. This kills the 2× re-embed: whichever
+         ;; embed pass runs second (this one, in the central-evolver flow) no
+         ;; longer re-embeds what `embed+index!` already landed. Behavior-
+         ;; preserving (#4): the final embedded set is byte-identical — every
+         ;; semantic concept is still embedded exactly once.
+         already-embedded-uris (cs/reduce-concept-embeddings
+                                ctx ontology-id
+                                (fn [acc uri _vec] (conj acc uri)) #{})
+         {to-embed :to-embed} (eis/select-concepts-to-embed concepts already-embedded-uris)
          ;; HONEST EMPTY: a concept whose detected-field text is blank carries
          ;; nothing to embed — `embed-concepts-batch!` drops it from `:embeddings`,
          ;; so it is absent from the precompute map and skipped (no fabricated vector).
          embeddable (filterv #(seq (embedding/concept->embedding-text % fields-set))
-                             concepts)
+                             to-embed)
          ;; ONE batched compute pass over the embeddable concepts.
          batch (embed-batch-fn embeddable {:embedding-fields fields-set
                                            :auto-detect? false :ctx ctx})

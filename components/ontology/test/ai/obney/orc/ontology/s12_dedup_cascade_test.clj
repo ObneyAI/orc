@@ -243,11 +243,13 @@
 (deftest keep-number-variant-emits-dedup-distinct
   (testing "Number variants (Model 3 vs Model 30) → T2 :number-guard
             verdict :distinct :reason :number-difference. A
-            :ontology/dedup-distinct-recorded event is emitted."
+            :ontology/dedup-distinct-recorded event is emitted WHEN the ME-2
+            pair ledger is opted in (:persist-pair-ledger? true)."
     (h/with-test-context [ctx]
       (let [r (run-cascade-cmd! ctx
                                 {:ontology-id primary-p
-                                 :a number-3-vs-30-a :b number-3-vs-30-b})
+                                 :a number-3-vs-30-a :b number-3-vs-30-b
+                                 :persist-pair-ledger? true})
             v (get-in r [:command-result/data :verdict])
             primary-events (read-events-by-tag ctx [:ontology primary-p])
             distinct-evt (first (filter #(= :ontology/dedup-distinct-recorded
@@ -348,11 +350,13 @@
         (is (zero? @llm-counter)
             "ADVERSARIAL: the LLM was NEVER called for the disjoint pair"))
 
-      ;; And via the public command path — emits dedup-distinct + co-occurrence,
-      ;; reusing the projected axioms (no LLM call at the defcommand level either).
+      ;; And via the public command path — emits dedup-distinct + co-occurrence
+      ;; (ME-2 pair ledger opted in), reusing the projected axioms (no LLM call
+      ;; at the defcommand level either).
       (let [r (run-cascade-cmd! ctx
                                 {:ontology-id primary-p
-                                 :a disjoint-whale-a :b disjoint-crocodile-b})
+                                 :a disjoint-whale-a :b disjoint-crocodile-b
+                                 :persist-pair-ledger? true})
             v (get-in r [:command-result/data :verdict])
             primary-events (read-events-by-tag ctx [:ontology primary-p])
             distinct-evt (first (filter #(and (= :ontology/dedup-distinct-recorded
@@ -490,7 +494,8 @@
 ;; =============================================================================
 
 (deftest co-occurrence-event-emitted-per-pair
-  (testing "Every cascade invocation emits exactly ONE
+  (testing "With the ME-2 pair ledger opted in (:persist-pair-ledger? true),
+            every cascade invocation emits exactly ONE
             :ontology/concept-pair-co-occurrence event tagged to the
             primary section. The event carries the canonical pair, the
             tier that closed the verdict, and the verdict itself.
@@ -502,10 +507,12 @@
     (h/with-test-context [ctx]
       (run-cascade-cmd! ctx
                         {:ontology-id primary-p
-                         :a number-3-vs-30-a :b number-3-vs-30-b})
+                         :a number-3-vs-30-a :b number-3-vs-30-b
+                         :persist-pair-ledger? true})
       (run-cascade-cmd! ctx
                         {:ontology-id primary-p
-                         :a number-3-vs-30-a :b number-3-vs-30-b})
+                         :a number-3-vs-30-a :b number-3-vs-30-b
+                         :persist-pair-ledger? true})
       (let [primary-events (read-events-by-tag ctx [:ontology primary-p])
             co-events (filter #(= :ontology/concept-pair-co-occurrence
                                   (:event/type %))
@@ -533,7 +540,8 @@
                                 {:ontology-id primary-p
                                  :alignment-ontology-id align-pq
                                  :a equiv-prop-a :b equiv-prop-b
-                                 :llm-budget 0})
+                                 :llm-budget 0
+                                 :persist-pair-ledger? true})
             v (get-in r [:command-result/data :verdict])
             primary-events (read-events-by-tag ctx [:ontology primary-p])
             co-evt (first (filter #(= :ontology/concept-pair-co-occurrence
@@ -613,6 +621,86 @@
         "prompt carries the negation-difference KEEP rule")
     (is (str/includes? dedup/llm-keep-rule-prompt "DIFFERENT ENTITIES")
         "prompt carries the entity-disambiguation KEEP rule")))
+
+;; =============================================================================
+;; ME-2 — the write-only dedup ledgers (co-occurrence + dedup-distinct) are
+;; OPT-IN. VERIFIED (grep across components/ontology/src): nothing reads either
+;; :ontology/concept-pair-co-occurrence or :ontology/dedup-distinct-recorded —
+;; no read-model, no query, no reconcile/dedup consumer. They are aspirational
+;; incremental-dedup ledgers (~723k events in the real O*NET build) of pure
+;; write-only bloat. Gate them behind :persist-pair-ledger? (default FALSE)
+;; threaded from dedup-stage. The dedup VERDICT and the CONSUMED events
+;; (equivalence on :merge, S13 evidence on every run) are byte-identical in
+;; both modes — only the unread ledgers stop being written by default.
+;; =============================================================================
+
+(deftest ledgers-not-persisted-by-default
+  (testing "ME-2 — with :persist-pair-ledger? OFF (the DEFAULT), a :distinct
+            verdict emits NO :ontology/dedup-distinct-recorded and NO
+            :ontology/concept-pair-co-occurrence event, and a :merge verdict
+            emits NO co-occurrence event — while the CONSUMED equivalence
+            event STILL lands. Only the write-only ledgers stop."
+    (h/with-test-context [ctx]
+      ;; :distinct pair (T2 number-guard) — default flag (OFF).
+      (let [rd (run-cascade-cmd! ctx
+                                 {:ontology-id primary-p
+                                  :a number-3-vs-30-a :b number-3-vs-30-b})]
+        (is (= :distinct (:verdict (get-in rd [:command-result/data :verdict])))
+            "verdict rides :command-result/data unchanged"))
+      ;; :merge pair (T6 case-variant) — default flag (OFF).
+      (let [rm (run-cascade-cmd! ctx
+                                 {:ontology-id primary-p
+                                  :alignment-ontology-id align-pq
+                                  :a case-variant-a :b case-variant-b})]
+        (is (= :merge (:verdict (get-in rm [:command-result/data :verdict])))
+            "verdict rides :command-result/data unchanged"))
+      (let [primary-events (read-events-by-tag ctx [:ontology primary-p])
+            align-events   (read-events-by-tag ctx [:ontology align-pq])
+            co-events      (filter #(= :ontology/concept-pair-co-occurrence
+                                       (:event/type %)) primary-events)
+            distinct-events (filter #(= :ontology/dedup-distinct-recorded
+                                        (:event/type %)) primary-events)
+            equiv-events   (filter #(= :ontology/equivalence-recorded
+                                       (:event/type %)) align-events)]
+        (is (zero? (count co-events))
+            "no concept-pair-co-occurrence ledger by default (write-only, unread)")
+        (is (zero? (count distinct-events))
+            "no dedup-distinct-recorded ledger by default (write-only, unread)")
+        (is (= 1 (count equiv-events))
+            "the CONSUMED equivalence event STILL lands — behavior-preserving")))))
+
+(deftest ledgers-persisted-when-opted-in
+  (testing "ME-2 — with :persist-pair-ledger? true (opt-in for a future
+            incremental-dedup caller), BOTH ledgers ARE emitted again: a
+            :distinct pair emits dedup-distinct + co-occurrence, a :merge pair
+            emits equivalence + co-occurrence. Today's behavior, preserved as
+            an explicit opt-in."
+    (h/with-test-context [ctx]
+      ;; :distinct pair, opted in.
+      (run-cascade-cmd! ctx
+                        {:ontology-id primary-p
+                         :a number-3-vs-30-a :b number-3-vs-30-b
+                         :persist-pair-ledger? true})
+      ;; :merge pair, opted in.
+      (run-cascade-cmd! ctx
+                        {:ontology-id primary-p
+                         :alignment-ontology-id align-pq
+                         :a case-variant-a :b case-variant-b
+                         :persist-pair-ledger? true})
+      (let [primary-events (read-events-by-tag ctx [:ontology primary-p])
+            align-events   (read-events-by-tag ctx [:ontology align-pq])
+            co-events      (filter #(= :ontology/concept-pair-co-occurrence
+                                       (:event/type %)) primary-events)
+            distinct-events (filter #(= :ontology/dedup-distinct-recorded
+                                        (:event/type %)) primary-events)
+            equiv-events   (filter #(= :ontology/equivalence-recorded
+                                       (:event/type %)) align-events)]
+        (is (= 2 (count co-events))
+            "both runs emit a co-occurrence event when opted in (one per pair)")
+        (is (= 1 (count distinct-events))
+            "the :distinct run emits its dedup-distinct ledger when opted in")
+        (is (= 1 (count equiv-events))
+            "the :merge run still emits its equivalence event")))))
 
 ;; =============================================================================
 ;; MT-7e — bounded LSH blocking (comprehensive-scale OOM guard)

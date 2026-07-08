@@ -1619,11 +1619,15 @@
    ;; emits whichever events the verdict requires:
    ;;
    ;;   :verdict :merge              → :ontology/equivalence-recorded
-   ;;                                  + :ontology/concept-pair-co-occurrence
-   ;;   :verdict :distinct           → :ontology/dedup-distinct-recorded
-   ;;                                  + :ontology/concept-pair-co-occurrence
-   ;;   :verdict :skip               → :ontology/concept-pair-co-occurrence ONLY
-   ;;   :verdict :requires-review    → :ontology/concept-pair-co-occurrence ONLY
+   ;;                                  (+ :ontology/concept-pair-co-occurrence *)
+   ;;   :verdict :distinct           → (:ontology/dedup-distinct-recorded *)
+   ;;                                  (+ :ontology/concept-pair-co-occurrence *)
+   ;;   :verdict :skip               → (:ontology/concept-pair-co-occurrence * ONLY)
+   ;;   :verdict :requires-review    → (:ontology/concept-pair-co-occurrence * ONLY)
+   ;;
+   ;; (*) ME-2 — the pair LEDGER events are write-only (no reader) and gated
+   ;; behind the OPT-IN `:persist-pair-ledger?` flag (default FALSE). Every
+   ;; verdict ALSO emits the S13 evidence events (one per side).
    ;;
    ;; `:ontology-id` is the PRIMARY section the pair was drawn from.
    ;; `:alignment-ontology-id` (optional) is the alignment section equivalence
@@ -1665,7 +1669,15 @@
      ;; so the command does NOT re-project per pair. When omitted the command
      ;; projects them itself (defensive — the command stays self-sufficient).
      [:disjointness {:optional true} [:map-of :string [:set :string]]]
-     [:existing-evidence {:optional true} [:map-of :string :any]]]]
+     [:existing-evidence {:optional true} [:map-of :string :any]]
+     ;; ME-2 — OPT-IN gate for the write-only pair LEDGERS
+     ;; (:ontology/concept-pair-co-occurrence + :ontology/dedup-distinct-recorded).
+     ;; No read-model / query / reconcile consumer reads either; they are
+     ;; aspirational incremental-dedup ledgers. Default FALSE (threaded FALSE by
+     ;; dedup-stage) — a normal build does NOT persist them. A future
+     ;; incremental-dedup caller opts in with true. The dedup VERDICT and the
+     ;; CONSUMED events (equivalence, S13 evidence) are byte-identical either way.
+     [:persist-pair-ledger? {:optional true} :boolean]]]
 
    ;; S13 — record a field-value contradiction the builder detected.
    ;; The contradiction is MARKED (visible, queryable) — the stored

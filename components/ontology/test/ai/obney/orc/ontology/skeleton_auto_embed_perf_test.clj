@@ -50,6 +50,26 @@
    {:uri "occupation/2" :label "Occupation Two" :description "Does the second kind of work."}
    {:uri "occupation/3" :label "Occupation Three" :description "Does the third kind of work."}])
 
+(defn- land-embedding!
+  "Append a `:ontology/concept-embedded` event EXACTLY as the real embed-concept
+   command tags it (only a `[:concept id]` tag, `:ontology-id` in the body) — the
+   DJL-free way to simulate an ALREADY-embedded concept, so `auto-embed!`'s
+   `concept-stream/reduce-concept-embeddings` fold sees it identically to a real
+   first-pass embed."
+  [ctx oid uri]
+  (es/append (:event-store ctx)
+             {:tenant-id (:tenant-id ctx)
+              :events [(es/->event
+                        {:type :ontology/concept-embedded
+                         :tags #{[:concept (random-uuid)]}
+                         :body {:uri uri
+                                :ontology-id oid
+                                :text-embedded (str "text for " uri)
+                                :field-source "label+description"
+                                :embedding (vec (repeatedly 8 #(double (rand))))
+                                :model-id "test-model"
+                                :embedded-at "2026-01-01T00:00:00Z"}})]}))
+
 (deftest auto-embed-single-pass-with-metadata-test
   (testing "auto-embed! computes vectors ONCE via the injected batch and lands them
             through the command with identity metadata; landed vectors ARE the batch's
@@ -80,6 +100,37 @@
           (is (= (get sentinels (:uri c)) (:embedding (get embs (:uri c))))
               (str "landed vector for " (:uri c)
                    " is the batch's precomputed vector — no re-embed")))))))
+
+(deftest auto-embed-skips-already-embedded-test
+  (testing "GC-12 — auto-embed! reads the already-embedded URI set from the
+            :ontology/concept-embedded projection and embeds only the NEW concepts,
+            so it does NOT re-embed what embed+index! already embedded (kills the 2×)"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            _ (ontology/compile-discovery-source!
+               ctx oid {:status :emitted-drafts
+                        :emitted-concepts concepts :emitted-relationships []})
+            projected (vec (filter #(= oid (:ontology-id %)) (rm/get-concepts ctx {})))
+            ;; ONE concept is ALREADY embedded (mirrors embed+index!'s first pass).
+            already-uri "occupation/2"
+            _ (land-embedding! ctx oid already-uri)
+            ;; capture WHICH concepts the batch capability is asked to embed.
+            batch-seen (atom nil)
+            fake-batch (fn [embeddable _opts]
+                         (reset! batch-seen (set (map :uri embeddable)))
+                         {:embedded-count (count embeddable)
+                          :embeddings (mapv (fn [c] {:uri (:uri c)
+                                                     :embedding (vec (repeatedly 384 #(double (rand))))
+                                                     :text-embedded (str "t:" (:uri c))})
+                                            embeddable)})
+            r (#'ds/auto-embed! ctx oid projected :heuristic fake-batch)]
+        (is (= 3 (count projected)) "precondition: three concepts landed")
+        (is (= 2 (:embedded-count r))
+            "only the 2 NEW concepts are embedded — the already-embedded one is skipped")
+        (is (= #{"occupation/1" "occupation/3"} @batch-seen)
+            "the batch capability receives ONLY the NEW set (not the already-embedded uri)")
+        (is (not (contains? @batch-seen already-uri))
+            "the already-embedded concept is NOT handed to the batch (no re-embed)")))))
 
 ;; ---------------------------------------------------------------------------
 ;; ColBERT indexing at scale — the full O*NET build (36k concepts) stalled because
