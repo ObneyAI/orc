@@ -5,6 +5,8 @@
    All queries return {:query/result ...} on success."
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.tree-layout :as layout]
+            [ai.obney.orc.orc-service.core.tracing :as tracing]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.query-processor.interface :refer [defquery]]
             [clojure.set]
@@ -415,19 +417,24 @@
   {:authorized? authenticated?}
   "Fetch inputs/outputs for a specific node trace on demand.
 
+   RB-2a: full inputs/outputs are no longer inlined on the stored
+   :sheet/execution-traced event (that bloated it to ~19 MB). The trace-id IS
+   the tick-id, so we source the full payload from the granular
+   :sheet/node-execution-started (:inputs) / :sheet/node-execution-completed
+   (:writes) events tagged [:tick trace-id] — the same events the trace builder
+   reads. tracing/node-trace-io applies the identical correlation + context-key
+   filter the builder used to apply, so the returned shape is unchanged.
+
    Query params:
-     :trace-id - The execution trace ID.
+     :trace-id - The execution trace ID (== tick-id).
      :node-id - The node ID within the trace."
   [{{:keys [trace-id node-id]} :query
     :keys [event-store] :as ctx}]
-  (let [trace (rm/get-trace ctx trace-id)
-        node-trace (some #(when (= (:node-id %) node-id) %)
-                         (:node-traces trace))]
-    (if node-trace
-      {:query/result
-       {:node-id node-id
-        :inputs (:inputs node-trace)
-        :outputs (:outputs node-trace)}}
+  (let [tick-events (into [] (es/read event-store {:tags #{[:tick trace-id]}
+                                                   :tenant-id (:tenant-id ctx)}))
+        detail (tracing/node-trace-io tick-events node-id)]
+    (if detail
+      {:query/result detail}
       {::anom/category ::anom/not-found
        ::anom/message (str "Node trace not found: " node-id)})))
 

@@ -11,6 +11,7 @@
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [ai.obney.orc.orc-service.core.tracing :as tracing]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
@@ -2502,16 +2503,43 @@
 ;; Trace Assembly (Post-hoc from events)
 ;; =============================================================================
 
-(defn trace-execution-context
-  "Return the execution-disambiguating context for trace correlation.
-   This distinguishes repeated executions of the same node under map-each."
-  [inputs]
-  (select-keys (or inputs {}) [::map-each-index ::map-each-parent]))
+;; Re-exported from `tracing` (the canonical home, so the on-demand
+;; node-trace-detail query can reuse them without a require cycle). Kept here so
+;; existing callers/tests that reference todo-processors/trace-execution-key
+;; keep resolving to the SAME var — no duplicate logic.
+(def trace-execution-context tracing/trace-execution-context)
+(def trace-execution-key tracing/trace-execution-key)
 
-(defn trace-execution-key
-  "Correlation key for matching started/completed events in trace assembly."
-  [event]
-  [(:node-id event) (trace-execution-context (:inputs event))])
+(defn build-node-traces
+  "Build the light-metadata node-trace vector for an execution trace from a
+   tick's node-execution-started/completed events.
+
+   RB-2a: node traces intentionally DO NOT carry :inputs/:outputs. Those were
+   redundant with the granular [:tick tick-id] node-execution events and
+   inlining them bloated each :sheet/execution-traced event (~19 MB). The
+   on-demand node-trace-detail query now fetches full inputs/outputs from the
+   granular events (see tracing/node-trace-io)."
+  [nodes-by-id started-events completed-events]
+  (let [completed-by-execution (reduce (fn [acc e]
+                                         (assoc acc (tracing/trace-execution-key e) e))
+                                       {}
+                                       completed-events)]
+    (vec
+      (for [started started-events
+            :let [node-id (:node-id started)
+                  node (get nodes-by-id node-id)
+                  completed (get completed-by-execution
+                                 (tracing/trace-execution-key started))]
+            :when node]
+        (cond-> {:node-id node-id
+                 :node-name (:name node)
+                 :node-type (:type node)
+                 :parent-id (:parent-id node)
+                 :status (or (:status completed) :unknown)
+                 :started-at (str (:event/timestamp started))
+                 :completed-at (when completed (str (:event/timestamp completed)))}
+          (:duration-ms completed) (assoc :duration-ms (:duration-ms completed))
+          (:error completed) (assoc :error (:error completed)))))))
 
 (defn assemble-execution-trace
   "After a tick completes, assemble an execution trace from events and store it.
@@ -2543,38 +2571,13 @@
                                         {} bb))
             ;; Build output snapshot
             output-snapshot (or outputs {})
-            ;; Correlate node-execution-started and completed events
+            ;; Correlate node-execution-started and completed events into
+            ;; light-metadata node traces. RB-2a: full :inputs/:outputs are NOT
+            ;; inlined here — they stay only in the granular [:tick tick-id]
+            ;; events and are fetched on demand by node-trace-detail.
             started-events (filter #(= :sheet/node-execution-started (:event/type %)) tick-events)
             completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) tick-events)
-            ;; Build completed map by node plus execution context. Map-each runs
-            ;; the same child node-id once per item, so keying only by node-id
-            ;; collapses all child completions into whichever event was seen last.
-            completed-by-execution (reduce (fn [acc e]
-                                             (assoc acc (trace-execution-key e) e))
-                                           {}
-                                           completed-events)
-            ;; Build node traces
-            node-traces (vec
-                          (for [started started-events
-                                :let [node-id (:node-id started)
-                                      node (get nodes-by-id node-id)
-                                      completed (get completed-by-execution
-                                                     (trace-execution-key started))]
-                                :when node]
-                            (cond-> {:node-id node-id
-                                     :node-name (:name node)
-                                     :node-type (:type node)
-                                     :parent-id (:parent-id node)
-                                     :status (or (:status completed) :unknown)
-                                     :started-at (str (:event/timestamp started))
-                                     :completed-at (when completed (str (:event/timestamp completed)))}
-                              (:duration-ms completed) (assoc :duration-ms (:duration-ms completed))
-                              (:writes completed) (assoc :outputs (:writes completed))
-                              (:error completed) (assoc :error (:error completed))
-                              ;; Inputs from event (non-context keys)
-                              (:inputs started) (assoc :inputs
-                                                       (into {} (filter (fn [[k _]] (and (keyword? k) (not (= (namespace k) (namespace ::_)))))
-                                                                        (:inputs started)))))))
+            node-traces (build-node-traces nodes-by-id started-events completed-events)
             ;; Calculate duration
             duration-ms (if (and started-at completed-at)
                           (- (.toEpochMilli (java.time.Instant/parse (str completed-at)))

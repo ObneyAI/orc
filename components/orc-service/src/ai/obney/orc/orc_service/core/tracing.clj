@@ -18,6 +18,69 @@
 (def ^:private max-output-bytes (* 3 1024 1024))
 
 ;; =============================================================================
+;; Post-hoc Trace Assembly Helpers (event correlation)
+;; =============================================================================
+;;
+;; Shared, pure helpers for correlating :sheet/node-execution-started /
+;; :sheet/node-execution-completed events during post-hoc trace assembly.
+;; They live here (rather than in todo-processors) so the on-demand
+;; node-trace-detail query can reuse the SAME correlation logic without a
+;; require cycle into the todo-processor namespace.
+
+(def trace-context-ns
+  "Namespace (as a string) of the execution-disambiguating input keys
+   (::map-each-index / ::map-each-parent are interned under the
+   todo-processors namespace). Referenced by fully-qualified name here so this
+   ns-agnostic helper resolves the same keyword regardless of who calls it."
+  "ai.obney.orc.orc-service.core.todo-processors")
+
+(def ^:private map-each-index-key (keyword trace-context-ns "map-each-index"))
+(def ^:private map-each-parent-key (keyword trace-context-ns "map-each-parent"))
+
+(defn trace-execution-context
+  "Return the execution-disambiguating context for trace correlation.
+   This distinguishes repeated executions of the same node under map-each."
+  [inputs]
+  (select-keys (or inputs {}) [map-each-index-key map-each-parent-key]))
+
+(defn trace-execution-key
+  "Correlation key for matching started/completed events in trace assembly."
+  [event]
+  [(:node-id event) (trace-execution-context (:inputs event))])
+
+(defn node-trace-inputs
+  "The user-facing subset of a node-execution-started :inputs map: keyword keys
+   that are NOT execution-context keys. Matches the filter the trace builder
+   applied when it used to inline :inputs on each node trace."
+  [inputs]
+  (into {} (filter (fn [[k _]]
+                     (and (keyword? k)
+                          (not (= (namespace k) trace-context-ns))))
+                   inputs)))
+
+(defn node-trace-io
+  "Given all events for a tick and a node-id, return the on-demand
+   {:node-id :inputs :outputs} detail for the FIRST execution of that node,
+   sourcing :inputs from the :sheet/node-execution-started event (context keys
+   stripped) and :outputs from the correlated :sheet/node-execution-completed
+   :writes. Returns nil when the node has no started event.
+
+   This reproduces the pre-RB-2a node-trace-detail contract, now sourced from
+   the granular events instead of an inlined copy on the aggregate trace."
+  [events node-id]
+  (let [started-events   (filter #(= :sheet/node-execution-started (:event/type %)) events)
+        completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) events)
+        completed-by-execution (reduce (fn [acc e] (assoc acc (trace-execution-key e) e))
+                                       {} completed-events)
+        started (first (filter #(= node-id (:node-id %)) started-events))]
+    (when started
+      (let [completed      (get completed-by-execution (trace-execution-key started))
+            started-inputs (:inputs started)]
+        {:node-id node-id
+         :inputs  (when started-inputs (node-trace-inputs started-inputs))
+         :outputs (:writes completed)}))))
+
+;; =============================================================================
 ;; Trace Event Builders
 ;; =============================================================================
 
