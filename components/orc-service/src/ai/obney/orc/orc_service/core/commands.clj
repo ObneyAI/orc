@@ -1225,9 +1225,13 @@
                              :completed-at completed-at
                              :duration-ms duration-ms
                              :status status
-                             :input-snapshot input-snapshot
-                             :output-snapshot output-snapshot
                              :node-traces node-traces}
+                      ;; RB-2b: the assembler no longer sends the trace-level
+                      ;; snapshots (redundant full copies of the tick
+                      ;; blackboard). Only persist them when a caller still
+                      ;; provides them (back-compat).
+                      (some? input-snapshot) (assoc :input-snapshot input-snapshot)
+                      (some? output-snapshot) (assoc :output-snapshot output-snapshot)
                       version-number (assoc :version-number version-number)
                       error (assoc :error error))})]})
 

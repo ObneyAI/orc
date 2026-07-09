@@ -289,6 +289,40 @@
 ;; Execution Traces
 ;; =============================================================================
 
+(defn- hydrate-trace-snapshots
+  "RB-2b: the trace-level :input-snapshot/:output-snapshot are no longer
+   stored on the :sheet/execution-traced event (each was a full copy of the
+   tick blackboard — ~28 MB/event on ontology builds). For a FULL trace view,
+   source them on demand (trace-id == tick-id):
+
+   - :output-snapshot ← the tick's FINAL :sheet/tree-tick-completed event's
+     :outputs (the durable event the assembler copied it from).
+   - :input-snapshot ← the same tick-execution-context blackboard
+     reconstruction the assembler used (accumulated blackboard at completion,
+     non-nil values only).
+
+   Traces from older events that still carry stored snapshots are returned
+   verbatim — stored values win."
+  [ctx trace]
+  (when trace
+    (let [need-input? (not (contains? trace :input-snapshot))
+          need-output? (not (contains? trace :output-snapshot))]
+      (if-not (or need-input? need-output?)
+        trace
+        (let [trace-id (:trace-id trace)]
+          (cond-> trace
+            need-input?
+            (assoc :input-snapshot
+                   (tracing/blackboard-snapshot
+                    (:blackboard (rm/get-tick-execution-context ctx trace-id))))
+
+            need-output?
+            (assoc :output-snapshot
+                   (tracing/final-tick-outputs
+                    (into [] (es/read (:event-store ctx)
+                                      {:tags #{[:tick trace-id]}
+                                       :tenant-id (:tenant-id ctx)}))))))))))
+
 (defquery :sheet get-trace
   {:authorized? authenticated?}
   "Get a single execution trace by ID."
@@ -298,7 +332,7 @@
     (if-not trace
       {::anom/category ::anom/not-found
        ::anom/message "Trace not found"}
-      {:query/result trace})))
+      {:query/result (hydrate-trace-snapshots ctx trace)})))
 
 (defquery :sheet get-traces
   {:authorized? authenticated?}
@@ -405,9 +439,10 @@
                            :version-number (:version-number t)})
                         limited)
 
-        ;; Get full trace if requested
+        ;; Get full trace if requested (RB-2b: hydrate snapshots on demand)
         selected-trace (when trace-id
-                         (serialize-trace (rm/get-trace ctx trace-id)))]
+                         (serialize-trace
+                          (hydrate-trace-snapshots ctx (rm/get-trace ctx trace-id))))]
     {:query/result
      {:traces summaries
       :total (count filtered)
@@ -451,7 +486,8 @@
         sheets-map (rm/get-sheets-name-map ctx)]
     (if trace
       {:query/result
-       {:trace (-> (serialize-trace trace)
+       ;; RB-2b: hydrate the trace-level snapshots on demand before serializing.
+       {:trace (-> (serialize-trace (hydrate-trace-snapshots ctx trace))
                    (assoc :sheet-name (get sheets-map (:sheet-id trace) "Unknown")))}}
       {::anom/category ::anom/not-found
        ::anom/message (str "Trace not found: " trace-id)})))

@@ -80,6 +80,33 @@
          :inputs  (when started-inputs (node-trace-inputs started-inputs))
          :outputs (:writes completed)}))))
 
+(defn blackboard-snapshot
+  "RB-2b: reconstruct the trace-level :input-snapshot from a tick execution
+   context's blackboard: every entry whose :value is non-nil, keyed by
+   blackboard key. This is the EXACT reconstruction the trace assembler used
+   to inline on the :sheet/execution-traced event. Note the semantics: the
+   tick-execution-contexts read model folds every :sheet/execution-value-written
+   into the blackboard, so this is the ACCUMULATED blackboard at tick
+   completion (seed inputs + all writes) — not the seed."
+  [blackboard]
+  (reduce-kv (fn [acc k entry]
+               (if (some? (:value entry))
+                 (assoc acc k (:value entry))
+                 acc))
+             {} blackboard))
+
+(defn final-tick-outputs
+  "RB-2b: the trace-level :output-snapshot, sourced on demand from the tick's
+   FINAL :sheet/tree-tick-completed event's :outputs (ticks re-tick — the
+   intermediate :running completions carry no :outputs, so take the LAST).
+   Defaults to {} exactly as the assembler's `(or outputs {})` did."
+  [tick-events]
+  (or (->> tick-events
+           (filter #(= :sheet/tree-tick-completed (:event/type %)))
+           last
+           :outputs)
+      {}))
+
 ;; =============================================================================
 ;; Trace Event Builders
 ;; =============================================================================

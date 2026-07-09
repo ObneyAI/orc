@@ -2550,7 +2550,6 @@
   (let [tick-id (:tick-id event)
         sheet-id (:sheet-id event)
         root-status (:root-status event)
-        outputs (:outputs event)
         tick-ctx (rm/get-tick-execution-context context tick-id)]
     ;; Only assemble traces for tick-scoped executions
     (when tick-ctx
@@ -2562,15 +2561,13 @@
             started-event (first (filter #(= :sheet/tree-tick-started (:event/type %)) tick-events))
             started-at (when started-event (:event/timestamp started-event))
             completed-at (:event/timestamp event)
-            ;; Build input snapshot from tick blackboard seed
-            input-snapshot (let [bb (:blackboard tick-ctx)]
-                             (reduce-kv (fn [acc k entry]
-                                          (if (some? (:value entry))
-                                            (assoc acc k (:value entry))
-                                            acc))
-                                        {} bb))
-            ;; Build output snapshot
-            output-snapshot (or outputs {})
+            ;; RB-2b: the trace-level :input-snapshot/:output-snapshot are NOT
+            ;; inlined here anymore — each was a full copy of the tick
+            ;; blackboard (~28 MB/event on ontology builds), redundant with
+            ;; durable events. The detail queries reconstruct them on demand:
+            ;; :output-snapshot from the tick's final :sheet/tree-tick-completed
+            ;; :outputs, :input-snapshot via tracing/blackboard-snapshot over
+            ;; the same tick-execution-context blackboard read here.
             ;; Correlate node-execution-started and completed events into
             ;; light-metadata node traces. RB-2a: full :inputs/:outputs are NOT
             ;; inlined here — they stay only in the granular [:tick tick-id]
@@ -2608,8 +2605,6 @@
                               :completed-at (str (or completed-at (time/now)))
                               :duration-ms duration-ms
                               :status final-status
-                              :input-snapshot input-snapshot
-                              :output-snapshot output-snapshot
                               :node-traces node-traces}
                        version-number (assoc :version-number version-number)
                        (:error event) (assoc :error (:error event)))))

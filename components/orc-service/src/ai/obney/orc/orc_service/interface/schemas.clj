@@ -228,8 +228,13 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout :partial]]
-    [:input-snapshot :map]                        ;; Blackboard at start
-    [:output-snapshot :map]                       ;; Blackboard at end
+    ;; RB-2b: no longer stored on the event (they were full copies of the
+    ;; tick blackboard). Detail queries reconstruct them on demand from the
+    ;; durable [:tick trace-id] events; older events still carry them.
+    ;; NOTE: :input-snapshot is (and always was) the ACCUMULATED tick
+    ;; blackboard at completion (non-nil values), not the seed.
+    [:input-snapshot {:optional true} :map]
+    [:output-snapshot {:optional true} :map]
     [:node-traces [:vector ::node-trace]]
     [:error {:optional true} :string]]
 
@@ -654,8 +659,10 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status :keyword]
-    [:input-snapshot :map]
-    [:output-snapshot :map]
+    ;; RB-2b: the assembler no longer sends these (redundant full copies of
+    ;; the tick blackboard); optional for back-compat with older callers.
+    [:input-snapshot {:optional true} :map]
+    [:output-snapshot {:optional true} :map]
     [:node-traces [:vector :any]]
     [:error {:optional true} :string]]
 
@@ -1124,8 +1131,11 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout]]
-    [:input-snapshot :map]
-    [:output-snapshot :map]
+    ;; RB-2b: new events carry NO snapshots (they were full copies of the
+    ;; tick blackboard — ~28 MB/event on ontology builds). Optional so older
+    ;; events that still carry them remain valid.
+    [:input-snapshot {:optional true} :map]
+    [:output-snapshot {:optional true} :map]
     [:node-traces [:vector :any]]                 ;; Vector of ::node-trace
     [:error {:optional true} :string]]
 

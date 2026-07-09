@@ -866,17 +866,23 @@
   [state event]
   (let [trace-id (:trace-id event)]
     (assoc state trace-id
-           {:trace-id trace-id
-            :sheet-id (:sheet-id event)
-            :version-number (:version-number event)
-            :started-at (str (:started-at event))
-            :completed-at (str (:completed-at event))
-            :duration-ms (:duration-ms event)
-            :status (:status event)
-            :input-snapshot (:input-snapshot event)
-            :output-snapshot (:output-snapshot event)
-            :node-traces (:node-traces event)
-            :error (:error event)})))
+           ;; RB-2b: new events carry no :input-snapshot/:output-snapshot —
+           ;; only project them when present (older events) so the detail
+           ;; queries can distinguish "stored" from "reconstruct on demand".
+           (cond-> {:trace-id trace-id
+                    :sheet-id (:sheet-id event)
+                    :version-number (:version-number event)
+                    :started-at (str (:started-at event))
+                    :completed-at (str (:completed-at event))
+                    :duration-ms (:duration-ms event)
+                    :status (:status event)
+                    :node-traces (:node-traces event)
+                    :error (:error event)}
+             (contains? event :input-snapshot)
+             (assoc :input-snapshot (:input-snapshot event))
+
+             (contains? event :output-snapshot)
+             (assoc :output-snapshot (:output-snapshot event))))))
 
 (defmethod traces* :default [state _] state)
 
