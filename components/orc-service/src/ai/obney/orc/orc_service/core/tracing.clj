@@ -95,6 +95,69 @@
                  acc))
              {} blackboard))
 
+(defn blackboard-snapshot-from-events
+  "RB-2c: reconstruct the trace-level :input-snapshot from the tick's durable
+   events ALONE — a pure fold over the [:tick trace-id] event stream for
+   library consumers that hold events but no read-model ctx (e.g. evaluation's
+   get-traces-raw). Mirrors the tick-execution-contexts read model EXACTLY
+   (read_models.clj tick-execution-contexts* — equivalence is asserted in
+   rb2_trace_slimming_test/blackboard-snapshot-from-events-equals-read-model):
+
+   - :sheet/tree-tick-started with an :execution-snapshot seeds the blackboard
+     from the snapshot's :blackboard-entries merged with the event's :inputs
+     (string keys keywordized; an input whose key has no entry creates
+     {:sheet-id .. :key .. :schema :any :value .. :version 1} — the
+     cache-miss path). A started event WITHOUT a snapshot stores no context
+     (legacy UI tick).
+   - :sheet/execution-value-written assoc's [k :value] and bumps :version —
+     but ONLY once a snapshot-based started event has been seen, exactly as
+     the read model ignores ticks with no stored context.
+
+   The result is projected through blackboard-snapshot (non-nil values only):
+   the ACCUMULATED tick blackboard at completion — the same semantics as the
+   read-model path used by queries/hydrate-trace-snapshots."
+  [tick-events]
+  (let [context
+        (reduce
+         (fn [ctx event]
+           (case (:event/type event)
+             :sheet/tree-tick-started
+             (if-let [snapshot (:execution-snapshot event)]
+               (let [bb-entries (:blackboard-entries snapshot)
+                     inputs (or (:inputs event) {})
+                     blackboard
+                     (reduce (fn [bb [key-name value]]
+                               (let [kw-key (if (string? key-name) (keyword key-name) key-name)]
+                                 (if (get bb kw-key)
+                                   ;; Key exists - update value
+                                   (-> bb
+                                       (assoc-in [kw-key :value] value)
+                                       (assoc-in [kw-key :version] 1))
+                                   ;; Key doesn't exist - create entry from input
+                                   (assoc bb kw-key
+                                          {:sheet-id (:sheet-id event)
+                                           :key kw-key
+                                           :schema :any
+                                           :value value
+                                           :version 1}))))
+                             bb-entries
+                             inputs)]
+                 {:blackboard blackboard})
+               ;; No snapshot - legacy tick, no context stored
+               ctx)
+
+             :sheet/execution-value-written
+             (if ctx
+               (-> ctx
+                   (assoc-in [:blackboard (:key event) :value] (:value event))
+                   (update-in [:blackboard (:key event) :version] (fnil inc 0)))
+               ctx)
+
+             ctx))
+         nil
+         tick-events)]
+    (blackboard-snapshot (:blackboard context))))
+
 (defn final-tick-outputs
   "RB-2b: the trace-level :output-snapshot, sourced on demand from the tick's
    FINAL :sheet/tree-tick-completed event's :outputs (ticks re-tick — the

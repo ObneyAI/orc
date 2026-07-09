@@ -15,6 +15,8 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.todo-processors :as td]
+            [ai.obney.orc.orc-service.core.tracing :as tracing]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -364,6 +366,75 @@
                         :query/result)]
           (is (= expected-input (:input-snapshot trace)))
           (is (= final-outputs (:output-snapshot trace))))))))
+
+;; =============================================================================
+;; RB-2c — pure event-fold twin of the tick-execution-contexts read model
+;; =============================================================================
+
+(deftest blackboard-snapshot-from-events-equals-read-model
+  (testing "tracing/blackboard-snapshot-from-events (a PURE fold over the
+            [:tick tick-id] events — for library consumers that hold only
+            events, no read-model ctx) reconstructs EXACTLY the same
+            :input-snapshot as the tick-execution-contexts read model +
+            tracing/blackboard-snapshot on the same store. This is the
+            read-model-equivalence witness."
+    (h/with-test-context [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id  (random-uuid)          ;; trace-id == tick-id
+            ;; Seed inputs: a keyword key AND a string key (runtime/execute
+            ;; sends string keys; the read model keywordizes them).
+            inputs {:document "the source text"
+                    "threshold" 0.75}
+            ;; One declared-but-unwritten entry (nil value, must be dropped)
+            bb-entries {:draft {:sheet-id sheet-id :key :draft
+                                :schema :string :value nil :version 0}}]
+        (append-tick-started! ctx sheet-id tick-id inputs bb-entries)
+        ;; several value-writes: an overwrite, a nil write to an existing
+        ;; entry, and a nil write that CREATES a key.
+        (append-value-written! ctx sheet-id tick-id :summary "first draft")
+        (append-value-written! ctx sheet-id tick-id :summary "a concise summary")
+        (append-value-written! ctx sheet-id tick-id :draft nil)
+        (append-value-written! ctx sheet-id tick-id :scratch nil)
+        (let [tick-events (into [] (es/read (:event-store ctx)
+                                            {:tags #{[:tick tick-id]}
+                                             :tenant-id (:tenant-id ctx)}))
+              from-events (tracing/blackboard-snapshot-from-events tick-events)
+              from-read-model (tracing/blackboard-snapshot
+                               (:blackboard (rm/get-tick-execution-context ctx tick-id)))]
+          (is (= from-read-model from-events)
+              "pure event fold ≡ read-model reconstruction (same store)")
+          (is (= {:document "the source text"
+                  :threshold 0.75
+                  :summary "a concise summary"}
+                 from-events)
+              "accumulated blackboard: string keys keywordized, overwrite wins, nil values dropped"))))))
+
+(deftest blackboard-snapshot-from-events-ignores-legacy-ticks
+  (testing "A tick whose tree-tick-started carries NO :execution-snapshot
+            (legacy UI tick) stores no context in the read model, and its
+            value-written events are ignored — the pure fold must mirror
+            that exactly: {} on both paths."
+    (h/with-test-context [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id  (random-uuid)]
+        ;; legacy started event: no :execution-snapshot
+        (es/append (:event-store ctx)
+                   {:tenant-id (:tenant-id ctx)
+                    :events [(es/->event
+                              {:type :sheet/tree-tick-started
+                               :tags #{[:sheet sheet-id] [:tick tick-id]}
+                               :body {:sheet-id sheet-id
+                                      :tick-id tick-id
+                                      :inputs {:document "ignored"}}})]})
+        (append-value-written! ctx sheet-id tick-id :summary "also ignored")
+        (let [tick-events (into [] (es/read (:event-store ctx)
+                                            {:tags #{[:tick tick-id]}
+                                             :tenant-id (:tenant-id ctx)}))
+              from-events (tracing/blackboard-snapshot-from-events tick-events)
+              from-read-model (tracing/blackboard-snapshot
+                               (:blackboard (rm/get-tick-execution-context ctx tick-id)))]
+          (is (= from-read-model from-events) "both paths agree on legacy ticks")
+          (is (= {} from-events) "no snapshot context → empty snapshot"))))))
 
 (deftest stored-snapshots-win-for-older-events
   (testing "Back-compat: a trace whose stored event still carries snapshots

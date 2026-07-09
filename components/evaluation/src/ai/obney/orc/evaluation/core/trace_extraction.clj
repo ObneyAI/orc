@@ -7,7 +7,8 @@
    Key functions:
    - get-llm-traces: Query traces for specific LLM nodes
    - extract-trace-data: Transform raw trace into evaluation format"
-  (:require [ai.obney.grain.event-store-v3.interface :as event-store]))
+  (:require [ai.obney.grain.event-store-v3.interface :as event-store]
+            [ai.obney.orc.orc-service.interface.tracing :as tracing]))
 
 ;; =============================================================================
 ;; Event Types (from orc-service)
@@ -121,6 +122,35 @@
 ;; Public API
 ;; =============================================================================
 
+(defn- hydrate-trace-snapshots
+  "RB-2c: the trace-level :input-snapshot/:output-snapshot are no longer
+   stored on the :sheet/execution-traced event (each was a full copy of the
+   tick blackboard). Source them on demand from the tick's durable events
+   (trace-id == tick-id) via orc-service's pure helpers:
+
+   - :output-snapshot ← the tick's FINAL :sheet/tree-tick-completed :outputs
+   - :input-snapshot  ← the accumulated tick blackboard at completion
+     (non-nil values), the pure event fold mirroring the
+     tick-execution-contexts read model
+
+   Traces from older events that still carry stored snapshots are returned
+   verbatim — stored values win."
+  [{:keys [event-store tenant-id]} trace]
+  (let [need-input? (not (contains? trace :input-snapshot))
+        need-output? (not (contains? trace :output-snapshot))]
+    (if-not (or need-input? need-output?)
+      trace
+      (let [tick-events (into [] (event-store/read
+                                  event-store
+                                  {:tags #{[:tick (:trace-id trace)]}
+                                   :tenant-id tenant-id}))]
+        (cond-> trace
+          need-input?
+          (assoc :input-snapshot (tracing/blackboard-snapshot-from-events tick-events))
+
+          need-output?
+          (assoc :output-snapshot (tracing/final-tick-outputs tick-events)))))))
+
 (defn get-traces-raw
   "Get raw sheet execution traces.
 
@@ -132,28 +162,40 @@
        :limit - Maximum number of traces to return
 
    Returns:
-     Vector of raw trace maps from :sheet/execution-traced events"
+     Vector of raw trace maps from :sheet/execution-traced events.
+     :input-snapshot/:output-snapshot are the stored values when the event
+     carries them (pre-RB-2b events), otherwise hydrated on demand from the
+     tick's durable events (hydration runs AFTER limit/sort, so only the
+     returned traces pay the extra event read)."
   [{:keys [event-store tenant-id] :as ctx} {:keys [sheet-id since limit]}]
   (let [query (cond-> {:types trace-events :tenant-id tenant-id}
                 sheet-id (assoc :tags #{[:sheet sheet-id]})
                 since (assoc :after since))
         events (event-store/read event-store query)
         traces (mapv (fn [event]
-                       {:trace-id (:trace-id event)
-                        :sheet-id (:sheet-id event)
-                        :version-number (:version-number event)
-                        :started-at (:started-at event)
-                        :completed-at (:completed-at event)
-                        :duration-ms (:duration-ms event)
-                        :status (:status event)
-                        :input-snapshot (:input-snapshot event)
-                        :output-snapshot (:output-snapshot event)
-                        :node-traces (:node-traces event)
-                        :error (:error event)})
-                     events)]
-    (if limit
-      (vec (take limit (sort-by :started-at #(compare %2 %1) traces)))
-      traces)))
+                       (cond-> {:trace-id (:trace-id event)
+                                :sheet-id (:sheet-id event)
+                                :version-number (:version-number event)
+                                :started-at (:started-at event)
+                                :completed-at (:completed-at event)
+                                :duration-ms (:duration-ms event)
+                                :status (:status event)
+                                :node-traces (:node-traces event)
+                                :error (:error event)}
+                         ;; stored-wins: only copy the snapshot keys when the
+                         ;; event actually carries them, so hydration can
+                         ;; detect absence via contains?.
+                         (contains? event :input-snapshot)
+                         (assoc :input-snapshot (:input-snapshot event))
+
+                         (contains? event :output-snapshot)
+                         (assoc :output-snapshot (:output-snapshot event))))
+                     events)
+        limited (if limit
+                  (vec (take limit (sort-by :started-at #(compare %2 %1) traces)))
+                  traces)]
+    ;; hydrate AFTER limit/sort — only returned traces pay the event read
+    (mapv #(hydrate-trace-snapshots ctx %) limited)))
 
 (defn get-llm-traces
   "Extract LLM node traces for evaluation.
