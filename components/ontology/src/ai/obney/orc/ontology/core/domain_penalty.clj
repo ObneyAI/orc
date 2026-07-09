@@ -52,7 +52,6 @@
    penalize pass. The avoid/good SOURCE strings come from EL-2's enrichment."
   (:require [clojure.string :as str]
             [ai.obney.orc.ontology.core.embedding :as embedding]
-            [ai.obney.orc.colbert.interface :as colbert]
             [com.brunobonacci.mulog :as mu]))
 
 ;; =============================================================================
@@ -92,6 +91,19 @@
 ;;                   push a borderline force-fit under the gate. Clean cases stay
 ;;                   at penalty 0 regardless of scale (their contrast is < margin).
 ;;   :penalty-cap 0.6 — graded, never a hard zero (demoted, not annihilated).
+;;
+;; JVM-ColBERT Slice 3 amendment: the calibration above was measured on the
+;; colbertv2 bridge with /40 linear normalization. The pure-JVM answerai
+;; checkpoint's MASK-expansion floor compresses fixed-ceiling cosines
+;; (~0.70-0.73, margins ~0.01-0.03), so the DEFAULT :colbert-norm is now
+;; {:max-score 32.0 :method :batch-relative} (see default-penalty-config and
+;; batch-relative-scores). :batch-relative widens every witnessed margin
+;; beyond both /40 and /32 linear and preserves the clean/force-fit
+;; separability ORDER (clean cases <= +0.0025, force-fit +0.0160 on the probe
+;; sets), but the ABSOLUTE margins sit below the 0.03 :margin knob calibrated
+;; for colbertv2 — the knobs themselves are deliberately NOT retuned here;
+;; the el5 separability re-run (Slice 4) judges end behavior and owns any
+;; recalibration.
 ;; =============================================================================
 
 (def default-penalty-config
@@ -109,15 +121,36 @@
                         deepening-on-own-task).
      :penalty-cap     — caps the penalty so it stays GRADED, never a hard zero
                         (the candidate is demoted, not annihilated — reversible).
-     :colbert-norm    — colbert/normalize-colbert-score opts ({:max-score
-                        :method}); applied to both avoid + good so margin/cap are
-                        scale-stable. Only used by the :colbert scorer."
+     :colbert-norm    — normalization opts ({:max-score :method}) for the
+                        :colbert scorer, applied to both avoid + good so
+                        margin/cap are scale-stable. DEFAULT (JVM-ColBERT
+                        Slice 3): {:max-score 32.0 :method :batch-relative}.
+                        32.0 is the re-derived theoretical MaxSim ceiling for
+                        the answerai checkpoint (query_maxlen unit vectors —
+                        P-0 findings); :batch-relative normalizes each guard by
+                        the MAX raw score within the candidate's own rerank
+                        call (batch-relative-scores below) instead of the
+                        fixed ceiling, because the checkpoint's ~30/32
+                        MASK-expansion floor compresses fixed-ceiling cosines
+                        into ~0.75-0.98 and collapses the contrastive margin
+                        (0.011 witnessed vs colbertv2's ~0.18). Explicit
+                        :linear / :sigmoid configs keep their exact old
+                        behavior (norm-fn per score against :max-score)."
   {:scorer :colbert
    :embedding-model nil
    :penalty-scale 10.0
-   :margin 0.03
+   ;; 0.010 — gate-evidenced retune for the answerai checkpoint's batch-relative
+   ;; scale (Slice 4b, user-approved at the Slice-4 gate). The colbertv2-era
+   ;; 0.03 (derivation in the band commentary above) was INERT here: every
+   ;; witnessed must-fire margin (+0.016 probe force-fits, +0.0026
+   ;; live-enriched) sat below it. 0.010 fires the probe force-fits with
+   ;; ~1.6x headroom and spares every witnessed clean case (max +0.0025).
+   ;; Known limit (Slice-4 gate report §3): live-enriched force-fits
+   ;; (+0.0026) are inseparable from clean by ANY margin value — restoring
+   ;; live-corpus bite is guard-sharpening work (EL-5/C-3), not knob tuning.
+   :margin 0.010
    :penalty-cap 0.6
-   :colbert-norm {:max-score 40.0 :method :linear}})
+   :colbert-norm {:max-score 32.0 :method :batch-relative}})
 
 ;; =============================================================================
 ;; The pure penalty arithmetic (DETERMINISTIC — unit-tested hard). UNCHANGED.
@@ -175,6 +208,99 @@
   [candidate]
   (vec (distinct (concat (when (:content candidate) [(:content candidate)])
                          (keep :good-when (:strengths candidate))))))
+
+;; =============================================================================
+;; ColBERT RESOLVER SEAM (JVM-ColBERT Slice 0 — the poly boundary fix).
+;;
+;; colbert is an OPTIONAL component: the shipped orc-ontology project
+;; deliberately excludes it ('ontology works fully without colbert'). This
+;; namespace therefore must NOT statically require the colbert interface — the
+;; real :colbert backend resolves its two fns dynamically at call time (the
+;; same requiring-resolve idiom as interface/colbert-fn), through an
+;; INJECTABLE seam so tests can simulate absence without classpath surgery.
+;; =============================================================================
+
+(defn- resolve-colbert-fns
+  "Lazily resolve the colbert interface fns the :colbert backend needs.
+   Returns {:rerank <var> :normalize <var>} when the colbert component is on
+   the classpath, nil otherwise. Resolving VARS (not fn values) preserves
+   with-redefs / re-def semantics — a var call derefs at invocation time,
+   exactly like the previous static `colbert/rerank` call."
+  []
+  (let [rerank    (try (requiring-resolve 'ai.obney.orc.colbert.interface/rerank)
+                       (catch Throwable _ nil))
+        normalize (try (requiring-resolve 'ai.obney.orc.colbert.interface/normalize-colbert-score)
+                       (catch Throwable _ nil))]
+    (when (and rerank normalize)
+      {:rerank rerank :normalize normalize})))
+
+(def ^:dynamic *colbert-resolver*
+  "The INJECTABLE resolver seam (defaults to the real requiring-resolve impl).
+   A fn of no args returning {:rerank <ifn> :normalize <ifn>} or nil when the
+   colbert component is absent. Tests bind this to (constantly nil) to
+   simulate 'colbert not on the classpath', or to a fake-returning resolver
+   to drive the present path deterministically."
+  resolve-colbert-fns)
+
+(defn- colbert-unavailable-ex
+  "The precise, loud-at-the-source error for 'colbert explicitly requested but
+   not on the classpath'."
+  []
+  (ex-info
+   (str "Domain-penalty scorer :colbert was requested, but the colbert component "
+        "(ai.obney.orc.colbert.interface) is not on the classpath. The shipped "
+        "orc-ontology project deliberately excludes colbert (and its Python-venv "
+        "bridge) so ontology runs venv-free. Either add the orc-colbert package "
+        "to your classpath, or configure {:scorer :embedding} (the embed+cosine "
+        "backend) in :domain-penalty-config.")
+   {:error :colbert-unavailable
+    :missing-component 'ai.obney.orc.colbert.interface
+    :requested-scorer :colbert
+    :alternative {:scorer :embedding}}))
+
+(defn- scorer-explicit?
+  "Did the CALLER explicitly choose the scorer, vs inheriting the default?
+   Drives the colbert-absent semantics: explicit :colbert => loud ex-info;
+   default => graceful :embedding degradation with a warning.
+
+   The public search path (ontology interface apply-rerank) MERGES
+   default-penalty-config with the operator's ctx :domain-penalty-config
+   BEFORE calling in, so the merged config ALWAYS carries :scorer — there the
+   operator's PRE-merge map (still on ctx) is the honest explicitness signal.
+   Direct callers may state it outright via a :scorer-explicit? entry in
+   config, or implicitly by passing a config that names a :scorer and is not
+   just the shipped default map (penalize-candidates' default 3-arity passes
+   default-penalty-config itself, which stays the DEFAULT case)."
+  [ctx config]
+  (cond
+    (contains? config :scorer-explicit?)
+    (boolean (:scorer-explicit? config))
+
+    (map? (:domain-penalty-config ctx))
+    (contains? (:domain-penalty-config ctx) :scorer)
+
+    :else
+    (and (contains? config :scorer)
+         (not= config default-penalty-config))))
+
+(defn- colbert-backend-or-degrade
+  "Availability gate for a :colbert backend selection. Semantics:
+     resolvable                => (colbert-ctor) — EXACTLY today's behavior.
+     absent + EXPLICIT config  => throw the precise colbert-unavailable ex-info.
+     absent + DEFAULT config   => (embedding-ctor) — the existing :embedding
+                                  backend — with a mulog warning naming the
+                                  substitution (graceful degradation, matching
+                                  every other ontology->colbert touchpoint)."
+  [ctx config colbert-ctor embedding-ctor]
+  (if (*colbert-resolver*)
+    (colbert-ctor)
+    (if (scorer-explicit? ctx config)
+      (throw (colbert-unavailable-ex))
+      (do (mu/log ::colbert-unavailable-fallback
+                  :requested-scorer :colbert
+                  :selected-scorer :embedding
+                  :reason "colbert component not on the classpath; default config degrades to the :embedding backend")
+          (embedding-ctor)))))
 
 ;; =============================================================================
 ;; SCORERS — the injected capability (ADR 0016 amendment + EL-5.1 batching).
@@ -265,6 +391,54 @@
         {:cos-avoid (max-norm avoid)
          :cos-good  (max-norm good)}))))
 
+(defn batch-relative-scores
+  "The :batch-relative normalization (JVM-ColBERT Slice 3): given one rerank
+   call's content->RAW-score map, divide every score by the call's MAX raw
+   score (the normalize-result-scores idiom) so each guard expresses affinity
+   RELATIVE to the strongest guard in the call. This is what restores the
+   contrastive margin on the answerai checkpoint, whose MASK-expansion floor
+   (~30/32) makes fixed-ceiling normalization collapse all cosines together.
+
+   Bounds: empty map => {} (nothing fabricated); non-positive max =>
+   normalizer 1.0 (raw pass-through — an all-zero call can never fabricate a
+   contrast, and division by zero is impossible); all-equal positive scores =>
+   every score 1.0 (contrast 0)."
+  [content->raw]
+  (if (empty? content->raw)
+    {}
+    (let [mx (apply max (vals content->raw))
+          normalizer (if (pos? mx) (double mx) 1.0)]
+      (into {} (map (fn [[content score]]
+                      [content (/ (double score) normalizer)]))
+            content->raw))))
+
+(defn- candidate-relative-cosines-fn
+  "Per-candidate :batch-relative lookup: given a SHARED content->RAW-score map
+   (from one physical rerank call — per-candidate or batched across candidates;
+   raw MaxSim is per-doc independent, so sharing is results-neutral), return
+     (fn [candidate] -> {:cos-avoid :cos-good})
+   where each candidate's guards are normalized by the MAX raw score among
+   THAT CANDIDATE'S OWN guards (batch-relative-scores over its sub-map), then
+   maxed per side. Scoping the normalizer to the candidate keeps the batched
+   hot path IDENTICAL to the per-candidate scorer (no cross-candidate
+   contamination of the contrast) and matches 'normalize by the call's max' —
+   the call being the candidate's own avoid+good rerank. A side with no scored
+   guards is 0.0 (the conservative side, never fabricated)."
+  [raw-score-map]
+  (fn [candidate]
+    (let [avoid (avoid-strings candidate)
+          good  (positive-strings candidate)
+          sub   (into {}
+                      (keep (fn [s]
+                              (when-some [v (raw-score-map s)] [s v])))
+                      (distinct (concat avoid good)))
+          rel   (batch-relative-scores sub)
+          max-over (fn [strings]
+                     (let [vs (keep rel strings)]
+                       (if (seq vs) (apply max vs) 0.0)))]
+      {:cos-avoid (max-over avoid)
+       :cos-good  (max-over good)})))
+
 (defn colbert-scorer
   "The :colbert backend (DEFAULT). In-memory MaxSim via colbert/rerank — NO
    index. Returns a scorer fn (candidate task). Closes over ctx + the
@@ -272,20 +446,44 @@
    tests inject stubs.
 
    NB: one rerank call PER CANDIDATE (its own guard set), each scoring all of
-   that candidate's guards against the task in a single bridge round-trip."
-  ([ctx config] (colbert-scorer ctx config
-                                (fn [opts] (colbert/rerank ctx opts))
-                                colbert/normalize-colbert-score))
+   that candidate's guards against the task in a single bridge round-trip.
+
+   The 2-arity resolves the colbert fns via *colbert-resolver* at construction
+   time; it IS an explicit colbert request, so it throws the precise
+   colbert-unavailable ex-info when the component is absent (make-scorer /
+   make-batch-scorer own the default-config graceful degradation)."
+  ([ctx config]
+   (let [{:keys [rerank normalize]} (or (*colbert-resolver*)
+                                        (throw (colbert-unavailable-ex)))]
+     (colbert-scorer ctx config
+                     (fn [opts] (rerank ctx opts))
+                     normalize)))
   ([_ctx {:keys [colbert-norm]} rerank-fn norm-fn]
    (let [{:keys [max-score method]
           :or {max-score (:max-score (:colbert-norm default-penalty-config))
-               method (:method (:colbert-norm default-penalty-config))}} colbert-norm
-         norm (fn [score] (norm-fn score :max-score max-score :method method))]
-     (fn [candidate task]
-       (colbert-rerank-scores rerank-fn norm
-                              (avoid-strings candidate)
-                              (positive-strings candidate)
-                              task)))))
+               method (:method (:colbert-norm default-penalty-config))}} colbert-norm]
+     (if (= :batch-relative method)
+       ;; :batch-relative (the DEFAULT): ONE rerank over the candidate's own
+       ;; avoid+good guards, normalized by that call's max raw score. norm-fn
+       ;; (the fixed-ceiling normalizer) is deliberately unused here.
+       (fn [candidate task]
+         (let [avoid (vec (remove (fn [s] (or (nil? s) (str/blank? s)))
+                                  (avoid-strings candidate)))
+               good  (vec (remove (fn [s] (or (nil? s) (str/blank? s)))
+                                  (positive-strings candidate)))
+               docs  (vec (distinct (concat avoid good)))]
+           (if (empty? docs)
+             {:cos-avoid 0.0 :cos-good 0.0}
+             (let [res (rerank-fn {:query task :documents docs})
+                   raw (into {} (map (juxt :content :score)) res)]
+               ((candidate-relative-cosines-fn raw) candidate)))))
+       ;; Explicit :linear / :sigmoid — the exact pre-Slice-3 behavior.
+       (let [norm (fn [score] (norm-fn score :max-score max-score :method method))]
+         (fn [candidate task]
+           (colbert-rerank-scores rerank-fn norm
+                                  (avoid-strings candidate)
+                                  (positive-strings candidate)
+                                  task)))))))
 
 (defn make-scorer
   "Select + construct the PER-CANDIDATE scorer from config (ADR 0016 amendment):
@@ -298,11 +496,15 @@
   [ctx {:keys [scorer] :or {scorer (:scorer default-penalty-config)} :as config}]
   (case scorer
     :embedding (embedding-scorer config)
-    :colbert   (colbert-scorer ctx config)
+    :colbert   (colbert-backend-or-degrade ctx config
+                                           #(colbert-scorer ctx config)
+                                           #(embedding-scorer config))
     ;; Unknown scorer keyword — fall back to the default backend, but log it so a
     ;; typo'd operator config surfaces (never silently mis-score).
     (do (mu/log ::unknown-scorer :scorer scorer :falling-back-to :colbert)
-        (colbert-scorer ctx config))))
+        (colbert-backend-or-degrade ctx config
+                                    #(colbert-scorer ctx config)
+                                    #(embedding-scorer config)))))
 
 ;; =============================================================================
 ;; BATCH SCORERS (EL-5.1) — one bridge/embed call for the WHOLE candidate set.
@@ -352,23 +554,40 @@
 
    RESULTS-NEUTRAL: MaxSim(query, doc) is per-doc independent of the other docs in
    the call, and all candidates share the same task query, so the shared map gives
-   the IDENTICAL per-guard scores as the N-call colbert-scorer."
-  ([ctx config] (batch-colbert-scorer ctx config
-                                      (fn [opts] (colbert/rerank ctx opts))
-                                      colbert/normalize-colbert-score))
+   the IDENTICAL per-guard scores as the N-call colbert-scorer.
+
+   The 2-arity resolves the colbert fns via *colbert-resolver* at construction
+   time; it IS an explicit colbert request, so it throws the precise
+   colbert-unavailable ex-info when the component is absent (make-scorer /
+   make-batch-scorer own the default-config graceful degradation)."
+  ([ctx config]
+   (let [{:keys [rerank normalize]} (or (*colbert-resolver*)
+                                        (throw (colbert-unavailable-ex)))]
+     (batch-colbert-scorer ctx config
+                           (fn [opts] (rerank ctx opts))
+                           normalize)))
   ([_ctx {:keys [colbert-norm]} rerank-fn norm-fn]
    (let [{:keys [max-score method]
           :or {max-score (:max-score (:colbert-norm default-penalty-config))
-               method (:method (:colbert-norm default-penalty-config))}} colbert-norm
-         norm (fn [score] (norm-fn score :max-score max-score :method method))]
+               method (:method (:colbert-norm default-penalty-config))}} colbert-norm]
      (fn [candidates task]
        (let [{:keys [docs]} (distinct-guards candidates)]
          (if (empty? docs)
-           ;; No guards anywhere => no bridge round-trip; every candidate {0,0}.
+           ;; No guards anywhere => no round-trip; every candidate {0,0}.
            (fn [_candidate] {:cos-avoid 0.0 :cos-good 0.0})
-           (let [res (rerank-fn {:query task :documents docs})
-                 score-map (into {} (map (juxt :content (comp norm :score))) res)]
-             (candidate-cosines-fn score-map))))))))
+           (let [res (rerank-fn {:query task :documents docs})]
+             (if (= :batch-relative method)
+               ;; :batch-relative (the DEFAULT): share the RAW per-guard scores
+               ;; from the single call (raw MaxSim is per-doc independent), but
+               ;; normalize each candidate by ITS OWN guard max — identical
+               ;; cosines to the per-candidate colbert-scorer (results-neutral
+               ;; preserved), no cross-candidate contamination.
+               (candidate-relative-cosines-fn
+                (into {} (map (juxt :content :score)) res))
+               ;; Explicit :linear / :sigmoid — the exact pre-Slice-3 behavior.
+               (let [norm (fn [score] (norm-fn score :max-score max-score :method method))
+                     score-map (into {} (map (juxt :content (comp norm :score))) res)]
+                 (candidate-cosines-fn score-map))))))))))
 
 (defn batch-embedding-scorer
   "The :embedding BATCH backend (EL-5.1). Returns a factory
@@ -406,9 +625,13 @@
   [ctx {:keys [scorer] :or {scorer (:scorer default-penalty-config)} :as config}]
   (case scorer
     :embedding (batch-embedding-scorer config)
-    :colbert   (batch-colbert-scorer ctx config)
+    :colbert   (colbert-backend-or-degrade ctx config
+                                           #(batch-colbert-scorer ctx config)
+                                           #(batch-embedding-scorer config))
     (do (mu/log ::unknown-scorer :scorer scorer :falling-back-to :colbert)
-        (batch-colbert-scorer ctx config))))
+        (colbert-backend-or-degrade ctx config
+                                    #(batch-colbert-scorer ctx config)
+                                    #(batch-embedding-scorer config)))))
 
 ;; =============================================================================
 ;; score-candidate / penalize-candidates — the PASS. Now scorer-driven.

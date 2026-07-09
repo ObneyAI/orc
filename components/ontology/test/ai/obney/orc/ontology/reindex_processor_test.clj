@@ -167,18 +167,34 @@
               :target-id target-id
               :body body}))))
 
+(defn- unavailable-create-index!
+  "A create-index! stub that THROWS, simulating an unavailable indexer.
+
+   These two read-model tests (RED #5/#6) predate the pure-JVM ColBERT
+   signal: they were written when operations/create-index! needed the Python
+   bridge, which is absent in test environments — so the cold-start reindex
+   trigger fired, failed, and no :colbert/index-created event ever landed.
+   Now that create-index! is pure JVM it genuinely SUCCEEDS in tests, and the
+   cold-start rebuild would emit a real :colbert/index-created that resets
+   the very counter under test. Stubbing it to throw makes the old implicit
+   environment deterministic: the tests pin the READ-MODEL's counting
+   behavior, not the processor's (RED #7+ cover that, with stub-create-index!)."
+  [_ctx _opts]
+  (throw (ex-info "ColBERT indexer unavailable (simulated)" {})))
+
 (deftest reindex-state-tracks-events-since-last-rebuild
   (testing "After 3 description-updated events, reindex-state events-since-last-rebuild is 3 and :index-built? is false"
     (with-test-ctx [ctx]
-      (emit-description-updated! ctx :node-type :llm)
-      (emit-description-updated! ctx :node-type :code)
-      (emit-description-updated! ctx :node-type :map-each)
-      (Thread/sleep 200)
-      (let [state (ontology/get-reindex-state ctx)]
-        (is (= 3 (:events-since-last-rebuild state))
-            "Counter is 3 after 3 description-updated events across granularities")
-        (is (= false (:index-built? state))
-            ":index-built? remains false until a :colbert/index-created event lands")))))
+      (with-redefs [colbert-ops/create-index! unavailable-create-index!]
+        (emit-description-updated! ctx :node-type :llm)
+        (emit-description-updated! ctx :node-type :code)
+        (emit-description-updated! ctx :node-type :map-each)
+        (Thread/sleep 200)
+        (let [state (ontology/get-reindex-state ctx)]
+          (is (= 3 (:events-since-last-rebuild state))
+              "Counter is 3 after 3 description-updated events across granularities")
+          (is (= false (:index-built? state))
+              ":index-built? remains false until a :colbert/index-created event lands"))))))
 
 ;; =============================================================================
 ;; RED #6 — reindex-state resets on :colbert/index-created
@@ -212,20 +228,21 @@
 (deftest reindex-state-resets-on-colbert-index-created
   (testing "After :colbert/index-created (for ontology-descriptions) lands, counter resets to 0 and :index-built? flips to true"
     (with-test-ctx [ctx]
-      (emit-description-updated! ctx :node-type :llm)
-      (emit-description-updated! ctx :node-type :code)
-      (Thread/sleep 100)
-      (is (= 2 (:events-since-last-rebuild (ontology/get-reindex-state ctx)))
-          "Sanity: counter is 2 before the index-created event")
-      (inject-index-created! ctx)
-      (Thread/sleep 100)
-      (let [state (ontology/get-reindex-state ctx)]
-        (is (= 0 (:events-since-last-rebuild state))
-            "Counter resets to 0")
-        (is (= true (:index-built? state))
-            ":index-built? flips to true")
-        (is (string? (:last-rebuild-timestamp state))
-            ":last-rebuild-timestamp captured as a string")))))
+      (with-redefs [colbert-ops/create-index! unavailable-create-index!]
+        (emit-description-updated! ctx :node-type :llm)
+        (emit-description-updated! ctx :node-type :code)
+        (Thread/sleep 100)
+        (is (= 2 (:events-since-last-rebuild (ontology/get-reindex-state ctx)))
+            "Sanity: counter is 2 before the index-created event")
+        (inject-index-created! ctx)
+        (Thread/sleep 100)
+        (let [state (ontology/get-reindex-state ctx)]
+          (is (= 0 (:events-since-last-rebuild state))
+              "Counter resets to 0")
+          (is (= true (:index-built? state))
+              ":index-built? flips to true")
+          (is (string? (:last-rebuild-timestamp state))
+              ":last-rebuild-timestamp captured as a string"))))))
 
 ;; =============================================================================
 ;; Re-index trigger helpers — used by RED #7/#8/#9/#10

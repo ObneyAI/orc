@@ -280,12 +280,11 @@
     :else        (str v)))
 
 (defn- normalize-search-result
-  "The ColBERT Python bridge returns snake_case keys (`:document_id`,
-   `:document_metadata`). The docstring on `colbert/search` promises
-   kebab-case — that's a doc-vs-code mismatch in the colbert component
-   that we work around here. Also re-keywordize known metadata fields
-   so downstream consumers don't have to deal with stringified keywords
-   from the JSON roundtrip."
+  "`colbert/search` returns snake_case keys (`:document_id`,
+   `:document_metadata`) — the result shape frozen when the signal moved
+   to the pure JVM. Normalize to kebab-case here, and re-keywordize known
+   metadata fields so downstream consumers don't have to deal with
+   stringified keywords from the artifact's JSON roundtrip."
   [r]
   (let [meta (or (:document-metadata r) (:document_metadata r))
         norm-meta (when meta

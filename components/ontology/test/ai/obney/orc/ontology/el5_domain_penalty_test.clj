@@ -206,9 +206,11 @@
                                                   :or {max-score 40.0}}]
                                       (/ (double score) max-score)))
           {:keys [cos-avoid cos-good]} (scorer cand "refactor extract a helper")]
-      (is (approx? 0.5 cos-avoid) "avoid guard 20.0/40 = 0.5")
-      ;; cos-good = MAX over (:content, :good-when) = MAX(12,10)/40 = 0.3
-      (is (approx? 0.3 cos-good) "cos-good = MAX over summary + good-when, normalized")
+      ;; Default config is :batch-relative (JVM-ColBERT Slice 3): each guard is
+      ;; normalized by the call's MAX raw score (20.0 here), norm-fn unused.
+      (is (approx? 1.0 cos-avoid) "avoid guard is the call max: 20/20 = 1.0")
+      ;; cos-good = MAX over (:content, :good-when) = MAX(12,10)/20 = 0.6
+      (is (approx? 0.6 cos-good) "cos-good = MAX over summary + good-when, call-relative")
       (is (> cos-avoid cos-good) "the refactor force-fit shape: avoid beats good"))))
 
 ;; =============================================================================
@@ -247,9 +249,10 @@
       (let [scorer (dp/make-scorer nil {:scorer :colbert})
             res (scorer {:avoid-when ["a"] :content "b"} "task")]
         (is (map? res))
-        ;; avoid "a" = 20/40 = 0.5 ; good "b" = 10/40 = 0.25
-        (is (approx? 0.5 (:cos-avoid res)))
-        (is (approx? 0.25 (:cos-good res)))))))
+        ;; default :batch-relative (Slice 3): call max is avoid "a" (20.0)
+        ;; => avoid 20/20 = 1.0 ; good "b" = 10/20 = 0.5
+        (is (approx? 1.0 (:cos-avoid res)))
+        (is (approx? 0.5 (:cos-good res)))))))
 
 ;; =============================================================================
 ;; 6. score-candidate — CONTRASTIVE on real-shaped candidates with a fake scorer

@@ -287,42 +287,6 @@
      :config config}))
 
 ;; =============================================================================
-;; Search Helpers for RRF Integration
-;; =============================================================================
-
-(defn search-for-rrf
-  "Search ColBERT index and format results for RRF fusion.
-
-   Returns results compatible with ontology/retrieval.clj RRF merge.
-
-   Args:
-     ctx: Context with :event-store
-     opts: {:query \"search query\"
-            :index-id uuid
-            :k 20
-            :normalize? true}
-
-   Returns:
-     [{:uri \"concept-uri\" :score 0.92 :rank 1}]"
-  [ctx {:keys [query index-id k normalize?]
-        :or {k 20 normalize? true}}]
-  (let [results ((require-colbert (quote search)) ctx {:query query :index-id index-id :k k})
-        max-score (if (seq results)
-                    (apply max (map :score results))
-                    1.0)]
-    (mapv (fn [r]
-            {:uri (:document-id r)
-             :label (:content r)  ;; First 100 chars for display
-             :score (if normalize?
-                      (if (pos? max-score)
-                        (/ (:score r) max-score)
-                        0.0)
-                      (:score r))
-             :rank (:rank r)
-             :source :colbert})
-          results)))
-
-;; =============================================================================
 ;; Event Helpers
 ;; =============================================================================
 
