@@ -1,4 +1,10 @@
 {:paths ["src" "resources"]
- :deps {}
+ ;; langfuse.core hard-requires clj-http + data.json. These were previously
+ ;; UNDECLARED (:deps {}) and the brick only loaded because the :dev alias's
+ ;; other deps pulled clj-http transitively — the poly brick:ontology gate
+ ;; exposed the gap the moment RB-2a routed todo-processors/queries through
+ ;; tracing (which hard-requires langfuse). A brick declares what it uses.
+ :deps {clj-http/clj-http {:mvn/version "3.12.3"}
+        org.clojure/data.json {:mvn/version "2.5.0"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {}}}}
