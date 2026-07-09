@@ -254,6 +254,93 @@
    secondary safety. When exceeded, the omission is SURFACED (not silent)."
   50)
 
+;; -----------------------------------------------------------------------------
+;; CQ-1 — bound the enumerations themselves (the context-length crash fix)
+;; -----------------------------------------------------------------------------
+;; The MT-8 cap above bounds only which concepts get ATTRIBUTE lines. The
+;; enumerations' HEAD lines were unbounded: at real scale (15,728 concepts +
+;; 69,591 relationships) the evidence text reached ~8.5 MB ≈ 2.36M tokens and
+;; the CQ-gate judge call crashed the build with a context-length error.
+;; Above the caps below, each block renders a COUNT DIGEST over the FULL set
+;; (the S20 orientation-card T-Box-digest shape — domain-agnostic, derived
+;; from URI prefixes / predicates present in the data) plus a prioritized
+;; enumerated subset, and SURFACES the omission (bound by COUNT, never a
+;; silent truncation, never mid-value). Below the caps, rendering is
+;; byte-identical to the pre-CQ-1 output (small-graph regression guard).
+
+(def ^:private enum-concept-line-cap
+  "Max concepts enumerated (head lines) in the ALL-CONCEPTS block. Under
+   the cap the full enumeration renders exactly as before; above it a
+   type digest (counts over the FULL set) plus a prioritized subset is
+   rendered and the omission is SURFACED (not silent)."
+  300)
+
+(def ^:private edge-line-cap
+  "Max relationship lines enumerated in the ALL-RELATIONSHIPS block —
+   this block previously had NO bound and was the primary driver of the
+   2.36M-token crash. Under the cap the full enumeration renders exactly
+   as before; above it a predicate digest (counts over the FULL set)
+   plus a prioritized subset is rendered and the omission is SURFACED."
+  500)
+
+(defn- uri-type-prefix
+  "Domain-agnostic 'type' of a URI, convention-agnostic across the URI
+   schemes in this codebase:
+     - colon-prefixed (S20 orientation-card convention):
+       `concept:occ/analyst` → `concept:occ`, `class:Director` →
+       `class:Director`
+     - GC-1 canonical slash-scheme (no colon): `occupation/11-1011.00`
+       → `occupation`
+     - neither colon nor slash → `(no prefix)`.
+   The grouping is DERIVED from the data, never a hardcoded domain
+   vocabulary."
+  [uri]
+  (let [uri (str uri)
+        colon (.indexOf uri ":")
+        slash (.indexOf uri "/")]
+    (cond
+      ;; Colon-SCHEME only when the colon precedes any slash — a colon
+      ;; inside a slash-scheme URI's VALUE (`task/keep records: daily`)
+      ;; must not promote the whole URI into its own digest bucket.
+      (and (not (neg? colon)) (or (neg? slash) (< colon slash)))
+      (let [after (subs uri (inc colon))
+            slash' (.indexOf after "/")]
+        (str (subs uri 0 colon)
+             ":"
+             (if (neg? slash') after (subs after 0 slash'))))
+
+      (not (neg? slash))
+      (subs uri 0 slash)
+
+      :else "(no prefix)")))
+
+(def ^:private digest-line-cap
+  "Max distinct kinds listed in a count digest. Guards the pathological
+   shape where every URI carries a unique prefix (or every edge a unique
+   predicate) — the digest itself must stay bounded, so the tail beyond
+   this cap is aggregated into a single SURFACED remainder line."
+  100)
+
+(defn- render-count-digest
+  "`    kind: n <noun>` lines from a {kind count} map, sorted count-desc
+   with kind-asc tie-break (deterministic). At most `digest-line-cap`
+   kinds are listed; any tail is aggregated into one remainder line
+   (surfaced, never silent)."
+  [counts noun]
+  (let [ordered (sort-by (fn [[k n]] [(- n) (str k)]) counts)
+        shown (take digest-line-cap ordered)
+        omitted (drop digest-line-cap ordered)
+        lines (mapv (fn [[k n]] (str "    " k ": " n " " noun)) shown)]
+    (str/join "\n"
+              (if (seq omitted)
+                (conj lines
+                      (str "    (+ " (count omitted)
+                           " more kinds covering "
+                           (reduce + 0 (map second omitted))
+                           " " noun " — digest capped at " digest-line-cap
+                           " kinds to bound judge context)"))
+                lines))))
+
 (defn- attr-key-name
   "Readable name for an attribute/property key (keyword or string)."
   [k]
@@ -314,7 +401,15 @@
    attribute-borne CQs. The retrieved-hits block renders them for the
    query-relevant subset (load-bearing); the full enumeration renders them for
    up to `enum-attr-concept-cap` NON-retrieved concepts and SURFACES any
-   omission (bound by COUNT, never a silent truncation, never mid-value)."
+   omission (bound by COUNT, never a silent truncation, never mid-value).
+
+   CQ-1: the enumerations themselves are bounded (`enum-concept-line-cap`,
+   `edge-line-cap`) so the judge evidence stays far below the model context
+   limit at real graph scale. Above a cap the block renders a count digest
+   over the FULL set (URI-prefix types / predicates — derived from the data,
+   domain-agnostic) plus a prioritized subset (the retrieved hits' 1-hop
+   neighborhood first), with the omission surfaced honestly. Below the caps
+   the output is byte-identical to the pre-CQ-1 rendering."
   [{:keys [retrieved concepts relationships axioms closed-concepts]}]
   (let [retrieved-uris (set (keep :uri retrieved))
         retrieved-head (fn [r]
@@ -329,12 +424,37 @@
         concept-head (fn [c]
                        (str "  " (:uri c)
                             " [label: " (or (:label c) "?") "]"))
+        ;; CQ-1: the query-relevant neighborhood — edges incident to the
+        ;; retrieved URIs, and the concepts at either end of those edges
+        ;; (the retrieved hits' 1-hop neighbors) — is prioritized into the
+        ;; capped enumerations. Ordering is stable and deterministic:
+        ;; neighborhood first (input order), then the rest (input order).
+        incident-edge? (fn [r]
+                         (or (contains? retrieved-uris (:source-uri r))
+                             (contains? retrieved-uris (:target-uri r))))
+        neighborhood-uris (reduce (fn [acc r]
+                                    (if (incident-edge? r)
+                                      (conj acc (:source-uri r) (:target-uri r))
+                                      acc))
+                                  #{} relationships)
+        prioritize (fn [pred coll]
+                     (concat (filter pred coll) (remove pred coll)))
         concepts-block
         (if (seq concepts)
-          (let [;; Concepts NOT already fully-attributed in the retrieved block
+          (let [n-concepts (count concepts)
+                line-capped? (> n-concepts enum-concept-line-cap)
+                ;; CQ-1: above the line cap, enumerate only a bounded subset —
+                ;; the retrieved hits' 1-hop neighborhood first.
+                enum-concepts (if line-capped?
+                                (vec (take enum-concept-line-cap
+                                           (prioritize
+                                            #(contains? neighborhood-uris (:uri %))
+                                            concepts)))
+                                concepts)
+                ;; Concepts NOT already fully-attributed in the retrieved block
                 ;; that carry attribute-borne facts — the enumeration-attr budget
                 ;; goes to concepts the retrieved block did not already cover.
-                enum-attr-candidates (->> concepts
+                enum-attr-candidates (->> enum-concepts
                                           (remove #(contains? retrieved-uris (:uri %)))
                                           (filter #(seq (attr-entries %))))
                 n-candidates (count enum-attr-candidates)
@@ -343,26 +463,65 @@
                 body (str/join "\n"
                                (mapv #(render-concept-line
                                        % concept-head (contains? attr-uris (:uri %)))
-                                     concepts))]
-            (if capped?
-              (str body
-                   "\n  (attributes shown for the first " enum-attr-concept-cap
-                   " of " n-candidates " attributed concepts in this enumeration"
-                   " to bound judge context; the remaining "
-                   (- n-candidates enum-attr-concept-cap)
-                   " concepts' attributes are OMITTED here — see the TOP RETRIEVED"
-                   " HITS block above for the query-relevant, fully-attributed"
-                   " subset. No fact value is truncated.)")
+                                     enum-concepts))
+                body (if capped?
+                       (str body
+                            "\n  (attributes shown for the first " enum-attr-concept-cap
+                            " of " n-candidates " attributed concepts in this enumeration"
+                            " to bound judge context; the remaining "
+                            (- n-candidates enum-attr-concept-cap)
+                            " concepts' attributes are OMITTED here — see the TOP RETRIEVED"
+                            " HITS block above for the query-relevant, fully-attributed"
+                            " subset. No fact value is truncated.)")
+                       body)]
+            (if line-capped?
+              (str "  CONCEPT TYPE DIGEST (all " n-concepts
+                   " in-scope concepts, grouped by URI prefix, count desc):\n"
+                   (render-count-digest
+                    (frequencies (mapv #(uri-type-prefix (:uri %)) concepts))
+                    "concepts")
+                   "\n  ENUMERATED SUBSET (" enum-concept-line-cap
+                   " of " n-concepts "; 1-hop neighbors of the retrieved"
+                   " hits first, then stable graph order):\n"
+                   body
+                   "\n  (concept enumeration capped: head lines shown for "
+                   enum-concept-line-cap " of " n-concepts
+                   " in-scope concepts to bound judge context; the remaining "
+                   (- n-concepts enum-concept-line-cap)
+                   " concepts are OMITTED here — the CONCEPT TYPE DIGEST above"
+                   " counts the FULL set, and the TOP RETRIEVED HITS block above"
+                   " carries the query-relevant, fully-attributed subset."
+                   " No fact value is truncated.)")
               body))
           "  (no concepts in scope)")
+        edge-line (fn [r]
+                    (str "  " (:source-uri r)
+                         " " (:predicate r)
+                         " " (:target-uri r)))
         edges-block
         (if (seq relationships)
-          (str/join "\n"
-                    (mapv (fn [r]
-                            (str "  " (:source-uri r)
-                                 " " (:predicate r)
-                                 " " (:target-uri r)))
-                          relationships))
+          (let [n-rels (count relationships)]
+            (if (> n-rels edge-line-cap)
+              ;; CQ-1: this block previously had NO bound at all. Edges
+              ;; incident to the retrieved URIs are prioritized.
+              (let [shown (vec (take edge-line-cap
+                                     (prioritize incident-edge? relationships)))]
+                (str "  RELATIONSHIP PREDICATE DIGEST (all " n-rels
+                     " in-scope relationships, grouped by predicate, count desc):\n"
+                     (render-count-digest
+                      (frequencies (mapv :predicate relationships))
+                      "edges")
+                     "\n  ENUMERATED SUBSET (" edge-line-cap
+                     " of " n-rels "; edges incident to the retrieved"
+                     " hits first, then stable graph order):\n"
+                     (str/join "\n" (mapv edge-line shown))
+                     "\n  (relationship enumeration capped: "
+                     edge-line-cap " of " n-rels
+                     " in-scope relationships shown to bound judge context;"
+                     " the remaining " (- n-rels edge-line-cap)
+                     " edges are OMITTED here — the RELATIONSHIP PREDICATE DIGEST"
+                     " above counts the FULL set. No fact value is truncated.)"))
+              (str/join "\n" (mapv edge-line relationships))))
           "  (no relationships in scope)")]
     (str "TOP RETRIEVED HITS (best-match for the question):\n"
          retrieved-block

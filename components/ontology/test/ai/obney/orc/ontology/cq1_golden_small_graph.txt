@@ -1,0 +1,138 @@
+TOP RETRIEVED HITS (best-match for the question):
+  thing:grp0/c0 [label: Thing 0] the zeroth thing
+    · size: 0
+    · tags: tag-0, tag-x0
+  thing:grp1/c1 [label: Thing 1] the first thing
+
+ALL CONCEPTS CURRENTLY IN SCOPE (open-world — NOT asserted complete):
+  thing:grp0/c0 [label: Thing 0]
+  thing:grp1/c1 [label: Thing 1]
+  thing:grp2/c2 [label: Thing 2]
+    · size: 2
+    · tags: tag-2, tag-x2
+  thing:grp3/c3 [label: Thing 3]
+    · size: 3
+    · tags: tag-3, tag-x3
+  thing:grp0/c4 [label: Thing 4]
+    · size: 4
+    · tags: tag-4, tag-x4
+  thing:grp1/c5 [label: Thing 5]
+    · size: 5
+    · tags: tag-5, tag-x5
+  thing:grp2/c6 [label: Thing 6]
+    · size: 6
+    · tags: tag-6, tag-x6
+  thing:grp3/c7 [label: Thing 7]
+    · size: 7
+    · tags: tag-7, tag-x7
+  thing:grp0/c8 [label: Thing 8]
+    · size: 8
+    · tags: tag-8, tag-x8
+  thing:grp1/c9 [label: Thing 9]
+    · size: 9
+    · tags: tag-9, tag-x9
+  thing:grp2/c10 [label: Thing 10]
+    · size: 10
+    · tags: tag-10, tag-x10
+  thing:grp3/c11 [label: Thing 11]
+    · size: 11
+    · tags: tag-11, tag-x11
+  thing:grp0/c12 [label: Thing 12]
+  thing:grp1/c13 [label: Thing 13]
+  thing:grp2/c14 [label: Thing 14]
+  thing:grp3/c15 [label: Thing 15]
+  thing:grp0/c16 [label: Thing 16]
+  thing:grp1/c17 [label: Thing 17]
+  thing:grp2/c18 [label: Thing 18]
+  thing:grp3/c19 [label: Thing 19]
+  thing:grp0/c20 [label: Thing 20]
+  thing:grp1/c21 [label: Thing 21]
+  thing:grp2/c22 [label: Thing 22]
+  thing:grp3/c23 [label: Thing 23]
+  thing:grp0/c24 [label: Thing 24]
+  thing:grp1/c25 [label: Thing 25]
+  thing:grp2/c26 [label: Thing 26]
+  thing:grp3/c27 [label: Thing 27]
+  thing:grp0/c28 [label: Thing 28]
+  thing:grp1/c29 [label: Thing 29]
+  thing:grp2/c30 [label: Thing 30]
+  thing:grp3/c31 [label: Thing 31]
+  thing:grp0/c32 [label: Thing 32]
+  thing:grp1/c33 [label: Thing 33]
+  thing:grp2/c34 [label: Thing 34]
+  thing:grp3/c35 [label: Thing 35]
+  thing:grp0/c36 [label: Thing 36]
+    · legacy: L36
+  thing:grp1/c37 [label: Thing 37]
+    · legacy: L37
+  thing:grp2/c38 [label: Thing 38]
+    · legacy: L38
+  thing:grp3/c39 [label: Thing 39]
+    · legacy: L39
+
+ALL RELATIONSHIPS CURRENTLY IN SCOPE (open-world — NOT asserted complete):
+  thing:grp0/c0 pred-0 thing:grp1/c0
+  thing:grp1/c1 pred-1 thing:grp2/c7
+  thing:grp2/c2 pred-2 thing:grp3/c14
+  thing:grp3/c3 pred-0 thing:grp0/c21
+  thing:grp0/c4 pred-1 thing:grp1/c28
+  thing:grp1/c5 pred-2 thing:grp2/c35
+  thing:grp2/c6 pred-0 thing:grp3/c2
+  thing:grp3/c7 pred-1 thing:grp0/c9
+  thing:grp0/c8 pred-2 thing:grp1/c16
+  thing:grp1/c9 pred-0 thing:grp2/c23
+  thing:grp2/c10 pred-1 thing:grp3/c30
+  thing:grp3/c11 pred-2 thing:grp0/c37
+  thing:grp0/c12 pred-0 thing:grp1/c4
+  thing:grp1/c13 pred-1 thing:grp2/c11
+  thing:grp2/c14 pred-2 thing:grp3/c18
+  thing:grp3/c15 pred-0 thing:grp0/c25
+  thing:grp0/c16 pred-1 thing:grp1/c32
+  thing:grp1/c17 pred-2 thing:grp2/c39
+  thing:grp2/c18 pred-0 thing:grp3/c6
+  thing:grp3/c19 pred-1 thing:grp0/c13
+  thing:grp0/c20 pred-2 thing:grp1/c20
+  thing:grp1/c21 pred-0 thing:grp2/c27
+  thing:grp2/c22 pred-1 thing:grp3/c34
+  thing:grp3/c23 pred-2 thing:grp0/c1
+  thing:grp0/c24 pred-0 thing:grp1/c8
+  thing:grp1/c25 pred-1 thing:grp2/c15
+  thing:grp2/c26 pred-2 thing:grp3/c22
+  thing:grp3/c27 pred-0 thing:grp0/c29
+  thing:grp0/c28 pred-1 thing:grp1/c36
+  thing:grp1/c29 pred-2 thing:grp2/c3
+  thing:grp2/c30 pred-0 thing:grp3/c10
+  thing:grp3/c31 pred-1 thing:grp0/c17
+  thing:grp0/c32 pred-2 thing:grp1/c24
+  thing:grp1/c33 pred-0 thing:grp2/c31
+  thing:grp2/c34 pred-1 thing:grp3/c38
+  thing:grp3/c35 pred-2 thing:grp0/c5
+  thing:grp0/c36 pred-0 thing:grp1/c12
+  thing:grp1/c37 pred-1 thing:grp2/c19
+  thing:grp2/c38 pred-2 thing:grp3/c26
+  thing:grp3/c39 pred-0 thing:grp0/c33
+  thing:grp0/c0 pred-1 thing:grp1/c0
+  thing:grp1/c1 pred-2 thing:grp2/c7
+  thing:grp2/c2 pred-0 thing:grp3/c14
+  thing:grp3/c3 pred-1 thing:grp0/c21
+  thing:grp0/c4 pred-2 thing:grp1/c28
+  thing:grp1/c5 pred-0 thing:grp2/c35
+  thing:grp2/c6 pred-1 thing:grp3/c2
+  thing:grp3/c7 pred-2 thing:grp0/c9
+  thing:grp0/c8 pred-0 thing:grp1/c16
+  thing:grp1/c9 pred-1 thing:grp2/c23
+  thing:grp2/c10 pred-2 thing:grp3/c30
+  thing:grp3/c11 pred-0 thing:grp0/c37
+  thing:grp0/c12 pred-1 thing:grp1/c4
+  thing:grp1/c13 pred-2 thing:grp2/c11
+  thing:grp2/c14 pred-0 thing:grp3/c18
+  thing:grp3/c15 pred-1 thing:grp0/c25
+  thing:grp0/c16 pred-2 thing:grp1/c32
+  thing:grp1/c17 pred-0 thing:grp2/c39
+  thing:grp2/c18 pred-1 thing:grp3/c6
+  thing:grp3/c19 pred-2 thing:grp0/c13
+
+EXPLICIT COMPLETENESS / CLOSURE / DISJOINTNESS SIGNALS
+(the ONLY basis for concluding :fail on an absent fact):
+  disjoint: #{"class:B" "class:A"}
+  closed-set: thing:set/closed-1 [Closed Set]
