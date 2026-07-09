@@ -962,6 +962,44 @@
     {}
     (or reads [])))
 
+;; Per-read-value cap for trace :inputs capture. A grounding judge needs enough
+;; of each read value to verify the answer was built from it — not megabytes.
+;; Large string reads (e.g. full-file contents) are truncated to this many chars.
+(def ^:private max-trace-input-chars 20000)
+
+(defn- truncate-trace-value
+  "Truncate a single read value for inclusion in a trace's :inputs.
+   Strings longer than max-trace-input-chars are cut with a marker; other
+   values pass through unchanged (vectors/maps are bounded structurally by
+   the reads themselves and stay small in practice)."
+  [v]
+  (if (and (string? v) (> (count v) max-trace-input-chars))
+    (str (subs v 0 max-trace-input-chars)
+         "\n…[truncated " (- (count v) max-trace-input-chars) " chars]")
+    v))
+
+(defn extract-read-inputs
+  "Build the {read-key -> value} map a node actually read from the blackboard,
+   restricted to the node's declared :reads. Large string values are truncated
+   (see max-trace-input-chars) so the eval trace carries real grounding context
+   without bloating events. Returns {} when reads is empty or no values present.
+
+   This is the honest-grounding capture: control nodes (sequence/fallback)
+   emit a non-leaf child's node-execution-started with only the map-each
+   context, so the synthesis/answer node's real inputs were dropped from the
+   trace. Capturing them at execution time — when the blackboard is fully
+   resolved (prior siblings' writes already merged) — gives judges the
+   evidence the answer was grounded on. Pure function — testable in isolation."
+  [reads blackboard]
+  (reduce
+    (fn [acc k]
+      (let [v (get-in blackboard [k :value])]
+        (if (nil? v)
+          acc
+          (assoc acc k (truncate-trace-value v)))))
+    {}
+    (or reads [])))
+
 (defn execute-leaf-node
   "Execute a leaf node when node-execution-started is emitted.
    Supports multiple executor types:
@@ -1217,7 +1255,16 @@
                                raw-blackboard
                                event-inputs)
             provider (or dscloj-provider *default-dscloj-provider*)
-            exec-context (extract-execution-context event-inputs)]
+            exec-context (extract-execution-context event-inputs)
+            ;; Honest-grounding capture: the values this node actually read
+            ;; from the (fully-resolved) blackboard, restricted to its declared
+            ;; :reads and truncated for size. Control-node started events drop a
+            ;; non-leaf child's reads, so trace assembly would otherwise default
+            ;; the synthesis node's :inputs to {} and judges score grounded
+            ;; answers as hallucinations. We carry these into the completion
+            ;; event; assemble-execution-trace prefers them over the (empty)
+            ;; started inputs.
+            read-inputs (extract-read-inputs (:reads node) blackboard)]
         (future
           (try
             ;; C-Loop-3: thread sheet-id / tick-id / cache through to
@@ -1271,7 +1318,18 @@
                                       ;; per iteration. Surfaced so bench reports can show the model's
                                       ;; full Phase 1 work (including syntax-error retries) alongside
                                       ;; its reasoning + the final tree.
-                                      (seq iterations) (assoc :iterations (vec iterations)))]
+                                      (seq iterations) (assoc :iterations (vec iterations))
+                                      ;; CJ-5b: carry the OPAQUE :tool-context onto the terminal
+                                      ;; completion's :writes so a downstream per-event judge (e.g.
+                                      ;; the coding-outcome judge) recovers the turn-id via
+                                      ;; build-trace-data and grounds on the turn's captured effect.
+                                      ;; On a :success terminal the completion otherwise carried only
+                                      ;; the declared writes (+ RLM internals) — never the reads — so
+                                      ;; the turn-id was unreachable and the judge grounded empty. The
+                                      ;; :tool-context is the SAME one FIX B (above) reads from this
+                                      ;; tick's execution-context read model; orc does not interpret
+                                      ;; it. Absent -> not carried (backward-compatible).
+                                      tool-context (assoc :tool-context tool-context))]
               ;; Emit :rlm/tree-generated event when tree is generated
               ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
               (when (some? generated-tree-raw)
@@ -1322,7 +1380,12 @@
                                 :writes (normalize-output-keys (or effective-outputs {}))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
-                         (seq exec-context) (assoc :inputs exec-context)
+                         ;; Carry the node's real read inputs (plus any map-each
+                         ;; context) so the eval trace has honest grounding
+                         ;; context. exec-context keys win on conflict to keep
+                         ;; map-each correlation intact.
+                         (or (seq read-inputs) (seq exec-context))
+                         (assoc :inputs (merge read-inputs exec-context))
                          ;; WS-2a: a Phase-2 leaf blocked -> the RLM loop
                          ;; short-circuited with :status :blocked + the opaque
                          ;; payload. Carry the payload onto the repl-researcher
@@ -1388,7 +1451,13 @@
                                (assoc acc (name k) (:value entry))
                                acc))
                            {}
-                           read-keys)]
+                           read-keys)
+            ;; Honest-grounding capture (same rationale as repl-researcher):
+            ;; the control node that started this delegate dropped its reads
+            ;; (delegate is non-leaf), so the eval trace would default the
+            ;; synthesis node's :inputs to {}. Capture the real keyword-keyed
+            ;; read values (truncated) for the completion event.
+            read-inputs (extract-read-inputs read-keys blackboard)]
 
         ;; Async execution pattern (ORC standard)
         (future
@@ -1434,7 +1503,11 @@
                                 :status status
                                 :writes (normalize-output-keys outputs)
                                 :duration-ms duration-ms}
-                         (seq exec-context) (assoc :inputs exec-context)
+                         ;; Carry the node's real read inputs (plus any map-each
+                         ;; context) so the eval trace has honest grounding
+                         ;; context; exec-context keys win to keep correlation.
+                         (or (seq read-inputs) (seq exec-context))
+                         (assoc :inputs (merge read-inputs exec-context))
                          (:error result) (assoc :error (:error result))))))
 
             (catch Exception e
@@ -2814,10 +2887,24 @@
                               (:duration-ms completed) (assoc :duration-ms (:duration-ms completed))
                               (:writes completed) (assoc :outputs (:writes completed))
                               (:error completed) (assoc :error (:error completed))
-                              ;; Inputs from event (non-context keys)
-                              (:inputs started) (assoc :inputs
-                                                       (into {} (filter (fn [[k _]] (and (keyword? k) (not (= (namespace k) (namespace ::_)))))
-                                                                        (:inputs started)))))))
+                              ;; Inputs (non-context keys). Prefer the completed
+                              ;; event's inputs when they carry real reads:
+                              ;; control-node started events drop a non-leaf
+                              ;; (e.g. repl-researcher) child's reads, so the
+                              ;; started inputs are empty for the synthesis/answer
+                              ;; node. The completion event captures the real read
+                              ;; values resolved at execution time (see
+                              ;; extract-read-inputs), giving judges honest
+                              ;; grounding context. Strip the map-each context
+                              ;; keys (::_ namespace) from whichever source wins,
+                              ;; and only override the leaf-path started inputs
+                              ;; when the completed inputs actually have reads.
+                              :always (as-> nt
+                                            (let [strip (fn [m] (into {} (filter (fn [[k _]] (and (keyword? k) (not (= (namespace k) (namespace ::_))))) m)))
+                                                  completed-reads (strip (:inputs completed))
+                                                  started-reads (strip (:inputs started))
+                                                  chosen (if (seq completed-reads) completed-reads started-reads)]
+                                              (cond-> nt (seq chosen) (assoc :inputs chosen)))))))
             ;; Calculate duration
             duration-ms (if (and started-at completed-at)
                           (- (.toEpochMilli (java.time.Instant/parse (str completed-at)))

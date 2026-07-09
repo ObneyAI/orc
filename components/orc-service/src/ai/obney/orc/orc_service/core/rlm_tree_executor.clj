@@ -456,7 +456,11 @@
                         (make-create-node-command sheet-id :leaf :parent-id parent-id :index index))
           leaf-id (-> leaf-result :command-result/events first :node-id)
           reads (vec (:reads opts))
-          writes (vec (:writes opts))]
+          writes (vec (:writes opts))
+          ;; Phase 4B: a generated code node may carry a gated tool-caller
+          ;; builder FQN. Thread it onto the child sheet's leaf so the child
+          ;; tick rebuilds the gated caller from its blackboard :tool-context.
+          tool-caller-fn (:tool-caller-fn opts)]
       ;; Set I/O
       (run-command! context
         {:command/name :sheet/set-node-io
@@ -468,13 +472,14 @@
          :writes writes})
       ;; Set executor to :code with the fn reference (qualified symbol or ephemeral key)
       (run-command! context
-        {:command/name :sheet/set-node-executor
-         :command/id (random-uuid)
-         :command/timestamp (time/now)
-         :sheet-id sheet-id
-         :node-id leaf-id
-         :executor :code
-         :fn fn-value})
+        (cond-> {:command/name :sheet/set-node-executor
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :sheet-id sheet-id
+                 :node-id leaf-id
+                 :executor :code
+                 :fn fn-value}
+          tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)))
       {:node-id leaf-id
        :ephemeral-fn-keys ephemeral-keys})
 

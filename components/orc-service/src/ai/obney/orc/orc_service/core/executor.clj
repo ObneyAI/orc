@@ -795,6 +795,33 @@
           node))
       tree)))
 
+(defn- inject-tool-caller-fn
+  "Phase 4B: Walk a canonical-DSL emit-tree! tree and inject the parent
+   repl-researcher's `:tool-caller-fn` (gated tool-caller builder FQN) into
+   each (sheet/code ...) form that does not already declare one.
+
+   No-op when tool-caller-fn is nil (no parent gate) — backwards compatible,
+   the child code nodes use the static (:call-tool-fn context) unchanged.
+
+   This is the async-safe half of the inheritance model: the parent RLM
+   node's gated caller is a closure (built from :tool-context) that CANNOT
+   thread across the child-tick command boundary. Instead we stamp the
+   BUILDER FQN onto the generated code nodes so the child tick rebuilds the
+   gated caller from its own blackboard :tool-context (plain data, which
+   does survive the boundary) — exactly how the parent node builds it."
+  [tree tool-caller-fn]
+  (if (nil? tool-caller-fn)
+    tree
+    (walk/postwalk
+      (fn [node]
+        (if (and (seq? node)
+                 (= 'sheet/code (first node))
+                 (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
+                   (and opts (not (contains? opts :tool-caller-fn)))))
+          (concat node [:tool-caller-fn tool-caller-fn])
+          node))
+      tree)))
+
 ;; =============================================================================
 ;; Code Executor
 ;; =============================================================================
@@ -826,6 +853,27 @@
           {:error (str "Function not found: " fn-symbol-str)}))
       (catch Exception e
         {:error (str "Failed to resolve function: " fn-symbol-str " - " (.getMessage e))}))))
+
+(defn node-call-tool-fn
+  "Resolve the tool-caller a repl-researcher node should use.
+
+   Leaf tool invocation is context-aware but policy-agnostic: a node may
+   declare `:tool-caller-fn \"fully.qualified/builder\"`, an opt-in hook
+   resolved like a code-node `:fn`. When present, the builder is invoked
+   as `(builder blackboard context)` and must return the `call-tool-fn`
+   used to build this node's tool sandbox — letting the consumer thread
+   per-execution context (identity, consent, confinement, routing) into
+   how the node's tools behave. When ABSENT, the static
+   `(:call-tool-fn context)` is used exactly as before — so existing
+   nodes are unaffected. orc knows nothing about what the builder does;
+   it only resolves and calls it."
+  [node blackboard context]
+  (if-let [builder-sym (:tool-caller-fn node)]
+    (let [{:keys [fn]} (resolve-fn builder-sym)]
+      ;; Unresolvable builder → fall back to the static caller rather
+      ;; than failing the node.
+      (if fn (fn blackboard context) (:call-tool-fn context)))
+    (:call-tool-fn context)))
 
 (defn execute-code
   "Execute a Clojure function as a leaf node.
@@ -866,8 +914,19 @@
                                  acc))
                              {}
                              (:reads node))
+              ;; Phase 4B: gate tool calls inside generated (Phase-2) trees.
+              ;; A code node may declare a :tool-caller-fn (an opt-in builder
+              ;; FQN, same hook as repl-researcher nodes). When present, we
+              ;; rebuild the gated call-tool-fn from THIS node's blackboard
+              ;; (which carries :tool-context as plain data — async-safe across
+              ;; the child-tick boundary) and thread it into the fn's context
+              ;; as :call-tool-fn. When absent, node-call-tool-fn returns the
+              ;; static (:call-tool-fn context) unchanged — so existing code
+              ;; nodes are byte-identical.
+              call-tool-fn (node-call-tool-fn node blackboard context)
+              code-context (assoc context :call-tool-fn call-tool-fn)
               ;; Call the function with context
-              result (f (assoc context :inputs inputs :execution-context context))
+              result (f (assoc code-context :inputs inputs :execution-context code-context))
               duration-ms (- (System/currentTimeMillis) start-time)
               writes (:writes node)
               ;; U7: Reconcile the function's return value with the declared :writes.
@@ -1491,9 +1550,13 @@
           max-iterations (or (:max-iterations node) 10)
         mcp-tools (or (:mcp-tools node) [])
         browser-tools (or (:browser-tools node) [])
-        ;; WS-5b: thread the tick :tool-context into inline Phase-1 tool calls
-        ;; (see phase1-call-tool-fn) so an inline mutate is gated like Phase-2.
-        call-tool-fn (phase1-call-tool-fn context)
+        ;; Resolve the node's context-aware tool caller (:tool-caller-fn
+        ;; builder, else static (:call-tool-fn context)), then (WS-5b) wrap it
+        ;; so inline Phase-1 tool calls forward the tick :tool-context as the
+        ;; 3rd arg — gating an inline mutate exactly like Phase-2.
+        call-tool-fn (phase1-call-tool-fn
+                      (assoc context :call-tool-fn
+                             (node-call-tool-fn node blackboard context)))
 
         ;; Build SCI context with MCP and browser tools injected
         sci-ctx (sci-sandbox/build-sci-context
@@ -2270,9 +2333,13 @@
         max-iterations (or (:max-iterations node) 10)
         mcp-tools (or (:mcp-tools node) [])
         browser-tools (or (:browser-tools node) [])
-        ;; WS-5b: thread the tick :tool-context into inline Phase-1 tool calls
-        ;; (see phase1-call-tool-fn) so an inline mutate is gated like Phase-2.
-        call-tool-fn (phase1-call-tool-fn context)
+        ;; Resolve the node's context-aware tool caller (:tool-caller-fn
+        ;; builder, else static (:call-tool-fn context)), then (WS-5b) wrap it
+        ;; so inline Phase-1 tool calls forward the tick :tool-context as the
+        ;; 3rd arg — gating an inline mutate exactly like Phase-2.
+        call-tool-fn (phase1-call-tool-fn
+                      (assoc context :call-tool-fn
+                             (node-call-tool-fn node blackboard context)))
         declared-writes (:writes node)
         ;; Extract debug? from node's :rlm config (can be {:debug? true}) or from options
         rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
@@ -2658,9 +2725,15 @@
                         ;; no-op.
                         sub-model (or (get rlm-config :sub-model)
                                       (:sub-model node))
-                        generated-tree (inject-sub-model
-                                         (:generated-tree @sandbox-vars)
-                                         sub-model)
+                        ;; Phase 4B: if the parent repl-researcher node opted
+                        ;; into a gated tool-caller (:tool-caller-fn), stamp
+                        ;; that builder FQN onto every generated :code node so
+                        ;; the child tick's code nodes gate their tool calls
+                        ;; the same way the parent node does. No-op (and so
+                        ;; byte-identical) when the parent has no gate.
+                        generated-tree (-> (:generated-tree @sandbox-vars)
+                                           (inject-sub-model sub-model)
+                                           (inject-tool-caller-fn (:tool-caller-fn node)))
                         generated-tree-raw (:generated-tree-raw @sandbox-vars)
                         ;; Debug: Print the generated tree
                         _ (when debug?

@@ -156,6 +156,11 @@
     [:preserve-failures? {:optional true} :boolean] ;; Slice O: write aligned vector (keep failure markers) to :into
     ;; Repl-researcher-only fields
     [:mcp-tools {:optional true} [:vector :string]] ;; Available MCP tool names for research
+    ;; Opt-in hook: FQN of a (fn [blackboard context] -> call-tool-fn)
+    ;; that builds this node's tool-caller, threading per-execution
+    ;; context (identity/consent/confinement/routing) into tool calls.
+    ;; Absent -> the static (:call-tool-fn context) is used unchanged.
+    [:tool-caller-fn {:optional true} :string]
     [:max-iterations {:optional true} :int]         ;; Max research iterations (default 10)
     ;; D-003: total budget (Phase 1 + Phase 2) in ms. When set, takes precedence
     ;; over the parent tick :options :timeout-ms and the 900_000ms hardcoded
@@ -359,7 +364,10 @@
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
-    [:options {:optional true} :map]]
+    [:options {:optional true} :map]
+    ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
+    ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
+    [:tool-caller-fn {:optional true} :string]]
 
    :sheet/set-node-retry
    [:map
@@ -803,6 +811,8 @@
     [:fn {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
+    ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
+    [:tool-caller-fn {:optional true} :string]
     [:previous-executor {:optional true} executor-type]
     [:previous-model {:optional true} :string]
     [:previous-fn {:optional true} :string]
