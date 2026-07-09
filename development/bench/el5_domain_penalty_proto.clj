@@ -13,9 +13,8 @@
    rate probe's concern — this proto isolates the DETERMINISTIC penalty so the
    knob calibration is reproducible).
 
-   Run (bridge resolves to this worktree's scripts/colbert_bridge.py; venv is
-   orc-main's, read-only):
-     OPENROUTER_API_KEY=… clojure -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert -M:dev -m el5-domain-penalty-proto"
+   Run (pure-JVM ColBERT signal — no venv, no bridge):
+     OPENROUTER_API_KEY=… clojure -M:dev -m el5-domain-penalty-proto"
   (:require [runner]
             [clojure.string :as str]
             [ai.obney.orc.ontology.interface :as ont]

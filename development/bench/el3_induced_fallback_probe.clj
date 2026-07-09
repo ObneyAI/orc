@@ -12,11 +12,9 @@
 
    Detect-and-defer (ADR 0015): :uncertain creates/captures NOTHING.
 
-   Run (venv read-only from orc-main; -J-D BEFORE -M:dev):
+   Run (pure-JVM ColBERT signal — no venv, no bridge):
      OPENROUTER_API_KEY=... \\
-     clojure -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert \\
-             -J-Dcolbert.bridge.script=/Users/darylroberts/Desktop/Code/orc-rinject-redesign/scripts/colbert_bridge.py \\
-             -M:dev -m el3-induced-fallback-probe"
+     clojure -M:dev -m el3-induced-fallback-probe"
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
             [ai.obney.orc.ontology.core.task-classifier :as tc]

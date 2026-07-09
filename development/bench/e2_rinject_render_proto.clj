@@ -15,10 +15,7 @@
    an OOD/below-threshold task still mints. Prints both prepends VERBATIM.
 
    Run (from the orc-rinject-redesign worktree, OPENROUTER_API_KEY in env):
-     clojure -M:dev \\
-       -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert \\
-       -J-Dcolbert.bridge.script=/Users/darylroberts/Desktop/Code/orc-rinject-redesign/scripts/colbert_bridge.py \\
-       -m e2-rinject-render-proto"
+     clojure -M:dev -m e2-rinject-render-proto"
   (:require [runner]
             [clojure.string :as str]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
@@ -81,8 +78,6 @@
 
 (defn -main [& _]
   (println "=== E2 THROWAWAY: render the REAL R-Inject prepend ===")
-  (println "venv :" (System/getProperty "colbert.venv.path"))
-  (println "bridge:" (System/getProperty "colbert.bridge.script"))
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (try

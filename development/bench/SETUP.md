@@ -1,120 +1,63 @@
-# Bench Setup — ColBERT venv + first-run flow
+# Bench Setup — first-run flow
 
-ColBERT (neural late-interaction retrieval, via [RAGatouille]) powers the optional
-`:colbert` signal in the ontology's hybrid search — used by BOTH the agent-facing
-R-Inject classifier AND the general-purpose evolutionary-ontology extraction
-pipeline (Cambot path). It runs as a **Python subprocess bridge**
-(`scripts/colbert_bridge.py`) that the Clojure `colbert` component talks to over
-JSON-RPC on stdin/stdout. There is no Python in the JVM — just a dedicated venv.
+ColBERT (late-interaction retrieval) powers the optional `:colbert` signal in
+the ontology's hybrid search — used by BOTH the agent-facing R-Inject
+classifier AND the general-purpose evolutionary-ontology extraction pipeline
+(Cambot path). It runs **entirely on the JVM** (ADR 0002:
+`docs/adr/0002-pure-jvm-colbert-signal.md`): the `answerai-colbert-small-v1`
+encoder checkpoint on DJL OnnxRuntime + HuggingFace tokenizers, scored with
+exact MaxSim. There is no Python environment, no subprocess bridge, and no
+setup script.
 
-The dependency stack is notoriously fragile to resolve, so we pin a **full,
-verified-working freeze** (`development/bench/requirements.txt`) rather than loose
-constraints. A fresh `pip install ragatouille` will silently build a broken venv.
-
-This document walks a fresh-machine setup from clean clone through a successful
-`(bench/run! legal-issue-detection/task)`. The content is grounded in the venv
-rebuild done on 2026-06-08 — every package pin and every troubleshooting entry
-below corresponds to a failure mode actually hit during that rebuild.
+This document walks a fresh-machine setup from clean clone through a
+successful `(bench/run! legal-issue-detection/task)`.
 
 ## 1. One-time machine setup
 
 ### Prerequisites
 
-- Python 3.10, 3.11, or 3.12 (verified working — 3.12 is the captured set;
-  ragatouille does not yet support 3.13 cleanly — torch wheels may be missing)
-- Clojure CLI (`clj`) installed
-- ~3 GB of free disk space for the Python venv + cached HuggingFace model
-  weights downloaded on first use
+- Java 21+ and the Clojure CLI (`clj`) installed
+- ~150 MB of free disk space for the encoder checkpoint, downloaded into a
+  local cache on first use
+- `OPENROUTER_API_KEY` in the environment (the benches make real LLM calls)
 
-### Quick start
+That's the whole list. The first ColBERT use in any JVM resolves the encoder
+checkpoint:
 
-```bash
-bash scripts/setup-colbert.sh            # create/reuse .venv-colbert, install, smoke-test
-bash scripts/setup-colbert.sh --force    # always recreate (no prompt)
-```
+1. `-Dcolbert.model.path=/abs/dir` — operator override; skips the network
+   entirely (air-gapped machines).
+2. `~/.cache/orc/colbert/answerai-colbert-small-v1/` — the local cache, used
+   when it already holds every artifact at the expected byte size.
+3. Otherwise the missing artifacts (~133 MB, dominated by `model.onnx`)
+   download from the HuggingFace CDN into that cache, each verified by byte
+   size. This happens ONCE per machine; every later run is offline.
 
-The script:
+### Sanity check — venv-less rerank
 
-1. Checks the existing `.venv-colbert/` for a broken Python symlink (the
-   most common failure when the system Python the venv was built against has
-   been upgraded or removed). If broken, recreates the venv.
-2. Installs pinned dependencies from `development/bench/requirements.txt`
-   into the venv. The pin file is a full `pip freeze` from a verified-working
-   venv — every transitive dep is pinned because pip's resolver under loose
-   constraints picks combinations that fail at first index-build (see
-   Troubleshooting below).
-3. Smoke-tests the bridge with `{"id":1,"method":"ping","params":{}}` and
-   verifies `{"status": "ok"}` comes back.
-
-Expected runtime: 3-8 minutes (mostly downloading torch + transformers from
-PyPI). The script is idempotent — running it again with an intact venv prompts
-before recreating; `--force` skips the prompt.
-
-The script fails loudly if the install half-succeeds: it runs a real
-`import ragatouille` and the bridge `ping` before declaring success.
-
-### Sanity check — bridge ping
-
-After setup, the bridge subprocess can be smoke-tested without bringing up
-Clojure:
+Prove the JVM signal end-to-end without bringing up the bench runner:
 
 ```bash
-echo '{"id":1,"method":"ping","params":{}}' | \
-  .venv-colbert/bin/python scripts/colbert_bridge.py
-# Expected: {"id": 1, "result": {"status": "ok"}}
+clj -M:dev -e '(require (quote [ai.obney.orc.colbert.interface :as colbert]))
+               (println (colbert/rerank {} {:query "arbitration clause"
+                                            :documents ["binding arbitration governs disputes"
+                                                        "the weather is nice today"]
+                                            :k 2}))'
 ```
 
-From Clojure:
-```bash
-clj -M:dev -e '(require (quote [ai.obney.orc.colbert.interface :as colbert])) (println (colbert/ping))'
-```
-
-### Deeper check — `colbert/health-check`
-
-A `(colbert/health-check)` fn exercises both the bridge ping AND a tiny
-8-document index build using the actual `colbert-ir/colbertv2.0` model. This
-catches failure modes that `(colbert/ping)` alone misses — see Troubleshooting
-for the specific package-version skews that only surface during the model
-load + index build (and not on ping).
-
-Run from a Clojure REPL or via `clj -M:dev -e`:
-
-```clojure
-clj -M:dev -e '(require (quote [ai.obney.orc.colbert.interface :as colbert])) (println (colbert/health-check))'
-```
-
-Expected (~10-30s cold-load, faster on subsequent calls):
-
-```clojure
-{:status :ok, :ping {:status "ok"}, :index-id #uuid "..."}
-```
-
-On failure, `:stage` identifies where the chain broke (`:ping` or
-`:index-build`) and `:error` carries the underlying message. See
-Troubleshooting.
+Expected (~5-10s cold — the one-time encoder load; milliseconds warm): two
+results, the arbitration document ranked first. On a fresh machine the first
+invocation logs the model download before scoring.
 
 ## 2. Using ColBERT from a downstream app (orc as a git/SHA dependency)
 
-The bridge resolves its venv and script **relative to the JVM working directory**,
-which is correct when you run *from* the orc repo. An app that depends on orc as a
-read-only `:git/sha` library runs from its own directory, where neither
-`.venv-colbert` nor `scripts/colbert_bridge.py` exists. Point both at absolute paths
-via system properties (JVM `-D` flags / `:jvm-opts`):
-
-```
--Dcolbert.venv.path=/abs/path/to/.venv-colbert
--Dcolbert.bridge.script=/abs/path/to/orc/scripts/colbert_bridge.py
-```
-
-The script lives in your gitlibs checkout of orc, e.g.
-`~/.gitlibs/libs/obneyai/orc-*/<sha>/scripts/colbert_bridge.py`. Create the venv
-locally (clone orc or copy the two files + run `setup-colbert.sh`), then set both
-properties. Without `-Dcolbert.bridge.script` the bridge can't find the script and
-ColBERT search silently no-ops back to the other signals.
+Nothing extra. The model cache lives under the user home (not the repo), so a
+read-only gitlibs checkout works as-is. Index artifacts are written under the
+JVM working directory by default (`.orc-colbert-indexes/`); point
+`-Dcolbert.index.root=/abs/path` somewhere writable if your app's working
+directory is read-only, and `-Dcolbert.model.path` at a pre-downloaded model
+directory if the machine cannot reach the HuggingFace CDN.
 
 ## 3. First-run flow
-
-With a healthy venv + health-check passing:
 
 ```clojure
 clj -M:dev -e '(require (quote [runner :as r])) (r/start!)'
@@ -126,22 +69,23 @@ Expected output (annotated):
 Emitting synthetic padding (80 entries for FAISS clustering floor)...
 Seeding description corpus (45 hand-authored seeds)...
 Driving concept-graph projectors...
-Building ColBERT description index (one-time, expect 2-4 min)...
+Building ColBERT description index (one-time, expect seconds)...
 Index state: {:events-since-last-rebuild 0, :last-rebuild-timestamp "...", :index-built? true}
 Benchmark system ready.
 ```
 
 What to look for:
 
-- The 80 synthetic-padding entries are filler the FAISS k-means clusterer
-  needs to hit its minimum-cluster-size requirement. They're tagged so they
-  do not surface in retrieval results.
-- `:index-built? true` is the canonical "ColBERT-cold-start succeeded"
+- The 80 synthetic-padding entries are a holdover from the Python-era index
+  builder, which needed a minimum corpus size for its clusterer. The pure-JVM
+  index has no such floor, but the runner still emits them; they're tagged so
+  they never surface in retrieval results.
+- `:index-built? true` is the canonical "ColBERT cold-start succeeded"
   signal. Without it, retrieval (`classify-task` / `classify-behaviors`)
   returns 0 hits because there's nothing in the index yet.
-- The 2-4 minute build is mostly Python ColBERT loading the model the first
-  time. Subsequent `(start!)` calls (after the model + tokenizer are cached)
-  are 30-60 seconds.
+- Index builds are fast on the JVM: the corpus encode is the cost (seconds
+  for the seed corpus after the one-time encoder load). Subsequent
+  `(start!)` calls are similar — the encoder loads once per JVM.
 
 ## 4. Running benches
 
@@ -222,36 +166,14 @@ After adding a seed:
    ```
 4. The new seed should appear in the top-K with a positive score.
 
-## 6. Why every dep is pinned (the failure modes)
-
-`requirements.txt` is a full `pip freeze`. The non-obvious pins, all hit in practice:
-
-| Pin | Why |
-|-----|-----|
-| `RAGatouille==0.0.9.post2` (`<0.0.10`) | 0.0.10+ drops the Stanford ColBERT backend. 0.0.9 imports `langchain.retrievers` — the **pre-0.3** langchain API. |
-| `langchain==0.2.17`, `langchain-core==0.2.43` (`<0.3`) | ragatouille 0.0.9 breaks against langchain 0.3+. |
-| `transformers==4.55.4` (`<5.0`), `tokenizers==0.21.4` (`<0.22`) | colbert-ai 0.2.22 uses `HF_ColBERT.all_tied_weights_keys`, removed in transformers 5.x. |
-| `psutil==7.2.2` | `fast-pytorch-kmeans` imports it without declaring it; pip won't pull it in. |
-| `numpy==1.26.4` | langchain 0.2.x needs numpy < 2.0. |
-| **no `langgraph`** | A `pip freeze` may sweep in `langgraph` (unrelated to ColBERT). `langgraph` 1.x needs `langchain-core>=1.4`, which conflicts head-on with `langchain-core==0.2.43` → `ResolutionImpossible`, install aborts, **nothing** installs. Keep langgraph out of this file. |
-
-A permissive `pip install ragatouille>=0.0.9 torch>=2.0` picks the newest
-compatible-on-paper versions and hits the first three bugs; the venv imports but
-fails on the first real index build.
-
-## 7. Troubleshooting
+## 6. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| `ResolutionImpossible` … `langchain-core` | A `langgraph` line is in `requirements.txt`. Remove all `langgraph*` lines. |
-| `ModuleNotFoundError: ragatouille` after setup | The install aborted (see above) — `pip list` is empty. Re-run after fixing requirements. |
-| `Error: python3 is required but not found` | Install Python 3.12 (or 3.10/3.11). On macOS via pyenv: `pyenv install 3.12.8 && pyenv global 3.12.8`. |
-| `Existing venv is broken (python interpreter missing or unrunnable)` | The setup script detects this and recreates the venv automatically. This happens when the system Python the venv was built against was upgraded or removed (the `.venv-colbert/bin/python` symlink no longer resolves). Re-run with `--force`. |
-| `ModuleNotFoundError: No module named 'langchain.retrievers'` | The venv was built with too-new `langchain` (>= 0.3). ragatouille 0.0.9 imports `langchain.retrievers.document_compressors.base` which moved in langchain 0.3. The pin file pins `langchain==0.2.17`. Re-run `bash scripts/setup-colbert.sh --force`. |
-| `ModuleNotFoundError: No module named 'psutil'` | `fast-pytorch-kmeans` depends on `psutil` but doesn't declare it. The pin file includes `psutil==7.2.2`. Re-install via the setup script. |
-| `AttributeError: 'HF_ColBERT' object has no attribute 'all_tied_weights_keys'` | The venv has `transformers >= 5.x` but `colbert-ai` 0.2.22 references an attribute removed in transformers 5. Pin `transformers<5.0 tokenizers<0.22` and re-install. |
-| `Number of training points (N) should be at least as large as number of clusters (32)` | The corpus passed to ColBERT is too small for the FAISS k-means clusterer. The bench runner emits 80 synthetic-padding entries at startup specifically to satisfy this constraint. If you're calling `create-index!` outside the runner with a tiny corpus, either supply more docs (~10+ with multi-token content) or set `:use-faiss? false` to skip the k-means step. |
-| Bridge `ping` ok but search no-ops from another app | Missing `-Dcolbert.bridge.script` (see section 2 above). |
+| `ColBERT model artifact failed size verification` | A download was truncated (network hiccup). Delete the named file under `~/.cache/orc/colbert/answerai-colbert-small-v1/` and re-run — the resolver re-fetches and re-verifies. |
+| `-Dcolbert.model.path points at ... missing required model artifacts` | The override directory is incomplete. It must contain `model.onnx`, `tokenizer.json`, and the config files (the error names exactly what's missing). |
+| `:colbert-index-artifact-unreadable` | The index directory has no `orc-colbert-index` format marker — a foreign or legacy Python-era PLAID layout. Index artifacts are derived data: rebuild via `create-index!` (the reindex processor does this automatically for the description corpus); `hybrid-search` degrades to 2 signals in the meantime. |
+| First run is slow / appears to hang for ~10s | One-time model download (fresh machine) and/or the one-time encoder load in this JVM. Subsequent calls are milliseconds. |
 
 ### `:r-inject-trace` is nil on a saved EDN even though task has `:rlm {:auto-classify? true}`
 
@@ -267,20 +189,10 @@ Three possible causes:
    `min-display-confidence` floor (0.6). Try lowering the floor temporarily
    in `todo_processors.clj` to confirm.
 
-## 8. Regenerating the pinned requirements
-
-After intentionally upgrading a dep in a working venv:
-
-```bash
-.venv-colbert/bin/pip freeze | grep -v -i '^langgraph' > development/bench/requirements.txt
-```
-
-Then verify a clean rebuild reproduces: `bash scripts/setup-colbert.sh --force`.
-
-## 9. Reproducing report numbers
+## 7. Reproducing report numbers
 
 The reports under `development/bench/r_inject_reports/` cite specific EDNs
-from `2026-06-02` runs. Clean re-runs **will not** produce byte-identical
+from earlier runs. Clean re-runs **will not** produce byte-identical
 EDNs (LLM non-determinism + timestamp fields), but they will produce
 **structurally-comparable** ones:
 
@@ -303,12 +215,9 @@ expected variance band.
 
 ## Cross-references
 
-- `scripts/setup-colbert.sh` — idempotent venv builder
-- `development/bench/requirements.txt` — pinned, verified-working dependencies
-- `scripts/colbert_bridge.py` — the Python subprocess the JVM talks to
+- `docs/adr/0002-pure-jvm-colbert-signal.md` — why the signal is pure JVM
+- `docs/COLBERT-INTEGRATION.md` — the JVM architecture (encoder checkpoint,
+  exact MaxSim, index artifact, model resolution)
 - `components/colbert/src/ai/obney/orc/colbert/interface.clj` — public API
-  (including `health-check`)
 - `components/ontology/resources/seeds/` — shipped baseline seed corpus
 - `development/bench/r_inject_reports/` — expected-output reference EDNs
-
-[RAGatouille]: https://github.com/AnswerDotAI/RAGatouille

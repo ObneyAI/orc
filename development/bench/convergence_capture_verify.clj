@@ -27,9 +27,7 @@
    AUTO-SELECTS whichever OOD candidate actually fresh-mints as the subject.
 
    Run SOLO:
-     clojure -J-Dcolbert.venv.path=<orc-main venv> \\
-             -J-Dcolbert.bridge.script=<orc-main bridge> \\
-             -M:dev -m convergence-capture-verify"
+     clojure -M:dev -m convergence-capture-verify"
   (:require [runner]
             [litellm.router :as litellm-router]
             [ai.obney.orc.ontology.interface :as ont]

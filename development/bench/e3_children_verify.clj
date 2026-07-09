@@ -15,10 +15,7 @@
         derived ids + skos:broader parent edges.
 
    Run (from the orc-rinject-redesign worktree, OPENROUTER_API_KEY in env):
-     clojure -M:dev \\
-       -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert \\
-       -J-Dcolbert.bridge.script=/Users/darylroberts/Desktop/Code/orc-rinject-redesign/scripts/colbert_bridge.py \\
-       -m e3-children-verify"
+     clojure -M:dev -m e3-children-verify"
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
             [ai.obney.orc.ontology.core.task-classifier :as tc]

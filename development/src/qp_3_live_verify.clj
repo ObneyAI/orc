@@ -17,7 +17,7 @@
 
    This verify proves the LOAD-BEARING end-to-end behavior:
      1. runner/start! brings up real Grain + seeds the corpus + builds
-        the initial ColBERT index (real bridge — ragatouille).
+        the initial ColBERT index (real pure-JVM encoder).
      2. Mint a distinctive behavior (a domain-specific summary the
         seed corpus does not cover).
      3. Wait for the forced rebuild to complete (poll the reindex

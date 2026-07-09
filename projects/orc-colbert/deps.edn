@@ -5,11 +5,14 @@
                                :git/sha "0ab49d7fd3847ce5ec485d29a6fbe292ba4e7856"
                                :deps/root "projects/grain-core-v2"}
 
-        ;; ColBERT late-interaction retrieval — the optional Layer-5 upgrade.
-        ;; A leaf component (its ontology reference is resolved lazily). Add this
-        ;; alongside orc-ontology to light up the third retrieval signal in
-        ;; hybrid-search. REQUIRES a Python venv (.venv-colbert) at runtime —
-        ;; this is the one package that pulls Python.
+        ;; The pure-JVM ColBERT signal (ADR 0002) — the optional Layer-5
+        ;; late-interaction upgrade. A leaf component (its ontology reference is
+        ;; resolved lazily). Add this alongside orc-ontology to light up the
+        ;; third retrieval signal in hybrid-search. Pulls DJL (api + HuggingFace
+        ;; tokenizers + OnnxRuntime engine, 0.31.1) and downloads the
+        ;; answerai-colbert-small-v1 encoder checkpoint (~133MB) into a local
+        ;; cache on first use — no Python (-Dcolbert.model.path overrides for
+        ;; air-gapped machines).
         orc/colbert {:local/root "../../components/colbert"}}
 
  :aliases {:test {:extra-paths []

@@ -21,12 +21,10 @@ development/bench/generalization-results/
 # Large binary test fixtures. Keep these local; share via external storage if needed.
 development/resources/
 
-# ColBERT runtime artifacts — Python virtualenv + binary index data.
-# These are local infrastructure for both the description corpus (agent
-# self-improving loop) and the evolutionary ontology extraction pipeline.
-# Rebuild via scripts/setup-colbert.sh.
-.venv-colbert/
-.ragatouille/
+# Pure-JVM ColBERT index artifacts (ADR 0002) — derived data, always
+# rebuildable from the events that describe the corpus. Default index root
+# (override via -Dcolbert.index.root).
+.orc-colbert-indexes/
 
 # Local-only follow-up working notes. Survive compaction (filesystem-tracked)
 # but never committed — they're scratch planning that becomes stale fast.

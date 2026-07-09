@@ -4,24 +4,24 @@
 >
 > ORC is a layered opt-in library. Most consumers only need the core execution engine
 > (`orc-service`). Add components as capabilities require. This document maps each
-> capability to its components, flags Python requirements, and calls out known issues
-> you will hit before the code does.
+> capability to its components, flags heavy dependencies (DJL model loading), and calls
+> out known issues you will hit before the code does.
 
 ---
 
 ## Opt-in layer table
 
-| Layer | Capability | Component(s) needed | Python required | Evidence |
-|-------|-----------|---------------------|:---------------:|---------|
-| 0 | **Core execution** — behavior tree DSL, workflow execution, event-sourced state | `orc-service` | No | `components/orc-service/deps.edn`: an LLM-call layer, structured logging, and a safe Clojure interpreter — no DJL, no Python bridge |
-| 1 | **LLM judges** — grounding, reasoning, completeness, instruction-following | `evaluation` | No | `evaluation/deps.edn`: JSON handling, the LLM-call layer, and orc-service — **no ontology**. The Living-Description gate in `judge_runtime.clj` is resolved lazily (`requiring-resolve`), so judges run with zero ontology, zero DJL, zero Python. Verified: `projects/orc-evaluation` resolves with none of those on the classpath. |
+| Layer | Capability | Component(s) needed | DJL required | Evidence |
+|-------|-----------|---------------------|:------------:|---------|
+| 0 | **Core execution** — behavior tree DSL, workflow execution, event-sourced state | `orc-service` | No | `components/orc-service/deps.edn`: an LLM-call layer, structured logging, and a safe Clojure interpreter — no DJL, no model loading |
+| 1 | **LLM judges** — grounding, reasoning, completeness, instruction-following | `evaluation` | No | `evaluation/deps.edn`: JSON handling, the LLM-call layer, and orc-service — **no ontology**. The Living-Description gate in `judge_runtime.clj` is resolved lazily (`requiring-resolve`), so judges run with zero ontology and zero DJL. Verified: `projects/orc-evaluation` resolves with none of those on the classpath. |
 | 2 | **Observability** — Langfuse trace forwarding | `langfuse` | No | `components/langfuse/deps.edn`: empty deps map — no external deps at all |
-| 3 | **Prompt optimization** — GEPA Pareto-frontier instruction evolution | `gepa` + `evaluation` | No | `components/gepa/deps.edn`: deps are mulog, orc/evaluation — no ontology dep, no Python |
-| 4 | **DJL embeddings** — dense vector embeddings, semantic concept search | `ontology` | No | `components/ontology/deps.edn`: deps are ai.djl/api, ai.djl.pytorch/pytorch-engine (no Python); `embedding.clj:53` calls `(Criteria/builder)` from DJL directly — pure JVM model loading |
-| 5 | **ColBERT retrieval** — 110M-param late-interaction scoring, PLAID indexing | `colbert` | **Yes** | `bridge.clj:2-14`: "Python subprocess bridge for ColBERT operations. Protocol: JSON-RPC over stdin/stdout" |
+| 3 | **Prompt optimization** — GEPA Pareto-frontier instruction evolution | `gepa` + `evaluation` | No | `components/gepa/deps.edn`: deps are mulog, orc/evaluation — no ontology dep, no DJL |
+| 4 | **DJL embeddings** — dense vector embeddings, semantic concept search | `ontology` | **Yes** | `components/ontology/deps.edn`: deps are ai.djl/api, ai.djl.pytorch/pytorch-engine; `embedding.clj:53` calls `(Criteria/builder)` from DJL directly — pure JVM model loading |
+| 5 | **ColBERT retrieval** — pure-JVM late-interaction scoring (exact MaxSim over a versioned index artifact) | `colbert` | **Yes** | `components/colbert/deps.edn`: ai.djl/api + huggingface tokenizers + onnxruntime engine (0.31.1) run the `answerai-colbert-small-v1` encoder checkpoint natively — no Python process (ADR 0002) |
 | 6 | **Evolutionary ontology builder** — ingest CSV/JSON/SQL/text, auto-discover concepts, event-sourced general-purpose memory | `ontology` + ORC sheets for extraction | No | `ontology/interface/evolutionary.clj`: `build-from-sources` + `evolve` entry points; ColBERT indexing is an optional phase-7 within the pipeline |
-| 7 | **Self-improving loop** — auto-classify executions, pattern evolution, behavior minting | `orc-service` + `evaluation` + `ontology` + `colbert` | **Yes** (via colbert) | `judge_runtime.clj:559`: `(ontology/get-living-description-enabled? ctx)` is the single boolean gate that controls the entire loop; disabled by default |
-| 8 | **MCP Sheet Builder** — dynamic workflow generation from MCP tool schemas | `mcp-sheet-builder` | No | `components/mcp-sheet-builder/deps.edn`: deps are clj-http, cheshire, sci — no ontology dep, no Python |
+| 7 | **Self-improving loop** — auto-classify executions, pattern evolution, behavior minting | `orc-service` + `evaluation` + `ontology` + `colbert` | **Yes** (via ontology + colbert) | `judge_runtime.clj:559`: `(ontology/get-living-description-enabled? ctx)` is the single boolean gate that controls the entire loop; disabled by default |
+| 8 | **MCP Sheet Builder** — dynamic workflow generation from MCP tool schemas | `mcp-sheet-builder` | No | `components/mcp-sheet-builder/deps.edn`: deps are clj-http, cheshire, sci — no ontology dep, no DJL |
 
 ---
 
@@ -31,17 +31,17 @@ ORC is published as standalone packages from a single Polylith repo — pull in
 only the package your layer needs, instead of the full umbrella. Full details
 and deps.edn snippets: **[PACKAGES.md](PACKAGES.md)**.
 
-| Package | Layers | DJL? | Python? |
-|---------|--------|:----:|:-------:|
-| `projects/orc-service` | 0 (engine) | No | No |
-| `projects/orc-evaluation` | 0–2 (+ judges) | No | No |
-| `projects/orc-gepa` | 0–3 (+ optimization) | No | No |
-| `projects/orc-ontology` | 0, 4, 6 (+ memory) | Yes | No |
-| `projects/orc-colbert` | 5 (retrieval upgrade) | No | Yes |
-| `projects/orc-mcp-sheet-builder` | 8 | No | No |
-| `projects/orc` (umbrella) | all (full self-improving loop) | Yes | Yes |
+| Package | Layers | DJL? |
+|---------|--------|:----:|
+| `projects/orc-service` | 0 (engine) | No |
+| `projects/orc-evaluation` | 0–2 (+ judges) | No |
+| `projects/orc-gepa` | 0–3 (+ optimization) | No |
+| `projects/orc-ontology` | 0, 4, 6 (+ memory) | Yes |
+| `projects/orc-colbert` | 5 (retrieval upgrade) | Yes (OnnxRuntime) |
+| `projects/orc-mcp-sheet-builder` | 8 | No |
+| `projects/orc` (umbrella) | all (full self-improving loop) | Yes |
 
-Example — judges with zero Python and zero DJL:
+Example — judges with zero DJL and zero model loading:
 
 ```clojure
 ;; in your project's deps.edn — lib name matches the package
@@ -70,7 +70,7 @@ the target component is absent.
 
 ```
 langfuse          deps: (none — empty deps map)
-colbert           deps: mulog, data.json  [+Python subprocess at runtime]
+colbert           deps: mulog, data.json, DJL (api + tokenizers + onnxruntime, in-JVM)
                   (its ontology reference is lazy — fn-body require, not a hard dep)
 ```
 
@@ -95,16 +95,18 @@ projects/orc  →  orc-service
                  evaluation   → orc-service
                  gepa         → evaluation
                  ontology
-                 colbert      [+Python]
+                 colbert      [+ DJL OnnxRuntime, in-JVM]
                  mcp-sheet-builder
                  langfuse
 ```
 
 ### When is Python required?
 
-Python is only required when you add the `colbert` component. Every other component
-runs entirely on the JVM. The `ontology` component uses DJL to load embedding models
-locally over PyTorch — this is JVM-managed; no Python process is spawned.
+Never. Every component runs entirely on the JVM. The `ontology` component uses DJL to
+load embedding models locally over the PyTorch engine, and the `colbert` component runs
+its encoder checkpoint on DJL OnnxRuntime (ADR 0002) — both are JVM-managed; no Python
+process is spawned. The only external touch is each model's one-time download into a
+local cache on first use.
 
 ---
 

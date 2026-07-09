@@ -9,10 +9,7 @@
    top-n 5) on ~12 coding-implementation task signatures + 3 OOD tasks.
 
    Run (from the orc-rinject-redesign worktree, OPENROUTER_API_KEY in env):
-     clojure -M:dev \\
-       -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert \\
-       -J-Dcolbert.bridge.script=/Users/darylroberts/Desktop/Code/orc-rinject-redesign/scripts/colbert_bridge.py \\
-       -m e1-behavioral-axis-proto
+     clojure -M:dev -m e1-behavioral-axis-proto
 
    NO engine source change. This file is scratch/prototype."
   (:require [runner]
@@ -84,8 +81,6 @@
 
 (defn -main [& _]
   (println "=== E1 THROWAWAY: behavioral-axis classification of coding tasks ===")
-  (println "venv :" (System/getProperty "colbert.venv.path"))
-  (println "bridge:" (System/getProperty "colbert.bridge.script"))
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (let [results (atom [])]

@@ -506,11 +506,11 @@ Judges are defined at the workflow level (paralleling `sheet/blackboard`) and st
 | `evaluation` | `ai.obney.orc.evaluation.interface` | orc-service, LLM layer, cheshire | `:judge/score-emitted`, `:judge/composite-score-computed` |
 | `gepa` | `ai.obney.orc.gepa.interface` | evaluation, mulog | `:gepa/optimization-*` |
 | `ontology` | `ai.obney.orc.ontology.interface` | ai.djl/api, ai.djl.huggingface/tokenizers, ai.djl.pytorch/pytorch-engine, data.csv, data.json, sqlite-jdbc | `:ontology/*`, `:evolutionary/*` |
-| `colbert` | `ai.obney.orc.colbert.interface` | mulog, data.json [+Python subprocess] | `:colbert/*` |
+| `colbert` | `ai.obney.orc.colbert.interface` | mulog, data.json, DJL OnnxRuntime (in-JVM) | `:colbert/*` |
 | `mcp-sheet-builder` | `ai.obney.orc.mcp-sheet-builder.interface` | clj-http, cheshire, sci | none |
 | `langfuse` | `ai.obney.orc.langfuse.interface` | (none) | none |
 
-For the full opt-in hierarchy and Python requirements, see [COMPONENT-MAP.md](COMPONENT-MAP.md).
+For the full opt-in hierarchy and heavy-dependency flags, see [COMPONENT-MAP.md](COMPONENT-MAP.md).
 
 ---
 

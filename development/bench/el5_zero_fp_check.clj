@@ -9,7 +9,7 @@
    scorer is alive (rule out the harness: a dead scorer would give 0 for both).
 
    Real ColBERT + production knobs. Run:
-     OPENROUTER_API_KEY=… clojure -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert -M:dev -m el5-zero-fp-check"
+     OPENROUTER_API_KEY=… clojure -M:dev -m el5-zero-fp-check"
   (:require [runner]
             [ai.obney.orc.ontology.core.domain-penalty :as dp]))
 

@@ -59,9 +59,9 @@ Every existing doc gets its own focused issue. Each agent reads the existing doc
 | 2 | Custom judges (your rubric, your bands) | `evaluation` | No |
 | 3 | GEPA — instruction optimization | `gepa` + `evaluation` | No |
 | 4 | Base embeddings + semantic search | `ontology` (DJL) | No |
-| 5 | ColBERT — late-interaction retrieval upgrade | `colbert` | Yes (`.venv-colbert`) |
+| 5 | ColBERT — late-interaction retrieval upgrade | `colbert` | No (pure JVM — DJL OnnxRuntime) |
 | 6 | Evolutionary ontology builder — general memory | `ontology` + ORC sheets | No |
-| 7 | Self-improving loop — Living Descriptions | `ontology` + `colbert` + seed corpus | Yes |
+| 7 | Self-improving loop — Living Descriptions | `ontology` + `colbert` + seed corpus | No (pure JVM) |
 | 8 | MCP Sheet Builder — dynamic workflow generation | `mcp-sheet-builder` | No |
 
 ### Getting-started domain and structure

@@ -12,7 +12,7 @@
    colbert/rerank scores ALL docs against ONE query in a single call, so the
    avoid vs good scores for a given task are directly comparable (same scale).
 
-   Run: clojure -J-Dcolbert.venv.path=<orc-main venv> -J-Dcolbert.bridge.script=<this worktree> -M:dev -m el5-colbert-separability-probe"
+   Run (pure-JVM ColBERT signal): clojure -M:dev -m el5-colbert-separability-probe"
   (:require [runner]
             [ai.obney.orc.colbert.interface :as colbert]))
 

@@ -15,8 +15,6 @@
 
    Real grain + real ColBERT + real reranker. Run:
      OPENROUTER_API_KEY=... clojure \\
-       -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert \\
-       -J-Dcolbert.bridge.script=/Users/darylroberts/Desktop/Code/orc-rinject-redesign/scripts/colbert_bridge.py \\
        -M:dev -m el2-grounded-rank-proto"
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]

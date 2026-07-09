@@ -18,11 +18,9 @@
      AFTER   — search #{:tree-fingerprint :tree-class} -> recorded class PRESENT
                classify-task on a similar task      -> MATCHES (not a mint)
 
-   Run (venv read-only from orc-main; -J-D BEFORE -M:dev):
+   Run (pure-JVM ColBERT signal — no venv, no bridge):
      OPENROUTER_API_KEY=... \\
-     clojure -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert \\
-             -J-Dcolbert.bridge.script=/Users/darylroberts/Desktop/Code/orc-rinject-redesign/scripts/colbert_bridge.py \\
-             -M:dev -m el1a-convergence-proto"
+     clojure -M:dev -m el1a-convergence-proto"
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
             [ai.obney.orc.ontology.core.task-classifier :as tc]
@@ -86,8 +84,6 @@
 
 (defn -main [& _]
   (println "=== EL-1a CONVERGENCE PROTOTYPE (ADR 0015) ===")
-  (println "venv  :" (System/getProperty "colbert.venv.path"))
-  (println "bridge:" (System/getProperty "colbert.bridge.script"))
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (try

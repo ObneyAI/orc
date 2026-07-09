@@ -271,11 +271,11 @@ This is Anterior's "Failure Mode Ontology" + "Ready-made Datasets" pattern appli
 
 ---
 
-### Theme 9: Enhanced Retrieval with ColBERT (RAGatouille Integration)
+### Theme 9: Enhanced Retrieval with ColBERT
 
-**Status:** Planned (Phase 4a Enhancement)
+**Status:** Shipped — as the pure-JVM ColBERT signal (see `docs/adr/0002-pure-jvm-colbert-signal.md` and `docs/COLBERT-INTEGRATION.md`)
 
-**Original Note:** "The ontology mechanism (with rrf) is using embeddings for its search within memory etc already. So the likely integration for ragatouille is integration with the ontology based memory that will already be used internally for all retrieval whether it be custom documents or internal mechanisms for preexisting trees."
+**Original Note (paraphrased):** the ontology mechanism (with RRF) already uses embeddings for its search within memory; the likely ColBERT integration is with that ontology-based memory, which is used internally for all retrieval — custom documents and internal mechanisms for preexisting trees alike.
 
 **What This Means:**
 The existing RRF-based hybrid search (graph + embeddings) gains a third signal: ColBERT late-interaction retrieval for superior semantic matching. ColBERT provides token-level matching instead of single-vector embeddings, offering better relevance for complex queries.
@@ -305,56 +305,22 @@ The existing RRF-based hybrid search (graph + embeddings) gains a third signal: 
                  Ranked Results
 ```
 
-**Why Python Bridge (Not Pure Clojure):**
-ColBERT is fundamentally different from a callable API:
-1. **Neural Network** - 110M parameter PyTorch transformer model
-2. **PLAID Index** - Specialized compression algorithm (2000+ lines), not a data format
-3. **Training** - Requires PyTorch autograd for gradient computation
-4. **No JVM Equivalent** - ONNX/DJL can't replicate PLAID indexing or training
+**How it shipped (pure JVM, no Python):**
+The original plan assumed a Python subprocess bridge was unavoidable; that assumption was overturned (the full argument and considered options live in ADR 0002). The shipped signal runs the `answerai-colbert-small-v1` encoder checkpoint natively on DJL OnnxRuntime with exact MaxSim scoring over a versioned on-disk index artifact — numerically verified against the reference Python implementation on the same checkpoint. The vision's training surface (domain fine-tuning on tree success/failure data) was dropped: it had no callers, and inference-only serving covers every shipped use case. If fine-tuning is ever wanted, the path is offline training → ONNX export → served by the same JVM runtime.
 
-The Python bridge adds ~50ms latency per call (negligible vs model inference time) while providing full RAGatouille functionality.
-
-**Key Features:**
+**Key Features (as shipped):**
 1. **Three-Signal Hybrid Search** - Graph BFS + MiniLM + ColBERT via existing RRF
-2. **Tree Profile Indexing** - Index tree self-descriptions for few-shot retrieval
-3. **Domain Training** - Fine-tune ColBERT on tree success/failure data (pairs/triplets)
-4. **Event-Sourced** - Full audit trail of index/search/training operations
-5. **Reranking** - In-memory rerank without index for candidate selection
+2. **Event-Sourced** - Index lifecycle + search/rerank audit via Grain events; the index artifact is derived data, always rebuildable
+3. **Reranking** - In-memory rerank without index (also the classifier's domain-penalty scorer)
+4. **Batch search** - many queries against one index load
 
 **Integration Points:**
-- Extends `ontology/hybrid-search` with optional ColBERT signal
+- Extends `ontology/hybrid-search` with the optional ColBERT signal (graceful degradation when absent)
 - Uses existing `compute-rrf-scores` for fusion (no changes to RRF logic)
-- Training data extracted from successful trace evaluation pairs
 - Index lifecycle tracked via Grain events
 
-**Required Features:**
-1. ColBERT component with Python bridge (`components/colbert/`)
-2. Index lifecycle events (`:colbert/index-created`, `:colbert/search-performed`, etc.)
-3. Hybrid search extension in ontology (add ColBERT batch to RRF)
-4. Training data extraction from traces (pairs with min-score filter)
-5. Hard negative mining (using existing DJL embeddings)
-6. Document splitting (matching RAGatouille's LlamaIndex splitter logic)
+**Dependency:** Phase 4a (Ontology) for the description corpus, existing RRF infrastructure
 
-**Component Structure:**
-```
-components/colbert/
-├── interface.clj                 # Public API
-├── interface/schemas.clj         # Events, commands, queries
-└── core/
-    ├── bridge.clj                # Python subprocess (JSON-RPC)
-    ├── corpus_processor.clj      # Document splitting
-    ├── training_data_processor.clj # Triplet generation
-    ├── negative_miner.clj        # Hard negative mining (DJL-based)
-    └── read_models.clj           # Event projections
-```
-
-**Use Cases:**
-- Semantic search over internal documentation
-- Tree profile retrieval for few-shot examples
-- Reranking LLM-generated candidates by relevance
-- Training domain-specific retrievers on tree success/failure data
-
-**Dependency:** Phase 4a (Ontology) for tree profiles, existing RRF infrastructure
 
 ---
 
@@ -707,7 +673,7 @@ When you're stuck, check which phase you're in and what's next:
 3. **Phase 3 (Library):** Self-description → Registration → Hierarchy → Search
 4. **Phase 4 (Intelligence):** Basic failure taxonomy → Dataset builder → Best-of-N → Tree analyzer
 5. **Phase 4a (Ontology):** Static core → Event schemas → Read models → Classifier → Tree profiles → Few-shot → TTL export → Discovery
-6. **Phase 4b (ColBERT):** Python bridge → Index management → Ontology integration → Training pipeline → ORC integration
+6. **Phase 4b (ColBERT):** JVM encoder + exact MaxSim → Index management → Ontology integration → ORC integration (shipped pure-JVM; ADR 0002)
 7. **Phase 5 (Debug):** Debug agent → Pattern classifier → Judge adequacy
 8. **Phase 6 (Experience):** Skills compiler → Personality layer
 

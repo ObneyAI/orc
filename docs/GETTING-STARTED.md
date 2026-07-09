@@ -1098,7 +1098,7 @@ that graph are tagged with that ID. Multiple separate graphs coexist:
 Fusion (RRF). ColBERT is optional — control signals with `:signals`:
 
 ```clojure
-;; No ColBERT — graph + embedding signals only. No Python required.
+;; No ColBERT — graph + embedding signals only.
 ;; (source-verified: retrieval.clj:860 — signals default is #{:graph :embedding :colbert};
 ;;  passing #{:graph :embedding} disables ColBERT)
 (ontology/hybrid-search ctx
@@ -1106,8 +1106,8 @@ Fusion (RRF). ColBERT is optional — control signals with `:signals`:
    :signals    #{:graph :embedding}
    :limit      5})
 
-;; With ColBERT (Layer 5 + Python required).
-;; colbert-index-id is obtained from (colbert/build-index! ctx ...) first.
+;; With ColBERT (Layer 5 — pure JVM; the colbert component on the classpath).
+;; colbert-index-id is obtained from (colbert/create-index! ctx ...) first.
 (ontology/hybrid-search ctx
   {:query-text       "dispute resolution mechanisms in contracts"
    :colbert-index-id colbert-index-id
@@ -1152,13 +1152,14 @@ Default when omitted: `#{:graph :embedding :colbert}`.
 
 > **What you're adding**
 >
-> | Layer | Component | Python required |
-> |-------|-----------|:---------------:|
+> | Layer | Component | DJL required |
+> |-------|-----------|:------------:|
 > | 7 | `orc-service` + `evaluation` + `ontology` + `colbert` | **Yes** |
 >
-> The self-improving loop is the only ORC capability that requires Python. The `colbert`
-> component spawns a Python subprocess (`.venv-colbert`) for late-interaction re-ranking
-> and index search. See [COMPONENT-MAP.md](COMPONENT-MAP.md) — Layer 7.
+> The loop's retrieval runs entirely on the JVM: the `colbert` component runs its
+> encoder checkpoint on DJL OnnxRuntime for late-interaction re-ranking and index
+> search (a ~133MB model downloads into a local cache on first use). No Python.
+> See [COMPONENT-MAP.md](COMPONENT-MAP.md) — Layer 7.
 
 ### First: seed the corpus
 
@@ -1380,15 +1381,13 @@ surfaced references (it *informs*, it does not gate).
 
 ### What you just added
 
-> | Layer | Component | Python | Notes |
-> |-------|-----------|:------:|-------|
-> | 7 | `ontology` + `colbert` | **Yes** | `colbert` spawns `.venv-colbert` Python subprocess |
+> | Layer | Component | DJL | Notes |
+> |-------|-----------|:---:|-------|
+> | 7 | `ontology` + `colbert` | **Yes** | `colbert` runs its encoder on DJL OnnxRuntime (pure JVM; one-time model download) |
 >
 > **Setup required before the loop runs:**
-> 1. Install ColBERT dependencies in `.venv-colbert`
->    (see `components/colbert/README.md`)
-> 2. `(ontology/seed-baseline-corpus! ctx)` — once on first start
-> 3. `(ontology/bootstrap-reindex! ctx)` — triggers the initial ColBERT index build
+> 1. `(ontology/seed-baseline-corpus! ctx)` — once on first start
+> 2. `(ontology/bootstrap-reindex! ctx)` — triggers the initial ColBERT index build
 >
 > **Graceful degradation**: without a built ColBERT index, `search-descriptions` returns
 > `[]` and the R-Inject prepend is silently skipped. The `:repl-researcher` node still
@@ -1399,13 +1398,13 @@ surfaced references (it *informs*, it does not gate).
 
 ## Summary: what every phase added
 
-| Phase | Capability | Component(s) | Layer | Python |
-|-------|-----------|-------------|-------|:------:|
+| Phase | Capability | Component(s) | Layer | DJL |
+|-------|-----------|-------------|-------|:---:|
 | 1 | Core behavior tree + event-sourced execution | `orc-service` | 0 | No |
 | 2 | LLM-as-judge (grounding, completeness, etc.) | `evaluation` | 1 | No |
 | 3 | Custom scale + custom judge workflows | `evaluation` | 1 | No |
 | 4 | GEPA — evolutionary instruction optimization | `gepa` + `evaluation` | 3 | No |
-| 5 | Ontology — general-purpose semantic memory | `ontology` (DJL) | 4 / 6 | No |
+| 5 | Ontology — general-purpose semantic memory | `ontology` (DJL) | 4 / 6 | **Yes** |
 | 6 | Self-improving loop — corpus-driven tree design | `ontology` + `colbert` | 7 | **Yes** |
 
 ---

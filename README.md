@@ -92,9 +92,9 @@ one dependency: give it the lib name shown and point `:deps/root` at the project
 | …plus LLM-as-judge evaluation | `obneyai/orc-evaluation` → `projects/orc-evaluation` | — |
 | …plus GEPA prompt optimization | `obneyai/orc-gepa` → `projects/orc-gepa` | — |
 | …plus concept graph + DJL embeddings | `obneyai/orc-ontology` → `projects/orc-ontology` | DJL (JVM) |
-| …plus ColBERT retrieval (added to ontology) | also `obneyai/orc-colbert` → `projects/orc-colbert` | Python |
+| …plus ColBERT retrieval (added to ontology) | also `obneyai/orc-colbert` → `projects/orc-colbert` | DJL (JVM) |
 | …plus MCP-driven tree generation | `obneyai/orc-mcp-sheet-builder` → `projects/orc-mcp-sheet-builder` | — |
-| **Everything** / the full self-improving loop | `obneyai/orc` → `projects/orc` | DJL + Python |
+| **Everything** / the full self-improving loop | `obneyai/orc` → `projects/orc` | DJL (JVM) |
 
 ```clojure
 ;; deps.edn — pick ONE row above; use its lib name + :deps/root
@@ -114,7 +114,7 @@ layer → internal-component mapping and dependency graph live in
 > **Self-improving loop is alpha-stage.** The full loop (`:auto-classify?` +
 > `:recursive?`) works end-to-end on workflows that align with the shipped seed
 > corpus, but force-fit classifications appear on out-of-distribution tasks. It
-> needs the ColBERT Python bridge. See [docs/SELF-IMPROVING-LOOP.md](docs/SELF-IMPROVING-LOOP.md)
+> needs the `colbert` component (pure JVM). See [docs/SELF-IMPROVING-LOOP.md](docs/SELF-IMPROVING-LOOP.md)
 > for an honest current-state breakdown.
 
 > **RLM recursive mode is now the default.** `:repl-researcher` nodes default to
@@ -165,7 +165,7 @@ The full opt-in layer table, dependency graph, and known issues live in **[docs/
 | **orc-service** | `ai.obney.orc.orc-service` | Core behavior tree execution, DSL, versioning, event sourcing |
 | **gepa** | `ai.obney.orc.gepa` | LLM instruction optimization with Pareto frontier selection |
 | **evaluation** | `ai.obney.orc.evaluation` | LLM-as-judge evaluation (grounding, reasoning, completeness) |
-| **colbert** | `ai.obney.orc.colbert` | Late-interaction retrieval via Python ColBERT bridge |
+| **colbert** | `ai.obney.orc.colbert` | Pure-JVM late-interaction retrieval (DJL OnnxRuntime, exact MaxSim) |
 | **ontology** | `ai.obney.orc.ontology` | Three-layer concept graph with embeddings and pattern discovery |
 | **mcp-sheet-builder** | `ai.obney.orc.mcp-sheet-builder` | Dynamic workflow generation from MCP tool schemas |
 | **langfuse** | `ai.obney.orc.langfuse` | Observability and tracing integration |
@@ -279,7 +279,6 @@ flowchart TB
 
 - **Java 21+** (with module access for LMDB)
 - **Clojure CLI** (`brew install clojure/tools/clojure`)
-- **Python 3.10+** (optional, for ColBERT semantic search)
 
 ### Getting Started
 
@@ -301,13 +300,7 @@ clj -M:poly test brick:orc-service   # specific brick
 
 ### ColBERT Setup (Optional)
 
-ColBERT provides late-interaction semantic retrieval. It requires a separate Python environment:
-
-```bash
-./scripts/setup-colbert.sh
-```
-
-This creates `.venv-colbert/` with RAGatouille, PyTorch, and sentence-transformers. The Clojure `colbert` component communicates with Python via `scripts/colbert_bridge.py` (subprocess JSON-RPC).
+There is none. The ColBERT signal is pure JVM (see [ADR 0002](docs/adr/0002-pure-jvm-colbert-signal.md)): the `colbert` component runs the `answerai-colbert-small-v1` encoder checkpoint on DJL OnnxRuntime. On first use it downloads the model (~133 MB) into `~/.cache/orc/colbert/` — after that everything is offline. For air-gapped machines, point `-Dcolbert.model.path` at a directory containing the model artifacts.
 
 ### Project Structure
 
@@ -317,11 +310,8 @@ orc/
 ├── README.md
 ├── deps.edn                   # Dev alias + Polylith config
 ├── workspace.edn              # Polylith workspace (top-ns: ai.obney.orc)
-├── python.edn                 # libpython-clj config
-├── requirements.txt           # Python dependencies
 ├── scripts/
-│   ├── colbert_bridge.py      # ColBERT Python subprocess
-│   └── setup-colbert.sh       # ColBERT environment setup
+│   └── nrepl.sh               # nREPL launcher (JVM flags for LMDB)
 ├── components/
 │   ├── orc-service/           # Core execution engine
 │   ├── gepa/                  # Prompt optimization
@@ -344,7 +334,7 @@ ORC is a library — consumers provide:
 
 - **Grain infrastructure**: event store (in-memory or Postgres), LMDB cache, control plane
 - **LLM provider**: DSCloj configuration (`:dscloj-provider` in context)
-- **Optional**: Langfuse client for tracing, MCP servers for tool calling, Python for ColBERT
+- **Optional**: Langfuse client for tracing, MCP servers for tool calling
 
 ## Documentation
 
@@ -361,7 +351,7 @@ ORC is a library — consumers provide:
 | [Architecture](docs/ARCHITECTURE.md) | System architecture and design decisions |
 | [GEPA Guide](docs/GEPA-GUIDE.md) | Prompt optimization with GEPA |
 | [Evaluation](docs/EVALUATION-COMPONENT.md) | LLM-as-judge evaluation framework |
-| [ColBERT Integration](docs/COLBERT-INTEGRATION.md) | Semantic retrieval setup |
+| [ColBERT Integration](docs/COLBERT-INTEGRATION.md) | The pure-JVM late-interaction retrieval signal |
 | [Ontology](docs/ONTOLOGY.md) | Concept graph and pattern discovery |
 | [MCP Sheet Builder](docs/MCP-SHEET-BUILDER-GUIDE.md) | Dynamic workflow generation |
 | [Self-Improving Loop](docs/SELF-IMPROVING-LOOP.md) | Alpha-stage: auto-classify, pattern evolution, behavior minting |

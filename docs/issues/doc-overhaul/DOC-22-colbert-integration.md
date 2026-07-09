@@ -24,7 +24,7 @@ Yes — run `ontology/hybrid-search` WITHOUT ColBERT present. Confirm it works o
 - [ ] Opening: "ColBERT is an optional third retrieval signal (Layer 5). ORC's ontology component works fully without it using graph BFS + DJL embeddings. Add ColBERT when you need late-interaction token-level matching for larger corpora."
 - [ ] 2-signal vs 3-signal example: `hybrid-search` with `:signals #{:graph :embedding}` (no ColBERT) vs `#{:graph :embedding :colbert}` (with ColBERT) — both verified
 - [ ] Graceful degradation shown with captured output: no ColBERT, no exception, 2-signal results returned
-- [ ] Python requirement clearly stated upfront: requires `.venv-colbert` Python environment
+- [ ] Runtime requirement clearly stated upfront: pure JVM (DJL OnnxRuntime encoder; one-time model download) — superseded the original Python-environment criterion when the signal moved in-JVM (ADR 0002)
 - [ ] "When to add ColBERT" guidance: when 2-signal retrieval is insufficient for corpus size and semantic complexity
 - [ ] Dynamic resolution note: ColBERT is resolved via `(find-ns 'ai.obney.orc.colbert.interface)` — graceful nil when component absent from classpath
 

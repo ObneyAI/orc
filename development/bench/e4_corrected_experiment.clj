@@ -15,11 +15,9 @@
    Real grain + real ColBERT (both pools) + real OpenRouter. Classification
    only (NO full 8-iter RLM runs). The ONLY injected fault is reranker/rerank!.
 
-   Run (venv read-only from orc-main; -J-D BEFORE -M:dev):
+   Run (pure-JVM ColBERT signal — no venv, no bridge):
      OPENROUTER_API_KEY=... \\
-     clojure -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert \\
-             -J-Dcolbert.bridge.script=/Users/darylroberts/Desktop/Code/orc-rinject-redesign/scripts/colbert_bridge.py \\
-             -M:dev -m e4-corrected-experiment"
+     clojure -M:dev -m e4-corrected-experiment"
   (:require [runner]
             [ai.obney.orc.ontology.interface :as ont]
             [ai.obney.orc.ontology.core.task-classifier :as tc]
@@ -132,8 +130,6 @@
 ;; ============================================================================
 (defn -main [& _]
   (println "=== E4 CORRECTED EXPERIMENT (Phase B, ADR 0014) ===")
-  (println "venv  :" (System/getProperty "colbert.venv.path"))
-  (println "bridge:" (System/getProperty "colbert.bridge.script"))
   (when-not (System/getenv "OPENROUTER_API_KEY")
     (println "FATAL: OPENROUTER_API_KEY not set") (System/exit 1))
   (let [collected (atom {})]

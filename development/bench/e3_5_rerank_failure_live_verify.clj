@@ -8,10 +8,9 @@
    search + the index stay REAL. We assert by reading the real result maps
    + the real rendered R-Inject prepend back.
 
-   Run (venv read-only from orc-main; -J-D BEFORE -M:dev):
+   Run (pure-JVM ColBERT signal — no venv, no bridge):
      OPENROUTER_API_KEY=... \\
-     clojure -J-Dcolbert.venv.path=/Users/darylroberts/Desktop/Code/orc-main/.venv-colbert \\
-             -M:dev:test -e \"(require 'e3-5-rerank-failure-live-verify)(e3-5-rerank-failure-live-verify/run!)\"
+     clojure -M:dev:test -e \"(require 'e3-5-rerank-failure-live-verify)(e3-5-rerank-failure-live-verify/run!)\"
 
    What it does:
      1. start! → real ontology-descriptions ColBERT index.
