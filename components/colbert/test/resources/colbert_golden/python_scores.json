@@ -1,0 +1,116 @@
+{
+  "model": "answerdotai/answerai-colbert-small-v1",
+  "method": "RAGPretrainedModel.rerank (exact, index-free)",
+  "ragatouille_version": "0.0.9post2",
+  "queries": {
+    "q1": "arbitration clause",
+    "q2": "termination notice period",
+    "q3": "intellectual property ownership"
+  },
+  "documents": {
+    "d1": "Any dispute arising under this agreement shall be settled by binding arbitration.",
+    "d2": "Either party may terminate this agreement with thirty days written notice.",
+    "d3": "All intellectual property created during the engagement remains the sole property of the contractor.",
+    "d4": "Preheat the oven and bake the sourdough loaf for forty minutes until golden.",
+    "d5": "The hurricane weakened to a tropical storm before making landfall on the coast.",
+    "d6": "The midfielder scored twice in the final minutes of the championship match."
+  },
+  "scores": {
+    "q1": [
+      {
+        "doc": "d1",
+        "score": 31.303754806518555,
+        "rank": 0
+      },
+      {
+        "doc": "d2",
+        "score": 30.663862228393555,
+        "rank": 1
+      },
+      {
+        "doc": "d3",
+        "score": 30.587318420410156,
+        "rank": 2
+      },
+      {
+        "doc": "d6",
+        "score": 30.550647735595703,
+        "rank": 3
+      },
+      {
+        "doc": "d5",
+        "score": 30.429866790771484,
+        "rank": 4
+      },
+      {
+        "doc": "d4",
+        "score": 30.298131942749023,
+        "rank": 5
+      }
+    ],
+    "q2": [
+      {
+        "doc": "d2",
+        "score": 30.886913299560547,
+        "rank": 0
+      },
+      {
+        "doc": "d1",
+        "score": 30.199085235595703,
+        "rank": 1
+      },
+      {
+        "doc": "d3",
+        "score": 30.14033317565918,
+        "rank": 2
+      },
+      {
+        "doc": "d4",
+        "score": 30.132354736328125,
+        "rank": 3
+      },
+      {
+        "doc": "d6",
+        "score": 30.13170623779297,
+        "rank": 4
+      },
+      {
+        "doc": "d5",
+        "score": 29.96194839477539,
+        "rank": 5
+      }
+    ],
+    "q3": [
+      {
+        "doc": "d3",
+        "score": 31.194217681884766,
+        "rank": 0
+      },
+      {
+        "doc": "d1",
+        "score": 30.57179069519043,
+        "rank": 1
+      },
+      {
+        "doc": "d2",
+        "score": 30.497648239135742,
+        "rank": 2
+      },
+      {
+        "doc": "d5",
+        "score": 30.36269187927246,
+        "rank": 3
+      },
+      {
+        "doc": "d6",
+        "score": 30.34542465209961,
+        "rank": 4
+      },
+      {
+        "doc": "d4",
+        "score": 30.297740936279297,
+        "rank": 5
+      }
+    ]
+  }
+}
