@@ -9,6 +9,12 @@
                                          :tree-fingerprint AND :tree-class
                                          scopes)
      behavioral-subtrees.edn          — 12 behavioral-subtree seed bodies
+                                         (the abstract PARENTS, repurposed
+                                         E3/ADR 0014)
+     behavioral-subtree-children.edn  — durable coding SUBBEHAVIORS
+                                         (children) minted via
+                                         mint-behavioral-subtree with a
+                                         stable derived id + parent edge (E3)
      ontology-discovery-patterns.edn  — 5 ontology-discovery patterns
                                          (S18 — AFK-derived from bench
                                          RESULTS; :hitl-status flagged
@@ -54,6 +60,24 @@
                            :target-id target-id
                            :body body}))))
 
+(defn- emit-behavioral-child!
+  "E3 (ADR 0014): emit one DURABLE coding subbehavior via the
+   :ontology/mint-behavioral-subtree command. The command owns identity —
+   it derives the STABLE id nameUUIDFromBytes(\"mint:\" + name + \":\" +
+   parent-behavior), so callers pass :name + :parent-behavior + :body, NOT
+   a :target-id. Re-emitting the same (name, parent) lands at the same
+   concept (accrues, never scatters). :provenance is :human-authored —
+   these are curated bootstrap seeds, not runtime volitional mints."
+  [ctx {:keys [name parent-behavior body]}]
+  (cp/process-command
+    (assoc ctx :command {:command/name :ontology/mint-behavioral-subtree
+                         :command/id (random-uuid)
+                         :command/timestamp (time/now)
+                         :name name
+                         :parent-behavior parent-behavior
+                         :body body
+                         :provenance :human-authored})))
+
 (defn seed-baseline-corpus!
   "Emit every baseline seed shipped with the ontology component into the
    caller's event store. Returns a vec of command-results.
@@ -69,6 +93,12 @@
                          assembler's read path (which keys by tree-class)
                          finds them from bootstrap onward.
 
+   E3 (ADR 0014): the durable coding SUBBEHAVIORS (children) from
+   behavioral-subtree-children.edn are then emitted via the
+   :ontology/mint-behavioral-subtree command (stable derived id +
+   :parent-behavior -> skos:broader), AFTER the abstract behavioral
+   parents so the parent concepts exist when the broader edge is drawn.
+
    Idempotent semantics inherit from the underlying :ontology/record-*
    commands — re-emitting the same target-id appends a new
    :tree-description-updated event with the same body, and the read-model
@@ -77,13 +107,23 @@
   (let [node-types (read-seeds "seeds/node-types.edn")
         tree-classes (read-seeds "seeds/tree-classes.edn")
         behaviorals (read-seeds "seeds/behavioral-subtrees.edn")
-        discovery (read-seeds "seeds/ontology-discovery-patterns.edn")]
+        discovery (read-seeds "seeds/ontology-discovery-patterns.edn")
+        ;; E3 (ADR 0014): durable coding SUBBEHAVIORS (children) under the
+        ;; over-matching abstract parents. Emitted via mint-behavioral-subtree
+        ;; (stable derived id + :parent-behavior -> skos:broader), AFTER the
+        ;; abstract behavioral parents so the parent concepts exist when the
+        ;; R05a processor draws the broader edge.
+        behavioral-children (read-seeds "seeds/behavioral-subtree-children.edn")]
     (vec
       (concat
         (mapv #(emit-seed! ctx :node-type %) node-types)
         (mapv #(emit-seed! ctx :tree-fingerprint %) tree-classes)
         (mapv #(emit-seed! ctx :tree-class %) tree-classes)
         (mapv #(emit-seed! ctx :tree-fingerprint %) behaviorals)
+        ;; E3 — durable coding subbehavior children, emitted AFTER the
+        ;; abstract behavioral parents so the parent concepts exist when
+        ;; the broader edge is drawn.
+        (mapv #(emit-behavioral-child! ctx %) behavioral-children)
         ;; S18 — ontology-discovery patterns route through the
         ;; tree-description command (granularity :tree-fingerprint) so
         ;; classify-behaviors surfaces them. Each body carries
@@ -102,6 +142,7 @@
   {:node-types (read-seeds "seeds/node-types.edn")
    :tree-classes (read-seeds "seeds/tree-classes.edn")
    :behavioral-subtrees (read-seeds "seeds/behavioral-subtrees.edn")
+   :behavioral-subtree-children (read-seeds "seeds/behavioral-subtree-children.edn")
    :ontology-discovery-patterns (read-seeds "seeds/ontology-discovery-patterns.edn")})
 
 (defn ontology-discovery-patterns

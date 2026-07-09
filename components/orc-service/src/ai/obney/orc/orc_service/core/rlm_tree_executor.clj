@@ -429,7 +429,8 @@
                  :source-key (:from opts)
                  :item-key (:as opts)
                  :output-key (:into opts)}
-          (:max-concurrency opts) (assoc :max-concurrency (:max-concurrency opts))))
+          (:max-concurrency opts) (assoc :max-concurrency (:max-concurrency opts))
+          (some? (:preserve-failures? opts)) (assoc :preserve-failures? (:preserve-failures? opts))))
       ;; Compile the child node under map-each (child is at index 0)
       (let [child-result (compile-tree-node context sheet-id child-node map-each-id :index 0)]
         {:node-id map-each-id
@@ -455,7 +456,11 @@
                         (make-create-node-command sheet-id :leaf :parent-id parent-id :index index))
           leaf-id (-> leaf-result :command-result/events first :node-id)
           reads (vec (:reads opts))
-          writes (vec (:writes opts))]
+          writes (vec (:writes opts))
+          ;; Phase 4B: a generated code node may carry a gated tool-caller
+          ;; builder FQN. Thread it onto the child sheet's leaf so the child
+          ;; tick rebuilds the gated caller from its blackboard :tool-context.
+          tool-caller-fn (:tool-caller-fn opts)]
       ;; Set I/O
       (run-command! context
         {:command/name :sheet/set-node-io
@@ -467,13 +472,14 @@
          :writes writes})
       ;; Set executor to :code with the fn reference (qualified symbol or ephemeral key)
       (run-command! context
-        {:command/name :sheet/set-node-executor
-         :command/id (random-uuid)
-         :command/timestamp (time/now)
-         :sheet-id sheet-id
-         :node-id leaf-id
-         :executor :code
-         :fn fn-value})
+        (cond-> {:command/name :sheet/set-node-executor
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :sheet-id sheet-id
+                 :node-id leaf-id
+                 :executor :code
+                 :fn fn-value}
+          tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)))
       {:node-id leaf-id
        :ephemeral-fn-keys ephemeral-keys})
 
@@ -517,7 +523,8 @@
                            the child sheet's leaf nodes. When absent for a
                            given key, falls back to inferring schema from
                            value type."
-  [tree context {:keys [sandbox-vars blackboard blackboard-schemas timeout-ms]
+  [tree context {:keys [sandbox-vars blackboard blackboard-schemas timeout-ms
+                        generated-tree-raw]
                  :or {timeout-ms 60000
                       blackboard-schemas {}}}]
   (println "[DEBUG Tree] execute-tree starting")
@@ -622,6 +629,14 @@
           ;; immediately. Without this check, the anomaly is dropped, no tick
           ;; events ever fire, and (deref p timeout-ms) hangs for the full
           ;; timeout budget before returning a misleading {:status :timeout}.
+          ;; G1 (ADR 0018): carry the OPAQUE :tool-context from the RLM
+          ;; execution context onto the tick-tree command so it survives the
+          ;; async command -> event -> processor boundary and reaches the
+          ;; Phase-2 leaf. orc does not interpret it. Absent -> not carried
+          ;; (backward-compatible; non-coding consumers see no change).
+          ;; Transitive: a nested execute-tree (a leaf that emits its own tree)
+          ;; reads :tool-context off ITS context the same way, re-threading it.
+          tool-context (:tool-context context)
           tick-cmd-result (cp/process-command
                             (assoc context :command
                                    (cond-> {:command/id (random-uuid)
@@ -631,7 +646,8 @@
                                             :tick-id tick-id
                                             :inputs (merge blackboard sandbox-vars)
                                             :options {:timeout-ms timeout-ms}}
-                                     parent-tick-id (assoc :parent-tick-id parent-tick-id))))
+                                     parent-tick-id (assoc :parent-tick-id parent-tick-id)
+                                     tool-context (assoc :tool-context tool-context))))
           tick-anomaly (:cognitect.anomalies/category tick-cmd-result)
           ;; If the command was rejected, short-circuit: deregister the pending
           ;; completion so the caller doesn't deref a promise that will never
@@ -707,13 +723,26 @@
             _ (try
                 (cp/process-command
                   (assoc context :command
-                         {:command/id (random-uuid)
-                          :command/timestamp (time/now)
-                          :command/name :sheet/record-rlm-tree-execution-completion
-                          :sheet-id sheet-id
-                          :tick-id tick-id
-                          :trajectory trajectory
-                          :total-usage (or (:usage result) {})}))
+                         (cond-> {:command/id (random-uuid)
+                                  :command/timestamp (time/now)
+                                  :command/name :sheet/record-rlm-tree-execution-completion
+                                  :sheet-id sheet-id
+                                  :tick-id tick-id
+                                  :trajectory trajectory
+                                  :total-usage (or (:usage result) {})}
+                           ;; CV-2 (ADR 0017 decision 3): carry the emitted
+                           ;; worked-DSL (sanitized raw S-expr — pure data the
+                           ;; ontology can store + a model can read) + the
+                           ;; SOURCE (host/classified) sheet-id so the post-emit
+                           ;; enrichment processor resolves the tree-class via
+                           ;; the sheet->class join. Note `sheet-id` above is the
+                           ;; EPHEMERAL Phase-2 sheet; the classified sheet is
+                           ;; (:sheet-id context). Both optional/backward-compat.
+                           (some? generated-tree-raw)
+                           (assoc :generated-tree
+                                  (sanitize-tree-for-events generated-tree-raw))
+                           (some? (:sheet-id context))
+                           (assoc :source-sheet-id (:sheet-id context)))))
                 (catch Exception e
                   (println "[DEBUG Tree] Bookend emission failed:" (.getMessage e))))
             result-with-duration (assoc result :duration-ms duration-ms)]

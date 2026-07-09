@@ -192,6 +192,20 @@ learning machinery:
   which then prime future tree designs. See
   [SELF-IMPROVING-LOOP.md](SELF-IMPROVING-LOOP.md).
 
+The judge-grounded `:avoid-when` evidence is **dual-use**, not merely recorded.
+It feeds two consumers (ADRs
+0015 /
+0016): (1) the consolidator
+folds it into Living Description bodies (the C-3 weakness-self-correction loop),
+and (2) classification's reranker READS each candidate's `:avoid-when` and a
+deterministic contrastive **domain penalty** ENFORCES it after the rerank, so a
+strong shape match no longer overrides a firing domain guard. A `refactor→rename`
+run that scores badly teaches the consolidator to add an "avoid when extract /
+refactor" guard, after which the penalty bites precisely on the next similar task —
+the same evidence both learns and enforces. See
+[LIVING-DESCRIPTIONS.md](LIVING-DESCRIPTIONS.md) and
+[SELF-IMPROVING-LOOP.md § How novelty is handled](SELF-IMPROVING-LOOP.md#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop).
+
 The full signal path is detailed in [§ Why judges matter](#why-judges-matter)
 just below — the short version: **every automatic improvement ORC makes starts
 with a judge score**, which is why judge calibration matters so much.

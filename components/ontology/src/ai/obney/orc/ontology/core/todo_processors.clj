@@ -243,6 +243,93 @@
     nil))
 
 ;; =============================================================================
+;; CV-2 (ADR 0017 decision 3) — post-emit emitted-tree worked-DSL enrichment
+;; =============================================================================
+;;
+;; ADR 0015's literal "capture the emitted TREE": once the RLM emits its tree
+;; (the Phase-2 :sheet/rlm-tree-execution-completed bookend now carries the
+;; emitted worked-DSL + the SOURCE sheet-id), enrich the assigned :tree-class
+;; description with that DSL as a :strengths[].:recommended-pattern — the
+;; content EL-4 harvest reads so a harvested specialist ships the REAL proven
+;; pattern, not just the CV-1 signature summary.
+;;
+;; ADDITIVE over CV-1's floor: the floor already made the class retrievable at
+;; classify time (robust to turn timeouts). This enrichment lands ONLY when an
+;; emit completes — a turn that times out before emit carries no :generated-tree
+;; → no enrichment → the class is still retrievable via the CV-1 summary (never
+;; a regression). Re-orchestration, NOT rewrite: reuses the sheet->class join,
+;; get-description, and record-tree-class-description — NO second synthesis LLM.
+
+(def ^:private emitted-pattern-trait
+  "Stable :trait marker for the single :strengths entry that carries the
+   post-emit worked-DSL. Stable so a re-emit UPDATES that one entry rather
+   than appending a new strength on every turn (thrash-safe)."
+  "emitted worked-DSL (post-emit capture)")
+
+(defn- upsert-emitted-pattern-strength
+  "Return `body` with its emitted-pattern strength added/updated to carry
+   `dsl-str` as :recommended-pattern. Preserves every other key (incl.
+   CV-1's :summary) and every OTHER strength. Idempotent by trait: at most
+   ONE emitted-pattern strength exists; a re-emit bumps :evidence-count +
+   :last-reinforced-at and keeps the original :first-observed-at."
+  [body dsl-str now]
+  (let [strengths (vec (:strengths body))
+        idx (first (keep-indexed
+                     (fn [i s] (when (= emitted-pattern-trait (:trait s)) i))
+                     strengths))
+        existing (when idx (nth strengths idx))
+        entry {:trait emitted-pattern-trait
+               :good-when (or (:summary body) "")
+               :recommended-pattern dsl-str
+               :confidence 1.0
+               :evidence-count (inc (or (:evidence-count existing) 0))
+               :first-observed-at (or (:first-observed-at existing) now)
+               :last-reinforced-at now}]
+    (assoc body :strengths
+           (if idx (assoc strengths idx entry) (conj strengths entry)))))
+
+(defn enrich-tree-class-with-emitted-dsl!
+  "CV-2: on a completion event carrying :generated-tree + :source-sheet-id,
+   resolve the tree-class for the source sheet, read its CURRENT description,
+   and re-record it with the emitted DSL as a :recommended-pattern strength.
+
+   No-ops (never crashes) when:
+     - the event carries no emitted tree / source sheet (timeout / legacy),
+     - the source sheet was never classified (no class to enrich),
+     - the class has no description yet (nothing to enrich additively),
+     - the emitted DSL is ALREADY the recorded pattern (thrash-safe: skip the
+       re-record so no redundant tree-description-updated / reindex fires)."
+  [{:keys [event] :as context}]
+  (let [{:keys [generated-tree source-sheet-id]} event]
+    (when (and (some? generated-tree) (some? source-sheet-id))
+      (when-let [class-id (rm/get-tree-class-for-sheet context source-sheet-id)]
+        (when-let [current (rm/get-description context :tree-class class-id)]
+          (let [dsl-str (pr-str generated-tree)
+                already? (some #(and (= emitted-pattern-trait (:trait %))
+                                     (= dsl-str (:recommended-pattern %)))
+                               (:strengths current))]
+            (when-not already?
+              (let [now (time/now)
+                    merged (upsert-emitted-pattern-strength current dsl-str (str now))]
+                (u/log ::enriching-tree-class-with-emitted-dsl
+                       :class-id class-id :source-sheet-id source-sheet-id)
+                (run-command! context
+                  {:command/name :ontology/record-tree-class-description
+                   :command/id (random-uuid)
+                   :command/timestamp now
+                   :target-id class-id
+                   :body merged})))))))))
+
+(defprocessor :ontology on-emit-enrich-tree-class
+  {:topics #{:sheet/rlm-tree-execution-completed}}
+  "CV-2: after an RLM emits its tree, record the emitted worked-DSL as the
+   assigned tree-class's :recommended-pattern (additive over CV-1's floor).
+   Separate processor from the threshold-check above so each concern stays
+   independent; both subscribe to the same bookend topic."
+  [context]
+  (enrich-tree-class-with-emitted-dsl! context))
+
+;; =============================================================================
 ;; C-2b-1 — Re-index processor
 ;;
 ;; Subscribes to ALL THREE :ontology/*-description-updated events. After each

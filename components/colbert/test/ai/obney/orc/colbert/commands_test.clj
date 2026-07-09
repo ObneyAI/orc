@@ -1,10 +1,11 @@
 (ns ai.obney.orc.colbert.commands-test
   "Integration tests for ColBERT command handlers.
 
-   Verifies that commands emit the correct events via the command processor.
-   Bridge calls are not available in test (require Python), so these tests
-   focus on commands that do NOT require the bridge (delete-index, validation)
-   and verify event emission patterns."
+   Verifies that commands emit the correct events via the command processor,
+   and that failure paths convert to anomalies. Encoder-backed happy paths
+   (create-index/search/rerank against the real JVM encoder) are covered by
+   index_search_test and rerank tests; these tests focus on validation and
+   anomaly paths."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [ai.obney.orc.grain-test-utils.interface :as tu]
             [ai.obney.orc.colbert.interface.schemas]
@@ -51,7 +52,7 @@
                                              :document-ids ["id1" "id2"]
                                              :document-count 2
                                              :passage-count 2
-                                             :model-name "colbert-ir/colbertv2.0"
+                                             :model-name "answerdotai/answerai-colbert-small-v1"
                                              :config {:split-documents? true
                                                       :max-document-length 256
                                                       :use-faiss? false}
@@ -106,7 +107,7 @@
             "Should return conflict anomaly for already-deleted index")))))
 
 ;; =============================================================================
-;; Search Command Tests (without bridge — verify anomaly paths)
+;; Search Command Tests (anomaly paths)
 ;; =============================================================================
 
 (deftest search-missing-index-returns-not-found-test
@@ -135,40 +136,38 @@
             "Should return not-found for deleted index")))))
 
 ;; =============================================================================
-;; Rerank Command Tests (without bridge — verify anomaly paths)
+;; Rerank Command Tests (anomaly paths)
 ;; =============================================================================
 
-(deftest rerank-without-bridge-returns-fault-test
-  (testing "rerank returns a fault anomaly when the bridge call fails (e.g. bridge unavailable)"
-    ;; Force the bridge-unavailable condition deterministically rather than relying
-    ;; on the absence of a .venv-colbert (which makes this test pass/fail depending
-    ;; on the dev's environment): simulate the bridge call throwing. The command
-    ;; handler must convert the exception into an ::anom/fault map regardless of
-    ;; host state (venv present or absent).
+(deftest rerank-operation-failure-returns-fault-test
+  (testing "rerank returns a fault anomaly when the underlying operation throws"
+    ;; Force the failure deterministically: simulate the encoder-backed
+    ;; operation throwing. The command handler must convert the exception
+    ;; into an ::anom/fault map regardless of host state.
     (with-redefs [operations/rerank (fn [& _]
-                                      (throw (ex-info "ColBERT bridge unavailable (simulated)" {})))]
+                                      (throw (ex-info "ColBERT encoder unavailable (simulated)" {})))]
       (let [result (tu/process-command! *ctx*
                      {:command/name :colbert/rerank
                       :query "test query"
                       :documents ["doc 1" "doc 2"]
                       :k 2})]
         (is (= ::anom/fault (::anom/category result))
-            "Should return fault anomaly when the bridge call fails")))))
+            "Should return fault anomaly when the operation throws")))))
 
 ;; =============================================================================
-;; Create Index Command Tests (V16 — no silent drop on timeout)
+;; Create Index Command Tests (V16 — no silent drop on failure)
 ;; =============================================================================
 
 (deftest create-index-timeout-surfaces-anomaly-test
   (testing "an over-budget index creation surfaces an anomaly — never a silent success"
-    ;; V16: if index creation exceeds even the scaled timeout, the bridge throws
-    ;; a TimeoutException. The command MUST convert that into an ::anom/fault the
-    ;; caller can see — it must NOT swallow it and let hybrid-search quietly run
+    ;; V16 invariant (encoder-agnostic): if index creation fails — e.g. exceeds
+    ;; its time budget — the command MUST convert that into an ::anom/fault the
+    ;; caller can see. It must NOT swallow it and let hybrid-search quietly run
     ;; RRF on the remaining 2 signals (the V02 silent-under-retrieval failure).
     (with-redefs [operations/create-index!
                   (fn [& _]
                     (throw (java.util.concurrent.TimeoutException.
-                            "Bridge call timed out after 600000ms for method :create_index")))]
+                            "Index creation timed out after 600000ms")))]
       (let [result (tu/process-command! *ctx*
                      {:command/name :colbert/create-index
                       :collection ["doc 1" "doc 2"]
@@ -179,15 +178,3 @@
             "the surfaced anomaly must carry the timeout reason so the caller knows the index is missing")
         (is (not (tu/event-of-type? result :colbert/index-created))
             "a timed-out index creation must NOT emit an index-created event (no false green)")))))
-
-;; =============================================================================
-;; Regenerate Index Command Tests
-;; =============================================================================
-
-(deftest regenerate-missing-index-returns-not-found-test
-  (testing "regenerate-index returns not-found for non-existent index"
-    (let [result (tu/process-command! *ctx*
-                   {:command/name :colbert/regenerate-index
-                    :index-id (random-uuid)})]
-      (is (= ::anom/not-found (::anom/category result))
-          "Should return not-found anomaly"))))

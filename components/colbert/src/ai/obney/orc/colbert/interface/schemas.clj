@@ -2,7 +2,7 @@
   "Malli schemas for ColBERT component.
 
    Events store everything needed to rebuild indexes from scratch.
-   The PLAID index on disk is a 'materialized view' - the event store
+   The index artifact on disk is derived data - the event store
    is the source of truth.
 
    Types:
@@ -10,14 +10,10 @@
    - :colbert/index-config - Index configuration
 
    Events:
-   - :colbert/index-created - Full source data for regeneration
-   - :colbert/index-updated - Incremental updates
+   - :colbert/index-created - Full source data for rebuild
    - :colbert/index-deleted - Soft delete marker
    - :colbert/search-performed - Search audit trail
-   - :colbert/training-data-prepared - Training data preparation audit
-   - :colbert/training-started - Training session start
-   - :colbert/training-completed - Training session end
-   - :colbert/training-failed - Training session failure"
+   - :colbert/rerank-performed - Rerank audit trail"
   (:require [ai.obney.grain.schema-util.interface :refer [defschemas]]))
 
 ;; =============================================================================
@@ -39,19 +35,7 @@
     [:model-name :string]
     [:split-documents? :boolean]
     [:max-document-length :int]
-    [:use-faiss? :boolean]]
-
-   :colbert/training-config
-   [:map
-    [:batch-size :int]
-    [:nbits :int]
-    [:maxsteps :int]
-    [:learning-rate :double]
-    [:dim :int]
-    [:doc-maxlen :int]
-    [:use-ib-negatives :boolean]
-    [:warmup-steps :int]
-    [:accumsteps :int]]})
+    [:use-faiss? :boolean]]})
 
 ;; =============================================================================
 ;; Event Schemas
@@ -62,15 +46,15 @@
    ;; Index Lifecycle Events
    ;; =========================================================================
 
-   ;; Index creation stores FULL source data for regeneration
-   ;; If disk is wiped, the PLAID index can be rebuilt from this event
+   ;; Index creation stores FULL source data for rebuild
+   ;; If disk is wiped, the index artifact can be rebuilt from this event
    :colbert/index-created
    [:map
     [:index-id :uuid]
     [:index-name :string]
     [:index-path :string]
 
-    ;; SOURCE DATA - enables regeneration if disk wiped
+    ;; SOURCE DATA - enables rebuild if disk wiped
     [:documents [:vector :string]]
     [:document-ids [:vector :string]]
     ;; nil = "no per-document metadata" is a valid state; the create-index command
@@ -90,19 +74,6 @@
               [:use-faiss? :boolean]]]
     [:created-at :string]
     [:duration-ms {:optional true} :int]]
-
-   ;; Incremental index updates (for audit trail)
-   :colbert/index-updated
-   [:map
-    [:index-id :uuid]
-    [:update-type [:enum :add :remove]]
-    ;; For :add updates
-    [:documents-added {:optional true} [:vector :string]]
-    [:document-ids-added {:optional true} [:vector :string]]
-    [:document-metadatas-added {:optional true} [:vector [:map-of :keyword :any]]]
-    ;; For :remove updates
-    [:document-ids-removed {:optional true} [:vector :string]]
-    [:updated-at :string]]
 
    ;; Soft delete marker
    :colbert/index-deleted
@@ -133,48 +104,7 @@
     [:output-count :int]
     [:latency-ms :int]
     [:top-score {:optional true} :double]
-    [:performed-at :string]]
-
-   ;; =========================================================================
-   ;; Training Events
-   ;; =========================================================================
-
-   :colbert/training-started
-   [:map
-    [:training-id :uuid]
-    [:model-name :string]
-    [:base-model :string]
-    [:training-data-path :string]
-    [:training-data-size :int]
-    [:config [:map-of :keyword :any]]
-    [:started-at :string]]
-
-   :colbert/training-completed
-   [:map
-    [:training-id :uuid]
-    [:checkpoint-path :string]
-    [:final-step :int]
-    [:duration-ms :int]
-    [:completed-at :string]]
-
-   :colbert/training-failed
-   [:map
-    [:training-id :uuid]
-    [:error-message :string]
-    [:error-details {:optional true} [:map-of :keyword :any]]
-    [:failed-at :string]]
-
-   ;; Training data preparation event - tracks data prep for audit trail
-   :colbert/training-data-prepared
-   [:map
-    [:preparation-id :uuid]
-    [:input-format [:enum :pairs :labeled-pairs :triplets]]
-    [:num-queries :int]
-    [:num-triplets :int]
-    [:hard-negatives-mined? :boolean]
-    [:num-new-negatives {:optional true} :int]
-    [:output-path :string]
-    [:prepared-at :string]]})
+    [:performed-at :string]]})
 
 ;; =============================================================================
 ;; Command Schemas
@@ -195,18 +125,6 @@
    [:map
     [:index-id :uuid]]
 
-   :colbert/add-to-index
-   [:map
-    [:index-id :uuid]
-    [:documents [:vector :string]]
-    [:document-ids {:optional true} [:vector :string]]
-    [:document-metadatas {:optional true} [:vector [:map-of :keyword :any]]]]
-
-   :colbert/remove-from-index
-   [:map
-    [:index-id :uuid]
-    [:document-ids [:vector :string]]]
-
    :colbert/search
    [:map
     [:index-id :uuid]
@@ -217,34 +135,7 @@
    [:map
     [:query :string]
     [:documents [:vector :string]]
-    [:k {:optional true} :int]]
-
-   :colbert/start-training
-   [:map
-    [:model-name :string]
-    [:base-model {:optional true} :string]
-    [:training-data-path :string]
-    [:config {:optional true} [:map-of :keyword :any]]]
-
-   :colbert/regenerate-index
-   [:map
-    [:index-id :uuid]]
-
-   :colbert/prepare-training-data
-   [:map
-    [:raw-data [:or
-                ;; pairs: [[query positive] ...]
-                [:vector [:tuple :string :string]]
-                ;; labeled-pairs: [[query passage label] ...]
-                [:vector [:tuple :string :string [:enum 0 1]]]
-                ;; triplets: [[query positive negative] ...]
-                [:vector [:tuple :string :string :string]]]]
-    [:output-path :string]
-    [:format [:enum :pairs :labeled-pairs :triplets]]
-    [:mine-hard-negatives? {:optional true} :boolean]
-    [:num-new-negatives {:optional true} :int]
-    [:hard-negative-min-rank {:optional true} :int]
-    [:all-documents {:optional true} [:vector :string]]]})
+    [:k {:optional true} :int]]})
 
 ;; =============================================================================
 ;; Query Schemas
@@ -257,17 +148,7 @@
 
    :colbert/list-indexes
    [:map
-    [:include-deleted {:optional true} :boolean]]
-
-   :colbert/get-search-history
-   [:map
-    [:index-id {:optional true} :uuid]
-    [:limit {:optional true} :int]
-    [:since {:optional true} :string]]
-
-   :colbert/get-training-status
-   [:map
-    [:training-id :uuid]]})
+    [:include-deleted {:optional true} :boolean]]})
 
 ;; =============================================================================
 ;; Read Model Schemas
@@ -286,16 +167,4 @@
                 [:model-name :string]
                 [:config [:map-of :keyword :any]]
                 [:created-at :string]
-                [:deleted-at {:optional true} :string]]]]]
-
-   :colbert/training-read-model
-   [:map
-    [:trainings [:map-of :uuid
-                 [:map
-                  [:training-id :uuid]
-                  [:model-name :string]
-                  [:status [:enum :running :completed :failed]]
-                  [:started-at :string]
-                  [:completed-at {:optional true} :string]
-                  [:checkpoint-path {:optional true} :string]
-                  [:error-message {:optional true} :string]]]]]})
+                [:deleted-at {:optional true} :string]]]]]})

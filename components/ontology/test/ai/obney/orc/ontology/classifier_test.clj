@@ -284,18 +284,30 @@
               "Still considered a match — string fingerprints are legitimate tree-class targets"))))))
 
 ;; =============================================================================
-;; RED #7 — classify-task passes :granularity :tree-fingerprint to retrieval
+;; RED #7 — classify-task retrieves BOTH the tree-fingerprint AND tree-class axes
+;;
+;; EL-1a (ADR 0015): classify-task now queries a granularity SET
+;; #{:tree-fingerprint :tree-class}. Querying :tree-fingerprint alone left
+;; every recorded :tree-class indexed-but-unreachable, so a second similar
+;; task could never match the first's class — the scatter bug. The
+;; :tree-class axis MUST be in the retrieval granularity for a recorded
+;; class to be a candidate.
 ;; =============================================================================
 
-(deftest classify-task-uses-tree-fingerprint-granularity
-  (testing "classify-task narrows retrieval to :granularity :tree-fingerprint and uses the classifier-intent string"
+(deftest classify-task-retrieves-tree-fingerprint-and-tree-class-axes
+  (testing "classify-task retrieves a granularity SET covering BOTH :tree-fingerprint and :tree-class, and uses the classifier-intent string"
     (let [captured (atom nil)]
       (with-redefs [ontology/search-descriptions (fn [_ctx opts]
                                                     (reset! captured opts)
                                                     [])]
         (ontology/classify-task {} {:task-signature "x" :threshold 0.7})
-        (is (= :tree-fingerprint (:granularity @captured))
-            ":granularity is :tree-fingerprint (we are classifying for trees)")
+        (let [g (:granularity @captured)]
+          (is (set? g)
+              ":granularity is a SET of axes (multi-axis retrieval)")
+          (is (contains? g :tree-class)
+              ":tree-class axis is queried (the EL-1a fix — recorded classes are now reachable)")
+          (is (contains? g :tree-fingerprint)
+              ":tree-fingerprint axis is still queried (no regression on exact-shape retrieval)"))
         (is (string? (:rerank-with-intent @captured))
             "An intent string is passed to the reranker")
         (is (re-find #"(?i)classify" (:rerank-with-intent @captured))

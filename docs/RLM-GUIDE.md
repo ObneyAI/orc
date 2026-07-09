@@ -133,16 +133,52 @@ The simplest case: a workflow whose root is a single `repl-researcher` node.
 
 > **Prefer the composed pattern** — a pre-process node cleans the input, the researcher explores, a post-process node packages the output. See the "Composition" section above for the three-node pattern.
 
+The researcher runs as a loop: a Phase-1 **orchestrator** (the model) designs a full behavior tree, emits it (Phase 2 runs it), reasons over the results, and either emits another tree or finishes:
+
+```mermaid
+flowchart LR
+  r["🧠 repl-researcher<br/>ORCHESTRATOR (Phase 1)"]:::rlm
+  r -->|"round 1 · emit-tree!"| t1(["Tree #1 · gather + extract"]):::t
+  t1 -->|"results + reasoning →"| r
+  r -->|"round 2 · emit-tree!"| t2(["Tree #2 · deepen penalties"]):::t
+  t2 -->|"results + reasoning →"| r
+  r -->|"satisfied · final!"| done(["✅ result"]):::done
+  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:3px;
+  classDef t fill:#1e3a8a,stroke:#60a5fa,color:#fff;
+  classDef done fill:#166534,stroke:#86efac,color:#fff,stroke-width:2px;
+```
+
+**Round 1 — the orchestrator designs and emits a full tree.** Faced with a 280K-token RFP, it composes a chunk → parallel-extract → aggregate → synthesize pipeline (this is a real shape from the [generalization benchmark](../development/bench/RESULTS.md)):
+
 ```mermaid
 flowchart TB
-  p1["<b>Phase 1 — reason</b><br/>model inspects sandbox-vars,<br/>runs (llm …) / (code …), drills into prior trees"]:::rlm
-  p1 -->|"emit-tree!"| p2["<b>Phase 2 — execute</b><br/>run the emitted subtree<br/>sequence / parallel / llm / code …"]:::seq
-  p2 -->|"outputs merge into sandbox-vars"| p1
-  p1 -->|"final!"| done(["<b>return result</b>"]):::done
-  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:2px;
+  root["<b>analyze RFP</b><br/>SEQUENCE"]:::seq
+  root --> chunk["<b>chunk-document</b><br/>split 280K → 12K windows<hr/>▸ reads&nbsp;&nbsp;rfp<br/>◂ writes&nbsp;&nbsp;chunks"]:::code
+  root --> map["<b>map-each</b> · over chunks · max-concurrency 5<br/><i>run the child subtree per chunk</i>"]:::me
+  map --> child["<b>extract obligations</b><br/>LLM leaf<br/><i>per-chunk extraction</i><hr/>▸ reads&nbsp;&nbsp;chunk<br/>◂ writes&nbsp;&nbsp;analysis"]:::llm
+  root --> agg["<b>aggregate</b><br/>merge per-chunk analyses<hr/>▸ reads&nbsp;&nbsp;extracted[]<br/>◂ writes&nbsp;&nbsp;combined"]:::code
+  root --> syn["<b>synthesize report</b><br/>LLM leaf<hr/>▸ reads&nbsp;&nbsp;combined<br/>◂ writes&nbsp;&nbsp;obligations, penalties, risk_matrix"]:::llm
   classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
-  classDef done fill:#0f766e,stroke:#5eead4,color:#fff;
+  classDef code fill:#134e4a,stroke:#5eead4,color:#fff;
+  classDef me fill:#5b21b6,stroke:#ddd6fe,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
 ```
+
+**Phase 2 runs that tree; its outputs merge back into sandbox-vars and the orchestrator reasons over `:tree-results`.** The obligations extracted cleanly, but the penalty analysis is thin (and had a leaf surface in `:failed-leaves`). Rather than rebuild the pipeline, it emits a **second, focused tree** that reads the *surviving* sandbox-vars and drills in:
+
+```mermaid
+flowchart TB
+  root["<b>deepen penalties</b><br/>SEQUENCE<br/><i>focused follow-up — reads surviving sandbox-vars</i>"]:::seq
+  root --> ex["<b>re-extract penalty clauses</b><br/>LLM leaf<hr/>▸ reads&nbsp;&nbsp;combined, chunks<br/>◂ writes&nbsp;&nbsp;penalty_detail"]:::llm
+  root --> score["<b>build severity matrix</b><br/>CODE leaf<hr/>▸ reads&nbsp;&nbsp;penalty_detail<br/>◂ writes&nbsp;&nbsp;risk_matrix"]:::code
+  root --> fin(["<b>final!</b> · return obligations, penalties, risk_matrix, summary"]):::done
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+  classDef code fill:#134e4a,stroke:#5eead4,color:#fff;
+  classDef done fill:#166534,stroke:#86efac,color:#fff,stroke-width:2px;
+```
+
+Each round is a fresh, full tree — the model composes whatever topology the moment needs (`sequence`, `parallel`, `map-each`, `delegate`), executes it, and lets the results steer the next round until it calls `final!`.
 
 ```clojure
 (require '[ai.obney.orc.orc-service.interface :as orc])
@@ -383,10 +419,24 @@ end-to-end consumer walkthrough.
 
 ### Behavioral mints — contributing new patterns to the corpus
 
-When `classify-behaviors` returns a fresh-mint marker (no candidate
-scored above the confidence floor for the task's accomplishment shape),
-the model can contribute a new behavior via the sandbox primitive
-`(mint-behavior! ...)`:
+> **Detect-and-defer (ADRs
+> 0014,
+> 0015).**
+> Structural classification (`classify-task`) never creates a durable
+> behavior at runtime — it DETECTS novelty (a three-state `:outcome` of
+> `:matched`/`:novel`/`:uncertain`) and DEFERS: an uncertain task is
+> skipped, a novel one accrues evidence on a tree-class identity, and the
+> tree the model emits is itself the candidate. Durable named-behavior
+> creation is the evidence-grounded **harvest** path (the designed terminus
+> of the emergence loop; not yet shipped on this branch). The references
+> the corpus prepend surfaces **inform** the design — they do not gate it,
+> and a match clearing threshold is not a reason to suppress them.
+
+Within that frame the behavioral sandbox primitive `(mint-behavior! ...)`
+remains available: when the surfaced references show the task is novel or
+adjacent, the model can contribute a new behavioral subtree informed by
+them. The mint is the model's choice — it is *informed by* the references
+rather than *triggered by* a not-found result:
 
 ```clojure
 (mint-behavior!
@@ -706,7 +756,7 @@ When the model's Phase 1 code executes in the SCI sandbox, the following primiti
 | `(get-input :key)` | Read a declared input |
 | `(final! {...})` | **Terminate** with validated output |
 | `(emit-tree! [...])` | Emit a behavior tree for Phase 2 execution |
-| `(mint-behavior! "name" body)` / `(mint-behavior! "name" body :parent parent-id)` | Contribute a new behavioral subtree to the corpus. Returns the minted behavior's UUID-string. The minted body must validate against the description-body Malli schema (capabilities + principle-shaped strengths/weaknesses + representative-uses + summary). Persists for future `classify-behaviors` calls across all consumers — see [`SELF-IMPROVING-LOOP.md`](SELF-IMPROVING-LOOP.md#new-patterns-get-minted-when-the-model-encounters-genuinely-new-work). |
+| `(mint-behavior! "name" body)` / `(mint-behavior! "name" body :parent parent-id)` | Contribute a new behavioral subtree to the corpus. Returns the minted behavior's UUID-string. The minted body must validate against the description-body Malli schema (capabilities + principle-shaped strengths/weaknesses + representative-uses + summary). Persists for future `classify-behaviors` calls across all consumers — see [`SELF-IMPROVING-LOOP.md`](SELF-IMPROVING-LOOP.md#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop). |
 
 The drill-down primitives `(tree-detail)`, `(tree-trajectory)`, `(tree-failures)`, `(node-output node-id)`, `(node-input-profile node-id)` are also bound in the sandbox when `:recursive? true` — see [Drill-down primitives](#drill-down-primitives-when-the-summary-isnt-enough).
 

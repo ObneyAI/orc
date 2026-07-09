@@ -82,6 +82,7 @@
                        :item-key (:item-key snapshot-node)
                        :output-key (:output-key snapshot-node)
                        :max-concurrency (:max-concurrency snapshot-node)
+                       :preserve-failures? (:preserve-failures? snapshot-node)
                        ;; Repl-researcher fields
                        :mcp-tools (or (:mcp-tools snapshot-node) [])
                        :max-iterations (:max-iterations snapshot-node)
@@ -266,7 +267,18 @@
                                                  llm-call-budget (assoc :llm-call-budget llm-call-budget))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)
                               use-version (assoc :use-version use-version)
-                              force-draft (assoc :force-draft force-draft))))]
+                              force-draft (assoc :force-draft force-draft)
+                              ;; CE-6c (ADR 0018): parity with execute-stream's
+                              ;; CE-5b FIX A — carry the OPAQUE :tool-context
+                              ;; off the execute context onto the root
+                              ;; :sheet/tick-tree command so it survives the
+                              ;; async command -> event -> tick-execution-context
+                              ;; read model boundary and can be read back at
+                              ;; node/leaf depth. Absent -> not carried
+                              ;; (backward-compatible; non-coding turns see
+                              ;; no change).
+                              (:tool-context context)
+                              (assoc :tool-context (:tool-context context)))))]
     (if (:cognitect.anomalies/category cmd-result)
       ;; Command failed (e.g., sheet not found, no root node)
       (do (swap! completion-registry dissoc tick-id)

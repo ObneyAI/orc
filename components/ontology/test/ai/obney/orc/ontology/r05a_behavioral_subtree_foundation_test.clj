@@ -549,9 +549,16 @@
         (is (= 23 (count (get by-scope :tree-class)))
             "R02 stays unchanged — 23 tree-class concepts after seed-all!"))
 
-      (testing "17 behavioral-subtree concepts created (R05a's 11 + R07 Investigation + S18's 5 ontology-discovery patterns)"
-        (is (= 17 (count (get by-scope :behavioral-subtree)))
-            "17 behavioral-subtree concepts — R05a's 11 top-level competencies + R07's Investigation + S18's 5 ontology-discovery patterns (DirectExtraction, SequentialPipeline, AdversarialGrounding, ChunkedSynthesis, SpecializedSynthesis)"))
+      (testing "22 behavioral-subtree concepts created (12 abstract parents + 5 E3 coding children + S18's 5 ontology-discovery patterns)"
+        ;; 12 abstract behaviors (R05a's 11 + R07 Investigation) are the
+        ;; repurposed PARENTS; E3 (ADR 0014) adds 5 durable coding SUBBEHAVIORS
+        ;; (children) via mint-behavioral-subtree, each projected as a
+        ;; behavioral-subtree concept by the same R05a processor; S18 adds 5
+        ;; ontology-discovery patterns (DirectExtraction, SequentialPipeline,
+        ;; AdversarialGrounding, ChunkedSynthesis, SpecializedSynthesis) whose
+        ;; bodies carry :scope :behavioral-subtree.
+        (is (= 22 (count (get by-scope :behavioral-subtree)))
+            "22 behavioral-subtree concepts — 12 abstract parents + 5 E3 coding children + 5 S18 ontology-discovery patterns"))
 
       (testing "behavior:composes-into edges exist on every behavioral seed"
         (require 'ai.obney.orc.ontology.test-support.seed-descriptions)

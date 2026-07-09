@@ -6,4 +6,18 @@
        :auto-add false}
  :tag-patterns {:stable "^stable-.*"
                 :release "^v[0-9].*"}
- :projects {"development" {:alias "dev"}}}
+ :projects {"development" {:alias "dev"}
+            ;; orc-colbert is a deps-only packaging project; its brick tests
+            ;; already run under the orc project. Re-running them here loads
+            ;; the DJL tokenizers native library in a second classloader in
+            ;; the same test JVM, which the JVM forbids (UnsatisfiedLinkError:
+            ;; already loaded in another classloader). Run them once.
+            "orc-colbert" {:test {:include []}}
+            ;; Same DJL-native single-load constraint (MERGE-1): the ontology
+            ;; brick's tests already run under the orc project, and since the
+            ;; streamed embed+index end-to-end test they exercise the colbert
+            ;; encoder's HuggingFace tokenizers natives. A second run in the
+            ;; orc-ontology project's classloader within the same test JVM
+            ;; fails with NoClassDefFoundError (tokenizers natives already
+            ;; loaded in the orc project's classloader). Run them once.
+            "orc-ontology" {:test {:include []}}}}

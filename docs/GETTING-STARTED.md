@@ -18,6 +18,41 @@ is not "call an LLM" — it is composing the right nodes and sub-behaviors so
 your methodology is *structural*, guaranteed by the tree, rather than crammed
 into one prompt and hoped for.
 
+Here's the contract-analysis workflow you'll build, drawn as a behavior tree — each leaf is a card declaring the blackboard keys it **reads** and **writes**. *(Illustrative of the full shape: you start with the flat sequence in Phase 1 and grow into routing, a `:delegate` subbehavior, and an RLM leaf.)*
+
+```mermaid
+flowchart TB
+  root["<b>contract-analysis</b><br/>FALLBACK"]:::fb
+  root --> main
+  root --> human["<b>escalate to human</b><br/>LLM · leaf<br/><i>hand off when unsure</i><hr/>▸ reads&nbsp;&nbsp;contract<br/>◂ writes&nbsp;&nbsp;summary"]:::llm
+  subgraph MAIN["seq: analyze"]
+    direction TB
+    main["<b>analyze</b><br/>SEQUENCE"]:::seq
+    main --> survey["<b>survey</b><br/>LLM · leaf 1<br/><i>extract key clauses</i><hr/>▸ reads&nbsp;&nbsp;contract<br/>◂ writes&nbsp;&nbsp;survey"]:::llm
+    main --> diff["<b>diff vs prior</b><br/>LLM · leaf 2<br/><i>find changed terms</i><hr/>▸ reads&nbsp;&nbsp;survey<br/>◂ writes&nbsp;&nbsp;diff"]:::llm
+    main --> route["<b>route by type</b><br/>FALLBACK · leaf 3"]:::fb
+    main --> risk["<b>quantify risk</b> &#9662;<br/>REPL-RESEARCHER · leaf 4<br/><i>RLM designs + runs a subtree</i><hr/>▸ reads&nbsp;&nbsp;diff, survey<br/>◂ writes&nbsp;&nbsp;risk_class"]:::rlm
+    main --> persist["<b>persist findings</b><br/>CODE · leaf 5<br/><i>write record via sci</i><hr/>▸ reads&nbsp;&nbsp;summary, risk_class<br/>◂ writes&nbsp;&nbsp;record"]:::code
+    route --> isNDA{{"<b>is it an NDA?</b><br/>LLM-CONDITION<br/><i>route on yes / no</i><hr/>▸ reads&nbsp;&nbsp;contract"}}:::llmc
+    isNDA --> NDA
+    route --> summarize["<b>summarize clauses</b><br/>LLM · leaf<br/><i>plain-language brief</i><hr/>▸ reads&nbsp;&nbsp;diff<br/>◂ writes&nbsp;&nbsp;summary"]:::llm
+    subgraph NDA["delegate → NDA review&nbsp;(peek inside) &#9662;"]
+      direction TB
+      ndaRoot["<b>NDA review</b><br/>SEQUENCE"]:::seq
+      ndaRoot --> parties["<b>extract parties</b><br/>LLM · leaf<br/><i>who is bound</i><hr/>▸ reads&nbsp;&nbsp;contract<br/>◂ writes&nbsp;&nbsp;parties"]:::llm
+      ndaRoot --> conf["<b>confidentiality check</b><br/>CODE · leaf<br/><i>required clauses present?</i><hr/>▸ reads&nbsp;&nbsp;contract<br/>◂ writes&nbsp;&nbsp;conf_ok"]:::code
+    end
+  end
+  classDef fb fill:#7c2d12,stroke:#fb923c,color:#fff,stroke-width:2px;
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+  classDef llmc fill:#5b21b6,stroke:#ddd6fe,color:#fff;
+  classDef code fill:#0f766e,stroke:#5eead4,color:#fff;
+  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:2px;
+```
+
+And because any tree can be a **subbehavior** in a bigger one (via `:delegate`), you factor reusable methodology into its own sheet — `analyze-document` below delegates to independent `clause-review` and `risk-scoring` trees:
+
 ```mermaid
 flowchart TB
   root["<b>analyze-document</b><br/>SEQUENCE · all steps in order"]:::seq
@@ -1063,7 +1098,7 @@ that graph are tagged with that ID. Multiple separate graphs coexist:
 Fusion (RRF). ColBERT is optional — control signals with `:signals`:
 
 ```clojure
-;; No ColBERT — graph + embedding signals only. No Python required.
+;; No ColBERT — graph + embedding signals only.
 ;; (source-verified: retrieval.clj:860 — signals default is #{:graph :embedding :colbert};
 ;;  passing #{:graph :embedding} disables ColBERT)
 (ontology/hybrid-search ctx
@@ -1071,8 +1106,8 @@ Fusion (RRF). ColBERT is optional — control signals with `:signals`:
    :signals    #{:graph :embedding}
    :limit      5})
 
-;; With ColBERT (Layer 5 + Python required).
-;; colbert-index-id is obtained from (colbert/build-index! ctx ...) first.
+;; With ColBERT (Layer 5 — pure JVM; the colbert component on the classpath).
+;; colbert-index-id is obtained from (colbert/create-index! ctx ...) first.
 (ontology/hybrid-search ctx
   {:query-text       "dispute resolution mechanisms in contracts"
    :colbert-index-id colbert-index-id
@@ -1117,13 +1152,14 @@ Default when omitted: `#{:graph :embedding :colbert}`.
 
 > **What you're adding**
 >
-> | Layer | Component | Python required |
-> |-------|-----------|:---------------:|
+> | Layer | Component | DJL required |
+> |-------|-----------|:------------:|
 > | 7 | `orc-service` + `evaluation` + `ontology` + `colbert` | **Yes** |
 >
-> The self-improving loop is the only ORC capability that requires Python. The `colbert`
-> component spawns a Python subprocess (`.venv-colbert`) for late-interaction re-ranking
-> and index search. See [COMPONENT-MAP.md](COMPONENT-MAP.md) — Layer 7.
+> The loop's retrieval runs entirely on the JVM: the `colbert` component runs its
+> encoder checkpoint on DJL OnnxRuntime for late-interaction re-ranking and index
+> search (a ~133MB model downloads into a local cache on first use). No Python.
+> See [COMPONENT-MAP.md](COMPONENT-MAP.md) — Layer 7.
 
 ### First: seed the corpus
 
@@ -1229,20 +1265,47 @@ Terminal mode is the deprecated opt-out. Every `:repl-researcher` is recursive u
 you explicitly disable it.
 
 ```mermaid
-flowchart TB
-  p1["<b>Phase 1 — reason</b><br/>model inspects sandbox-vars,<br/>runs (llm …) / (code …), drills into prior trees"]:::rlm
-  p1 -->|"emit-tree!"| p2["<b>Phase 2 — execute</b><br/>run the emitted subtree<br/>sequence / parallel / llm / code …"]:::seq
-  p2 -->|"outputs merge into sandbox-vars"| p1
-  p1 -->|"final!"| done(["<b>return result</b>"]):::done
-  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:2px;
-  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
-  classDef done fill:#0f766e,stroke:#5eead4,color:#fff;
+flowchart LR
+  r["🧠 repl-researcher<br/>ORCHESTRATOR (Phase 1)"]:::rlm
+  r -->|"round 1 · emit-tree!"| t1(["Tree #1 · gather + extract"]):::t
+  t1 -->|"results + reasoning →"| r
+  r -->|"round 2 · emit-tree!"| t2(["Tree #2 · deepen penalties"]):::t
+  t2 -->|"results + reasoning →"| r
+  r -->|"satisfied · final!"| done(["✅ result"]):::done
+  classDef rlm fill:#9d174d,stroke:#f9a8d4,color:#fff,stroke-width:3px;
+  classDef t fill:#1e3a8a,stroke:#60a5fa,color:#fff;
+  classDef done fill:#166534,stroke:#86efac,color:#fff,stroke-width:2px;
 ```
 
-*In recursive mode the researcher loops: Phase 1 (the model) inspects state and
-`emit-tree!`s a subtree, Phase 2 executes it, and the outputs flow back into
-Phase 1 — so the leaf keeps designing and running new subtrees until it calls
-`final!`.*
+In recursive mode the researcher *is* an orchestrator. **Round 1**, it designs and emits a full tree — for a 280K-token RFP, a chunk → parallel-extract → aggregate → synthesize pipeline:
+
+```mermaid
+flowchart TB
+  root["<b>analyze RFP</b><br/>SEQUENCE"]:::seq
+  root --> chunk["<b>chunk-document</b><br/>split 280K → 12K windows<hr/>▸ reads&nbsp;&nbsp;rfp<br/>◂ writes&nbsp;&nbsp;chunks"]:::code
+  root --> map["<b>map-each</b> · over chunks · max-concurrency 5<br/><i>run the child subtree per chunk</i>"]:::me
+  map --> child["<b>extract obligations</b><br/>LLM leaf<hr/>▸ reads&nbsp;&nbsp;chunk<br/>◂ writes&nbsp;&nbsp;analysis"]:::llm
+  root --> agg["<b>aggregate</b><br/>merge per-chunk analyses<hr/>▸ reads&nbsp;&nbsp;extracted[]<br/>◂ writes&nbsp;&nbsp;combined"]:::code
+  root --> syn["<b>synthesize report</b><br/>LLM leaf<hr/>▸ reads&nbsp;&nbsp;combined<br/>◂ writes&nbsp;&nbsp;obligations, penalties, risk_matrix"]:::llm
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef code fill:#134e4a,stroke:#5eead4,color:#fff;
+  classDef me fill:#5b21b6,stroke:#ddd6fe,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+```
+
+Phase 2 runs it; outputs merge into sandbox-vars. The orchestrator reasons over the results — obligations look good, but penalties came back thin — and emits a **second, focused tree** reading the surviving sandbox-vars, then calls `final!`:
+
+```mermaid
+flowchart TB
+  root["<b>deepen penalties</b><br/>SEQUENCE<br/><i>focused follow-up — reads surviving sandbox-vars</i>"]:::seq
+  root --> ex["<b>re-extract penalty clauses</b><br/>LLM leaf<hr/>▸ reads&nbsp;&nbsp;combined, chunks<br/>◂ writes&nbsp;&nbsp;penalty_detail"]:::llm
+  root --> score["<b>build severity matrix</b><br/>CODE leaf<hr/>▸ reads&nbsp;&nbsp;penalty_detail<br/>◂ writes&nbsp;&nbsp;risk_matrix"]:::code
+  root --> fin(["<b>final!</b> · return obligations, penalties, risk_matrix, summary"]):::done
+  classDef seq fill:#1e3a8a,stroke:#60a5fa,color:#fff,stroke-width:2px;
+  classDef llm fill:#4c1d95,stroke:#c4b5fd,color:#fff;
+  classDef code fill:#134e4a,stroke:#5eead4,color:#fff;
+  classDef done fill:#166534,stroke:#86efac,color:#fff,stroke-width:2px;
+```
 
 **Source-verified — `executor.clj:2172-2176` verbatim comment + binding:**
 
@@ -1265,10 +1328,14 @@ Enabling `:auto-classify? true` on a `:repl-researcher` fires the following
 before the model starts Phase 1:
 
 1. **Classification**: the task signature runs through `classify-task` (structural
-   tree-class match) and `classify-behaviors` (behavioral-subtree match) against the
-   seeded corpus.
-2. **LLM reranker**: top-N matched patterns are reranked by an LLM against your task's
-   intent — each candidate receives a fitness-score and a reasoning string.
+   tree-class match, retrieving across BOTH the `:tree-fingerprint` and `:tree-class`
+   axes) and `classify-behaviors` (behavioral-subtree match) against the seeded corpus.
+   `classify-task` returns a three-state `:outcome` (`:matched`/`:novel`/`:uncertain`) —
+   detect-and-defer, no runtime creation of a durable behavior.
+2. **Grounded domain rank**: top-N matched patterns are reranked by an LLM that reads
+   each candidate's judge-grounded `:avoid-when`, then a deterministic contrastive
+   domain penalty (ADR 0016) enforces it after the rerank — each candidate receives a
+   fitness-score and a reasoning string.
 3. **Corpus prepend**: the top-fitting pattern's full body is prepended to the model's
    instruction — capabilities, worked-example DSL snippets, observed strengths with
    evidence-counts, observed weaknesses with recommended fixes, representative uses.
@@ -1283,37 +1350,44 @@ other. The corpus prepend improves tree **design**; recursive mode improves tree
 
 ### Alpha-state framing
 
-The self-improving loop is **alpha-stage**. The table below reflects the
-current state from a 21-task OOD evidence sweep, mirroring
-[`SELF-IMPROVING-LOOP.md § current capabilities`](SELF-IMPROVING-LOOP.md):
+The self-improving loop is **alpha-stage**. The earlier OOD symptom — a
+runtime that minted a task class on not-finding (and rarely did so, ~1 of
+21 OOD tasks) or force-fit the structurally-closest pattern — is the
+**resolved** symptom that the emergence loop addresses (ADRs
+0014,
+0015,
+0016); it is no
+longer the runtime's behavior. The table below reflects the current loop,
+mirroring [`SELF-IMPROVING-LOOP.md`](SELF-IMPROVING-LOOP.md#honest-status-today--solid-vs-rough):
 
 | Aspect | Today |
 |--------|-------|
 | **In-distribution classification** | **Solid** — tasks resembling shipped seed patterns (legal-issue-detection, contract-comparison, risk-analysis, chunked-extraction) match at confidence 1.00; prepend carries full worked-example DSL |
 | **Recursive RLM + drill-down** | **Solid** — `(tree-detail)`, `(tree-failures)`, `(node-output node-id)` work; model recovers mid-tree failures via focused single-node resume trees |
 | **Consolidator-driven body evolution** | **Solid** — repeated traffic on a pattern increments body version with new strengths grounded in observed execution; history is append-only |
-| **`mint-behavior!` mechanics** | **Solid** — defcommand path, persistence, ColBERT re-index, and same-iteration lookup all work as documented |
-| **Out-of-distribution classification** | **Rough** — OOD tasks force-fit to structurally-closest corpus pattern at confidence 0.85–0.95; reranker gives mechanically-plausible reasoning that misses domain specialization |
-| **`mint-behavior!` firing rate** | **Rough** — fired on 1 of 21 deliberately-OOD tasks; today's classifier does not surface "no good semantic match" as a strong signal; model treats top-N matches as coverage |
-| **Hierarchical seed gaps** | **Rough** — 12 abstract behavioral seeds describe shape but not domain (no "Analysis-of-legal-documents" or "Validation-of-schedule-constraints" specializations yet) |
+| **Detect-and-defer novelty handling** | **Solid** — `classify-task` retrieves on both `:tree-fingerprint` and `:tree-class`, returns a three-state `:outcome` (`:matched`/`:novel`/`:uncertain`); an uncertain (reranker-fallback) task skips assignment, a novel one bundles onto a near class or records a provisional one — no durable behavior is fabricated at runtime |
+| **Grounded domain rank** | **Solid** — the reranker reads each candidate's judge-grounded `:avoid-when`, and a deterministic contrastive penalty (ADR 0016) enforces it after the rerank so a strong shape match no longer overrides a firing domain guard |
+| **Harvest (durable promotion)** | **Designed, not yet shipped on this branch** — novel candidates accrue judge evidence on their `:tree-class` identity today; crystallizing a recurring, well-scored candidate into a named behavior is the next pulled step of the emergence loop |
 
-If your workflow aligns with the shipped seed corpus, the loop is useful from day one.
-If your tasks fall far outside the corpus, author your own seeds via
-`:ontology/record-tree-description` (structural) or `:ontology/mint-behavioral-subtree`
-(behavioral). The affordance works; it rarely fires autonomously today without curator
-involvement.
+Novelty is handled by **detect-and-defer**: the runtime detects that a
+task is novel/uncertain and accrues evidence rather than fabricating a
+durable behavior on the spot — durable creation is the evidence-grounded
+harvest path. If your workflow aligns with the shipped seed corpus, the
+loop is useful from day one. If your tasks fall far outside the corpus,
+you can still author your own seeds via `:ontology/record-tree-description`
+(structural), and the behavioral `mint-behavior!` primitive remains
+available for a model to contribute an adjacent behavior informed by the
+surfaced references (it *informs*, it does not gate).
 
 ### What you just added
 
-> | Layer | Component | Python | Notes |
-> |-------|-----------|:------:|-------|
-> | 7 | `ontology` + `colbert` | **Yes** | `colbert` spawns `.venv-colbert` Python subprocess |
+> | Layer | Component | DJL | Notes |
+> |-------|-----------|:---:|-------|
+> | 7 | `ontology` + `colbert` | **Yes** | `colbert` runs its encoder on DJL OnnxRuntime (pure JVM; one-time model download) |
 >
 > **Setup required before the loop runs:**
-> 1. Install ColBERT dependencies in `.venv-colbert`
->    (see `components/colbert/README.md`)
-> 2. `(ontology/seed-baseline-corpus! ctx)` — once on first start
-> 3. `(ontology/bootstrap-reindex! ctx)` — triggers the initial ColBERT index build
+> 1. `(ontology/seed-baseline-corpus! ctx)` — once on first start
+> 2. `(ontology/bootstrap-reindex! ctx)` — triggers the initial ColBERT index build
 >
 > **Graceful degradation**: without a built ColBERT index, `search-descriptions` returns
 > `[]` and the R-Inject prepend is silently skipped. The `:repl-researcher` node still
@@ -1324,13 +1398,13 @@ involvement.
 
 ## Summary: what every phase added
 
-| Phase | Capability | Component(s) | Layer | Python |
-|-------|-----------|-------------|-------|:------:|
+| Phase | Capability | Component(s) | Layer | DJL |
+|-------|-----------|-------------|-------|:---:|
 | 1 | Core behavior tree + event-sourced execution | `orc-service` | 0 | No |
 | 2 | LLM-as-judge (grounding, completeness, etc.) | `evaluation` | 1 | No |
 | 3 | Custom scale + custom judge workflows | `evaluation` | 1 | No |
 | 4 | GEPA — evolutionary instruction optimization | `gepa` + `evaluation` | 3 | No |
-| 5 | Ontology — general-purpose semantic memory | `ontology` (DJL) | 4 / 6 | No |
+| 5 | Ontology — general-purpose semantic memory | `ontology` (DJL) | 4 / 6 | **Yes** |
 | 6 | Self-improving loop — corpus-driven tree design | `ontology` + `colbert` | 7 | **Yes** |
 
 ---

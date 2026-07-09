@@ -33,7 +33,9 @@
             [ai.obney.orc.ontology.core.lints.read-models] ;; Register lint read-models
             [ai.obney.orc.ontology.core.lints.commands]    ;; Register register-shape + run-validation
             [ai.obney.orc.ontology.core.lints.queries]     ;; Register lint queries
+            [ai.obney.orc.ontology.core.harvest] ;; EL-4: register the harvest processor
             [ai.obney.orc.ontology.core.reranker :as reranker]
+            [ai.obney.orc.ontology.core.domain-penalty :as domain-penalty]
             [ai.obney.orc.ontology.core.task-classifier :as task-classifier]
             [ai.obney.orc.ontology.core.seeds :as seeds]
             ;; S18 — recursive-RLM discovery wiring + :rlm-discovery
@@ -526,6 +528,21 @@
   [ctx target-type target-id]
   (rm/get-consolidation-delta ctx target-type target-id))
 
+(defn get-tree-class-judge-averages
+  "EL-4 (ADR 0015): return {judge-name -> mean-score} across a
+   :tree-class's lifetime, or nil when no judge scores exist for it.
+   Standing read-model queryable at harvest time; parity with the
+   consolidator's on-demand tree-class-aggregate-metrics :judge-averages."
+  [ctx tree-class-id]
+  (rm/get-tree-class-judge-averages ctx tree-class-id))
+
+(defn get-tree-class-for-sheet
+  "CV-2 (ADR 0017 decision 3): return the :tree-class id assigned to
+   `source-sheet-id` (via the task-classified sheet->class join), or nil
+   when the sheet was never classified."
+  [ctx source-sheet-id]
+  (rm/get-tree-class-for-sheet ctx source-sheet-id))
+
 (defn get-consolidation-budget
   "C-2a-3c: return the configured hourly consolidation budget for a
    target-type keyword. Falls back to default 100 when no per-target-type
@@ -604,12 +621,11 @@
     :else        (str v)))
 
 (defn- normalize-search-result
-  "The ColBERT Python bridge returns snake_case keys (`:document_id`,
-   `:document_metadata`). The docstring on `colbert/search` promises
-   kebab-case — that's a doc-vs-code mismatch in the colbert component
-   that we work around here. Also re-keywordize known metadata fields
-   so downstream consumers don't have to deal with stringified keywords
-   from the JSON roundtrip."
+  "`colbert/search` returns snake_case keys (`:document_id`,
+   `:document_metadata`) — the result shape frozen when the signal moved
+   to the pure JVM. Normalize to kebab-case here, and re-keywordize known
+   metadata fields so downstream consumers don't have to deal with
+   stringified keywords from the artifact's JSON roundtrip."
   [r]
   (let [meta (or (:document-metadata r) (:document_metadata r))
         norm-meta (when meta
@@ -638,39 +654,145 @@
   [k]
   (min rerank-hard-cap (max k (* rerank-over-fetch-multiplier k))))
 
+;; =============================================================================
+;; EL-2 (ADR 0015, emergence loop): candidate evidence enrichment
+;;
+;; The reranker decision must READ the judge-grounded evidence the flywheel
+;; writes (`:avoid-when`/strengths) — closing the link that exists-but-is-
+;; ignored today. ColBERT hands the reranker only each candidate's `:content`
+;; (the description SUMMARY) + score + metadata, so a strong shape/summary
+;; match force-fits a wrong-domain behavior even when its `:avoid-when` says
+;; "not this case". We enrich each candidate map, BEFORE rerank!, with its
+;; body's `:avoid-when` (the top-level domain guards + the per-weakness guards)
+;; and compact strengths/weaknesses. The reranker output contract
+;; ({:document-id :reasoning :fitness-score}) is UNCHANGED — this is purely
+;; input-side.
+;;
+;; SCOPE (the E3.5 wrong-scope trap, root-caused not assumed): minted
+;; behavioral-subtree bodies AND minted tree-class bodies are recorded under
+;; :target-type :tree-fingerprint (see mint-behavioral-subtree /
+;; record-tree-description in commands.clj), while the candidate's
+;; :document-metadata :granularity reads :behavioral-subtree / :tree-class.
+;; A get-description keyed naively on the candidate's stated granularity
+;; returns nil and ships a silent no-op. We therefore try the candidate's
+;; stated scope FIRST, then fall back to :tree-fingerprint (the universal
+;; store for minted/seeded bodies; tree-class seeds are dual-emitted there).
+;; =============================================================================
+
+(def ^:private evidence-max-entries
+  "Keep the enrichment compact: cap how many strengths/weaknesses ride along
+   so the structured-output prompt stays small."
+  3)
+
+(defn- coerce-evidence-target-id
+  "A candidate's :document-metadata :target-id round-trips through ColBERT's
+   JSON bridge as a string; coerce to UUID when it parses as one (minted
+   bodies key the descriptions read-model by UUID). Non-UUID strings (e.g.
+   seed fingerprints like \"seed:tree:ChunkedExtraction\") pass through."
+  [tid]
+  (cond
+    (uuid? tid) tid
+    (string? tid) (try (java.util.UUID/fromString tid) (catch Exception _ tid))
+    :else tid))
+
+(defn- fetch-evidence-body
+  "Return the candidate's Living Description body, fetched from the RIGHT
+   read-model scope. Tries the candidate's stated granularity, then
+   :tree-fingerprint, then :tree-class (deduped). Returns nil if no body."
+  [ctx granularity target-id]
+  (let [tid (coerce-evidence-target-id target-id)]
+    (some (fn [scope] (when scope (get-description ctx scope tid)))
+          (distinct [granularity :tree-fingerprint :tree-class]))))
+
+(defn- compact-strengths [strengths]
+  (->> strengths
+       (take evidence-max-entries)
+       (mapv (fn [e] (cond-> {:trait (:trait e)}
+                       (:good-when e) (assoc :good-when (:good-when e))
+                       (:recommended-pattern e) (assoc :recommended-pattern (:recommended-pattern e)))))))
+
+(defn- compact-weaknesses [weaknesses]
+  (->> weaknesses
+       (take evidence-max-entries)
+       (mapv (fn [e] (cond-> {:trait (:trait e)}
+                       (:avoid-when e) (assoc :avoid-when (:avoid-when e))
+                       (:recommended-alternative e) (assoc :recommended-alternative (:recommended-alternative e)))))))
+
+(defn- enrich-candidate-evidence
+  "Add :avoid-when (top-level body guards + per-weakness guards) and compact
+   :strengths/:weaknesses from the candidate's body to the candidate map.
+   No-op (returns the candidate unchanged) when no body is found — the
+   reranker simply sees the summary, as before."
+  [ctx c]
+  (let [{:keys [granularity target-id]} (:document-metadata c)
+        body (fetch-evidence-body ctx granularity target-id)
+        weaknesses (:weaknesses body)
+        per-weakness-guards (into [] (keep :avoid-when) weaknesses)
+        avoid-when (vec (distinct (concat (:avoid-when body) per-weakness-guards)))]
+    (cond-> c
+      (seq avoid-when)        (assoc :avoid-when avoid-when)
+      (seq (:strengths body)) (assoc :strengths (compact-strengths (:strengths body)))
+      (seq weaknesses)        (assoc :weaknesses (compact-weaknesses weaknesses)))))
+
 (defn- apply-rerank
   "JOIN the reranker's delta output back to the original ColBERT
    candidates on :document-id, returning the top-N in the reranker's
    order. Each result carries the original ColBERT fields PLUS
    :reasoning, :fitness-score, and :rerank-source from the reranker.
 
+   EL-2: before reranking, each candidate is enriched with its body's
+   judge-grounded evidence (:avoid-when + compact strengths/weaknesses) so
+   the reranker can weight DOMAIN fit, not just structural shape. The JOIN
+   below still keys on the ORIGINAL candidates, so the enrichment is
+   input-only — the returned result shape is unchanged.
+
    R01: each result is stamped with :rerank-source. On the success
    path the value is :reranker. On the fallback path (reranker threw,
    returned nil, or returned empty) the value is :colbert-fallback
    AND :fitness-score/:reasoning are explicitly nil so downstream
    `(or (:fitness-score x) 0.0)` short-circuits don't mask the
-   absence."
+   absence.
+
+   EL-5 (ADR 0016): AFTER the JOIN, the reranker's :fitness-score is
+   passed through the deterministic CONTRASTIVE domain penalty
+   (domain-penalty/penalize-candidates). The JOIN below keys back onto
+   the ENRICHED candidates (not the raw ColBERT ones) so the penalty
+   pass can read each candidate's :avoid-when (negative signal) +
+   :content/:good-when (positive signal) — the same EL-2 evidence — and
+   bite DETERMINISTICALLY where the LLM ignored the veto. The penalty
+   re-sorts by the new fitness BEFORE (take k …). Output contract
+   ({:document-id :reasoning :fitness-score}) is UNCHANGED (the extra
+   :domain-penalty/:cos-* keys are additive observability)."
   [ctx candidates rerank-intent query k]
-  (let [reranked (try
+  (let [enriched (mapv #(enrich-candidate-evidence ctx %) candidates)
+        reranked (try
                    (reranker/rerank! ctx
                      {:query query
                       :intent rerank-intent
-                      :candidates candidates})
+                      :candidates enriched})
                    (catch Throwable t
                      (u/log ::rerank-failed
                             :query query
                             :error (.getMessage t))
                      nil))]
     (if (seq reranked)
-      (let [by-doc-id (into {} (map (juxt :document-id identity)) candidates)
+      (let [by-doc-id (into {} (map (juxt :document-id identity)) enriched)
             joined (keep (fn [r]
                            (when-let [orig (get by-doc-id (:document-id r))]
                              (-> orig
                                  (assoc :reasoning (:reasoning r))
                                  (assoc :fitness-score (:fitness-score r))
                                  (assoc :rerank-source :reranker))))
-                         reranked)]
-        (vec (take k joined)))
+                         reranked)
+            ;; EL-5: contrastive domain penalty + re-sort, then take k. The
+            ;; scorer is config-selected (ADR 0016 amendment): :colbert (DEFAULT)
+            ;; or :embedding. An operator overrides via ctx :domain-penalty-config
+            ;; (e.g. {:scorer :embedding :embedding-model "…"}); absent => the
+            ;; recalibrated :colbert defaults.
+            penalty-config (merge domain-penalty/default-penalty-config
+                                  (:domain-penalty-config ctx))
+            penalized (domain-penalty/penalize-candidates ctx joined query penalty-config)]
+        (vec (take k penalized)))
       (do
         (u/log ::rerank-failed
                :query query
@@ -694,7 +816,10 @@
      opts - options map:
        :query              - natural-language query string (REQUIRED)
        :granularity        - filter to one of :node-type, :node-instance,
-                             :tree-fingerprint; or :all (default :all)
+                             :tree-fingerprint, :tree-class,
+                             :behavioral-subtree; OR a SET of those
+                             (membership filter, retrieve across axes);
+                             or :all (no filter; default :all)
        :k                  - top-K to return (default 10)
        :rerank-with-intent - optional string. When provided, the
                              ColBERT top-(2k or capped 50) is run
@@ -726,13 +851,24 @@
                               {:query query
                                :index-id (:index-id index)
                                :k fetch-k}))
-          filtered (if (= granularity :all)
+          ;; EL-1a: granularity may be :all (no filter), a single granularity
+          ;; keyword (equality, legacy), OR a SET of granularities
+          ;; (membership) so a caller can retrieve across more than one axis
+          ;; in one query — e.g. classify-task pulling BOTH :tree-fingerprint
+          ;; and :tree-class so a previously-recorded tree-class is reachable
+          ;; (it was indexed-but-unreachable when only :tree-fingerprint was
+          ;; queried). Compare by name because granularity round-trips through
+          ;; the ColBERT JSON bridge as a string.
+          allowed-names (cond
+                          (= granularity :all) nil ;; nil => no filter
+                          (set? granularity)   (into #{} (map granularity-name) granularity)
+                          :else                #{(granularity-name granularity)})
+          filtered (if (nil? allowed-names)
                      raw-results
-                     (let [g-name (granularity-name granularity)]
-                       (filterv #(= g-name
-                                    (granularity-name
-                                      (-> % :document-metadata :granularity)))
-                                raw-results)))]
+                     (filterv #(contains? allowed-names
+                                          (granularity-name
+                                            (-> % :document-metadata :granularity)))
+                              raw-results))]
       (if rerank-with-intent
         (apply-rerank ctx filtered rerank-with-intent query k)
         (vec (take k filtered))))

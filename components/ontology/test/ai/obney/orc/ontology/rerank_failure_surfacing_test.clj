@@ -145,9 +145,51 @@
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
 
+;; -----------------------------------------------------------------------------
+;; Index-discovery stub (R01 / E3.5).
+;;
+;; search-descriptions finds its index via
+;;   latest-ontology-descriptions-index → (colbert-fn 'list-indexes)
+;; i.e. it calls the REAL `colbert/list-indexes` var (resolved lazily by
+;; `requiring-resolve`), NOT the :colbert/index-created event in the store.
+;; So merely appending the event (inject-index-created! below) is NOT enough
+;; to make the index discoverable: without a `colbert/list-indexes` stub the
+;; lookup returns nil → search-descriptions short-circuits to the
+;; cold-no-index [] branch → 0 results → apply-rerank is NEVER reached and the
+;; (= 3 count) + stamping assertions fail vacuously.
+;;
+;; The stub below returns exactly what latest-ontology-descriptions-index
+;; reads off each candidate (:index-name, :created-at) plus the :index-id that
+;; search-descriptions threads into (colbert-fn 'search). Wrap any test that
+;; calls search-descriptions in `with-discoverable-index` so the lookup
+;; resolves and the test genuinely exercises apply-rerank's stamping.
+;;
+;; (Tests that stub `ontology/search-descriptions` wholesale — the classify-task
+;; cycles below — bypass this lookup and do not need the stub.)
+(defn- fake-list-indexes
+  "Stand in for the real `colbert/list-indexes`: returns a single active
+   index named 'ontology-descriptions' so latest-ontology-descriptions-index
+   resolves it."
+  [_ctx & _opts]
+  [{:index-name "ontology-descriptions"
+    :index-id   (random-uuid)
+    :created-at "2026-05-28T00:00:00Z"}])
+
+(defmacro with-discoverable-index
+  "Redefine `colbert/list-indexes` to the fake so search-descriptions's
+   index lookup resolves (it goes through list-indexes, not the event)."
+  [& body]
+  `(with-redefs [colbert/list-indexes fake-list-indexes]
+     ~@body))
+
 (defn- inject-index-created!
   "Append a :colbert/index-created event so search-descriptions has an
-   index to find. Mirrors the pattern from reranker_test.clj."
+   index to find. Mirrors the pattern from reranker_test.clj.
+
+   NOTE: kept only as belt-and-suspenders / documentation of the index's
+   existence — the LOAD-BEARING discovery is the `colbert/list-indexes`
+   stub (see with-discoverable-index). search-descriptions does NOT read
+   this event."
   [ctx]
   (es/append (:event-store ctx)
     {:tenant-id (:tenant-id ctx)
@@ -197,8 +239,9 @@
       (let [fake-rerank [{:document-id "a" :reasoning "primary" :fitness-score 0.9}
                          {:document-id "b" :reasoning "secondary" :fitness-score 0.7}
                          {:document-id "c" :reasoning "tertiary" :fitness-score 0.5}]]
-        (with-redefs [colbert/search (fn [_ctx _opts] colbert-candidates)
-                      reranker/rerank! (fn [_ctx _opts] fake-rerank)]
+        (with-discoverable-index
+         (with-redefs [colbert/search (fn [_ctx _opts] colbert-candidates)
+                       reranker/rerank! (fn [_ctx _opts] fake-rerank)]
           (let [results (ontology/search-descriptions ctx
                           {:query "x"
                            :rerank-with-intent "y"
@@ -210,7 +253,7 @@
             (is (every? #(number? (:fitness-score %)) results)
                 ":fitness-score is real (non-nil) on every result")
             (is (every? #(string? (:reasoning %)) results)
-                ":reasoning is real (non-nil) on every result")))))))
+                ":reasoning is real (non-nil) on every result"))))))))
 
 ;; =============================================================================
 ;; RED #3 — apply-rerank fallback (reranker returned nil) stamps
@@ -222,8 +265,9 @@
     (with-test-ctx [ctx]
       (inject-index-created! ctx)
       (Thread/sleep 100)
-      (with-redefs [colbert/search (fn [_ctx _opts] colbert-candidates)
-                    reranker/rerank! (fn [_ctx _opts] nil)]
+      (with-discoverable-index
+       (with-redefs [colbert/search (fn [_ctx _opts] colbert-candidates)
+                     reranker/rerank! (fn [_ctx _opts] nil)]
         (let [results (ontology/search-descriptions ctx
                         {:query "x"
                          :rerank-with-intent "y"
@@ -239,7 +283,7 @@
           (is (every? #(contains? % :fitness-score) results)
               ":fitness-score key is PRESENT (with nil value), not absent — this is the load-bearing signal callers can detect")
           (is (every? #(contains? % :reasoning) results)
-              ":reasoning key is PRESENT (with nil value), not absent"))))))
+              ":reasoning key is PRESENT (with nil value), not absent")))))))
 
 ;; =============================================================================
 ;; RED #4 — apply-rerank fallback (reranker THREW) stamps colbert-fallback
@@ -250,9 +294,10 @@
     (with-test-ctx [ctx]
       (inject-index-created! ctx)
       (Thread/sleep 100)
-      (with-redefs [colbert/search (fn [_ctx _opts] colbert-candidates)
-                    reranker/rerank! (fn [_ctx _opts]
-                                        (throw (ex-info "synthetic rerank failure" {})))]
+      (with-discoverable-index
+       (with-redefs [colbert/search (fn [_ctx _opts] colbert-candidates)
+                     reranker/rerank! (fn [_ctx _opts]
+                                         (throw (ex-info "synthetic rerank failure" {})))]
         (let [results (ontology/search-descriptions ctx
                         {:query "x"
                          :rerank-with-intent "y"
@@ -262,7 +307,7 @@
           (is (every? #(= :colbert-fallback (:rerank-source %)) results)
               "Throw is treated identically to nil-return — fallback path")
           (is (every? #(nil? (:fitness-score %)) results))
-          (is (every? #(nil? (:reasoning %)) results)))))))
+          (is (every? #(nil? (:reasoning %)) results))))))))
 
 ;; =============================================================================
 ;; RED #5 — classify-task computes :rerank-fallback? true from top-1's
@@ -286,13 +331,20 @@
                         :walk-down? false})]
           (is (true? (:rerank-fallback? result))
               ":rerank-fallback? is true on the classify-task result")
-          ;; Under fallback the top-1 :fitness-score is nil → top-score = 0.0
-          ;; → not matched → fresh-mint at root via the legacy path. The
-          ;; flag distinguishes this from a real low-confidence match.
-          (is (true? (:was-fresh-mint? result))
-              "Fresh-mint still happens (nil fitness → 0.0 → below threshold)")
+          ;; EL-3 (ADR 0015) — DE-CONFLATION: this test previously asserted
+          ;; that a reranker fallback fresh-mints (nil fitness → 0.0 → below
+          ;; threshold → no-match → fresh-mint). That WAS the conflation
+          ;; (the 8/8 fallback-mint): a fallback is uncertainty, not novelty.
+          ;; EL-3 short-circuits a fallback to :outcome :uncertain BEFORE the
+          ;; no-match branch — detect-and-defer: create NOTHING.
+          (is (= :uncertain (:outcome result))
+              "Reranker fallback → :outcome :uncertain (uncertainty, not novelty)")
+          (is (not (true? (:was-fresh-mint? result)))
+              "EL-3: a fallback NO LONGER fresh-mints (de-conflation)")
+          (is (nil? (:assigned-tree-id result))
+              "EL-3: :uncertain assigns NO class (no fresh random-uuid)")
           (is (nil? (:parent-tree-id result))
-              ":parent-tree-id stays nil (legacy not-matched path)"))))))
+              ":parent-tree-id stays nil (deferred, not matched)"))))))
 
 ;; =============================================================================
 ;; RED #6 — classify-task reports :rerank-fallback? false under success

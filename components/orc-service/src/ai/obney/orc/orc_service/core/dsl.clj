@@ -352,6 +352,7 @@
      :item-key (:as opts)
      :output-key (:into opts)
      :max-concurrency (:parallel opts)
+     :preserve-failures? (:preserve-failures? opts)
      :children (vec children)}))
 
 ;; =============================================================================
@@ -581,7 +582,8 @@
         (run-build-command! ctx
           (h/make-set-map-each-config-command sheet-id node-id
             (:source-key node) (:item-key node) (:output-key node)
-            :max-concurrency (:max-concurrency node)))
+            :max-concurrency (:max-concurrency node)
+            :preserve-failures? (:preserve-failures? node)))
         ;; Build children
         (doseq [[idx child] (map-indexed vector (:children node))]
           (build-node! ctx sheet-id child node-id idx)))
@@ -784,7 +786,8 @@
                    (:source-key node) (assoc :source-key (:source-key node))
                    (:item-key node) (assoc :item-key (:item-key node))
                    (:output-key node) (assoc :output-key (:output-key node))
-                   (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))))
+                   (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))
+                   (some? (:preserve-failures? node)) (assoc :preserve-failures? (:preserve-failures? node))))
           ;; Repl-researcher-specific
           (= :repl-researcher (:type node))
           (merge (cond-> {}
@@ -916,7 +919,8 @@
         (h/run-and-apply! ctx
           (h/make-set-map-each-config-command sheet-id node-id
             (:source-key node) (:item-key node) (:output-key node)
-            :max-concurrency (:max-concurrency node)))
+            :max-concurrency (:max-concurrency node)
+            :preserve-failures? (:preserve-failures? node)))
         ;; Build children
         (doseq [[idx child] (map-indexed vector (:children node))]
           (import-node! ctx sheet-id child node-id idx)))
@@ -1164,7 +1168,8 @@
                {:from (:source-key node)
                 :as (:item-key node)
                 :into (:output-key node)
-                :parallel (:max-concurrency node)})]
+                :parallel (:max-concurrency node)
+                :preserve-failures? (:preserve-failures? node)})]
     (apply list (dsl-sym 'map-each) name (concat opts children))))
 
 (defn- node->dsl-form

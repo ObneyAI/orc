@@ -408,6 +408,11 @@
             ;; is sourced from `ontology/ontology-discovery-patterns`
             ;; which reads the EDN ship corpus directly.
             discovery-count (count (ontology/ontology-discovery-patterns))
+            ;; E3 (ADR 0014): seed-all! / seed-baseline-corpus! now also mints
+            ;; the durable coding SUBBEHAVIORS (children) via
+            ;; mint-behavioral-subtree — one dispatch each.
+            child-count (count (:behavioral-subtree-children
+                                 (ontology/baseline-seeds)))
             expected (+ (count seeds/all-node-type-seeds)
                         tree-fp-count
                         ;; C-Loop-1: each tree-fingerprint seed is also
@@ -417,10 +422,12 @@
                         ;; on its first cycle.
                         tree-fp-count
                         (count seeds/all-behavioral-subtree-seeds)
+                        child-count
                         discovery-count)]
         (is (= expected (count results))
             (str "seed-all! should emit " expected
                  " commands (10 node-type + 23 tree-fingerprint + 23 tree-class duplicates + 12 behavioral-subtree + "
+                 child-count " behavioral-children + "
                  discovery-count " ontology-discovery). Got "
                  (count results))))
       (Thread/sleep 200)

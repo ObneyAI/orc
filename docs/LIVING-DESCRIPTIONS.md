@@ -50,6 +50,8 @@ Every entity — a node type (`:llm`, `:map-each`, etc.), a specific node in a s
 
 Every strength and weakness is **principle-shaped**: a concrete trait, a context guard (when does it apply?), and actionable advice (a recommended pattern or alternative). Confidence weights the entry — high-confidence entries are surfaced to the model when designing new trees; low-confidence entries are tracked but hidden until evidence accumulates.
 
+> **`:avoid-when` is now enforced, not just stored.** A weakness's `:avoid-when` guard used to be recorded for the model to read; it is now an active signal in classification, closing a loop that previously left judge-grounded evidence the decision layer never consulted (ADRs 0015 / 0016). The loop closes in three steps: the consolidator **learns** `:avoid-when` from judge evidence (this doc) → the classification reranker **reads** each candidate's `:avoid-when` → a deterministic contrastive domain penalty **enforces** it after the rerank, down-weighting a candidate whose avoid-condition the task matches more than its use-case. So a guard a description accrues here directly biases which pattern future tasks retrieve. See [SELF-IMPROVING-LOOP.md § How novelty is handled](SELF-IMPROVING-LOOP.md#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop) and [EVALUATION-COMPONENT.md](EVALUATION-COMPONENT.md).
+
 ### Three granularities
 
 | Granularity | What it groups | Example use |

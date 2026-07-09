@@ -141,16 +141,20 @@
       ;;       — resolved at execution time via ns-resolve.
       ;; Code nodes let the model design transforms (counts, joins, simple
       ;; reductions) without spending sub-LLM tokens on deterministic work.
-      (let [{:keys [reads writes] :as opts} (first args)
+      (let [{:keys [reads writes tool-caller-fn] :as opts} (first args)
             fn-ref (:fn opts)]
         (when-not (or (and (string? fn-ref) (seq fn-ref))
                       (fn? fn-ref))
           (throw (ex-info ":code node missing required :fn (qualified-symbol string or inline function)"
                           {:node-type :code :tree tree :opts opts})))
-        (list 'sheet/code
-              :fn fn-ref
-              :reads reads
-              :writes writes))
+        ;; Phase 4B: thread an optional :tool-caller-fn (gated tool-caller
+        ;; builder FQN) through to the canonical sheet/code form so the child
+        ;; tick's code node can rebuild the gated caller from its blackboard.
+        (cond-> (list 'sheet/code
+                      :fn fn-ref
+                      :reads reads
+                      :writes writes)
+          tool-caller-fn (concat (list :tool-caller-fn tool-caller-fn))))
 
       ;; Default: unknown node type
       (throw (ex-info (str "Unknown node type: " node-type)

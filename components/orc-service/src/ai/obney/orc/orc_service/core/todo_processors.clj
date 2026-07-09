@@ -8,6 +8,7 @@
    - Update blackboard with node outputs"
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.executor :as executor]
+            [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
@@ -214,40 +215,90 @@
                                  ;; section can surface up to 5 candidates
                                  ;; (matches behavioral-cap downstream).
                                  :top-n 5})
-            behaviors (:behaviors behavioral-result)]
-        (cp/process-command
-          (assoc context :command
-                 (cond-> {:command/name :ontology/assign-task-class
-                          :command/id (random-uuid)
-                          :command/timestamp (time/now)
-                          :source-sheet-id (:sheet-id context)
-                          :source-tick-id (:tick-id context)
-                          :source-node-id (:id node)
-                          :assigned-tree-id (:assigned-tree-id result)
-                          :confidence (:confidence result)
-                          :top-candidates (:top-candidates result)
-                          :reasoning (or (:reasoning result) "")
-                          :was-fresh-mint? (:was-fresh-mint? result)}
-                   ;; C-2d-2: forward :parent-tree-id when walk-down returned
-                   ;; one. Nil means top-level match or walk-down disabled.
-                   (some? (:parent-tree-id result))
-                   (assoc :parent-tree-id (:parent-tree-id result))
-                   ;; R01: forward :rerank-fallback? as :rerank-failed?
-                   ;; when classify-task observed a reranker fallback.
-                   ;; Omit when false (legacy event shape preserved).
-                   (true? (:rerank-fallback? result))
-                   (assoc :rerank-failed? true)
-                   ;; R05b: forward behavioral classification when present.
-                   ;; Omit when nil/empty so the legacy event shape is
-                   ;; preserved on opt-out / failure paths.
-                   (seq behaviors)
-                   (assoc :behavioral-subtrees behaviors))))
-        (println (format "[DEBUG RLM] node '%s' auto-classified → %s (confidence %.2f, was-fresh-mint? %s, behavioral-count %d)"
-                         (or (:name node) (str (:id node)))
-                         (:assigned-tree-id result)
-                         (double (or (:confidence result) 0.0))
-                         (:was-fresh-mint? result)
-                         (count (:behaviors behavioral-result))))
+            behaviors (:behaviors behavioral-result)
+            ;; EL-3 (ADR 0015): detect-and-defer. When the structural OR
+            ;; behavioral classification :outcome is :uncertain (a reranker
+            ;; fallback — we do NOT know the class), SKIP the
+            ;; :ontology/assign-task-class dispatch entirely: no fresh-mint
+            ;; event, no class creation/accrual. We still set the node
+            ;; :context below so the R-Inject reranker-fallback caution
+            ;; surfaces to the model. :matched / :novel dispatch as today.
+            ;; The defeat condition (ADR 0015) is an :uncertain outcome that
+            ;; still mints/assigns — so the dispatch is gated here, not via a
+            ;; schema throw on a nil :assigned-tree-id.
+            uncertain? (or (= :uncertain (:outcome result))
+                           (= :uncertain (:outcome behavioral-result)))]
+        (if uncertain?
+          (println (format "[DEBUG RLM] node '%s' auto-classify DEFERRED (outcome :uncertain — struct=%s behav=%s) — NO assign-task-class dispatched"
+                           (or (:name node) (str (:id node)))
+                           (:outcome result)
+                           (:outcome behavioral-result)))
+          (do
+            (cp/process-command
+              (assoc context :command
+                     (cond-> {:command/name :ontology/assign-task-class
+                              :command/id (random-uuid)
+                              :command/timestamp (time/now)
+                              :source-sheet-id (:sheet-id context)
+                              :source-tick-id (:tick-id context)
+                              :source-node-id (:id node)
+                              :assigned-tree-id (:assigned-tree-id result)
+                              :confidence (:confidence result)
+                              :top-candidates (:top-candidates result)
+                              :reasoning (or (:reasoning result) "")
+                              :was-fresh-mint? (:was-fresh-mint? result)}
+                       ;; C-2d-2: forward :parent-tree-id when walk-down returned
+                       ;; one. Nil means top-level match or walk-down disabled.
+                       (some? (:parent-tree-id result))
+                       (assoc :parent-tree-id (:parent-tree-id result))
+                       ;; R01: forward :rerank-fallback? as :rerank-failed?
+                       ;; when classify-task observed a reranker fallback.
+                       ;; Omit when false (legacy event shape preserved).
+                       (true? (:rerank-fallback? result))
+                       (assoc :rerank-failed? true)
+                       ;; R05b: forward behavioral classification when present.
+                       ;; Omit when nil/empty so the legacy event shape is
+                       ;; preserved on opt-out / failure paths.
+                       (seq behaviors)
+                       (assoc :behavioral-subtrees behaviors))))
+            (println (format "[DEBUG RLM] node '%s' auto-classified → %s (confidence %.2f, was-fresh-mint? %s, behavioral-count %d)"
+                             (or (:name node) (str (:id node)))
+                             (:assigned-tree-id result)
+                             (double (or (:confidence result) 0.0))
+                             (:was-fresh-mint? result)
+                             (count (:behaviors behavioral-result))))
+            ;; CV-1 (ADR 0017) Part 1 — CONVERGENCE CAPTURE. On a fresh-mint
+            ;; (and only then — we are already past the :uncertain guard), ALSO
+            ;; record a provisional :tree-class description whose SEARCHABLE
+            ;; content is the task `signature` (the same instruction-aware text
+            ;; classify-task searched by). This puts the just-minted class into
+            ;; the corpus immediately, so the NEXT identical/similar signature
+            ;; retrieves + matches it (accrues) instead of scattering a new
+            ;; random-uuid — the capture EL-1b specified but never built.
+            ;; ONLY on fresh-mint: a MATCH or BUNDLE (:was-fresh-mint? false)
+            ;; records NOTHING, so a recurrence does not re-emit a description
+            ;; and thrash the ColBERT reindex (see orc-sheet-content-hash-thrash).
+            ;; Reuses record-tree-class-description (keys on the fresh-mint root
+            ;; UUID the classifier just assigned). Robust to turn timeouts — it
+            ;; does not depend on the RLM completing.
+            (when (:was-fresh-mint? result)
+              (cp/process-command
+                (assoc context :command
+                       {:command/name :ontology/record-tree-class-description
+                        :command/id (random-uuid)
+                        :command/timestamp (time/now)
+                        :target-id (:assigned-tree-id result)
+                        :body {:summary signature
+                               :capabilities []
+                               :strengths []
+                               :weaknesses []
+                               :representative-uses []
+                               :avoid-when []
+                               :version 1
+                               :consolidated-from-event-count 0}}))
+              (println (format "[DEBUG RLM] node '%s' CONVERGENCE-CAPTURE recorded provisional :tree-class description for %s"
+                               (or (:name node) (str (:id node)))
+                               (:assigned-tree-id result))))))
         ;; R-Inject: stash the full classifier payload on :context so
         ;; apply-r05-classifier-context can prepend it to the model's
         ;; Phase 1 prompt. :tree-id stays at the top level for downstream
@@ -442,6 +493,36 @@
           (get-description ctx :tree-class uuid-target))
         (catch Exception _ nil)))))
 
+(defn- fetch-behavioral-body
+  "Pull a behavioral-subtree description body via ontology/get-description.
+
+   E3 Part-1 (scope fix): behavioral seed bodies — and minted children —
+   land in the Living-Description read-model under the :tree-fingerprint
+   granularity, NOT :tree-class. Both emission paths stamp
+   :target-type :tree-fingerprint on the description-updated event:
+     - seed-baseline-corpus! emits behavioral seeds via
+       :ontology/record-tree-description (commands.clj record-tree-
+       description → :target-type :tree-fingerprint)
+     - :ontology/mint-behavioral-subtree emits the same event with
+       :target-type :tree-fingerprint, keyed by the derived stable id.
+   (Structural tree-class seeds are DUAL-emitted under :tree-class for the
+   structural read path — behavioral ones are not, so a behavioral id read
+   against :tree-class misses → rich body nil → no strengths rendered.)
+
+   This is the behavioral counterpart of fetch-tree-body: same UUID
+   coercion + best-effort nil-on-failure semantics, but reads the
+   :tree-fingerprint scope where behavioral bodies actually live. The
+   structural fetch-tree-body path is deliberately left reading
+   :tree-class (C-Loop-1) and is NOT changed."
+  [ctx target-id]
+  (when-let [uuid-target (->uuid target-id)]
+    (let [get-description (requiring-resolve
+                            'ai.obney.orc.ontology.interface/get-description)]
+      (try
+        (when get-description
+          (get-description ctx :tree-fingerprint uuid-target))
+        (catch Exception _ nil)))))
+
 (defn- derive-seed-name
   "Extract a human-readable seed name from the start of a `:summary`
    string. Most seeds begin with their own name followed by a stative
@@ -585,6 +666,11 @@
            "                        :version 1\n"
            "                        :consolidated-from-event-count 0}\n"
            "                       :parent nil)\n\n"
+           "   SPECIALIZE vs ROOT-MINT: `:parent nil` mints a NEW root behavior. If, instead, one "
+           "of the nearest references listed above is a broad-but-related parent (it shares the "
+           "task's shape even though it fell below threshold), prefer specializing a CHILD of it — "
+           "pass that reference's behavior-id as `:parent <id>` so the new behavior accrues evidence "
+           "under the proven parent rather than scattering as an unrelated root.\n\n"
            "   CRITICAL: :strengths and :weaknesses are VECTORS OF MAPS, not vectors of "
            "strings. Each entry is principle-shaped — :trait + context-guard + concrete "
            "recommended action + confidence + evidence-count. A vector of bare strings "
@@ -595,7 +681,7 @@
            "minting, a genuinely novel pattern is LOST when this task completes.\n\n"
            "   If (a) — the task fits an existing category by your judgement — no mint "
            "is needed; designing the tree using known patterns is the right call.\n")
-      (let [body (fetch-tree-body ctx behavior-id)
+      (let [body (fetch-behavioral-body ctx behavior-id)
             summary (:summary body)
             rich (format-seed-body body traits-per-seed-cap)
             seed-name (derive-seed-name summary)
@@ -610,7 +696,48 @@
              "   Why this fits: " (or reasoning "(no reasoning recorded)") "\n\n"
              "   Guidance (seed `:summary`):\n"
              "   " (or summary reasoning "(no guidance recorded)") "\n\n"
-             (or rich ""))))))
+             (or rich "")
+             ;; E2 (ADR 0014, RG-3): references INFORM, they do not GATE. A
+             ;; match clearing threshold is NOT a reason to suppress the
+             ;; specialize/mint invitation — that gate is exactly why the
+             ;; corpus stays shape-broad (mint fired 1/21: a "good enough"
+             ;; parent is almost always found, so the not-found mint branch
+             ;; never fired and no coding CHILD was ever born). The strengths/
+             ;; weaknesses above are the EVIDENCE that informs the four-way
+             ;; choice; :avoid-when in particular lets the model self-detect a
+             ;; shape-over-match (a broad parent matching on shape, not domain).
+             "\n   Adopt / adapt / SPECIALIZE / mint-adjacent — use the evidence above, not the score alone:\n"
+             "   - ADOPT this pattern as-is if it is an EXACT fit for your task.\n"
+             "   - ADAPT it (keep the shape, override the specifics) if it mostly fits.\n"
+             "   - SPECIALIZE — if this is a BROAD fit rather than an exact one (its `:summary`/strengths"
+             " describe a more general shape than your task, or its `:avoid-when` flags your context),"
+             " mint a domain-specialized CHILD of THIS behavior. The child keeps the parent's proven shape"
+             " but pins your domain, gets a STABLE derived id, and ACCRUES evidence under the parent"
+             " (it is retrievable on subsequent classify-behaviors calls):\n\n"
+             "       (mint-behavior! \"<short-kebab-name>\"\n"
+             "                       {:capabilities [\"<concrete action verb + object>\"]\n"
+             "                        :strengths [{:trait \"<what works AND why>\"\n"
+             "                                     :good-when \"<context guard>\"\n"
+             "                                     :recommended-pattern \"<concrete DSL snippet>\"\n"
+             "                                     :confidence 0.7\n"
+             "                                     :evidence-count 1}]\n"
+             "                        :weaknesses [{:trait \"<what fails AND why>\"\n"
+             "                                      :avoid-when \"<context guard>\"\n"
+             "                                      :recommended-alternative \"<concrete fix>\"\n"
+             "                                      :confidence 0.7\n"
+             "                                      :evidence-count 1}]\n"
+             "                        :representative-uses [\"<concrete task this child shipped on>\"]\n"
+             "                        :avoid-when [\"<concrete anti-context>\"]\n"
+             "                        :summary \"<2-3 sentences naming the domain + load-bearing trait + when to prefer this over the parent>\"\n"
+             "                        :version 1\n"
+             "                        :consolidated-from-event-count 0}\n"
+             "                       :parent " behavior-id ")\n\n"
+             "   - MINT-ADJACENT — if your task is related-but-DISTINCT (not a child of this behavior),"
+             " mint an adjacent behavior the same way with `:parent nil` (or under whichever listed"
+             " reference is the true nearest parent).\n"
+             "   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard +"
+             " concrete recommended action + :confidence + :evidence-count) — a vector of bare strings"
+             " fails schema validation and the mint is dropped silently.\n")))))
 
 (defn- format-behavioral-section [ctx behavioral]
   (let [{:keys [behaviors rerank-fallback?]} behavioral
@@ -651,7 +778,15 @@
                        "  - Proven STRENGTHS — traits observed to work, each with a worked-example DSL snippet you can adapt\n"
                        "  - Observed WEAKNESSES — failure modes others hit, with the recommended fix\n"
                        "  - Representative uses where this pattern has shipped\n\n"
-                       "Mimic what works, modify what's risky for your task, OR design from scratch. They are not mandates — your job is to design the RIGHT tree for THIS task, using the corpus as evidence not gospel.\n\n"
+                       ;; E2 (ADR 0014, RG-3): the four moves are ALWAYS available —
+                       ;; finding a match never removes specialize/mint. References
+                       ;; inform the choice with evidence; they do not gate it.
+                       "You always have FOUR moves, and the references below are EVIDENCE for choosing — not a mandate:\n"
+                       "  - ADOPT — use a reference as-is when it is an EXACT fit.\n"
+                       "  - ADAPT — keep a reference's pattern, override the specifics, when it mostly fits.\n"
+                       "  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n"
+                       "  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\n"
+                       "A match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n"
                        (format-structural-section ctx structural)
                        "\n"
                        (format-behavioral-section ctx behavioral)
@@ -828,6 +963,44 @@
     {}
     (or reads [])))
 
+;; Per-read-value cap for trace :inputs capture. A grounding judge needs enough
+;; of each read value to verify the answer was built from it — not megabytes.
+;; Large string reads (e.g. full-file contents) are truncated to this many chars.
+(def ^:private max-trace-input-chars 20000)
+
+(defn- truncate-trace-value
+  "Truncate a single read value for inclusion in a trace's :inputs.
+   Strings longer than max-trace-input-chars are cut with a marker; other
+   values pass through unchanged (vectors/maps are bounded structurally by
+   the reads themselves and stay small in practice)."
+  [v]
+  (if (and (string? v) (> (count v) max-trace-input-chars))
+    (str (subs v 0 max-trace-input-chars)
+         "\n…[truncated " (- (count v) max-trace-input-chars) " chars]")
+    v))
+
+(defn extract-read-inputs
+  "Build the {read-key -> value} map a node actually read from the blackboard,
+   restricted to the node's declared :reads. Large string values are truncated
+   (see max-trace-input-chars) so the eval trace carries real grounding context
+   without bloating events. Returns {} when reads is empty or no values present.
+
+   This is the honest-grounding capture: control nodes (sequence/fallback)
+   emit a non-leaf child's node-execution-started with only the map-each
+   context, so the synthesis/answer node's real inputs were dropped from the
+   trace. Capturing them at execution time — when the blackboard is fully
+   resolved (prior siblings' writes already merged) — gives judges the
+   evidence the answer was grounded on. Pure function — testable in isolation."
+  [reads blackboard]
+  (reduce
+    (fn [acc k]
+      (let [v (get-in blackboard [k :value])]
+        (if (nil? v)
+          acc
+          (assoc acc k (truncate-trace-value v)))))
+    {}
+    (or reads [])))
+
 (defn execute-leaf-node
   "Execute a leaf node when node-execution-started is emitted.
    Supports multiple executor types:
@@ -860,6 +1033,16 @@
                                    bb))
                                raw-blackboard
                                event-inputs)
+            ;; G1 (ADR 0018): read the opaque :tool-context that rode the
+            ;; tick-execution-context across the async boundary and assoc it
+            ;; onto the context handed to execute-leaf -> execute-code, so the
+            ;; leaf fn sees (:tool-context ctx). Absent -> leaf-context is the
+            ;; unchanged context (no behavior change for non-coding leaves).
+            ;; Works at any depth: composites resolve leaves through the same
+            ;; per-tick context.
+            tool-context (:tool-context (rm/get-tick-execution-context context tick-id))
+            leaf-context (cond-> context
+                           tool-context (assoc :tool-context tool-context))
             ;; Use provider from context, fall back to default, or use mock if nil
             provider (or dscloj-provider *default-dscloj-provider*)
             executor-type (or (:executor node) :ai)
@@ -933,16 +1116,16 @@
                              ;; Code executor doesn't need provider
                              (= :code executor-type)
                              (executor/execute-leaf node blackboard nil
-                                                    :context context)
+                                                    :context leaf-context)
                              ;; AI executor with provider
                              provider
                              (executor/execute-leaf node blackboard provider
-                                                    :context context
+                                                    :context leaf-context
                                                     :stream stream-cfg)
                              ;; No provider - use mock
                              :else
                              (executor/execute-leaf-mock node blackboard))
-                  {:keys [status outputs error duration-ms usage raw-response]} result
+                  {:keys [status outputs error duration-ms usage raw-response block-payload]} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
                              :node-id node-id
@@ -964,6 +1147,10 @@
                                 :writes (normalize-output-keys (or outputs {}))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
+                         ;; WS-2a: carry the OPAQUE block payload through on a
+                         ;; :blocked completion so it propagates up the tree to
+                         ;; the caller's result. orc never interprets it.
+                         (= :blocked status) (assoc :block-payload block-payload)
                          ;; Verbatim raw LLM response on parse failures —
                          ;; persisted on the completion event so (node-output
                          ;; <node-id>) can retrieve the full text for diagnosis.
@@ -995,17 +1182,40 @@
                                     :usage usage}
                              (seq input-profile)
                              (assoc :input-profile input-profile)))))))))
-            (catch Exception e
-              ;; Use process-command to emit failure event
-              (cp/process-command
-                (assoc context :command
-                       {:command/id (random-uuid)
-                        :command/timestamp (time/now)
-                        :command/name :sheet/fail-node-execution
-                        :sheet-id sheet-id
-                        :tick-id tick-id
-                        :node-id node-id
-                        :error (.getMessage e)})))))))
+            ;; WS-2a: catch Throwable (not just Exception) so a block signal
+            ;; that escapes execute-code's own catch (e.g. thrown from an :ai
+            ;; leaf or fn resolution) still COMPLETES the node :blocked rather
+            ;; than dying in the future and hanging the tick. Preserves today's
+            ;; behavior for everything else: an ordinary Exception -> :failure;
+            ;; a non-blocking Error/Throwable -> re-thrown exactly as before
+            ;; (it escaped the future previously too — no new swallowing).
+            (catch Throwable t
+              (cond
+                (block/blocking-condition? t)
+                (cp/process-command
+                  (assoc context :command
+                         {:command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :command/name :sheet/complete-node-execution
+                          :sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :status :blocked
+                          :writes {}
+                          :block-payload (block/block-payload t)}))
+
+                (instance? Exception t)
+                (cp/process-command
+                  (assoc context :command
+                         {:command/id (random-uuid)
+                          :command/timestamp (time/now)
+                          :command/name :sheet/fail-node-execution
+                          :sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :error (.getMessage t)}))
+
+                :else (throw t)))))))
         ;; Return nil - completion will be handled by the future via process-command
         nil))))
 
@@ -1046,7 +1256,16 @@
                                raw-blackboard
                                event-inputs)
             provider (or dscloj-provider *default-dscloj-provider*)
-            exec-context (extract-execution-context event-inputs)]
+            exec-context (extract-execution-context event-inputs)
+            ;; Honest-grounding capture: the values this node actually read
+            ;; from the (fully-resolved) blackboard, restricted to its declared
+            ;; :reads and truncated for size. Control-node started events drop a
+            ;; non-leaf child's reads, so trace assembly would otherwise default
+            ;; the synthesis node's :inputs to {} and judges score grounded
+            ;; answers as hallucinations. We carry these into the completion
+            ;; event; assemble-execution-trace prefers them over the (empty)
+            ;; started inputs.
+            read-inputs (extract-read-inputs (:reads node) blackboard)]
         (future
           (try
             ;; C-Loop-3: thread sheet-id / tick-id / cache through to
@@ -1056,17 +1275,27 @@
             ;; descriptions read-model. Without these, mint-behavior!
             ;; throws "requires a command context" and the agent's
             ;; mint call is lost.
-            (let [enriched-context (assoc context
-                                          :sheet-id sheet-id
-                                          :tick-id tick-id
-                                          ;; node-id rides along so RLM stream
-                                          ;; events (iteration/phase2) carry the
-                                          ;; hosting repl-researcher node.
-                                          :node-id node-id)
+            (let [;; CE-5b FIX B (ADR 0018): read the OPAQUE :tool-context that
+                  ;; FIX A stored on THIS tick's execution-context read model
+                  ;; (the same tick this repl-researcher node runs in) and
+                  ;; thread it into the context handed to
+                  ;; execute-repl-researcher -> execute-tree, whose Phase-2
+                  ;; child tick re-threads it to the emitted leaf. Mirrors
+                  ;; execute-leaf-node's read (rm/get-tick-execution-context).
+                  ;; Absent -> enriched-context unchanged (backward-compatible).
+                  tool-context (:tool-context (rm/get-tick-execution-context context tick-id))
+                  enriched-context (cond-> (assoc context
+                                                  :sheet-id sheet-id
+                                                  :tick-id tick-id
+                                                  ;; node-id rides along so RLM stream
+                                                  ;; events (iteration/phase2) carry the
+                                                  ;; hosting repl-researcher node.
+                                                  :node-id node-id)
+                                     tool-context (assoc :tool-context tool-context))
                   result (if provider
                            (executor/execute-repl-researcher node blackboard provider enriched-context)
                            {:status :failure :error "No DSCloj provider configured"})
-                  {:keys [status outputs error duration-ms generated-tree-raw iteration-reasonings usage iterations]} result
+                  {:keys [status outputs error duration-ms generated-tree-raw iteration-reasonings usage iterations block-payload]} result
                   ;; Track usage for this tick (RLM mode aggregates all LLM calls)
                   _ (when usage (add-usage! tick-id usage))
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
@@ -1090,7 +1319,18 @@
                                       ;; per iteration. Surfaced so bench reports can show the model's
                                       ;; full Phase 1 work (including syntax-error retries) alongside
                                       ;; its reasoning + the final tree.
-                                      (seq iterations) (assoc :iterations (vec iterations)))]
+                                      (seq iterations) (assoc :iterations (vec iterations))
+                                      ;; CJ-5b: carry the OPAQUE :tool-context onto the terminal
+                                      ;; completion's :writes so a downstream per-event judge (e.g.
+                                      ;; the coding-outcome judge) recovers the turn-id via
+                                      ;; build-trace-data and grounds on the turn's captured effect.
+                                      ;; On a :success terminal the completion otherwise carried only
+                                      ;; the declared writes (+ RLM internals) — never the reads — so
+                                      ;; the turn-id was unreachable and the judge grounded empty. The
+                                      ;; :tool-context is the SAME one FIX B (above) reads from this
+                                      ;; tick's execution-context read model; orc does not interpret
+                                      ;; it. Absent -> not carried (backward-compatible).
+                                      tool-context (assoc :tool-context tool-context))]
               ;; Emit :rlm/tree-generated event when tree is generated
               ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
               (when (some? generated-tree-raw)
@@ -1141,7 +1381,17 @@
                                 :writes (normalize-output-keys (or effective-outputs {}))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
-                         (seq exec-context) (assoc :inputs exec-context)
+                         ;; Carry the node's real read inputs (plus any map-each
+                         ;; context) so the eval trace has honest grounding
+                         ;; context. exec-context keys win on conflict to keep
+                         ;; map-each correlation intact.
+                         (or (seq read-inputs) (seq exec-context))
+                         (assoc :inputs (merge read-inputs exec-context))
+                         ;; WS-2a: a Phase-2 leaf blocked -> the RLM loop
+                         ;; short-circuited with :status :blocked + the opaque
+                         ;; payload. Carry the payload onto the repl-researcher
+                         ;; node completion so it reaches the parent tick result.
+                         (= :blocked effective-status) (assoc :block-payload block-payload)
                          ;; Propagate :usage (including :by-node from Phase 2)
                          ;; so per-node detail bubbles up to the parent tick.
                          (seq usage) (assoc :usage usage)))))
@@ -1202,7 +1452,13 @@
                                (assoc acc (name k) (:value entry))
                                acc))
                            {}
-                           read-keys)]
+                           read-keys)
+            ;; Honest-grounding capture (same rationale as repl-researcher):
+            ;; the control node that started this delegate dropped its reads
+            ;; (delegate is non-leaf), so the eval trace would default the
+            ;; synthesis node's :inputs to {}. Capture the real keyword-keyed
+            ;; read values (truncated) for the completion event.
+            read-inputs (extract-read-inputs read-keys blackboard)]
 
         ;; Async execution pattern (ORC standard)
         (future
@@ -1254,7 +1510,11 @@
                                 :status status
                                 :writes (normalize-output-keys outputs)
                                 :duration-ms duration-ms}
-                         (seq exec-context) (assoc :inputs exec-context)
+                         ;; Carry the node's real read inputs (plus any map-each
+                         ;; context) so the eval trace has honest grounding
+                         ;; context; exec-context keys win to keep correlation.
+                         (or (seq read-inputs) (seq exec-context))
+                         (assoc :inputs (merge read-inputs exec-context))
                          (:error result) (assoc :error (:error result))))))
 
             (catch Exception e
@@ -1729,6 +1989,26 @@
                         (:error event) (assoc :error (:error event))
                         (seq exec-context) (assoc :inputs exec-context))})]}
 
+            (= child-status :blocked)
+            ;; WS-2a: a child raised the orc block signal (a gated tool call
+            ;; needs permission). Like :failure/:timeout, the sequence does not
+            ;; continue — but unlike :timeout it short-circuits regardless of
+            ;; composite kind: the whole turn must pause for permission, not
+            ;; try another sibling. Propagate :blocked + the OPAQUE payload up.
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :blocked}
+                        (contains? event :block-payload)
+                        (assoc :block-payload (:block-payload event))
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+
             (= child-status :running)
             ;; Child returned running - propagate up
             {:result/events
@@ -1814,6 +2094,25 @@
                                :tick-id tick-id
                                :node-id parent-id
                                :status :running}
+                        (seq exec-context) (assoc :inputs exec-context))})]}
+            ;; WS-2a: a child raised the orc block signal. A block is NOT a
+            ;; "this approach failed, try the next sibling" — the turn must
+            ;; pause for permission, so the fallback short-circuits and
+            ;; propagates :blocked + the OPAQUE payload up (does NOT try the
+            ;; next child).
+            :blocked
+            {:result/events
+             [(->event
+               {:type :sheet/node-execution-completed
+                :tags #{[:sheet sheet-id]
+                        [:node parent-id]
+                        [:tick tick-id]}
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id parent-id
+                               :status :blocked}
+                        (contains? event :block-payload)
+                        (assoc :block-payload (:block-payload event))
                         (seq exec-context) (assoc :inputs exec-context))})]}
             ;; Unknown status - do nothing
             nil)
@@ -1911,7 +2210,7 @@
                        :succeeded (- item-count failed-count)
                        :failed failed-count
                        :failure-indices (mapv first failed-pairs)
-                       :failure-reasons (into {} (map (fn [[i r]] [i (:__error r)]) failed-pairs))}
+                       :failure-reasons (into {} (map (fn [[i r]] [i (or (:__error r) "(no error reason — node timed out or returned nil)")]) failed-pairs))}
               status (if (= failed-count item-count) :failure :partial)
               output (mapv second successful-pairs)]
           [status summary output])))))
@@ -2153,6 +2452,15 @@
               (let [[status summary output]
                     (classify-map-each-outcome
                       {:results (:results act) :item-count total-items})
+                    ;; Slice O opt-in: when the map-each parent node has
+                    ;; :preserve-failures? truthy, write the ALIGNED full-length
+                    ;; results vector (with {:__status :failure …} markers at
+                    ;; failed slots) instead of the successes-only `output`.
+                    ;; Flag absent/false → write `output` exactly as before.
+                    preserve-failures? (boolean
+                                         (:preserve-failures?
+                                          (get nodes-by-id map-each-parent-id)))
+                    into-value (if preserve-failures? (:results act) output)
                     completion-body (cond-> {:sheet-id sheet-id
                                              :tick-id tick-id
                                              :node-id map-each-parent-id
@@ -2164,7 +2472,7 @@
                     :tags #{[:sheet sheet-id] [:node map-each-parent-id] [:tick tick-id]}
                     :body {:sheet-id sheet-id :tick-id tick-id :node-id map-each-parent-id
                            :item-index (:completed-count act) :total-items total-items}})
-                  (make-bb-write-event event-store sheet-id tick-id output-key output blackboard)
+                  (make-bb-write-event event-store sheet-id tick-id output-key into-value blackboard)
                   (->event
                    {:type :sheet/node-execution-completed
                     :tags #{[:sheet sheet-id] [:node map-each-parent-id] [:tick tick-id]}
@@ -2226,6 +2534,10 @@
         node-id (:node-id event)
         status (:status event)
         error (:error event)  ;; Extract error from node completion
+        ;; WS-2a: the OPAQUE block payload rides the root node's :blocked
+        ;; completion up onto the tree-tick-completed event so the delivered
+        ;; result carries it. orc never interprets it.
+        block-payload (:block-payload event)
         tick-ctx (rm/get-tick-execution-context context tick-id)
         root-node-id (:root-node-id tick-ctx)
         ;; Per-execution override from options, else global dynamic default
@@ -2296,6 +2608,8 @@
                              :iteration current-iteration
                              :root-status final-status}
                       outputs (assoc :outputs outputs)
+                      ;; WS-2a: carry the opaque payload when the tree blocked.
+                      (= :blocked final-status) (assoc :block-payload block-payload)
                       error (assoc :error error))})]})))))
 
 
@@ -2439,7 +2753,9 @@
   (let [tick-id (:tick-id event)
         root-status (:root-status event)
         outputs (:outputs event)
-        error (:error event)]
+        error (:error event)
+        ;; WS-2a: the opaque block payload, present on a :blocked tree tick.
+        block-payload (:block-payload event)]
     ;; Skip intermediate :running completions — those are re-tick signals,
     ;; not final results. complete-tree-tick converts :running to :failure
     ;; when max iterations are exhausted.
@@ -2470,6 +2786,10 @@
                              ;; can distinguish "budget exceeded mid-execution"
                              ;; from "we failed for some other reason".
                              :timeout :timeout
+                             ;; WS-2a: surface :blocked truthfully so the caller
+                             ;; (RLM loop / turn executor) can route it into the
+                             ;; blocked-turn machinery instead of a false failure.
+                             :blocked :blocked
                              :failure)
                    :outputs (or outputs {})
                    ;; Include raw tree for :tree-generated status (canonical form generated at execution time)
@@ -2478,6 +2798,8 @@
                    :error error}
             ;; Include usage if any LLM calls were made
             (pos? (:total-tokens usage 0)) (assoc :usage usage-with-breakdown)
+            ;; WS-2a: carry the opaque payload out to the caller's result.
+            (= :blocked root-status) (assoc :block-payload block-payload)
             ;; Always include :node-trace when we have any leaf events.
             (seq node-trace) (assoc :node-trace node-trace)))))
     ;; No events to emit
@@ -2574,6 +2896,14 @@
             ;; events and are fetched on demand by node-trace-detail.
             started-events (filter #(= :sheet/node-execution-started (:event/type %)) tick-events)
             completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) tick-events)
+            ;; RB-2a: node traces are light metadata only (no :inputs/:outputs)
+            ;; — those stay in the granular [:tick tick-id] events and are
+            ;; fetched on demand. The honest-grounding preference main's cj
+            ;; workstream applied here at assembly ("prefer the completed
+            ;; event's inputs when they carry real reads" — control-node
+            ;; started events drop a non-leaf child's reads; see
+            ;; extract-read-inputs) now lives in the on-demand path:
+            ;; tracing/node-trace-io.
             node-traces (build-node-traces nodes-by-id started-events completed-events)
             ;; Calculate duration
             duration-ms (if (and started-at completed-at)
@@ -2809,7 +3139,9 @@
                                                                 :item-key (:item-key snapshot-node)
                                                                 :output-key (:output-key snapshot-node)}
                                                          (:max-concurrency snapshot-node)
-                                                         (assoc :max-concurrency (:max-concurrency snapshot-node)))}))])
+                                                         (assoc :max-concurrency (:max-concurrency snapshot-node))
+                                                         (some? (:preserve-failures? snapshot-node))
+                                                         (assoc :preserve-failures? (:preserve-failures? snapshot-node)))}))])
 
                                    :delegate
                                    (filterv some?

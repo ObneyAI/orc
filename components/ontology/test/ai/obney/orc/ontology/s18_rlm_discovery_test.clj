@@ -139,12 +139,12 @@
 
 (deftest discovery-seeds-emit-via-seed-baseline-corpus
   (testing "Calling seed-baseline-corpus! dispatches the 5 discovery
-            patterns alongside the existing 68 baseline dispatches.
-            Total grows from 68 to 73."
+            patterns alongside the existing baseline dispatches.
+            Total: 68 baseline + 5 E3 behavioral-children + 5 discovery = 78."
     (with-ctx [ctx]
       (let [results (ontology/seed-baseline-corpus! ctx)]
-        (is (= 73 (count results))
-            (str "Expected 68 baseline + 5 discovery = 73; got "
+        (is (= 78 (count results))
+            (str "Expected 68 baseline + 5 E3 behavioral-children + 5 discovery = 78; got "
                  (count results)))))))
 
 ;; =============================================================================

@@ -27,6 +27,7 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.observability :as obs]
+            [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
@@ -835,6 +836,33 @@
           node))
       tree)))
 
+(defn- inject-tool-caller-fn
+  "Phase 4B: Walk a canonical-DSL emit-tree! tree and inject the parent
+   repl-researcher's `:tool-caller-fn` (gated tool-caller builder FQN) into
+   each (sheet/code ...) form that does not already declare one.
+
+   No-op when tool-caller-fn is nil (no parent gate) — backwards compatible,
+   the child code nodes use the static (:call-tool-fn context) unchanged.
+
+   This is the async-safe half of the inheritance model: the parent RLM
+   node's gated caller is a closure (built from :tool-context) that CANNOT
+   thread across the child-tick command boundary. Instead we stamp the
+   BUILDER FQN onto the generated code nodes so the child tick rebuilds the
+   gated caller from its own blackboard :tool-context (plain data, which
+   does survive the boundary) — exactly how the parent node builds it."
+  [tree tool-caller-fn]
+  (if (nil? tool-caller-fn)
+    tree
+    (walk/postwalk
+      (fn [node]
+        (if (and (seq? node)
+                 (= 'sheet/code (first node))
+                 (let [opts (try (apply hash-map (rest node)) (catch Exception _ nil))]
+                   (and opts (not (contains? opts :tool-caller-fn)))))
+          (concat node [:tool-caller-fn tool-caller-fn])
+          node))
+      tree)))
+
 ;; =============================================================================
 ;; Code Executor
 ;; =============================================================================
@@ -866,6 +894,27 @@
           {:error (str "Function not found: " fn-symbol-str)}))
       (catch Exception e
         {:error (str "Failed to resolve function: " fn-symbol-str " - " (.getMessage e))}))))
+
+(defn node-call-tool-fn
+  "Resolve the tool-caller a repl-researcher node should use.
+
+   Leaf tool invocation is context-aware but policy-agnostic: a node may
+   declare `:tool-caller-fn \"fully.qualified/builder\"`, an opt-in hook
+   resolved like a code-node `:fn`. When present, the builder is invoked
+   as `(builder blackboard context)` and must return the `call-tool-fn`
+   used to build this node's tool sandbox — letting the consumer thread
+   per-execution context (identity, consent, confinement, routing) into
+   how the node's tools behave. When ABSENT, the static
+   `(:call-tool-fn context)` is used exactly as before — so existing
+   nodes are unaffected. orc knows nothing about what the builder does;
+   it only resolves and calls it."
+  [node blackboard context]
+  (if-let [builder-sym (:tool-caller-fn node)]
+    (let [{:keys [fn]} (resolve-fn builder-sym)]
+      ;; Unresolvable builder → fall back to the static caller rather
+      ;; than failing the node.
+      (if fn (fn blackboard context) (:call-tool-fn context)))
+    (:call-tool-fn context)))
 
 (defn execute-code
   "Execute a Clojure function as a leaf node.
@@ -906,8 +955,19 @@
                                  acc))
                              {}
                              (:reads node))
+              ;; Phase 4B: gate tool calls inside generated (Phase-2) trees.
+              ;; A code node may declare a :tool-caller-fn (an opt-in builder
+              ;; FQN, same hook as repl-researcher nodes). When present, we
+              ;; rebuild the gated call-tool-fn from THIS node's blackboard
+              ;; (which carries :tool-context as plain data — async-safe across
+              ;; the child-tick boundary) and thread it into the fn's context
+              ;; as :call-tool-fn. When absent, node-call-tool-fn returns the
+              ;; static (:call-tool-fn context) unchanged — so existing code
+              ;; nodes are byte-identical.
+              call-tool-fn (node-call-tool-fn node blackboard context)
+              code-context (assoc context :call-tool-fn call-tool-fn)
               ;; Call the function with context
-              result (f (assoc context :inputs inputs :execution-context context))
+              result (f (assoc code-context :inputs inputs :execution-context code-context))
               duration-ms (- (System/currentTimeMillis) start-time)
               writes (:writes node)
               ;; U7: Reconcile the function's return value with the declared :writes.
@@ -960,7 +1020,20 @@
         (catch Exception e
           {:status :failure
            :error (.getMessage e)
-           :duration-ms (- (System/currentTimeMillis) start-time)})))))
+           :duration-ms (- (System/currentTimeMillis) start-time)})
+        ;; WS-2a: the block signal is an AssertionError SUBCLASS — an Error, NOT
+        ;; an Exception — so it skips the :failure clause above (preserving that
+        ;; ordinary Exceptions still become :failure) and lands here. A blocking
+        ;; condition becomes a first-class :blocked result carrying the OPAQUE
+        ;; payload; any OTHER non-blocking Error/Throwable is re-thrown exactly
+        ;; as before (no new swallowing). Broad-catch-after-narrow is legal: the
+        ;; Exception handler above is still reachable for Exceptions.
+        (catch Throwable t
+          (if (block/blocking-condition? t)
+            {:status :blocked
+             :block-payload (block/block-payload t)
+             :duration-ms (- (System/currentTimeMillis) start-time)}
+            (throw t)))))))
 
 ;; =============================================================================
 ;; AI Execution
@@ -973,6 +1046,24 @@
           (or (nil? v)
               (and (map? v) (every? nil? (vals v)))))
         (vals outputs)))
+
+(defn- strip-nil-optional-writes
+  "Drop declared-OPTIONAL writes that parsed to nil, so a node can mark a
+   best-effort output (e.g. an evidence array the model legitimately omits under
+   prompt load) as droppable. A stripped (absent) value neither fails the nil-gate
+   below NOR is written to the blackboard as nil — downstream code reads it as
+   absent and defaults it. Opt in via the node's `:options :optional-writes`
+   (a coll of write keywords); `:options` already round-trips to execution, so this
+   needs no new persisted node field. `outputs` may be nil (error path) — pass it
+   through untouched."
+  [outputs optional-writes]
+  (if (and (map? outputs) (seq optional-writes))
+    (into {} (remove (fn [[k v]]
+                       (and (contains? optional-writes k)
+                            (or (nil? v)
+                                (and (map? v) (every? nil? (vals v))))))
+                     outputs))
+    outputs))
 
 (defn execute-ai
   "Execute a leaf node using DSCloj AI.
@@ -997,6 +1088,11 @@
    nested structure for the blackboard."
   [node blackboard provider & {:keys [options stream] :or {options {}}}]
   (let [start-time (System/currentTimeMillis)
+        ;; Best-effort writes the model may omit (e.g. evidence arrays under
+        ;; prompt load): capture them, then strip the marker from the options
+        ;; map so it never reaches DSCloj as a spurious request option.
+        optional-writes (set (:optional-writes options))
+        options (dissoc options :optional-writes)
         module (build-module node blackboard)
         inputs (gather-inputs node blackboard)
         output-mapping (:output-mapping module)
@@ -1099,7 +1195,10 @@
             (try
               (try-once attempt)
               (catch Exception e
-                {:error (.getMessage e)}))]
+                {:error (.getMessage e)}))
+            ;; Drop nil best-effort writes so an omitted evidence array is the
+            ;; node's declared-optional absence, not a nil-gate failure.
+            outputs (strip-nil-optional-writes outputs optional-writes)]
         (cond
           ;; Exception — retry with backoff (handles rate limits, transient errors)
           (and error (< attempt max-retries))
@@ -1440,6 +1539,30 @@
                         "- Do NOT use require, eval, slurp, or any I/O functions\n\n"
                         "Your task: " (:instruction node))}))
 
+(defn phase1-call-tool-fn
+  "The effective Phase-1 sandbox tool caller for a repl-researcher context.
+
+   The SCI sandbox invokes MCP tools via a two-arg (tool-name args) caller.
+   When the execution context carries an OPAQUE :tool-context (ADR 0018 G1 —
+   the per-tick value the host threads across the async command boundary and
+   which the Phase-2 tree :code path already re-threads to every leaf), wrap
+   the raw :call-tool-fn so each INLINE Phase-1 tool call FORWARDS that
+   tool-context as the third argument (the same 3-arity gate contract the
+   Phase-2 :code leaf uses, e.g. ce2's gated-tool-leaf-fn). This lets the host
+   gate an inline mutate with the SAME context Phase-2 receives, instead of
+   the inline call fail-closing on a missing tool-context (the WS-5b resumed
+   FALSE SUCCESS: a granted inline apply_patch that never re-applied).
+
+   Absent :tool-context (or absent :call-tool-fn) -> the raw fn unchanged
+   (backward-compatible; non-coding hosts and tool-context-free contexts see
+   no change)."
+  [context]
+  (let [raw (:call-tool-fn context)
+        tool-context (:tool-context context)]
+    (if (and raw tool-context)
+      (fn [tool-name args] (raw tool-name args tool-context))
+      raw)))
+
 (defn execute-repl-researcher
   "Execute a repl-researcher node using iterative LLM+SCI code execution.
 
@@ -1478,7 +1601,13 @@
           max-iterations (or (:max-iterations node) 10)
         mcp-tools (or (:mcp-tools node) [])
         browser-tools (or (:browser-tools node) [])
-        call-tool-fn (:call-tool-fn context)
+        ;; Resolve the node's context-aware tool caller (:tool-caller-fn
+        ;; builder, else static (:call-tool-fn context)), then (WS-5b) wrap it
+        ;; so inline Phase-1 tool calls forward the tick :tool-context as the
+        ;; 3rd arg — gating an inline mutate exactly like Phase-2.
+        call-tool-fn (phase1-call-tool-fn
+                      (assoc context :call-tool-fn
+                             (node-call-tool-fn node blackboard context)))
 
         ;; RF1: structured finalization for the terminal (non-:rlm) path.
         ;; The model calls (final! {:<write-key> value}) when satisfied; we
@@ -1764,18 +1893,38 @@
    catalog is surfaced as an extra dscloj input field so the model can use
    the listed functions inside emit-tree! :code nodes.
 
+   CE-6b (ADR 0018): when mcp-tools is non-empty, the module advertises the
+   bound tools (re-housing the non-RLM researcher's tool-advertisement
+   pattern — declared :tools input + instructions section): tool names, the
+   fact that they are bound as directly callable functions in the Phase-1
+   sandbox, the generic call shape, and inline-effects guidance — and the
+   large-data emit-tree! example line drops its exclusivity claim. With
+   empty/absent mcp-tools the module is byte-identical to the pre-CE-6b
+   output (backward-compatible). Tool names come from the node config; no
+   tool semantics are hardcoded beyond the generic call shape.
+
    S20: When `orientation-card` (a string) is supplied via the optional
-   7th arg, it is injected at the top of the recursive-mode section so
+   8th arg, it is injected at the top of the recursive-mode section so
    the model orients on the granted ontology graph before deciding
    which tool to call. The 6-arg arity preserves back-compat for existing
-   call-sites (and tests) that do not have a card to inject."
+   call-sites (and tests) that do not have a card to inject; the 7-arg
+   arity preserves the CE-6b mcp-tools call shape."
   ([node inputs-preview history blackboard sandbox-vars-map var-creation-times]
-   (build-rlm-code-generation-module
-    node inputs-preview history blackboard sandbox-vars-map var-creation-times nil))
-  ([node inputs-preview history blackboard sandbox-vars-map var-creation-times
+   (build-rlm-code-generation-module node inputs-preview history blackboard
+                                     sandbox-vars-map var-creation-times
+                                     (or (:mcp-tools node) []) nil))
+  ([node inputs-preview history blackboard sandbox-vars-map var-creation-times mcp-tools]
+   (build-rlm-code-generation-module node inputs-preview history blackboard
+                                     sandbox-vars-map var-creation-times
+                                     mcp-tools nil))
+  ([node inputs-preview history blackboard sandbox-vars-map var-creation-times mcp-tools
     orientation-card]
   (let [rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
         available-code-nodes (get rlm-config :available-code-nodes)
+        has-mcp? (boolean (seq mcp-tools))
+        mcp-tool-list (str/join ", " mcp-tools)
+        has-namespaced? (some #(str/includes? % "/") mcp-tools)
+        example-tool (first mcp-tools)
         base-inputs [{:name :task
                       :spec :string
                       :description "The research task to complete"}
@@ -1789,7 +1938,14 @@
                      available-code-nodes
                      (conj {:name :available-code-nodes
                             :spec :string
-                            :description "Catalog of pre-built Clojure functions you can reference in emit-tree! :code nodes via {:fn \"ns/sym\" ...}. Read this carefully if present."}))]
+                            :description "Catalog of pre-built Clojure functions you can reference in emit-tree! :code nodes via {:fn \"ns/sym\" ...}. Read this carefully if present."})
+                     ;; CE-6b: re-housed from the non-RLM researcher module
+                     ;; (build-code-generation-module) — same input name and
+                     ;; description so the advertisement pattern is identical.
+                     has-mcp?
+                     (conj {:name :tools
+                            :spec :string
+                            :description "Available tools you can call as functions"}))]
     {:inputs all-inputs
    :outputs [{:name :reasoning
               :spec :string
@@ -1895,6 +2051,29 @@
                       "                            :reads [:text] :writes [:counts]}]\n"
                       "  - :final - Return validated output with {:keys [...]}\n"
                       "- The tree is stored for learning and can be reused\n\n"
+                      ;; CE-6b (ADR 0018): advertise the node's bound mcp-tools.
+                      ;; The sandbox has bound these since af7c718e, but nothing
+                      ;; in the SYSTEM prompt told the model they exist — the
+                      ;; live S6-lite forensic showed a task-level instruction
+                      ;; alone loses to the system-level emit-tree framing
+                      ;; (data-processing tree, zero tool calls, iteration 1).
+                      ;; Domain-agnostic: names + example come from the node's
+                      ;; own tool list; only the generic call shape is stated.
+                      (if has-mcp?
+                        (str "## Bound Tools\n\n"
+                             "The following tools are bound in your sandbox as directly callable functions: "
+                             mcp-tool-list "\n"
+                             "Each takes a single map of arguments and returns a result map:\n"
+                             "```clojure\n"
+                             "(" example-tool " {\"arg\" \"value\"})  ;; => result map\n"
+                             "```\n"
+                             (if has-namespaced?
+                               "Namespaced names (server/tool) are bound per-namespace — call them exactly as listed above.\n"
+                               "")
+                             "Perform workspace/file effects by calling these bound tools INLINE in your Phase-1 code "
+                             "(read → patch/write → verify) rather than emitting a tree for them. Reserve emit-tree! "
+                             "for genuinely parallel or structured sub-work.\n\n")
+                        "")
                       "## Default Mode: emit-tree!\n\n"
                       "**emit-tree! is your default execution mode.** For ANY non-trivial workflow — anything\n"
                       "with multiple steps, parallel sub-tasks, deterministic transforms alongside LLM calls,\n"
@@ -1957,6 +2136,11 @@
                              "Each iteration, prefer one of:\n"
                              "1. `(emit-tree! ...)` to make progress on the task, OR\n"
                              "2. `(final! {...})` to terminate when the work is done.\n\n"
+                             ;; CE-6c (ADR 0018): pairs with the dispatch guard —
+                             ;; the live forensic showed the model believing
+                             ;; emit-tree! returns tree outputs synchronously.
+                             "emit-tree! does NOT return tree outputs in the same iteration — "
+                             "never call final! in the same code block as emit-tree!.\n\n"
                              "Direct `(llm ...)` / `(code ...)` calls in Phase 1 are for "
                              "narrow inspection or decision flows — they should not be "
                              "your main work loop. If you find yourself iterating direct "
@@ -2229,7 +2413,13 @@
                       "  (final! {:answer (:analysis result)}))\n"
                       "```\n\n"
                       "## Example: Processing Large Data (PREFERRED - use emit-tree!)\n"
-                      "For ANY large data (documents, collections, etc.), ALWAYS use emit-tree!:\n"
+                      ;; CE-6b: when tools are bound, the large-data line must
+                      ;; not claim exclusivity — workspace/file effects belong
+                      ;; inline in Phase-1 via the bound tools. Without tools,
+                      ;; the strong data-processing guidance is unchanged.
+                      (if has-mcp?
+                        "For large DATA processing (documents, collections), use emit-tree!; for workspace/file effects, call your bound tools directly inline:\n"
+                        "For ANY large data (documents, collections, etc.), ALWAYS use emit-tree!:\n")
                       "```clojure\n"
                       "(emit-tree!\n"
                       "  [:sequence\n"
@@ -2275,7 +2465,13 @@
         max-iterations (or (:max-iterations node) 10)
         mcp-tools (or (:mcp-tools node) [])
         browser-tools (or (:browser-tools node) [])
-        call-tool-fn (:call-tool-fn context)
+        ;; Resolve the node's context-aware tool caller (:tool-caller-fn
+        ;; builder, else static (:call-tool-fn context)), then (WS-5b) wrap it
+        ;; so inline Phase-1 tool calls forward the tick :tool-context as the
+        ;; 3rd arg — gating an inline mutate exactly like Phase-2.
+        call-tool-fn (phase1-call-tool-fn
+                      (assoc context :call-tool-fn
+                             (node-call-tool-fn node blackboard context)))
         declared-writes (:writes node)
         ;; Extract debug? from node's :rlm config (can be {:debug? true}) or from options
         rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
@@ -2366,6 +2562,9 @@
 
           :else
           ;; Generate code using LLM
+          ;; CE-6b (ADR 0018): pass the node's bound mcp-tools into the module
+          ;; builder (mirrors the non-RLM researcher call) so the Phase-1
+          ;; prompt ADVERTISES what the sandbox already binds.
           (let [;; S20 — compute the orientation card now (or pull from
                 ;; the per-process cache). The card namespace's `card-for`
                 ;; is grant-gated: nil ontology-id → nil card; the
@@ -2383,10 +2582,22 @@
                                     primary-grant))
                 module (build-rlm-code-generation-module node inputs-preview history
                                                           blackboard @sandbox-vars @var-creation-times
-                                                          orientation-card)
-                inputs {:task (:instruction node)
-                        :inputs-info (pr-str inputs-preview)
-                        :history (or (build-iteration-history history) "None")}
+                                                          mcp-tools orientation-card)
+                ;; G2 (ADR 0018): pass the :available-code-nodes VALUE into the
+                ;; runtime inputs so the module's declared field + catalog prompt
+                ;; note are non-empty and the model can reference catalog :code
+                ;; fns. Read from the same :rlm map the module builder reads
+                ;; (executor build-rlm-code-generation-module). Absent -> not
+                ;; added (no declared field either, so backward-compatible).
+                available-code-nodes (let [rlm (:rlm node)]
+                                       (when (map? rlm) (:available-code-nodes rlm)))
+                inputs (cond-> {:task (:instruction node)
+                                :inputs-info (pr-str inputs-preview)
+                                :history (or (build-iteration-history history) "None")}
+                         available-code-nodes (assoc :available-code-nodes available-code-nodes)
+                         ;; CE-6b: supply the declared :tools input's VALUE
+                         ;; (same joined-list shape as the non-RLM researcher).
+                         (seq mcp-tools) (assoc :tools (str/join ", " mcp-tools)))
                 ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
                 ;; but preserve an explicit caller/node :use-function-calling? override.
                 ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
@@ -2626,6 +2837,44 @@
                                             :vars-created []})]
                     (recur (inc iteration) error-history))
 
+                  ;; CE-6c (ADR 0018): final!+emit-tree! same-iteration guard,
+                  ;; recursive mode ONLY. Live forensics: the model wrote
+                  ;; (do (store! ...) (emit-tree! [...]) ... (final! {...}))
+                  ;; in ONE iteration — believing emit-tree! returns tree
+                  ;; outputs synchronously. The final-output branch below is
+                  ;; checked BEFORE the :generated-tree branch, so the final!
+                  ;; was accepted and the emitted tree SILENTLY DISCARDED
+                  ;; (zero Phase-2 executions). Neither is applied: clear the
+                  ;; pending tree markers, discard the final, surface an
+                  ;; ITERATION ERROR in the history, and recur so the model
+                  ;; can choose one or the other. Terminal (non-recursive)
+                  ;; mode keeps today's behavior (final! wins).
+                  (and recursive-mode?
+                       final-output
+                       (contains? @sandbox-vars :generated-tree))
+                  (let [guard-error (str "You called (final! ...) in the same iteration as "
+                                         "(emit-tree! ...). The tree executes AFTER your code "
+                                         "returns, so its outputs were not available to your "
+                                         "final!. Neither was applied: the tree was not executed "
+                                         "and the final! was discarded. Either call "
+                                         "(emit-tree! ...) alone this iteration and inspect "
+                                         ":tree-results next iteration, or call (final! ...) alone.")
+                        ;; Clear the pending tree so the :generated-tree branch
+                        ;; can't fire on it later; the raw marker goes too —
+                        ;; it records a tree that was never executed.
+                        _ (swap! sandbox-vars dissoc :generated-tree :generated-tree-raw)
+                        guard-history (conj history
+                                            {:code code
+                                             :result nil
+                                             :stdout (:stdout exec-result)
+                                             :error guard-error
+                                             ;; Non-marker vars (e.g. store!
+                                             ;; calls) DID land and persist.
+                                             :vars-created (vec (remove #{:generated-tree
+                                                                          :generated-tree-raw}
+                                                                        new-vars))})]
+                    (recur (inc iteration) guard-history))
+
                   ;; final! was called - return the validated output
                   final-output
                   (let [total-elapsed (- (System/currentTimeMillis) start-time)
@@ -2666,9 +2915,15 @@
                         ;; no-op.
                         sub-model (or (get rlm-config :sub-model)
                                       (:sub-model node))
-                        generated-tree (inject-sub-model
-                                         (:generated-tree @sandbox-vars)
-                                         sub-model)
+                        ;; Phase 4B: if the parent repl-researcher node opted
+                        ;; into a gated tool-caller (:tool-caller-fn), stamp
+                        ;; that builder FQN onto every generated :code node so
+                        ;; the child tick's code nodes gate their tool calls
+                        ;; the same way the parent node does. No-op (and so
+                        ;; byte-identical) when the parent has no gate.
+                        generated-tree (-> (:generated-tree @sandbox-vars)
+                                           (inject-sub-model sub-model)
+                                           (inject-tool-caller-fn (:tool-caller-fn node)))
                         generated-tree-raw (:generated-tree-raw @sandbox-vars)
                         ;; Debug: Print the generated tree
                         _ (when debug?
@@ -2711,6 +2966,12 @@
                                               generated-tree
                                               context
                                               {:sandbox-vars phase2-vars
+                                               ;; CV-2 (ADR 0017 decision 3):
+                                               ;; hand the emitted raw S-expr to
+                                               ;; the executor so its bookend can
+                                               ;; carry the worked-DSL for the
+                                               ;; post-emit tree-class enrichment.
+                                               :generated-tree-raw generated-tree-raw
                                                :blackboard (reduce-kv
                                                              (fn [acc k entry]
                                                                (assoc acc k (:value entry)))
@@ -2763,6 +3024,22 @@
                             (println "  error:" (:error phase2-result))
                             (println "  outputs keys:" (keys (:outputs phase2-result)))
                             (println "  duration-ms:" (:duration-ms phase2-result)))]
+                    ;; WS-2a: a Phase-2 leaf raised the orc block signal (a gated
+                    ;; tool call needs permission). SHORT-CIRCUIT the RLM loop in
+                    ;; BOTH modes and surface :blocked + the OPAQUE payload
+                    ;; immediately — there is nothing for the model to iterate on
+                    ;; until the block is resolved (that is WS-2c / the turn
+                    ;; executor's job). This also stops the recursive loop from
+                    ;; summarizing the block and burning the remaining iterations.
+                    (if (= :blocked (:status phase2-result))
+                      {:status :blocked
+                       :block-payload (:block-payload phase2-result)
+                       :outputs (:outputs phase2-result)
+                       :generated-tree-raw generated-tree-raw
+                       :iterations new-history
+                       :duration-ms (+ phase1-elapsed-ms (or (:duration-ms phase2-result) 0))
+                       :usage @total-usage
+                       :phase2-tick-id (:trace-id phase2-result)}
                     ;; R-1: When :recursive? true, DON'T return Phase 2's result —
                     ;; instead merge outputs into sandbox-vars, append a summary entry
                     ;; to :tree-results, clear :generated-tree, and recur to give the
@@ -2905,7 +3182,7 @@
                                               (:remaining-ms budget)
                                               :else nil)
                          :phase2-tick-id (:trace-id phase2-result)
-                         :budget budget})))))
+                         :budget budget}))))))
 
                   ;; Check for FINAL_ANSWER pattern (fallback)
                   (or (sci-sandbox/contains-final-answer? (:result exec-result))

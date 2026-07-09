@@ -1,0 +1,294 @@
+;; E3 (Phase B, ADR 0014) — DURABLE, version-controlled coding SUBBEHAVIORS
+;; (the waterfall's missing CONTENT). These are the leaves a coding task
+;; adopts/specializes; the 12 abstract behaviors in behavioral-subtrees.edn
+;; are REPURPOSED as their coarse parents (top of a hierarchy + reusable
+;; shape + the parent a child accrues evidence under) — NOT discarded.
+;;
+;; These are AUTHORED durable seeds (curation at bootstrap), NOT runtime
+;; volitional mints. seed-baseline-corpus! loops each entry through the
+;; :ontology/mint-behavioral-subtree command, which:
+;;   - derives the STABLE id  nameUUIDFromBytes("mint:" + name + ":" + parent)
+;;     so the same logical child always lands at the same identity (accrues,
+;;     doesn't scatter — a random-uuid here would be a FAIL),
+;;   - sets :parent-behavior -> skos:broader to the abstract parent,
+;;   - stamps :scope :behavioral-subtree (rejects any other declared scope).
+;;
+;; Granularity discipline (RG-2/RG-4): a child ONLY where the tree-design
+;; approach genuinely differs from its parent — justified by E1's real
+;; over-match evidence (see the table in the E3 handoff). add-function /
+;; refactor / add-endpoint legitimately share Code-building's spec->emit
+;; shape, so they get NO child (the over-fit trap to avoid).
+;;
+;; Parent abstract-behavior uuids (from behavioral-subtrees.edn):
+;;   Code-building   bf47c816-2833-320e-9fbd-6ae109275ab0
+;;   Transformation  86275302-0c3d-35ae-b74e-abd4f27984eb
+;;   Investigation   760be698-0bb8-3a5a-a2bd-1d45445a5861
+;;
+;; Each entry: {:name <kebab-string>
+;;              :parent-behavior <abstract-seed-uuid>
+;;              :body {... :scope :behavioral-subtree ...}}
+;; :strengths / :weaknesses are VECTORS OF MAPS (principle-shaped) — bare
+;; strings fail schema validation and the mint is dropped.
+
+[;; ----------------------------------------------------------------------------
+ ;; Transformation -> code-edit-dependency-wiring
+ ;; E1: wire-dependency over-grabbed Transformation @0.95. It is a CODE EDIT
+ ;; (add a dep + use it across files), not a pure data reshape — Transformation's
+ ;; ":code, not :llm; map-each per item" shape misfits a multi-file wiring edit.
+ ;; ----------------------------------------------------------------------------
+ {:name "code-edit-dependency-wiring"
+  :parent-behavior #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb"
+  :body
+  {:capabilities
+   ["given a dependency/library to introduce + the call sites that must use it, edit the manifest (deps.edn / package.json / pom) AND the consuming source so the new dependency is declared and actually exercised"
+    "natural fit when a task says 'add library X and use it in Y' — a coordinated edit spanning a manifest and one or more source files, not a per-row data transformation"
+    "outputs are typically a small set of file edits (manifest + consumers) that compile/resolve together, not a restructured data value"]
+   :strengths
+   [{:trait
+     "edit the dependency manifest and at least one real consumer in the SAME change so the dependency is declared AND exercised — a declared-but-unused dep (or a use with no declaration) is a broken half-edit"
+     :good-when "the task is 'add library X and use it to do Y' (deps.edn + the export/import writer that calls it)"
+     :recommended-pattern "[:sequence [:llm {:reads [:goal :manifest] :writes [:manifest-edit]}] [:llm {:reads [:goal :consumer-src :manifest-edit] :writes [:consumer-edit]}] [:final {:keys [:manifest-edit :consumer-edit]}]]"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "verify the wiring with a resolve/compile/load step after the edit rather than trusting the diff — wiring bugs (version skew, wrong artifact coordinate, missing import) surface only at resolution time"
+     :good-when "a deterministic resolve/compile/test command is available to gate the edit"
+     :recommended-pattern "[:sequence [:llm {:writes [:edits]}] [:code {:reads [:edits] :writes [:resolve-result] :fn (fn [{:keys [inputs]}] {:resolve-result :ran-build})}] [:final {:keys [:edits :resolve-result]}]]"
+     :confidence 0.7
+     :evidence-count 1}]
+   :weaknesses
+   [{:trait
+     "treating dependency-wiring as a pure :code data transformation (the Transformation parent's default) drops the cross-file coordination — the manifest gets the dep but no consumer calls it, or a consumer imports a dep that was never declared"
+     :avoid-when "the task touches BOTH a manifest and consuming source — a single-stage reshape can't keep them in sync"
+     :recommended-alternative "split into a manifest-edit stage and a consumer-edit stage that reads the manifest-edit, then gate on a resolve/compile step"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "wiring a dependency without pinning/checking the version produces non-reproducible builds — a floating version resolves differently across machines and CI"
+     :avoid-when "the ecosystem expects pinned versions (deps.edn :mvn/version, package.json exact)"
+     :recommended-alternative "resolve and pin a concrete version in the manifest edit; surface the chosen version in the output so it is reviewable"
+     :confidence 0.7
+     :evidence-count 1}]
+   :representative-uses
+   ["add the cheshire JSON dependency to deps.edn and use it in the export writer to serialize the report map to a .json file"
+    "introduce a retry library and wrap the flaky HTTP client call site with it"]
+   :avoid-when
+   ["the dependency is already declared and the task is only to call it — that is plain code-building, not a wiring edit"
+    "the change is a pure in-memory data reshape with no new dependency — that is the Transformation parent"]
+   :summary
+   "Code-edit dependency-wiring introduces a library and wires it into real call sites — a coordinated CODE EDIT spanning a manifest (deps.edn / package.json) AND consuming source, not a data reshape. The load-bearing constraint is keeping the declaration and the use in sync (a declared-but-unused dep, or a use with no declaration, is a broken half-edit), then gating on a resolve/compile step and pinning the version for reproducibility. Prefer this over the broad Transformation parent whenever the task is 'add library X and use it to do Y': Transformation's 'reshape it in :code' shape drops the cross-file coordination. Avoid when the dependency already exists (plain code-building) or there is no new dependency (the Transformation parent)."
+   :scope :behavioral-subtree
+   :version 1
+   :consolidated-from-event-count 0}}
+
+ ;; ----------------------------------------------------------------------------
+ ;; Transformation -> performance-optimization
+ ;; E1: perf-tune over-grabbed Transformation @0.95, but it is really
+ ;; Investigation (profile the hot path) -> Code-building (optimize) under an
+ ;; invariant-preservation constraint. The "reshape data" shape misfits.
+ ;; ----------------------------------------------------------------------------
+ {:name "performance-optimization"
+  :parent-behavior #uuid "86275302-0c3d-35ae-b74e-abd4f27984eb"
+  :body
+  {:capabilities
+   ["given code that is too slow + a performance target + an output-invariance constraint, locate the hot path, change it for speed, and prove the output is unchanged"
+    "natural fit when the task is 'X is slow, make it faster WITHOUT changing what it produces' — a measure-then-change-then-re-measure loop, not a one-shot reshape"
+    "outputs are typically a code edit to the hot path + a before/after measurement + evidence the observable output is byte-for-byte unchanged"]
+   :strengths
+   [{:trait
+     "measure to find the hot path BEFORE editing — optimize what the profile proves is slow, not what looks slow; premature edits to cold code add risk for no gain"
+     :good-when "the slow region is not obvious AND a profiling/timing signal is available"
+     :recommended-pattern "[:sequence [:code {:reads [:input] :writes [:profile] :fn (fn [{:keys [inputs]}] {:profile :hot-path})}] [:llm {:reads [:profile :src] :writes [:optimized-src]}] [:code {:reads [:optimized-src] :writes [:after-timing]}] [:final {:keys [:optimized-src :after-timing]}]]"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "pin output-invariance with a check that compares optimized output to the original on representative inputs — a speedup that changes results is a regression, not an optimization"
+     :good-when "the task explicitly requires 'without changing the output' (or correctness matters more than speed)"
+     :recommended-pattern "[:sequence [:llm {:writes [:optimized-src]}] [:code {:reads [:optimized-src :baseline-output] :writes [:invariance-check] :fn (fn [{:keys [inputs]}] {:invariance-check :outputs-equal})}] [:final {:keys [:optimized-src :invariance-check]}]]"
+     :confidence 0.7
+     :evidence-count 1}]
+   :weaknesses
+   [{:trait
+     "optimizing by rewriting the logic (the Transformation parent's 'reshape it in :code' instinct) without a baseline measurement OR an invariance check ships a change that may be no faster and may silently alter output"
+     :avoid-when "the task pairs a speed target with an output-invariance constraint"
+     :recommended-alternative "measure first (profile/timing), change only the proven hot path, then compare optimized output to the baseline before committing"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "guessing the bottleneck from reading the code instead of profiling wastes the edit on the wrong region and often misses the real cost (I/O, N+1, allocation) entirely"
+     :avoid-when "a profiler or representative-input timing harness is available"
+     :recommended-alternative "always derive the hot path from a measurement stage; let the profile, not intuition, choose where to edit"
+     :confidence 0.7
+     :evidence-count 1}]
+   :representative-uses
+   ["the report-rendering endpoint is slow on large inputs; profile it and optimize the hot path so a 10k-row report renders under 500ms without changing the output"
+    "a nightly aggregation job exceeds its window; find and fix the dominant cost while keeping the produced totals identical"]
+   :avoid-when
+   ["the task is to add new behavior, not speed up existing behavior — that is code-building"
+    "there is no correctness/invariance constraint and the work is a pure data reshape — that is the Transformation parent"]
+   :summary
+   "Performance-optimization makes existing code faster WITHOUT changing what it produces — a measure-then-change-then-re-measure loop (really Investigation to find the hot path, then Code-building to optimize) under an output-invariance constraint. The load-bearing traits are profiling to locate the real bottleneck BEFORE editing (never guess from reading the code) and pinning output-invariance with a before/after comparison (a speedup that changes results is a regression). Prefer this over the broad Transformation parent whenever the task pairs a speed target with 'without changing the output': Transformation's one-shot 'reshape in :code' shape ships an unmeasured, possibly output-altering change. Avoid when the task adds new behavior (code-building) or has no correctness constraint (the Transformation parent)."
+   :scope :behavioral-subtree
+   :version 1
+   :consolidated-from-event-count 0}}
+
+ ;; ----------------------------------------------------------------------------
+ ;; Code-building -> documentation-writing
+ ;; E1: write-doc over-grabbed Code-building @0.95, but docstrings/usage prose
+ ;; are NOT executable code — the spec->emit->validate shape misfits. The
+ ;; load-bearing constraint is fidelity to the actual API surface, not compile.
+ ;; ----------------------------------------------------------------------------
+ {:name "documentation-writing"
+  :parent-behavior #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0"
+  :body
+  {:capabilities
+   ["given a code symbol (function / option map / API) + its real signature, produce human-facing prose — a docstring, usage example, or reference entry — that accurately describes what it accepts and returns"
+    "natural fit when the artifact is PROSE ABOUT code (docstring, README section, option reference), not executable code itself"
+    "outputs are typically a docstring string + an optional runnable usage snippet, attached to the documented symbol"]
+   :strengths
+   [{:trait
+     "ground the doc in the symbol's ACTUAL signature/options read from source — read the arglist and option keys first, then describe them, so the prose can't drift from the real API"
+     :good-when "the symbol's source is available to read (the common case for internal docs)"
+     :recommended-pattern "[:sequence [:code {:reads [:src] :writes [:signature] :fn (fn [{:keys [inputs]}] {:signature :arglist-and-option-keys})}] [:llm {:reads [:signature :src] :writes [:docstring]}] [:final {:keys [:docstring]}]]"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "include a SHORT runnable usage example that exercises the real signature — a worked call teaches the API faster than prose and surfaces signature mistakes in the doc"
+     :good-when "the symbol is public/consumed by others AND a minimal example is meaningful"
+     :recommended-pattern "[:llm {:reads [:signature] :writes [:doc] :output-schemas {:doc [:map [:docstring :string] [:example :string]]}}]"
+     :confidence 0.7
+     :evidence-count 1}]
+   :weaknesses
+   [{:trait
+     "writing the doc from the task description alone (the Code-building parent's spec->emit instinct) invents parameters/return shapes the function does not actually have — the doc looks plausible and is wrong"
+     :avoid-when "the documented symbol already exists and its real signature can be read"
+     :recommended-alternative "read the symbol's actual arglist/options first; describe only what is really there; never infer the API from the prose ask"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "treating documentation like code generation drives toward producing or modifying executable code when the task only wanted prose — scope creep that risks changing behavior"
+     :avoid-when "the deliverable is strictly the docstring/usage prose, not a code change"
+     :recommended-alternative "keep the edit confined to the doc surface (docstring / comment / README); do not alter the implementation"
+     :confidence 0.7
+     :evidence-count 1}]
+   :representative-uses
+   ["write a docstring and a short usage example for the public parse-config function describing each option key it accepts"
+    "add a README section documenting the public HTTP endpoints with request/response shapes drawn from the route handlers"]
+   :avoid-when
+   ["the task asks to implement or change behavior — that is the Code-building parent"
+    "the deliverable is a structured machine artifact (OpenAPI spec, schema) rather than human prose — that is closer to transformation/extraction"]
+   :summary
+   "Documentation-writing produces human-facing PROSE ABOUT code — a docstring, usage example, or reference entry — not executable code. The load-bearing trait is fidelity to the symbol's ACTUAL signature/options (read the real arglist and option keys first, then describe them, optionally with a short runnable example) so the prose can't drift from the real API. Prefer this over the broad Code-building parent whenever the deliverable is documentation: Code-building's spec->emit->validate shape invents parameters the function doesn't have and risks scope-creeping into a behavior change. Avoid when the task implements/changes behavior (the Code-building parent) or the deliverable is a structured machine artifact like an OpenAPI spec (extraction/transformation)."
+   :scope :behavioral-subtree
+   :version 1
+   :consolidated-from-event-count 0}}
+
+ ;; ----------------------------------------------------------------------------
+ ;; Investigation -> bug-diagnosis
+ ;; E1: Investigation already wins fix-bug/debug-failing-test — this child
+ ;; SHARPENS the recommended pattern for the code-bug case: reproduce
+ ;; deterministically, then bisect to the root cause, then minimal fix.
+ ;; ----------------------------------------------------------------------------
+ {:name "bug-diagnosis"
+  :parent-behavior #uuid "760be698-0bb8-3a5a-a2bd-1d45445a5861"
+  :body
+  {:capabilities
+   ["given a failing/flaky test or a wrong-behavior bug report + the relevant code, reproduce it deterministically, isolate the root cause, and produce the minimal fix"
+    "natural fit when the goal is 'this code is broken, find WHY and fix it' — a reproduce-then-bisect-then-fix loop, distinct from greenfield code-building"
+    "outputs are typically a deterministic repro, a root-cause statement tied to a specific code location, and the minimal change that makes the repro pass"]
+   :strengths
+   [{:trait
+     "establish a DETERMINISTIC reproduction before attempting a fix — a flaky/intermittent symptom must be pinned to a reliable trigger first, or you cannot know the fix worked"
+     :good-when "the bug is intermittent or its trigger is not yet understood (e.g. an intermittent nil from shared state / timing)"
+     :recommended-pattern "[:sequence [:llm {:reads [:symptom :code] :writes [:candidate-causes]}] [:code {:reads [:candidate-causes] :writes [:repro] :fn (fn [{:keys [inputs]}] {:repro :deterministic-failing-case})}] [:llm {:reads [:repro :code] :writes [:root-cause :fix]}] [:final {:keys [:root-cause :fix]}]]"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "enumerate candidate causes upfront and rule them out with evidence before converging — bisect the search space rather than fixing the first plausible guess (which often masks the real cause)"
+     :good-when "the symptom has multiple plausible causes (timing, shared state, environment, off-by-one)"
+     :recommended-pattern "[:sequence [:llm {:writes [:hypotheses]}] [:llm {:reads [:hypotheses :evidence] :writes [:ruled-out :remaining]}] [:llm {:reads [:remaining] :writes [:root-cause :minimal-fix]}]]"
+     :confidence 0.7
+     :evidence-count 1}]
+   :weaknesses
+   [{:trait
+     "jumping straight to a code edit on the first hypothesis (a code-building instinct) without a deterministic repro produces a fix that may paper over the symptom while the real defect remains — and you cannot prove it is fixed"
+     :avoid-when "the symptom is intermittent OR the root cause is not yet evidenced"
+     :recommended-alternative "reproduce deterministically first, name the root cause with evidence, then make the minimal change and re-run the repro"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "an over-broad 'fix' that rewrites surrounding code while chasing a bug introduces new regressions and obscures which change actually resolved the defect"
+     :avoid-when "the bug is localized and a targeted change suffices"
+     :recommended-alternative "scope the fix to the proven root cause; keep unrelated code untouched so the repro pinpoints the effective change"
+     :confidence 0.7
+     :evidence-count 1}]
+   :representative-uses
+   ["debug why the integration test checkout-flow-test fails intermittently with a nil cart-id and make it deterministic"
+    "fix the off-by-one bug in the pagination loop so the final page renders its last row instead of dropping it"]
+   :avoid-when
+   ["the task is to build new functionality from a spec — that is code-building, there is no existing failure to diagnose"
+    "the task is exploratory research with no specific failure to explain — that is the Research behavior"]
+   :summary
+   "Bug-diagnosis explains WHY code is broken and fixes it — a reproduce-then-bisect-then-fix loop sharpening the Investigation parent for the code-bug case. The load-bearing traits are establishing a DETERMINISTIC reproduction before attempting a fix (a flaky symptom must be pinned to a reliable trigger or you can't know the fix worked) and enumerating candidate causes to rule out with evidence before converging (don't fix the first plausible guess). Prefer this child of Investigation whenever the task is 'this test/behavior is broken, find why and fix it'. Avoid when building new functionality from a spec (code-building, no failure to diagnose) or doing exploratory research with no specific failure (Research)."
+   :scope :behavioral-subtree
+   :version 1
+   :consolidated-from-event-count 0}}
+
+ ;; ----------------------------------------------------------------------------
+ ;; Code-building -> rename-move-symbol
+ ;; E1: rename-symbol was the ONLY task that correctly MINTED (cleanest real
+ ;; gap). It is a behavior-preserving, exhaustive cross-file edit — the
+ ;; load-bearing constraint is "update EVERY caller and change NOTHING else".
+ ;; ----------------------------------------------------------------------------
+ {:name "rename-move-symbol"
+  :parent-behavior #uuid "bf47c816-2833-320e-9fbd-6ae109275ab0"
+  :body
+  {:capabilities
+   ["given a symbol to rename or relocate, change its definition and EVERY reference across the codebase (including tests) while preserving behavior exactly"
+    "natural fit when the task is a pure refactor of identity — rename calc -> compute-tax everywhere, move a fn to another namespace — with zero behavior change"
+    "outputs are typically a set of coordinated edits across all referencing files + evidence that no call site was missed and behavior is unchanged"]
+   :strengths
+   [{:trait
+     "ENUMERATE every reference before editing — find all call sites (definition, callers, tests, docs) so the rename/move is exhaustive; a missed reference is a compile/runtime break"
+     :good-when "the symbol is referenced from multiple files including tests"
+     :recommended-pattern "[:sequence [:code {:reads [:symbol :repo] :writes [:references] :fn (fn [{:keys [inputs]}] {:references :all-call-sites})}] [:map-each {:items :references :as :ref :writes [:edits]} [:llm {:reads [:ref :new-name] :writes [:edit]}]] [:final {:keys [:edits]}]]"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "gate the change on a compile/test run after editing — a behavior-preserving rename/move is correct ONLY if everything still resolves and the existing tests stay green"
+     :good-when "a build or test command exists to confirm exhaustiveness and behavior preservation"
+     :recommended-pattern "[:sequence [:llm {:writes [:edits]}] [:code {:reads [:edits] :writes [:build-result] :fn (fn [{:keys [inputs]}] {:build-result :compiles-tests-green})}] [:final {:keys [:edits :build-result]}]]"
+     :confidence 0.7
+     :evidence-count 1}]
+   :weaknesses
+   [{:trait
+     "editing only the definition and the obvious callers (a code-building instinct that stops at the first file) leaves stale references in tests/docs/secondary namespaces — the rename is half-applied and the build breaks"
+     :avoid-when "the symbol is referenced beyond the file that defines it"
+     :recommended-alternative "first enumerate ALL references repo-wide (grep/AST), then map-each an edit over every site, then compile to confirm none was missed"
+     :confidence 0.7
+     :evidence-count 1}
+    {:trait
+     "sneaking a behavior change into a rename/move (renaming AND tweaking logic) destroys the refactor's safety — reviewers can no longer trust it as a no-op and regressions hide in the diff"
+     :avoid-when "the task is strictly a rename/move with behavior preserved"
+     :recommended-alternative "keep the change behavior-identical; if logic must change too, do it as a separate, reviewable step after the rename lands green"
+     :confidence 0.7
+     :evidence-count 1}]
+   :representative-uses
+   ["rename the function calc to compute-tax across the billing namespace and update every caller, including the test files"
+    "move a shared helper from the request handler into a pure pricing namespace and repoint every import"]
+   :avoid-when
+   ["the task changes behavior or adds functionality — that is code-building, not a behavior-preserving rename/move"
+    "the change is a data reshape rather than an identity refactor of code symbols — that is the Transformation behavior"
+    ;; EL-5 (ADR 0016) guard sharpen: the load-bearing distinction is PURE RENAME
+    ;; vs EXTRACT/REFACTOR. Extracting a helper from a handler, pulling out a
+    ;; function, or restructuring code is NOT a pure identity rename even though
+    ;; it 'moves' code and preserves behavior — that is code-building/refactor.
+    ;; Without this, the contrastive penalty can't tell extract-helper (the 9/10
+    ;; force-fit) from a rename. Exactly what the C-3 judge loop converges to
+    ;; after a refactor->rename run scores badly. See ADR 0016.
+    "the task is to extract a helper, pull out a function, or otherwise refactor/restructure code — that is code-building/refactor, NOT a pure identity rename or move of an existing symbol"]
+   :summary
+   "Rename-move-symbol is a behavior-preserving, EXHAUSTIVE cross-file identity refactor — rename a function everywhere, move a symbol to another namespace — changing NOTHING else. The load-bearing traits are enumerating EVERY reference (definition, callers, tests, docs) before editing so the change is exhaustive (a missed reference is a compile/runtime break) and gating on a compile/test run to confirm exhaustiveness and behavior preservation. Prefer this child of Code-building whenever the task is a pure rename/move with behavior preserved: the parent's spec->emit instinct stops at the first file and leaves stale references, and sneaking a logic change in destroys the refactor's no-op safety. Avoid when the task adds/changes behavior (code-building) or is a data reshape (Transformation)."
+   :scope :behavioral-subtree
+   :version 1
+   :consolidated-from-event-count 0}}]

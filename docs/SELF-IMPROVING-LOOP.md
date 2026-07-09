@@ -7,11 +7,13 @@
 > **⚠ Alpha — read this before adopting in production.**
 > The self-improving loop ships as alpha-stage capability. It works
 > well for in-distribution workflows that align with the shipped seed
-> corpus, and it's worth using today for those. Workflows that fall
-> far outside the corpus's covered domains will see honest-but-thin
-> classifications and rare behavioral mints. See
-> [Honest status today](#honest-status-today--solid-vs-rough)
-> in this doc for the evidence summary.
+> corpus, and it's worth using today for those. For out-of-distribution
+> work the runtime now **detects** novelty and **defers** durable
+> creation to the evidence-grounded emergence loop, rather than minting a
+> task class on the spot — see
+> [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop)
+> and [Honest status today](#honest-status-today--solid-vs-rough)
+> in this doc.
 
 ---
 
@@ -66,10 +68,14 @@ that:
    weaknesses, and recommended-patterns. The next task that hits the
    same pattern sees a richer prompt with the new content.
 
-3. **Adds genuinely-new patterns to the corpus when needed.** If the
-   model encounters work no existing pattern fits, it can contribute a
-   new pattern that persists for future retrieval. New domains can grow
-   the corpus organically.
+3. **Detects genuinely-new work and lets the corpus grow from evidence.**
+   When no existing pattern fits, the runtime classifies the task as
+   *novel* (or *uncertain*) and DEFERS — it does not fabricate a durable
+   behavior on the spot. The tree the model actually emits becomes a
+   retrievable, domain-aware candidate that accrues judge evidence on a
+   stable identity; recurring, well-scored candidates are the raw material
+   for promotion into named behaviors. See
+   [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop).
 
 4. **Recovers from mid-tree failures gracefully.** When a leaf in an
    emitted tree throws, the model sees the specific failure detail and
@@ -171,10 +177,17 @@ and what does *not*:**
   `:llm` node in the same tree is untouched by `:auto-classify?` — that's
   GEPA's territory (see
   [Two orthogonal improvement actuators](#two-orthogonal-improvement-actuators)).
-- `mint-behavior!` is **model-initiated**, not flag-initiated. Enabling
-  the flags makes minting *possible*; the model only mints when no
-  existing pattern credibly fits (see
-  [New patterns get minted](#2-new-patterns-get-minted-when-the-model-encounters-genuinely-new-work)).
+- Structural classification (`classify-task`) is **detect-and-defer**:
+  it never creates a durable behavior at runtime. A *novel* task accrues
+  evidence on a tree-class identity (or bundles onto a near one); an
+  *uncertain* task (reranker fallback) is skipped entirely — no class is
+  assigned (see
+  [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop)).
+  The behavioral `mint-behavior!` primitive remains **model-initiated**,
+  not flag-initiated — enabling the flags makes it *possible*, and the
+  references the prepend surfaces *inform* (not gate) when the model uses
+  it. References inform new and adjacent behaviors regardless of whether a
+  match cleared threshold.
 
 ---
 
@@ -250,35 +263,38 @@ of `:repl-researcher` as a node inside a larger tree, see
 ## Honest status today — solid vs rough
 
 The self-improving loop is **alpha-stage**. The components that compose
-the loop work as documented — but the *aggregate behavior on workflows
-far outside the shipped seed corpus is honest-but-thin*, not what a
-"self-improving" label would imply at maturity. The framing below comes
-from a real 21-task OOD evidence-gathering sweep, not from marketing.
+the loop work as documented. The earlier OOD symptom — a "mint fires on
+1 of 21 deliberately-OOD tasks" reluctance, and an OOD task force-fitting
+the structurally-closest pattern — is the **resolved** symptom that the
+emergence loop addresses (ADRs 0014,
+0015,
+0016); it is no
+longer the runtime's behavior. The framing below is what's solid vs.
+rough on the current loop.
 
 | **Solid** (use without hesitation) | **Rough** (know before you commit) |
 |---|---|
-| In-distribution classification — tasks resembling shipped seed patterns (legal-issue-detection, contract-comparison, risk-analysis, chunked-extraction) match at confidence 1.00; prepend carries the full worked-example DSL | OOD force-fit — tasks outside the corpus force-fit to the structurally-closest pattern at confidence 0.85–0.95; reranker gives mechanically-plausible reasoning that misses domain specialization |
-| Recursive RLM with drill-down — `(tree-detail)`, `(tree-failures)`, `(node-output node-id)` all work; model recovers mid-tree failures via focused single-node resume trees without rebuilding the whole pipeline | `mint-behavior!` firing rate — fired on 1 of 21 deliberately-OOD tasks; today's classifier does not surface "no good semantic match" as a strong signal; model treats top-N matches as coverage |
-| Consolidator-driven body evolution — repeated traffic on a pattern increments the body version with new strengths grounded in observed execution; history is append-only | Hierarchical seed gaps — 12 abstract behavioral seeds describe shape but not domain (no "Analysis-of-legal-documents" or "Validation-of-schedule-constraints" specializations yet) |
-| `mint-behavior!` mechanics — the defcommand path, persistence, ColBERT re-index, and same-iteration lookup all work as documented | |
+| In-distribution classification — tasks resembling shipped seed patterns (legal-issue-detection, contract-comparison, risk-analysis, chunked-extraction) match at confidence 1.00; prepend carries the full worked-example DSL | Hierarchical seed gaps — the abstract behavioral seeds describe shape; domain-specialized children accrue from evidence rather than shipping pre-authored |
+| Recursive RLM with drill-down — `(tree-detail)`, `(tree-failures)`, `(node-output node-id)` all work; model recovers mid-tree failures via focused single-node resume trees without rebuilding the whole pipeline | Harvest (durable promotion) is the *designed* terminus of the emergence loop and not yet shipped on this branch — novel candidates accrue evidence today; crystallizing a recurring, well-scored candidate into a named behavior is the next pulled step |
+| Detect-and-defer + grounded domain rank — `classify-task` retrieves on the instruction-aware `:tree-class` axis, an OOD task is classified *novel*/*uncertain* (not force-minted), and the reranker reads + a deterministic contrastive penalty enforces each candidate's judge-grounded `:avoid-when` | |
+| Consolidator-driven body evolution — repeated traffic on a pattern increments the body version with new strengths grounded in observed execution; history is append-only | |
 
-### Active investigation
+### How the emergence loop closes the OOD gap
 
-The R04 OOD verification work in
-`development/bench/ood-stress-results/` is an evidence-gathering arc
-that surfaced the above limits. Two paths forward are being considered:
+The OOD limits surfaced by the earlier evidence sweep are addressed by
+the emergence loop, which makes behavior emergence a **closed,
+evidence-grounded loop** (ADR 0015):
 
-- **Hierarchical/specialized seeds:** author N specializations per
-  abstract behavior (Analysis-of-legal-documents,
-  Analysis-of-source-code, etc.) so the classifier can discriminate
-  on domain.
-- **Judge-grounded rerank discrimination:** add a meta-judge that
-  scores classification confidence against the matched seed's actual
-  domain coverage (high shape-fit + low domain-fit → DOWN-weight).
-
-The HANDOFF document at
-`development/bench/ood-stress-results/HANDOFF.md` is the entry point
-for a future agent picking up this investigation.
+- **Detect-and-defer, not force-mint.** `classify-task` returns a
+  three-state `:outcome` (`:matched` / `:novel` / `:uncertain`). A
+  reranker fallback is *uncertain* and skips assignment; a confident
+  no-match is *novel* and either bundles onto a near tree-class or
+  records a provisional one — never a fabricated durable behavior.
+- **Grounded domain rank.** The reranker now READS each candidate's
+  judge-grounded `:avoid-when` and a deterministic contrastive penalty
+  ENFORCES it after the rerank, so a strong shape match no longer
+  overrides a firing domain guard (ADR 0016). See
+  [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop).
 
 ### What this means for your workflow
 
@@ -461,36 +477,49 @@ You can read the current body at any time:
 > safeguards that prevent single-bad-burst overcorrection, see
 > [`LIVING-DESCRIPTIONS.md`](LIVING-DESCRIPTIONS.md).
 
-### 2. New patterns get minted when the model encounters genuinely-new work
+### 2. How novelty is handled — detect-and-defer + the emergence loop
 
-If a task arrives that doesn't fit any existing pattern at meaningful
-confidence, the model can contribute a new pattern via the sandbox
-primitive `(mint-behavior! ...)`. The minted behavior persists in the
-corpus and is retrievable for future tasks that share its behavioral
-shape — even when the future tasks are in different domains.
+When a task doesn't fit any existing pattern, the runtime does **not**
+fabricate a durable behavior on the spot. A behavior is *earned by a tree
+that worked*, not *asserted by a description*. Structural classification
+is **detect-and-defer** (ADRs
+0014
+and 0015):
 
-An example: a task in domain X (say, game balance playtesting) gets
-solved with an iterative parameter-adjustment pattern. The model
-explicitly mints the pattern. Months later, a different consumer's task
-in domain Y (say, ML hyperparameter tuning) arrives — completely
-different vocabulary, different metrics — but the same behavioral shape
-(iterate parameter adjustments driven by measured feedback). The new
-task's classify-behaviors call retrieves the minted pattern from
-domain X at high confidence with the reranker explaining:
+- **`classify-task` returns a three-state `:outcome`** —
+  `:matched` (a confident corpus match), `:novel` (a confident no-match),
+  or `:uncertain` (the LLM reranker fell back to raw ColBERT, so the fit
+  is unknown). It retrieves across BOTH the canonical `:tree-fingerprint`
+  shape axis and the instruction-aware `:tree-class` identity axis, so a
+  prior task's recorded class is reachable for a second similar task.
+- **`:uncertain` defers completely.** A reranker fallback is *explicit
+  uncertainty*, never a score-0 no-match — the auto-classify wedge SKIPS
+  the class-assign dispatch entirely (no fresh class, nothing fabricated;
+  the R-Inject caution still surfaces to the model).
+- **`:novel` converges instead of scattering.** Before recording a fresh
+  identity, the classifier probes the recurred `:tree-class` candidates
+  (an RRF fusion of reranker fitness + ColBERT semantic score) and, when
+  the best near-miss lands in a bundle band, BUNDLES the task onto that
+  existing class so variants converge on one stable identity rather than
+  scattering a new id per occurrence. Only genuinely-distinct work below
+  the band records a provisional class of its own.
 
-> _"This candidate perfectly matches the task's iterative tuning
-> requirements. The pattern of pairing a trusted oracle (the 5-fold CV
-> score/latency) with LLM-driven heuristics for parameter adjustment
-> directly implements the core logic of the search loop described in
-> the prompt."_
+So when no behavior fits, the **tree the model emits IS the candidate**.
+It accrues judge evidence on its `:tree-class` identity (the same counter
+the consolidator reads), and the recurring, well-scored candidates are
+the raw material for **harvest** — the evidence-grounded promotion of a
+recurring candidate into a named, durable behavior. Harvest is the
+designed terminus of this loop (ADR 0015) and is the path that *creates*
+durable behaviors; it is pulled when there is volume to harvest, and is
+not yet shipped on this branch.
 
-The model sees the minted pattern's prose summary plus its
-recommended-pattern DSL and adapts it.
-
-You don't decide when to mint. The model does — based on whether any
-existing pattern in the corpus offers a credible match for the task. As
-the corpus grows, the bar for minting rises (more existing patterns to
-fit against), so mint events get rarer as the corpus matures.
+The references the prepend surfaces **inform** the design — they do not
+gate it. The behavioral `(mint-behavior! ...)` primitive remains
+available for the model to contribute an adjacent or specialized behavior
+informed by those references (see
+[`RLM-GUIDE.md`](RLM-GUIDE.md#behavioral-mints--contributing-new-patterns-to-the-corpus)),
+but the corpus grows primarily by capturing emitted trees and accruing
+evidence, not by a runtime mint firing on not-finding.
 
 ---
 
@@ -712,11 +741,18 @@ injection flow rather than the current corpus-driven prepend loop.
 
 **What `:auto-classify? true` activates** (stages 2–3):
 
-1. **Classification**: `classify-task` (structural tree-class match) and
-   `classify-behaviors` (behavioral-subtree match) run against the seeded
-   corpus.
-2. **LLM reranker**: top-N matched patterns are scored against your task's
-   intent — each candidate receives a fitness-score and a reasoning string.
+1. **Classification**: `classify-task` (structural tree-class match,
+   retrieving across both the `:tree-fingerprint` and `:tree-class` axes)
+   and `classify-behaviors` (behavioral-subtree match) run against the
+   seeded corpus. `classify-task` returns a three-state `:outcome`
+   (`:matched` / `:novel` / `:uncertain`) — detect-and-defer, no runtime
+   creation of a durable behavior (see
+   [How novelty is handled](#2-how-novelty-is-handled--detect-and-defer--the-emergence-loop)).
+2. **Grounded domain rank**: top-N candidates are reranked by an LLM that
+   READS each candidate's judge-grounded `:avoid-when`, then a
+   deterministic contrastive domain penalty ENFORCES the same guard after
+   the rerank (ADR 0016) — each candidate ends with a fitness-score and a
+   reasoning string.
 3. **Corpus prepend**: the top-fitting pattern's full body is prepended to
    the model's instruction before Phase 1 starts.
 4. **Post-execution body evolution** (stage 7): after the tree runs,

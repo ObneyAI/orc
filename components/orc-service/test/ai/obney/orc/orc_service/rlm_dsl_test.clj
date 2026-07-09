@@ -278,6 +278,42 @@
       (is (re-find #"Unknown node type" (:error result))))))
 
 ;; =============================================================================
+;; MCP tools resolve in the recursive RLM sandbox (regression guard)
+;; =============================================================================
+;; build-rlm-context accepted :call-tool-fn / :mcp-tools but never bound them, so
+;; a recursive agent calling (get-index) hit "Could not resolve symbol" and got
+;; NO data (then fabricated). These guard that declared tools are now callable as
+;; bare symbols reaching call-tool-fn, exactly as the plain sci-sandbox binds them.
+
+(deftest mcp-tools-resolve-in-rlm-sandbox
+  (testing "a declared :mcp-tool is a callable symbol that reaches call-tool-fn"
+    (let [calls   (atom [])
+          ctf     (fn [tool args] (swap! calls conj [tool args]) {:ok tool :got args})
+          sandbox (rlm-sandbox/build-rlm-context
+                   {:provider :openrouter :blackboard {} :inputs {}
+                    :call-tool-fn ctf
+                    :mcp-tools ["get-index" "get-company"]})
+          r-idx   (rlm-sandbox/execute-rlm-code sandbox "(get-index)")
+          r-kw    (rlm-sandbox/execute-rlm-code sandbox "(get-company :slug \"acoer-inc\")")]
+      (is (nil? (:error r-idx)) "no 'Could not resolve symbol: get-index'")
+      (is (nil? (:error r-kw)))
+      (is (= [["get-index" {}] ["get-company" {:slug "acoer-inc"}]] @calls)
+          "both calls reached call-tool-fn with the right (tool-name args-map)"))))
+
+(deftest rlm-sandbox-tool-binding-is-additive
+  (testing "no :call-tool-fn → clean no-op; bare primitives unaffected"
+    (let [sandbox (rlm-sandbox/build-rlm-context {:provider :openrouter :blackboard {} :inputs {}})
+          r       (rlm-sandbox/execute-rlm-code sandbox "(+ 1 2)")]
+      (is (nil? (:error r)))
+      (is (= "3" (:result r)))))
+  (testing "an UNdeclared tool stays unresolved (only :mcp-tools are bound)"
+    (let [sandbox (rlm-sandbox/build-rlm-context
+                   {:provider :openrouter :blackboard {} :inputs {}
+                    :call-tool-fn (fn [_ _] :x) :mcp-tools ["get-index"]})
+          r (rlm-sandbox/execute-rlm-code sandbox "(no-such-tool)")]
+      (is (some? (:error r))))))
+
+;; =============================================================================
 ;; Tracer Bullet #9: RLM event schemas
 ;; =============================================================================
 

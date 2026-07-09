@@ -66,7 +66,16 @@
    :writes. Returns nil when the node has no started event.
 
    This reproduces the pre-RB-2a node-trace-detail contract, now sourced from
-   the granular events instead of an inlined copy on the aggregate trace."
+   the granular events instead of an inlined copy on the aggregate trace.
+
+   Honest-grounding preference (cj workstream): prefer the COMPLETED event's
+   :inputs when they carry real reads. Control-node started events drop a
+   non-leaf (e.g. repl-researcher / delegate) child's reads, so the started
+   :inputs are empty for the synthesis/answer node; the completion event
+   captures the real read values resolved at execution time (see
+   todo-processors/extract-read-inputs). Context keys are stripped from
+   whichever source wins, and the started inputs are only overridden when the
+   completed inputs actually have reads."
   [events node-id]
   (let [started-events   (filter #(= :sheet/node-execution-started (:event/type %)) events)
         completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) events)
@@ -74,10 +83,13 @@
                                        {} completed-events)
         started (first (filter #(= node-id (:node-id %)) started-events))]
     (when started
-      (let [completed      (get completed-by-execution (trace-execution-key started))
-            started-inputs (:inputs started)]
+      (let [completed        (get completed-by-execution (trace-execution-key started))
+            completed-reads  (node-trace-inputs (:inputs completed))
+            started-inputs   (:inputs started)]
         {:node-id node-id
-         :inputs  (when started-inputs (node-trace-inputs started-inputs))
+         :inputs  (if (seq completed-reads)
+                    completed-reads
+                    (when started-inputs (node-trace-inputs started-inputs)))
          :outputs (:writes completed)}))))
 
 (defn blackboard-snapshot

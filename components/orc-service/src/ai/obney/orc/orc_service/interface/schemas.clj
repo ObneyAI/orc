@@ -153,8 +153,14 @@
     [:item-key {:optional true} :keyword]          ;; Blackboard key for current item
     [:output-key {:optional true} :keyword]        ;; Blackboard key for collected results
     [:max-concurrency {:optional true} :int]       ;; Max parallel iterations (nil = sequential)
+    [:preserve-failures? {:optional true} :boolean] ;; Slice O: write aligned vector (keep failure markers) to :into
     ;; Repl-researcher-only fields
     [:mcp-tools {:optional true} [:vector :string]] ;; Available MCP tool names for research
+    ;; Opt-in hook: FQN of a (fn [blackboard context] -> call-tool-fn)
+    ;; that builds this node's tool-caller, threading per-execution
+    ;; context (identity/consent/confinement/routing) into tool calls.
+    ;; Absent -> the static (:call-tool-fn context) is used unchanged.
+    [:tool-caller-fn {:optional true} :string]
     [:max-iterations {:optional true} :int]         ;; Max research iterations (default 10)
     ;; D-003: total budget (Phase 1 + Phase 2) in ms. When set, takes precedence
     ;; over the parent tick :options :timeout-ms and the 900_000ms hardcoded
@@ -363,7 +369,10 @@
     [:model {:optional true} :string]
     [:fn {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
-    [:options {:optional true} :map]]
+    [:options {:optional true} :map]
+    ;; Phase 4B: opt-in gated tool-caller builder FQN for :code nodes inside
+    ;; generated (Phase-2) trees. Mirrors the node-level :tool-caller-fn hook.
+    [:tool-caller-fn {:optional true} :string]]
 
    :sheet/set-node-retry
    [:map
@@ -387,7 +396,8 @@
     [:source-key :keyword]
     [:item-key :keyword]
     [:output-key :keyword]
-    [:max-concurrency {:optional true} :int]]
+    [:max-concurrency {:optional true} :int]
+    [:preserve-failures? {:optional true} :boolean]]
 
    :sheet/set-llm-condition-config
    [:map
@@ -493,7 +503,10 @@
     [:inputs {:optional true} :map]
     [:use-version {:optional true} :int]
     [:force-draft {:optional true} :boolean]
-    [:options {:optional true} :map]]
+    [:options {:optional true} :map]
+    ;; G1 (ADR 0018): opaque per-tick tool context threaded to Phase-2 leaves.
+    ;; orc treats it as an opaque map; orc-sessions populates/consumes it.
+    [:tool-context {:optional true} :map]]
 
    :sheet/tick-node
    [:map
@@ -513,8 +526,16 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:status [:enum :success :failure :tree-generated :partial :timeout]]
+    ;; WS-2a: :blocked — a leaf raised the orc block signal (a gated tool call
+    ;; needs permission). The node completes (so the tick completes and the
+    ;; parent deref returns immediately) instead of the throwable escaping the
+    ;; future and hanging the Phase-2 budget.
+    [:status [:enum :success :failure :tree-generated :partial :timeout :blocked]]
     [:writes [:map-of :keyword :any]]
+    ;; WS-2a: OPAQUE payload carried on a :blocked completion. orc never
+    ;; interprets it (orc-sessions owns its meaning — WS-2c). Optional/
+    ;; backward-compatible — present only on :blocked completions.
+    [:block-payload {:optional true} :any]
     [:duration-ms {:optional true} :int]
     [:inputs {:optional true} [:map-of :keyword :any]]
     ;; Verbatim raw LLM response text, present only on parse-failure
@@ -594,7 +615,14 @@
     [:status {:optional true} [:enum :success :failure :partial :timeout]]
     ;; C-2a-2: wall-clock duration of Phase 2 execution. Optional for
     ;; the same reason :status is.
-    [:duration-ms {:optional true} :int]]
+    [:duration-ms {:optional true} :int]
+    ;; CV-2 (ADR 0017 decision 3): the emitted worked-DSL (sanitized, pure
+    ;; data) + the SOURCE (host/classified) sheet-id. The post-emit
+    ;; enrichment processor uses source-sheet-id to resolve the tree-class
+    ;; (sheet->class join) and records generated-tree as the class's
+    ;; :recommended-pattern. Both optional/backward-compatible.
+    [:generated-tree {:optional true} [:maybe :any]]
+    [:source-sheet-id {:optional true} [:maybe :uuid]]]
 
    ;; -------------------------------------------------------------------------
    ;; Versioning Commands
@@ -790,6 +818,8 @@
     [:fn {:optional true} :string]
     [:tools {:optional true} [:vector :keyword]]
     [:options {:optional true} :map]
+    ;; Phase 4B: opt-in gated tool-caller builder FQN (see set-node-executor).
+    [:tool-caller-fn {:optional true} :string]
     [:previous-executor {:optional true} executor-type]
     [:previous-model {:optional true} :string]
     [:previous-fn {:optional true} :string]
@@ -824,6 +854,7 @@
     [:item-key :keyword]
     [:output-key :keyword]
     [:max-concurrency {:optional true} :int]
+    [:preserve-failures? {:optional true} :boolean]
     [:previous-source-key {:optional true} :keyword]
     [:previous-item-key {:optional true} :keyword]
     [:previous-output-key {:optional true} :keyword]
@@ -947,7 +978,10 @@
     [:inputs {:optional true} :map]
     [:execution-snapshot {:optional true} :map]
     [:version-number {:optional true} :int]
-    [:options {:optional true} :map]]
+    [:options {:optional true} :map]
+    ;; G1 (ADR 0018): opaque per-tick tool context, surfaced back at the leaf
+    ;; via the tick-execution-context read model. Absent for non-coding ticks.
+    [:tool-context {:optional true} :map]]
 
    :sheet/node-execution-started
    [:map
@@ -961,8 +995,11 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:status [:enum :success :failure :running :tree-generated :partial :timeout]]
+    ;; WS-2a: :blocked — see :sheet/complete-node-execution.
+    [:status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
     [:writes {:optional true} [:map-of :keyword :any]]
+    ;; WS-2a: OPAQUE block payload, present only on :blocked completions.
+    [:block-payload {:optional true} :any]
     [:duration-ms {:optional true} :int]
     [:inputs {:optional true} [:map-of :keyword :any]]
     ;; Verbatim raw LLM response text, present only on parse-failure
@@ -1039,6 +1076,10 @@
     [:status {:optional true} [:enum :success :failure :partial :timeout]]
     ;; C-2a-2: wall-clock duration of Phase 2 execution.
     [:duration-ms {:optional true} :int]
+    ;; CV-2 (ADR 0017 decision 3): emitted worked-DSL + source (host) sheet-id.
+    ;; Optional/backward-compatible — replayed older bookends carry neither.
+    [:generated-tree {:optional true} [:maybe :any]]
+    [:source-sheet-id {:optional true} [:maybe :uuid]]
     [:timestamp [:fn inst?]]]
 
    :sheet/tree-tick-completed
@@ -1049,8 +1090,12 @@
     ;; D-008: :partial added so map-each can surface partial outcomes.
     ;; D-003: :timeout added so RLM repl-researcher can surface Phase 2
     ;; budget cancellation as a tree-level signal.
-    [:root-status [:enum :success :failure :running :tree-generated :partial :timeout]]
+    ;; WS-2a: :blocked — a leaf raised the orc block signal; the tree tick
+    ;; completes :blocked so the parent deref returns immediately.
+    [:root-status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
     [:outputs {:optional true} :map]
+    ;; WS-2a: OPAQUE block payload, present only when :root-status is :blocked.
+    [:block-payload {:optional true} :any]
     [:error {:optional true} :string]]
 
    :sheet/execution-value-written
@@ -1130,7 +1175,7 @@
     [:started-at :any]
     [:completed-at :any]
     [:duration-ms :int]
-    [:status [:enum :success :failure :timeout]]
+    [:status [:enum :success :failure :timeout :partial]]
     ;; RB-2b: new events carry NO snapshots (they were full copies of the
     ;; tick blackboard — ~28 MB/event on ontology builds). Optional so older
     ;; events that still carry them remain valid.
@@ -1332,7 +1377,7 @@
    [:map
     [:sheet-id :uuid]
     [:version-number {:optional true} :int]       ;; Filter by version
-    [:status {:optional true} [:enum :success :failure :timeout]]
+    [:status {:optional true} [:enum :success :failure :timeout :partial]]
     [:node-id {:optional true} :uuid]             ;; Filter by node involvement
     [:since {:optional true} :any]                ;; Filter by time
     [:limit {:optional true} :int]]
@@ -1349,7 +1394,7 @@
    :sheet/runs-screen
    [:map
     [:trace-id {:optional true} :uuid]
-    [:status {:optional true} [:enum :success :failure :timeout]]
+    [:status {:optional true} [:enum :success :failure :timeout :partial]]
     [:limit {:optional true} :int]]
 
    :sheet/runs-screen-result
@@ -1364,7 +1409,7 @@
     [:trace-id :uuid]
     [:sheet-id :uuid]
     [:sheet-name :string]
-    [:status [:enum :success :failure :timeout]]
+    [:status [:enum :success :failure :timeout :partial]]
     [:started-at :any]
     [:duration-ms :int]
     [:node-count :int]

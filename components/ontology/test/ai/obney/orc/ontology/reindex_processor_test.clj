@@ -184,18 +184,34 @@
               :target-id target-id
               :body body}))))
 
+(defn- unavailable-create-index!
+  "A create-index! stub that THROWS, simulating an unavailable indexer.
+
+   These two read-model tests (RED #5/#6) predate the pure-JVM ColBERT
+   signal: they were written when operations/create-index! needed the Python
+   bridge, which is absent in test environments — so the cold-start reindex
+   trigger fired, failed, and no :colbert/index-created event ever landed.
+   Now that create-index! is pure JVM it genuinely SUCCEEDS in tests, and the
+   cold-start rebuild would emit a real :colbert/index-created that resets
+   the very counter under test. Stubbing it to throw makes the old implicit
+   environment deterministic: the tests pin the READ-MODEL's counting
+   behavior, not the processor's (RED #7+ cover that, with stub-create-index!)."
+  [_ctx _opts]
+  (throw (ex-info "ColBERT indexer unavailable (simulated)" {})))
+
 (deftest reindex-state-tracks-events-since-last-rebuild
   (testing "After 3 description-updated events, reindex-state events-since-last-rebuild is 3 and :index-built? is false"
     (with-test-ctx [ctx]
-      (emit-description-updated! ctx :node-type :llm)
-      (emit-description-updated! ctx :node-type :code)
-      (emit-description-updated! ctx :node-type :map-each)
-      (Thread/sleep 200)
-      (let [state (ontology/get-reindex-state ctx)]
-        (is (= 3 (:events-since-last-rebuild state))
-            "Counter is 3 after 3 description-updated events across granularities")
-        (is (= false (:index-built? state))
-            ":index-built? remains false until a :colbert/index-created event lands")))))
+      (with-redefs [colbert-ops/create-index! unavailable-create-index!]
+        (emit-description-updated! ctx :node-type :llm)
+        (emit-description-updated! ctx :node-type :code)
+        (emit-description-updated! ctx :node-type :map-each)
+        (Thread/sleep 200)
+        (let [state (ontology/get-reindex-state ctx)]
+          (is (= 3 (:events-since-last-rebuild state))
+              "Counter is 3 after 3 description-updated events across granularities")
+          (is (= false (:index-built? state))
+              ":index-built? remains false until a :colbert/index-created event lands"))))))
 
 ;; =============================================================================
 ;; RED #6 — reindex-state resets on :colbert/index-created
@@ -229,20 +245,21 @@
 (deftest reindex-state-resets-on-colbert-index-created
   (testing "After :colbert/index-created (for ontology-descriptions) lands, counter resets to 0 and :index-built? flips to true"
     (with-test-ctx [ctx]
-      (emit-description-updated! ctx :node-type :llm)
-      (emit-description-updated! ctx :node-type :code)
-      (Thread/sleep 100)
-      (is (= 2 (:events-since-last-rebuild (ontology/get-reindex-state ctx)))
-          "Sanity: counter is 2 before the index-created event")
-      (inject-index-created! ctx)
-      (Thread/sleep 100)
-      (let [state (ontology/get-reindex-state ctx)]
-        (is (= 0 (:events-since-last-rebuild state))
-            "Counter resets to 0")
-        (is (= true (:index-built? state))
-            ":index-built? flips to true")
-        (is (string? (:last-rebuild-timestamp state))
-            ":last-rebuild-timestamp captured as a string")))))
+      (with-redefs [colbert-ops/create-index! unavailable-create-index!]
+        (emit-description-updated! ctx :node-type :llm)
+        (emit-description-updated! ctx :node-type :code)
+        (Thread/sleep 100)
+        (is (= 2 (:events-since-last-rebuild (ontology/get-reindex-state ctx)))
+            "Sanity: counter is 2 before the index-created event")
+        (inject-index-created! ctx)
+        (Thread/sleep 100)
+        (let [state (ontology/get-reindex-state ctx)]
+          (is (= 0 (:events-since-last-rebuild state))
+              "Counter resets to 0")
+          (is (= true (:index-built? state))
+              ":index-built? flips to true")
+          (is (string? (:last-rebuild-timestamp state))
+              ":last-rebuild-timestamp captured as a string"))))))
 
 ;; =============================================================================
 ;; Re-index trigger helpers — used by RED #7/#8/#9/#10
@@ -355,6 +372,79 @@
                        :k 10})]
             (is (= 4 (count all))
                 ":all returns every result without filtering")))))))
+
+;; =============================================================================
+;; EL-1a RED — search-descriptions accepts a granularity SET (multi-axis)
+;;
+;; The scatter bug: classify-task queried ONLY :tree-fingerprint, and
+;; search-descriptions hard-filtered to a single granularity — so a
+;; recorded :tree-class description was indexed-but-UNREACHABLE. The fix
+;; lets :granularity be a SET so a caller can retrieve across both the
+;; :tree-fingerprint and :tree-class axes in one query (membership filter,
+;; no :all node-type/node-instance noise). This is the deterministic merge
+;; surface; the live real-ColBERT proof lives in the EL-1a prototype.
+;; =============================================================================
+
+(deftest search-descriptions-accepts-granularity-set
+  (testing "When :granularity is a SET, results whose granularity is in the set survive; others are filtered out"
+    (with-test-ctx [ctx]
+      (let [tree-class-id (random-uuid)
+            mixed-results [{:content "node-type doc"
+                            :score 0.95 :rank 1
+                            :document-id "node-type::validate"
+                            :document-metadata {:granularity :node-type
+                                                :target-id :validate
+                                                :confidence 0.8
+                                                :last-update "2026-06-01T10:00:00Z"}}
+                           {:content "tree-fingerprint doc"
+                            :score 0.9 :rank 2
+                            :document-id "tree-fingerprint::abc"
+                            :document-metadata {:granularity :tree-fingerprint
+                                                :target-id "abc"
+                                                :confidence 0.75
+                                                :last-update "2026-06-01T10:00:00Z"}}
+                           {:content "tree-class doc (the previously-unreachable one)"
+                            :score 0.85 :rank 3
+                            :document-id (str "tree-class::" tree-class-id)
+                            :document-metadata {:granularity :tree-class
+                                                :target-id tree-class-id
+                                                :confidence 0.7
+                                                :last-update "2026-06-01T10:00:00Z"}}
+                           {:content "node-instance doc"
+                            :score 0.6 :rank 4
+                            :document-id "node-instance::xyz"
+                            :document-metadata {:granularity :node-instance
+                                                :target-id ["sheet-1" "node-1"]
+                                                :confidence 0.5
+                                                :last-update "2026-06-01T10:00:00Z"}}]]
+        (inject-index-created! ctx)
+        (Thread/sleep 100)
+        (with-redefs [colbert/search (fn [_ctx _opts] mixed-results)]
+          (let [two-axis (ontology/search-descriptions ctx
+                           {:query "wire a dependency"
+                            :granularity #{:tree-fingerprint :tree-class}
+                            :k 10})
+                grans (set (map #(-> % :document-metadata :granularity) two-axis))
+                target-ids (set (map #(-> % :document-metadata :target-id) two-axis))]
+            (is (= 2 (count two-axis))
+                "Both the :tree-fingerprint AND :tree-class docs survive the set filter")
+            (is (= #{:tree-fingerprint :tree-class} grans)
+                "Only the two requested axes are present (no node-type/node-instance noise)")
+            (is (contains? target-ids tree-class-id)
+                "The :tree-class doc — indexed-but-unreachable under single-axis filtering — is now RETRIEVABLE")
+            (is (not (contains? grans :node-type))
+                ":node-type noise is excluded")
+            (is (not (contains? grans :node-instance))
+                ":node-instance noise is excluded"))
+          ;; Regression: a single-keyword granularity still behaves exactly as before.
+          (let [tf-only (ontology/search-descriptions ctx
+                          {:query "tree pattern"
+                           :granularity :tree-fingerprint
+                           :k 10})]
+            (is (= 1 (count tf-only))
+                "Single-keyword :tree-fingerprint still returns only the tree-fingerprint doc (no regression)")
+            (is (= :tree-fingerprint (-> (first tf-only) :document-metadata :granularity))
+                "And it is the tree-fingerprint doc")))))))
 
 ;; =============================================================================
 ;; RED #12 — search-descriptions returns ColBERT results with :document-metadata

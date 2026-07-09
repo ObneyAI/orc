@@ -1,14 +1,19 @@
 (ns ai.obney.orc.colbert.core.operations
   "Pure business logic for ColBERT search, indexing, and retrieval operations.
 
-   Contains score normalization, hybrid search, tree profile indexing,
-   and concept indexing logic. All functions are pure with respect to
-   event emission — they call the Python bridge and return results,
-   but never append events. Event emission is handled exclusively
-   by defcommand handlers in commands.clj."
-  (:require [ai.obney.orc.colbert.core.bridge :as bridge]
+   Contains index creation, search (single + batch), rerank, score
+   normalization, and the RRF integration helpers. All functions are pure
+   with respect to event emission — they run the pure-JVM encoder/MaxSim
+   pipeline (ADR 0002, no Python process) and return results, but never
+   append events. Event emission is handled exclusively by defcommand
+   handlers in commands.clj."
+  (:require [ai.obney.orc.colbert.core.corpus :as corpus]
+            [ai.obney.orc.colbert.core.encoder :as encoder]
+            [ai.obney.orc.colbert.core.index-store :as index-store]
+            [ai.obney.orc.colbert.core.maxsim :as maxsim]
+            [ai.obney.orc.colbert.core.model-store :as model-store]
             [ai.obney.orc.colbert.core.read-models :as read-models]
-            [clojure.string :as str]
+            [clojure.java.io :as io]
             [com.brunobonacci.mulog :as mu]))
 
 ;; =============================================================================
@@ -18,20 +23,33 @@
 (defn normalize-colbert-score
   "Normalize ColBERT score to 0-1 range.
 
-   ColBERT scores are typically in the range 0-40+ depending on query/document
-   length and content overlap. This function normalizes them for RRF fusion
-   with other retrieval signals (graph BFS, embeddings).
+   The default ceiling 32.0 is the THEORETICAL MaxSim bound for the
+   answerai-colbert-small-v1 checkpoint (ADR 0002): queries are MASK-expanded
+   to query_maxlen = 32 rows and every token row is unit-normed inside the
+   ONNX graph, so MaxSim = sum over 32 query rows of (max dot <= 1.0) <= 32.0.
+   Verified empirically in the P-0 encoder spike (docs/issues/jvm-colbert/
+   p0-findings.md, 'Scores, bound, and range'): all observed scores in
+   [29.96, 31.30], bound 32 holds. The old 40.0 default belonged to the
+   colbertv2 Python-bridge era.
+
+   NB (same P-0 findings): MASK query expansion gives even unrelated pairs a
+   ~30/32 floor, so a FIXED-ceiling linear normalization compresses everything
+   into ~0.94-0.98 — fine for RRF-style rank fusion, but NOT enough dynamic
+   range for score-contrast consumers. Those should normalize RELATIVE to the
+   scores in the same call (see normalize-result-scores, and the domain-penalty
+   :batch-relative method on the ontology side).
 
    Args:
-     score - Raw ColBERT score (typically 0-40+)
+     score - Raw ColBERT score (typically ~[0, 32] for this checkpoint)
      opts - Options map:
-       :max-score - Maximum expected score for normalization (default: 40.0)
-       :method - Normalization method: :linear, :sigmoid, :softmax (default: :linear)
+       :max-score - Maximum expected score for normalization (default: 32.0,
+                    the theoretical query_maxlen * unit-vector bound)
+       :method - Normalization method: :linear, :sigmoid (default: :linear)
 
    Returns:
      Normalized score in [0, 1] range"
   [score & {:keys [max-score method]
-            :or {max-score 40.0 method :linear}}]
+            :or {max-score 32.0 method :linear}}]
   (case method
     :linear
     (min 1.0 (max 0.0 (/ (double score) max-score)))
@@ -74,11 +92,30 @@
 ;; Index Creation
 ;; =============================================================================
 
-(defn create-index!
-  "Create a ColBERT index from documents via the Python bridge.
+(def index-root-property
+  "System property overriding the index root directory."
+  "colbert.index.root")
 
-   Pure bridge call — does NOT emit events. Event emission is handled
-   by the defcommand :colbert/create-index in commands.clj.
+(def default-index-root
+  "Default index root, relative to cwd."
+  ".orc-colbert-indexes")
+
+(defn- index-root
+  ^java.io.File []
+  (io/file (or (System/getProperty index-root-property) default-index-root)))
+
+(defn create-index!
+  "Create a ColBERT index artifact on disk from documents — pure JVM (ADR
+   0002), no Python process: resolve the encoder, split the collection into
+   passages by token count (corpus/split-collection, overlap parity rule),
+   encode every passage (encoder/encode-doc), and write the versioned index
+   artifact (index-store/write-index!) under
+   `<index-root>/<index-name>/` (index root defaults to .orc-colbert-indexes
+   relative to cwd; override via -Dcolbert.index.root).
+
+   Does NOT emit events. Event emission is handled by the defcommand
+   :colbert/create-index in commands.clj, which consumes this exact return
+   map.
 
    Args:
      ctx - Context map (unused currently, kept for signature compatibility)
@@ -87,27 +124,31 @@
        :index-name         - Name for the index (required)
        :document-ids       - Vector of unique IDs (auto-generated if nil)
        :document-metadatas - Vector of metadata maps (optional)
-       :model-name         - ColBERT model (default: colbert-ir/colbertv2.0)
+       :model-name         - Recorded in the event (default:
+                             model-store/checkpoint — the encoder actually
+                             used; the artifact records the real checkpoint
+                             regardless)
        :split-documents?   - Auto-split long docs (default: true)
-       :max-document-length - Chunk size in tokens (default: 256)
+       :max-document-length - Chunk size in tokens (default: 256; must be
+                             <= the encoder's doc-maxlen - 3)
 
    Returns map with :index-id, :index-path, :num-passages, :duration-ms,
-   :document-ids, and config details."
+   :document-ids, :document-metadatas, :document-count, :model-name,
+   :index-name, and :config."
   [ctx {:keys [collection document-ids document-metadatas index-name
                model-name split-documents? max-document-length]
-        :or {model-name "colbert-ir/colbertv2.0"
+        :or {model-name model-store/checkpoint
              split-documents? true
              max-document-length 256}
         :as opts}]
   (let [index-id (random-uuid)
-        alias (str index-id)
         ;; Coalesce explicit nils. The :colbert/create-index command forwards
         ;; omitted optional params as explicit nil, which bypasses the :or defaults
         ;; above (:or only fires on an ABSENT key, not a present nil). Without this,
         ;; the emitted :colbert/index-created event carries nil :model-name / :config
         ;; values and fails its schema. (Preserve an explicit false for
         ;; split-documents?.)
-        model-name (or model-name "colbert-ir/colbertv2.0")
+        model-name (or model-name model-store/checkpoint)
         split-documents? (if (nil? split-documents?) true split-documents?)
         max-document-length (or max-document-length 256)
         ;; Generate document IDs if not provided. The previous form was
@@ -115,9 +156,9 @@
         ;; which compiled to a 0-arg fn called by mapv with 1 arg — an
         ;; arity error any time :document-ids was nil. In production the
         ;; colbert defcommand always supplied :document-ids so the
-        ;; default branch was dead code; standalone callers (like
-        ;; colbert/health-check) hit the bug. repeatedly with a 0-arg fn
-        ;; matches mapv's intent without the throwaway arg.
+        ;; default branch was dead code; standalone callers hit the bug.
+        ;; repeatedly with a 0-arg fn matches mapv's intent without the
+        ;; throwaway arg.
         document-ids (or document-ids
                          (into [] (repeatedly (count collection)
                                               #(str (random-uuid)))))
@@ -126,24 +167,38 @@
     (mu/log ::creating-index :index-id index-id :index-name index-name
             :document-count (count collection))
 
-    ;; Load model and create index via bridge
-    (bridge/load-model! alias :model-name model-name)
-    (let [result (bridge/create-index! alias
-                   {:collection collection
-                    :document-ids document-ids
-                    :document-metadatas document-metadatas
-                    :index-name index-name
-                    :split-documents? split-documents?
-                    :max-document-length max-document-length})
+    (let [enc (encoder/get-encoder (model-store/resolve-model-dir))
+          passages (corpus/split-collection enc
+                     {:collection collection
+                      :document-ids document-ids
+                      :document-metadatas document-metadatas
+                      :split-documents? split-documents?
+                      :max-document-length max-document-length})
+          encoded (mapv (fn [{:keys [text] :as passage}]
+                          (let [{:keys [ids rows]} (encoder/encode-doc enc text)]
+                            (assoc passage :token-ids ids :rows rows)))
+                        passages)
+          ;; dim observed from the encoder's own output (96 for this
+          ;; checkpoint); an empty collection writes an empty artifact
+          dim (if-let [^floats row (first (:rows (first encoded)))]
+                (alength row)
+                96)
+          index-dir (io/file (index-root) index-name)
+          _ (index-store/write-index! index-dir
+              {:checkpoint model-store/checkpoint
+               :dim dim
+               :passages encoded
+               :document-metadatas (when document-metadatas
+                                     (zipmap document-ids document-metadatas))})
           duration-ms (- (System/currentTimeMillis) start-time)]
 
       (mu/log ::index-created :index-id index-id :duration-ms duration-ms
-              :passages (:num_passages result))
+              :passages (count encoded))
 
       ;; Return all data needed by the command handler to emit the event
       {:index-id index-id
-       :index-path (:index_path result)
-       :num-passages (or (:num_passages result) (count collection))
+       :index-path (.getAbsolutePath index-dir)
+       :num-passages (count encoded)
        :duration-ms duration-ms
        :document-ids document-ids
        :document-metadatas document-metadatas
@@ -159,20 +214,27 @@
 ;; =============================================================================
 
 (defn search
-  "Search indexed corpus using ColBERT late-interaction.
+  "Search indexed corpus using ColBERT late-interaction — pure JVM (ADR
+   0002), no Python process: read the index artifact (in-memory cached per
+   canonical path), encode the query ONCE, exact MaxSim (zero-not-drop
+   punctuation semantics) against every passage, aggregate passages to
+   documents by MAX passage score, sort descending, take k.
 
-   Pure bridge call — does NOT emit events. Event emission is handled
-   by the defcommand :colbert/search in commands.clj.
+   Does NOT emit events. Event emission is handled by the defcommand
+   :colbert/search in commands.clj.
 
    Args:
      ctx - Context map (used for read-model lookup)
      opts - Options map:
        :query    - Search query string (required)
        :index-id - Index UUID (required)
-       :k        - Number of results (default: 10)
+       :k        - Number of DOCUMENTS to return (default: 10)
 
-   Returns:
-     [{:content \"...\" :score 0.87 :rank 1 :document-id \"...\" :document-metadata {...}}]"
+   Returns (snake_case keys — the exact shape the bridge returned;
+   downstream search-for-rrf and ontology normalize-search-result read
+   :document_id/:document_metadata):
+     [{:content <best-scoring passage's text> :score <double>
+       :rank <1-indexed int> :document_id <id> :document_metadata <map>}]"
   [ctx {:keys [query index-id k]
         :or {k 10}}]
   (let [index (read-models/get-index ctx index-id)]
@@ -181,18 +243,42 @@
     (when (= :deleted (:status index))
       (throw (ex-info "Index has been deleted" {:index-id index-id})))
 
-    (let [alias (str index-id)]
-
-      ;; Ensure model is loaded
-      (bridge/load-model! alias :index-path (:index-path index))
-
-      (bridge/search alias {:query query :k k}))))
+    (let [k (or k 10)
+          artifact (index-store/load-index (:index-path index))
+          enc (encoder/get-encoder (model-store/resolve-model-dir))
+          skiplist (get-in enc [:consts :skiplist])
+          q-rows (:rows (encoder/encode-query enc query))
+          document-metadatas (:document-metadatas artifact)]
+      (->> (:passages artifact)
+           (map (fn [{:keys [document-id text token-ids rows]}]
+                  {:document-id document-id
+                   :text text
+                   :score (maxsim/max-sim q-rows rows token-ids skiplist)}))
+           (group-by :document-id)
+           ;; document score = MAX passage score; :content = that passage
+           (map (fn [[_ passages]] (apply max-key :score passages)))
+           (sort-by :score >)
+           (take k)
+           (map-indexed
+            (fn [i {:keys [document-id text score]}]
+              {:content text
+               :score score
+               :rank (inc i)
+               :document_id document-id
+               ;; {} when no metadata was indexed — exactly what the bridge
+               ;; returned (Python r.get(\"document_metadata\", {}))
+               :document_metadata (get document-metadatas document-id {})}))
+           vec))))
 
 (defn rerank
-  "Rerank documents in-memory (no index required).
+  "Rerank documents in-memory (no index required) — pure-JVM ColBERT signal
+   (ADR 0002): encode the query and each document with the JVM encoder
+   (DJL OnnxRuntime, answerai-colbert-small-v1 fp32), score with exact MaxSim
+   (zero-not-drop punctuation semantics), sort descending, take k. No Python
+   process, no index artifact.
 
-   Pure bridge call — does NOT emit events. Event emission is handled
-   by the defcommand :colbert/rerank in commands.clj.
+   Does NOT emit events. Event emission is handled by the defcommand
+   :colbert/rerank in commands.clj.
 
    Args:
      ctx - Context map (unused currently, kept for signature compatibility)
@@ -202,16 +288,21 @@
        :k         - Number of results (default: all documents)
 
    Returns:
-     [{:content \"...\" :score 0.87 :rank 1}]"
-  [ctx {:keys [query documents k]}]
+     [{:content \"...\" :score 0.87 :rank 1}]  (1-indexed rank, descending score)"
+  [_ctx {:keys [query documents k]}]
   (let [k (or k (count documents))
-        alias "rerank-default"]
-
-    ;; Ensure default model is loaded
-    (try (bridge/load-model! alias)
-         (catch Exception _))
-
-    (bridge/rerank alias {:query query :documents documents :k k})))
+        enc (encoder/get-encoder (model-store/resolve-model-dir))
+        skiplist (get-in enc [:consts :skiplist])
+        q-rows (:rows (encoder/encode-query enc query))]
+    (->> documents
+         (mapv (fn [doc]
+                 (let [{:keys [ids rows]} (encoder/encode-doc enc doc)]
+                   {:content doc
+                    :score (maxsim/max-sim q-rows rows ids skiplist)})))
+         (sort-by :score >)
+         (take k)
+         (map-indexed (fn [i result] (assoc result :rank (inc i))))
+         vec)))
 
 ;; =============================================================================
 ;; Hybrid Search Integration
@@ -249,16 +340,22 @@
           normalized)))
 
 (defn search-batch
-  "Batch-search a ColBERT index for MANY queries in ONE bridge round-trip, with the
-   index loaded ONCE (not once-per-query). Returns a vector of result-lists aligned
-   to `queries`, each list shaped like `search`'s output.
+  "Batch-search a ColBERT index for MANY queries with the artifact loaded ONCE
+   (not once-per-query) — pure JVM (ADR 0002), no Python process. The one-load
+   property comes from index-store/load-index's per-canonical-path in-memory
+   cache: the artifact is read from disk at most once for the whole batch (and
+   for every later search against the same path). Each query is encoded ONCE
+   and scored with the same exact-MaxSim document pipeline as `search`.
+
+   Returns a vector of result-lists ALIGNED to `queries`, each list shaped
+   exactly like `search`'s output (same snake_case keys).
 
    Args:
      ctx - Context map (used for read-model lookup)
      opts - Options map:
        :queries  - Vector of query strings (required)
        :index-id - Index UUID (required)
-       :k        - Number of results per query (default: 10)"
+       :k        - Number of DOCUMENTS to return per query (default: 10)"
   [ctx {:keys [queries index-id k]
         :or {k 10}}]
   (let [index (read-models/get-index ctx index-id)]
@@ -266,18 +363,42 @@
       (throw (ex-info "Index not found" {:index-id index-id})))
     (when (= :deleted (:status index))
       (throw (ex-info "Index has been deleted" {:index-id index-id})))
-    (let [alias (str index-id)]
-      ;; Load the index ONCE; the bridge then runs every query against the resident
-      ;; model in a single round-trip (no per-query load, no per-query reload).
-      (bridge/load-model! alias :index-path (:index-path index))
-      (bridge/search-batch alias {:queries (vec queries) :k k}))))
+    (let [k (or k 10)
+          artifact (index-store/load-index (:index-path index))
+          enc (encoder/get-encoder (model-store/resolve-model-dir))
+          skiplist (get-in enc [:consts :skiplist])
+          document-metadatas (:document-metadatas artifact)]
+      (mapv
+       (fn [query]
+         (let [q-rows (:rows (encoder/encode-query enc query))]
+           ;; The same pipeline as `search` (kept in lockstep — the contract is
+           ;; "each inner list = the corresponding search output"): score every
+           ;; passage, aggregate to documents by MAX passage score, sort, take k.
+           (->> (:passages artifact)
+                (map (fn [{:keys [document-id text token-ids rows]}]
+                       {:document-id document-id
+                        :text text
+                        :score (maxsim/max-sim q-rows rows token-ids skiplist)}))
+                (group-by :document-id)
+                (map (fn [[_ passages]] (apply max-key :score passages)))
+                (sort-by :score >)
+                (take k)
+                (map-indexed
+                 (fn [i {:keys [document-id text score]}]
+                   {:content text
+                    :score score
+                    :rank (inc i)
+                    :document_id document-id
+                    :document_metadata (get document-metadatas document-id {})}))
+                vec)))
+       (vec queries)))))
 
 (defn search-for-rrf-batch
-  "Batched `search-for-rrf`: ONE index load + ONE bridge round-trip for ALL queries.
-   Returns a vector aligned to `queries`, each element a vector of {:uri :score}
-   ready for RRF fusion. This is the batched integration point for ontology
-   hybrid-search over a whole transcript — it collapses N per-line ColBERT
-   round-trips into one.
+  "Batched `search-for-rrf`: ONE index load (the search-batch cache pin) for
+   ALL queries — pure JVM, no Python round-trips. Returns a vector aligned to
+   `queries`, each element a vector of {:uri :score} ready for RRF fusion.
+   This is the batched integration point for ontology hybrid-search over a
+   whole transcript — it collapses N per-line index loads into one.
 
    Args:
      ctx - Context map containing :event-store
@@ -299,318 +420,3 @@
                          {:uri (or (:document_id r) (:document-id r))
                           :score (* weight (double score))})
                        normalized))))))
-
-(defn hybrid-search
-  "Combine ColBERT with existing ontology search via RRF.
-
-   This function performs ColBERT search and returns results formatted
-   for merging with other retrieval signals via RRF.
-
-   Args:
-     ctx - Context map
-     opts - Options map:
-       :query         - Search query (required)
-       :index-id      - ColBERT index UUID (required)
-       :k             - Number of results (default: 10)
-
-   Returns results compatible with ontology/merge-batches."
-  [ctx {:keys [query index-id k]
-        :or {k 10}}]
-  (let [results (search ctx {:query query :index-id index-id :k k})]
-    ;; Format for RRF: {:id :score}
-    (mapv (fn [{:keys [document-id score]}]
-            {:id document-id :score score})
-          results)))
-
-;; =============================================================================
-;; Tree Profile Indexing
-;; =============================================================================
-
-(defn tree-profile->document
-  "Convert a tree profile to a searchable document string.
-
-   Combines all textual fields from the profile into a single
-   searchable representation optimized for ColBERT retrieval.
-
-   Args:
-     profile - Tree profile map with keys:
-       :name - Tree name
-       :objectives - Vector of objective strings
-       :capabilities - Vector of capability strings
-       :problem-types - Vector of problem type URIs
-       :strengths - Vector of {:pattern :confidence} maps
-       :weaknesses - Vector of {:failure :frequency} maps
-
-   Returns:
-     Concatenated string suitable for ColBERT indexing"
-  [{:keys [name objectives capabilities problem-types strengths weaknesses
-           solves description]}]
-  (let [sections
-        [(when name (str "Tree: " name))
-
-         (when description
-           (str "Description: " description))
-
-         (when (seq objectives)
-           (str "Objectives: " (str/join ", " objectives)))
-
-         (when (seq capabilities)
-           (str "Capabilities: " (str/join ", " capabilities)))
-
-         (when (seq problem-types)
-           (str "Problem Types: " (str/join ", " problem-types)))
-
-         (when (seq solves)
-           (str "Solves: "
-                (str/join "; "
-                  (map (fn [{:keys [problem-uri success-rate]}]
-                         (str problem-uri " (success: " (when success-rate
-                                                          (format "%.0f%%" (* 100 success-rate))) ")"))
-                       solves))))
-
-         (when (seq strengths)
-           (str "Strengths: "
-                (str/join ", "
-                  (map (fn [{:keys [pattern confidence]}]
-                         (str pattern
-                              (when confidence
-                                (str " (" (format "%.0f%%" (* 100 confidence)) ")"))))
-                       strengths))))
-
-         (when (seq weaknesses)
-           (str "Weaknesses: "
-                (str/join ", "
-                  (map (fn [{:keys [failure frequency]}]
-                         (str failure
-                              (when frequency
-                                (str " (" (format "%.0f%%" (* 100 frequency)) ")"))))
-                       weaknesses))))]]
-
-    (->> sections
-         (remove nil?)
-         (str/join "\n"))))
-
-(defn index-tree-profiles!
-  "Create ColBERT index from tree profiles.
-
-   Indexes all tree self-descriptions for few-shot retrieval.
-   Each tree profile becomes a document in the index.
-
-   Args:
-     ctx - Context map containing :event-store
-     profiles - Seq of tree profile maps, or map of tree-id -> profile
-     opts - Options map:
-       :index-name - Name for the index (default: \"tree-profiles\")
-       :model-name - ColBERT model (default: colbert-ir/colbertv2.0)
-
-   Returns:
-     Index ID (UUID)
-
-   Example:
-     (index-tree-profiles! ctx
-       {\"tree-1\" {:name \"Lead Qualifier\" :objectives [...]}
-        \"tree-2\" {:name \"Email Generator\" :objectives [...]}})
-
-     ;; Then search:
-     (search ctx {:query \"lead scoring classification\" :index-id index-id})"
-  [ctx profiles & {:keys [index-name model-name]
-                    :or {index-name "tree-profiles"
-                         model-name "colbert-ir/colbertv2.0"}}]
-  (let [;; Normalize to vector of [tree-id profile] pairs
-        profile-pairs (if (map? profiles)
-                        (vec profiles)
-                        (map-indexed (fn [i p]
-                                       [(or (:tree-id p) (str i)) p])
-                                     profiles))
-
-        ;; Build collections
-        documents (mapv (comp tree-profile->document second) profile-pairs)
-        doc-ids (mapv (comp str first) profile-pairs)
-        metadatas (mapv (fn [[tree-id profile]]
-                          {:tree-id (str tree-id)
-                           :name (:name profile)
-                           :problem-types (vec (:problem-types profile))})
-                        profile-pairs)]
-
-    (mu/log ::indexing-tree-profiles :profile-count (count documents)
-            :index-name index-name)
-
-    (create-index! ctx
-      {:collection documents
-       :document-ids doc-ids
-       :document-metadatas metadatas
-       :index-name index-name
-       :model-name model-name
-       :split-documents? false})))  ;; Profiles are already coherent units
-
-(defn search-similar-trees
-  "Search for trees similar to a query description.
-
-   Convenience wrapper around search for tree profile indexes.
-
-   Args:
-     ctx - Context map
-     index-id - Tree profiles index UUID
-     query - Natural language description of desired tree
-     opts - Options map:
-       :k - Number of results (default: 5)
-       :min-score - Minimum normalized score threshold (default: 0.0)
-
-   Returns:
-     Vector of {:tree-id :score :name :metadata}"
-  [ctx index-id query & {:keys [k min-score]
-                          :or {k 5 min-score 0.0}}]
-  (let [results (search ctx {:query query :index-id index-id :k k})
-        normalized (normalize-result-scores results :min-score-threshold min-score)]
-    (mapv (fn [{:keys [document-id score document-metadata]}]
-            {:tree-id document-id
-             :score score
-             :name (get document-metadata :name)
-             :metadata document-metadata})
-          normalized)))
-
-;; =============================================================================
-;; Ontology Concept Indexing
-;; =============================================================================
-
-(defn concept->document
-  "Convert an ontology concept to a searchable document string.
-
-   Combines all textual fields from the concept into a single
-   searchable representation optimized for ColBERT retrieval.
-   Similar to embedding/concept->embedding-text but for ColBERT.
-
-   Args:
-     concept - Concept map with keys:
-       :uri         - Unique identifier (e.g., 'failure:Hallucination')
-       :label       - Human-readable name
-       :description - Detailed description
-       :scope       - :failure, :success, or :problem
-       :broader     - Parent concept URIs (optional)
-       :indicators  - Vector of indicator strings (optional)
-       :triggers    - Vector of trigger strings (optional)
-
-   Returns:
-     Concatenated string suitable for ColBERT indexing"
-  [{:keys [uri label description scope broader indicators triggers]}]
-  (let [sections
-        [(when label
-           (str "Concept: " label))
-
-         (when description
-           (str "Description: " description))
-
-         (when scope
-           (str "Scope: " (name scope)))
-
-         (when (seq broader)
-           (str "Broader: " (str/join ", " broader)))
-
-         (when (seq indicators)
-           (str "Indicators: " (str/join ", " indicators)))
-
-         (when (seq triggers)
-           (str "Triggers: " (str/join ", " triggers)))]]
-
-    (->> sections
-         (remove nil?)
-         (str/join "\n"))))
-
-(defn index-concepts!
-  "Create ColBERT index from ontology concepts.
-
-   Similar to embed-concepts-batch for MiniLM but creates a ColBERT index
-   for late-interaction retrieval. Uses concept URIs as document-ids,
-   so search results can be directly used with ontology lookups.
-
-   Args:
-     ctx - Context map containing :event-store
-     concepts - Collection of concept maps, each with :uri, :label, :description
-     opts - Options map:
-       :index-name - Name for the index (default: 'concepts-{scope}' or 'concepts')
-       :model-name - ColBERT model (default: colbert-ir/colbertv2.0)
-       :scope      - Used for default index-name if provided
-
-   Returns:
-     Index ID (UUID)
-
-   Example:
-     ;; Index failure concepts from static ontology
-     (require '[ai.obney.orc.ontology.core.static-ontology :as static])
-     (def failure-index-id
-       (colbert/index-concepts! ctx
-         (static/get-concepts-by-scope :failure)
-         {:index-name \"failure-concepts\"}))
-
-     ;; Search for relevant failure types
-     (colbert/search ctx
-       {:query \"output contradicts input evidence\"
-        :index-id failure-index-id
-        :k 5})
-     ;; => [{:document-id \"failure:Hallucination\" :score 0.87 ...}]"
-  [ctx concepts & {:keys [index-name model-name scope]
-                    :or {model-name "colbert-ir/colbertv2.0"}}]
-  (let [;; Determine index name
-        index-name (or index-name
-                       (if scope
-                         (str "concepts-" (name scope))
-                         "concepts"))
-
-        ;; Filter out concepts without URIs
-        valid-concepts (filter :uri concepts)
-
-        ;; Build collections - use URI as document-id for direct ontology lookup
-        documents (mapv concept->document valid-concepts)
-        doc-ids (mapv :uri valid-concepts)
-        metadatas (mapv (fn [{:keys [uri label scope broader]}]
-                          {:uri uri
-                           :label label
-                           :scope (when scope (name scope))
-                           :broader (vec broader)})
-                        valid-concepts)]
-
-    (mu/log ::indexing-concepts
-            :concept-count (count valid-concepts)
-            :index-name index-name
-            :scope scope)
-
-    (create-index! ctx
-      {:collection documents
-       :document-ids doc-ids
-       :document-metadatas metadatas
-       :index-name index-name
-       :model-name model-name
-       :split-documents? false})))  ;; Concepts are already coherent units
-
-(defn search-similar-concepts
-  "Search for concepts similar to a query description.
-
-   Convenience wrapper around search for concept indexes.
-   Returns results with URIs that can be used directly with ontology lookups.
-
-   Args:
-     ctx - Context map
-     index-id - Concepts index UUID
-     query - Natural language description or failure feedback
-     opts - Options map:
-       :k - Number of results (default: 10)
-       :min-score - Minimum normalized score threshold (default: 0.0)
-       :scope - Optional scope filter (:failure, :success, :problem)
-
-   Returns:
-     Vector of {:uri :score :label :metadata}"
-  [ctx index-id query & {:keys [k min-score scope]
-                          :or {k 10 min-score 0.0}}]
-  (let [results (search ctx {:query query :index-id index-id :k k})
-        normalized (normalize-result-scores results :min-score-threshold min-score)
-        ;; Optionally filter by scope
-        filtered (if scope
-                   (filter #(= (name scope) (get-in % [:document-metadata :scope]))
-                           normalized)
-                   normalized)]
-    (mapv (fn [{:keys [document-id score document-metadata]}]
-            {:uri document-id
-             :score score
-             :label (get document-metadata :label)
-             :metadata document-metadata})
-          filtered)))

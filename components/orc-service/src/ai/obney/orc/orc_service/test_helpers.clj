@@ -330,7 +330,7 @@
 
 (defn make-set-map-each-config-command
   "Create a set-map-each-config command."
-  [sheet-id node-id source-key item-key output-key & {:keys [max-concurrency]}]
+  [sheet-id node-id source-key item-key output-key & {:keys [max-concurrency preserve-failures?]}]
   (cond-> {:command/name :sheet/set-map-each-config
            :command/id (random-uuid)
            :command/timestamp (time/now)
@@ -339,7 +339,8 @@
            :source-key source-key
            :item-key item-key
            :output-key output-key}
-    max-concurrency (assoc :max-concurrency max-concurrency)))
+    max-concurrency (assoc :max-concurrency max-concurrency)
+    preserve-failures? (assoc :preserve-failures? preserve-failures?)))
 
 (defn make-set-llm-condition-config-command
   "Create a set-llm-condition-config command."

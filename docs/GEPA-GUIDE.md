@@ -221,7 +221,7 @@ GEPA ships as its own Polylith component (`components/gepa`) with zero ontology 
                   :extra-deps {}}}}
 ```
 
-Two deps: `mulog` (structured logging) and `orc/evaluation` (the tier-1 judges that score candidates). No model download, no ontology component, no ColBERT bridge. Pareto selection and reflective mutation run entirely in the JVM as native Clojure.
+Two deps: `mulog` (structured logging) and `orc/evaluation` (the tier-1 judges that score candidates). No model download, no ontology component, no ColBERT. Pareto selection and reflective mutation run entirely in the JVM as native Clojure.
 
 **Orthogonal to `:auto-classify?`.** GEPA and `:auto-classify?` are independent actuators that solve different problems:
 
