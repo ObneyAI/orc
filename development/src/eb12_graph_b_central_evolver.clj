@@ -28,6 +28,14 @@
    or REPL: (require '[eb12-graph-b-central-evolver :as b]) (def r (b/run! {}))
             (b/print-summary! r) (b/save-capture! r)"
   (:require [ai.obney.orc.orc-service.core.todo-processors]
+            ;; COLBERT-INTEGRATION consumer contract: EAGERLY require the
+            ;; colbert interface so its defcommands register BEFORE make-ctx
+            ;; snapshots (cp/global-command-registry). Without this the
+            ;; embed+index subbehavior's :colbert/create-index dispatch hits
+            ;; "Unknown Command" and the build silently degrades to 2-signal
+            ;; retrieval (:colbert-unavailable skip, no index) — witnessed
+            ;; live on the 2026-07-10 bounded build.
+            [ai.obney.orc.colbert.interface]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]

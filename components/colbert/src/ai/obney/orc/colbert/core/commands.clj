@@ -7,6 +7,16 @@
    processor return value."
   (:require [ai.obney.orc.colbert.core.operations :as operations]
             [ai.obney.orc.colbert.core.read-models :as read-models]
+            ;; Load-bearing: defcommand only registers the HANDLER; grain's
+            ;; process-command validates `(mc/validate command-name command)`
+            ;; against the schemas this ns registers at LOAD (schema-util
+            ;; registry). Without this require a consumer who loads the
+            ;; interface gets registered commands whose schemas are absent →
+            ;; :malli.core/invalid-schema at dispatch (witnessed live on the
+            ;; 2026-07-10 bounded O*NET build: embed-index :failure while the
+            ;; brick's own tests stayed green because they require the schemas
+            ;; directly). Commands must never load without their schemas.
+            [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [ai.obney.grain.time.interface :as time]
