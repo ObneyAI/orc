@@ -786,30 +786,15 @@
    building a large PLAID index, or the bridge process dying mid-index. ColBERT is a
    REBUILDABLE retrieval accelerator (ARCHITECTURE-ONTOLOGY invariant #3), NOT the
    graph — so at scale a timeout is surfaced NON-fatally: the build completes on the
-   graph + embedding signals and the index can be (re)built incrementally later
-   (`colbert-indexer`'s corpus-size guard skips over-ceiling corpora up front; this
-   is the safety net when an in-bounds build stalls anyway). Matched on the
-   TimeoutException type + the bridge's message text ONLY — every other failure
-   still propagates (#5)."
+   graph + embedding signals and the index can be (re)built incrementally later.
+   Matched on the TimeoutException type + the bridge's message text ONLY — every
+   other failure still propagates (#5)."
   [^Throwable t]
   (let [msg (str (.getMessage t) " " (some-> t .getCause .getMessage))]
     (boolean
      (or (instance? java.util.concurrent.TimeoutException t)
          (instance? java.util.concurrent.TimeoutException (.getCause t))
          (re-find #"(?i)timed out|Bridge process died" msg)))))
-
-(defn- colbert-artifact-too-large?
-  "True iff the throwable is the colbert index store's TYPED over-ceiling
-   boundary — `write-index!`'s 2 GiB single-artifact pre-check, ex-data
-   `{:type :colbert/artifact-too-large}` (directly or as the cause). ColBERT
-   is a REBUILDABLE retrieval accelerator (invariant #3), so an over-ceiling
-   corpus degrades the build to embedding-only retrieval, never kills it.
-   Matched on the ex-data :type ONLY (no message string matching) — every
-   other failure propagates (#5)."
-  [^Throwable t]
-  (boolean
-   (or (= :colbert/artifact-too-large (:type (ex-data t)))
-       (= :colbert/artifact-too-large (some-> (.getCause t) ex-data :type)))))
 
 (defn- register-colbert-index!
   "Resolve the bare index-id UUID from `index-concepts!`'s result and
@@ -866,13 +851,13 @@
    that specific condition and surface it as a structured, NON-fatal
    `:reason :corpus-below-colbert-minimum`. The embeddings still landed and
    remain retrievable via the embedding signal, so the build is not failed
-   by it. Two more real capability boundaries are likewise recognized and
+   by it. One more real capability boundary is likewise recognized and
    surfaced NON-fatally: an index-build timeout/stall at scale
-   (`:reason :colbert-index-timeout`) and the store's typed 2 GiB
-   single-artifact ceiling (`:colbert/artifact-too-large` ex-data →
-   `:reason :colbert-artifact-too-large`) — in both cases the build degrades
-   to embedding-only retrieval. EVERY OTHER error propagates verbatim (no
-   blanket swallow) — the skeleton never hides an unexpected fault.
+   (`:reason :colbert-index-timeout`) — the build degrades to embedding-only
+   retrieval. (There is NO artifact-size boundary: the index store streams
+   embeddings.bin through bounded buffers, witnessed at 59k docs / 2.93 GiB.)
+   EVERY OTHER error propagates verbatim (no blanket swallow) — the skeleton
+   never hides an unexpected fault.
 
    Returns `{:indexed? bool :index-id uuid :document-count int
              :colbert-fields [...]}`."
@@ -884,19 +869,16 @@
                     ctx concepts
                     {:auto-detect-colbert-fields true})
                    (catch Exception e
-                     ;; Recognize ColBERT's training-points floor, a bridge
-                     ;; timeout at scale, AND the store's typed 2 GiB
-                     ;; over-ceiling boundary as NON-fatal; any other failure
+                     ;; Recognize ColBERT's training-points floor and a bridge
+                     ;; timeout at scale as NON-fatal; any other failure
                      ;; re-throws untouched (#5 — no blanket swallow).
                      (cond
                        (colbert-corpus-too-small? e)     ::corpus-too-small
                        (colbert-index-timeout? e)        ::index-timeout
-                       (colbert-artifact-too-large? e)   ::artifact-too-large
                        :else (throw e))))]
       (cond
         (= result ::corpus-too-small)     {:indexed? false :reason :corpus-below-colbert-minimum}
         (= result ::index-timeout)        {:indexed? false :reason :colbert-index-timeout}
-        (= result ::artifact-too-large)   {:indexed? false :reason :colbert-artifact-too-large}
         :else (register-colbert-index! ctx ontology-id result)))))
 
 (defn- index-stage

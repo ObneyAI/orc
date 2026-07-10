@@ -168,57 +168,16 @@
           "an unrecognized fault is NOT masked"))))
 
 ;; ---------------------------------------------------------------------------
-;; SCALE-1b — the pure-JVM index store's 2 GiB single-artifact ceiling is a
-;; TYPED boundary (:colbert/artifact-too-large ex-data from write-index!).
-;; auto-index! surfaces it NON-fatally, same honest-skip class as the timeout:
-;; a too-large corpus degrades the build to embedding-only retrieval, never
-;; kills it. Recognition is by ex-data :type ONLY — no message string matching.
-;; ---------------------------------------------------------------------------
-
-(deftest auto-index-nonfatal-on-artifact-too-large-test
-  (testing "the store's TYPED over-ceiling boundary is surfaced non-fatally
-            (:reason :colbert-artifact-too-large), NOT thrown — the build completes"
-    (with-redefs [colbert-indexer/index-concepts!
-                  (fn [& _]
-                    (throw (ex-info "ColBERT index artifact too large for the single-buffer store"
-                                    {:type :colbert/artifact-too-large
-                                     :total-bytes 3130000000
-                                     :max-bytes Integer/MAX_VALUE
-                                     :passages 59000})))]
-      (let [r (#'ds/auto-index! {} (random-uuid)
-                                [{:uri "occupation/1" :label "X" :description "y"}] 1)]
-        (is (= false (:indexed? r)) "not indexed")
-        (is (= :colbert-artifact-too-large (:reason r))
-            "the over-ceiling boundary is a NON-fatal honest skip"))))
-  (testing "the typed boundary WRAPPED as a cause is likewise recognized (typed
-            ex-data match on the cause, still no string matching)"
-    (with-redefs [colbert-indexer/index-concepts!
-                  (fn [& _]
-                    (throw (ex-info "indexing failed" {}
-                                    (ex-info "artifact too large"
-                                             {:type :colbert/artifact-too-large}))))]
-      (let [r (#'ds/auto-index! {} (random-uuid)
-                                [{:uri "occupation/1" :label "X" :description "y"}] 1)]
-        (is (= :colbert-artifact-too-large (:reason r)) "wrapped cause → non-fatal"))))
-  (testing "a DIFFERENT ex-data :type still PROPAGATES (typed match is precise, #5)"
-    (with-redefs [colbert-indexer/index-concepts!
-                  (fn [& _] (throw (ex-info "other typed fault"
-                                            {:type :colbert/some-other-fault})))]
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (#'ds/auto-index! {} (random-uuid)
-                                     [{:uri "occupation/1" :label "X" :description "y"}] 1))
-          "only the :colbert/artifact-too-large type is the non-fatal class"))))
-
-;; ---------------------------------------------------------------------------
-;; ColBERT corpus-size guard — the pure-JVM index store moves the whole
-;; embeddings.bin through ONE contiguous int-indexed buffer: a hard 2 GiB
-;; (Integer/MAX_VALUE) artifact ceiling, DENSITY-DEPENDENT (measured: 36k docs
-;; at ~132 tok/doc = 1.82 GiB = 89% of int-max; ~40k is the boundary at that
-;; density). index-concepts! SKIPS above a conservative 30k threshold with a
-;; clean skip result (no create-index call) — ColBERT is rebuildable
-;; (invariant #3); the graph + embedding signals are unaffected. These tests
-;; PIN the boundary from both sides: 15k (well under, MUST index) and 35k
-;; (over, MUST skip). DJL-free: create-index! is faked.
+;; SCALE-2 — the corpus-size guard is RETIRED. The index store streams
+;; embeddings.bin through bounded buffers (no single int-indexed allocation),
+;; so the 2 GiB artifact ceiling no longer exists — witnessed live at 59k
+;; docs / 2.93 GiB artifact with exact planted-marker retrieval. No typed
+;; artifact-size error is thrown anywhere anymore, and
+;; index-concepts! attempts EVERY corpus size: these tests pin that a
+;; formerly-skipped 35k corpus now indexes, alongside the 15k mid-size case.
+;; The timeout + corpus-too-small non-fatal classes are UNTOUCHED (see
+;; auto-index-nonfatal-on-colbert-timeout-test above). DJL-free:
+;; create-index! is faked.
 ;; ---------------------------------------------------------------------------
 
 (defn- guard-corpus [n]
@@ -245,32 +204,22 @@
           (is (= 15000 (:document-count r)) "all 15k documents indexed")
           (is (nil? (:skipped-reason r)) "NOT skipped"))))))
 
-(deftest colbert-index-skips-35k-corpus-test
-  (testing "a 35,000-doc corpus is OVER the guard (approaching the measured ~40k
-            density-dependent 2 GiB ceiling) — still skipped, same reason keyword
-            (the contract is unchanged), and create-index! is never called"
-    (let [calls (atom [])]
+(deftest colbert-index-does-not-skip-35k-corpus-test
+  (testing "a 35,000-doc corpus — over the RETIRED 30k guard — must now be
+            INDEXED, not skipped: the streamed index store has no artifact
+            ceiling (witnessed at 59k docs / 2.93 GiB), so index-concepts!
+            attempts every corpus"
+    (let [calls (atom [])
+          fake-id (random-uuid)]
       (with-redefs [colbert/create-index!
-                    (fn [& _] (swap! calls conj :called) (random-uuid))]
+                    (fn [_ctx {:keys [collection]}]
+                      (swap! calls conj (count collection))
+                      fake-id)]
         (let [r (colbert-indexer/index-concepts!
                  {} (guard-corpus 35000)
-                 {:colbert-fields [:label]
+                 {:colbert-fields [:label :description]
                   :auto-detect-colbert-fields false})]
-          (is (empty? @calls) "create-index! never called for an over-guard corpus")
-          (is (nil? (:index-id r)) "no index built")
-          (is (= 0 (:document-count r)) "zero documents indexed")
-          (is (= :corpus-too-large-for-single-index (:skipped-reason r))
-              "the skip keyword contract is unchanged"))))))
-
-(deftest colbert-index-skips-large-corpus-test
-  (testing "index-concepts! SKIPS an over-threshold corpus (nil index-id, 0 docs,
-            :corpus-too-large-for-single-index) WITHOUT calling create-index"
-    (let [big (mapv (fn [i] {:uri (str "c/" i) :label (str "Concept " i)
-                             :description "some indexable content here"})
-                    (range (inc colbert-indexer/colbert-max-single-index-corpus)))
-          r (colbert-indexer/index-concepts! {} big {:colbert-fields [:label]
-                                                     :auto-detect-colbert-fields false})]
-      (is (nil? (:index-id r)) "no index built for an over-threshold corpus")
-      (is (= 0 (:document-count r)) "zero documents indexed")
-      (is (= :corpus-too-large-for-single-index (:skipped-reason r))
-          "surfaced as a clean skip, not a stall or a throw"))))
+          (is (= [35000] @calls) "create-index! was called ONCE with all 35k docs")
+          (is (= fake-id (:index-id r)) "the index was actually built")
+          (is (= 35000 (:document-count r)) "all 35k documents indexed")
+          (is (nil? (:skipped-reason r)) "NOT skipped — the skip contract is dead"))))))

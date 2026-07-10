@@ -154,20 +154,6 @@
 ;; ColBERT Index Creation
 ;; =============================================================================
 
-(def colbert-max-single-index-corpus
-  "The largest corpus (post-blank-filter document count) allowed into ONE pure-JVM
-   ColBERT index artifact. The index store (`write-index!`/`read-index`) moves the
-   whole embeddings.bin through a single contiguous int-indexed buffer — a hard
-   2 GiB (Integer/MAX_VALUE) artifact ceiling. That ceiling is DENSITY-DEPENDENT:
-   at ~132 tokens/doc x 96 dims x 4 bytes it lands around ~40k docs (MEASURED:
-   36k docs indexed cleanly at 1.82 GiB = 89% of int-max; 59k crashed the single
-   allocation before the typed pre-check existed). Denser documents hit it sooner,
-   so 30,000 is the conservative margin under the measured boundary. Above this we
-   SKIP indexing (non-fatally — ColBERT is a REBUILDABLE retrieval accelerator,
-   invariant #3; the graph + embedding signals are unaffected). Chunked embeddings
-   IO in the index store is the real large-scale lift that removes the ceiling."
-  30000)
-
 (defn index-concepts!
   "Create a ColBERT index from concepts with auto-detected fields.
 
@@ -213,37 +199,23 @@
 
         ;; Generate index name if not provided
         final-index-name (or index-name
-                             (str "ontology-" (subs (str (random-uuid)) 0 8)))]
-    ;; CORPUS-SIZE GUARD. The pure-JVM index store writes/reads the whole
-    ;; embeddings.bin through ONE contiguous int-indexed buffer — a hard 2 GiB
-    ;; (Integer/MAX_VALUE) artifact ceiling, density-dependent (see
-    ;; colbert-max-single-index-corpus). Above the threshold we SKIP with a clean
-    ;; skip result (no throw, no create-index call): callers treat a nil index-id /
-    ;; 0 document-count as "no index" and proceed. ColBERT is a REBUILDABLE
-    ;; retrieval accelerator (invariant #3); the graph + embedding signals are
-    ;; unaffected. Chunked embeddings IO is the real large-scale fix.
-    (if (> (count valid-docs) colbert-max-single-index-corpus)
-      (do (mu/log ::skipped-large-corpus
-                  :valid-docs (count valid-docs)
-                  :threshold colbert-max-single-index-corpus)
-          {:index-id nil
-           :index-name final-index-name
-           :document-count 0
-           :colbert-fields fields-to-use
-           :skipped-reason :corpus-too-large-for-single-index})
-      (let [index-id ((require-colbert (quote create-index!)) ctx
-                      {:collection (mapv :content valid-docs)
-                       :document-ids (mapv :document-id valid-docs)
-                       :index-name final-index-name})]
-        (mu/log ::index-created
-                :index-id index-id
-                :document-count (count valid-docs)
-                :index-name final-index-name)
-        {:index-id index-id
-         :index-name final-index-name
-         :document-count (count valid-docs)
-         :colbert-fields fields-to-use
-         :detected-confidence (when detected (:confidence-scores detected))}))))
+                             (str "ontology-" (subs (str (random-uuid)) 0 8)))
+        ;; Every corpus size is attempted: the pure-JVM index store streams
+        ;; embeddings.bin through bounded buffers (SCALE-2), so there is no
+        ;; artifact-size ceiling and no corpus-size guard.
+        index-id ((require-colbert (quote create-index!)) ctx
+                  {:collection (mapv :content valid-docs)
+                   :document-ids (mapv :document-id valid-docs)
+                   :index-name final-index-name})]
+    (mu/log ::index-created
+            :index-id index-id
+            :document-count (count valid-docs)
+            :index-name final-index-name)
+    {:index-id index-id
+     :index-name final-index-name
+     :document-count (count valid-docs)
+     :colbert-fields fields-to-use
+     :detected-confidence (when detected (:confidence-scores detected))}))
 
 (defn index-with-related-data!
   "Create enriched ColBERT index with related data.

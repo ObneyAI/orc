@@ -29,8 +29,10 @@
             [clojure.data.json :as json]
             [clojure.walk :as walk]
             [com.brunobonacci.mulog :as mu])
-  (:import [java.nio ByteBuffer ByteOrder]
-           [java.nio.file Files]))
+  (:import [java.io BufferedOutputStream]
+           [java.nio ByteBuffer ByteOrder]
+           [java.nio.channels FileChannel]
+           [java.nio.file Files OpenOption StandardOpenOption]))
 
 (def format-name "orc-colbert-index")
 (def format-version 1)
@@ -89,37 +91,24 @@
    row counts, written LAST so a partial write never leaves a directory that
    parses as a complete artifact. Evicts `dir` from the in-memory cache.
 
-   CEILING: the whole embeddings.bin moves through ONE contiguous ByteBuffer
-   (and `read-index` mirrors it with one byte[]), so an artifact whose total
-   embedding bytes exceed Integer/MAX_VALUE (2 GiB) cannot be stored. That
-   boundary is pre-checked BEFORE any file IO and thrown as a typed
-   `{:type :colbert/artifact-too-large}` ex-info — never a mid-write
-   ArithmeticException, never a partial artifact. Chunked embeddings IO is
-   the lift that removes the ceiling."
+   STREAMED (SCALE-2): the rows move to disk through one small reusable
+   per-row buffer behind a buffered stream — no artifact-sized allocation,
+   no 2 GiB (Integer/MAX_VALUE) single-buffer ceiling. Total artifact size
+   is bounded only by disk (and by the heap already holding the rows). All
+   dims are validated BEFORE any file IO, so a row-dim mismatch never leaves
+   a partial artifact on disk. The bytes produced are IDENTICAL to the
+   pre-SCALE-2 single-buffer implementation (pinned by the byte-identity
+   golden in index_store_test) — no format change, no version bump."
   [dir {:keys [checkpoint dim passages document-metadatas]}]
   (let [dir (io/file dir)
         dim (long dim)
-        ;; embeddings.bin: contiguous float32 LE rows, per passage
-        total-bytes (reduce + 0 (map #(passage-byte-size % dim) passages))
-        ;; 2 GiB single-buffer ceiling — throw the TYPED boundary error before
-        ;; any file IO (no dir created, no partial artifact; the meta-json-last
-        ;; invariant holds trivially).
-        _ (when (> total-bytes Integer/MAX_VALUE)
-            (throw (ex-info (str "ColBERT index artifact too large for the single-buffer "
-                                 "store: embeddings.bin would be " total-bytes " bytes "
-                                 "across " (count passages) " passages, exceeding the "
-                                 "2 GiB (Integer/MAX_VALUE = " Integer/MAX_VALUE ") ceiling "
-                                 "of the single contiguous ByteBuffer used by write-index!/"
-                                 "read-index. Chunked embeddings IO is the lift to store "
-                                 "corpora past this boundary.")
-                            {:type :colbert/artifact-too-large
-                             :total-bytes total-bytes
-                             :max-bytes Integer/MAX_VALUE
-                             :passages (count passages)})))
-        _ (.mkdirs dir)
-        buf (doto (ByteBuffer/allocate total-bytes)
-              (.order ByteOrder/LITTLE_ENDIAN))
-        offsets (reductions + 0 (map #(passage-byte-size % dim) passages))]
+        ;; embeddings.bin: contiguous float32 LE rows, per passage.
+        ;; Long arithmetic throughout — totals past 2 GiB are legal.
+        total-bytes (long (reduce + 0 (map #(passage-byte-size % dim) passages)))
+        offsets (reductions + 0 (map #(passage-byte-size % dim) passages))
+        row-bytes (int (* dim 4))]
+    ;; Validate every row's dim BEFORE any file IO — a mismatch throws with
+    ;; nothing on disk (the meta-json-last invariant holds trivially).
     (doseq [{:keys [rows] :as passage} passages
             ^floats row rows]
       (when (not= dim (alength row))
@@ -127,11 +116,20 @@
                         {:error :colbert-index-row-dim-mismatch
                          :dim dim
                          :row-length (alength row)
-                         :document-id (:document-id passage)})))
-      (dotimes [i dim]
-        (.putFloat buf (aget row i))))
-    (with-open [out (io/output-stream (io/file dir embeddings-file-name))]
-      (.write out (.array buf)))
+                         :document-id (:document-id passage)}))))
+    (.mkdirs dir)
+    (with-open [out (BufferedOutputStream.
+                     (io/output-stream (io/file dir embeddings-file-name))
+                     (* 1024 1024))]
+      (let [row-buf (doto (ByteBuffer/allocate row-bytes)
+                      (.order ByteOrder/LITTLE_ENDIAN))
+            row-arr (.array row-buf)]
+        (doseq [{:keys [rows]} passages
+                ^floats row rows]
+          (.clear row-buf)
+          (dotimes [i dim]
+            (.putFloat row-buf (aget row i)))
+          (.write out row-arr 0 row-bytes))))
     ;; index-meta.json last — the commit marker
     (let [meta {"format" format-name
                 "format-version" format-version
@@ -211,37 +209,67 @@
             bin-file (io/file dir embeddings-file-name)
             _ (when-not (.exists bin-file)
                 (unreadable! dir (str embeddings-file-name " is missing") {}))
-            expected-bytes (reduce + 0 (map #(* (long (get % "rows")) dim 4) passages-meta))
-            bytes (Files/readAllBytes (.toPath bin-file))
-            _ (when (not= expected-bytes (alength bytes))
+            ;; Byte-length integrity check up front — long arithmetic, the
+            ;; file never moves through one array (SCALE-2 streamed read).
+            expected-bytes (long (reduce + 0 (map #(* (long (get % "rows")) dim 4)
+                                                  passages-meta)))
+            actual-bytes (Files/size (.toPath bin-file))
+            _ (when (not= expected-bytes actual-bytes)
                 (unreadable! dir (str embeddings-file-name " byte length mismatch: expected "
-                                      expected-bytes ", got " (alength bytes))
-                             {:expected-bytes expected-bytes :actual-bytes (alength bytes)}))
-            fbuf (.asFloatBuffer (doto (ByteBuffer/wrap bytes)
-                                   (.order ByteOrder/LITTLE_ENDIAN)))
-            passages (mapv (fn [p]
-                             (let [offset (long (get p "offset"))
-                                   n-rows (long (get p "rows"))
-                                   rows (mapv (fn [r]
+                                      expected-bytes ", got " actual-bytes)
+                             {:expected-bytes expected-bytes :actual-bytes actual-bytes}))
+            row-bytes (long (* dim 4))]
+        (with-open [ch (FileChannel/open (.toPath bin-file)
+                                         (into-array OpenOption
+                                                     [StandardOpenOption/READ]))]
+          (let [;; Bounded reusable chunk: ~1 MiB of whole rows per read.
+                chunk-rows (max 1 (quot (* 1024 1024) row-bytes))
+                chunk-buf (doto (ByteBuffer/allocate (int (* chunk-rows row-bytes)))
+                            (.order ByteOrder/LITTLE_ENDIAN))
+                fill! (fn [^ByteBuffer b]
+                        (while (.hasRemaining b)
+                          (when (neg? (.read ch b))
+                            (unreadable! dir (str embeddings-file-name
+                                                  " ends before a passage's recorded rows")
+                                         {:expected-bytes expected-bytes
+                                          :actual-bytes actual-bytes}))))
+                read-rows! (fn [^long offset ^long n-rows]
+                             ;; Honors the passage's recorded LONG byte offset
+                             ;; (no int casts anywhere on the position), then
+                             ;; streams its rows through the bounded chunk.
+                             (.position ch offset)
+                             (loop [remaining n-rows
+                                    acc (transient [])]
+                               (if (zero? remaining)
+                                 (persistent! acc)
+                                 (let [batch (min remaining chunk-rows)]
+                                   (.clear chunk-buf)
+                                   (.limit chunk-buf (int (* batch row-bytes)))
+                                   (fill! chunk-buf)
+                                   (.flip chunk-buf)
+                                   (let [fbuf (.asFloatBuffer chunk-buf)]
+                                     (recur (- remaining batch)
+                                            (loop [k 0, a acc]
+                                              (if (< k batch)
                                                 (let [row (float-array dim)]
-                                                  (.position fbuf (int (+ (quot offset 4)
-                                                                          (* (long r) dim))))
                                                   (.get fbuf row)
-                                                  row))
-                                              (range n-rows))]
-                               {:document-id (get p "document-id")
-                                :document-index (get p "document-index")
-                                :text (get p "text")
-                                :token-ids (vec (get p "token-ids"))
-                                :rows rows}))
-                           passages-meta)]
-        {:checkpoint (get meta "checkpoint")
-         :dim dim
-         :passages passages
-         :document-metadatas (when-let [metas (get meta "document-metadatas")]
-                               (into {} (map (fn [[doc-id m]]
-                                               [doc-id (keywordize-metadata m)]))
-                                     metas))}))))
+                                                  (recur (inc k) (conj! a row)))
+                                                a))))))))
+                passages (mapv (fn [p]
+                                 {:document-id (get p "document-id")
+                                  :document-index (get p "document-index")
+                                  :text (get p "text")
+                                  :token-ids (vec (get p "token-ids"))
+                                  :rows (read-rows! (long (get p "offset"))
+                                                    (long (get p "rows")))})
+                               passages-meta)]
+            {:checkpoint (get meta "checkpoint")
+             :dim dim
+             :passages passages
+             :document-metadatas (when-let [metas (get meta "document-metadatas")]
+                                   (into {} (map (fn [[doc-id m]]
+                                                   [doc-id (keywordize-metadata m)]))
+                                         metas))}))))))
 
 (defn load-index
   "The loaded artifact for an index directory (string or File), reading it
