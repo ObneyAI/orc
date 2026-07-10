@@ -87,13 +87,36 @@
    Layout: embeddings.bin holds every passage's rows contiguously in passage
    order (float32 LE); index-meta.json records per-passage byte offsets and
    row counts, written LAST so a partial write never leaves a directory that
-   parses as a complete artifact. Evicts `dir` from the in-memory cache."
+   parses as a complete artifact. Evicts `dir` from the in-memory cache.
+
+   CEILING: the whole embeddings.bin moves through ONE contiguous ByteBuffer
+   (and `read-index` mirrors it with one byte[]), so an artifact whose total
+   embedding bytes exceed Integer/MAX_VALUE (2 GiB) cannot be stored. That
+   boundary is pre-checked BEFORE any file IO and thrown as a typed
+   `{:type :colbert/artifact-too-large}` ex-info — never a mid-write
+   ArithmeticException, never a partial artifact. Chunked embeddings IO is
+   the lift that removes the ceiling."
   [dir {:keys [checkpoint dim passages document-metadatas]}]
   (let [dir (io/file dir)
         dim (long dim)
-        _ (.mkdirs dir)
         ;; embeddings.bin: contiguous float32 LE rows, per passage
         total-bytes (reduce + 0 (map #(passage-byte-size % dim) passages))
+        ;; 2 GiB single-buffer ceiling — throw the TYPED boundary error before
+        ;; any file IO (no dir created, no partial artifact; the meta-json-last
+        ;; invariant holds trivially).
+        _ (when (> total-bytes Integer/MAX_VALUE)
+            (throw (ex-info (str "ColBERT index artifact too large for the single-buffer "
+                                 "store: embeddings.bin would be " total-bytes " bytes "
+                                 "across " (count passages) " passages, exceeding the "
+                                 "2 GiB (Integer/MAX_VALUE = " Integer/MAX_VALUE ") ceiling "
+                                 "of the single contiguous ByteBuffer used by write-index!/"
+                                 "read-index. Chunked embeddings IO is the lift to store "
+                                 "corpora past this boundary.")
+                            {:type :colbert/artifact-too-large
+                             :total-bytes total-bytes
+                             :max-bytes Integer/MAX_VALUE
+                             :passages (count passages)})))
+        _ (.mkdirs dir)
         buf (doto (ByteBuffer/allocate total-bytes)
               (.order ByteOrder/LITTLE_ENDIAN))
         offsets (reductions + 0 (map #(passage-byte-size % dim) passages))]

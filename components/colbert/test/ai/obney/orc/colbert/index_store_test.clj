@@ -133,3 +133,47 @@
   (let [dir (doto (io/file (temp-dir "garbage") "idx") (.mkdirs))]
     (spit (io/file dir "index-meta.json") "{not json at all")
     (assert-unreadable! dir)))
+
+;; =============================================================================
+;; SCALE-1b: the 2 GiB single-buffer artifact ceiling is a TYPED pre-check
+;; =============================================================================
+
+(deftest over-ceiling-write-throws-typed-artifact-too-large
+  (testing "write-index! with total embedding bytes over Integer/MAX_VALUE throws
+            the typed :colbert/artifact-too-large ex-info BEFORE any file IO —
+            no ArithmeticException mid-write, no partial artifact on disk"
+    ;; Cheapest HONEST construction (no 2 GiB allocation): the pre-check derives
+    ;; total-bytes from per-passage METADATA — (count rows) x dim x 4 — and
+    ;; throws before ever touching row contents. `(repeat n x)` is a counted
+    ;; O(1) clojure.lang.Repeat, so a passage can CLAIM 4.2M rows without
+    ;; allocating row data: 4,200,000 rows x 128 dims x 4 B = 2,150,400,000 B
+    ;; > Integer/MAX_VALUE (2,147,483,647).
+    (let [claimed-rows 4200000
+          dim 128
+          total (* claimed-rows dim 4)
+          dir (io/file (temp-dir "over-ceiling") "idx")
+          ex (try (index-store/write-index!
+                   dir {:checkpoint "test-checkpoint"
+                        :dim dim
+                        :passages [{:document-id "d1" :document-index 0
+                                    :text "over the ceiling" :token-ids [1 2 3]
+                                    :rows (repeat claimed-rows nil)}]
+                        :document-metadatas nil})
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? ex) "write-index! must throw ex-info (not ArithmeticException)")
+      (when ex
+        (let [data (ex-data ex)]
+          (is (= :colbert/artifact-too-large (:type data)) "the typed boundary error")
+          (is (= total (:total-bytes data)) "ex-data states the artifact byte size")
+          (is (= Integer/MAX_VALUE (:max-bytes data)) "ex-data states the ceiling")
+          (is (= 1 (:passages data)) "ex-data states the passage count")
+          (is (re-find #"2 GiB" (ex-message ex))
+              "message states the single-buffer ceiling")
+          (is (re-find #"(?i)chunk" (ex-message ex))
+              "message states chunked IO as the lift")))
+      (testing "meta-json-last invariant holds trivially — NO file IO happened"
+        (is (not (.exists dir))
+            "the index dir was never even created — no partial artifact")
+        (is (not (.exists (io/file dir index-store/meta-file-name))))
+        (is (not (.exists (io/file dir index-store/embeddings-file-name))))))))

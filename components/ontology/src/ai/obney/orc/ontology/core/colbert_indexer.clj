@@ -155,15 +155,18 @@
 ;; =============================================================================
 
 (def colbert-max-single-index-corpus
-  "The largest corpus (post-blank-filter document count) that ColBERT's SINGLE-REQUEST
-   PLAID indexer handles here. A create_index sends the WHOLE collection as one JSON
-   line over the bridge pipe; at large scale (observed stall at ~36k docs; empty index,
-   0% CPU) that line-protocol/memory ceiling parks the JVM indefinitely. Above this we
-   SKIP indexing (non-fatally — ColBERT is a REBUILDABLE retrieval accelerator, invariant
-   #3; the graph + embedding signals are unaffected). The real large-scale fix is CHUNKED
-   incremental indexing (add-to-index). Set well below the observed stall, above the
-   proven small/mid builds."
-  10000)
+  "The largest corpus (post-blank-filter document count) allowed into ONE pure-JVM
+   ColBERT index artifact. The index store (`write-index!`/`read-index`) moves the
+   whole embeddings.bin through a single contiguous int-indexed buffer — a hard
+   2 GiB (Integer/MAX_VALUE) artifact ceiling. That ceiling is DENSITY-DEPENDENT:
+   at ~132 tokens/doc x 96 dims x 4 bytes it lands around ~40k docs (MEASURED:
+   36k docs indexed cleanly at 1.82 GiB = 89% of int-max; 59k crashed the single
+   allocation before the typed pre-check existed). Denser documents hit it sooner,
+   so 30,000 is the conservative margin under the measured boundary. Above this we
+   SKIP indexing (non-fatally — ColBERT is a REBUILDABLE retrieval accelerator,
+   invariant #3; the graph + embedding signals are unaffected). Chunked embeddings
+   IO in the index store is the real large-scale lift that removes the ceiling."
+  30000)
 
 (defn index-concepts!
   "Create a ColBERT index from concepts with auto-detected fields.
@@ -211,14 +214,14 @@
         ;; Generate index name if not provided
         final-index-name (or index-name
                              (str "ontology-" (subs (str (random-uuid)) 0 8)))]
-    ;; CORPUS-SIZE GUARD (the reliable large-scale fix). A single-request PLAID index
-    ;; over a LARGE corpus stalls the python bridge (the whole collection is one JSON
-    ;; line over the pipe — a line-protocol/memory ceiling), parking the JVM
-    ;; indefinitely. Above the threshold we SKIP with a clean skip result (no throw, no
-    ;; create-index call): callers treat a nil index-id / 0 document-count as "no index"
-    ;; and proceed. ColBERT is a REBUILDABLE retrieval accelerator (invariant #3); the
-    ;; graph + embedding signals are unaffected. Chunked incremental indexing
-    ;; (add-to-index) is the real large-scale fix.
+    ;; CORPUS-SIZE GUARD. The pure-JVM index store writes/reads the whole
+    ;; embeddings.bin through ONE contiguous int-indexed buffer — a hard 2 GiB
+    ;; (Integer/MAX_VALUE) artifact ceiling, density-dependent (see
+    ;; colbert-max-single-index-corpus). Above the threshold we SKIP with a clean
+    ;; skip result (no throw, no create-index call): callers treat a nil index-id /
+    ;; 0 document-count as "no index" and proceed. ColBERT is a REBUILDABLE
+    ;; retrieval accelerator (invariant #3); the graph + embedding signals are
+    ;; unaffected. Chunked embeddings IO is the real large-scale fix.
     (if (> (count valid-docs) colbert-max-single-index-corpus)
       (do (mu/log ::skipped-large-corpus
                   :valid-docs (count valid-docs)
@@ -228,28 +231,19 @@
            :document-count 0
            :colbert-fields fields-to-use
            :skipped-reason :corpus-too-large-for-single-index})
-      (do
-        ;; SUB-THRESHOLD: scale the bridge timeout to corpus size (best-effort) — a
-        ;; mid-size index still exceeds the 60s default. The var lives in the optional
-        ;; colbert component, so guard resolution.
-        (when-let [tv (try (requiring-resolve
-                            'ai.obney.orc.colbert.core.bridge/default-timeout-ms)
-                           (catch Throwable _ nil))]
-          (alter-var-root tv (constantly (-> (* 40 (count valid-docs))
-                                             (max 120000) (min 360000)))))
-        (let [index-id ((require-colbert (quote create-index!)) ctx
-                        {:collection (mapv :content valid-docs)
-                         :document-ids (mapv :document-id valid-docs)
-                         :index-name final-index-name})]
-          (mu/log ::index-created
-                  :index-id index-id
-                  :document-count (count valid-docs)
-                  :index-name final-index-name)
-          {:index-id index-id
-           :index-name final-index-name
-           :document-count (count valid-docs)
-           :colbert-fields fields-to-use
-           :detected-confidence (when detected (:confidence-scores detected))})))))
+      (let [index-id ((require-colbert (quote create-index!)) ctx
+                      {:collection (mapv :content valid-docs)
+                       :document-ids (mapv :document-id valid-docs)
+                       :index-name final-index-name})]
+        (mu/log ::index-created
+                :index-id index-id
+                :document-count (count valid-docs)
+                :index-name final-index-name)
+        {:index-id index-id
+         :index-name final-index-name
+         :document-count (count valid-docs)
+         :colbert-fields fields-to-use
+         :detected-confidence (when detected (:confidence-scores detected))}))))
 
 (defn index-with-related-data!
   "Create enriched ColBERT index with related data.
