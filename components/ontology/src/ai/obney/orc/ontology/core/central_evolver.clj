@@ -394,8 +394,20 @@
    Named + overridable (mirrors `default-max-containers` / `default-max-extract-
    windows`) so the budget is legible + tunable, not a magic literal. DERIVE the
    budget from the cap (below) so it stays correct if the cap changes — do NOT bump
-   a literal."
-  30000)
+   a literal.
+
+   RECALIBRATED 30s → 60s (2026-07-11): the 30s figure was measured under SERIAL
+   extraction with a fast provider. Since then (a) GC-13 made container extraction
+   concurrently bounded — the cap-scaled ceiling is margin, not pacing (`central
+   -evolver` caller note: 'harmlessly generous under parallel extract — the build
+   just finishes sooner'), and (b) the 13.5-min ceiling FIRED on two real uncapped
+   O*NET runs (2026-07-08, 2026-07-11 — provider-latency variance + the EB9
+   resilience cascade's extra calls on :failure containers), killing 50-80 min
+   multi-source builds at :failed-at-model-extract with real drafts on the floor.
+   The ceiling exists to prevent HANGS, not to cut slow-but-working extraction;
+   60s/container (25-container ceiling: 26 min) absorbs a slow-provider day while
+   still bounding a genuine hang."
+  60000)
 
 (def model-extract-overhead-budget-ms
   "GC-8 — the Model node + delegation/parse overhead allowance ADDED to the
