@@ -565,13 +565,56 @@
                    :vocabulary-retries retries}
             (pos? retries) (assoc :degraded-model-spec-raw first-degraded-raw)))))))
 
+(def per-probe-budget-ms
+  "MS-2 (GC-8 style) — the per-DRAFT time budget the Reconcile delegate sizes its
+   deref-timeout against. Reconcile's dominant cost is the check-before-mint
+   probe: up to `reconcile/default-max-probe` SEQUENTIAL P3 hybrid-search probes
+   (graph BFS + embedding + ColBERT), observed at ≥1.5s each on an 18k-concept
+   populated graph (2026-07-11 all-5-sources forensic — the flat 180s default
+   ceiling was exceeded by EVERY post-first source, silently landing ZERO
+   concepts). 2s/probe is the honest ceiling until MS-3 shrinks the real cost
+   (URI-exact-match fast path + batched probe embedding). Named + overridable-by-
+   derivation (mirrors `default-per-container-budget-ms`) — never a magic literal."
+  2000)
+
+(def reconcile-overhead-budget-ms
+  "MS-2 (GC-8 style) — the non-probe Reconcile allowance ADDED to the per-probe
+   budget: landing the drafts (compile-discovery-source!), the DT7 entity
+   reconcile, the EB5 attribute reconcile, and the `:delegate` build/execute +
+   blackboard read-back. Keeps a small/zero-draft reconcile's ceiling comfortably
+   above its real work without depending on a per-probe term (mirrors
+   `model-extract-overhead-budget-ms`)."
+  120000)
+
+(defn reconcile-timeout-ms
+  "MS-2 (GC-8 style) — DERIVE the Reconcile delegate's deref-timeout from the
+   DRAFT COUNT it will probe:
+   `(min(draft-count, default-max-probe) × per-probe-budget-ms) + overhead`.
+   It SCALES with the real probe work (GC-7 caps that work at
+   `reconcile/default-max-probe`, so the ceiling caps there too) instead of the
+   flat 180s `delegate-subbehavior!` default — which every post-first source's
+   reconcile exceeded, timing out SILENTLY with ZERO concepts landed
+   (2026-07-11 forensic). Pure + public so the budget is assertable. A
+   zero/absent draft-count floors at the overhead (never 0)."
+  [{:keys [draft-count]}]
+  (+ (* (min (or draft-count 0) reconcile/default-max-probe)
+        per-probe-budget-ms)
+     reconcile-overhead-budget-ms))
+
 (defn delegate-reconcile!
-  "Production Reconcile seam: `:delegate` Reconcile (land + entity/attr reconcile)."
+  "Production Reconcile seam: `:delegate` Reconcile (land + entity/attr reconcile).
+
+   MS-2 — sizes the delegate `:timeout-ms` to the ACTUAL draft count it is handed
+   (`reconcile-timeout-ms`) instead of inheriting `delegate-subbehavior!`'s flat
+   180s default (the silent-zero-landing root cause)."
   [ctx {:keys [ontology-id concept-drafts relationship-drafts source-uri-sets model]}]
   (let [sub-id (reconcile/register-reconcile-subbehavior! ctx {:model model})
         r (delegate-subbehavior!
            ctx {:central-name "ontology-central/reconcile@v1"
                 :target-sheet-id sub-id
+                ;; MS-2 — size the deref-timeout to the ACTUAL probe work (the
+                ;; concept-draft count is what check-before-mint probes).
+                :timeout-ms (reconcile-timeout-ms {:draft-count (count concept-drafts)})
                 :bb-schema {:ontology-id :any
                             :concept-drafts [:vector [:map {:closed false}]]
                             :relationship-drafts [:vector [:map {:closed false}]]
@@ -1208,6 +1251,10 @@
                    ctx {:ontology-id ontology-id :embed-fields (:embed-fields mx) :model model})]
             {:status :ok :closed route
              :concept-drafts (:concept-drafts mx)
+             ;; MS-2 — THREAD the reconcile's status (previously `rc` was read
+             ;; only for :reconcile-report — a timed-out focal reconcile vanished
+             ;; into :status :ok). Never drop a non-:success.
+             :reconcile-status (:status rc)
              :reconcile-report (:reconcile-report rc)})))
 
       :reconcile
@@ -1218,7 +1265,11 @@
                      :concept-drafts [] :relationship-drafts []
                      :source-uri-sets source-uri-sets :model model})]
         {:status (if (= :success (:status rc)) :ok :failed)
-         :closed route :reconcile-report (:reconcile-report rc) :error (:error rc)})
+         :closed route
+         ;; MS-2 — the same :reconcile-status key as the :extract/:model route
+         ;; (uniform read across routes).
+         :reconcile-status (:status rc)
+         :reconcile-report (:reconcile-report rc) :error (:error rc)})
 
       :axiom
       ;; re-emit TBox axioms from the held candidate-axioms (no new extraction).
@@ -1387,6 +1438,38 @@
 ;; not a fork (discipline 8): no subbehavior or loop machinery is duplicated.
 ;; =============================================================================
 
+(defn source-report
+  "MS-2 — the PER-SOURCE outcome report (pure). Built from a per-source pipeline
+   entry (the model-extract return `mx` augmented with the CAPTURED
+   `:reconcile-result` / `:axiom-result` / `:embed-result` seam returns — which
+   were previously fire-and-forget: the 2026-07-11 all-5-sources forensic showed
+   4 sources extract ~230k drafts and land ZERO concepts because their reconcile
+   delegates timed out SILENTLY). A seam that never ran (its model-extract failed,
+   or the pipeline aborted upstream) reports `:not-run` — never a fabricated
+   status. `:landed` is read from the reconcile subbehavior's PUBLIC report shape
+   (`:reconcile-report :landed :concepts-emitted` — `reconcile_subbehavior.clj`
+   → `rlm_discovery.clj` discovery-provenance); nil when the reconcile failed or
+   the report doesn't carry it (nil, not a fabricated 0)."
+  [{:keys [source concept-drafts relationship-drafts
+           reconcile-result axiom-result embed-result]}]
+  {:source (select-keys source [:type :path])
+   :extracted {:concepts (count concept-drafts)
+               :relationships (count relationship-drafts)}
+   :reconcile {:status (or (:status reconcile-result) :not-run)
+               :landed (get-in reconcile-result
+                               [:reconcile-report :landed :concepts-emitted])}
+   :axiom {:status (or (:status axiom-result) :not-run)}
+   :embed {:status (or (:status embed-result) :not-run)}})
+
+(defn- reconcile-not-success?
+  "MS-2 — did this per-source pipeline entry's reconcile RUN and return
+   non-:success? (`:not-run` — the model-extract failed so reconcile never ran —
+   is NOT a reconcile failure; that source surfaces via model-extract's own
+   abort semantics.)"
+  [{:keys [reconcile-result]}]
+  (and (some? reconcile-result)
+       (not= :success (:status reconcile-result))))
+
 (defn- run-evolver-pipeline!
   "The shared evolver pipeline (EB10 STEP 2-6) both arms run. `mode` is
    `:greenfield` | `:maintain` (recorded on the result as `:mode`); `gf-branch` is
@@ -1510,29 +1593,48 @@
                                     :selected-containers (:selected-containers sel)
                                     :pipeline-sheet-id pipeline-sheet-id
                                     :model model :resilient? resilient?})]
-                       (when (= :success (:status mx))
-                         ;; LAND + RECONCILE (Reconcile lands the drafts via
-                         ;; compile-discovery-source! then entity/attr reconcile
-                         ;; AGAINST CURRENT GRAPH STATE — the maintain seam: an
-                         ;; existing entity reconciles-not-duplicates, a new
-                         ;; class/attr lands alongside the existing graph).
-                         (reconcile-fn ctx {:ontology-id ontology-id
-                                            :concept-drafts (:concept-drafts mx)
-                                            :relationship-drafts (:relationship-drafts mx)
-                                            :source-uri-sets source-uri-sets :model model})
-                         ;; AXIOM/TBox from the held candidate-axioms (NEW classes/
-                         ;; properties + how they relate to existing — TBox evolution).
-                         (axiom-fn ctx {:ontology-id ontology-id
-                                        :candidate-axioms (:candidate-axioms mx)
-                                        :model-spec (:model-spec mx) :model model})
-                         ;; EMBED+INDEX (guaranteed P2)
-                         (embed-fn ctx {:ontology-id ontology-id
-                                        :embed-fields (:embed-fields mx) :model model}))
-                       ;; MT-2 — carry THIS source's selection-report (drop reasons +
-                       ;; the rank-degraded flag) so the build surfaces it honestly
-                       ;; (no false-green: a silently-degraded LLM rank is VISIBLE).
-                       (assoc mx :source src :selection-report (:selection-report sel))))
+                       ;; MS-2 — the reconcile/axiom/embed returns are CAPTURED per
+                       ;; source (they were fire-and-forget: a reconcile that TIMED
+                       ;; OUT left the source "counted" with ZERO concepts landed and
+                       ;; the run still claimed the CQ loop's status — the 2026-07-11
+                       ;; all-5-sources silent-zero root cause). A non-:success
+                       ;; reconcile does NOT abort the run (deliberately unlike
+                       ;; model-extract: extraction failing means no data; reconcile
+                       ;; failing means data exists but didn't land, and the
+                       ;; REMAINING sources are independent — keep landing them).
+                       ;; The statuses surface via :source-reports + the final
+                       ;; :partial-reconcile status (below).
+                       (let [ok? (= :success (:status mx))
+                             ;; LAND + RECONCILE (Reconcile lands the drafts via
+                             ;; compile-discovery-source! then entity/attr reconcile
+                             ;; AGAINST CURRENT GRAPH STATE — the maintain seam: an
+                             ;; existing entity reconciles-not-duplicates, a new
+                             ;; class/attr lands alongside the existing graph).
+                             rc (when ok?
+                                  (reconcile-fn ctx {:ontology-id ontology-id
+                                                     :concept-drafts (:concept-drafts mx)
+                                                     :relationship-drafts (:relationship-drafts mx)
+                                                     :source-uri-sets source-uri-sets :model model}))
+                             ;; AXIOM/TBox from the held candidate-axioms (NEW classes/
+                             ;; properties + how they relate to existing — TBox evolution).
+                             ax (when ok?
+                                  (axiom-fn ctx {:ontology-id ontology-id
+                                                 :candidate-axioms (:candidate-axioms mx)
+                                                 :model-spec (:model-spec mx) :model model}))
+                             ;; EMBED+INDEX (guaranteed P2)
+                             em (when ok?
+                                  (embed-fn ctx {:ontology-id ontology-id
+                                                 :embed-fields (:embed-fields mx) :model model}))]
+                         ;; MT-2 — carry THIS source's selection-report (drop reasons +
+                         ;; the rank-degraded flag) so the build surfaces it honestly
+                         ;; (no false-green: a silently-degraded LLM rank is VISIBLE).
+                         (assoc mx :source src :selection-report (:selection-report sel)
+                                ;; MS-2 — the captured per-source seam returns.
+                                :reconcile-result rc :axiom-result ax :embed-result em))))
                    sources profiles)
+                  ;; MS-2 — the per-source outcome reports + the honest run status.
+                  source-reports (mapv source-report per-source)
+                  partial-reconcile? (boolean (some reconcile-not-success? per-source))
                   mx-fail (first (filter #(not= :success (:status %)) per-source))
                   ;; hold the last source's model-spec / candidate-axioms /
                   ;; embed-fields for the focal-close re-invokes.
@@ -1542,7 +1644,11 @@
                        {:status :failed-at-model-extract
                         :survey-profiles profiles
                         :error (:error mx-fail)
-                        :failed-source (:source mx-fail)})
+                        :failed-source (:source mx-fail)
+                        ;; MS-2 — the per-source outcomes are surfaced EVEN on the
+                        ;; model-extract abort (the mapv ran EVERY source; earlier
+                        ;; sources may have landed — that must be readable).
+                        :source-reports source-reports})
 
                 (let [;; --- STEP 4.5: GC-10 Fix B2 — GLOBAL family↔detail SKOS
                       ;;     hierarchy. Now that EVERY source has landed + reconciled,
@@ -1606,8 +1712,20 @@
                   (merge
                    envelope
                    (select-keys loop-result [:status :graph-health :cq-verdict :cq-loop])
+                   ;; MS-2 — HONEST final status: the run "completing" while ≥1
+                   ;; source's reconcile was non-:success means that source's
+                   ;; drafts NEVER LANDED. Surface :partial-reconcile instead of
+                   ;; claiming the CQ loop's status alone; the loop's own status
+                   ;; stays observable as :cq-loop-status.
+                   (when partial-reconcile?
+                     {:status :partial-reconcile
+                      :cq-loop-status (:status loop-result)})
                    {:survey-profiles profiles
                     :competency-questions (:competency-questions derive)
+                    ;; MS-2 — the per-source outcome reports (extracted counts +
+                    ;; reconcile/axiom/embed statuses + landed counts): a
+                    ;; zero-landed source is readable at a glance.
+                    :source-reports source-reports
                     ;; GC-10 Fix B2 — surface the family↔detail hierarchy bridging
                     ;; report (edge-count + honest truncation) so it is observable.
                     :hierarchy-report hierarchy-report
@@ -1663,16 +1781,25 @@
      + the injected loop/seam fns (tests stub them; production delegates for real).
 
    Returns:
-     {:status :complete | :failed-cq | :failed-at-survey | :failed-at-derive-cqs
-              | :failed-at-model-extract
+     {:status :complete | :partial-reconcile | :failed-cq | :failed-at-survey
+              | :failed-at-derive-cqs | :failed-at-model-extract
       :mode :greenfield | :maintain           ; which arm ran (EB11)
       :ontology-id :goal :graph-health :cq-verdict
       :branch-points {:greenfield-vs-maintain <DT9 decision>}
       :survey-profiles [<per-source profile> …]
       :competency-questions [<CQ> …]
+      :source-reports [{:source {:type :path}          ; MS-2 — per-source outcomes
+                        :extracted {:concepts N :relationships N}
+                        :reconcile {:status <kw> :landed <N-or-nil>}
+                        :axiom {:status <kw>} :embed {:status <kw>}} …]
       :build-result <verbatim build! result>
       :cq-loop {:iterations :termination-reason :unanswerable-cqs :history}}
    A subbehavior failure surfaces honestly as :failed-at-<step> (#5; no false green).
+   MS-2 — a run that reached the end with ≥1 source's reconcile non-:success is
+   :status :partial-reconcile (that source's drafts NEVER landed — never claim the
+   CQ loop's status alone); the loop's own status stays on :cq-loop-status, and the
+   run CONTINUES past a failed reconcile data-maximizing (later sources are
+   independent — unlike model-extract's abort semantics, which are unchanged).
 
    EB11: BOTH the greenfield AND the maintain arm now run the SHARED
    `run-evolver-pipeline!` (the maintain arm was flipped from `maintain-deferred-

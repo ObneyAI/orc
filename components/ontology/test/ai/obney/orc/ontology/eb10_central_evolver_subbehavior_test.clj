@@ -34,6 +34,7 @@
             [ai.obney.orc.ontology.core.deterministic-skeleton :as skeleton]
             [ai.obney.orc.ontology.core.model-subbehavior :as model]
             [ai.obney.orc.ontology.core.extract-subbehavior :as extract]
+            [ai.obney.orc.ontology.core.reconcile-subbehavior :as reconcile]
             [ai.obney.orc.ontology.core.central-evolver :as ce]
             [malli.core :as m]))
 
@@ -1025,6 +1026,221 @@
             "nil cap is forwarded as nil (the extract's default is the only source)")
         (is (nil? (get inputs "max-windows"))
             "nil window cap is forwarded as nil (the extract's default is the only source)")))))
+
+;; =============================================================================
+;; MS-2 — per-source outcome surfacing (:source-reports) + honest
+;; :partial-reconcile. Root cause (2026-07-11 all-5-sources forensic): the
+;; per-source reconcile/axiom/embed returns were DISCARDED — 4 sources extracted
+;; ~230k drafts but landed ZERO concepts because their reconcile delegates timed
+;; out SILENTLY, and the run still claimed the CQ loop's status. The pipeline now
+;; CAPTURES each seam's return per source, surfaces them as :source-reports on
+;; the envelope, and a non-:success reconcile flips the FINAL status to
+;; :partial-reconcile while the run CONTINUES data-maximizing (later sources are
+;; independent — reconcile failing ≠ extraction failing).
+;; =============================================================================
+
+(defn- ms2-config
+  "The stubbed-seam config for the MS-2 pipeline tests. `reconcile-fn` is
+   injectable so a single source's reconcile can fail while the rest land."
+  [oid reconcile-fn]
+  {:ontology-id oid
+   :sources [{:type :csv :path "a.csv"}
+             {:type :excel :path "b.xlsx"}
+             {:type :sql :path "c.db"}]
+   :goal "g"
+   :survey-fn (fn [_ _] {:status :success :profile {}})
+   :derive-cqs-fn (fn [_ _] {:status :success :competency-questions ["Q1"]})
+   :synthesize-vocab-fn (fn [_ _] {:status :success :vocabulary {}})
+   :model-extract-fn (fn [_ _] {:status :success
+                                :concept-drafts [{:uri "concept:a" :label "A"}
+                                                 {:uri "concept:b" :label "B"}]
+                                :relationship-drafts [{:from "concept:a" :to "concept:b"}]
+                                :embed-fields [] :model-spec {}
+                                :candidate-axioms {:axioms []}})
+   :reconcile-fn reconcile-fn
+   :axiom-fn (fn [_ _] {:status :success})
+   :embed-fn (fn [_ _] {:status :success})
+   :build-fn (fn [_ _] {:status :complete})
+   :gate-fn (fn [_ _] {:graph-health {:pass-rate 1.0 :unknown-rate 0.0}
+                       :evaluated [{:cq-text "Q1" :verdict :pass}]
+                       :cq-verdict [{:cq-text "Q1" :verdict :pass}]})})
+
+(deftest ms2-timed-out-reconcile-surfaces-in-source-reports-and-partial-status-test
+  (testing "source 2 of 3's reconcile returns :timeout → its :source-reports entry
+            carries :reconcile {:status :timeout}; sources 1+3 land normally
+            (:success + the landed count from the reconcile report); the pipeline
+            CONTINUES to source 3 (data-maximizing — no abort); the FINAL status is
+            :partial-reconcile (honest — never the CQ loop's status alone)."
+    (h/with-async-test-context [ctx]
+      (let [oid (random-uuid)
+            calls (atom 0)
+            reconcile-fn (fn [_ _]
+                           (let [n (swap! calls inc)]
+                             (if (= 2 n)
+                               {:status :timeout :error "Execution timed out"}
+                               {:status :success
+                                :reconcile-report {:landed {:status :ingested
+                                                            :concepts-emitted 2
+                                                            :relationships-emitted 1}}})))
+            result (ce/run-central-evolver! ctx (ms2-config oid reconcile-fn))
+            reports (:source-reports result)]
+        (is (= 3 @calls) "the pipeline CONTINUED past the failed reconcile (source 3 ran)")
+        (is (= 3 (count reports)) "one report per source, in source order")
+        (is (= [{:type :csv :path "a.csv"}
+                {:type :excel :path "b.xlsx"}
+                {:type :sql :path "c.db"}]
+               (mapv :source reports))
+            "each report identifies its source (type + path)")
+        (is (= {:concepts 2 :relationships 1} (:extracted (first reports)))
+            "the extracted draft counts are surfaced per source")
+        (is (= :timeout (get-in reports [1 :reconcile :status]))
+            "the FAILED source's reconcile status is VISIBLE (never silently dropped)")
+        (is (= :success (get-in reports [0 :reconcile :status])))
+        (is (= :success (get-in reports [2 :reconcile :status])))
+        (is (= 2 (get-in reports [0 :reconcile :landed]))
+            "a successful reconcile surfaces its landed concept count")
+        (is (nil? (get-in reports [1 :reconcile :landed]))
+            "a failed reconcile has no landed count (nil, not a fabricated 0)")
+        (is (= :success (get-in reports [0 :axiom :status])))
+        (is (= :success (get-in reports [0 :embed :status])))
+        (is (= :partial-reconcile (:status result))
+            "≥1 non-:success reconcile → the run status is :partial-reconcile, NOT
+             the CQ loop's status alone (the silent-zero-landing root cause)")
+        (is (some? (:cq-verdict result))
+            "the CQ fields stay on the envelope (the loop still ran)")))))
+
+(deftest ms2-all-success-reconciles-keep-todays-status-test
+  (testing "regression guard: all reconciles :success → :source-reports is complete
+            AND the overall status is unchanged from today's behavior (:complete via
+            the CQ path)"
+    (h/with-async-test-context [ctx]
+      (let [oid (random-uuid)
+            reconcile-fn (fn [_ _]
+                           {:status :success
+                            :reconcile-report {:landed {:status :ingested
+                                                        :concepts-emitted 2
+                                                        :relationships-emitted 1}}})
+            result (ce/run-central-evolver! ctx (ms2-config oid reconcile-fn))
+            reports (:source-reports result)]
+        (is (= :complete (:status result))
+            "all-success reconciles → today's status (no behavior change)")
+        (is (= 3 (count reports)))
+        (is (every? #(= :success (get-in % [:reconcile :status])) reports))
+        (is (every? #(= 2 (get-in % [:reconcile :landed])) reports))
+        (is (every? #(= {:concepts 2 :relationships 1} (:extracted %)) reports))))))
+
+;; =============================================================================
+;; MS-2 — GC-8-size the RECONCILE delegate timeout. Root cause: delegate-reconcile!
+;; passed no :timeout-ms → the flat 180s delegate-subbehavior! default, while
+;; reconcile's real work is up to default-max-probe (2000) SEQUENTIAL hybrid-search
+;; probes at ≥1.5s each against a populated graph → EVERY post-first source's
+;; reconcile timed out. The budget now DERIVES from the draft count the reconcile
+;; will probe (mirrors model-extract-timeout-ms — never a magic literal).
+;; =============================================================================
+
+(deftest ms2-reconcile-timeout-derives-from-draft-count-test
+  (testing "reconcile-timeout-ms = (min(draft-count, default-max-probe) ×
+            per-probe-budget-ms) + overhead — named knobs, floor, scaling, and the
+            max-probe cap (the probe work is bounded by GC-7's cap, so the budget
+            is too). Mirrors the GC-8 model-extract budget tests — derived, never
+            a pinned literal."
+    ;; the knobs exist and are named legibly (per-probe covers the observed ≥1.5s
+    ;; probe on a populated graph; overhead covers land + entity/attr reconcile).
+    (is (number? ce/per-probe-budget-ms) "the per-probe budget is a named knob")
+    (is (>= ce/per-probe-budget-ms 1500)
+        "the per-probe budget covers the observed ≥1.5s hybrid-search probe")
+    (is (number? ce/reconcile-overhead-budget-ms) "the overhead budget is a named knob")
+    ;; FLOOR: zero drafts → the overhead alone (never 0, never negative).
+    (is (= ce/reconcile-overhead-budget-ms (ce/reconcile-timeout-ms {:draft-count 0}))
+        "a zero-draft reconcile's ceiling is the overhead floor")
+    (is (= (ce/reconcile-timeout-ms {:draft-count 0}) (ce/reconcile-timeout-ms {}))
+        "absent :draft-count degrades to the floor (never throws)")
+    ;; DERIVES: the budget grows by exactly per-probe-budget-ms per extra draft.
+    (let [small (ce/reconcile-timeout-ms {:draft-count 100})
+          large (ce/reconcile-timeout-ms {:draft-count 500})]
+      (is (< small large) "more drafts → a larger ceiling (it scales)")
+      (is (= (- large small) (* 400 ce/per-probe-budget-ms))
+          "the budget grows by exactly per-probe-budget-ms per extra draft"))
+    ;; CAPS at default-max-probe: beyond the GC-7 probe cap the reconcile does NO
+    ;; more probe work, so the ceiling stops growing (honest, not unbounded).
+    (is (= (ce/reconcile-timeout-ms {:draft-count reconcile/default-max-probe})
+           (ce/reconcile-timeout-ms {:draft-count (+ reconcile/default-max-probe 50000)}))
+        "the ceiling is capped at the GC-7 probe cap (the real bounded work)")
+    ;; the capped ceiling comfortably exceeds the flat 180s that silently cut
+    ;; every post-first source's reconcile (the whole point of MS-2 fix 3).
+    (is (> (ce/reconcile-timeout-ms {:draft-count reconcile/default-max-probe}) 180000)
+        "at the probe cap the ceiling is >> the flat 180s that was failing")))
+
+(deftest ms2-delegate-reconcile-passes-the-derived-timeout-test
+  (testing "delegate-reconcile! passes the DRAFT-COUNT-derived :timeout-ms to
+            delegate-subbehavior! (the deref-timeout that silently cut every
+            post-first source at the flat 180s default). Reverting the override
+            makes this RED. Captured via a stubbed delegate-subbehavior!
+            (the eb10 GC-8 capture pattern)."
+    (h/with-async-test-context [ctx]
+      (let [captured (atom [])
+            stub (fn [_ctx opts]
+                   (swap! captured conj (:timeout-ms opts))
+                   {:status :success :outputs {} :tick-id (random-uuid)})
+            drafts (fn [n] (mapv (fn [i] {:uri (str "concept:" i) :label (str i)})
+                                 (range n)))]
+        (with-redefs [ce/delegate-subbehavior! stub]
+          ;; an empty reconcile (the focal :reconcile re-link path)
+          (ce/delegate-reconcile! ctx {:ontology-id (random-uuid)
+                                       :concept-drafts [] :relationship-drafts []})
+          ;; a mid-size batch
+          (ce/delegate-reconcile! ctx {:ontology-id (random-uuid)
+                                       :concept-drafts (drafts 300)
+                                       :relationship-drafts []})
+          ;; beyond the GC-7 probe cap
+          (ce/delegate-reconcile! ctx {:ontology-id (random-uuid)
+                                       :concept-drafts (drafts (+ reconcile/default-max-probe 100))
+                                       :relationship-drafts []}))
+        (let [[empty-t mid-t capped-t] @captured]
+          (is (= (ce/reconcile-timeout-ms {:draft-count 0}) empty-t)
+              "an empty reconcile gets the floor ceiling (not the flat 180s)")
+          (is (= (ce/reconcile-timeout-ms {:draft-count 300}) mid-t)
+              "the passed :timeout-ms derives from the ACTUAL draft count handed in")
+          (is (> mid-t 180000)
+              "a 300-draft reconcile's ceiling is >> the flat 180s that was failing")
+          (is (= (ce/reconcile-timeout-ms {:draft-count reconcile/default-max-probe}) capped-t)
+              "beyond the probe cap the passed ceiling is the capped budget"))))))
+
+(deftest ms2-focal-close-threads-the-reconcile-status-test
+  (testing "focal-close! (:extract/:model route) THREADS its reconcile's status
+            into the return (:reconcile-status) — previously `rc` was read only
+            for :reconcile-report and a timed-out focal reconcile vanished into
+            :status :ok. The :reconcile route (whose :status already reflects the
+            reconcile) carries it too, for a uniform read."
+    (h/with-async-test-context [ctx]
+      (let [oid (random-uuid)
+            base {:route :extract :ontology-id oid :source {:type :csv :path "x"}
+                  :goal "g" :profile {} :vocabulary nil
+                  :pipeline-sheet-id (random-uuid) :source-uri-sets nil}
+            seams (fn [reconcile-status]
+                    {:model-extract-fn (fn [_ _] {:status :success
+                                                  :concept-drafts [{:uri "concept:a"}]
+                                                  :relationship-drafts [] :embed-fields []
+                                                  :model-spec {} :candidate-axioms {:axioms []}})
+                     :reconcile-fn (fn [_ _] {:status reconcile-status
+                                              :reconcile-report {:landed {:concepts-emitted 1}}})
+                     :axiom-fn (fn [_ _] {:status :success})
+                     :embed-fn (fn [_ _] {:status :success})})]
+        ;; a SUCCESSFUL focal reconcile → :reconcile-status :success on the return
+        (let [r (#'ce/focal-close! ctx (assoc base :seams (seams :success)))]
+          (is (= :ok (:status r)))
+          (is (= :success (:reconcile-status r))
+              "the reconcile status is threaded on the success path"))
+        ;; a TIMED-OUT focal reconcile → the non-:success status is NEVER dropped
+        (let [r (#'ce/focal-close! ctx (assoc base :seams (seams :timeout)))]
+          (is (= :timeout (:reconcile-status r))
+              "a non-:success focal reconcile is VISIBLE on the return"))
+        ;; the :reconcile route carries it too (uniform read across routes)
+        (let [r (#'ce/focal-close! ctx (assoc base :route :reconcile
+                                              :seams (seams :timeout)))]
+          (is (= :failed (:status r)) "the :reconcile route's abort semantics stand")
+          (is (= :timeout (:reconcile-status r))
+              "the :reconcile route surfaces the same :reconcile-status key"))))))
 
 (deftest gc9-smaller-cap-yields-smaller-budget-gc8-unaffected-test
   (testing "GC-8 STILL scales: the reduced container cap (6) yields a SMALLER

@@ -20,4 +20,33 @@
             ;; orc-ontology project's classloader within the same test JVM
             ;; fails with NoClassDefFoundError (tokenizers natives already
             ;; loaded in the orc project's classloader). Run them once.
-            "orc-ontology" {:test {:include []}}}}
+            "orc-ontology" {:test {:include []}}
+            ;; orc-evaluation is likewise a deps-only packaging project whose
+            ;; brick tests (evaluation + orc-service) already run under the orc
+            ;; project. Re-running orc-service's suite here also hits a
+            ;; pre-existing composition gap (present on main): the project
+            ;; declares no gepa brick, but orc-service's
+            ;; end-to-end-integration-test requires gepa.interface →
+            ;; FileNotFoundException ("Couldn't run test statement") the moment
+            ;; any orc-service change makes poly re-run the suite in this
+            ;; context (first hit: MS-2's runtime.clj change, 2026-07-14).
+            "orc-evaluation" {:test {:include []}}
+            ;; orc-gepa: same deps-only packaging story. Its duplicate run of
+            ;; orc-service's suite hits the second-classloader JDBC gap —
+            ;; DriverManager/ServiceLoader registers the sqlite driver in the
+            ;; FIRST project classloader only, so mc1-container-contract-test
+            ;; errors "No suitable driver" in this context (latent until
+            ;; 2026-07-14: the flaky s20 baseline passing let poly run past its
+            ;; old abort point into this project for the first time).
+            "orc-gepa" {:test {:include []}}
+            ;; orc-mcp-sheet-builder + orc-service: the remaining deps-only
+            ;; packaging projects. Their duplicate runs of orc-service's suite
+            ;; require bricks they deliberately don't package (r05b-wedge test →
+            ;; ontology.interface; e2e test → gepa.interface) → "Couldn't run
+            ;; test statement" the moment poly reaches them. ALL brick tests run
+            ;; under the orc umbrella project — the only context composing every
+            ;; test dependency. (Family completed 2026-07-14; each member was
+            ;; latent until the flaky s20 baseline passed and poly ran past its
+            ;; old abort point.)
+            "orc-mcp-sheet-builder" {:test {:include []}}
+            "orc-service" {:test {:include []}}}}

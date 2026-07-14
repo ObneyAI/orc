@@ -1,17 +1,17 @@
-(ns full-onet-build
-  "FULL uncapped O*NET graph-B build (the culmination). Reuses the eb12 harness's
-   own ctx + analysis helpers, but PRESERVES the SQLite store on completion (eb12
-   `run!` deletes it in its finally) so the graph can be INDEPENDENTLY re-read /
-   verified afterward (connectivity-verdict, node-origin, embed accounting).
+(ns full-graph-b-all-sources
+  "THE PLANNED DELIVERABLE — full Graph-B build over ALL FIVE official sources
+   (ipeds SQLite + cip/soc crosswalk CSV + O*NET Excel + Louisiana wages CSV +
+   pseo Excel), uncapped (default 25/50 coverage-ranked), sqlite PRESERVED.
+   This is the BRYC-comparison Graph B: same sources the hand-made A2 graph
+   models, one domain goal, no per-source recipes.
 
-   Config: onet-only, DEFAULT caps (nil → the extract's own 25 containers / 50
-   windows — the MT-12 coverage ranker selects the high-relevance connecting
-   sheets), PERSISTENT :sqlite, generous per-source budget so extraction of the
-   connecting sheets is NOT starved (the earlier disconnection root cause), the
-   embed phase now O(n) (~1100 concepts/s) so the CQ loop terminates.
+   Mirrors full-onet-build's PRESERVE + cache-warm + manifest pattern; differs
+   only in: srcs = (h/sources) ALL FIVE, and a 60-min CQ-loop budget (the
+   5-source graph is bigger than O*NET-only's 38k concepts — give the gate
+   room to judge rather than guaranteeing :budget-exhausted).
 
    USAGE (detached): OPENROUTER_API_KEY=… nohup clj -J-Xmx10g -M:dev:test \\
-                       -m full-onet-build > /tmp/full-onet-build.log 2>&1 &"
+                       -m full-graph-b-all-sources > /tmp/full-graph-b-all.log 2>&1 &"
   (:require [eb12-graph-b-central-evolver :as h]
             [ai.obney.orc.ontology.core.central-evolver :as ce]
             [ai.obney.orc.ontology.core.read-models :as rm]
@@ -29,13 +29,13 @@
         oid     (random-uuid)
         db-file (:eb12-graph-b-central-evolver/db-file ctx)
         tenant  (:tenant-id ctx)
-        onet    (first (filter #(= :onet (:name %)) (h/sources)))
-        srcs    [(select-keys onet [:type :path])]
-        budget  {:max-iterations 40 :total-budget-ms 1800000 :max-retries 3}]
-    (println "=== FULL O*NET GRAPH-B BUILD (uncapped, sqlite PRESERVED) ===")
+        srcs    (mapv #(select-keys % [:type :path]) (h/sources))
+        budget  {:max-iterations 40 :total-budget-ms 3600000 :max-retries 3}]
+    (println "=== FULL GRAPH-B BUILD — ALL 5 SOURCES (uncapped, sqlite PRESERVED) ===")
     (println "oid    :" oid)
     (println "tenant :" tenant)
     (println "db-file:" db-file "  (PRESERVED for independent forensics)")
+    (println "sources:" (mapv :name (h/sources)))
     (println "budget :" budget "  caps: default (25/50)  model:" h/default-model)
     (let [t0 (System/currentTimeMillis)
           result (ce/run-central-evolver!
@@ -64,31 +64,25 @@
       (pp/pprint (try (h/connectivity-proof ctx oid) (catch Throwable t {:error (.getMessage t)})))
       (println "\n>>> cq-loop / verdict")
       (pp/pprint (select-keys result [:cq-verdict :graph-health]))
-      ;; WARM the L2 (LMDB) read-model cache: a full rmp/project pass over the graph's
-      ;; concepts + relationships materializes the projection into the cache with an
-      ;; up-to-date watermark, so a FRESH process pointing at this db + cache replays
-      ;; only events newer than the watermark (none) instead of re-folding the whole
-      ;; event log (ARCHITECTURE-ONTOLOGY invariant #1: the graph is a cached projection).
       (println "\n>>> warming the L2 read-model cache (concepts + relationships)…")
       (let [cw (System/currentTimeMillis)
             nc (count (rm/get-concepts ctx {}))
             nr (count (rm/get-relationships ctx))]
         (println "  cached concepts:" nc " relationships:" nr
                  " (" (- (System/currentTimeMillis) cw) "ms to project+cache)"))
-      ;; PRESERVE the db + cache dir (a MANIFEST records the reuse coordinates), closing
-      ;; store/cache/pubsub WITHOUT stop-ctx's file deletion.
       (let [cache-dir (when db-file (str/replace db-file #"-events\.db$" ""))
             manifest {:oid oid :tenant tenant :db-file db-file :cache-dir cache-dir
+                      :sources (mapv :name (h/sources))
                       :status (:status result)}]
         (es/stop (:event-store ctx))
         (kv/stop (:cache ctx))
         (pubsub/stop (:event-pubsub ctx))
-        (spit "/tmp/orc-onet-graph.manifest.edn" (pr-str manifest))
+        (spit "/tmp/orc-graph-b-all-sources.manifest.edn" (pr-str manifest))
         (println "\n=== BUILD COMPLETE — store + L2 cache PRESERVED ===")
         (println "OID:" oid)
         (println "TENANT:" tenant)
         (println "DB-FILE  :" db-file)
         (println "CACHE-DIR:" cache-dir)
-        (println "MANIFEST :" "/tmp/orc-onet-graph.manifest.edn")))
+        (println "MANIFEST :" "/tmp/orc-graph-b-all-sources.manifest.edn")))
     (shutdown-agents)
     (System/exit 0)))

@@ -290,9 +290,22 @@
             duration-ms (- (System/currentTimeMillis) start-time)]
         (swap! completion-registry dissoc tick-id)
         (if (= result ::timeout)
-          {:status :timeout
-           :error "Execution timed out"
-           :duration-ms duration-ms}
+          (do
+            ;; MS-2 — best-effort CANCEL the still-running tick (cascades to its
+            ;; known child ticks via streaming/cancel!'s lineage walk) instead of
+            ;; abandoning it. An abandoned tick keeps executing — zombie
+            ;; reconcilers past their delegate deref-timeout starved the
+            ;; 4-connection sqlite pool (2026-07-11 forensic, Hikari total=4,
+            ;; active=4 cascade). requiring-resolve avoids the static require
+            ;; cycle (streaming requires runtime); failures are swallowed —
+            ;; cancellation is best-effort, the honest :timeout return stands.
+            (try
+              ((requiring-resolve 'ai.obney.orc.orc-service.core.streaming/cancel!)
+               context tick-id)
+              (catch Throwable _ nil))
+            {:status :timeout
+             :error "Execution timed out"
+             :duration-ms duration-ms})
           (cond-> (assoc result :duration-ms duration-ms)
             ;; Fold the C-2c-2 auto-classification envelope when an
             ;; :ontology/task-classified event was emitted during this tick.

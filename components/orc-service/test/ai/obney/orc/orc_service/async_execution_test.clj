@@ -5,6 +5,7 @@
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]))
 
 ;; =============================================================================
@@ -27,6 +28,12 @@
   (let [x (get inputs :x)]
     {:doubled (* x 2)
      :squared (* x x)}))
+
+(defn slow-fn
+  "Sleeps well past the caller's deref-timeout — the zombie-tick scenario."
+  [{:keys [inputs]}]
+  (Thread/sleep 3000)
+  {:output (get inputs :input)})
 
 ;; =============================================================================
 ;; Helper: build sheet and dispatch async execution
@@ -134,6 +141,41 @@
         (is (= :success (:status result2)))
         (is (= "first" (get (:outputs result1) :output)))
         (is (= "second" (get (:outputs result2) :output)))))))
+
+(deftest deref-timeout-cancels-the-abandoned-tick-test
+  (testing "MS-2 — when runtime/execute's deref times out, the still-running tick
+            is best-effort CANCELLED (cascading to known child ticks), not
+            abandoned. Root cause (2026-07-11 all-5-sources forensic): abandoned
+            zombie reconcilers kept running past their delegate's deref-timeout
+            and starved the 4-connection sqlite pool (Hikari total=4, active=4)."
+    (h/with-async-test-context [ctx]
+      (let [{:keys [sheet-id]} (setup-simple-sheet!
+                                ctx
+                                :fn-sym "ai.obney.orc.orc-service.async-execution-test/slow-fn")
+            tick-id (random-uuid)
+            result (runtime/execute ctx sheet-id {:input "x"}
+                                    :timeout-ms 500 :tick-id tick-id)]
+        (is (= :timeout (:status result)) "the caller still gets the honest :timeout")
+        ;; the abandoned tick received the cancellation marker: the
+        ;; :sheet/tick-cancelled event exists for THIS tick (the same assertion
+        ;; style as phase2-timeout-dispatches-cancel-tick / streaming cancel!).
+        (let [deadline (+ (System/currentTimeMillis) 3000)
+              cancelled-ids (loop []
+                              (let [ids (->> (es/read (:event-store ctx)
+                                                      {:types #{:sheet/tick-cancelled}
+                                                       :tenant-id (:tenant-id ctx)})
+                                             (into [])
+                                             (map :tick-id)
+                                             set)]
+                                (if (or (contains? ids tick-id)
+                                        (> (System/currentTimeMillis) deadline))
+                                  ids
+                                  (do (Thread/sleep 100) (recur)))))]
+          (is (contains? cancelled-ids tick-id)
+              (str "expected a :sheet/tick-cancelled event for the timed-out tick "
+                   tick-id ", got " cancelled-ids)))
+        (is (rm/is-tick-cancelled? ctx tick-id)
+            "the tick read model shows the abandoned tick as :cancelled")))))
 
 (deftest async-tick-scoped-blackboard-test
   (testing "execution-value-written events are scoped to tick"
