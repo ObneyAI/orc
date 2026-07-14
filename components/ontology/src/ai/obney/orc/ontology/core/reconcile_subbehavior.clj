@@ -133,6 +133,20 @@
    `:max-probe`."
   2000)
 
+(def default-probe-budget-ms
+  "MS-3 — the default WALL-CLOCK budget (ms) for the check-before-mint probe's
+   hybrid-search loop: 10 minutes. The cap (`default-max-probe`) bounds the probe
+   by COUNT; against a populated graph each hybrid-search was observed at ≥1.5 s,
+   so 2,000 probes can still cost ~50+ min per source — the latency that (before
+   MS-2's timeout sizing) silently killed 4 of 5 sources. The budget bounds the
+   probe by TIME: once exceeded, the REMAINING drafts degrade to the free
+   exact-uri-only treatment and `:probe-coverage` reports
+   `{:budget-exceeded? true :hybrid-probed N ...}` — never a silent stop
+   (Discipline 5). Identity is not weakened: `:exact-uri?` stays computed for
+   every draft, and the deterministic S12 cascade still adjudicates after
+   landing. Overridable per-call with `:probe-budget-ms` (nil disables)."
+  600000)
+
 (defn check-before-mint-probe
   "DEEPENING 1 — for each incoming concept-draft, probe the CURRENT graph via the
    reused P3 `hybrid-search` (graph BFS + embedding + ColBERT via RRF) for an
@@ -175,21 +189,46 @@
                  :existing-uri :existing-label :score
                  :match?    <bool>         ; an OTHER existing node was surfaced
                  :exact-uri? <bool>         ; draft URI already in the graph
-                 :hybrid-probed? <bool>}]   ; the full P3 search ran (vs cap-skipped)
-      :probe-coverage {...}}                 ; GC-7 honest coverage report
+                 :hybrid-probed? <bool>}]   ; the full P3 search ran (vs skipped)
+      :probe-coverage {...}}                 ; GC-7 + MS-3 honest coverage report
+
+   MS-3 (1) — EXACT-URI FAST PATH: a draft whose `:uri` is already in the
+   pre-existing graph is a reconcile-into-existing REGARDLESS of what the probe
+   would say — the hybrid search adds no decision value, so it is SKIPPED
+   entirely for that draft (`:exact-uri? true`, `:hybrid-probed? false`) and
+   does NOT consume the `:max-probe` cap. On cross-source runs (e.g. crosswalk
+   drafts referencing existing occupation/program URIs minted by earlier
+   sources — GC-1 canonical URIs make these collide by design) MOST drafts take
+   this path. The split is reported in `:probe-coverage :exact-uri-skipped`.
+
+   MS-3 (2) — BATCHED QUERY EMBEDDINGS: the to-probe drafts' query texts are
+   embedded in ONE batched call (`embed-texts-batch`) and each `hybrid-search`
+   receives its vector via `:query-embedding`, skipping the slow per-call
+   single-item embed. Same vector, computed cheaper — no search-semantics
+   change. Skipped when the embedding signal is off; a text that embeds to nil
+   falls back to per-call behavior.
+
+   MS-3 (3) — WALL-CLOCK BUDGET: `:probe-budget-ms` (default
+   `default-probe-budget-ms`, 10 min; nil disables) bounds the probe loop by
+   TIME. Once exceeded, the remaining drafts degrade to the exact-uri-only
+   treatment and `:probe-coverage` carries `:budget-exceeded? true` — never a
+   silent stop.
 
    GC-7 — the per-draft `hybrid-search` is bounded by `:max-probe` (default
-   `default-max-probe`): at most that many drafts get the full P3 search. The
-   strongest signal — `:exact-uri?` (the draft already resolves in the REAL graph)
-   — is a free set lookup and is computed for EVERY draft regardless of the cap, so
-   the reconcile-not-duplicate seam is never lost; and the deterministic S12 cascade
+   `default-max-probe`): at most that many drafts get the full P3 search (the
+   FIRST `cap` drafts that are NOT exact-uri hits — the cap is spent on
+   genuinely-new drafts). The strongest signal — `:exact-uri?` (the draft
+   already resolves in the REAL graph) — is a free set lookup and is computed
+   for EVERY draft regardless of the cap or budget, so the
+   reconcile-not-duplicate seam is never lost; and the deterministic S12 cascade
    still adjudicates identity after landing for all drafts. Drafts beyond the cap
    carry `:hybrid-probed? false` (their embedding/ColBERT signal was not run) and the
    reduction is reported honestly in `:probe-coverage` (no silent skip — Discipline
    5). `:max-probe` nil/`:all` disables the cap (the original full-probe behavior)."
   [ctx {:keys [ontology-id concept-drafts pre-existing-uris signals colbert-index-id
-               max-probe]
-        :or {max-probe default-max-probe}
+               max-probe probe-budget-ms]
+        :or {max-probe default-max-probe
+             probe-budget-ms default-probe-budget-ms}
         :as _params}]
   (when-not ontology-id
     (throw (ex-info "check-before-mint-probe requires :ontology-id (the granted scope)"
@@ -202,21 +241,77 @@
                              (:colbert-index-id
                               (ontology/get-colbert-index-for-ontology ctx ontology-id)))
         drafts (vec (or concept-drafts []))
-        ;; GC-7 — the hybrid-search cap. nil / :all disables it (full-probe). The
-        ;; FIRST `cap` drafts get the full P3 search; the rest get only the free
-        ;; exact-uri? lookup (honest coverage reported below).
+        ;; GC-7 — the hybrid-search cap. nil / :all disables it (full-probe).
         cap (when (and (number? max-probe) (nat-int? max-probe)) max-probe)
+        ;; MS-3 (3) — the wall-clock budget. nil disables it (count-cap only).
+        budget-ms (when (number? probe-budget-ms) probe-budget-ms)
+        ;; MS-3 (1) — the exact-URI fast path. A draft whose :uri is ALREADY in
+        ;; the pre-existing graph is a reconcile-into-existing REGARDLESS of what
+        ;; the probe would say — the hybrid search adds no decision value, so it
+        ;; is skipped entirely and does NOT consume the cap (the cap is spent on
+        ;; genuinely-NEW drafts). On cross-source runs (e.g. crosswalk drafts
+        ;; referencing occupation/program URIs minted by earlier sources — GC-1
+        ;; canonical URIs make these collide by design) MOST drafts take this
+        ;; path, which is the big latency win on incremental/maintain runs.
+        ;; The FIRST `cap` NON-exact drafts get the full P3 search; the rest get
+        ;; only the free exact-uri? lookup (honest coverage reported below).
+        probe-candidate-idxs (into []
+                                   (keep-indexed
+                                    (fn [i d]
+                                      (when-not (contains? pre-existing (:uri d)) i))
+                                    drafts))
+        to-probe-idxs (vec (if cap (take cap probe-candidate-idxs) probe-candidate-idxs))
+        to-probe-idx? (set to-probe-idxs)
+        ;; the probe's query text — the draft's own CONTENT (see docstring). One
+        ;; helper so the batched embed below and the per-draft :query-text are
+        ;; guaranteed to embed the SAME string.
+        draft-query-text (fn [{:keys [label description]}]
+                           (str (or label "") " " (or description "")))
+        ;; MS-3 (2) — ONE batched embed for the to-probe drafts' query texts (the
+        ;; ME batched DJL path, ~4.5x over single-item), threaded to each
+        ;; hybrid-search via :query-embedding so its per-call single-item embed is
+        ;; skipped. Same vector, computed cheaper — NO search-semantics change.
+        ;; Only when the embedding signal is actually enabled (a restricted
+        ;; :signals set without :embedding — e.g. the hermetic #{:graph :lexical}
+        ;; gate — must not touch the embedding model at all). Nil-safe: a text
+        ;; that embeds to nil simply gets no :query-embedding (per-call fallback).
+        embedding-signal? (or (nil? signals) (contains? signals :embedding))
+        query-embeddings (when (and embedding-signal? (seq to-probe-idxs))
+                           (zipmap to-probe-idxs
+                                   (or (ontology/embed-texts-batch
+                                        (mapv #(draft-query-text (nth drafts %)) to-probe-idxs))
+                                       [])))
+        ;; MS-3 (3) — wall-clock accounting for the probe loop. `budget-exceeded?`
+        ;; flips (once, monotonically) the first time a WOULD-BE probe finds the
+        ;; budget spent; every later draft degrades to the exact-uri-only
+        ;; treatment. The check runs ONLY for genuine probe candidates, so a
+        ;; probe with nothing left to search never reports a spurious exceed.
+        start-ms (System/currentTimeMillis)
+        budget-exceeded? (volatile! false)
+        within-budget? (fn []
+                         (and (not @budget-exceeded?)
+                              (or (nil? budget-ms)
+                                  (< (- (System/currentTimeMillis) start-ms) budget-ms)
+                                  (do (vreset! budget-exceeded? true) false))))
         entries
         (vec
          (map-indexed
-          (fn [idx {:keys [uri label description] :as _draft}]
-            (let [run-hybrid? (or (nil? cap) (< idx cap))
+          (fn [idx {:keys [uri label] :as draft}]
+            (let [exact? (contains? pre-existing uri)
+                  run-hybrid? (boolean (and (not exact?)
+                                            (to-probe-idx? idx)
+                                            (within-budget?)))
                   hits (when run-hybrid?
-                         (let [res (ontology/hybrid-search
-                                    ctx (cond-> {:query-text (str (or label "") " " (or description ""))
+                         (let [query-embedding (get query-embeddings idx)
+                               res (ontology/hybrid-search
+                                    ctx (cond-> {:query-text (draft-query-text draft)
                                                  :ontology-id ontology-id
                                                  :limit 5
                                                  :min-similarity probe-min-similarity}
+                                          ;; MS-3 (2) — the precomputed (batched)
+                                          ;; query vector; absent/nil → hybrid-search
+                                          ;; embeds per-call (today's behavior).
+                                          query-embedding (assoc :query-embedding query-embedding)
                                           ;; `signals` lets the caller restrict the probe's
                                           ;; signal set (default = all three P3 signals). A
                                           ;; hermetic gate can pass #{:graph :lexical} to stay off
@@ -238,21 +333,34 @@
                :match? (boolean (seq hits))
                :hybrid-probed? run-hybrid?
                ;; the draft's URI already resolves in the REAL pre-existing graph
-               :exact-uri? (boolean (contains? pre-existing uri))}))
+               :exact-uri? exact?}))
           drafts))
-        hybrid-probed (count (filter :hybrid-probed? entries))]
+        hybrid-probed (count (filter :hybrid-probed? entries))
+        exact-uri-skipped (count (filter :exact-uri? entries))]
     {:probed (count entries)
      :hits (count (filter :match? entries))
      :exact-uri-hits (count (filter :exact-uri? entries))
      :entries entries
-     ;; GC-7 — honest coverage report (never a silent skip). When the cap bit, the
-     ;; caller can see exactly how many drafts got the full P3 signal vs only the
-     ;; free exact-uri? lookup.
+     ;; GC-7 + MS-3 — honest coverage report (never a silent skip). The caller
+     ;; sees exactly how many drafts got the full P3 signal, how many took the
+     ;; exact-uri fast path, and how many were cap-skipped.
      :probe-coverage {:total (count entries)
                       :hybrid-probed hybrid-probed
                       :hybrid-skipped (- (count entries) hybrid-probed)
+                      ;; MS-3 (1) — the exact-uri fast-path split (these drafts
+                      ;; intentionally skip the probe; they are reconcile-into-
+                      ;; existing by definition).
+                      :exact-uri-skipped exact-uri-skipped
                       :max-probe cap
-                      :full-coverage? (= hybrid-probed (count entries))}}))
+                      ;; MS-3 (3) — the wall-clock dimension, reported honestly:
+                      ;; when the budget bit, the remaining drafts degraded to
+                      ;; the exact-uri-only treatment (never a silent stop).
+                      :probe-budget-ms budget-ms
+                      :budget-exceeded? @budget-exceeded?
+                      ;; full coverage = every draft that NEEDED a probe got one
+                      ;; (exact-uri drafts never need it).
+                      :full-coverage? (= hybrid-probed
+                                         (- (count entries) exact-uri-skipped))}}))
 
 ;; =============================================================================
 ;; DEEPENING 2 — ATTRIBUTE/FEATURE GRANULARITY: connect a NEW entity's attributes
@@ -403,13 +511,16 @@
    Optional: `:relationship-drafts`, `:source-uri-sets` (the DT7 shared-URI
    report), `:llm-budget` (DEFAULT 0 — deterministic), `:llm-fn`, `:probe-signals`
    (restrict the check-before-mint probe's P3 signal set — nil = all three;
-   #{:graph :lexical} keeps a hermetic gate off the embedding model / ColBERT).
+   #{:graph :lexical} keeps a hermetic gate off the embedding model / ColBERT),
+   `:max-probe` (GC-7 probe count cap) and `:probe-budget-ms` (MS-3 wall-clock
+   probe budget) — both passed through to `check-before-mint-probe`; omitted →
+   its named defaults apply.
 
    The probe runs over the UNLANDED drafts (so a hit means already-present); the
    attribute-link pass runs over the LANDED graph (so the new entities' attributes
    are compared against the existing graph). Returns the public reconcile report."
   [ctx {:keys [ontology-id concept-drafts relationship-drafts source-uri-sets
-               llm-budget llm-fn probe-signals max-probe]
+               llm-budget llm-fn probe-signals max-probe probe-budget-ms]
         :or {llm-budget 0}
         :as _params}]
   (when-not ontology-id
@@ -438,7 +549,10 @@
                      ;; GC-7 — bound the per-draft hybrid-search at scale (honest
                      ;; coverage reported in :probe-coverage). nil → the probe's
                      ;; own default cap applies.
-                     (contains? _params :max-probe) (assoc :max-probe max-probe)))
+                     (contains? _params :max-probe) (assoc :max-probe max-probe)
+                     ;; MS-3 (3) — the wall-clock probe budget. Callers that pass
+                     ;; nothing get the probe's own named default.
+                     (contains? _params :probe-budget-ms) (assoc :probe-budget-ms probe-budget-ms)))
 
         ;; 2. LAND the drafts (REUSE compile-discovery-source! — no fork). It
         ;;    validates the drafts, emits the create commands, runs the always-on

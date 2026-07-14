@@ -162,6 +162,49 @@
               "nil-vs-[] contract matches the full scan"))))))
 
 ;; =============================================================================
+;; MS-3 (2) — a caller-supplied :query-embedding SKIPS the per-call embed and is
+;; used verbatim (same vector → identical results; nil → today's embed path).
+;; This is the retrieval seam the reconcile probe's batched embeddings thread
+;; through. NO search-semantics change — the vector is the same, computed cheaper.
+;; =============================================================================
+
+(deftest supplied-query-embedding-skips-embed-and-is-result-identical
+  (testing "MS-3 — semantic-search-concepts with a precomputed :query-embedding
+            (a) never calls embed-text, (b) returns results IDENTICAL to the
+            per-call embed baseline for the same vector"
+    (h/with-test-context [ctx]
+      (let [ont-id (seed-embeddings! ctx (random-uuid))
+            baseline (with-redefs [embedding/embed-text (fn [_ & _] query-vec)]
+                       (retrieval/semantic-search-concepts
+                        ctx "query text" :ontology-id ont-id
+                        :limit 10 :min-similarity 0.0))
+            supplied (with-redefs [embedding/embed-text
+                                   (fn [_ & _]
+                                     (throw (ex-info "embed-text must NOT run when :query-embedding is supplied" {})))]
+                       (retrieval/semantic-search-concepts
+                        ctx "query text" :ontology-id ont-id
+                        :limit 10 :min-similarity 0.0
+                        :query-embedding query-vec))]
+        (is (seq baseline) "the baseline finds the seeded concepts")
+        (is (= baseline supplied)
+            "same vector → byte-identical results; and embed-text was never invoked (it throws)")))))
+
+(deftest nil-query-embedding-falls-back-to-per-call-embed
+  (testing "MS-3 nil-safety — :query-embedding nil behaves exactly like today
+            (the per-call embed-text runs once)"
+    (h/with-test-context [ctx]
+      (let [ont-id (seed-embeddings! ctx (random-uuid))
+            embed-calls (atom 0)
+            out (with-redefs [embedding/embed-text
+                              (fn [_ & _] (swap! embed-calls inc) query-vec)]
+                  (retrieval/semantic-search-concepts
+                   ctx "query text" :ontology-id ont-id
+                   :limit 10 :min-similarity 0.0
+                   :query-embedding nil))]
+        (is (= 1 @embed-calls) "nil :query-embedding → the per-call embed runs (once)")
+        (is (seq out) "and the search still returns the seeded concepts")))))
+
+;; =============================================================================
 ;; Tracer 2 — the bounded top-K fold is bounded + vector-free (Part A)
 ;; =============================================================================
 

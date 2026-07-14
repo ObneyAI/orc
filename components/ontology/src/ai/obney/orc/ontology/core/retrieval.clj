@@ -755,17 +755,26 @@
        :limit - Maximum results (default 10)
        :min-similarity - Minimum cosine similarity threshold (default 0.5)
        :model-id - Embedding model to use (default: all-MiniLM-L6-v2)
+       :query-embedding - MS-3: optional PRECOMPUTED query vector. When supplied,
+                          the per-call embed-text (the slow single-item DJL path)
+                          is skipped and the vector is used verbatim by BOTH the
+                          streaming and full-scan scoring paths — same vector,
+                          computed cheaper (e.g. by embed-texts-batch upstream).
+                          nil → embed per-call exactly as before.
 
    Returns:
      Vector of {:uri :similarity :label :description} sorted by similarity
 
    Requires concept embeddings to be generated first via ontology/embed-concepts-batch."
-  [ctx query-text & {:keys [scope ontology-id ontology-ids limit min-similarity model-id]
+  [ctx query-text & {:keys [scope ontology-id ontology-ids limit min-similarity model-id
+                            query-embedding]
                       :or {limit 10 min-similarity 0.5}}]
   (when (and ctx query-text)
-    (let [;; Generate query embedding
-          query-embedding (embedding/embed-text query-text
-                                                 (when model-id {:model-id model-id}))
+    (let [;; Query embedding: the caller's precomputed vector wins (MS-3 batched
+          ;; path); otherwise generate it per-call (unchanged behavior).
+          query-embedding (or query-embedding
+                              (embedding/embed-text query-text
+                                                    (when model-id {:model-id model-id})))
 
           ;; Enrich a top-K hit with concept metadata from the static ontology
           ;; (IDENTICAL for the streaming + fallback paths — byte-invariant shape).
@@ -1147,6 +1156,12 @@
                                  when no scoping was set.
        :limit - Maximum results (default 10)
        :min-similarity - Minimum embedding similarity (default 0.3)
+       :query-embedding - MS-3: optional PRECOMPUTED embedding vector for
+                          :query-text, threaded to the embedding signal so its
+                          per-call single-item embed is skipped (same vector,
+                          computed cheaper — e.g. batched upstream). nil-safe:
+                          omitted/nil → the embedding signal embeds per-call
+                          as before. NO search-semantics change.
        :max-depth - BFS expansion depth (default 2)
        :decay - BFS decay factor (default 0.6)
        :colbert-index-id - UUID of ColBERT index (required for ColBERT signal)
@@ -1173,7 +1188,7 @@
       :batches-used [:graph :embedding :colbert]}"
   [ctx {:keys [seed-uris query-text scope ontology-id ontology-ids limit min-similarity max-depth decay
                        colbert-index-id weights signals per-source-cap
-                       auto-widen-alignments?]
+                       auto-widen-alignments? query-embedding]
                 :or {limit 10 min-similarity 0.3 max-depth 2 decay 0.6
                      weights {:graph 1.0 :embedding 1.0 :colbert 1.0 :lexical 1.0}
                      signals #{:graph :embedding :colbert :lexical}
@@ -1268,14 +1283,17 @@
                                                           :ontology-ids ontology-ids)
                              (take cap)))
 
-        ;; Embedding-based results (when enabled and query provided)
+        ;; Embedding-based results (when enabled and query provided). MS-3: a
+        ;; caller-supplied :query-embedding rides through so the per-call embed
+        ;; is skipped (nil → semantic-search-concepts embeds as before).
         embedding-results (when (and embedding-enabled? query-text)
                             (semantic-search-concepts ctx query-text
                                                        :scope scope
                                                        :ontology-id ontology-id
                                                        :ontology-ids ontology-ids
                                                        :limit cap
-                                                       :min-similarity min-similarity))
+                                                       :min-similarity min-similarity
+                                                       :query-embedding query-embedding))
 
         ;; ColBERT results (when enabled, query provided, and index available).
         ;; ColBERT scoping is implicit: each ontology has its OWN

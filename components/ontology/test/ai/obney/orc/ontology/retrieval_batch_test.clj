@@ -61,6 +61,23 @@
           (is (not= (:results (nth batch 0)) (:results (nth batch 1)))
               "the two queries produce distinct results (no cross-wiring)"))))))
 
+(deftest hybrid-search-threads-supplied-query-embedding-to-embedding-signal
+  (testing "MS-3 — hybrid-search passes a caller-supplied :query-embedding through
+            to the embedding signal (semantic-search-concepts) so the per-call
+            embed is skipped; omitted → nil rides through (per-call fallback)"
+    (let [captured (atom [])]
+      (with-redefs [retrieval/semantic-search-concepts
+                    (fn [_ctx query-text & {:as kw}]
+                      (swap! captured conj kw)
+                      (get embedding-by-query query-text))]
+        (retrieval/hybrid-search {} {:query-text "q1" :signals #{:embedding}
+                                     :query-embedding [0.1 0.2 0.3]})
+        (retrieval/hybrid-search {} {:query-text "q1" :signals #{:embedding}})
+        (is (= [0.1 0.2 0.3] (:query-embedding (first @captured)))
+            "the supplied vector reaches the embedding signal verbatim")
+        (is (nil? (:query-embedding (second @captured)))
+            "no supplied vector → nil (semantic-search embeds per-call as today)")))))
+
 (deftest batch-embedding-only-skips-colbert-entirely
   (testing "with signals #{:embedding}, the batch never touches the ColBERT collaborator"
     (let [colbert-called? (atom false)]

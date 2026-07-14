@@ -558,6 +558,174 @@
         (is (= 30 (:hybrid-probed cov)) "nil cap → all drafts fully probed")
         (is (true? (:full-coverage? cov)) "coverage reported as full")))))
 
+;; ---------------------------------------------------------------------------
+;; MS-3 — make the check-before-mint probe AFFORDABLE at multi-source scale:
+;; (1) exact-URI fast path (an already-pre-existing URI is reconcile-into-existing
+;;     by definition — the hybrid probe adds no decision value, so it is skipped
+;;     and the :max-probe cap is spent on genuinely-NEW drafts only),
+;; (2) ONE batched embed for the to-probe query texts (threaded to hybrid-search
+;;     via :query-embedding — same vector, computed cheaper),
+;; (3) a wall-clock :probe-budget-ms (exceeded → remaining drafts degrade to the
+;;     exact-uri-only treatment, reported honestly — never silent).
+;; Invocation-count evidence via redef'd collaborator fns (hermetic — no DJL, no
+;; real hybrid-search).
+;; ---------------------------------------------------------------------------
+
+(deftest ms3-exact-uri-drafts-skip-hybrid-probe-and-do-not-consume-cap-test
+  (testing "MS-3 (1) — a draft whose :uri is already pre-existing skips the hybrid
+            probe entirely (reconcile-into-existing by definition), keeps
+            :exact-uri? true, does NOT consume the :max-probe cap (the cap is spent
+            on genuinely-new drafts), and the split is reported in :probe-coverage"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            calls (atom [])
+            ;; the 2 exact-uri drafts come FIRST — under position-only cap gating
+            ;; they would burn the whole cap; under the fast path they must not.
+            drafts [{:uri "pre:1" :label "P1" :description "pre"}
+                    {:uri "pre:2" :label "P2" :description "pre"}
+                    {:uri "new:1" :label "N1" :description "new"}
+                    {:uri "new:2" :label "N2" :description "new"}
+                    {:uri "new:3" :label "N3" :description "new"}]
+            probe (with-redefs [ontology/hybrid-search
+                                (fn [_ctx opts]
+                                  (swap! calls conj (:query-text opts))
+                                  {:results []})
+                                ;; embedding signal is OFF (#{:graph :lexical}) —
+                                ;; the batched embed must NOT be attempted.
+                                ontology/embed-texts-batch
+                                (fn [& _]
+                                  (throw (ex-info "embed-texts-batch must not run when the embedding signal is off" {})))]
+                    (recon/check-before-mint-probe
+                     ctx {:ontology-id oid
+                          :concept-drafts drafts
+                          :pre-existing-uris #{"pre:1" "pre:2"}
+                          :signals #{:graph :lexical}
+                          :max-probe 2}))
+            by-uri (into {} (map (juxt :uri identity) (:entries probe)))
+            cov (:probe-coverage probe)]
+        ;; invocation-count evidence: exactly cap (2) hybrid-search calls, and
+        ;; they are the genuinely-NEW drafts — not the first-2-by-position.
+        (is (= 2 (count @calls))
+            "exactly :max-probe hybrid-search invocations (exact-uri drafts consume none)")
+        (is (= ["N1 new" "N2 new"] @calls)
+            "the cap is spent on the genuinely-NEW drafts, not the exact-uri ones")
+        (doseq [u ["pre:1" "pre:2"]]
+          (is (true? (:exact-uri? (get by-uri u)))
+              (str u " keeps :exact-uri? true"))
+          (is (false? (:hybrid-probed? (get by-uri u)))
+              (str u " (exact-uri) skipped the hybrid probe")))
+        (is (true? (:hybrid-probed? (get by-uri "new:1"))) "1st new draft probed")
+        (is (true? (:hybrid-probed? (get by-uri "new:2"))) "2nd new draft probed")
+        (is (false? (:hybrid-probed? (get by-uri "new:3"))) "3rd new draft is cap-skipped")
+        ;; the coverage report carries the exact-uri/hybrid split honestly
+        (is (= 2 (:exact-uri-skipped cov)) "coverage reports the exact-uri skip split")
+        (is (= 2 (:hybrid-probed cov)) "coverage: cap-many hybrid probes ran")
+        (is (= 3 (:hybrid-skipped cov)) "coverage: 2 exact-uri + 1 cap-skipped")))))
+
+(deftest ms3-probe-batches-query-embeddings-in-one-call-and-threads-them-test
+  (testing "MS-3 (2) — the probe embeds the to-probe drafts' query texts in ONE
+            batched call (not N singles), each hybrid-search receives its
+            precomputed :query-embedding, and a text that embeds to nil falls
+            back to per-call behavior (no :query-embedding passed)"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            batch-calls (atom [])
+            search-opts (atom [])
+            drafts [{:uri "new:1" :label "N1" :description "new"}
+                    {:uri "new:2" :label "N2" :description "new"}
+                    {:uri "new:3" :label "N3" :description "new"}]
+            ;; the middle text "embeds to nil" — the nil-safety seam
+            fake-vecs [[0.1] nil [0.3]]
+            probe (with-redefs [ontology/embed-texts-batch
+                                (fn [texts & _]
+                                  (swap! batch-calls conj (vec texts))
+                                  fake-vecs)
+                                ontology/hybrid-search
+                                (fn [_ctx opts]
+                                  (swap! search-opts conj opts)
+                                  {:results []})]
+                    ;; :signals nil → the default (embedding enabled) → batch fires
+                    (recon/check-before-mint-probe
+                     ctx {:ontology-id oid
+                          :concept-drafts drafts
+                          :pre-existing-uris #{}}))]
+        ;; invocation-count evidence: ONE batched embed call for all 3 texts
+        (is (= 1 (count @batch-calls))
+            "the probe-query embeddings are computed in ONE batched call")
+        (is (= [["N1 new" "N2 new" "N3 new"]] @batch-calls)
+            "the batch carries the exact per-draft query texts, in draft order")
+        ;; each hybrid-search received its precomputed vector
+        (is (= 3 (count @search-opts)) "all 3 drafts still hybrid-probed")
+        (is (= [0.1] (:query-embedding (nth @search-opts 0)))
+            "draft 1's hybrid-search received its precomputed :query-embedding")
+        (is (not (contains? (nth @search-opts 1) :query-embedding))
+            "a draft whose text embeds to nil falls back to per-call embedding (no :query-embedding key)")
+        (is (= [0.3] (:query-embedding (nth @search-opts 2)))
+            "draft 3's hybrid-search received its precomputed :query-embedding")
+        (is (= 3 (get-in probe [:probe-coverage :hybrid-probed]))
+            "coverage unchanged by the batching (same drafts probed)")))))
+
+(deftest ms3-probe-budget-degrades-to-exact-uri-only-honestly-test
+  (testing "MS-3 (3) — an exceeded :probe-budget-ms degrades the remaining drafts
+            to the exact-uri-only treatment with :budget-exceeded? true in
+            :probe-coverage (never silent); a generous budget → unchanged behavior;
+            the default is a named def"
+    (is (= 600000 recon/default-probe-budget-ms)
+        "the default probe budget is a named def (10 min)")
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            drafts [{:uri "pre:1" :label "P1" :description "pre"}
+                    {:uri "new:1" :label "N1" :description "new"}
+                    {:uri "new:2" :label "N2" :description "new"}]
+            run (fn [budget]
+                  (with-redefs [ontology/hybrid-search (fn [_ _] {:results []})]
+                    (recon/check-before-mint-probe
+                     ctx {:ontology-id oid
+                          :concept-drafts drafts
+                          :pre-existing-uris #{"pre:1"}
+                          :signals #{:graph :lexical}
+                          :probe-budget-ms budget})))
+            exhausted (run 0)
+            generous (run 600000)]
+        ;; budget 0 → every hybrid probe degrades; NEVER silent
+        (is (= 0 (get-in exhausted [:probe-coverage :hybrid-probed]))
+            "budget exceeded → no hybrid probes ran")
+        (is (every? #(false? (:hybrid-probed? %)) (:entries exhausted))
+            "every entry honestly carries :hybrid-probed? false")
+        (is (true? (get-in exhausted [:probe-coverage :budget-exceeded?]))
+            "coverage reports :budget-exceeded? true (never a silent stop)")
+        (is (false? (get-in exhausted [:probe-coverage :full-coverage?]))
+            "coverage is honestly NOT full")
+        (is (= 3 (get-in exhausted [:probe-coverage :total]))
+            "coverage still reports hybrid-probed OF total")
+        ;; the free exact-uri signal SURVIVES budget exhaustion
+        (is (true? (:exact-uri? (first (:entries exhausted))))
+            ":exact-uri? (the free, strongest signal) is still computed for every draft")
+        ;; a generous budget → unchanged behavior
+        (is (= 2 (get-in generous [:probe-coverage :hybrid-probed]))
+            "generous budget → both new drafts hybrid-probed")
+        (is (false? (get-in generous [:probe-coverage :budget-exceeded?]))
+            "generous budget → not exceeded")
+        (is (true? (get-in generous [:probe-coverage :full-coverage?]))
+            "generous budget → full coverage (exact-uri drafts never need the probe)")))))
+
+(deftest ms3-reconcile-drafts-passes-probe-budget-through-test
+  (testing "MS-3 (3) — reconcile-drafts! passes :probe-budget-ms through to the
+            probe (callers that pass nothing get the named default)"
+    (with-ctx [ctx]
+      (let [oid (random-uuid)
+            _ (land! ctx oid src-a-concepts [])
+            report (with-redefs [ontology/hybrid-search (fn [_ _] {:results []})]
+                     (recon/reconcile-drafts!
+                      ctx {:ontology-id oid
+                           :concept-drafts src-b-concepts
+                           :probe-signals #{:graph :lexical}
+                           :probe-budget-ms 0}))
+            cov (get-in report [:mint-probe :probe-coverage])]
+        (is (true? (:budget-exceeded? cov))
+            "the 0-ms budget reached the probe through reconcile-drafts!")
+        (is (= 0 (:hybrid-probed cov)) "no hybrid probes ran under the 0-ms budget")))))
+
 (deftest reconcile-requires-ontology-id-test
   (testing "reconcile fails loudly without a granted scope (no silent empty-graph
             default — Discipline #5)"
