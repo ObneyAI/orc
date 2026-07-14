@@ -176,13 +176,35 @@
 
    The wiring MIRRORS the EXACT real precedent in
    `orc-service/.../build_atomicity_test.clj` `sqlite-ctx` (`:conn {:type :sqlite
-   :database-file db-file :maximum-pool-size 4}`)."
+   :database-file db-file :maximum-pool-size 4}`).
+
+   INC-1 reuse knob: `{:reuse {:dir <existing-cache-dir> :db-file
+   <existing-sqlite-file> :tenant-id <uuid>}}` rewires the SAME store impl /
+   LMDB cache / pubsub / registries / processors against the EXISTING preserved
+   paths and the RECORDED tenant instead of minting fresh ones — the accretion
+   mode (one source per invocation into ONE persistent store; the store-open
+   side mirrors `verify_cache_reuse.clj`). `rmp/l1-clear!` still runs; the
+   L2/LMDB watermark makes reprojection cheap (the proven cache-reuse path).
+   No `:reuse` → behavior is UNCHANGED (backward-compatible: full_onet_build /
+   full_graph_b_all_sources call this with `{:store :sqlite}` / no options).
+   Reuse requires the `:sqlite` store (an in-memory event log cannot be
+   reopened) and ALL THREE coordinates — fail loudly, never half-wire."
   ([] (make-ctx {}))
-  ([{:keys [store] :or {store :sqlite}}]
+  ([{:keys [store reuse] :or {store :sqlite}}]
+   (when reuse
+     (when (not= store :sqlite)
+       (throw (ex-info "make-ctx :reuse requires the :sqlite store (an in-memory event log cannot be reopened)"
+                       {:store store})))
+     (when-not (and (string? (:dir reuse)) (string? (:db-file reuse))
+                    (uuid? (:tenant-id reuse)))
+       (throw (ex-info "make-ctx :reuse needs {:dir <string> :db-file <string> :tenant-id <uuid>}"
+                       {:reuse reuse}))))
    (rmp/l1-clear!)
    (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
-         dir (str "/tmp/eb12-graph-b-" (random-uuid))
-         db-file (when (= store :sqlite) (str dir "-events.db"))
+         dir (or (:dir reuse) (str "/tmp/eb12-graph-b-" (random-uuid)))
+         db-file (if reuse
+                   (:db-file reuse)
+                   (when (= store :sqlite) (str dir "-events.db")))
          store-impl (case store
                       :sqlite   (es/start {:conn {:type :sqlite
                                                   :database-file db-file
@@ -197,7 +219,10 @@
          cache (kv/start (lmdb/->KV-Store-LMDB
                           {:storage-dir dir :db-name "graph-b"
                            :map-size (* 4 1024 1024 1024)}))
-         base-ctx (cond-> {:event-store store-impl :cache cache :tenant-id (random-uuid)
+         base-ctx (cond-> {:event-store store-impl :cache cache
+                           ;; INC-1: reuse the RECORDED tenant so the reopened
+                           ;; store projects the same tenant's events.
+                           :tenant-id (or (:tenant-id reuse) (random-uuid))
                            :provider :openrouter :dscloj-provider :openrouter
                            :command-registry (cp/global-command-registry)
                            :query-registry (qp/global-query-registry)
