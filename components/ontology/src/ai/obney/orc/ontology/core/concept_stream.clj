@@ -169,7 +169,8 @@
   (:events (relationships-registry-entry)))
 
 (defn- fold-relationship-state
-  "Build the relationship-state map {relationship-id -> relationship} for
+  "Build the relationship-state map {identity-key -> relationship} (MS-4:
+   keyed by [ontology-id source-uri predicate target-uri]) for
    `ontology-id` by folding the REGISTERED relationships reducer over the
    tag-scoped, windowed es/read stream. Same reducer + same scope + same order
    as `(rmp/project :ontology/relationships {:tags #{[:ontology id]}})` ⇒

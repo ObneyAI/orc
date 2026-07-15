@@ -2174,6 +2174,7 @@
       :discovery-provenance {:status :ingested
                              :concepts-emitted <int>
                              :relationships-emitted <int>
+                             :relationships-skipped-existing <int>
                              :axioms-emitted <int>
                              :rlm-trace <vec>}}
 
@@ -2210,7 +2211,24 @@
         {concepts :drafts occurrence-conflicts :conflicts
          occurrence-groups-merged :groups-merged}
         (union-drafts-with-existing validated existing-by-uri)
-        relationships (mapv validate-relationship-draft! (:emitted-relationships discovery-output))
+        validated-relationships (mapv validate-relationship-draft! (:emitted-relationships discovery-output))
+        ;; MS-4 — landing-site store hygiene (the projection is ALSO
+        ;; identity-keyed, so a duplicate would merge there regardless; this
+        ;; keeps the retry from writing duplicate events into the store at
+        ;; all). ONE per-batch projection read (the concepts' existing-by-uri
+        ;; precedent — never an O(n) read per draft) builds the set of
+        ;; identity triples already landed for THIS ontology; a draft whose
+        ;; identical triple already exists is SKIPPED and the skip is
+        ;; SURFACED in the provenance (:relationships-skipped-existing).
+        pre-existing-triples (into #{}
+                                   (comp (filter #(= ontology-id (:ontology-id %)))
+                                         (map rm/relationship-identity))
+                                   (rm/get-relationships ctx))
+        {relationships false skipped-relationships true}
+        (group-by #(contains? pre-existing-triples
+                              (rm/relationship-identity (assoc % :ontology-id ontology-id)))
+                  validated-relationships)
+        relationships (vec relationships)
         axioms (:emitted-axioms discovery-output)
         rlm-trace (:rlm-trace discovery-output)]
 
@@ -2264,6 +2282,9 @@
                             :occurrence-conflicts (count occurrence-conflicts)
                             :occurrence-conflict-details occurrence-conflicts
                             :relationships-emitted (count relationships)
+                            ;; MS-4 — the skipped-identical-triple count (the
+                            ;; retry-idempotency skip above), surfaced honestly.
+                            :relationships-skipped-existing (count skipped-relationships)
                             :axioms-emitted (count (or axioms []))
                             ;; V18 — referential-integrity report (always on).
                             :implied-concepts-minted (:implied-minted integrity)

@@ -1212,6 +1212,24 @@
    the initial build (so the loop ALWAYS terminates regardless of model behavior)."
   {:max-iterations 3})
 
+(def reconcile-error-max-chars
+  "MS-4 — the bound on a reconcile error string carried in a source-report /
+   focal-close return. The FULL error lives in the node-execution events; the
+   report carries a readable prefix so forensics never require decoding those
+   giant payloads (the live accretion series' reconcile :failure was
+   unreadable — a targeted 8g es/read OOMed on the fressian decode of the
+   node event that held the error). Named, never a magic literal."
+  500)
+
+(defn- bounded-error-str
+  "MS-4 — the reconcile error as a BOUNDED string: a string error is kept
+   verbatim (truncated to `reconcile-error-max-chars`); a non-string error
+   (anomaly map, ex-data) travels as its pr-str prefix; nil stays nil."
+  [error]
+  (when (some? error)
+    (let [s (if (string? error) error (pr-str error))]
+      (subs s 0 (min (count s) reconcile-error-max-chars)))))
+
 (defn- focal-close!
   "Re-invoke the routed CLOSING subbehavior FOCALLY (NOT a full rebuild) for a
    failing CQ. Maps the ROUTE keyword to the subbehavior seam:
@@ -1249,13 +1267,18 @@
                          :source-uri-sets source-uri-sets :model model})
                 _ ((or embed-fn delegate-embed!)
                    ctx {:ontology-id ontology-id :embed-fields (:embed-fields mx) :model model})]
-            {:status :ok :closed route
-             :concept-drafts (:concept-drafts mx)
-             ;; MS-2 — THREAD the reconcile's status (previously `rc` was read
-             ;; only for :reconcile-report — a timed-out focal reconcile vanished
-             ;; into :status :ok). Never drop a non-:success.
-             :reconcile-status (:status rc)
-             :reconcile-report (:reconcile-report rc)})))
+            (cond-> {:status :ok :closed route
+                     :concept-drafts (:concept-drafts mx)
+                     ;; MS-2 — THREAD the reconcile's status (previously `rc` was read
+                     ;; only for :reconcile-report — a timed-out focal reconcile vanished
+                     ;; into :status :ok). Never drop a non-:success.
+                     :reconcile-status (:status rc)
+                     :reconcile-report (:reconcile-report rc)}
+              ;; MS-4 — the reconcile ERROR travels too (bounded) — the loop
+              ;; history entry is forensically readable without the giant
+              ;; node-execution events.
+              (some? (:error rc))
+              (assoc :reconcile-error (bounded-error-str (:error rc)))))))
 
       :reconcile
       ;; re-link the CURRENT graph (no new extraction — connect what is already
@@ -1264,12 +1287,16 @@
                 ctx {:ontology-id ontology-id
                      :concept-drafts [] :relationship-drafts []
                      :source-uri-sets source-uri-sets :model model})]
-        {:status (if (= :success (:status rc)) :ok :failed)
-         :closed route
-         ;; MS-2 — the same :reconcile-status key as the :extract/:model route
-         ;; (uniform read across routes).
-         :reconcile-status (:status rc)
-         :reconcile-report (:reconcile-report rc) :error (:error rc)})
+        (cond-> {:status (if (= :success (:status rc)) :ok :failed)
+                 :closed route
+                 ;; MS-2 — the same :reconcile-status key as the :extract/:model route
+                 ;; (uniform read across routes).
+                 :reconcile-status (:status rc)
+                 :reconcile-report (:reconcile-report rc) :error (:error rc)}
+          ;; MS-4 — the same :reconcile-error key as the :extract/:model route
+          ;; (uniform, bounded).
+          (some? (:error rc))
+          (assoc :reconcile-error (bounded-error-str (:error rc)))))
 
       :axiom
       ;; re-emit TBox axioms from the held candidate-axioms (no new extraction).
@@ -1455,9 +1482,15 @@
   {:source (select-keys source [:type :path])
    :extracted {:concepts (count concept-drafts)
                :relationships (count relationship-drafts)}
-   :reconcile {:status (or (:status reconcile-result) :not-run)
-               :landed (get-in reconcile-result
-                               [:reconcile-report :landed :concepts-emitted])}
+   ;; MS-4 — a non-:success reconcile's ERROR travels IN the report (bounded):
+   ;; without it, the only copy lives in a giant node-execution event that a
+   ;; forensic es/read cannot cheaply decode. Absent error → no :error key
+   ;; (the :success shape is unchanged).
+   :reconcile (cond-> {:status (or (:status reconcile-result) :not-run)
+                       :landed (get-in reconcile-result
+                                       [:reconcile-report :landed :concepts-emitted])}
+                (some? (:error reconcile-result))
+                (assoc :error (bounded-error-str (:error reconcile-result))))
    :axiom {:status (or (:status axiom-result) :not-run)}
    :embed {:status (or (:status embed-result) :not-run)}})
 

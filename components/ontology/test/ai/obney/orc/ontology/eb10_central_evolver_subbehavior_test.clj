@@ -26,6 +26,7 @@
 
    Domain-agnostic fixtures — no education/CIP/SOC specifics (Discipline #12)."
   (:require [clojure.test :refer [deftest testing is]]
+            [clojure.string :as str]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as orm]
             [ai.obney.orc.ontology.interface :as ontology]
@@ -1128,6 +1129,95 @@
         (is (every? #(= :success (get-in % [:reconcile :status])) reports))
         (is (every? #(= 2 (get-in % [:reconcile :landed])) reports))
         (is (every? #(= {:concepts 2 :relationships 1} (:extracted %)) reports))))))
+
+;; =============================================================================
+;; MS-4 — the reconcile ERROR travels in the report. Root cause (live accretion
+;; series): a :timeout/:failure reconcile surfaced only {:status :failure
+;; :landed nil} in :source-reports — the error string lived in a
+;; :sheet/node-execution-completed event whose :writes payload is so large that
+;; even a targeted 8g es/read OOMs on the fressian decode. The report must
+;; CARRY the error (bounded, so the report itself never becomes the next
+;; giant payload).
+;; =============================================================================
+
+(deftest ms4-reconcile-error-travels-in-source-report-test
+  (testing "a non-:success reconcile's :error string is CARRIED on its
+            :source-reports entry (:reconcile :error), bounded to ~500 chars —
+            forensics never require decoding giant node events. A :success
+            reconcile's report carries NO :error key (shape unchanged)."
+    (h/with-async-test-context [ctx]
+      (let [oid (random-uuid)
+            long-error (apply str (repeat 3000 "x"))
+            calls (atom 0)
+            reconcile-fn (fn [_ _]
+                           (let [n (swap! calls inc)]
+                             (if (= 2 n)
+                               {:status :failure :error long-error}
+                               {:status :success
+                                :reconcile-report {:landed {:status :ingested
+                                                            :concepts-emitted 2
+                                                            :relationships-emitted 1}}})))
+            result (ce/run-central-evolver! ctx (ms2-config oid reconcile-fn))
+            reports (:source-reports result)]
+        (is (= :failure (get-in reports [1 :reconcile :status])))
+        (let [err (get-in reports [1 :reconcile :error])]
+          (is (string? err) "the reconcile error STRING travels in the report")
+          (is (<= (count err) 500) "the error is BOUNDED (~500 chars)")
+          (is (str/starts-with? err "xxx")
+              "the bounded error is the real error's prefix, not a placeholder"))
+        (is (not (contains? (get-in reports [0 :reconcile]) :error))
+            "a :success reconcile carries no :error key (shape unchanged)")))))
+
+(deftest ms4-source-report-bounds-non-string-errors-test
+  (testing "source-report (pure) stringifies + bounds a NON-string reconcile
+            error (an anomaly map / ex-data travels as its pr-str prefix) and
+            keeps a short error verbatim."
+    (let [entry (fn [err] {:source {:type :csv :path "a.csv"}
+                           :concept-drafts [] :relationship-drafts []
+                           :reconcile-result {:status :timeout :error err}
+                           :axiom-result {:status :success}
+                           :embed-result {:status :success}})]
+      (is (= "Execution timed out"
+             (get-in (ce/source-report (entry "Execution timed out"))
+                     [:reconcile :error]))
+          "a short string error travels verbatim")
+      (let [err (get-in (ce/source-report
+                         (entry {:cognitect.anomalies/category :cognitect.anomalies/fault
+                                 :detail (apply str (repeat 1000 "y"))}))
+                        [:reconcile :error])]
+        (is (string? err) "a map error is stringified")
+        (is (<= (count err) 500) "and bounded")))))
+
+(deftest ms4-focal-close-carries-reconcile-error-test
+  (testing "focal-close!'s :extract/:model route (the :reconcile-status path)
+            ALSO carries the reconcile error, bounded — the loop history entry
+            is forensically readable without the giant node events."
+    (h/with-async-test-context [ctx]
+      (let [oid (random-uuid)
+            base {:route :extract :ontology-id oid :source {:type :csv :path "x"}
+                  :goal "g" :profile {} :vocabulary nil
+                  :pipeline-sheet-id (random-uuid) :source-uri-sets nil}
+            seams (fn [rc-return]
+                    {:model-extract-fn (fn [_ _] {:status :success
+                                                  :concept-drafts [{:uri "concept:a"}]
+                                                  :relationship-drafts [] :embed-fields []
+                                                  :model-spec {} :candidate-axioms {:axioms []}})
+                     :reconcile-fn (fn [_ _] rc-return)
+                     :axiom-fn (fn [_ _] {:status :success})
+                     :embed-fn (fn [_ _] {:status :success})})
+            long-error (apply str (repeat 3000 "z"))]
+        (let [r (#'ce/focal-close!
+                 ctx (assoc base :seams (seams {:status :timeout :error long-error})))]
+          (is (= :timeout (:reconcile-status r)))
+          (is (string? (:reconcile-error r))
+              "the focal reconcile's error is CARRIED on the return")
+          (is (<= (count (:reconcile-error r)) 500) "bounded"))
+        (let [r (#'ce/focal-close!
+                 ctx (assoc base :seams
+                            (seams {:status :success
+                                    :reconcile-report {:landed {:concepts-emitted 1}}})))]
+          (is (nil? (:reconcile-error r))
+              "a :success focal reconcile carries no error"))))))
 
 ;; =============================================================================
 ;; MS-2 — GC-8-size the RECONCILE delegate timeout. Root cause: delegate-reconcile!

@@ -497,7 +497,9 @@
 ;; S06 — Relationships projection (per-edge metadata accessor)
 ;; =============================================================================
 ;;
-;; Keyed by relationship-id. Each entry carries the full edge record —
+;; MS-4 — keyed by the relationship's IDENTITY
+;; [ontology-id source-uri predicate target-uri] (nil ontology-id for
+;; legacy pre-S06 events). Each entry carries the full edge record —
 ;; source-uri, target-uri, predicate, plus the named metadata fields and
 ;; the `:properties` open bag. Distinct from the URI-keyed
 ;; :ontology/concepts projection (which is concept-centric) so that
@@ -506,37 +508,72 @@
 ;; relationships not concepts to know which to reify), the C5 lint
 ;; surfaces that operate on edge-level invariants.
 ;;
-;; Append-only — back-compat with legacy events that lack the named
-;; metadata is preserved (those fields are simply omitted from the
-;; projected record).
+;; Identity-keying is the retry-safety fix (MS-4): the projection was
+;; previously keyed by the per-landing :relationship-id UUID, so every
+;; reconcile RETRY re-appended the same edge under a fresh id (measured
+;; live: 31,300 records for 21,420 distinct triples — 1.46x inflation).
+;; A re-landed duplicate now MERGES (present fields last-wins; :evidence
+;; and :properties union — the concepts* URI-keyed precedent), and
+;; HISTORICAL duplicates in an existing store vanish at projection (the
+;; event-sourced cure — no store rewrite). Back-compat with legacy events
+;; that lack the named metadata is preserved (those fields are simply
+;; omitted from the projected record).
 
 (def relationship-events
   "Events that affect the per-edge relationships read model."
   #{:ontology/relationship-created})
 
+(defn relationship-identity
+  "MS-4 — the relationship's IDENTITY key: what makes two landings the SAME
+   edge. Scoped per ontology (nil for legacy no-ontology-id events, so
+   legacy duplicates of one triple also merge). Pure; public so the landing
+   site (compile-discovery-source!) and the projection share ONE notion of
+   edge identity — never two."
+  [{:keys [ontology-id source-uri predicate target-uri]}]
+  [ontology-id source-uri predicate target-uri])
+
+(defn- merge-relationship-record
+  "MS-4 — union a re-landed edge record into the existing one (the concepts*
+   precedent): fields PRESENT on the incoming record win (last-wins);
+   fields absent on the incoming record are preserved from the existing;
+   :evidence unions (order-preserving distinct) and :properties merges so a
+   retry ADDS metadata, never silently drops the first landing's."
+  [existing incoming]
+  (if (nil? existing)
+    incoming
+    (cond-> (merge existing incoming)
+      (or (seq (:evidence existing)) (seq (:evidence incoming)))
+      (assoc :evidence (vec (distinct (concat (:evidence existing)
+                                              (:evidence incoming)))))
+      (or (seq (:properties existing)) (seq (:properties incoming)))
+      (assoc :properties (merge (:properties existing)
+                                (:properties incoming))))))
+
 (defmulti relationships*
   "Apply event to relationships read model.
-   State: {relationship-id -> relationship-map}"
+   State: {[ontology-id source-uri predicate target-uri] -> relationship-map}
+   (MS-4 identity-keyed; a same-identity event merges, never appends)."
   (fn [_state event] (:event/type event)))
 
 (defmethod relationships* :ontology/relationship-created
   [state event]
   (let [{:keys [relationship-id source-uri target-uri predicate ontology-id
                 confidence-class evidence valid-from valid-to superseded-by
-                properties created-at]} event]
-    (assoc state relationship-id
-           (cond-> {:relationship-id relationship-id
-                    :source-uri source-uri
-                    :target-uri target-uri
-                    :predicate predicate
-                    :created-at created-at}
-             ontology-id      (assoc :ontology-id ontology-id)
-             confidence-class (assoc :confidence-class confidence-class)
-             (seq evidence)   (assoc :evidence (vec evidence))
-             valid-from       (assoc :valid-from valid-from)
-             valid-to         (assoc :valid-to valid-to)
-             superseded-by    (assoc :superseded-by superseded-by)
-             (seq properties) (assoc :properties properties)))))
+                properties created-at]} event
+        record (cond-> {:relationship-id relationship-id
+                        :source-uri source-uri
+                        :target-uri target-uri
+                        :predicate predicate
+                        :created-at created-at}
+                 ontology-id      (assoc :ontology-id ontology-id)
+                 confidence-class (assoc :confidence-class confidence-class)
+                 (seq evidence)   (assoc :evidence (vec evidence))
+                 valid-from       (assoc :valid-from valid-from)
+                 valid-to         (assoc :valid-to valid-to)
+                 superseded-by    (assoc :superseded-by superseded-by)
+                 (seq properties) (assoc :properties properties))]
+    (update state (relationship-identity event)
+            merge-relationship-record record)))
 
 (defmethod relationships* :default [state _] state)
 
@@ -546,14 +583,22 @@
   (reduce relationships* initial-state events))
 
 (defreadmodel :ontology relationships
-  {:events relationship-events, :version 1}
+  ;; MS-4 — :version 2: the identity re-keying changes the FOLDED state
+  ;; shape, and grain's L2/LMDB cache keys folded state by (name, version)
+  ;; with an event watermark — without the bump an existing store would keep
+  ;; serving (and folding onto) the stale relationship-id-keyed, duplicated
+  ;; state. Bump = full refold under the new identity semantics.
+  {:events relationship-events, :version 2}
   [state event] (relationships* state event))
 
 (defn get-relationship
   "Return the projected relationship-record for a given relationship-id,
-   or nil when no such edge has been created. S06."
+   or nil when no such edge has been created. S06. (MS-4: the projection
+   is identity-keyed now, so this is a linear scan — fine for its
+   consumers, which resolve single ids from just-created events.)"
   [ctx relationship-id]
-  (get (rmp/project ctx :ontology/relationships) relationship-id))
+  (first (filter #(= relationship-id (:relationship-id %))
+                 (vals (rmp/project ctx :ontology/relationships)))))
 
 (defn get-relationships
   "Return all projected relationship records as a seq. Use to iterate the
