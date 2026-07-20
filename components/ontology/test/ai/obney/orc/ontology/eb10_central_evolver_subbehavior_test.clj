@@ -619,8 +619,13 @@
           "the INNER delegate-extract :timeout-ms is the cap-scaled budget (not 180s)")
       (is (> (get by-name "delegate-extract") 180000)
           "the inner extract ceiling is >> the flat 180s that timed out the extract")
-      (is (= 180000 (get by-name "delegate-model"))
-          "delegate-model stays 180s (the Model node is fast — no change needed)"))))
+      (is (= ce/default-llm-delegate-timeout-ms (get by-name "delegate-model"))
+          "MS-5b: delegate-model carries the sized LLM-delegate ceiling — the
+           old flat 180s assumed a fast provider; on a slow-provider day a
+           single Model call exceeds it and every EB9 ladder rung re-pays it
+           (witnessed as a 36-min extract churn on the accretion series)")
+      (is (> (get by-name "delegate-model") 180000)
+          "the Model ceiling is above the flat 180s that churned the ladder"))))
 
 (deftest small-source-budget-is-behavior-preserving-test
   (testing "GC-8 is behavior-preserving for a SMALL source: a 1-container source's
