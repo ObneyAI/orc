@@ -361,14 +361,31 @@
 
 ;; ------- the per-subbehavior production delegation seams (default fns) --------
 
+(def default-llm-delegate-timeout-ms
+  "MS-5 — the deref-timeout for the SMALL LLM-backed delegates (survey,
+   select-rank, synthesize-vocab, derive-CQs, axiom, embed) that previously
+   rode `delegate-subbehavior!`'s flat 180s destructuring default. Each is a
+   handful of LLM calls (a survey is a recursive-RLM session), so 180s assumed
+   a fast provider — on a slow-provider day the survey delegate timed out at
+   EXACTLY 180s three times in a row (witnessed live on the incremental
+   accretion series), the third member of the flat-180s family after extract
+   (GC-8-sized) and reconcile (MS-2-sized). 10 min absorbs provider latency
+   while still bounding a genuine hang. The two WORK-SCALED delegates keep
+   their derived budgets (`model-extract-timeout-ms`, `reconcile-timeout-ms`)."
+  600000)
+
 (defn delegate-survey!
   "Production Survey seam: register the per-source Survey sheet + `:delegate` it.
-   Returns `{:status … :profile <map>}`."
+   Returns `{:status … :profile <map>}`.
+
+   MS-5 — sized `:timeout-ms` (`default-llm-delegate-timeout-ms`) instead of the
+   flat 180s default, which cut a slow-provider survey three times running."
   [ctx {:keys [source goal model]}]
   (let [sub-id (survey/register-survey-subbehavior! ctx {:source source :model model})
         r (delegate-subbehavior!
            ctx {:central-name (str "ontology-central/survey-" (name (:type source)) "@v1")
                 :target-sheet-id sub-id
+                :timeout-ms default-llm-delegate-timeout-ms  ;; MS-5 — not the flat 180s
                 :bb-schema {:goal :string
                             :source-descriptor :string
                             :profile survey/profile-contract-schema}
@@ -751,6 +768,7 @@
         r (delegate-subbehavior!
            ctx {:central-name "ontology-central/axiom-tbox@v1"
                 :target-sheet-id sub-id
+                :timeout-ms default-llm-delegate-timeout-ms  ;; MS-5 — not the flat 180s
                 :bb-schema {:ontology-id :any
                             :candidate-axioms [:map {:closed false}]
                             :model-spec [:maybe [:map {:closed false}]]
@@ -772,6 +790,7 @@
         r (delegate-subbehavior!
            ctx {:central-name "ontology-central/embed-index@v1"
                 :target-sheet-id sub-id
+                :timeout-ms default-llm-delegate-timeout-ms  ;; MS-5 — not the flat 180s
                 :bb-schema {:ontology-id :any
                             :embed-fields [:maybe [:vector :string]]
                             embed/embed-index-report-key embed/embed-index-report-schema}
@@ -794,6 +813,7 @@
         r (delegate-subbehavior!
            ctx {:central-name "ontology-central/derive-cqs@v1"
                 :target-sheet-id sub-id
+                :timeout-ms default-llm-delegate-timeout-ms  ;; MS-5 — not the flat 180s
                 :bb-schema {:ontology-id :any
                             :goal :string
                             :profile vcq/profile-read-schema
@@ -825,6 +845,7 @@
         r (delegate-subbehavior!
            ctx {:central-name "ontology-central/synthesize-vocab@v1"
                 :target-sheet-id sub-id
+                :timeout-ms default-llm-delegate-timeout-ms  ;; MS-5 — not the flat 180s
                 :bb-schema {:goal :string
                             :profile vcq/profile-read-schema
                             synth/vocabulary-key synth/vocabulary-schema}
@@ -1062,6 +1083,7 @@
                         r (delegate-subbehavior!
                            ctx {:central-name "ontology-central/select-rank@v1"
                                 :target-sheet-id sub-id
+                                :timeout-ms default-llm-delegate-timeout-ms  ;; MS-5 — not the flat 180s
                                 :bb-schema {:goal :string
                                             :competency-questions [:vector :string]
                                             :candidates rank-candidates-schema

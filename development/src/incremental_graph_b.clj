@@ -108,6 +108,17 @@
 ;; =============================================================================
 
 (defn -main [& args]
+  ;; SLOW-PROVIDER TUNING (2026-07-20): the per-container extract budget is a
+  ;; documented-tunable knob ("Named + overridable"). The 2026-07-16 onet
+  ;; attempts ground steadily for 5h (4-87 node completions per 10-min bucket,
+  ;; ZERO stalls) but averaged ~70s per LLM-backed node vs the ~6-22s the 60s
+  ;; calibration assumed — pure provider latency — so every 26-min delegate
+  ;; attempt timed out mid-honest-work. 120s/container (52-min ceiling at cap
+  ;; 25) absorbs a slow-provider evening; the ceiling still bounds a genuine
+  ;; hang. Runner-level override — the component default stays 60s.
+  (alter-var-root #'ce/default-per-container-budget-ms (constantly 120000))
+  (println "per-container extract budget (runner override): 120s → ceiling"
+           (ce/model-extract-timeout-ms {}) "ms")
   (let [dry-run? (boolean (some #{"--dry-run"} args))
         manifest (read-manifest)
         src (next-source (h/sources) (:completed-sources manifest))]
