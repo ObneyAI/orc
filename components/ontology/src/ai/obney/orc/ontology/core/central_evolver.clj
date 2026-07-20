@@ -121,6 +121,19 @@
   []
   (dsl/sheet-id-for-name model-extract-pipeline-name))
 
+(def default-llm-delegate-timeout-ms
+  "MS-5 — the deref-timeout for the SMALL LLM-backed delegates (survey,
+   select-rank, synthesize-vocab, derive-CQs, axiom, embed) that previously
+   rode `delegate-subbehavior!`'s flat 180s destructuring default. Each is a
+   handful of LLM calls (a survey is a recursive-RLM session), so 180s assumed
+   a fast provider — on a slow-provider day the survey delegate timed out at
+   EXACTLY 180s three times in a row (witnessed live on the incremental
+   accretion series), the third member of the flat-180s family after extract
+   (GC-8-sized) and reconcile (MS-2-sized). 10 min absorbs provider latency
+   while still bounding a genuine hang. The two WORK-SCALED delegates keep
+   their derived budgets (`model-extract-timeout-ms`, `reconcile-timeout-ms`)."
+  600000)
+
 (defn model-extract-pipeline-def
   "The fixed-composed per-source pipeline sheet: `:delegate` Model → `:delegate`
    Extract, mapping Model's `:model-spec` → Extract's `:reads` on the ISOLATED
@@ -178,7 +191,11 @@
           ;; GM-1 — also thread the graph-context snapshot into the Model.
           :reads [:goal :profile :vocabulary gcs/graph-context-key]
           :writes [:reasoning :model-spec :candidate-axioms]
-          :timeout-ms 180000)
+          ;; MS-5b — the LAST flat-180s literal: the Model node is ~10s on a
+          ;; fast provider, but on a slow-provider day a single Model call can
+          ;; exceed 180s, and every EB9 ladder rung re-pays it (witnessed as a
+          ;; 36-min :failed-at-model-extract churn on the accretion series).
+          :timeout-ms default-llm-delegate-timeout-ms)
         ;; STEP 2 — :delegate Extract (model-spec × source → drafts). Reads the
         ;; model-spec Model just wrote onto the central child blackboard.
         (dsl/delegate "delegate-extract"
@@ -360,19 +377,6 @@
      :error (:error result)}))
 
 ;; ------- the per-subbehavior production delegation seams (default fns) --------
-
-(def default-llm-delegate-timeout-ms
-  "MS-5 — the deref-timeout for the SMALL LLM-backed delegates (survey,
-   select-rank, synthesize-vocab, derive-CQs, axiom, embed) that previously
-   rode `delegate-subbehavior!`'s flat 180s destructuring default. Each is a
-   handful of LLM calls (a survey is a recursive-RLM session), so 180s assumed
-   a fast provider — on a slow-provider day the survey delegate timed out at
-   EXACTLY 180s three times in a row (witnessed live on the incremental
-   accretion series), the third member of the flat-180s family after extract
-   (GC-8-sized) and reconcile (MS-2-sized). 10 min absorbs provider latency
-   while still bounding a genuine hang. The two WORK-SCALED delegates keep
-   their derived budgets (`model-extract-timeout-ms`, `reconcile-timeout-ms`)."
-  600000)
 
 (defn delegate-survey!
   "Production Survey seam: register the per-source Survey sheet + `:delegate` it.
