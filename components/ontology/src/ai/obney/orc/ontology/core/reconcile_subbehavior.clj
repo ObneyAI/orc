@@ -19,8 +19,12 @@
    entity-reconcile step and ADDS the attribute/feature-granularity logic + the
    check-before-mint probe.
 
-   ## A FOUR-node sheet: all `:code` (NOT an `:llm` node) — reconcile is
+   ## A FOUR-STEP sheet: one `:code` leaf (NOT an `:llm` node) — reconcile is
    DETERMINISTIC
+
+   NOTE: the registered tree is ONE `:code` leaf (`reconcile-subbehavior-def`
+   → `dsl/code "reconcile"` → `reconcile-code`) whose body runs the four
+   steps below in order — not four separate tree nodes.
 
    Reconcile is largely DETERMINISTIC: the probe is `hybrid-search` (P3 graph BFS
    + embedding + ColBERT via RRF — evidence, not LLM label-cosine), the landing is
@@ -29,7 +33,7 @@
    `:llm-budget` DEFAULT 0 — ambiguities surface as `:requires-review`, never
    silently merged), and the attribute-linker is structural (the SAME jaro-winkler
    structural-similarity primitive S12 uses — no LLM, no hardcoded phrase list).
-   So the body is FOUR `:code` nodes, NO `:llm` node:
+   So the `:code` leaf's body runs FOUR deterministic steps, NO `:llm` call:
 
      1. `:code` PROBE  — check-before-mint: for each incoming concept-draft, probe
         the CURRENT graph via `hybrid-search` for an existing match BEFORE it is
