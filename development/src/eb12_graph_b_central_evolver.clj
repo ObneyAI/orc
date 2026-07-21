@@ -205,6 +205,19 @@
          db-file (if reuse
                    (:db-file reuse)
                    (when (= store :sqlite) (str dir "-events.db")))
+         ;; SCALE FIX (accretion forensic): a statistics-less sqlite store
+         ;; mis-plans tag-scoped reads — the planner iterates EVERY tenant
+         ;; event probing tags per row instead of starting at the event_tags
+         ;; PK. Measured on the live 17 GB accretion store: 9.6 s per
+         ;; tick-scoped read (paid at EVERY tick completion, by EVERY
+         ;; delegate — the tax behind repeated survey/derive-cqs timeouts);
+         ;; after ANALYZE: 3 ms (~3000×, plan flips to tags-first). ANALYZE
+         ;; before opening the pool so every run starts with sane statistics.
+         _ (when (and (= store :sqlite) db-file (.exists (io/file db-file)))
+             (try (with-open [c (java.sql.DriverManager/getConnection
+                                 (str "jdbc:sqlite:" db-file))]
+                    (.execute (.createStatement c) "ANALYZE;"))
+                  (catch Exception _ nil)))
          store-impl (case store
                       :sqlite   (es/start {:conn {:type :sqlite
                                                   :database-file db-file
