@@ -231,7 +231,13 @@
                                       {:store store})))
          cache (kv/start (lmdb/->KV-Store-LMDB
                           {:storage-dir dir :db-name "graph-b"
-                           :map-size (* 4 1024 1024 1024)}))
+                           ;; 4 GiB → 32 GiB (accretion forensic): the L2
+                           ;; read-model cache FILLED its 4 GiB mapsize after
+                           ;; three big sources' cascade cycles (MapFullException
+                           ;; at ctx open, pseo retry). mapsize is a VIRTUAL
+                           ;; reservation — disk pages materialize only as used —
+                           ;; so a generous ceiling costs nothing until needed.
+                           :map-size (* 32 1024 1024 1024)}))
          base-ctx (cond-> {:event-store store-impl :cache cache
                            ;; INC-1: reuse the RECORDED tenant so the reopened
                            ;; store projects the same tenant's events.
