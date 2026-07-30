@@ -215,6 +215,32 @@
   ((requiring-resolve 'ai.obney.orc.ontology.core.reranker/rerank!)
    ctx opts))
 
+;; =============================================================================
+;; Rerank-fallback detection (R01 + RR-1)
+;; =============================================================================
+
+(def rerank-fallback-sources
+  "Every :rerank-source value that means THE RERANKER DID NOT RANK — the
+   result set is raw ColBERT ordering with nil :fitness-score/:reasoning.
+
+     :colbert-fallback — genuine rerank failure (threw / nil / empty)
+     :timeout-fallback — RR-1 (ADR 0020): the call timed out and so did its
+                         one retry. Transient infra, not epistemic
+                         uncertainty about the corpus — but from the
+                         classifier's seat the epistemic state is identical
+                         (we do NOT know the fit), so the ACTION is
+                         identical: EL-3 / ADR 0015 detect-and-defer.
+
+   Membership, not equality: a new fallback flavour must be added HERE, or
+   it silently skips the defer and re-creates the 8/8 fallback-mint
+   conflation (a nil fitness reads as 0.0 → below threshold → fresh mint)."
+  #{:colbert-fallback :timeout-fallback})
+
+(defn- rerank-fallback?*
+  "True when a candidate's :rerank-source says the reranker did not rank."
+  [candidate]
+  (contains? rerank-fallback-sources (:rerank-source candidate)))
+
 (defn- get-tree-class-children
   "Return the children of `parent-target-id` as {:target-id :description}
    maps. Reads the concepts read-model for narrower URIs and pulls each
@@ -554,7 +580,7 @@
         ;;     noise-suppression role for surfaced references only.
         ;; The fallback flag is read from the RAW top-1 so reranker-fallback
         ;; uncertainty is detected regardless of the gate.
-        rerank-fallback?-raw (= :colbert-fallback (:rerank-source (first raw-candidates)))
+        rerank-fallback?-raw (rerank-fallback?* (first raw-candidates))
         candidates raw-candidates
         surfaced-candidates (gate-candidates ctx raw-candidates retrieval-gate)
         top-1 (first candidates)
@@ -563,7 +589,10 @@
         ;; R01: detect reranker fallback by top-1's :rerank-source. When
         ;; apply-rerank fell back to pure ColBERT (reranker threw, returned
         ;; nil, or returned empty), every result entry carries
-        ;; :rerank-source :colbert-fallback. Surface that on the result
+        ;; :rerank-source :colbert-fallback — or, per RR-1, :timeout-fallback
+        ;; when the fallback was reached via an exhausted timeout. Both are
+        ;; members of rerank-fallback-sources and defer identically.
+        ;; Surface that on the result
         ;; so downstream consumers (event body, dashboard, operator
         ;; alerts) can distinguish a legitimate low-confidence match
         ;; from a silent reranker failure that looks identical.
@@ -571,7 +600,7 @@
         ;; on the RAW (pre-gate) top-1 — gating must never turn an :uncertain
         ;; fallback into a confident :novel by removing the fallback candidate.
         rerank-fallback? (or rerank-fallback?-raw
-                             (= :colbert-fallback (:rerank-source top-1)))]
+                             (rerank-fallback?* top-1))]
     (cond
       ;; EL-3 (ADR 0015): the reranker FELL BACK to raw ColBERT — we do NOT
       ;; KNOW the fit. De-conflate uncertainty from novelty: this is NOT a
@@ -722,14 +751,16 @@
                           :confidence <0.0-1.0>
                           :was-fresh-mint? <bool>
                           :reasoning <string>
-                          :rerank-source <:reranker | :colbert-fallback>}
+                          :rerank-source <:reranker | :colbert-fallback
+                                          | :timeout-fallback>}
                          ...]
       :rerank-fallback? <bool>}
 
    When NO candidate passes :threshold, :behaviors carries exactly one
    fresh-mint marker with :was-fresh-mint? true + a fresh UUID +
-   reasoning string. Per R01: :rerank-fallback? is derived from top-1's
-   :rerank-source (true when :colbert-fallback)."
+   reasoning string. Per R01 (+ RR-1): :rerank-fallback? is derived from
+   top-1's :rerank-source — true for any member of
+   `rerank-fallback-sources` (:colbert-fallback OR :timeout-fallback)."
   [ctx opts]
   (when-let [err (m/explain classify-behaviors-opts-schema opts)]
     (throw (ex-info "Invalid classify-behaviors opts"
@@ -781,7 +812,7 @@
                    candidates)
         top-1 (first filtered)
         rerank-fallback? (and (some? top-1)
-                              (= :colbert-fallback (:rerank-source top-1)))
+                              (rerank-fallback?* top-1))
         above-threshold (filter #(let [s (or (:fitness-score %) 0.0)]
                                    (>= s threshold))
                                 filtered)

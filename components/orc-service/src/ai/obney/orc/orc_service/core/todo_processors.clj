@@ -547,6 +547,22 @@
           (when (<= (count candidate) 50)
             candidate))))))
 
+(defn- rerank-source-caution
+  "Per-candidate annotation naming WHY the reranker's score is missing.
+
+   RR-1 (ADR 0020): the reranker's fallback is now stamped with WHICH
+   failure it was — :colbert-fallback (it could not rank) vs
+   :timeout-fallback (it ran out of budget, twice). Both mean the same
+   thing for the reader — the score below is raw ColBERT similarity, not a
+   grounded fitness — so both are cautioned; naming the reason keeps the
+   distinction the signal now carries visible to the model and to anyone
+   auditing the rendered prompt. Returns nil for a successful rerank."
+  [rerank-source]
+  (case rerank-source
+    :colbert-fallback " [reranker fell back to ColBERT — treat with caution]"
+    :timeout-fallback " [reranker timed out (retry included) and fell back to ColBERT — treat with caution]"
+    nil))
+
 (defn- format-structural-candidate
   "Render one structural candidate with its full seed body.
    `idx` is the 1-based position in the top-N list (used to label
@@ -569,8 +585,7 @@
                        rank-label)]
     (str "#### " header-label " (confidence: "
          (format "%.2f" (double (or fitness-score 0.0))) ")"
-         (when (= :colbert-fallback rerank-source)
-           " [reranker fell back to ColBERT — treat with caution]")
+         (rerank-source-caution rerank-source)
          "\n"
          "Why this fits: " (or reasoning "(no reasoning recorded)") "\n\n"
          "Pattern guidance (seed `:summary`):\n"
@@ -689,8 +704,7 @@
                            (str (inc idx) ". Behavioral suggestion"))]
         (str header-label " (confidence: "
              (format "%.2f" (double (or confidence 0.0))) ")"
-             (when (= :colbert-fallback rerank-source)
-               " [reranker fell back to ColBERT — treat with caution]")
+             (rerank-source-caution rerank-source)
              "\n"
              "   Why this fits: " (or reasoning "(no reasoning recorded)") "\n\n"
              "   Guidance (seed `:summary`):\n"
@@ -1232,21 +1246,22 @@
         event-inputs (:inputs event)
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         overrides (resolve-instruction-overrides context tick-id)
-        node (-> (get nodes-by-id node-id)
-                 (apply-instruction-override overrides)
-                 (maybe-auto-classify-and-set-context
-                   (assoc context :sheet-id sheet-id :tick-id tick-id))
-                 ;; R-Inject: replaces the legacy apply-ontology-context
-                 ;; call. The wedge stashes R05's full classifier payload
-                 ;; on :context; this helper prepends a principle-shaped
-                 ;; "Suggested patterns from corpus" block to :instruction
-                 ;; so the model designs trees informed by real corpus
-                 ;; examples (with reasoning + seed :summary guidance).
-                 ;; Pass sheet-id explicitly so the helper can write a
-                 ;; sidecar trace file the bench runner picks up.
-                 (apply-r05-classifier-context
-                   (assoc context :sheet-id sheet-id :tick-id tick-id)))]
-    (when (= :repl-researcher (:type node))
+        ;; RR-1 (ADR 0020): the node as it comes off the tick snapshot. The
+        ;; auto-classify wedge + R-Inject used to run HERE, synchronously, on
+        ;; the dispatch thread — contradicting this function's own docstring
+        ;; and letting one slow classify->rerank call (measured live at 302s)
+        ;; hold the thread the todo-processor delivers other node executions
+        ;; on. They now run INSIDE the future below, still ahead of Phase-1
+        ;; prompt assembly. Verified safe: nothing between here and the future
+        ;; reads the wedge's output — the two consumers of `base-node` out
+        ;; here are (:type …) and (:reads …), neither of which the wedge or
+        ;; R-Inject touch (they set :context and prepend to :instruction),
+        ;; and the only other reader of a node's :context,
+        ;; apply-ontology-context, is the legacy path R-Inject replaced (it
+        ;; has no call sites left anywhere in the workspace).
+        base-node (-> (get nodes-by-id node-id)
+                      (apply-instruction-override overrides))]
+    (when (= :repl-researcher (:type base-node))
       (let [raw-blackboard (resolve-blackboard context sheet-id tick-id)
             blackboard (reduce (fn [bb [k v]]
                                  (if (and (keyword? k) (not (= (namespace k) (namespace ::_))))
@@ -1264,7 +1279,7 @@
             ;; answers as hallucinations. We carry these into the completion
             ;; event; assemble-execution-trace prefers them over the (empty)
             ;; started inputs.
-            read-inputs (extract-read-inputs (:reads node) blackboard)]
+            read-inputs (extract-read-inputs (:reads base-node) blackboard)]
         (future
           (try
             ;; C-Loop-3: thread sheet-id / tick-id / cache through to
@@ -1274,7 +1289,26 @@
             ;; descriptions read-model. Without these, mint-behavior!
             ;; throws "requires a command context" and the agent's
             ;; mint call is lost.
-            (let [;; CE-5b FIX B (ADR 0018): read the OPAQUE :tool-context that
+            (let [;; RR-1 (ADR 0020): auto-classify + R-Inject, moved OFF the
+                  ;; dispatch thread into this future — still ahead of Phase-1
+                  ;; prompt assembly, which is the only thing that consumes
+                  ;; them. A slow classify->rerank now costs THIS turn's
+                  ;; latency and nothing else.
+                  wedge-ctx (assoc context :sheet-id sheet-id :tick-id tick-id)
+                  node (-> base-node
+                           (maybe-auto-classify-and-set-context wedge-ctx)
+                           ;; R-Inject: replaces the legacy
+                           ;; apply-ontology-context call. The wedge stashes
+                           ;; R05's full classifier payload on :context; this
+                           ;; helper prepends a principle-shaped "Suggested
+                           ;; patterns from corpus" block to :instruction so
+                           ;; the model designs trees informed by real corpus
+                           ;; examples (with reasoning + seed :summary
+                           ;; guidance). sheet-id rides on wedge-ctx so the
+                           ;; helper can write the sidecar trace file the
+                           ;; bench runner picks up.
+                           (apply-r05-classifier-context wedge-ctx))
+                  ;; CE-5b FIX B (ADR 0018): read the OPAQUE :tool-context that
                   ;; FIX A stored on THIS tick's execution-context read model
                   ;; (the same tick this repl-researcher node runs in) and
                   ;; thread it into the context handed to

@@ -139,6 +139,111 @@ full ranking. Do not drop any.")
                 :use-function-calling? true})))
 
 ;; =============================================================================
+;; Execution budget (RR-1 / ADR 0020)
+;; =============================================================================
+
+(def default-rerank-timeout-ms
+  "Fixed, GENEROUS execution budget for one reranker call, replacing the
+   generic 300000ms `orc/execute` default the classify->rerank path used to
+   inherit (the cliff a live run tripped by ~2s at 302147ms).
+
+   Sizing (from the measured evidence, not a guess):
+     - worst controlled-repro completion: 10525 tokens (ARM-E)
+     - worst LIVE observed throughput:    ~25 tok/s (the degraded run)
+     => worst realistic wall time ~= 10525 / 25 = 421s
+
+   900000ms (15 min) clears that by ~2.1x. The margin is deliberate: this is
+   a BACKSTOP against a hung/pathologically-degraded call, not a latency
+   control — a bare match to the worst observed case would re-create the
+   same cliff one bad provider-hour later. Affordable because RR-1 also
+   moves classify off the dispatch thread: a slow rerank now costs turn
+   latency only.
+
+   Override per-call with `:timeout-ms` on `rerank!`'s opts, or per-
+   deployment with `:rerank-timeout-ms` on the context."
+  900000)
+
+(def ^:private max-timeout-retries
+  "How many times a TIMED-OUT rerank call is retried (same model, same
+   call) before the caller falls through to its fallback path. One retry:
+   a timeout is transient infra, not epistemic uncertainty (ADR 0015's
+   spirit), and the retry is cheap now that classify is off the blocking
+   path. A genuine throw / nil / empty result is NOT retried here — that is
+   the reranker failing to rank, and `apply-rerank`'s ColBERT fallback owns
+   it (unchanged)."
+  1)
+
+(defn- resolve-timeout-ms
+  "Per-call opt > per-deployment ctx knob > the fixed default."
+  [ctx timeout-ms]
+  (or timeout-ms (:rerank-timeout-ms ctx) default-rerank-timeout-ms))
+
+(def ^:private timed-out-result
+  "What `rerank!` returns when the call AND its one retry both timed out.
+
+   An EMPTY vector, so every existing caller — all of which test the result
+   with `(seq …)` / `(first …)` — behaves exactly as it does for a nil or
+   empty reranker result today (fall back / stop descent). The
+   `:rerank-timeout? true` metadata is the ADDITIVE signal: a caller that
+   cares can ask `timed-out?` and record 'infra was slow' distinctly from
+   'the reranker could not rank'. Metadata is invisible to value equality,
+   so nothing downstream changes shape."
+  (with-meta [] {:rerank-timeout? true}))
+
+(defn timed-out?
+  "True when a `rerank!` return value is the exhausted-timeout marker (the
+   call timed out and so did its retry). False for every other result,
+   including nil, a genuine empty result, and success."
+  [rerank-result]
+  (boolean (:rerank-timeout? (meta rerank-result))))
+
+(defn- parse-reranked-json
+  "Parse + canonicalize + validate the reranker's JSON payload from a
+   SUCCESSFUL execution result. Extracted from `rerank!` unchanged when
+   RR-1 gave that function its budget/retry/timeout concerns — pure over
+   the result map, no execution semantics."
+  [result]
+  (let [raw-json (get-in result [:outputs :reranked-json])
+        ;; The LLM may wrap its JSON in a code fence or include a
+        ;; brief preamble. Extract the first [...] block.
+        json-payload (when (string? raw-json)
+                       (let [start (.indexOf raw-json "[")
+                             end (.lastIndexOf raw-json "]")]
+                         (when (and (>= start 0) (> end start))
+                           (subs raw-json start (inc end)))))
+        parsed (try
+                 (when json-payload
+                   (json/read-str json-payload :key-fn keyword))
+                 (catch Throwable t
+                   (mu/log ::rerank-parse-failed
+                           :error (.getMessage t)
+                           :raw-preview (when raw-json
+                                          (subs raw-json 0
+                                                (min 200 (count raw-json)))))
+                   nil))
+        ;; The LLM produces snake_case keys per the instruction
+        ;; ({"document_id":..., "fitness_score":...}). Canonicalize
+        ;; to the kebab-case schema and validate.
+        canon (when (sequential? parsed)
+                (mapv (fn [e]
+                        (cond-> e
+                          (:document_id e)   (-> (assoc :document-id (:document_id e))
+                                                 (dissoc :document_id))
+                          (:fitness_score e) (-> (assoc :fitness-score (:fitness_score e))
+                                                 (dissoc :fitness_score))
+                          ;; Keep only the canonical kebab-case keys
+                          true               (select-keys [:document-id :reasoning :fitness-score])))
+                      parsed))
+        valid (when (sequential? canon)
+                (filterv #(m/validate ontology-schemas/reranked-result %) canon))]
+    (when (and (sequential? canon)
+               (not= (count canon) (count (or valid []))))
+      (mu/log ::rerank-dropped-malformed-entries
+              :raw-count (count canon)
+              :valid-count (count valid)))
+    valid))
+
+;; =============================================================================
 ;; Public API
 ;; =============================================================================
 
@@ -149,61 +254,58 @@ full ranking. Do not drop any.")
    {:document-id :reasoning :fitness-score} entries in descending
    :fitness-score order. Returns nil if the workflow fails.
 
+   RR-1: when the call TIMED OUT and the one retry ALSO timed out, the
+   return value is an EMPTY vector carrying `{:rerank-timeout? true}`
+   metadata (read it with `timed-out?`). Callers that only check
+   `(seq …)` — every caller today — see it exactly as they see a nil/empty
+   result and take their existing fallback path unchanged; the metadata
+   only lets a caller distinguish 'infra was slow' from 'the reranker
+   could not rank' when it wants to (see apply-rerank's
+   :timeout-fallback stamp).
+
    Args:
      ctx        — context with :event-store / :dscloj-provider
      opts       — {:query :intent :candidates}
        :query       — original NL query string
        :intent      — caller's goal/context string
        :candidates  — vector of candidate maps (each with at least
-                      :content :score :document-id :document-metadata)"
-  [ctx {:keys [query intent candidates]}]
-  (let [sheet-id (orc/build-workflow! ctx reranker-workflow)
-        result   (orc/execute ctx sheet-id
-                              {:query query
-                               :intent intent
-                               :candidates candidates})]
+                      :content :score :document-id :document-metadata)
+       :timeout-ms  — optional explicit execution budget for the rerank
+                      workflow. Defaults to default-rerank-timeout-ms
+                      (see its docstring for the sizing evidence)."
+  [ctx {:keys [query intent candidates timeout-ms]}]
+  (let [budget-ms (resolve-timeout-ms ctx timeout-ms)
+        sheet-id (orc/build-workflow! ctx reranker-workflow)
+        inputs   {:query query
+                  :intent intent
+                  :candidates candidates}
+        ;; RR-1: retry-on-TIMEOUT only. A timeout is transient infra (tail
+        ;; latency against a fixed clock); the SAME call is re-run once,
+        ;; unchanged, before the caller's fallback path is reached. Any other
+        ;; non-success status is a genuine rerank failure and is NOT retried
+        ;; here (the node itself already owns content-level retries via
+        ;; :max-retries 3).
+        result   (loop [attempt 0]
+                   (let [r (orc/execute ctx sheet-id inputs :timeout-ms budget-ms)]
+                     (if (and (= :timeout (:status r))
+                              (< attempt max-timeout-retries))
+                       (do (mu/log ::rerank-timed-out-retrying
+                                   :attempt (inc attempt)
+                                   :timeout-ms budget-ms
+                                   :duration-ms (:duration-ms r))
+                           (recur (inc attempt)))
+                       r)))]
     (when-not (= :success (:status result))
       (mu/log ::rerank-workflow-failed
               :status (:status result)
               :error (:error result)
               :duration-ms (:duration-ms result)))
-    (when (= :success (:status result))
-      (let [raw-json (get-in result [:outputs :reranked-json])
-            ;; The LLM may wrap its JSON in a code fence or include a
-            ;; brief preamble. Extract the first [...] block.
-            json-payload (when (string? raw-json)
-                           (let [start (.indexOf raw-json "[")
-                                 end (.lastIndexOf raw-json "]")]
-                             (when (and (>= start 0) (> end start))
-                               (subs raw-json start (inc end)))))
-            parsed (try
-                     (when json-payload
-                       (json/read-str json-payload :key-fn keyword))
-                     (catch Throwable t
-                       (mu/log ::rerank-parse-failed
-                               :error (.getMessage t)
-                               :raw-preview (when raw-json
-                                              (subs raw-json 0
-                                                    (min 200 (count raw-json)))))
-                       nil))
-            ;; The LLM produces snake_case keys per the instruction
-            ;; ({"document_id":..., "fitness_score":...}). Canonicalize
-            ;; to the kebab-case schema and validate.
-            canon (when (sequential? parsed)
-                    (mapv (fn [e]
-                            (cond-> e
-                              (:document_id e)   (-> (assoc :document-id (:document_id e))
-                                                     (dissoc :document_id))
-                              (:fitness_score e) (-> (assoc :fitness-score (:fitness_score e))
-                                                     (dissoc :fitness_score))
-                              ;; Keep only the canonical kebab-case keys
-                              true               (select-keys [:document-id :reasoning :fitness-score])))
-                          parsed))
-            valid (when (sequential? canon)
-                    (filterv #(m/validate ontology-schemas/reranked-result %) canon))]
-        (when (and (sequential? canon)
-                   (not= (count canon) (count (or valid []))))
-          (mu/log ::rerank-dropped-malformed-entries
-                  :raw-count (count canon)
-                  :valid-count (count valid)))
-        valid))))
+    (case (:status result)
+      ;; RR-1: the retry ALSO timed out. Hand back the timeout-marked empty
+      ;; result so the caller's fallback can record WHY it fell back.
+      :timeout (do (mu/log ::rerank-timeout-exhausted
+                           :timeout-ms budget-ms
+                           :attempts (inc max-timeout-retries))
+                   timed-out-result)
+      :success (parse-reranked-json result)
+      nil)))

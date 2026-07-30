@@ -412,6 +412,15 @@
    `(or (:fitness-score x) 0.0)` short-circuits don't mask the
    absence.
 
+   RR-1 (ADR 0020): the fallback path now distinguishes WHY it fired.
+   Reached because the rerank call timed out AND its one retry also timed
+   out (`reranker/timed-out?`) → :timeout-fallback. Reached because the
+   reranker threw / returned nil / returned empty → :colbert-fallback, as
+   before. The downstream ACTION is identical for both (ADR 0015's
+   detect-and-defer :outcome :uncertain) — this only sharpens what the
+   measurement code can observe: 'infra was slow' vs 'the reranker could
+   not rank'.
+
    EL-5 (ADR 0016): AFTER the JOIN, the reranker's :fitness-score is
    passed through the deterministic CONTRASTIVE domain penalty
    (domain-penalty/penalize-candidates). The JOIN below keys back onto
@@ -452,17 +461,25 @@
                                   (:domain-penalty-config ctx))
             penalized (domain-penalty/penalize-candidates ctx joined query penalty-config)]
         (vec (take k penalized)))
-      (do
+      (let [;; RR-1: de-conflate a TIMEOUT (transient infra, retried once and
+            ;; still out of budget) from a genuine rerank failure (throw / nil
+            ;; / empty). Same fallback ordering, same nil fitness/reasoning,
+            ;; same downstream defer — different, observable reason.
+            timeout? (reranker/timed-out? reranked)
+            source (if timeout? :timeout-fallback :colbert-fallback)]
         (u/log ::rerank-failed
                :query query
-               :note "Reranker returned no results; falling back to pure ColBERT ordering.")
+               :rerank-source source
+               :note (if timeout?
+                       "Reranker timed out (including its retry); falling back to pure ColBERT ordering."
+                       "Reranker returned no results; falling back to pure ColBERT ordering."))
         (->> candidates
              (take k)
              (mapv (fn [c]
                      (-> c
                          (assoc :reasoning nil)
                          (assoc :fitness-score nil)
-                         (assoc :rerank-source :colbert-fallback)))))))))
+                         (assoc :rerank-source source)))))))))
 
 (defn search-descriptions
   "C-2b-1+C-2b-2: parameterized retrieval over the ColBERT-indexed
