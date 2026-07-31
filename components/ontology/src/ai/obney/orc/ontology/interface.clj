@@ -421,14 +421,19 @@
    bite DETERMINISTICALLY where the LLM ignored the veto. The penalty
    re-sorts by the new fitness BEFORE (take k …). Output contract
    ({:document-id :reasoning :fitness-score}) is UNCHANGED (the extra
-   :domain-penalty/:cos-* keys are additive observability)."
-  [ctx candidates rerank-intent query k]
+   :domain-penalty/:cos-* keys are additive observability).
+
+   RR-2: `model` is an OPTIONAL override for the reranker's :model,
+   threaded straight through to `reranker/rerank!`'s own :model opt —
+   nil here is a no-op (reranker/rerank! resolves its own default)."
+  [ctx candidates rerank-intent query k model]
   (let [enriched (mapv #(enrich-candidate-evidence ctx %) candidates)
         reranked (try
                    (reranker/rerank! ctx
                      {:query query
                       :intent rerank-intent
-                      :candidates enriched})
+                      :candidates enriched
+                      :model model})
                    (catch Throwable t
                      (u/log ::rerank-failed
                             :query query
@@ -485,6 +490,11 @@
                              through an LLM reranker that returns
                              a reordered list with per-result
                              :reasoning + :fitness-score.
+       :model              - optional OpenRouter model id override for
+                             the reranker (RR-2). Only meaningful when
+                             :rerank-with-intent is also provided; nil
+                             is a no-op (the reranker resolves its own
+                             evidence-tested default).
 
    Returns a vector of result maps:
      [{:content \"...\" :score 0.87 :rank 1 :document-id \"...\"
@@ -499,7 +509,7 @@
    Rerank-failure semantics: if the LLM call throws or returns nil,
    fall back to the pure-ColBERT top-K + log ::rerank-failed. The
    caller sees no exception."
-  [ctx {:keys [query granularity k rerank-with-intent]
+  [ctx {:keys [query granularity k rerank-with-intent model]
         :or {granularity :all k 10}}]
   (if-let [index (latest-ontology-descriptions-index ctx)]
     (let [fetch-k (if rerank-with-intent
@@ -529,7 +539,7 @@
                                             (-> % :document-metadata :granularity)))
                               raw-results))]
       (if rerank-with-intent
-        (apply-rerank ctx filtered rerank-with-intent query k)
+        (apply-rerank ctx filtered rerank-with-intent query k model)
         (vec (take k filtered))))
     (do
       (u/log ::search-cold-no-index

@@ -474,6 +474,70 @@
               ":parent-tree-id is the node we walked FROM at depth 4"))))))
 
 ;; =============================================================================
+;; RR-2 — classify-task threads an optional :model into BOTH the top-level
+;; search-descriptions call AND the walk-down rerank! calls (pick-best-child),
+;; unchanged in shape, with no breaking change to callers that pass nothing.
+;; =============================================================================
+
+(deftest classify-task-forwards-optional-model-to-search-descriptions
+  (testing "Caller's :model reaches search-descriptions' opts unchanged"
+    (let [captured (atom nil)]
+      (with-redefs [ontology/search-descriptions
+                    (fn [_ opts] (reset! captured opts) (fake-top-1 (random-uuid) 0.95))]
+        (ontology/classify-task {}
+          {:task-signature "x" :threshold 0.7 :model "anthropic/claude-sonnet-4"}))
+      (is (= "anthropic/claude-sonnet-4" (:model @captured))
+          "search-descriptions receives the caller's explicit :model override")))
+
+  (testing "Omitting :model forwards nil — no breaking change to existing callers"
+    (let [captured (atom nil)]
+      (with-redefs [ontology/search-descriptions
+                    (fn [_ opts] (reset! captured opts) (fake-top-1 (random-uuid) 0.95))]
+        (ontology/classify-task {} {:task-signature "x" :threshold 0.7}))
+      (is (nil? (:model @captured))
+          "No :model key supplied means nil forwarded"))))
+
+(deftest classify-task-walk-down-forwards-model-to-rerank
+  (testing "During walk-down, pick-best-child's rerank! call carries the caller's :model override"
+    (let [parent-id (random-uuid)
+          child-id  (random-uuid)
+          fake-narrower (fn [_ctx uri]
+                          (cond
+                            (= uri (str "tree-class:" parent-id)) #{(str "tree-class:" child-id)}
+                            :else #{}))
+          fake-get-desc (fn [_ctx granularity target-id]
+                          (when (and (= granularity :tree-fingerprint)
+                                     (= target-id child-id))
+                            {:summary "Specific child variant of the parent pattern."
+                             :version 1
+                             :consolidated-from-event-count 1
+                             :capabilities []
+                             :strengths []
+                             :weaknesses []
+                             :representative-uses []
+                             :avoid-when []}))
+          captured-model (atom :unset)
+          fake-rerank (fn [_ctx {:keys [candidates model]}]
+                        (reset! captured-model model)
+                        (mapv (fn [c]
+                                {:document-id (:document-id c)
+                                 :reasoning "Tighter match at the leaf level."
+                                 :fitness-score 0.92})
+                              candidates))]
+      (with-redefs [ontology/search-descriptions   (fn [_ _] (fake-top-1 parent-id 0.85))
+                    ontology/get-narrower-concepts fake-narrower
+                    ontology/get-description       fake-get-desc
+                    reranker/rerank!               fake-rerank]
+        (ontology/classify-task {}
+          {:task-signature "extract per-section summaries"
+           :threshold 0.7
+           :walk-down? true
+           :specificity-threshold 0.9
+           :model "anthropic/claude-sonnet-4"})
+        (is (= "anthropic/claude-sonnet-4" @captured-model)
+            "pick-best-child's rerank! call inside walk-down carries the override")))))
+
+;; =============================================================================
 ;; RED #7 — :ontology/assign-task-class command with :parent-tree-id forwards
 ;; it through to the emitted :ontology/task-classified event body
 ;; =============================================================================

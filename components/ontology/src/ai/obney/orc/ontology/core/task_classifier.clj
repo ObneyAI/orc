@@ -113,7 +113,12 @@
    ;; is only a retrievable candidate once its consolidation total >= the gate.
    [:bundle-threshold       {:optional true}
                             [:and number? [:>= 0.0] [:<= 1.0]]]
-   [:retrieval-gate         {:optional true} [:and int? [:>= 0]]]])
+   [:retrieval-gate         {:optional true} [:and int? [:>= 0]]]
+   ;; RR-2: optional reranker :model override, threaded unchanged in shape
+   ;; through search-descriptions/apply-rerank down to reranker/rerank!.
+   ;; Absent/nil is a no-op — the reranker resolves its own evidence-tested
+   ;; default (ADR 0020 decision 5). No breaking change to existing callers.
+   [:model                  {:optional true} [:maybe :string]]])
 
 ;; =============================================================================
 ;; Walk-down configuration
@@ -235,8 +240,11 @@
 (defn- pick-best-child
   "Re-rank a candidate list of children against the caller's intent.
    Returns {:target-id :fitness-score :reasoning} for the best child
-   that meets the auto-classify threshold, or nil if no child does."
-  [ctx intent children threshold]
+   that meets the auto-classify threshold, or nil if no child does.
+
+   RR-2: `model` is an OPTIONAL reranker :model override, threaded
+   straight through to `rerank!`'s own :model opt — nil is a no-op."
+  [ctx intent children threshold model]
   (when (seq children)
     (let [candidates (mapv (fn [c]
                              {:content (or (-> c :description :summary) "")
@@ -249,7 +257,8 @@
                            children)
           reranked (rerank! ctx {:query intent
                                  :intent intent
-                                 :candidates candidates})
+                                 :candidates candidates
+                                 :model model})
           top-1 (first reranked)]
       (when (and top-1 (>= (or (:fitness-score top-1) 0.0) threshold))
         ;; The :document-id is the child's stringified target-id.
@@ -285,8 +294,12 @@
        - If we never walked (depth = 0): return current as-is — we only
          LOOKED at children, never committed to descending.
      - A child passes: recurse on it at depth+1, carrying current's
-       target-id forward as the new parent for the child."
-  [ctx intent current depth auto-threshold parent-id]
+       target-id forward as the new parent for the child.
+
+   RR-2: `model` is an OPTIONAL reranker :model override, threaded
+   unchanged through every `pick-best-child` call and the recursion —
+   nil is a no-op (each rerank! resolves its own default)."
+  [ctx intent current depth auto-threshold parent-id model]
   (cond
     (>= depth max-walk-depth)
     (do (u/log ::walk-down-depth-cap-hit
@@ -312,7 +325,7 @@
          :was-fresh-mint? false}
 
         :else
-        (let [best (pick-best-child ctx intent children auto-threshold)]
+        (let [best (pick-best-child ctx intent children auto-threshold model)]
           (cond
             (nil? best)
             ;; Children exist but none passed threshold.
@@ -332,7 +345,7 @@
 
             :else
             (recur ctx intent best (inc depth) auto-threshold
-                   (:target-id current))))))))
+                   (:target-id current) model)))))))
 
 ;; =============================================================================
 ;; EL-1b (ADR 0015) — convergence-capture helpers (pure)
@@ -516,7 +529,7 @@
                      :opts opts})))
   (let [{:keys [task-signature parent-summary threshold
                 walk-down? specificity-threshold
-                bundle-threshold retrieval-gate]
+                bundle-threshold retrieval-gate model]
          :or {walk-down? default-walk-down?
               specificity-threshold default-specificity-threshold
               bundle-threshold default-bundle-threshold
@@ -538,7 +551,8 @@
                          {:query signature
                           :granularity #{:tree-fingerprint :tree-class}
                           :rerank-with-intent classifier-intent
-                          :k 5})
+                          :k 5
+                          :model model})
         ;; CV-1 (ADR 0017) — the retrieval gate governs SURFACING, not accrual.
         ;; EL-1b originally filtered a :tree-class whose consolidation total was
         ;; in (0, gate) OUT OF CANDIDACY. That was the bootstrap DEADLOCK: a
@@ -664,7 +678,8 @@
                                              :reasoning (:reasoning top-1)}
                                             0
                                             threshold
-                                            nil)]
+                                            nil
+                                            model)]
             (-> walk-result
                 (assoc :top-candidates (vec surfaced-candidates))
                 (assoc :outcome :matched)
@@ -681,7 +696,10 @@
    [:task-signature      :string]
    [:threshold           [:and number? [:>= 0.0] [:<= 1.0]]]
    [:structural-context  {:optional true} [:maybe :uuid]]
-   [:top-n               {:optional true} :int]])
+   [:top-n               {:optional true} :int]
+   ;; RR-2: optional reranker :model override, threaded unchanged in shape
+   ;; through search-descriptions/apply-rerank down to reranker/rerank!.
+   [:model               {:optional true} [:maybe :string]]])
 
 (defn classify-behaviors
   "R05b: pure behavioral classification. Given a task signature +
@@ -735,13 +753,14 @@
     (throw (ex-info "Invalid classify-behaviors opts"
                     {:explain err
                      :opts opts})))
-  (let [{:keys [task-signature threshold top-n structural-context]
+  (let [{:keys [task-signature threshold top-n structural-context model]
          :or {top-n default-classify-behaviors-top-n}} opts
         candidates (search-descriptions ctx
                      {:query task-signature
                       :granularity :behavioral-subtree
                       :rerank-with-intent behavioral-classifier-intent
-                      :k (* 2 top-n)})
+                      :k (* 2 top-n)
+                      :model model})
         ;; R05b + R07: when :structural-context is provided, surface
         ;; behaviors that compose into the shell ALONGSIDE the top
         ;; overall candidates — the composes-into graph is a

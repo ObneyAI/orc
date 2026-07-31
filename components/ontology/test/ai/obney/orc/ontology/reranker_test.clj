@@ -387,6 +387,70 @@
           "Instruction enumerates forbidden status-shape examples"))))
 
 ;; =============================================================================
+;; RR-2 — the reranker's own :model config slot (ADR 0020 decision 5)
+;; =============================================================================
+
+(deftest reranker-default-model-is-the-evidence-tested-model
+  (testing "The RR-2 default model constant is the ADR-0020-validated model, not a flagship/arbitrary pick"
+    (is (= "qwen/qwen3.5-flash-02-23" reranker/default-model))))
+
+(deftest reranker-workflow-pins-model-on-rerank-node
+  (testing "reranker-workflow builds the 'rerank' node with :model set to whatever is passed — pure data, no ambient/router fallback"
+    (is (= reranker/default-model
+           (:model (:root-node (reranker/reranker-workflow reranker/default-model)))))
+    (is (= "some-other-model"
+           (:model (:root-node (reranker/reranker-workflow "some-other-model")))))))
+
+(defn- with-captured-rerank-request
+  "Like with-faked-rerank-llm, but also captures the dscloj request
+   :options passed to dscloj.core/predict (4th arg) into `captured-atom`
+   so callers can assert on the RESOLVED :model that actually rides the
+   request — not just the workflow-def's static shape."
+  [reranked-results captured-atom f]
+  (let [json-keyed (mapv (fn [r]
+                           {:document_id (:document-id r)
+                            :reasoning (:reasoning r)
+                            :fitness_score (:fitness-score r)})
+                         reranked-results)
+        payload (clojure.data.json/write-str json-keyed)]
+    (with-redefs [dscloj.core/predict
+                  (fn [_provider _module _inputs options]
+                    (reset! captured-atom options)
+                    {:outputs {:reranked-json payload}
+                     :usage {:total-tokens 100}
+                     :model (:model options)})]
+      (f))))
+
+(deftest rerank-resolves-default-model-when-none-given
+  (testing "rerank! called with NO :model resolves the RR-2 default onto the dscloj request options (not the app's ambient litellm-router default)"
+    (with-test-ctx [ctx]
+      (let [candidates [{:content "A" :score 0.8 :document-id "a"
+                         :document-metadata {:granularity :node-type :target-id "a"}}]
+            fake [{:document-id "a" :reasoning "fits" :fitness-score 0.9}]
+            captured (atom nil)]
+        (with-captured-rerank-request fake captured
+          (fn []
+            (reranker/rerank! ctx
+              {:query "q" :intent "i" :candidates candidates})
+            (is (= reranker/default-model (:model @captured))
+                "Resolved request carries the RR-2 default model")))))))
+
+(deftest rerank-uses-explicit-model-override
+  (testing "rerank! called WITH an explicit :model uses that value instead of the default"
+    (with-test-ctx [ctx]
+      (let [candidates [{:content "A" :score 0.8 :document-id "a"
+                         :document-metadata {:granularity :node-type :target-id "a"}}]
+            fake [{:document-id "a" :reasoning "fits" :fitness-score 0.9}]
+            captured (atom nil)
+            override "anthropic/claude-sonnet-4"]
+        (with-captured-rerank-request fake captured
+          (fn []
+            (reranker/rerank! ctx
+              {:query "q" :intent "i" :candidates candidates :model override})
+            (is (= override (:model @captured))
+                "Resolved request carries the caller's explicit override, not the default")))))))
+
+;; =============================================================================
 ;; RED #9 — fail-soft to pure ColBERT when the reranker throws
 ;; =============================================================================
 
