@@ -192,6 +192,29 @@
             "Shared constant — defined once in the classifier ns and referenced from this call site")))))
 
 ;; =============================================================================
+;; RR-2 — classify-behaviors threads an optional :model to search-descriptions
+;; =============================================================================
+
+(deftest classify-behaviors-forwards-optional-model-to-search
+  (testing "When the caller supplies :model, classify-behaviors forwards it unchanged to search-descriptions"
+    (let [calls (atom [])]
+      (with-redefs [ontology/search-descriptions (stub-search! calls [])]
+        (task-classifier/classify-behaviors
+          {}
+          {:task-signature "x" :threshold 0.7 :model "anthropic/claude-sonnet-4"}))
+      (is (= "anthropic/claude-sonnet-4" (-> @calls first :model))
+          "search-descriptions receives the caller's explicit :model override")))
+
+  (testing "When the caller omits :model, classify-behaviors forwards nil (no breaking change — search-descriptions/rerank! resolve their own default)"
+    (let [calls (atom [])]
+      (with-redefs [ontology/search-descriptions (stub-search! calls [])]
+        (task-classifier/classify-behaviors
+          {}
+          {:task-signature "x" :threshold 0.7}))
+      (is (nil? (-> @calls first :model))
+          "No :model key supplied means nil forwarded — existing callers are unaffected"))))
+
+;; =============================================================================
 ;; Candidate helper (shape produced by search-descriptions + reranker)
 ;; =============================================================================
 

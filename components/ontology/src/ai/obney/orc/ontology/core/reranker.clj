@@ -98,8 +98,39 @@ full ranking. Do not drop any.")
 ;; Workflow definition
 ;; =============================================================================
 
-(def reranker-workflow
-  "Single-:llm-node ORC workflow for the description reranker.
+(def default-model
+  "RR-2 (ADR 0020 decision 5): the reranker's default :model when the
+   caller supplies none. Evidence-tested (not an arbitrary 'fast model'
+   pick) — validated via repro to produce correct, function-calling-valid
+   structured rankings on the real behavioral-subtree corpus. A flagship
+   model was proven unnecessary for ranking quality, and a different
+   fast-alternative model was proven insufficient to reduce latency on
+   its own (see ADR 0020 / doc/reranker-resilience-grill-input.md §2).
+   This default is about correctness/determinism/decoupling, not speed."
+  "qwen/qwen3.5-flash-02-23")
+
+(defn- reranker-workflow-name
+  "The workflow's sheet-identity is deterministic from its NAME
+   (orc-service `build-workflow!` derives a v5-UUID sheet-id from the
+   name alone, then content-hashes the definition to decide whether to
+   rebuild in place). Keep the DEFAULT model's identity pinned to the
+   original stable name so existing deployments/dashboards that know it
+   as \"ontology-description-reranker\" keep resolving the same sheet.
+   A caller-supplied override gets its OWN distinct name/identity —
+   never reusing the default sheet's name with different content, which
+   would otherwise thrash that sheet's content hash (clear + rebuild in
+   place) every time a different model is requested against the same
+   name."
+  [model]
+  (if (= model default-model)
+    "ontology-description-reranker"
+    (str "ontology-description-reranker--" model)))
+
+(defn reranker-workflow
+  "Build the single-:llm-node ORC workflow for the description reranker,
+   pinning the 'rerank' node's :model to `model` (RR-2). Pure data — no
+   I/O — so tests can assert on the resolved node without a real LLM
+   call.
 
    Inputs (blackboard): :query, :intent, :candidates
    Output (one :writes slot): :reranked-json
@@ -110,7 +141,8 @@ full ranking. Do not drop any.")
        deeply-nested structured output via U11 :output-schemas. A
        string output trivially passes structured-output validation;
        we own the parse + validate step downstream."
-  (orc/workflow "ontology-description-reranker"
+  [model]
+  (orc/workflow (reranker-workflow-name model)
     (orc/blackboard
       {:query         :string
        :intent        :string
@@ -118,6 +150,7 @@ full ranking. Do not drop any.")
        :reranked-json :string})
 
     (orc/llm "rerank"
+      :model model
       :instruction reranker-instruction
       :reads [:query :intent :candidates]
       :writes [:reranked-json]
@@ -265,17 +298,23 @@ full ranking. Do not drop any.")
 
    Args:
      ctx        — context with :event-store / :dscloj-provider
-     opts       — {:query :intent :candidates}
+     opts       — {:query :intent :candidates :model}
        :query       — original NL query string
        :intent      — caller's goal/context string
        :candidates  — vector of candidate maps (each with at least
                       :content :score :document-id :document-metadata)
        :timeout-ms  — optional explicit execution budget for the rerank
                       workflow. Defaults to default-rerank-timeout-ms
-                      (see its docstring for the sizing evidence)."
-  [ctx {:keys [query intent candidates timeout-ms]}]
+                      (see its docstring for the sizing evidence).
+       :model       — OPTIONAL OpenRouter model id override for the
+                      'rerank' node. Defaults to `default-model` (RR-2)
+                      when absent, mirroring the caller-overridable
+                      config-slot pattern so a future deployment can pick
+                      a different model with no code change."
+  [ctx {:keys [query intent candidates timeout-ms model]}]
   (let [budget-ms (resolve-timeout-ms ctx timeout-ms)
-        sheet-id (orc/build-workflow! ctx reranker-workflow)
+        resolved-model (or model default-model)
+        sheet-id (orc/build-workflow! ctx (reranker-workflow resolved-model))
         inputs   {:query query
                   :intent intent
                   :candidates candidates}

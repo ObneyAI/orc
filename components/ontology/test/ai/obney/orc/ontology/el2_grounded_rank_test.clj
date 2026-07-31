@@ -224,3 +224,62 @@
                (is (string? (:reasoning r)))
                (is (= (str "tf::" tid) (:document-id r))
                    "join-back on :document-id is intact")))))))))
+
+;; =============================================================================
+;; RR-2 — search-descriptions/apply-rerank thread an optional :model through
+;; to reranker/rerank!, unchanged in shape, with no breaking change to
+;; callers that pass nothing (nil forwarded, reranker/rerank! resolves its
+;; own evidence-tested default).
+;; =============================================================================
+
+(deftest search-descriptions-forwards-optional-model-to-rerank
+  (testing "search-descriptions :model reaches reranker/rerank!'s opts unchanged"
+    (with-test-ctx [ctx]
+      (let [tid (random-uuid)]
+        (record-body! ctx tid guarded-body)
+        (Thread/sleep 50)
+        (let [captured-model (atom :unset)
+              stub (fn [_ctx {:keys [candidates model]}]
+                     (reset! captured-model model)
+                     (mapv (fn [c] {:document-id (:document-id c)
+                                    :reasoning "stub" :fitness-score 0.5})
+                           candidates))
+              candidates [{:content (:summary guarded-body)
+                           :score 0.9 :rank 1
+                           :document-id (str "tf::" tid)
+                           :document_metadata {:granularity "tree-fingerprint"
+                                               :target-id (str tid)
+                                               :confidence 0.7 :last-update "2026"}}]]
+          (with-discoverable-index
+           (with-redefs [colbert/search (fn [_ _] candidates)
+                         reranker/rerank! stub]
+             (ontology/search-descriptions ctx
+               {:query "rename calc" :rerank-with-intent "y" :k 3
+                :model "anthropic/claude-sonnet-4"})
+             (is (= "anthropic/claude-sonnet-4" @captured-model)
+                 "reranker/rerank! receives the caller's explicit :model override")))))))
+
+  (testing "Omitting :model forwards nil — no breaking change to existing callers"
+    (with-test-ctx [ctx]
+      (let [tid (random-uuid)]
+        (record-body! ctx tid guarded-body)
+        (Thread/sleep 50)
+        (let [captured-model (atom :unset)
+              stub (fn [_ctx {:keys [candidates model]}]
+                     (reset! captured-model model)
+                     (mapv (fn [c] {:document-id (:document-id c)
+                                    :reasoning "stub" :fitness-score 0.5})
+                           candidates))
+              candidates [{:content (:summary guarded-body)
+                           :score 0.9 :rank 1
+                           :document-id (str "tf::" tid)
+                           :document_metadata {:granularity "tree-fingerprint"
+                                               :target-id (str tid)
+                                               :confidence 0.7 :last-update "2026"}}]]
+          (with-discoverable-index
+           (with-redefs [colbert/search (fn [_ _] candidates)
+                         reranker/rerank! stub]
+             (ontology/search-descriptions ctx
+               {:query "rename calc" :rerank-with-intent "y" :k 3})
+             (is (nil? @captured-model)
+                 "No :model key supplied means nil forwarded"))))))))
