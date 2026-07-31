@@ -91,8 +91,10 @@ Every reasoning entry must answer: 'Why does THIS candidate's specific
 content advance the caller's stated intent?' If you cannot answer that
 concretely, assign a low fitness_score and say WHAT is missing.
 
-Return ALL candidates, even low-fitness ones — the caller may want the
-full ranking. Do not drop any.")
+Return ALL candidates — including low-fitness ones, and ones that arrive
+with only content, score and document-id — the caller may want the full
+ranking. Do not drop any. The output vector MUST contain exactly one entry
+per input candidate.")
 
 ;; =============================================================================
 ;; Workflow definition

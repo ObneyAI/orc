@@ -674,7 +674,14 @@
 ;; R05b — classify-behaviors: behavioral subtree retrieval API
 ;; =============================================================================
 
-(def ^:private default-classify-behaviors-top-n 3)
+(def default-classify-behaviors-top-n
+  "The established top-N surfacing convention for behavioral classification.
+
+   NOT private: RR-3 (ADR 0020 #4) reuses this exact number as K for the
+   reranker's structural candidate-richness cap (how many CHILDREN keep full
+   richness in the prompt) rather than inventing a second magic number that
+   could drift away from this one."
+  3)
 
 (def ^:private classify-behaviors-opts-schema
   [:map
