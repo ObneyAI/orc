@@ -391,7 +391,91 @@
     (cond-> c
       (seq avoid-when)        (assoc :avoid-when avoid-when)
       (seq (:strengths body)) (assoc :strengths (compact-strengths (:strengths body)))
-      (seq weaknesses)        (assoc :weaknesses (compact-weaknesses weaknesses)))))
+      (seq weaknesses)        (assoc :weaknesses (compact-weaknesses weaknesses))
+      ;; RR-3 (ADR 0020 #4): carry the body's EXISTING structural provenance
+      ;; (`:parent-behavior` — the SKOS-broader axis stamped by
+      ;; mint-behavioral-subtree; absent on the ~12 curated abstract parents)
+      ;; so `shape-candidate-richness` can partition parent-vs-child without a
+      ;; new taxonomy field. Namespaced + stripped before the candidate is used
+      ;; anywhere else, so no caller-visible shape changes.
+      (:parent-behavior body) (assoc ::parent-behavior (:parent-behavior body)))))
+
+;; =============================================================================
+;; RR-3 (ADR 0020, decision 4): STRUCTURAL candidate-richness cap
+;;
+;; The reranker's prompt grows with the corpus, and the corpus grows on ONE
+;; side only: the harvest loop mints CHILDREN (`:parent-behavior` set), never
+;; new abstract parents (~12, curated, bounded). So cap richness on the child
+;; side.
+;;
+;; The naive design — full richness for the top-K candidates BY PRE-RERANK
+;; ColBERT SCORE — was PROVEN UNSAFE by /prototype before it was built, and
+;; re-measured here on this repo's own seeded corpus (see
+;; development/bench/rr3_richness_shape_probe.clj): on the established EL-5
+;; `refactor` regression case the pure pre-rerank ranking puts the KNOWN-WRONG
+;; force-fit (`rename-move-symbol`) at #1 and the KNOWN-CORRECT answer
+;; (`Code-building`) at #9 of 16 behavioral candidates (#9 of 19 on the
+;; orc-sessions corpus the original prototype ran against — same verdict).
+;; A top-K-by-score cut would have handed the wrong answer full evidence and
+;; starved the right one. Root cause: raw
+;; ColBERT similarity IS the biased signal EL-2/EL-5 exist to correct, so
+;; selecting on it reproduces the bias in a new place.
+;;
+;; Hence STRUCTURAL selection: parents ALWAYS full, whatever their score; only
+;; children compete on score for the K full-richness slots. This is INPUT-only
+;; shaping — every candidate is still handed to the reranker and still ranked
+;; (see the reranker instruction's terse-candidate note), and the JOIN + EL-5
+;; domain penalty downstream still key onto the FULLY enriched candidates.
+;; =============================================================================
+
+(def ^:private child-full-richness-top-n
+  "K — how many CHILDREN keep full richness in the reranker prompt. Reuses
+   `classify-behaviors`' established `:top-n` surfacing convention rather than
+   introducing a second number that could drift from it."
+  task-classifier/default-classify-behaviors-top-n)
+
+(def ^:private terse-candidate-keys
+  "What a CAPPED candidate carries into the reranker prompt: the content
+   SUMMARY (already a one-line summary — it is the description's `:summary`
+   field, which is what ColBERT indexes), the raw ColBERT score, and the
+   document-id it must echo back. Everything else — :avoid-when, :strengths,
+   :weaknesses, :document-metadata, :rank — is dropped. That drop IS the
+   shrinkage."
+  [:document-id :content :score])
+
+(defn- child-candidate?
+  "True when the candidate's Living Description body declares a
+   `:parent-behavior` — i.e. it is one of the harvest-grown CHILDREN. The ~12
+   curated abstract parents have none, and neither does any non-behavioral
+   candidate (tree-class / tree-fingerprint / node-type), so both keep full
+   richness. Conservative by construction: only the unbounded, growing side of
+   the corpus is ever capped."
+  [c]
+  (some? (::parent-behavior c)))
+
+(defn- shape-candidate-richness
+  "Decide STRUCTURALLY who carries full richness into the reranker prompt.
+
+   Parents (and every non-behavioral candidate) keep everything. Children are
+   ordered by their pre-rerank ColBERT score; the top-`child-full-richness-top-n`
+   keep everything, the rest are cut to `terse-candidate-keys`.
+
+   Candidate ORDER and COUNT are unchanged — this only shrinks per-candidate
+   detail, never the ranking task."
+  [annotated]
+  (let [keep-ids (into #{}
+                       (map :document-id)
+                       (->> annotated
+                            (filter child-candidate?)
+                            (sort-by #(or (:score %) 0.0) >)
+                            (take child-full-richness-top-n)))]
+    (mapv (fn [c]
+            (let [c' (dissoc c ::parent-behavior)]
+              (if (and (child-candidate? c)
+                       (not (contains? keep-ids (:document-id c))))
+                (select-keys c' terse-candidate-keys)
+                c')))
+          annotated)))
 
 (defn- apply-rerank
   "JOIN the reranker's delta output back to the original ColBERT
@@ -434,14 +518,31 @@
 
    RR-2: `model` is an OPTIONAL override for the reranker's :model,
    threaded straight through to `reranker/rerank!`'s own :model opt —
-   nil here is a no-op (reranker/rerank! resolves its own default)."
+   nil here is a no-op (reranker/rerank! resolves its own default).
+
+   RR-3 (ADR 0020 #4): between enrichment and the LLM call, the candidate
+   payload is passed through `shape-candidate-richness` — a STRUCTURAL cap
+   that keeps full richness for every parent behavior (and every
+   non-behavioral candidate) but cuts all but the top-K CHILDREN by
+   pre-rerank score down to content + score + document-id. INPUT-only: the
+   count, the order, and the ranking task are unchanged, and the JOIN + the
+   EL-5 penalty below key onto the fully-enriched set, not the shaped one."
   [ctx candidates rerank-intent query k model]
-  (let [enriched (mapv #(enrich-candidate-evidence ctx %) candidates)
+  (let [annotated (mapv #(enrich-candidate-evidence ctx %) candidates)
+        ;; The fully-enriched set (minus RR-3's internal structural marker).
+        ;; The JOIN and the EL-5 domain penalty below key onto THIS, not onto
+        ;; the shaped prompt payload — so capping a candidate's PROMPT detail
+        ;; never costs the deterministic penalty its :avoid-when signal.
+        enriched (mapv #(dissoc % ::parent-behavior) annotated)
+        ;; RR-3 (ADR 0020 #4): INPUT-only structural richness cap. Same
+        ;; candidates, same order, same count — less per-candidate detail for
+        ;; the non-critical (low-scoring CHILD) ones.
+        prompt-candidates (shape-candidate-richness annotated)
         reranked (try
                    (reranker/rerank! ctx
                      {:query query
                       :intent rerank-intent
-                      :candidates enriched
+                      :candidates prompt-candidates
                       :model model})
                    (catch Throwable t
                      (u/log ::rerank-failed
