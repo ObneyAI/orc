@@ -101,35 +101,39 @@
 ;; Event-stream fixtures — real commands, explicit sheet-ids so the
 ;; sheet -> tree-class JOIN is deterministic.
 ;; ---------------------------------------------------------------------------
-(defn- classify! [ctx sheet-id tree-class-id]
-  (cp/process-command
-    (assoc ctx :command
-           {:command/name :ontology/assign-task-class
-            :command/id (random-uuid)
-            :command/timestamp (time/now)
-            :source-sheet-id sheet-id
-            :source-tick-id (random-uuid)
-            :source-node-id (random-uuid)
-            :assigned-tree-id tree-class-id
-            :confidence 0.95
-            :top-candidates []
-            :reasoning "test"
-            :was-fresh-mint? false})))
+(defn- classify!
+  ([ctx sheet-id tree-class-id] (classify! ctx sheet-id tree-class-id (random-uuid)))
+  ([ctx sheet-id tree-class-id tick-id]
+   (cp/process-command
+     (assoc ctx :command
+            {:command/name :ontology/assign-task-class
+             :command/id (random-uuid)
+             :command/timestamp (time/now)
+             :source-sheet-id sheet-id
+             :source-tick-id tick-id
+             :source-node-id (random-uuid)
+             :assigned-tree-id tree-class-id
+             :confidence 0.95
+             :top-candidates []
+             :reasoning "test"
+             :was-fresh-mint? false}))))
 
-(defn- judge-score! [ctx sheet-id judge-name score]
-  (cp/process-command
-    (assoc ctx :command
-           {:command/name :evaluation/record-judge-score
-            :command/id (random-uuid)
-            :command/timestamp (time/now)
-            :sheet-id sheet-id
-            :node-id (random-uuid)
-            :tick-id (random-uuid)
-            :judge-name judge-name
-            :judge-config {}
-            :score score
-            :feedback ""
-            :dimensions []})))
+(defn- judge-score!
+  ([ctx sheet-id judge-name score] (judge-score! ctx sheet-id (random-uuid) judge-name score))
+  ([ctx sheet-id tick-id judge-name score]
+   (cp/process-command
+     (assoc ctx :command
+            {:command/name :evaluation/record-judge-score
+             :command/id (random-uuid)
+             :command/timestamp (time/now)
+             :sheet-id sheet-id
+             :node-id (random-uuid)
+             :tick-id tick-id
+             :judge-name judge-name
+             :judge-config {}
+             :score score
+             :feedback ""
+             :dimensions []}))))
 
 ;; ===========================================================================
 ;; SLICE 1 — tree-class-judge-averages read-model PARITY
@@ -142,16 +146,22 @@
             class-b (random-uuid)
             sheet-a1 (random-uuid)
             sheet-a2 (random-uuid)
-            sheet-b1 (random-uuid)]
-        ;; class-a: two sheets, judge :quality scored twice + :fit once
-        (classify! ctx sheet-a1 class-a)
-        (classify! ctx sheet-a2 class-a)
-        (judge-score! ctx sheet-a1 "quality" 0.8)
-        (judge-score! ctx sheet-a2 "quality" 0.6)   ;; quality mean = 0.7
-        (judge-score! ctx sheet-a1 "fit" 0.9)       ;; fit mean = 0.9
+            sheet-b1 (random-uuid)
+            tick-a1 (random-uuid)
+            tick-a2 (random-uuid)
+            tick-b1 (random-uuid)]
+        ;; class-a: two sheets (each its own occurrence/tick), judge :quality
+        ;; scored twice + :fit once — score calls reuse the SAME tick-id as
+        ;; their occurrence's classify! call, mirroring how a real turn's
+        ;; classify + judge-score events share one tick-id.
+        (classify! ctx sheet-a1 class-a tick-a1)
+        (classify! ctx sheet-a2 class-a tick-a2)
+        (judge-score! ctx sheet-a1 tick-a1 "quality" 0.8)
+        (judge-score! ctx sheet-a2 tick-a2 "quality" 0.6)   ;; quality mean = 0.7
+        (judge-score! ctx sheet-a1 tick-a1 "fit" 0.9)       ;; fit mean = 0.9
         ;; class-b: one sheet, judge :quality once
-        (classify! ctx sheet-b1 class-b)
-        (judge-score! ctx sheet-b1 "quality" 0.2)   ;; quality mean = 0.2
+        (classify! ctx sheet-b1 class-b tick-b1)
+        (judge-score! ctx sheet-b1 tick-b1 "quality" 0.2)   ;; quality mean = 0.2
         (Thread/sleep 250)
 
         ;; ORACLE: the consolidator's real (private) aggregate
@@ -178,6 +188,37 @@
           (is (nil? (:judge-averages agg)) "aggregate omits judge-averages when no scores")
           (is (nil? (ontology/get-tree-class-judge-averages ctx class-c))
               "read-model returns nil when no scores — parity on the empty case"))))))
+
+(deftest slice1-reclassification-does-not-corrupt-sibling-classes
+  (testing "SJ-1: the SAME shared sheet-id (the static workflow-definition sheet every turn of one task-shape
+             reuses) is classified to TWO different tree-classes across separate occurrences — each class's
+             judge-average must reflect ONLY its own occurrences' scores, not get misattributed via a
+             sheet-id-only join that the temporally-last classification silently overwrites"
+    (with-test-ctx [ctx]
+      (let [class-a (random-uuid)
+            class-b (random-uuid)
+            shared-sheet (random-uuid)
+            tick-1 (random-uuid)
+            tick-2 (random-uuid)
+            tick-3 (random-uuid)]
+        ;; occurrences 1 & 2 classify the shared sheet onto class-a
+        (classify! ctx shared-sheet class-a tick-1)
+        (judge-score! ctx shared-sheet tick-1 "quality" 0.9)
+        (classify! ctx shared-sheet class-a tick-2)
+        (judge-score! ctx shared-sheet tick-2 "quality" 0.7)
+        ;; occurrence 3 — the SAME shared sheet-id, RECLASSIFIED to a DIFFERENT
+        ;; class (class-b), temporally LAST — this is exactly the ordering that
+        ;; corrupts the old sheet-id-only join
+        (classify! ctx shared-sheet class-b tick-3)
+        (judge-score! ctx shared-sheet tick-3 "quality" 0.2)
+        (Thread/sleep 250)
+
+        (let [rm-a (ontology/get-tree-class-judge-averages ctx class-a)
+              rm-b (ontology/get-tree-class-judge-averages ctx class-b)]
+          (is (= {"quality" 0.8} rm-a)
+              (str "class-a (occurrences 1+2 only) mean should be (0.9+0.7)/2=0.8, got " rm-a))
+          (is (= {"quality" 0.2} rm-b)
+              (str "class-b (occurrence 3 only) mean should be 0.2 — NOT diluted by class-a's scores, got " rm-b)))))))
 
 ;; ===========================================================================
 ;; SLICE 2 — the conservative harvest GATE (pure fn truth-table)
@@ -273,7 +314,7 @@
                       :reasoning "test"
                       :was-fresh-mint? false}
                behavioral-subtrees (assoc :behavioral-subtrees behavioral-subtrees))))
-    (judge-score! ctx sheet-id "quality" score)
+    (judge-score! ctx sheet-id tick-id "quality" score)
     (cp/process-command
       (assoc ctx :command
              {:command/name :sheet/record-rlm-tree-execution-completion

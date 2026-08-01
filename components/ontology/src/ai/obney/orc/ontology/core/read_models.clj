@@ -790,28 +790,45 @@
 (defmethod tree-class-judge-averages* :ontology/task-classified
   [state event]
   (if-let [class-id (:assigned-tree-id event)]
-    (assoc-in state [:sheet->class (:source-sheet-id event)] class-id)
+    (-> state
+        ;; :sheet->class stays keyed on the bare (possibly shared/static)
+        ;; sheet-id — get-tree-class-for-sheet (CV-2's post-emit enrichment
+        ;; consumer) relies on this "most recent classification for this
+        ;; sheet" semantics and has no per-occurrence tick-id to join on.
+        (assoc-in [:sheet->class (:source-sheet-id event)] class-id)
+        ;; SJ-1: :occurrence->class is keyed on [sheet-id tick-id] — a
+        ;; per-OCCURRENCE identity, unlike :sheet->class above. A static
+        ;; task-shape's sheet-id is shared across every turn, so a bare
+        ;; sheet-id key silently overwrites earlier occurrences' class
+        ;; assignment whenever the same sheet-id is later reclassified to a
+        ;; sibling class — corrupting score attribution for every occurrence,
+        ;; not just the most recent one. tick-id is the per-turn identity
+        ;; already used this way by the consolidator (gather-recent-tree-
+        ;; class-events joins judge-scores by (sheet-id, tick-id)).
+        (assoc-in [:occurrence->class [(:source-sheet-id event) (:source-tick-id event)]] class-id))
     state))
 
 (defmethod tree-class-judge-averages* :judge/score-emitted
   [state event]
-  (let [{:keys [sheet-id judge-name score]} event]
-    (if (and sheet-id judge-name (number? score))
+  (let [{:keys [sheet-id tick-id judge-name score]} event]
+    (if (and sheet-id tick-id judge-name (number? score))
       (-> state
-          (update-in [:sheet-judge sheet-id judge-name :sum] (fnil + 0.0) score)
-          (update-in [:sheet-judge sheet-id judge-name :count] (fnil inc 0)))
+          (update-in [:sheet-judge [sheet-id tick-id] judge-name :sum] (fnil + 0.0) score)
+          (update-in [:sheet-judge [sheet-id tick-id] judge-name :count] (fnil inc 0)))
       state)))
 
 (defn tree-class-judge-averages-projection
   "Join the two accumulated maps into {class-id -> {judge-name -> {:sum :count}}}.
-   A score whose sheet has no classification yet is excluded (exactly as the
-   aggregate scan filters score sheet-ids to the class's task-classified
-   sheet-ids)."
+   SJ-1: joined by [sheet-id tick-id] OCCURRENCE identity (via :occurrence->class),
+   not bare sheet-id — a static task-shape's sheet-id is shared across every
+   turn, so a bare-sheet-id join would misattribute every occurrence's score
+   onto whichever class the sheet was MOST RECENTLY (re)classified to. A score
+   whose (sheet-id, tick-id) has no matching classification yet is excluded."
   [state]
-  (let [{:keys [sheet->class sheet-judge]} state]
+  (let [{:keys [occurrence->class sheet-judge]} state]
     (reduce-kv
-      (fn [acc sheet-id judges]
-        (if-let [class-id (get sheet->class sheet-id)]
+      (fn [acc occurrence-key judges]
+        (if-let [class-id (get occurrence->class occurrence-key)]
           (reduce-kv
             (fn [a judge-name {:keys [sum count]}]
               (-> a
