@@ -6,7 +6,8 @@
    - Return {:command-result/events [...]} on success
    - Return cognitect anomaly on failure
    - Last write wins (no optimistic concurrency)"
-  (:require [ai.obney.orc.orc-service.core.read-models :as rm]
+  (:require [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.metadata :as metadata]
             [ai.obney.grain.event-store-v3.interface :refer [->event]]
@@ -1057,6 +1058,28 @@
                          (contains? #{:success :failure :timeout} status) :terminal
                          :else nil))
         effective-completion-kind (or completion-kind derived-kind)
+        ;; Split :inputs into execution context vs read values.
+        ;;
+        ;; Blackboard keys are always SIMPLE keywords (see declare-key); the
+        ;; engine's map-each correlation keys are namespaced. So the namespace
+        ;; is the discriminator: namespaced => correlation metadata that must
+        ;; travel on the event; simple => a blackboard read value that is
+        ;; already durable elsewhere and is reduced to shape here.
+        exec-context (into {} (filter (fn [[k _]] (and (keyword? k) (namespace k))) inputs))
+        read-values (into {} (filter (fn [[k _]] (and (keyword? k) (nil? (namespace k)))) inputs))
+        ;; Whether this completion's writes get their own
+        ;; :sheet/execution-value-written events. Only tick-scoped
+        ;; executions have a blackboard to write into; a legacy
+        ;; (snapshot-less) tick has none.
+        ;;
+        ;; This gate decides whether :writes may be reduced to shape on the
+        ;; completion event. When the write events are NOT emitted, the
+        ;; completion event is the only record the values have, so dropping
+        ;; them here would lose them outright.
+        tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
+        externalize-writes? (and tick-scoped?
+                                 (#{:success :tree-generated} status)
+                                 (seq writes))
         completion-event (->event
                            {:type :sheet/node-execution-completed
                             :tags #{[:sheet sheet-id]
@@ -1066,14 +1089,35 @@
                                            :tick-id tick-id
                                            :node-id node-id
                                            :status status}
-                                    (seq writes) (assoc :writes writes)
+                                    ;; STORAGE: shape, not values — but ONLY
+                                    ;; when the values are durable elsewhere.
+                                    ;; The write events carry :node-id and
+                                    ;; :exec-context so consumers can attribute
+                                    ;; them back to this exact node execution.
+                                    (seq writes)
+                                    (assoc :write-keys (vec (keys writes))
+                                           :write-profile (profile/profile-values writes))
+                                    ;; No write events for this completion =>
+                                    ;; this event is the values' only home.
+                                    (and (seq writes) (not externalize-writes?))
+                                    (assoc :writes writes)
                                     duration-ms (assoc :duration-ms duration-ms)
                                     error (assoc :error error)
                                     ;; Verbatim raw LLM response for parse
                                     ;; failures — retrievable post-hoc via the
                                     ;; (node-output <node-id>) drill-down.
                                     raw-response (assoc :raw-response raw-response)
-                                    (seq inputs) (assoc :inputs inputs)
+                                    ;; :inputs keeps ONLY the namespaced
+                                    ;; execution-context keys. Those are not
+                                    ;; observability — trace-execution-key and
+                                    ;; matches-execution-context? correlate on
+                                    ;; them, and map-each correctness depends on
+                                    ;; it. The read VALUES (simple keywords, the
+                                    ;; blackboard keys) become shape only.
+                                    (seq exec-context) (assoc :inputs exec-context)
+                                    (seq read-values)
+                                    (assoc :read-keys (vec (keys read-values))
+                                           :input-profile (profile/profile-values read-values))
                                     (seq usage) (assoc :usage usage)
                                     ;; C-2a-2: propagate :node-type so the
                                     ;; per-node-type aggregator can partition
@@ -1089,19 +1133,23 @@
                                     ;; the completion event when the node blocked.
                                     (= :blocked status)
                                     (assoc :block-payload block-payload))})
-        ;; For tick-scoped executions with successful writes, emit bb writes atomically
-        ;; Also handle :tree-generated status (RLM two-phase execution)
-        tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
-        bb-write-events (when (and tick-scoped? (#{:success :tree-generated} status) (seq writes))
+        ;; For tick-scoped executions with successful writes, emit bb writes
+        ;; atomically. Also handles :tree-generated (RLM two-phase execution).
+        bb-write-events (when externalize-writes?
                           (mapv (fn [[k v]]
                                   (->event
                                     {:type :sheet/execution-value-written
                                      :tags #{[:sheet sheet-id]
                                              [:tick tick-id]}
-                                     :body {:tick-id tick-id
-                                            :sheet-id sheet-id
-                                            :key k
-                                            :value v}}))
+                                     :body (cond-> {:tick-id tick-id
+                                                    :sheet-id sheet-id
+                                                    :key k
+                                                    :value v
+                                                    :node-id node-id}
+                                             ;; Identifies the ITERATION, not
+                                             ;; just the node — see the schema.
+                                             (seq exec-context)
+                                             (assoc :exec-context exec-context))}))
                                 writes))]
     {:command-result/events
      (if bb-write-events

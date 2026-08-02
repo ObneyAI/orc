@@ -79,7 +79,9 @@
           (mapv (fn [c] {:completion-kind (:completion-kind c)
                           :status (:status c)
                           :tick-id (:tick-id c)
-                          :writes-keys (vec (keys (or (:writes c) {})))})))}))
+                          ;; The completion event names the keys it wrote; values live in
+                          ;; :sheet/execution-value-written (see EVENT-STORE-PATTERNS).
+                          :writes-keys (vec (or (:write-keys c) []))})))}))
 
 (defn verify!
   []

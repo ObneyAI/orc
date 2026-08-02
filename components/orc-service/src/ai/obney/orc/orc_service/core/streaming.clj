@@ -228,6 +228,15 @@
         {}))
     (catch Exception _ {})))
 
+(defn- tick-blackboard
+  "Best-effort tick blackboard lookup for resolving values the durable event
+   references by key. NOT memoized — unlike nodes-by-id this changes as the
+   tick runs, and it is read once per tick completion, not once per node."
+  [sub tick-id]
+  (try
+    (rm/get-tick-blackboard (:context sub) tick-id)
+    (catch Exception _ nil)))
+
 (defn- normalize-durable
   "Durable Grain event -> envelope (sans :seq/:ts/:root-tick-id), or nil to
    skip. include-values? gates :writes payloads."
@@ -257,8 +266,17 @@
               :node-id (:node-id event)
               :status (:status event)}
              (node-info sub tick-id (:node-id event))
+             ;; The completion event carries only :write-keys; resolve values
+             ;; from the tick blackboard so the envelope is unchanged for
+             ;; subscribers. Best-effort, like node-info.
              (when include-values?
-               (when-let [w (:writes event)] {:writes (truncate-values w)}))
+               (when-let [ks (seq (:write-keys event))]
+                 (when-let [bb (tick-blackboard sub tick-id)]
+                   {:writes (truncate-values
+                             (into {} (for [k ks
+                                            :let [entry (get bb k)]
+                                            :when entry]
+                                        [k (:value entry)])))})))
              (when-let [u (:usage event)] {:usage u})
              (when-let [d (:duration-ms event)] {:duration-ms d})
              (when-let [e (:error event)] {:error e})
@@ -286,8 +304,21 @@
         (merge base
                {:orc.stream/type :tick-completed
                 :status (:root-status event)}
+               ;; The event names the keys this tick wrote but does not carry
+               ;; their values (see :sheet/tree-tick-completed in schemas) —
+               ;; they are already durable in execution-value-written, and
+               ;; storing them twice was a large share of the event log.
+               ;; Resolve them from the tick blackboard so the envelope is
+               ;; unchanged for subscribers. Best-effort, like node-info:
+               ;; a resolution failure drops :outputs rather than the event.
                (when include-values?
-                 (when-let [o (:outputs event)] {:outputs (truncate-values o)}))
+                 (when-let [ks (seq (:output-keys event))]
+                   (when-let [bb (tick-blackboard sub tick-id)]
+                     {:outputs (truncate-values
+                                (into {} (for [k ks
+                                               :let [entry (get bb k)]
+                                               :when entry]
+                                           [k (:value entry)])))})))
                (when-let [e (:error event)] {:error e})))
 
       :sheet/tick-cancelled

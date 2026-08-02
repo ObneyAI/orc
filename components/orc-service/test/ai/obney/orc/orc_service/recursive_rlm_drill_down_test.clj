@@ -15,12 +15,24 @@
    :event/timestamp ts
    :tick-id tick-id})
 
-(defn- mk-tick-completed [tick-id ts root-status outputs]
-  {:event/type :sheet/tree-tick-completed
-   :event/timestamp ts
+(defn- mk-tick-completed
+  "tree-tick-completed NAMES the keys the tick wrote; it does not carry
+   their values. Values live in the tick's :sheet/execution-value-written
+   events — see mk-value-written, and the :sheet/tree-tick-completed schema."
+  [tick-id ts root-status outputs]
+  (cond-> {:event/type :sheet/tree-tick-completed
+           :event/timestamp ts
+           :tick-id tick-id
+           :root-status root-status}
+    (seq outputs) (assoc :output-keys (vec (keys outputs)))))
+
+(defn- mk-value-written
+  "The canonical record of one blackboard write."
+  [tick-id k v]
+  {:event/type :sheet/execution-value-written
    :tick-id tick-id
-   :root-status root-status
-   :outputs outputs})
+   :key k
+   :value v})
 
 (defn- mk-node-completed [tick-id node-id status & {:keys [writes duration-ms usage partial-summary]
                                                     :or {writes {} duration-ms 100}}]
@@ -68,6 +80,7 @@
                   (mk-rlm-tree-node-completed tick-id leaf-id
                                               :node-path [{:type :leaf :node-id leaf-id}]
                                               :usage {:total-tokens 50})
+                  (mk-value-written tick-id :summary "the answer")
                   (mk-tick-completed tick-id (java.time.Instant/parse "2026-05-20T10:00:01Z")
                                      :success {:summary "the answer"})
                   (mk-bookend tick-id (java.time.Instant/parse "2026-05-20T10:00:01Z")
@@ -111,6 +124,7 @@
                                      :partial-summary partial-sum
                                      :duration-ms 800
                                      :writes {:results [{} {}]})
+                  (mk-value-written tick-id :results [{} {}])
                   (mk-tick-completed tick-id (java.time.Instant/parse "2026-05-20T11:00:01Z")
                                      :partial {:results [{} {}]})
                   (mk-bookend tick-id (java.time.Instant/parse "2026-05-20T11:00:01Z")

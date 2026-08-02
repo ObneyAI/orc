@@ -7,13 +7,33 @@
 
    All functions take a vector of cleaned event maps (typically read from
    the event store with `[:tick tick-id]` tag) and return clean projections.
-   No event-store coupling — testable in isolation with fixture data.")
+   No event-store coupling — testable in isolation with fixture data."
+  (:require [ai.obney.orc.orc-service.core.value-log :as value-log]))
 
 (defn- event-of-type [events event-type]
   (first (filter #(= event-type (:event/type %)) events)))
 
 (defn- events-of-type [events event-type]
   (filter #(= event-type (:event/type %)) events))
+
+(defn- tick-outputs-from-events
+  "Reconstruct a tick's final output values from its own events.
+
+   :sheet/tree-tick-completed names the keys the tick wrote (:output-keys)
+   but does not carry their values — they are already durable in the tick's
+   :sheet/execution-value-written events, which are the canonical record of
+   every write. Replaying those in append order (last write per key wins)
+   reproduces exactly what the tick-completed event used to inline.
+
+   Stays a pure function of the event vector, so drill-down needs no
+   read-model or event-store access."
+  [events tick-completed]
+  (let [written (reduce (fn [acc e] (assoc acc (:key e) (:value e)))
+                        {}
+                        (events-of-type events :sheet/execution-value-written))]
+    (if-let [ks (seq (:output-keys tick-completed))]
+      (into {} (for [k ks :when (contains? written k)] [k (get written k)]))
+      written)))
 
 (defn tree-detail-from-events
   "Build a structured projection of a tree's full execution detail from
@@ -46,7 +66,9 @@
                           (cond-> {:node-id n-id
                                    :status (:status c)
                                    :duration-ms (:duration-ms c)
-                                   :writes (:writes c {})}
+                                   ;; From the canonical write log, keyed by
+                                   ;; execution — see node-output-from-events.
+                                   :writes (value-log/writes-for events c)}
                             (:usage c) (assoc :usage (:usage c))
                             (:input-profile rlm) (assoc :input-profile (:input-profile rlm))
                             ;; D-008: map-each completion events carry :partial-summary
@@ -57,7 +79,7 @@
       {:tick-id tick-id
        :status (:root-status tick-completed)
        :tree-raw tree-raw
-       :outputs (or (:outputs tick-completed) {})
+       :outputs (tick-outputs-from-events events tick-completed)
        :nodes nodes})))
 
 (defn tree-failures-from-events
@@ -125,15 +147,20 @@
    :error <string>} — the raw text IS the node's output as far as
    diagnosis is concerned, untruncated."
   [events node-id]
-  (some (fn [e]
-          (when (and (= :sheet/node-execution-completed (:event/type e))
-                     (= node-id (:node-id e)))
-            (if (:raw-response e)
-              (cond-> {:writes (:writes e)
-                       :raw-response (:raw-response e)}
-                (:error e) (assoc :error (:error e)))
-              (:writes e))))
-        events))
+  (let []
+    (some (fn [e]
+            (when (and (= :sheet/node-execution-completed (:event/type e))
+                       (= node-id (:node-id e)))
+              ;; Writes come from the canonical write log — the completion
+              ;; event carries only :write-keys. Keyed by execution so a
+              ;; map-each child's iterations do not collapse into one.
+              (let [writes (value-log/writes-for events e)]
+                (if (:raw-response e)
+                  (cond-> {:writes writes
+                           :raw-response (:raw-response e)}
+                    (:error e) (assoc :error (:error e)))
+                  (not-empty writes)))))
+          events)))
 
 (defn node-input-profile-from-events
   "Return the :input-profile of the specified node's :sheet/rlm-tree-node-completed

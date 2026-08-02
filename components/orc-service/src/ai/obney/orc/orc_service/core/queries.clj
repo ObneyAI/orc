@@ -5,6 +5,7 @@
    All queries return {:query/result ...} on success."
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.tree-layout :as layout]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.query-processor.interface :refer [defquery]]
             [clojure.set]
@@ -291,7 +292,16 @@
 
 (defquery :sheet get-trace
   {:authorized? authenticated?}
-  "Get a single execution trace by ID."
+  "Get a single execution trace by ID.
+
+   BREAKING (payload reduction): node-traces carry the SHAPE of each node's
+   I/O — :read-keys, :write-keys and size profiles — not the values, and the
+   :input-snapshot / :output-snapshot are key -> profile maps. The values are
+   durable in the tick's :sheet/execution-value-written events; storing them
+   in the trace as well made it the largest event type in the log.
+
+   For a node's actual inputs/outputs use :sheet/node-trace-detail, which
+   rehydrates them on demand."
   [{{:keys [trace-id]} :query
     :keys [event-store] :as ctx}]
   (let [trace (rm/get-trace ctx trace-id)]
@@ -417,6 +427,15 @@
   {:authorized? authenticated?}
   "Fetch inputs/outputs for a specific node trace on demand.
 
+   The trace itself stores only the SHAPE of each node's I/O (:read-keys,
+   :write-keys and size profiles) — the values are already durable in the
+   tick's :sheet/execution-value-written events, and storing them twice made
+   :sheet/execution-traced the largest event type in the log. This query is
+   the supported way to get the values, and rehydrates them here.
+
+   The trace-id IS the tick-id (see assemble-execution-trace), so the tick's
+   events are reachable by tag.
+
    Query params:
      :trace-id - The execution trace ID.
      :node-id - The node ID within the trace."
@@ -426,10 +445,28 @@
         node-trace (some #(when (= (:node-id %) node-id) %)
                          (:node-traces trace))]
     (if node-trace
-      {:query/result
-       {:node-id node-id
-        :inputs (:inputs node-trace)
-        :outputs (:outputs node-trace)}}
+      (let [tick-events (into [] (es/read event-store
+                                          {:tags #{[:tick trace-id]}
+                                           :tenant-id (:tenant-id ctx)}))
+            values (reduce (fn [acc e] (assoc acc (:key e) (:value e)))
+                           {}
+                           (filter #(= :sheet/execution-value-written (:event/type %))
+                                   tick-events))
+            completed (some #(when (and (= :sheet/node-execution-completed (:event/type %))
+                                        (= node-id (:node-id %)))
+                               %)
+                            tick-events)
+            pick (fn [ks] (when (seq ks)
+                            (into {} (for [k ks :when (contains? values k)]
+                                       [k (get values k)]))))]
+        {:query/result
+         {:node-id node-id
+          ;; Reads resolve from the blackboard the tick built. Writes prefer
+          ;; the node's own completion event, which attributes values to THIS
+          ;; node — the blackboard alone cannot, since a later node may have
+          ;; overwritten the same key.
+          :inputs (pick (:read-keys node-trace))
+          :outputs (or (:writes completed) (pick (:write-keys node-trace)))}})
       {::anom/category ::anom/not-found
        ::anom/message (str "Node trace not found: " node-id)})))
 

@@ -12,6 +12,7 @@
 
    See docs/issues/predict-rlm/PR05-comparison-runner-with-capture.md."
   (:require [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -274,8 +275,13 @@
   [ctx start-instant]
   (let [events (into [] (es/read (:event-store ctx)
                                  {:tenant-id (:tenant-id ctx)
-                                  :types #{:sheet/node-execution-completed}}))]
+                                  ;; Completions carry only :write-keys now;
+                                  ;; the values come from the canonical write
+                                  ;; log. See docs/EVENT-STORE-PATTERNS.md.
+                                  :types #{:sheet/node-execution-completed
+                                           :sheet/execution-value-written}}))]
     (->> events
+         (filter #(= :sheet/node-execution-completed (:event/type %)))
          (filter (fn [ev]
                    ;; Compare java.time.OffsetDateTime instances
                    (let [ts (:event/timestamp ev)]
@@ -290,7 +296,8 @@
                           :status (:status ev)
                           :timestamp (:event/timestamp ev)}
                    (:inputs ev) (assoc :inputs (:inputs ev))
-                   (:writes ev) (assoc :writes (:writes ev))
+                   (seq (value-log/writes-for events ev))
+                   (assoc :writes (value-log/writes-for events ev))
                    (:usage ev) (assoc :usage (:usage ev))
                    (:duration-ms ev) (assoc :duration-ms (:duration-ms ev))))))))
 

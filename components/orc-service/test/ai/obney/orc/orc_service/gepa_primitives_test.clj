@@ -152,15 +152,28 @@
             (is (every? #(contains? % :status) node-traces))))))))
 
 (deftest trace-captures-inputs-test
-  (testing "trace input snapshot captures execution inputs"
+  (testing "trace input snapshot covers the execution inputs"
+    ;; The snapshot records key -> size profile, not key -> value: the values
+    ;; are durable in the tick's :sheet/execution-value-written events, and
+    ;; storing them in the trace as well made :sheet/execution-traced the
+    ;; largest event type in the log (docs/EVENT-STORE-PATTERNS.md).
+    ;; Coverage — which keys the tick was given — is the durable fact here.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id]} (create-simple-workflow! ctx)
             result (sheet/execute ctx sheet-id {:test-key "input-val" :other-key "other-val"})
             trace (wait-for-trace ctx (:trace-id result))]
         (is (some? trace))
         (when trace
-          (is (= "input-val" (get (:input-snapshot trace) :test-key)))
-          (is (= "other-val" (get (:input-snapshot trace) :other-key))))))))
+          (let [snap (:input-snapshot trace)]
+            (is (contains? snap :test-key))
+            (is (contains? snap :other-key))
+            ;; The profile describes the value it stands in for.
+            (is (= {:type :string :length 9 :word-count 1 :line-count 1}
+                   (get snap :test-key))
+                (str "profile should describe \"input-val\"; got " (get snap :test-key)))
+            ;; The values themselves remain reachable through the caller's result.
+            (is (= "input-val" (get-in result [:outputs :test-key])))
+            (is (= "other-val" (get-in result [:outputs :other-key])))))))))
 
 ;; =============================================================================
 ;; Phase 2: Trace Querying

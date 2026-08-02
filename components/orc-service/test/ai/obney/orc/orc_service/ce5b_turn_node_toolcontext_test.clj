@@ -28,6 +28,7 @@
             [dscloj.core :as dscloj]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
             ;; Loading interface.schemas registers the malli command schemas
             ;; (:sheet/create-sheet, :sheet/tick-tree, ...) that the Phase-2
@@ -230,11 +231,24 @@
                                            completions))]
             (is (some? rr-complete)
                 "the repl-researcher emitted a :success node-execution-completed event")
-            (is (= tool-context (get-in rr-complete [:writes :tool-context]))
-                (str "the terminal completion's :writes carries the turn's "
-                     ":tool-context (FIX B) so build-trace-data delivers the "
-                     "turn-id to the judge; got writes keys: "
-                     (pr-str (keys (:writes rr-complete)))))))))))
+            ;; Asserted through value-log, which is how build-trace-data
+            ;; resolves a node's outputs — i.e. the path the judge actually
+            ;; takes. The completion event names its write keys; the values
+            ;; live in the tick's :sheet/execution-value-written events (see
+            ;; docs/EVENT-STORE-PATTERNS.md). What FIX B guarantees is that
+            ;; the judge RECEIVES :tool-context, not where the bytes sit, so
+            ;; this asserts the contract rather than the storage layout.
+            (is (contains? (set (:write-keys rr-complete)) :tool-context)
+                (str "the terminal completion declares :tool-context among its "
+                     "writes (FIX B); got write-keys: "
+                     (pr-str (:write-keys rr-complete))))
+            (let [tick-events (value-log/read-tick-events
+                               (:event-store ctx) (:tenant-id ctx) (:tick-id rr-complete))
+                  resolved (value-log/writes-for tick-events rr-complete)]
+              (is (= tool-context (:tool-context resolved))
+                  (str "the turn's :tool-context resolves back for the judge, "
+                       "so build-trace-data delivers the turn-id; got keys: "
+                       (pr-str (keys resolved)))))))))))
 
 ;; =============================================================================
 ;; Cycle 3 — Backward-compat: absent :tool-context changes nothing

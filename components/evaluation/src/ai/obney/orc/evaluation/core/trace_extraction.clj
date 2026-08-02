@@ -7,7 +7,8 @@
    Key functions:
    - get-llm-traces: Query traces for specific LLM nodes
    - extract-trace-data: Transform raw trace into evaluation format"
-  (:require [ai.obney.grain.event-store-v3.interface :as event-store]))
+  (:require [ai.obney.grain.event-store-v3.interface :as event-store]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]))
 
 ;; =============================================================================
 ;; Event Types (from orc-service)
@@ -88,18 +89,63 @@
       :model string - the model used
       :duration-ms int
       :status keyword}"
-  [sheet-trace node-trace node-metadata]
+  [sheet-trace node-trace node-metadata io]
   {:trace-id (:trace-id sheet-trace)
    :sheet-id (:sheet-id sheet-trace)
    :node-id (:node-id node-trace)
    :node-name (or (:node-name node-trace) (:name node-metadata) "unknown")
-   :inputs (or (:inputs node-trace) {})
-   :outputs (or (:outputs node-trace) {})
+   ;; Values are rehydrated from the tick's events (see tick-node-io): the
+   ;; trace stores only the shape of each node's I/O. Judges need the real
+   ;; values for grounding, so an empty map here would silently degrade
+   ;; every grounding score rather than fail loudly.
+   :inputs (or (:inputs io) {})
+   :outputs (or (:outputs io) {})
    :instruction (or (:instruction node-trace) (:instruction node-metadata) "")
    :model (or (:model node-trace) (:model node-metadata))
    :duration-ms (:duration-ms node-trace)
    :status (:status node-trace)
    :executed-at (:started-at sheet-trace)})
+
+(defn tick-node-io
+  "Rehydrate per-node input/output VALUES for one trace.
+
+   :sheet/execution-traced records only the shape of each node's I/O
+   (:read-keys, :write-keys, size profiles). The values live in the tick's
+   :sheet/execution-value-written events — the canonical record of every
+   write — and storing them in the trace as well made it the largest event
+   type in the log.
+
+   A trace-id IS the tick-id (see assemble-execution-trace), so one tagged
+   read gets everything. Returns {node-id {:inputs {..} :outputs {..}}}.
+
+   Writes prefer the node's own completion event when it still carries them,
+   because the blackboard alone cannot attribute a key to a node — a later
+   node may have overwritten it."
+  [{:keys [event-store tenant-id]} trace-id node-traces]
+  (try
+    (let [events (into [] (event-store/read
+                           event-store
+                           (cond-> {:tags #{[:tick trace-id]}}
+                             tenant-id (assoc :tenant-id tenant-id))))
+          values (reduce (fn [acc e] (assoc acc (:key e) (:value e)))
+                         {}
+                         (filter #(= :sheet/execution-value-written (:event/type %)) events))
+          ;; Writes attributed to each node EXECUTION — a later node may
+          ;; overwrite the same key, and under map-each one child node-id
+          ;; runs once per item.
+          completions (filter #(= :sheet/node-execution-completed (:event/type %)) events)
+          writes-by-node (reduce (fn [acc c]
+                                   (assoc acc (:node-id c) (value-log/writes-for events c)))
+                                 {}
+                                 completions)
+          pick (fn [ks] (into {} (for [k ks :when (contains? values k)] [k (get values k)])))]
+      (into {}
+            (for [nt node-traces
+                  :let [nid (:node-id nt)]]
+              [nid {:inputs (pick (:read-keys nt))
+                    :outputs (or (not-empty (get writes-by-node nid))
+                                 (pick (:write-keys nt)))}])))
+    (catch Exception _ {})))
 
 (defn- filter-node-traces
   "Filter node traces from a sheet trace based on criteria.
@@ -200,6 +246,12 @@
                                               :tenant-id tenant-id}))
         nodes-map (build-nodes-map node-events-data)
 
+        ;; Rehydrate I/O values once per trace, not once per node.
+        io-by-trace (into {}
+                          (for [st raw-traces]
+                            [(:trace-id st)
+                             (tick-node-io ctx (:trace-id st) (:node-traces st))]))
+
         ;; Extract and filter node traces
         results (for [sheet-trace raw-traces
                       node-trace (:node-traces sheet-trace)
@@ -211,7 +263,8 @@
                   (extract-node-trace-data
                    sheet-trace
                    (first filtered)
-                   (get nodes-map (:node-id node-trace))))]
+                   (get nodes-map (:node-id node-trace))
+                   (get-in io-by-trace [(:trace-id sheet-trace) (:node-id node-trace)])))]
     (if limit
       (vec (take limit results))
       (vec results))))

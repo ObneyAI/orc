@@ -12,7 +12,10 @@
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.todo-processor-v2.interface :as tp]
-            [ai.obney.grain.time.interface :as time])
+            [ai.obney.grain.time.interface :as time]
+            [ai.obney.grain.fressian-util.interface :as fressian-util]
+            [clojure.data.fressian :as fressian]
+            [clojure.walk :as walk])
   (:import [java.io File]))
 
 ;; =============================================================================
@@ -170,6 +173,156 @@
     (if handler-fn
       (handler-fn (assoc ctx :query query-data))
       (throw (ex-info "Unknown query" {:query query-name})))))
+
+;; =============================================================================
+;; Event Byte Accounting
+;; =============================================================================
+;;
+;; Storage-cost measurement for the event log. Sizes events with the same
+;; Fressian encoding the Postgres/SQLite event stores use (grain's
+;; fressian-util write-handlers, which add the java.time tags), so the
+;; numbers here correspond to what actually lands on disk — modulo row and
+;; index overhead, and modulo Postgres TOAST compression on large values.
+;;
+;; Used by storage_budget_test to assert byte *invariants* (a payload is
+;; stored a bounded number of times; lifecycle event size does not scale
+;; with payload size) rather than fixed thresholds, so the copy-count
+;; discipline cannot silently regress.
+
+(defn event-bytes
+  "Serialized size of a single event, in bytes, using grain's Fressian
+   write-handlers. Sizes the whole event map (type, tags, timestamp, body)
+   — not just the body — to match how the event store persists it."
+  ^long [event]
+  (let [baos (java.io.ByteArrayOutputStream.)
+        writer (fressian/create-writer baos :handlers fressian-util/write-handlers)]
+    (.writeObject writer event)
+    (.close writer)
+    (count (.toByteArray baos))))
+
+(defn read-tick-events
+  "All events tagged with the given tick-id, realized into a vector.
+   Note this does NOT include events from child ticks (RLM Phase 2 trees,
+   delegate nodes) — those carry their own tick-id. Use read-all-events
+   when you need the whole run."
+  [ctx tick-id]
+  (into [] (es/read (:event-store ctx)
+                    {:tags #{[:tick tick-id]}
+                     :tenant-id (:tenant-id ctx)})))
+
+(defn read-all-events
+  "Every event in the store for this tenant, realized into a vector.
+   This is the whole-run view: parent tick plus any child ticks spawned
+   during it."
+  [ctx]
+  (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)})))
+
+(defn byte-report
+  "Per-event-type byte accounting for a collection of events.
+
+   Returns:
+     {:total-bytes  <sum over all events>
+      :event-count  <n>
+      :by-type      {<event-type> {:n <count> :total <bytes> :avg <bytes>}}}
+
+   The :by-type map is what makes a regression legible — it names the event
+   type that grew, not just that the total moved."
+  [events]
+  (let [sized (mapv (fn [e] [(:event/type e) (event-bytes e)]) events)]
+    {:total-bytes (reduce + 0 (map second sized))
+     :event-count (count sized)
+     :by-type (reduce (fn [acc [t b]]
+                        (-> acc
+                            (update-in [t :n] (fnil inc 0))
+                            (update-in [t :total] (fnil + 0) b)))
+                      {}
+                      sized)}))
+
+(defn- finalize-averages
+  [report]
+  (update report :by-type
+          (fn [m] (reduce-kv (fn [acc t {:keys [n total]}]
+                               (assoc acc t {:n n :total total
+                                             :avg (long (/ total (max n 1)))}))
+                             {} m))))
+
+(defn tick-byte-report
+  "byte-report over one tick's events. See read-tick-events for the
+   child-tick caveat."
+  [ctx tick-id]
+  (finalize-averages (byte-report (read-tick-events ctx tick-id))))
+
+(defn run-byte-report
+  "byte-report over every event in the store — the whole-run view."
+  [ctx]
+  (finalize-averages (byte-report (read-all-events ctx))))
+
+(defn bytes-for-type
+  "Total bytes attributed to a single event type in a report."
+  ^long [report event-type]
+  (get-in report [:by-type event-type :total] 0))
+
+(defn- collect-large-strings
+  "Every string of at least min-chars appearing anywhere in x, WITH
+   repeats. Strings are where LLM payloads live and they do not nest, so
+   collecting them avoids the double-counting a general subtree walk would
+   produce. Large non-string collections are still covered indirectly —
+   they decompose into the strings they contain."
+  [x min-chars]
+  (let [acc (volatile! [])]
+    (walk/postwalk (fn [node]
+                     (when (and (string? node) (>= (count node) min-chars))
+                       (vswap! acc conj node))
+                     node)
+                   x)
+    @acc))
+
+(defn payload-duplication-report
+  "How much of the stored payload mass is the SAME content stored more than
+   once, across all the given events.
+
+   This is the measurement that decides whether content-addressed storage
+   is worth building: structural de-duplication (removing redundant event
+   fields) cannot touch duplication that is semantic — the same document
+   re-seeded into several nested ticks.
+
+   Options:
+     :min-chars - floor for what counts as a payload (default 512). Small
+                  strings are keys, names and statuses; counting them would
+                  drown the signal.
+
+   Returns:
+     {:payload-bytes    <total bytes of all large-string occurrences>
+      :unique-bytes     <bytes if each distinct string were stored once>
+      :duplicate-bytes  <payload-bytes minus unique-bytes>
+      :ratio            <duplicate-bytes / payload-bytes, 0.0 when none>
+      :occurrences      <n large-string occurrences>
+      :distinct         <n distinct large strings>}"
+  [events & {:keys [min-chars] :or {min-chars 512}}]
+  (let [occurrences (mapcat #(collect-large-strings % min-chars) events)
+        utf8-len (fn ^long [^String s] (count (.getBytes s "UTF-8")))
+        payload-bytes (reduce + 0 (map utf8-len occurrences))
+        unique-bytes (reduce + 0 (map utf8-len (distinct occurrences)))
+        duplicate-bytes (- payload-bytes unique-bytes)]
+    {:payload-bytes payload-bytes
+     :unique-bytes unique-bytes
+     :duplicate-bytes duplicate-bytes
+     :ratio (if (pos? payload-bytes)
+              (double (/ duplicate-bytes payload-bytes))
+              0.0)
+     :occurrences (count occurrences)
+     :distinct (count (distinct occurrences))}))
+
+(defn format-byte-report
+  "Render a byte-report as a sorted, human-readable table. Handy for
+   recording a baseline in a test's output."
+  [{:keys [total-bytes event-count by-type]}]
+  (let [rows (sort-by (comp - :total val) by-type)]
+    (str (format "%-42s %6s %12s %10s%n" "EVENT TYPE" "N" "TOTAL" "AVG")
+         (apply str
+                (for [[t {:keys [n total avg]}] rows]
+                  (format "%-42s %6d %12d %10d%n" (str t) n total avg)))
+         (format "%-42s %6d %12d%n" "TOTAL" event-count total-bytes))))
 
 ;; =============================================================================
 ;; Factory Functions - Sheet Commands
