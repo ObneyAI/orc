@@ -884,10 +884,17 @@ Per the Grain methodology — every event is monitorable.
 
 | Event | When emitted | Body |
 |---|---|---|
-| `:sheet/node-execution-completed` | Every node finishes | `:status`, `:writes`, `:duration-ms`, `:usage`, optional `:partial-summary` |
+| `:sheet/node-execution-completed` | Every node finishes | `:status`, `:write-keys` + `:write-profile`, `:read-keys` + `:input-profile`, `:duration-ms`, `:usage`, optional `:partial-summary`. Shape only — the VALUES live on `:sheet/execution-value-written` |
+| `:sheet/execution-value-written` | Every blackboard write (canonical) | `:key`, `:value`, `:node-id`, `:exec-context` — the last two attribute a value to one node *execution*, so map-each iterations stay distinct |
 | `:sheet/rlm-tree-node-completed` | Per-node inside RLM Phase 2 trees | Structured `:node-path`, `:usage`, `:input-profile` |
 | `:sheet/rlm-tree-execution-completed` | Bookend per Phase 2 tree | `:trajectory` (full per-event log), `:total-usage`, `:task-fingerprint` placeholder |
 | `:rlm/tree-generated` | When the researcher emitted a tree (Phase-2 will execute) | `:tree-id`, `:execution-id`, `:raw-dsl` (inline-fns sanitized to `"<inline-fn>"`), `:generated-at` |
+
+These are the **durable** event bodies. Resolve values from them with
+`ai.obney.orc.orc-service.core.value-log` (`writes-for`, `latest-values`) — see
+[Event Store Patterns](EVENT-STORE-PATTERNS.md#single-write-discipline-values-live-in-exactly-one-event-type).
+The ephemeral live-stream envelopes described below are unaffected: they still
+deliver `:writes` on `:node-completed`, resolved from the blackboard.
 | `:rlm/researcher-iterations` | Whenever the researcher ran ≥1 Phase-1 iteration, regardless of mode | `:execution-id`, `:iterations` (vector of `{:code :result :stdout :error :vars-created}`), `:iteration-count`, `:emitted-at` |
 | `:sheet/tick-cancelled` | When Phase 2 budget cancellation fires mid-flight | `:sheet-id`, `:tick-id` |
 

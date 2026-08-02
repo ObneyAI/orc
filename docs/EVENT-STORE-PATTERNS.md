@@ -366,7 +366,7 @@ Use `es/read` only for audit trails, cross-aggregate queries, or custom event an
 
 ```clojure
 (into [] (es/read event-store
-           {:types #{:sheet/trace-assembled}
+           {:types #{:sheet/execution-traced}
             :tags #{[:sheet sheet-id]}
             :since #inst "2025-01-18T00:00:00Z"
             :until #inst "2025-01-19T00:00:00Z"}))
@@ -402,7 +402,7 @@ Complete reference of all `:sheet/*` event types.
 
 | Event Type | When | Body Fields |
 |------------|------|-------------|
-| `:sheet/trace-assembled` | Trace ready | `:trace-id`, `:sheet-id`, `:status`, `:input-snapshot`, `:output-snapshot`, `:node-traces`, `:duration-ms` |
+| `:sheet/execution-traced` | Trace assembled at execution end | `:trace-id`, `:sheet-id`, `:status`, `:duration-ms`, `:input-snapshot` (key → profile), `:output-snapshot` (key → profile), `:node-traces` (shape only) |
 
 ### Example: Node Execution Completed Event
 
@@ -422,11 +422,14 @@ Complete reference of all `:sheet/*` event types.
         :completed-at #inst "2025-01-18T12:00:00Z"}}
 ```
 
-### Example: Trace Assembled Event
+### Example: Execution Traced Event
+
+Note this event records **shape, not values** — see
+[Single-Write Discipline](#single-write-discipline-values-live-in-exactly-one-event-type).
 
 ```clojure
 {:event/id #uuid "..."
- :event/type :sheet/trace-assembled
+ :event/type :sheet/execution-traced
  :event/created-at #inst "2025-01-18T12:00:01Z"
  :event/tags #{[:sheet #uuid "sheet-123"]
                [:trace #uuid "trace-abc"]}
@@ -434,16 +437,23 @@ Complete reference of all `:sheet/*` event types.
         :sheet-id #uuid "sheet-123"
         :status :success
         :duration-ms 2500
-        :input-snapshot {:question "What is 2+2?"}
-        :output-snapshot {:answer "4"}
+        ;; key -> size profile. :input-snapshot = keys the tick was given and
+        ;; did NOT write; :output-snapshot = keys it wrote. Disjoint sets.
+        :input-snapshot {:question {:type :string :length 12 :word-count 3 :line-count 1}}
+        :output-snapshot {:answer {:type :string :length 1 :word-count 1 :line-count 1}}
         :node-traces [{:node-id #uuid "node-456"
                        :node-name "answer"
                        :node-type :leaf
                        :status :success
                        :duration-ms 423
-                       :inputs {:question "What is 2+2?"}
-                       :outputs {:answer "4"}}]}}
+                       :read-keys [:question]
+                       :input-profile {:question {:type :string :length 12 :word-count 3 :line-count 1}}
+                       :write-keys [:answer]
+                       :output-profile {:answer {:type :string :length 1 :word-count 1 :line-count 1}}}]}}
 ```
+
+Fetch a node's actual inputs/outputs with the `:sheet/node-trace-detail` query,
+which rehydrates them from `:sheet/execution-value-written`.
 
 ---
 
@@ -501,19 +511,18 @@ Track node performance over a sliding window:
 ### Building Training Data from Traces
 
 ```clojure
+;; Trace snapshots are key -> size profile, NOT key -> value, so they cannot
+;; feed a trainset directly. The evaluation component rehydrates the real
+;; values from the tick's :sheet/execution-value-written events.
+(require '[ai.obney.orc.evaluation.interface :as eval])
+
 (defn traces-to-trainset
-  "Convert stored traces to GEPA trainset format."
-  [event-store sheet-id & {:keys [limit] :or {limit 100}}]
-  (let [trace-events (into [] (es/read event-store
-                                {:types #{:sheet/trace-assembled}
-                                 :tags #{[:sheet sheet-id]}
-                                 :limit limit
-                                 :order :desc}))]
-    (mapv (fn [{:keys [body]}]
-            {:inputs (:input-snapshot body)
-             :outputs (:output-snapshot body)
-             :status (:status body)})
-          trace-events)))
+  "Convert stored traces to GEPA trainset format, with real I/O values."
+  [ctx sheet-id & {:keys [limit] :or {limit 100}}]
+  (mapv (fn [t] {:inputs (:inputs t)
+                 :outputs (:outputs t)
+                 :status (:status t)})
+        (eval/get-llm-traces ctx {:sheet-id sheet-id :limit limit})))
 ```
 
 ### Finding Low-Scoring Executions

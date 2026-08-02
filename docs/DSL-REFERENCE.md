@@ -1040,7 +1040,7 @@ ORC includes a comprehensive tracing system that enables full observability of w
 
 Every workflow execution is automatically traced, capturing:
 - **Timing data** - Start/end times and duration for every node
-- **Input/output snapshots** - Blackboard state before and after each node
+- **Input/output shape** - Which blackboard keys each node read and wrote, plus a size profile for each (values are fetched on demand, not stored on the trace)
 - **Execution path** - Which branches were taken, which fallbacks triggered
 - **Error details** - Where failures occurred and why
 - **Token usage** - LLM token consumption for cost analysis
@@ -1063,7 +1063,7 @@ The tracing system has three layers:
 │  Layer 1: Internal Trace (Always-On)                        │
 │  - Stores in event store                                     │
 │  - Full node execution details                               │
-│  - Blackboard snapshots                                      │
+│  - Blackboard key coverage + size profiles                   │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 2: Langfuse Integration (Optional)                    │
 │  - External observability                                    │
@@ -1103,8 +1103,11 @@ Each trace contains comprehensive execution data:
  :completed-at #inst "2025-01-18T..."
  :duration-ms 2500
  :status :success                     ; :success, :failure, :timeout
- :input-snapshot {:leads [...]}       ; Initial blackboard
- :output-snapshot {:results [...]}    ; Final blackboard
+ ;; key -> size profile, NOT key -> value.
+ ;; input  = keys the tick was given and did NOT write
+ ;; output = keys the tick wrote           (the two are disjoint)
+ :input-snapshot {:leads {:type :vector :length 40}}
+ :output-snapshot {:results {:type :vector :length 40}}
  :error nil                           ; Error message if failed
  :node-traces [...]                   ; Per-node execution details
 }
@@ -1126,10 +1129,21 @@ Each node execution is captured with full context:
  :started-at #inst "..."
  :completed-at #inst "..."
  :duration-ms 450
- :inputs {:current-lead {...}}       ; Node inputs
- :outputs {:lead-analysis {...}}     ; Node outputs
+ :read-keys [:current-lead]          ; keys this node read
+ :input-profile {:current-lead {:type :map :length 11}}
+ :write-keys [:lead-analysis]        ; keys this node wrote
+ :output-profile {:lead-analysis {:type :string :length 2048
+                                  :word-count 310 :line-count 24}}
  :error nil}
 ```
+
+Traces record the **shape** of each node's I/O, not the values — those are
+already durable in that tick's `:sheet/execution-value-written` events. Profiles
+are `{:type :string :length N :word-count N :line-count N}` for strings and
+`{:type :vector|:map|:other :length N}` otherwise. Use the
+`:sheet/node-trace-detail` query to rehydrate a node's actual inputs and outputs
+on demand. (`orc/execute`'s returned `:outputs` is unaffected — still the full
+blackboard.)
 
 ### Querying Traces
 
@@ -1324,8 +1338,14 @@ The ORC UI provides rich visualization tools:
 (first failed-nodes)
 ;; => {:node-name "score-budget"
 ;;     :error "Rate limit exceeded"
-;;     :inputs {:current-lead {...}}
+;;     :read-keys [:current-lead]
+;;     :input-profile {:current-lead {:type :map :length 11}}
 ;;     ...}
+;; get-trace returns SHAPE, not values.
+
+;; 3b. To see the node's actual input/output values, rehydrate them:
+(sheet/node-trace-detail ctx {:trace-id (:trace-id trace)
+                              :node-id (:node-id (first failed-nodes))})
 
 ;; 4. Check if it's a pattern
 (sheet/node-stats ctx {:sheet-id sheet-id

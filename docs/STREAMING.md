@@ -186,8 +186,12 @@ Notes:
 {:orc.stream/truncated true :preview "first 16KB..." :full-size 1048576}
 ```
 
-The raw value is always in the durable event. Disable value payloads
-entirely with `:include-values? false`.
+The raw value is still durable, but not on the lifecycle event: it lives in the
+tick's `:sheet/execution-value-written` events (tagged `[:tick tick-id]`).
+`:sheet/node-execution-completed` carries only `:write-keys`/`:write-profile`, and
+`:sheet/tree-tick-completed` only `:output-keys`. Resolve values with
+`ai.obney.orc.orc-service.core.value-log`. Disable value payloads entirely with
+`:include-values? false`.
 
 ## Cancellation
 

@@ -481,7 +481,7 @@ sheet/execute(ctx, sheet-id, inputs)
 └──────────┬───────────┘
            ▼
 ┌──────────────────────┐
-│ 5. Assemble Trace    │──► Event: :sheet/trace-assembled
+│ 5. Assemble Trace    │──► Event: :sheet/execution-traced
 └──────────┬───────────┘
            ▼
 ┌──────────────────────┐
@@ -560,7 +560,7 @@ The orc-service uses Grain's event store for persistence and observability.
 | `:sheet/node-execution-started` | Node begins | `:sheet-id`, `:node-id`, `:tick-id` |
 | `:sheet/node-execution-completed` | Node ends | `:sheet-id`, `:node-id`, `:status`, `:duration-ms` |
 | `:sheet/tree-tick-completed` | `execute` end | `:sheet-id`, `:tick-id`, `:root-status` |
-| `:sheet/trace-assembled` | Trace ready | `:trace-id`, `:sheet-id`, full trace data |
+| `:sheet/execution-traced` | Trace assembled at execution end | `:trace-id`, `:sheet-id`, `:status`, `:duration-ms`, `:input-snapshot`/`:output-snapshot` (key → size profile, **not** values), `:node-traces` (shape only: `:read-keys`, `:write-keys`, `:input-profile`, `:output-profile`) |
 
 ### Read Model Queries
 

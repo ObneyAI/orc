@@ -812,8 +812,11 @@ Every workflow execution creates a `:sheet/execution-traced` event:
  :completed-at #inst "..."
  :duration-ms 1234
  :status :success
- :input-snapshot {:question "What is 2+2?" :instruction "..."}
- :output-snapshot {:answer "4"}
+ ;; key -> size PROFILE, not key -> value.
+ ;; input  = keys the tick was given and did NOT write
+ ;; output = keys the tick wrote           (the two are disjoint)
+ :input-snapshot {:question {:type :string :length 12 :word-count 3 :line-count 1}}
+ :output-snapshot {:answer {:type :string :length 1 :word-count 1 :line-count 1}}
  :node-traces [{:node-id #uuid "..." :duration-ms 100 :status :success}]
  :error nil}
 ```
@@ -856,8 +859,13 @@ Track per-node performance over recent executions:
 You can extract training data from past executions:
 
 ```clojure
-;; Get recent traces
-(def traces (sheet/get-traces-for-sheet event-store sheet-id))
+;; Trace snapshots carry SHAPE, not values (:input-snapshot / :output-snapshot
+;; are key -> size-profile maps), so they cannot feed a trainset directly.
+;; The evaluation component rehydrates the real values from the tick's
+;; :sheet/execution-value-written events.
+(require '[ai.obney.orc.evaluation.interface :as eval])
+
+(def traces (eval/get-llm-traces ctx {:sheet-id sheet-id :limit 50}))
 
 ;; Convert to GEPA example format: flat maps with string keys.
 ;; Each example merges the trace's inputs with its (successful) outputs,
@@ -866,8 +874,8 @@ You can extract training data from past executions:
   (->> traces
        (filter #(= :success (:status %)))
        (map (fn [trace]
-              (merge (:input-snapshot trace)
-                     (:output-snapshot trace))))
+              (merge (:inputs trace)
+                     (:outputs trace))))
        (take 20)
        vec))
 ```
@@ -882,9 +890,11 @@ For targeted improvement, find examples that scored poorly:
 
 (def evaluated-traces
   (for [trace traces]
-    (let [trace-data {:inputs (:input-snapshot trace)
-                      :outputs (:output-snapshot trace)
-                      :instruction (get (:input-snapshot trace) :instruction)}
+    ;; traces here come from eval/get-llm-traces (above), which carries real
+    ;; :inputs / :outputs / :instruction — the trace event itself has only shape.
+    (let [trace-data {:inputs (:inputs trace)
+                      :outputs (:outputs trace)
+                      :instruction (:instruction trace)}
           result (eval/evaluate-trace trace-data)]
       (assoc trace :eval-score (:score result)
                    :eval-feedback (:feedback result)))))

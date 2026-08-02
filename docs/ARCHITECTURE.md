@@ -375,10 +375,19 @@ flowchart TB
  :started-at inst
  :completed-at inst
  :duration-ms 450
- :inputs {:key value}
- :outputs {:key value}
+ :read-keys [:key]
+ :write-keys [:other-key]
+ :input-profile {:key {:type :string :length 1024 :word-count 180 :line-count 12}}
+ :output-profile {:other-key {:type :string :length 2048 :word-count 340 :line-count 26}}
  :error nil}
 ```
+
+The trace records the **shape** of each node's I/O, not the values —
+`:read-keys`/`:write-keys` name the blackboard keys, and the profiles give per-key
+size indicators. Values live in exactly one place, that tick's
+`:sheet/execution-value-written` events; fetch them on demand with the
+`:sheet/node-trace-detail` query. See
+[Event Store Patterns](EVENT-STORE-PATTERNS.md#single-write-discipline-values-live-in-exactly-one-event-type).
 
 ---
 
