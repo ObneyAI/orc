@@ -13,7 +13,8 @@
 
    This follows the delegate node pattern but is specialized for
    inline tree execution rather than referencing an existing sheet."
-  (:require [ai.obney.orc.orc-service.core.runtime :as runtime]
+  (:require [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.commands] ;; Load command handlers
             [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -808,7 +809,19 @@
                                   :sheet-id sheet-id
                                   :tick-id tick-id
                                   :trajectory trajectory
-                                  :total-usage (or (:usage result) {})}
+                                  :total-usage (or (:usage result) {})
+                                  ;; HP-2b: the C-2a-2 fields (:status /
+                                  ;; :duration-ms / :tree-fingerprint) were
+                                  ;; supported by the command + schema + the
+                                  ;; per-fingerprint rolling-metrics aggregator
+                                  ;; from the start, but this emit site never
+                                  ;; passed them — 0/138 real bookends carried a
+                                  ;; fingerprint, so shape-coherence and the
+                                  ;; fingerprint aggregator never fired in
+                                  ;; production. All three are in scope here.
+                                  :duration-ms duration-ms}
+                           (some? (:status result))
+                           (assoc :status (:status result))
                            ;; CV-2 (ADR 0017 decision 3): carry the emitted
                            ;; worked-DSL (sanitized raw S-expr — pure data the
                            ;; ontology can store + a model can read) + the
@@ -820,6 +833,14 @@
                            (some? generated-tree-raw)
                            (assoc :generated-tree
                                   (sanitize-tree-for-events generated-tree-raw))
+                           ;; HP-2b: canonical shape hash of the emitted tree —
+                           ;; the coherence signal distinct-tree-shapes and the
+                           ;; per-fingerprint aggregator read. Guarded: a
+                           ;; fingerprint failure must never sink the bookend.
+                           (some? generated-tree-raw)
+                           (assoc :tree-fingerprint
+                                  (try (rlm-fingerprint/fingerprint generated-tree-raw)
+                                       (catch Exception _ nil)))
                            (some? (:sheet-id context))
                            (assoc :source-sheet-id (:sheet-id context))
                            ;; HP-2: the hosting TURN's tick (the same
