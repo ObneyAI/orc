@@ -217,6 +217,12 @@
     [:parent-id {:optional true} :uuid]           ;; Parent node ID (for reference only)
     [:path [:vector :string]]                     ;; Path from root e.g. ["root" "fallback-1" "task-a"]
     [:child-index {:optional true} :int]          ;; Which child of parent (0-indexed)
+    ;; Execution context (map-each correlation). A node-id is NOT unique within
+    ;; a tick — map-each runs the same child node once per item — so
+    ;; (node-id, exec-context) is what identifies ONE execution. Consumers
+    ;; rehydrating per-node values must key on the pair; see
+    ;; value-log/execution-key. Empty map for nodes outside a map-each.
+    [:exec-context {:optional true} :map]
     [:status [:enum :success :failure :running :skipped :partial :timeout]]
     [:started-at :any]
     [:completed-at {:optional true} :any]
@@ -544,7 +550,13 @@
     ;; backward-compatible — present only on :blocked completions.
     [:block-payload {:optional true} :any]
     [:duration-ms {:optional true} :int]
+    ;; Execution context + the values this node READ. The read values are
+    ;; reduced to :read-keys + :input-profile before reaching the event.
     [:inputs {:optional true} [:map-of :keyword :any]]
+    ;; {read-key -> :event/id of the write it resolved to}. Carried through
+    ;; onto the event so rehydration is exact rather than last-write-wins —
+    ;; see the :sheet/node-execution-completed event schema.
+    [:read-sources {:optional true} [:map-of :keyword :uuid]]
     ;; Verbatim raw LLM response text, present only on parse-failure
     ;; completions (the model answered but no value could be extracted
     ;; for declared writes). Persisted so (node-output <node-id>) can
@@ -1003,10 +1015,29 @@
     [:node-id :uuid]
     ;; WS-2a: :blocked — see :sheet/complete-node-execution.
     [:status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
+    ;; STORAGE: shape, not values — the values are durable in this node's
+    ;; :sheet/execution-value-written events, which carry :node-id and
+    ;; :exec-context so they attribute back to this exact node EXECUTION.
+    ;; Resolve them with core/value-log.
+    [:write-keys {:optional true} [:vector :keyword]]
+    [:write-profile {:optional true} [:map-of :keyword :map]]
+    [:read-keys {:optional true} [:vector :keyword]]
+    [:input-profile {:optional true} [:map-of :keyword :map]]
+    ;; {read-key -> :event/id of the write that produced the value this node
+    ;; READ}. A key can be written several times in one tick, so resolving a
+    ;; read by key name alone yields the last write — possibly one that
+    ;; happened after this node finished. This makes rehydration exact.
+    ;; Absent for keys seeded into the tick rather than written during it.
+    [:read-sources {:optional true} [:map-of :keyword :uuid]]
+    ;; Values inline ONLY when no write events were emitted for this
+    ;; completion (non-tick-scoped execution) — then this event is their
+    ;; only home. See complete-node-execution's externalize-writes?.
     [:writes {:optional true} [:map-of :keyword :any]]
     ;; WS-2a: OPAQUE block payload, present only on :blocked completions.
     [:block-payload {:optional true} :any]
     [:duration-ms {:optional true} :int]
+    ;; Retains ONLY namespaced execution-context keys (map-each correlation).
+    ;; Read VALUES live in :read-keys / :input-profile / :read-sources above.
     [:inputs {:optional true} [:map-of :keyword :any]]
     ;; Verbatim raw LLM response text, present only on parse-failure
     ;; completions. Source for the (node-output <node-id>) drill-down

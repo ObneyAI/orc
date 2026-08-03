@@ -266,6 +266,40 @@
                          "payload size once resolved reads are dropped"))))))))))
 
 ;; =============================================================================
+;; Invariant: capturing a node's reads must not re-inline their values
+;; =============================================================================
+
+(deftest completion-events-carry-read-shape-not-read-values
+  (testing "a leaf's reads reach the trace as keys + profile, never as values"
+    ;; A leaf's reads ARE captured on the completion command (without it,
+    ;; grounding judges score against {}), but complete-node-execution reduces
+    ;; them to :read-keys + :input-profile before they reach the event. This
+    ;; asserts the reduction actually happens — the failure mode it guards is
+    ;; re-inlining large read values and quietly undoing the storage win.
+    (h/with-async-test-context [ctx]
+      (let [{:keys [sheet-id]} (setup-fanout-sheet! ctx)
+            [result _] (dispatch! ctx sheet-id {:scale 4})]
+        (is (= :success (:status result)) (str "run failed: " (:error result)))
+        (settle!)
+        (let [completions (filter #(= :sheet/node-execution-completed (:event/type %))
+                                  (h/read-all-events ctx))
+              readers (filter #(seq (:read-keys %)) completions)]
+          (is (seq readers) "sanity: some leaf recorded the keys it read")
+          (doseq [c readers]
+            (is (seq (:input-profile c))
+                (str "read keys without a profile on node " (:node-id c)))
+            ;; :inputs may carry namespaced execution-context keys only.
+            (let [simple (filter #(and (keyword? %) (nil? (namespace %)))
+                                 (keys (:inputs c)))]
+              (is (empty? simple)
+                  (str "completion event re-inlined read VALUES under " (vec simple)
+                       " — reads must reach the event as :read-keys + :input-profile"))))
+          ;; And the whole-run budget still holds with reads captured.
+          (let [dup (h/payload-duplication-report (h/read-all-events ctx))]
+            (is (<= (:ratio dup) (:duplication-ratio budgets))
+                (str "capturing reads reintroduced duplication: " dup))))))))
+
+;; =============================================================================
 ;; Invariant: no value is stored twice
 ;; =============================================================================
 

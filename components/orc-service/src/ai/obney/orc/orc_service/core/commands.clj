@@ -934,7 +934,18 @@
   [{{:keys [sheet-id tick-id parent-tick-id inputs use-version force-draft options
             tool-context]} :command
     :as context}]
-  (let [new-tick-id (or tick-id (random-uuid))]
+  (let [new-tick-id (or tick-id (random-uuid))
+        ;; Blackboard keys are simple keywords (see declare-key), but callers
+        ;; may pass string-keyed inputs — runtime/execute documents that form,
+        ;; and execute-delegate-node builds them that way. The tick-execution
+        ;; -context read model already keywordizes on projection; normalizing
+        ;; HERE means the stored event agrees with the invariant too, so a
+        ;; consumer reading the event directly resolves a seeded key by the
+        ;; same keyword the node declares in its :reads.
+        inputs (when inputs
+                 (reduce-kv (fn [acc k v]
+                              (assoc acc (if (string? k) (keyword k) k) v))
+                            {} inputs))]
     (if inputs
       ;; Snapshot-based execution: build full snapshot for isolation
       (let [instruction-overrides (:gepa/patched-instructions context)
@@ -1044,7 +1055,7 @@
 
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage
-            node-type completion-kind raw-response block-payload]} :command
+            node-type completion-kind raw-response block-payload read-sources]} :command
     :as ctx}]
   (let [;; Gap-7: when the dispatch site didn't explicitly set
         ;; :completion-kind but the node is a recursive repl-researcher,
@@ -1118,6 +1129,12 @@
                                     (seq read-values)
                                     (assoc :read-keys (vec (keys read-values))
                                            :input-profile (profile/profile-values read-values))
+                                    ;; Which write event each read resolved to.
+                                    ;; Lets a consumer rehydrate this node's
+                                    ;; inputs exactly, rather than resolving the
+                                    ;; key name to whichever write landed last.
+                                    (seq read-sources)
+                                    (assoc :read-sources read-sources)
                                     (seq usage) (assoc :usage usage)
                                     ;; C-2a-2: propagate :node-type so the
                                     ;; per-node-type aggregator can partition

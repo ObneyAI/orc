@@ -876,16 +876,34 @@
       node)))
 
 (defn- make-bb-write-event
-  "Create a tick-scoped blackboard write event (isolated per execution)."
-  [_event-store sheet-id tick-id key value _blackboard]
-  (->event
-   {:type :sheet/execution-value-written
-    :tags #{[:sheet sheet-id]
-            [:tick tick-id]}
-    :body {:tick-id tick-id
-           :sheet-id sheet-id
-           :key key
-           :value value}}))
+  "Create a tick-scoped blackboard write event (isolated per execution).
+
+   `attribution` is an optional {:node-id _ :exec-context _} naming the node
+   EXECUTION this write belongs to. It matters most for map-each item writes:
+   the parent emits them before starting each child, and all iterations share
+   one blackboard key, so without attribution a consumer cannot tell which
+   iteration a given item write was for — and the blackboard slot itself only
+   ever holds the most recent one. With it, each item write is addressable by
+   the same [node-id exec-context] identity every other write uses."
+  ([_event-store sheet-id tick-id key value _blackboard]
+   (make-bb-write-event nil sheet-id tick-id key value nil nil))
+  ([_event-store sheet-id tick-id key value _blackboard attribution]
+   (->event
+    {:type :sheet/execution-value-written
+     :tags #{[:sheet sheet-id]
+             [:tick tick-id]}
+     :body (cond-> {:tick-id tick-id
+                    :sheet-id sheet-id
+                    :key key
+                    :value value}
+             (:node-id attribution) (assoc :node-id (:node-id attribution))
+             (seq (:exec-context attribution))
+             (assoc :exec-context (:exec-context attribution))
+             ;; Direction matters. A map-each child often reads AND writes the
+             ;; same item key, so "attributed to execution E" is ambiguous
+             ;; without it: is this the value E was given, or the value E
+             ;; produced? :input-seed? marks the former.
+             (:input-seed? attribution) (assoc :input-seed? true))})))
 
 ;; =============================================================================
 ;; Tick Execution Processor
@@ -959,6 +977,37 @@
     (str (subs v 0 max-trace-input-chars)
          "\n…[truncated " (- (count v) max-trace-input-chars) " chars]")
     v))
+
+(defn read-sources
+  "For each of a node's declared :reads, the id of the write event that
+   produced the value the node is about to see: {read-key event-id}.
+
+   Returns {} when `exec-context` is non-empty — i.e. inside a map-each
+   iteration. The blackboard holds ONE :source-event-id per key, and
+   concurrent iterations sharing the item key clobber it, so any id captured
+   here would name an arbitrary iteration's write. The iteration's own
+   exec-context is the reliable identity and travels on both the completion
+   and the item write; recording a plausible-but-wrong id alongside it is
+   worse than recording nothing, because a consumer would trust it.
+
+   Recorded on the completion event so a consumer can rehydrate the node's
+   inputs EXACTLY. Resolving a read by key name alone yields the last write
+   to that key in the tick, which — when a key is written more than once —
+   can be a value produced after this node had already finished.
+
+   Keys with no entry are ones seeded into the tick rather than written
+   during it (they have no write event); consumers fall back to the tick's
+   seeded inputs for those. Pure function — testable in isolation."
+  ([reads blackboard] (read-sources reads blackboard nil))
+  ([reads blackboard exec-context]
+   (if (seq exec-context)
+     {}
+     (reduce (fn [acc k]
+               (if-let [src (get-in blackboard [k :source-event-id])]
+                 (assoc acc k src)
+                 acc))
+             {}
+             (or reads [])))))
 
 (defn extract-read-inputs
   "Build the {read-key -> value} map a node actually read from the blackboard,
@@ -1124,6 +1173,11 @@
                                 :sheet-id sheet-id
                                 :tick-id tick-id
                                 :node-id node-id
+                                ;; C-2a-2: the per-node-type rolling-metrics
+                                ;; aggregator is (if-let [nt (:node-type event)] ...),
+                                ;; so omitting this silently drops the execution
+                                ;; from the metric rather than failing.
+                                :node-type (:type node)
                                 :status status
                                 :writes (normalize-output-keys (or outputs {}))}
                          duration-ms (assoc :duration-ms duration-ms)
@@ -1137,7 +1191,29 @@
                          ;; <node-id>) can retrieve the full text for diagnosis.
                          (and (= :failure status) raw-response)
                          (assoc :raw-response raw-response)
-                         (seq exec-context) (assoc :inputs exec-context)
+                         ;; F1: capture what this leaf actually READ.
+                         ;;
+                         ;; node-execution-started no longer inlines resolved
+                         ;; reads (that was the storage amplification), so this
+                         ;; is now the only place the reads are observed. Without
+                         ;; it every leaf's trace has no :read-keys, and grounding
+                         ;; judges score against {} — silently, since an empty
+                         ;; map reads as "no context" rather than an error.
+                         ;;
+                         ;; Costs no storage: complete-node-execution reduces
+                         ;; these to :read-keys + :input-profile before they
+                         ;; reach the event (storage_budget_test guards it).
+                         :always
+                         (as-> cmd
+                               (let [reads (extract-read-inputs (:reads node) blackboard)]
+                                 (cond-> cmd
+                                   (or (seq exec-context) (seq reads))
+                                   (assoc :inputs (merge exec-context reads))
+                                   ;; F2: which write each read resolved to, so
+                                   ;; rehydration is an exact lookup instead of
+                                   ;; a last-write-wins guess on the key name.
+                                   (seq reads)
+                                   (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
                          (seq usage) (assoc :usage usage))))
               ;; ALSO emit the RLM-specific learning-signal event when an LLM
               ;; call has usage. Carries a precomputed structured node-path
@@ -1181,6 +1257,7 @@
                           :sheet-id sheet-id
                           :tick-id tick-id
                           :node-id node-id
+                          :node-type (:type node)
                           :status :blocked
                           :writes {}
                           :block-payload (block/block-payload t)}))
@@ -1388,6 +1465,11 @@
                          ;; map-each correlation intact.
                          (or (seq read-inputs) (seq exec-context))
                          (assoc :inputs (merge read-inputs exec-context))
+                         ;; F2: which write each read resolved to, so a
+                         ;; consumer rehydrates exactly what this node saw
+                         ;; rather than the last write to that key.
+                         (seq read-inputs)
+                         (assoc :read-sources (read-sources (:reads base-node) blackboard exec-context))
                          ;; WS-2a: a Phase-2 leaf blocked -> the RLM loop
                          ;; short-circuited with :status :blocked + the opaque
                          ;; payload. Carry the payload onto the repl-researcher
@@ -1502,6 +1584,7 @@
                                 :sheet-id sheet-id
                                 :tick-id tick-id
                                 :node-id node-id
+                                :node-type (:type node)
                                 :status status
                                 :writes (normalize-output-keys outputs)
                                 :duration-ms duration-ms}
@@ -1510,6 +1593,9 @@
                          ;; context; exec-context keys win to keep correlation.
                          (or (seq read-inputs) (seq exec-context))
                          (assoc :inputs (merge read-inputs exec-context))
+                         ;; F2: exact read provenance — see the leaf path.
+                         (seq read-inputs)
+                         (assoc :read-sources (read-sources read-keys blackboard exec-context))
                          (:error result) (assoc :error (:error result))))))
 
             (catch Exception e
@@ -1630,6 +1716,7 @@
                                :sheet-id sheet-id
                                :tick-id tick-id
                                :node-id node-id
+                               :node-type (:type node)
                                :status final-status
                                :writes {}}
                         duration-ms (assoc :duration-ms duration-ms)
@@ -1916,6 +2003,7 @@
                                   :sheet-id sheet-id
                                   :tick-id tick-id
                                   :node-id parent-id
+                                  :node-type (:type parent)
                                   :status final-status
                                   ;; Propagate the child's writes so the parent's
                                   ;; completion reports them. Resolved from the
@@ -2212,6 +2300,7 @@
               :body {:sheet-id sheet-id
                      :tick-id tick-id
                      :node-id node-id
+                     :node-type :map-each
                      :status :failure
                      :error (str "Source key '" source-key "' is not a list")}})]}
 
@@ -2227,6 +2316,7 @@
               :body {:sheet-id sheet-id
                      :tick-id tick-id
                      :node-id node-id
+                     :node-type :map-each
                      :status :success}})]}
 
           (not child-id)
@@ -2241,6 +2331,7 @@
               :body {:sheet-id sheet-id
                      :tick-id tick-id
                      :node-id node-id
+                     :node-type :map-each
                      :status :success}})]}
 
           :else
@@ -2286,7 +2377,14 @@
                        child (get nodes-by-id child-id)]
                    ;; Emit blackboard write for item BEFORE starting child
                    ;; This ensures all children in a sequence can read the item
-                   [(make-bb-write-event event-store sheet-id tick-id item-key item blackboard)
+                   ;; Attributed to the ITERATION that will read it, so a
+                   ;; consumer can tell iteration i's item from iteration j's.
+                   ;; The shared blackboard slot cannot — it holds one value.
+                   [(make-bb-write-event event-store sheet-id tick-id item-key item blackboard
+                                         {:node-id child-id
+                                          :input-seed? true
+                                          :exec-context {::map-each-index idx
+                                                         ::map-each-parent node-id}})
                     (->event
                      {:type :sheet/node-execution-started
                       :tags #{[:sheet sheet-id]
@@ -2430,6 +2528,7 @@
                     completion-body (cond-> {:sheet-id sheet-id
                                              :tick-id tick-id
                                              :node-id map-each-parent-id
+                                             :node-type :map-each
                                              :status status}
                                       summary (assoc :partial-summary summary))]
                 {:result/events
@@ -2454,7 +2553,13 @@
                     :body {:sheet-id sheet-id :tick-id tick-id :node-id map-each-parent-id
                            :item-index (:completed-count act) :total-items total-items}})
                   ;; Write item to blackboard so children in sequence can read it
-                  (make-bb-write-event event-store sheet-id tick-id item-key next-item blackboard)
+                  ;; Attributed to the iteration that will read it — see the
+                  ;; batch-dispatch site above.
+                  (make-bb-write-event event-store sheet-id tick-id item-key next-item blackboard
+                                       {:node-id child-id
+                                        :input-seed? true
+                                        :exec-context {::map-each-index (:next-index act)
+                                                       ::map-each-parent map-each-parent-id}})
                   (->event
                    {:type :sheet/node-execution-started
                     :tags #{[:sheet sheet-id] [:node child-id] [:tick tick-id]}
@@ -2924,6 +3029,16 @@
                                      :node-name (:name node)
                                      :node-type (:type node)
                                      :parent-id (:parent-id node)
+                                     ;; F3: a node-id is NOT unique within a
+                                     ;; tick — map-each runs the same child once
+                                     ;; per item. Carrying the execution context
+                                     ;; makes each entry addressable, so
+                                     ;; rehydration can hand every iteration its
+                                     ;; OWN inputs/outputs instead of collapsing
+                                     ;; them all onto whichever ran last.
+                                     ;; Same key shape value-log/execution-key
+                                     ;; reads off lifecycle events.
+                                     :exec-context (trace-execution-context (:inputs started))
                                      :status (or (:status completed) :unknown)
                                      :started-at (str (:event/timestamp started))
                                      :completed-at (when completed (str (:event/timestamp completed)))}

@@ -116,35 +116,92 @@
    type in the log.
 
    A trace-id IS the tick-id (see assemble-execution-trace), so one tagged
-   read gets everything. Returns {node-id {:inputs {..} :outputs {..}}}.
+   read gets everything.
 
-   Writes prefer the node's own completion event when it still carries them,
-   because the blackboard alone cannot attribute a key to a node — a later
-   node may have overwritten it."
+   Returns {[node-id exec-context] {:inputs {..} :outputs {..}}} — keyed by
+   EXECUTION, not by node-id. Two correctness rules drive that:
+
+   - A node-id is not unique within a tick. map-each runs the same child once
+     per item, so filing results under a bare node-id makes N iterations
+     overwrite each other and every one of them is served the last one's I/O.
+   - A key is not unique within a tick either. Reads therefore resolve through
+     :read-sources — the id of the write event the node actually saw — rather
+     than by key name, which would yield the last write to that key even if it
+     happened after this node finished."
   [{:keys [event-store tenant-id]} trace-id node-traces]
   (try
     (let [events (into [] (event-store/read
                            event-store
                            (cond-> {:tags #{[:tick trace-id]}}
                              tenant-id (assoc :tenant-id tenant-id))))
-          values (reduce (fn [acc e] (assoc acc (:key e) (:value e)))
-                         {}
-                         (filter #(= :sheet/execution-value-written (:event/type %)) events))
-          ;; Writes attributed to each node EXECUTION — a later node may
-          ;; overwrite the same key, and under map-each one child node-id
-          ;; runs once per item.
+          writes (filter #(= :sheet/execution-value-written (:event/type %)) events)
+          ;; Exact resolution: write event id -> value.
+          by-event-id (reduce (fn [acc e] (assoc acc (:event/id e) (:value e))) {} writes)
+          ;; Values seeded into the tick have no write event; they arrive on
+          ;; tree-tick-started :inputs. Fallback source for reads of keys the
+          ;; tick was given rather than produced.
+          ;; Keys are normalized here as well as at the emission site: a node
+          ;; declares its :reads as simple keywords, so a seeded key stored as
+          ;; the string "student-analysis" would never match :student-analysis
+          ;; and the read would be dropped. Normalizing on both sides keeps
+          ;; events written before that fix resolvable.
+          seeded (reduce-kv (fn [acc k v] (assoc acc (if (string? k) (keyword k) k) v))
+                            {}
+                            (or (some #(when (= :sheet/tree-tick-started (:event/type %))
+                                         (:inputs %))
+                                      events)
+                                {}))
+          ;; Last-write-wins, used ONLY as a final fallback for events that
+          ;; predate :read-sources.
+          latest (value-log/latest-values events)
           completions (filter #(= :sheet/node-execution-completed (:event/type %)) events)
-          writes-by-node (reduce (fn [acc c]
-                                   (assoc acc (:node-id c) (value-log/writes-for events c)))
-                                 {}
-                                 completions)
-          pick (fn [ks] (into {} (for [k ks :when (contains? values k)] [k (get values k)])))]
+          ;; Keyed by execution, so map-each iterations stay distinct.
+          by-execution (reduce (fn [acc c] (assoc acc (value-log/execution-key c) c))
+                               {}
+                               completions)
+          ;; Values seeded FOR a specific node execution (map-each items).
+          ;; Kept separate from that execution's own outputs — a child that
+          ;; reads and writes the same key would otherwise resolve its input
+          ;; to its own result.
+          input-seeds (value-log/input-seeds-by-iteration events)
+          resolve-reads
+          (fn [c]
+            (let [ek (value-log/execution-key c)
+                  ;; The ITERATION this execution belongs to, if any. Shared by
+                  ;; every node inside it regardless of node-id — which is why
+                  ;; the item lookup keys on this and not on the node.
+                  iter (value-log/exec-context (:inputs c))
+                  sources (:read-sources c)
+                  ;; Ordered candidates, most specific first. Each step is a
+                  ;; FALLTHROUGH, not a terminal branch: a miss moves on rather
+                  ;; than dropping the key. Treating any of these as terminal
+                  ;; silently loses reads — which is how 172 of them vanished.
+                  resolve-one
+                  (fn [k]
+                    (or ;; 1. A value seeded FOR this execution — exact for
+                        ;;    map-each items, where every iteration shares the
+                        ;;    key and the blackboard slot holds only the last.
+                        (get-in input-seeds [iter k])
+                        ;; 2. The specific write this node recorded reading.
+                        (some->> (get sources k) (get by-event-id))
+                        ;; 3. Seeded into the tick (no write event exists).
+                        (get seeded k)
+                        ;; 4. Last write to the key. Ambiguous when a key is
+                        ;;    written more than once, but better than nothing
+                        ;;    and the only option for events predating (2).
+                        (get latest k)))]
+              (into {}
+                    (for [k (:read-keys c)
+                          :let [v (resolve-one k)]
+                          :when (some? v)]
+                      [k v]))))]
       (into {}
             (for [nt node-traces
-                  :let [nid (:node-id nt)]]
-              [nid {:inputs (pick (:read-keys nt))
-                    :outputs (or (not-empty (get writes-by-node nid))
-                                 (pick (:write-keys nt)))}])))
+                  :let [k [(:node-id nt) (or (:exec-context nt) {})]
+                        c (get by-execution k)]
+                  :when c]
+              [k {:inputs (resolve-reads c)
+                  :outputs (value-log/writes-for events c)}])))
     (catch Exception _ {})))
 
 (defn- filter-node-traces
@@ -264,7 +321,11 @@
                    sheet-trace
                    (first filtered)
                    (get nodes-map (:node-id node-trace))
-                   (get-in io-by-trace [(:trace-id sheet-trace) (:node-id node-trace)])))]
+                   ;; Keyed by EXECUTION — a bare node-id would hand every
+                   ;; map-each iteration the LAST iteration's I/O.
+                   (get-in io-by-trace [(:trace-id sheet-trace)
+                                        [(:node-id node-trace)
+                                         (or (:exec-context node-trace) {})]])))]
     (if limit
       (vec (take limit results))
       (vec results))))

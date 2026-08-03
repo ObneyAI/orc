@@ -43,16 +43,47 @@
      (exec-context (:exec-context event))
      (exec-context (:inputs event)))])
 
+(defn input-seed?
+  "True when a write PROVIDES a value to the execution it names rather than
+   being that execution's output. map-each item writes are the case: the
+   parent emits them before starting each child, and a child commonly reads
+   and writes the same item key, so direction cannot be inferred from
+   attribution alone."
+  [event]
+  (true? (:input-seed? event)))
+
 (defn writes-by-execution
-  "Index a tick's write events as {[node-id exec-context] {key value}}.
+  "Index a tick's OUTPUT writes as {[node-id exec-context] {key value}}.
 
    Later writes win within one execution, matching blackboard semantics.
-   Events without a :node-id (e.g. the map-each item writes emitted by the
-   parent before starting a child) are indexed under a nil node-id."
+   Input seeds are excluded — they are inputs TO the named execution, not
+   outputs OF it, and including them would let a map-each item masquerade as
+   the child's own result for the same key."
   [events]
   (reduce (fn [acc e]
-            (if (= :sheet/execution-value-written (:event/type e))
+            (if (and (= :sheet/execution-value-written (:event/type e))
+                     (not (input-seed? e)))
               (assoc-in acc [(execution-key e) (:key e)] (:value e))
+              acc))
+          {}
+          events))
+
+(defn input-seeds-by-iteration
+  "Input seeds indexed by ITERATION: {exec-context {key value}}.
+
+   Keyed on exec-context alone, NOT on [node-id exec-context]. The iteration
+   identity is (map-each parent, index) — every node executing inside that
+   iteration shares it, whatever its own node-id. A map-each child is often a
+   composite, so the node that actually reads the item is a descendant of the
+   child the write was stamped with; keying on node-id would miss it and fall
+   back to the shared blackboard slot, which concurrent iterations clobber.
+
+   This is how a map-each iteration's OWN item is recovered."
+  [events]
+  (reduce (fn [acc e]
+            (if (and (= :sheet/execution-value-written (:event/type e))
+                     (input-seed? e))
+              (assoc-in acc [(exec-context (:exec-context e)) (:key e)] (:value e))
               acc))
           {}
           events))

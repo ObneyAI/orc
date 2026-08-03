@@ -966,7 +966,15 @@
     (if (contains? state tick-id)
       (-> state
           (assoc-in [tick-id :blackboard k :value] v)
-          (update-in [tick-id :blackboard k :version] (fnil inc 0)))
+          (update-in [tick-id :blackboard k :version] (fnil inc 0))
+          ;; Provenance: which write event produced the value currently under
+          ;; this key. A key can be written several times in one tick, so
+          ;; "the value of k" is ambiguous after the fact — a reader that
+          ;; resolves k by name alone gets the LAST write, which may have
+          ;; happened after the node that read it already finished.
+          ;; Recording the source event id lets a reader capture exactly
+          ;; which write it saw, making rehydration an exact lookup.
+          (assoc-in [tick-id :blackboard k :source-event-id] (:event/id event)))
       state)))
 
 (defmethod tick-execution-contexts* :default [state _] state)
