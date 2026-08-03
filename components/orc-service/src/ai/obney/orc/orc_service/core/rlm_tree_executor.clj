@@ -821,7 +821,15 @@
                            (assoc :generated-tree
                                   (sanitize-tree-for-events generated-tree-raw))
                            (some? (:sheet-id context))
-                           (assoc :source-sheet-id (:sheet-id context)))))
+                           (assoc :source-sheet-id (:sheet-id context))
+                           ;; HP-2: the hosting TURN's tick (the same
+                           ;; parent-tick-id used for streaming lineage above)
+                           ;; — the per-occurrence half of the
+                           ;; [source-sheet-id source-tick-id] linkage that
+                           ;; lets shape/exec/judge aggregation attribute this
+                           ;; execution to its classification occurrence.
+                           (some? (:tick-id context))
+                           (assoc :source-tick-id (:tick-id context)))))
                 (catch Exception e
                   (println "[DEBUG Tree] Bookend emission failed:" (.getMessage e))))
             result-with-duration (assoc result :duration-ms duration-ms)]

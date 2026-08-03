@@ -730,6 +730,15 @@
 ;; here at confidence X" — it can't reason about which tree-shapes worked
 ;; under load, what the model designed, how the run completed.
 
+(defn- turn-tick-for-sheet
+  "Deterministic per-sheet turn tick so the paired assign-task-class /
+   complete-tree helpers correlate on the SAME occurrence without changing
+   call-site signatures. HP-2: production classifications and bookends share
+   the turn tick via :source-tick-id — an uncorrelated (random-uuid) per
+   helper call would never join."
+  [sheet-id]
+  (java.util.UUID/nameUUIDFromBytes (.getBytes (str "turn-tick:" sheet-id))))
+
 (defn- assign-task-class-to-sheet! [ctx sheet-id tree-class-id]
   (cp/process-command
     (assoc ctx :command
@@ -737,7 +746,7 @@
             :command/id (random-uuid)
             :command/timestamp (time/now)
             :source-sheet-id sheet-id
-            :source-tick-id (random-uuid)
+            :source-tick-id (turn-tick-for-sheet sheet-id)
             :source-node-id (random-uuid)
             :assigned-tree-id tree-class-id
             :confidence 0.95
@@ -746,13 +755,20 @@
             :was-fresh-mint? false})))
 
 (defn- complete-tree-for-sheet! [ctx sheet-id fp status]
+  ;; HP-2 production shape: the bookend's own :sheet-id/:tick-id are the
+  ;; EPHEMERAL Phase-2 identifiers; the classified HOST sheet + turn tick
+  ;; ride in :source-sheet-id/:source-tick-id (the occurrence linkage).
+  ;; The earlier fixture put the host sheet in :sheet-id — a shape
+  ;; production never emits, which hid the disjoint-domain join bugs.
   (cp/process-command
     (assoc ctx :command
            {:command/name :sheet/record-rlm-tree-execution-completion
             :command/id (random-uuid)
             :command/timestamp (time/now)
-            :sheet-id sheet-id
-            :tick-id (random-uuid)
+            :sheet-id (random-uuid)          ;; EPHEMERAL Phase-2 sheet
+            :tick-id (random-uuid)           ;; EPHEMERAL Phase-2 tick
+            :source-sheet-id sheet-id
+            :source-tick-id (turn-tick-for-sheet sheet-id)
             :trajectory []
             :total-usage {:total-tokens 1000}
             :tree-fingerprint fp

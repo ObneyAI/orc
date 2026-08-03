@@ -679,7 +679,15 @@
     ;; (sheet->class join) and records generated-tree as the class's
     ;; :recommended-pattern. Both optional/backward-compatible.
     [:generated-tree {:optional true} [:maybe :any]]
-    [:source-sheet-id {:optional true} [:maybe :uuid]]]
+    [:source-sheet-id {:optional true} [:maybe :uuid]]
+    ;; HP-2: the hosting TURN's tick. :source-sheet-id alone cannot attribute
+    ;; an execution to a classification occurrence — the host sheet is a
+    ;; STATIC workflow definition shared by every turn of a task-shape, so a
+    ;; sheet-only join either matches nothing (vs the ephemeral :sheet-id) or
+    ;; over-matches across classes. [source-sheet-id source-tick-id] is the
+    ;; per-occurrence identity, pairing with :ontology/task-classified's
+    ;; [:source-sheet-id :source-tick-id]. Optional/backward-compatible.
+    [:source-tick-id {:optional true} [:maybe :uuid]]]
 
    ;; -------------------------------------------------------------------------
    ;; Versioning Commands
@@ -1174,6 +1182,11 @@
     ;; Optional/backward-compatible — replayed older bookends carry neither.
     [:generated-tree {:optional true} [:maybe :any]]
     [:source-sheet-id {:optional true} [:maybe :uuid]]
+    ;; HP-2: the hosting TURN's tick — the per-occurrence half of the
+    ;; [source-sheet-id source-tick-id] execution<->classification linkage.
+    ;; Optional/backward-compatible — replayed older bookends lack it and
+    ;; simply don't participate in occurrence-scoped joins.
+    [:source-tick-id {:optional true} [:maybe :uuid]]
     [:timestamp [:fn inst?]]]
 
    :sheet/tree-tick-completed

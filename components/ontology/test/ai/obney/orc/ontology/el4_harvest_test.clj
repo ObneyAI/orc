@@ -221,6 +221,112 @@
               (str "class-b (occurrence 3 only) mean should be 0.2 — NOT diluted by class-a's scores, got " rm-b)))))))
 
 ;; ===========================================================================
+;; HP-2 — production-faithful execution<->classification linkage
+;; ===========================================================================
+;; In PRODUCTION the :sheet/rlm-tree-execution-completed bookend carries the
+;; EPHEMERAL Phase-2 sheet in :sheet-id and its own ephemeral tick in
+;; :tick-id — the classified HOST sheet + TURN tick live in :source-sheet-id
+;; / :source-tick-id. Pre-HP-2 the shape/exec/judge aggregate joins matched
+;; the host sheet-id set against the ephemeral :sheet-id (disjoint domains →
+;; 0 rows always), and the aggregate judge join was bare-shared-sheet (every
+;; class absorbed every class's scores). These fixtures use DISJOINT ids for
+;; every axis a production event would have distinct — the SJ-1 lesson:
+;; same-id fixtures hide exactly this bug family.
+
+(defn- production-occurrence!
+  "One PRODUCTION-SHAPED observation: classification + judge score on the
+   shared HOST sheet + per-turn tick; bookend on its own EPHEMERAL sheet +
+   ephemeral tick, carrying the host linkage in :source-sheet-id /
+   :source-tick-id."
+  [ctx class-id host-sheet turn-tick fingerprint score]
+  (cp/process-command
+    (assoc ctx :command
+           {:command/name :ontology/assign-task-class
+            :command/id (random-uuid)
+            :command/timestamp (time/now)
+            :source-sheet-id host-sheet
+            :source-tick-id turn-tick
+            :source-node-id (random-uuid)
+            :assigned-tree-id class-id
+            :confidence 0.95
+            :top-candidates []
+            :reasoning "test"
+            :was-fresh-mint? false}))
+  (judge-score! ctx host-sheet turn-tick "quality" score)
+  (cp/process-command
+    (assoc ctx :command
+           {:command/name :sheet/record-rlm-tree-execution-completion
+            :command/id (random-uuid)
+            :command/timestamp (time/now)
+            :sheet-id (random-uuid)          ;; EPHEMERAL Phase-2 sheet
+            :tick-id (random-uuid)           ;; EPHEMERAL Phase-2 tick
+            :source-sheet-id host-sheet
+            :source-tick-id turn-tick
+            :trajectory []
+            :total-usage {:total-tokens 0}
+            :tree-fingerprint fingerprint
+            :status :success
+            :duration-ms 100})))
+
+(deftest hp2-distinct-tree-shapes-production-faithful
+  (testing "distinct-tree-shapes counts the class's executions' fingerprints via the
+             [source-sheet-id source-tick-id] linkage — NOT the ephemeral :sheet-id"
+    (with-test-ctx [ctx]
+      (let [class-a (random-uuid)
+            host (random-uuid)]
+        (production-occurrence! ctx class-a host (random-uuid) "shape-A" 0.9)
+        (production-occurrence! ctx class-a host (random-uuid) "shape-B" 0.9)
+        (Thread/sleep 250)
+        (is (= 2 (harvest/distinct-tree-shapes ctx class-a))
+            "two production-shaped occurrences with two fingerprints -> 2 distinct shapes")))))
+
+(deftest hp2-consolidator-gather-attaches-execution-evidence
+  (testing "gather-recent-tree-class-events joins each observation to its bookend via
+             [source-sheet-id source-tick-id] so the reflection LLM sees execution evidence"
+    (with-test-ctx [ctx]
+      (let [class-a (random-uuid)
+            host (random-uuid)]
+        (production-occurrence! ctx class-a host (random-uuid) "shape-A" 0.9)
+        (Thread/sleep 250)
+        (let [obs (#'consolidator/gather-recent-tree-class-events ctx class-a)]
+          (is (= 1 (count obs)))
+          (is (some? (:execution (first obs)))
+              "observation carries the joined :execution submap (was ALWAYS nil pre-HP-2)")
+          (is (= "shape-A" (get-in (first obs) [:execution :tree-fingerprint]))))))))
+
+(deftest hp2-aggregate-metrics-production-faithful
+  (testing "tree-class-aggregate-metrics counts successes/failures/shapes via the
+             occurrence linkage (all were 0 pre-HP-2 due to the disjoint-domain filter)"
+    (with-test-ctx [ctx]
+      (let [class-a (random-uuid)
+            host (random-uuid)]
+        (production-occurrence! ctx class-a host (random-uuid) "shape-A" 0.9)
+        (production-occurrence! ctx class-a host (random-uuid) "shape-A" 0.7)
+        (Thread/sleep 250)
+        (let [agg (#'consolidator/tree-class-aggregate-metrics ctx class-a)]
+          (is (= 2 (:total-assignments agg)))
+          (is (= 2 (:success-count agg)) "successes counted via the pair join")
+          (is (= 1 (:distinct-tree-shapes agg)) "one distinct fingerprint"))))))
+
+(deftest hp2-aggregate-judge-scoped-to-occurrence
+  (testing "aggregate :judge-averages is scoped by [sheet-id tick-id] occurrence pairs —
+             two classes sharing one HOST sheet must NOT absorb each other's scores
+             (the pre-SJ-1 misattribution that survived in the consolidator's copy)"
+    (with-test-ctx [ctx]
+      (let [class-a (random-uuid)
+            class-b (random-uuid)
+            host (random-uuid)]
+        (production-occurrence! ctx class-a host (random-uuid) "shape-A" 1.0)
+        (production-occurrence! ctx class-b host (random-uuid) "shape-B" 0.0)
+        (Thread/sleep 250)
+        (let [agg-a (#'consolidator/tree-class-aggregate-metrics ctx class-a)
+              agg-b (#'consolidator/tree-class-aggregate-metrics ctx class-b)]
+          (is (= {"quality" 1.0} (:judge-averages agg-a))
+              (str "class-a sees ONLY its own occurrence's score, got " (:judge-averages agg-a)))
+          (is (= {"quality" 0.0} (:judge-averages agg-b))
+              (str "class-b sees ONLY its own occurrence's score, got " (:judge-averages agg-b))))))))
+
+;; ===========================================================================
 ;; SLICE 2 — the conservative harvest GATE (pure fn truth-table)
 ;; ===========================================================================
 
@@ -296,8 +402,11 @@
                    :scope :behavioral-subtree}})))
 
 (defn- occurrence!
-  "One real observation of a tree-class: classify + judge-score + tree
-   execution, all on the SAME sheet so the joins line up."
+  "One real observation of a tree-class: classify + judge-score on the HOST
+   sheet + turn tick, and a PRODUCTION-SHAPED bookend on its own EPHEMERAL
+   sheet/tick carrying the [source-sheet-id source-tick-id] linkage (HP-2 —
+   the earlier same-sheet/same-tick bookend fixture hid the disjoint-domain
+   join bugs exactly the way SJ-1's same-id fixtures did)."
   [ctx class-id sheet-id fingerprint score behavioral-subtrees]
   (let [tick-id (random-uuid)]
     (cp/process-command
@@ -320,8 +429,10 @@
              {:command/name :sheet/record-rlm-tree-execution-completion
               :command/id (random-uuid)
               :command/timestamp (time/now)
-              :sheet-id sheet-id
-              :tick-id tick-id
+              :sheet-id (random-uuid)          ;; EPHEMERAL Phase-2 sheet
+              :tick-id (random-uuid)           ;; EPHEMERAL Phase-2 tick
+              :source-sheet-id sheet-id
+              :source-tick-id tick-id
               :trajectory []
               :total-usage {:total-tokens 0}
               :tree-fingerprint fingerprint

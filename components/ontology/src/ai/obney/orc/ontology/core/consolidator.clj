@@ -253,9 +253,19 @@
                                           {:types #{:sheet/rlm-tree-execution-completed}
                                            :tenant-id (:tenant-id ctx)})
                                  (into []))
-        executions-by-sheet (into {}
-                                  (map (fn [e] [(:sheet-id e) e]))
-                                  all-tree-executions)
+        ;; HP-2: key executions by the bookend's [:source-sheet-id
+        ;; :source-tick-id] occurrence pair — the bookend's own :sheet-id is
+        ;; the EPHEMERAL Phase-2 sheet, a domain disjoint from the classified
+        ;; HOST :source-sheet-id, so the previous bare-:sheet-id keying made
+        ;; the exec lookup nil for EVERY observation (the reflection LLM never
+        ;; saw execution evidence for a tree-class). Bookends predating
+        ;; :source-tick-id don't participate.
+        executions-by-occurrence (into {}
+                                       (keep (fn [e]
+                                               (when (and (:source-sheet-id e)
+                                                          (:source-tick-id e))
+                                                 [[(:source-sheet-id e) (:source-tick-id e)] e])))
+                                       all-tree-executions)
         ;; Gap-3: pull all :judge/score-emitted events, group by
         ;; [sheet-id tick-id] so we can attach per-observation.
         all-judge-scores (->> (es/read (:event-store ctx)
@@ -266,7 +276,7 @@
         joined (mapv (fn [tc]
                        (let [sheet-id (:source-sheet-id tc)
                              tick-id (:source-tick-id tc)
-                             exec (get executions-by-sheet sheet-id)
+                             exec (get executions-by-occurrence [sheet-id tick-id])
                              judge-events (get judge-scores-by-sheet-tick [sheet-id tick-id])
                              cleaned-tc (clean-event-for-llm tc)]
                          (cond-> cleaned-tc
@@ -373,12 +383,24 @@
                                         :tenant-id (:tenant-id ctx)})
                               (into [])
                               (filter #(= target-id (:assigned-tree-id %))))
-        sheet-ids (into #{} (map :source-sheet-id) task-classifieds)
+        ;; HP-2: the class's occurrence identity is the [source-sheet-id
+        ;; source-tick-id] PAIR — the bare source-sheet-id is the STATIC
+        ;; workflow-definition sheet shared by every turn of a task-shape.
+        ;; The previous sheet-only set (a) matched ZERO bookends (their
+        ;; :sheet-id is the disjoint EPHEMERAL Phase-2 sheet — so
+        ;; success/failure/shapes were always 0) and (b) over-matched judge
+        ;; scores across every class sharing the host sheet (the pre-SJ-1
+        ;; misattribution, surviving here after SJ-1 fixed the read-model —
+        ;; which also silently broke read-model<->aggregate parity until now).
+        occurrence-pairs (into #{}
+                               (map (juxt :source-sheet-id :source-tick-id))
+                               task-classifieds)
         all-tree-executions (->> (es/read (:event-store ctx)
                                           {:types #{:sheet/rlm-tree-execution-completed}
                                            :tenant-id (:tenant-id ctx)})
                                  (into []))
-        relevant-execs (filter #(contains? sheet-ids (:sheet-id %))
+        relevant-execs (filter #(contains? occurrence-pairs
+                                           [(:source-sheet-id %) (:source-tick-id %)])
                                all-tree-executions)
         success-count (count (filter #(= :success (:status %)) relevant-execs))
         failure-count (count (filter #(= :failure (:status %)) relevant-execs))
@@ -387,15 +409,15 @@
                              distinct
                              count)
         ;; Gap-3: per-judge averages across observations for this
-        ;; tree-class. Pulls all :judge/score-emitted events tagged with
-        ;; sheets belonging to this class, groups by :judge-name, and
-        ;; reports the mean score so the LLM can compare a recent window
-        ;; against the stable baseline.
+        ;; tree-class. Judge events carry the HOST sheet-id + the TURN's
+        ;; tick-id, so the same occurrence-pair scoping applies (matches the
+        ;; SJ-1-fixed tree-class-judge-averages read-model — parity restored).
         relevant-judge-scores (->> (es/read (:event-store ctx)
                                             {:types #{:judge/score-emitted}
                                              :tenant-id (:tenant-id ctx)})
                                    (into [])
-                                   (filter #(contains? sheet-ids (:sheet-id %))))
+                                   (filter #(contains? occurrence-pairs
+                                                       [(:sheet-id %) (:tick-id %)])))
         judge-averages (when (seq relevant-judge-scores)
                          (into {}
                                (map (fn [[judge-name entries]]

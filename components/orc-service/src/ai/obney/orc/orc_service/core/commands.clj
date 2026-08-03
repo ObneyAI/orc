@@ -1396,7 +1396,8 @@
    reads :tree-fingerprint from the event body directly (tag values must
    be UUIDs in event-store-v3, so we don't tag with the string fingerprint)."
   [{{:keys [sheet-id tick-id trajectory total-usage task-fingerprint
-            tree-fingerprint status duration-ms generated-tree source-sheet-id]} :command
+            tree-fingerprint status duration-ms generated-tree source-sheet-id
+            source-tick-id]} :command
     :as _ctx}]
   {:command-result/events
    [(->event
@@ -1419,7 +1420,11 @@
         ;; optional/backward-compatible — a turn that times out before emit
         ;; carries neither, so no enrichment fires (CV-1 floor still stands).
         (some? generated-tree)   (assoc-in [:body :generated-tree] generated-tree)
-        (some? source-sheet-id)  (assoc-in [:body :source-sheet-id] source-sheet-id)))]})
+        (some? source-sheet-id)  (assoc-in [:body :source-sheet-id] source-sheet-id)
+        ;; HP-2: the hosting TURN's tick — pairs with :source-sheet-id as the
+        ;; per-occurrence execution<->classification linkage (the shared/static
+        ;; host sheet alone cannot attribute an execution to an occurrence).
+        (some? source-tick-id)   (assoc-in [:body :source-tick-id] source-tick-id)))]})
 
 (defcommand :sheet fail-node-execution
   {:authorized? authenticated?}

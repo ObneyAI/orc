@@ -68,29 +68,40 @@
 
 (defn- behavioral-subtree-uri [id] (str "behavioral-subtree:" id))
 
-(defn- class-sheet-ids
-  "The source-sheet-ids of every task-classified event assigned to this class."
+(defn- class-occurrence-pairs
+  "The [source-sheet-id source-tick-id] pairs of every task-classified event
+   assigned to this class — the per-OCCURRENCE identity. HP-2: the bare
+   source-sheet-id is the STATIC workflow-definition sheet shared by every
+   turn of a task-shape, so a sheet-only set either matches nothing (a
+   bookend's :sheet-id is the EPHEMERAL Phase-2 sheet, a disjoint domain) or
+   over-matches across classes sharing the host. The pair is what uniquely
+   names one occurrence, on both the classification and the bookend
+   (:source-sheet-id/:source-tick-id)."
   [ctx class-id]
   (->> (es/read (:event-store ctx)
                 {:types #{:ontology/task-classified} :tenant-id (:tenant-id ctx)})
        (into [])
        (filter #(= class-id (:assigned-tree-id %)))
-       (map :source-sheet-id)
+       (map (juxt :source-sheet-id :source-tick-id))
        (into #{})))
 
 (defn distinct-tree-shapes
-  "EL-4: count of distinct tree-fingerprints across executions on sheets
-   assigned to this class. Mirrors the consolidator's aggregate
-   :distinct-tree-shapes — the coherence signal the gate reads. Computed by
-   a targeted scan; reached only past the cheap occurrence pre-gate, so it
-   runs rarely."
+  "EL-4: count of distinct tree-fingerprints across executions attributed to
+   this class. Mirrors the consolidator's aggregate :distinct-tree-shapes —
+   the coherence signal the gate reads. HP-2: joined by the bookend's
+   [:source-sheet-id :source-tick-id] occurrence pair (pre-HP-2 this filtered
+   the class's HOST sheet-ids against the bookend's EPHEMERAL :sheet-id —
+   disjoint domains, 0 rows always, so the coherence gate passed vacuously).
+   Bookends predating the :source-tick-id field don't participate. Computed
+   by a targeted scan; reached only past the cheap occurrence pre-gate, so
+   it runs rarely."
   [ctx class-id]
-  (let [sheet-ids (class-sheet-ids ctx class-id)]
+  (let [pairs (class-occurrence-pairs ctx class-id)]
     (->> (es/read (:event-store ctx)
                   {:types #{:sheet/rlm-tree-execution-completed}
                    :tenant-id (:tenant-id ctx)})
          (into [])
-         (filter #(contains? sheet-ids (:sheet-id %)))
+         (filter #(contains? pairs [(:source-sheet-id %) (:source-tick-id %)]))
          (keep :tree-fingerprint)
          distinct
          count)))
