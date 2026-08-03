@@ -214,6 +214,11 @@
     [:parent-trace-instance-id {:optional true} :uuid]  ;; Links to parent's trace-instance-id
     [:node-name :string]
     [:node-type node-type]
+    ;; The other axis. :node-type says what KIND of node it is (:leaf,
+    ;; :map-each, :repl-researcher …); :executor says how a LEAF runs
+    ;; (:ai, :code, :tool). Both are needed to answer "was this an LLM call?" —
+    ;; a leaf is :leaf either way. Absent on non-leaf nodes.
+    [:executor {:optional true} executor-type]
     [:parent-id {:optional true} :uuid]           ;; Parent node ID (for reference only)
     [:path [:vector :string]]                     ;; Path from root e.g. ["root" "fallback-1" "task-a"]
     [:child-index {:optional true} :int]          ;; Which child of parent (0-indexed)

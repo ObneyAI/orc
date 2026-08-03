@@ -68,12 +68,36 @@
 ;; Trace Extraction
 ;; =============================================================================
 
+(def ^:private llm-node-types
+  "Node TYPES that call an LLM by definition, whatever their executor."
+  #{:llm-condition :repl-researcher})
+
 (defn- is-llm-node?
-  "Check if a node trace represents an LLM execution"
-  [node-trace]
-  ;; LLM nodes have executor :llm or :llm-condition or :repl-researcher
-  (contains? #{:llm :llm-condition :repl-researcher "llm" "llm-condition" "repl-researcher"}
-             (:executor node-trace)))
+  "Does this node trace represent an LLM call?
+
+   Two independent axes decide it, and conflating them is why this returned
+   false for every node in the log:
+
+     :node-type — what kind of node (:leaf, :map-each, :repl-researcher …).
+                  :llm-condition and :repl-researcher call an LLM by
+                  definition.
+     :executor  — how a LEAF runs (:ai, :code, :tool). A leaf is :leaf
+                  whether it calls a model or runs Clojure; only :executor
+                  distinguishes them.
+
+   The previous version tested `:executor` against node-TYPE values
+   (:llm, :llm-condition, :repl-researcher). :llm is not a member of either
+   enum, and the executor enum is :ai/:code/:tool — so the set could never
+   match, and `llm-only?` emptied every result.
+
+   `node-metadata` is the entry from build-nodes-map, used as a fallback for
+   traces written before :executor was carried on the node trace."
+  ([node-trace] (is-llm-node? node-trace nil))
+  ([node-trace node-metadata]
+   (let [executor (or (:executor node-trace) (:executor node-metadata))
+         node-type (or (:node-type node-trace) (:type node-metadata))]
+     (boolean (or (= :ai executor)
+                  (contains? llm-node-types node-type))))))
 
 (defn- extract-node-trace-data
   "Transform a raw node trace into evaluation format.
@@ -210,11 +234,14 @@
    Options:
      :node-id - Filter to specific node ID
      :node-name - Filter by node name (substring match)
-     :executor - Filter by executor type (e.g., :llm)
-     :llm-only? - Only include LLM nodes"
-  [node-traces {:keys [node-id node-name executor llm-only?]}]
+     :executor - Filter by executor type (:ai, :code, :tool)
+     :llm-only? - Only include LLM nodes
+     :nodes-map - Optional {node-id -> node metadata}, used to resolve
+                  :executor for traces that predate it being carried on the
+                  node trace itself"
+  [node-traces {:keys [node-id node-name executor llm-only? nodes-map]}]
   (cond->> node-traces
-    llm-only? (filter is-llm-node?)
+    llm-only? (filter #(is-llm-node? % (get nodes-map (:node-id %))))
     node-id (filter #(= node-id (:node-id %)))
     node-name (filter #(and (:node-name %)
                             (.contains (str (:node-name %)) node-name)))
@@ -315,7 +342,8 @@
                       :let [filtered (filter-node-traces [node-trace]
                                                          {:node-id node-id
                                                           :node-name node-name
-                                                          :llm-only? true})]
+                                                          :llm-only? true
+                                                          :nodes-map nodes-map})]
                       :when (seq filtered)]
                   (extract-node-trace-data
                    sheet-trace

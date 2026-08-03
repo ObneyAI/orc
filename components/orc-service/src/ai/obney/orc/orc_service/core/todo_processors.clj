@@ -1921,6 +1921,10 @@
         tick-id (:tick-id event)
         child-id (:node-id event)
         child-status (:status event)
+        ;; Resolved from the write log: the completion event carries only
+        ;; :write-keys. Needed to keep a map-each iteration's sequence chained
+        ;; to its own values — see the :inputs note in the :sequence branch.
+        child-writes (value-log/resolve-writes event-store (:tenant-id context) tick-id event)
         event-inputs (:inputs event)
         exec-context (extract-execution-context event-inputs)
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
@@ -1943,21 +1947,28 @@
               ;; Continue to next child
               (let [next-index (inc child-index)
                     total-children (count siblings)
-                    ;; STORAGE: neither the next child's declared reads nor
-                    ;; the completing child's writes are inlined here.
+                    ;; STORAGE: the next child's declared reads are not
+                    ;; inlined — it resolves them from the tick blackboard,
+                    ;; which is read-your-own-write (rmp/project reads cached
+                    ;; state plus everything after the watermark straight from
+                    ;; the store, and these models set no :l1-ttl-ms).
                     ;;
-                    ;; The previous code merged child-writes in to guard
-                    ;; against "the read model hasn't yet processed the
-                    ;; execution-value-written events". That guard is
-                    ;; unnecessary: grain read models are read-your-own-write.
-                    ;; rmp/project reads cached state plus every event after
-                    ;; the cached watermark directly from the event store, and
-                    ;; these models set no :l1-ttl-ms (default 0 = always
-                    ;; revalidate). complete-node-execution appends the
-                    ;; execution-value-written events atomically with the
-                    ;; completion event this handler reacts to, so they are
-                    ;; durable before we run and resolve-blackboard sees them.
-                    inputs exec-context]
+                    ;; CORRECTNESS: the completing child's writes ARE inlined
+                    ;; when we are inside a map-each iteration. Consistency is
+                    ;; not the issue there — isolation is. Concurrent
+                    ;; iterations share one blackboard slot per key, so by the
+                    ;; time the next step in THIS iteration's sequence runs,
+                    ;; another iteration may have overwritten the item. Seeing
+                    ;; your own writes does not help when the value belongs to
+                    ;; someone else. Handing the sibling its predecessor's
+                    ;; actual writes is what keeps an iteration's chain intact.
+                    ;;
+                    ;; Bounded: one node's outputs, and only inside map-each.
+                    ;; Sequences outside a map-each have no competing writer
+                    ;; and resolve from the blackboard as before.
+                    inputs (if (seq exec-context)
+                             (merge exec-context child-writes)
+                             exec-context)]
                 {:result/events
                  [;; Emit sequence progress event
                   (->event
@@ -3028,6 +3039,14 @@
                             (cond-> {:node-id node-id
                                      :node-name (:name node)
                                      :node-type (:type node)
+                                     ;; F4: :node-type and :executor are two
+                                     ;; different axes and consumers need both.
+                                     ;; A leaf is :leaf whether it calls an LLM
+                                     ;; or runs Clojure; only :executor says
+                                     ;; which. Dropping it left every consumer
+                                     ;; filtering on "is this an LLM node?"
+                                     ;; testing a key that was never present.
+                                     :executor (:executor node)
                                      :parent-id (:parent-id node)
                                      ;; F3: a node-id is NOT unique within a
                                      ;; tick — map-each runs the same child once

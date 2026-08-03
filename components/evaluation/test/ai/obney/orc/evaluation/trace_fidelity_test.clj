@@ -30,7 +30,8 @@
             [ai.obney.orc.evaluation.core.trace-extraction :as tx]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [dscloj.core :as dscloj]))
 
 ;; =============================================================================
 ;; Deterministic executors — every value a distinct, recognizable length
@@ -62,6 +63,14 @@
   [{:keys [inputs]}]
   (let [item (:current-item inputs)]
     {:current-item (assoc item :seen (:id item))}))
+
+(defn read-enriched-item
+  "Third sequence step: reads the item AFTER echo-item rewrote it. Must see the
+   ENRICHED value (carrying :seen), not the original seed — the distinction a
+   fixture without a post-rewrite reader cannot make."
+  [{:keys [inputs]}]
+  (let [item (:current-item inputs)]
+    {:noted {:from (:id item) :saw-enriched (contains? item :seen)}}))
 
 (defn note-item
   "Grandchild that reads the item without writing it — proves a DESCENDANT of
@@ -164,11 +173,17 @@
           ;; grandchild #1 reads the item; grandchild #2 reads it AGAIN after a
           ;; sibling has run, so it cannot rely on an :inputs overlay either.
           note (add! 0 "note-item" [:current-item] [:noted])
-          echo (add! 1 "echo-item" [:current-item] [:current-item])]
+          echo (add! 1 "echo-item" [:current-item] [:current-item])
+          ;; Reads the item AFTER step 1 rewrote it. Round 4: one
+          ;; (key, iteration) pair legitimately has several writes, and a
+          ;; reader must see the last one at or before its own start — not
+          ;; the original seed, and not a later iteration's.
+          after (add! 2 "read-enriched-item" [:current-item] [:noted])]
       (h/run-and-apply! ctx (h/make-set-map-each-config-command
                              sheet-id me-id :items :current-item :results
                              :max-concurrency 8))
-      {:sheet-id sheet-id :map-each me-id :sequence sq-id :note note :echo echo})))
+      {:sheet-id sheet-id :map-each me-id :sequence sq-id
+       :note note :echo echo :after after})))
 
 (defn- setup-nested!
   "Parent sheet whose leaf delegates to a child sheet. The child READS a key it
@@ -460,3 +475,105 @@
                         {:key k :reader-index reader-idx :write-index w-idx})]
         (is (empty? offenders)
             (str ":read-sources naming another iteration's write: " (vec offenders)))))))
+
+;; =============================================================================
+;; The PUBLIC path — every check above passes with get-llm-traces returning []
+;; =============================================================================
+
+(defn mock-ai-predict
+  "dscloj/predict stub so the :ai leaf resolves offline and deterministically."
+  [_provider _module _inputs _opts]
+  {:outputs {:answer "answered-from-the-document"}
+   :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})
+
+(defn- setup-ai-sheet!
+  "A sheet with a leaf whose executor is :ai, carrying an instruction and a
+   model — the shape an evaluation consumer expects to find."
+  [ctx]
+  (let [sr (h/run-and-apply! ctx (h/make-create-sheet-command :name "AI Sheet"))
+        sheet-id (-> sr :command-result/events first :sheet-id)]
+    (doseq [k [:doc :answer]]
+      (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k :string)))
+    (let [sq (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
+          sq-id (-> sq :command-result/events first :node-id)
+          seeder (h/run-and-apply! ctx (h/make-create-node-command
+                                        sheet-id :leaf :parent-id sq-id :index 0))
+          seeder-id (-> seeder :command-result/events first :node-id)
+          ai (h/run-and-apply! ctx (h/make-create-node-command
+                                    sheet-id :leaf :parent-id sq-id :index 1))
+          ai-id (-> ai :command-result/events first :node-id)]
+      (h/run-and-apply! ctx (h/make-set-node-executor-command
+                             sheet-id seeder-id :code :fn (fq "seed-doc")))
+      (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id seeder-id [] [:doc]))
+      ;; The node under test: executor :ai, with instruction + model.
+      (h/run-and-apply! ctx (h/make-set-node-executor-command
+                             sheet-id ai-id :ai :model "test/model"))
+      (h/run-and-apply! ctx (h/make-set-node-instruction-command
+                             sheet-id ai-id "Answer using the document."))
+      (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id ai-id [:doc] [:answer]))
+      {:sheet-id sheet-id :ai-node ai-id})))
+
+(deftest f4-get-llm-traces-returns-populated-rows
+  (testing "the documented evaluation entry point returns LLM rows, populated"
+    ;; This is the gap round 4 found: every other assertion in this file calls
+    ;; tick-node-io directly, so all of them passed while the public API — the
+    ;; one the docs point consumers at — returned [] for every sheet. The
+    ;; filter tested :executor (which node traces did not carry) against
+    ;; node-TYPE values (which the executor enum does not contain), so it
+    ;; could never match.
+    (h/with-async-test-context [ctx]
+      ;; The leaf's executor really is :ai — that is what get-llm-traces
+      ;; filters on — so the model call is stubbed at the root var. Leaf
+      ;; execution happens on a processor thread, so a dynamic `binding`
+      ;; would not reach it; with-redefs alters the root and does.
+      (let [{:keys [sheet-id ai-node]} (setup-ai-sheet! ctx)
+            [result _] (with-redefs [dscloj/predict mock-ai-predict]
+                         (run! ctx sheet-id {}))]
+        (is (= :success (:status result)) (str "run failed: " (:error result)))
+        (let [rows (tx/get-llm-traces ctx {:sheet-id sheet-id})]
+          (is (seq rows)
+              "get-llm-traces returned no rows — the LLM filter is not matching")
+          (let [row (first (filter #(= ai-node (:node-id %)) rows))]
+            (is (some? row) "the :ai leaf appears in the results")
+            (testing "and its row is populated, not a shell"
+              (is (seq (:inputs row)) ":inputs rehydrated")
+              (is (seq (:outputs row)) ":outputs rehydrated")
+              (is (= v1 (:doc (:inputs row))) "the real read value came back")
+              (is (= "answered-from-the-document" (:answer (:outputs row)))
+                  "the model's output came back")
+              (is (seq (:instruction row)) ":instruction resolved from the sheet")
+              (is (some? (:model row)) ":model resolved from the sheet"))))))))
+
+(deftest f4-llm-filter-uses-both-axes
+  (testing "node-type and executor are separate axes and both select LLM nodes"
+    (let [pred #'tx/is-llm-node?]
+      (testing "executor axis"
+        (is (pred {:node-type :leaf :executor :ai}) ":ai leaf is an LLM node")
+        (is (not (pred {:node-type :leaf :executor :code})) ":code leaf is not")
+        (is (not (pred {:node-type :leaf :executor :tool})) ":tool leaf is not"))
+      (testing "node-type axis"
+        (is (pred {:node-type :repl-researcher}))
+        (is (pred {:node-type :llm-condition}))
+        (is (not (pred {:node-type :sequence})))
+        (is (not (pred {:node-type :map-each}))))
+      (testing "falls back to node metadata when the trace predates :executor"
+        (is (pred {:node-type :leaf} {:executor :ai}))
+        (is (not (pred {:node-type :leaf} {:executor :code})))))))
+
+
+;; NOTE — the assertion "rehydration equals what the step ACTUALLY read" is
+;; deliberately absent, and its absence is load-bearing.
+;;
+;; F5 (docs/trace-fidelity-assessment.md): map-each with a COMPOSITE body at
+;; concurrency > 1 races on the shared item key — sequence steps after the
+;; first resolve the item from the blackboard and can observe another
+;; iteration's value. Verified at concurrency 4 and reproduced identically on
+;; a8fb2c0, so it predates the storage work.
+;;
+;; While that race exists no per-iteration rehydration rule can be faithful:
+;; the value the step read belonged to a different iteration, so resolving by
+;; (key, iteration) necessarily reports the idealized value instead. Writing
+;; an assertion that passes today would encode the idealization as the
+;; contract. f2b-composite-child-descendants-resolve-their-own-item covers
+;; what IS well-defined — per-iteration resolution — and this note records
+;; what is blocked on F5.
