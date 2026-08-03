@@ -232,11 +232,9 @@
     [:started-at :any]
     [:completed-at {:optional true} :any]
     [:duration-ms {:optional true} :int]
-    ;; STORAGE: shape, not values. The values are already durable in this
-    ;; tick's :sheet/execution-value-written events; storing them here too
-    ;; made :sheet/execution-traced the largest event type in the log.
-    ;; Fetch values with the :sheet/node-trace-detail query, which rehydrates
-    ;; them on demand.
+    ;; Shape, not values — the values are durable in this tick's
+    ;; :sheet/execution-value-written events. Fetch them with the
+    ;; :sheet/node-trace-detail query, which rehydrates on demand.
     [:read-keys {:optional true} [:vector :keyword]]     ;; keys read
     [:write-keys {:optional true} [:vector :keyword]]    ;; keys written
     [:input-profile {:optional true} [:map-of :keyword :map]]
@@ -252,11 +250,9 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout :partial]]
-    ;; STORAGE: key -> size-profile, not key -> value. Both snapshots used to
-    ;; be built from the same post-completion blackboard, so they were
-    ;; byte-identical copies of the tick's entire working set.
-    ;; :input-snapshot now profiles the keys the tick was given and did not
-    ;; write; :output-snapshot profiles the keys it wrote.
+    ;; key -> size-profile, not key -> value. :input-snapshot profiles the
+    ;; keys the tick was given and did not write; :output-snapshot profiles
+    ;; the keys it wrote.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
     [:node-traces [:vector ::node-trace]]
@@ -711,7 +707,7 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status :keyword]
-    ;; STORAGE: key -> size-profile, not key -> value. See ::execution-trace.
+    ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
     [:node-traces [:vector :any]]
@@ -1020,19 +1016,19 @@
     [:node-id :uuid]
     ;; WS-2a: :blocked — see :sheet/complete-node-execution.
     [:status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
-    ;; STORAGE: shape, not values — the values are durable in this node's
+    ;; Shape, not values — the values are durable in this node's
     ;; :sheet/execution-value-written events, which carry :node-id and
-    ;; :exec-context so they attribute back to this exact node EXECUTION.
+    ;; :exec-context so they attribute to this exact node EXECUTION.
     ;; Resolve them with core/value-log.
     [:write-keys {:optional true} [:vector :keyword]]
     [:write-profile {:optional true} [:map-of :keyword :map]]
     [:read-keys {:optional true} [:vector :keyword]]
     [:input-profile {:optional true} [:map-of :keyword :map]]
-    ;; {read-key -> :event/id of the write that produced the value this node
-    ;; READ}. A key can be written several times in one tick, so resolving a
-    ;; read by key name alone yields the last write — possibly one that
-    ;; happened after this node finished. This makes rehydration exact.
-    ;; Absent for keys seeded into the tick rather than written during it.
+    ;; {read-key -> :event/id of the write this node READ}. A key can be
+    ;; written several times in one tick, so resolving by key name alone
+    ;; yields the last write — possibly one made after this node finished.
+    ;; Absent for keys seeded into the tick rather than written during it,
+    ;; and inside a map-each iteration (see read-sources).
     [:read-sources {:optional true} [:map-of :keyword :uuid]]
     ;; Values inline ONLY when no write events were emitted for this
     ;; completion (non-tick-scoped execution) — then this event is their
@@ -1135,15 +1131,10 @@
     ;; WS-2a: :blocked — a leaf raised the orc block signal; the tree tick
     ;; completes :blocked so the parent deref returns immediately.
     [:root-status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
-    ;; STORAGE: the NAMES of the blackboard keys this tick wrote — not their
-    ;; values. The values are already durable in the tick's
-    ;; :sheet/execution-value-written events, which are the canonical record;
-    ;; echoing the whole blackboard back out here stored the tick's entire
-    ;; working set a second time, once per (possibly nested) tick.
-    ;;
-    ;; Consumers that want values resolve them from the tick blackboard:
-    ;; runtime/execute's :outputs is rehydrated in deliver-execution-result,
-    ;; and the live stream resolves them in streaming/normalize-durable.
+    ;; The NAMES of the keys this tick wrote, not their values — those are
+    ;; durable in the tick's :sheet/execution-value-written events.
+    ;; runtime/execute's :outputs is rehydrated in deliver-execution-result;
+    ;; the live stream resolves them in streaming/normalize-durable.
     [:output-keys {:optional true} [:vector :keyword]]
     ;; WS-2a: OPAQUE block payload, present only when :root-status is :blocked.
     [:block-payload {:optional true} :any]
@@ -1240,7 +1231,7 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout :partial]]
-    ;; STORAGE: key -> size-profile, not key -> value. See ::execution-trace.
+    ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
     [:node-traces [:vector :any]]                 ;; Vector of ::node-trace

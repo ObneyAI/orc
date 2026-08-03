@@ -134,24 +134,20 @@
   "Rehydrate per-node input/output VALUES for one trace.
 
    :sheet/execution-traced records only the shape of each node's I/O
-   (:read-keys, :write-keys, size profiles). The values live in the tick's
-   :sheet/execution-value-written events — the canonical record of every
-   write — and storing them in the trace as well made it the largest event
-   type in the log.
-
-   A trace-id IS the tick-id (see assemble-execution-trace), so one tagged
-   read gets everything.
+   (:read-keys, :write-keys, size profiles); the values live in the tick's
+   :sheet/execution-value-written events. A trace-id IS the tick-id (see
+   assemble-execution-trace), so one tagged read gets everything.
 
    Returns {[node-id exec-context] {:inputs {..} :outputs {..}}} — keyed by
-   EXECUTION, not by node-id. Two correctness rules drive that:
+   EXECUTION, not by node-id. Two rules drive that:
 
-   - A node-id is not unique within a tick. map-each runs the same child once
-     per item, so filing results under a bare node-id makes N iterations
-     overwrite each other and every one of them is served the last one's I/O.
-   - A key is not unique within a tick either. Reads therefore resolve through
-     :read-sources — the id of the write event the node actually saw — rather
-     than by key name, which would yield the last write to that key even if it
-     happened after this node finished."
+   - A node-id is not unique within a tick: map-each runs the same child once
+     per item, so filing under a bare node-id makes N iterations overwrite
+     each other.
+   - A key is not unique within a tick either, so reads resolve through
+     :read-sources — the write the node actually saw — rather than by key
+     name, which yields the last write even if it landed after the node
+     finished."
   [{:keys [event-store tenant-id]} trace-id node-traces]
   (try
     (let [events (into [] (event-store/read

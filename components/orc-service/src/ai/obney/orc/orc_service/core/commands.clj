@@ -1100,11 +1100,11 @@
                                            :tick-id tick-id
                                            :node-id node-id
                                            :status status}
-                                    ;; STORAGE: shape, not values — but ONLY
-                                    ;; when the values are durable elsewhere.
-                                    ;; The write events carry :node-id and
-                                    ;; :exec-context so consumers can attribute
-                                    ;; them back to this exact node execution.
+                                    ;; Shape, not values — but only when the
+                                    ;; values are durable elsewhere. The write
+                                    ;; events carry :node-id and :exec-context
+                                    ;; so consumers can attribute them to this
+                                    ;; exact node execution.
                                     (seq writes)
                                     (assoc :write-keys (vec (keys writes))
                                            :write-profile (profile/profile-values writes))

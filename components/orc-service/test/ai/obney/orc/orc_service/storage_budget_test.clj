@@ -1,27 +1,21 @@
 (ns ai.obney.orc.orc-service.storage-budget-test
   "Storage-cost invariants for the event log.
 
-   A real production run measured 137 MB of Fressian-encoded events for a
-   single execution, of which ~85% was the SAME blackboard content
-   re-serialized under different event types. The canonical record —
-   :sheet/execution-value-written — was 19 MB of that. Everything else was
-   copies.
-
-   These tests encode the copy-count discipline as executable invariants so
-   it cannot silently regress:
+   :sheet/execution-value-written is the canonical record of every blackboard
+   write; every other event references values by key. These tests encode that
+   discipline as executable invariants so it cannot silently regress.
 
      amplification = total-stored-bytes / canonical-payload-bytes
 
    Amplification is the metric of record because it is scale-free: growing
-   the payload grows the canonical term too, so a fixed byte threshold
-   would either be vacuous on small fixtures or fail spuriously on large
-   ones. A perfect log stores each value once and scores ~1.0.
+   the payload grows the canonical term too, so a fixed byte threshold would
+   be vacuous on small fixtures and fail spuriously on large ones. A log that
+   stores each value once scores ~1.0.
 
    Everything here runs on deterministic :code executors and the mock LLM
    provider — no network, byte-reproducible across runs.
 
-   BUDGETS below are ceilings, not targets. Each phase of the payload
-   reduction work lowers them; the diff on that map is the storage win."
+   BUDGETS below are ceilings, not targets."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
@@ -36,29 +30,26 @@
 ;; =============================================================================
 
 (def ^:private budgets
-  "Ceilings measured against the fixtures below.
-
-   PHASE 0 (current main) records the status quo so the harness is green
-   and the numbers are visible in one place. Each later phase lowers the
-   entries it attacks; see docs/EVENT-STORE-PATTERNS.md.
+  "Ceilings measured against the fixtures below — ceilings, not targets.
 
      :amplification        total bytes / canonical (execution-value-written) bytes
      :started-scaling      node-execution-started byte growth when payload grows 10x
      :doc-occurrences      how many distinct events embed the producer's payload
      :seed-amplification   total bytes / size of a doc seeded into a child tick
-                           and never read or written by it"
-  {:amplification     2.85  ;; p0 12.35 -> p1 7.10 -> p2 6.22 -> p4 3.62 -> p3 2.76
-   :started-scaling   1.05  ;; p0  9.51 -> p1 1.00                            ACHIEVED
-   :doc-occurrences      1  ;; p0     7 -> p1    4 -> p2 3 -> p4 2 -> p3 1    MINIMUM
-   :seed-amplification 1.1  ;; p0  4.03 ->          p2 3.03 -> p4 1.03        ACHIEVED
-   ;; Fraction of large-payload bytes that are a second copy of something
-   ;; already stored. 0.0 means every value is stored exactly once.
-   :duplication-ratio 0.01  ;; p0 0.92 -> p1 0.83 -> p2 0.80 -> p4 0.50 -> p3 0.00
-   ;; map-each is different, and the floor is structural rather than
-   ;; incidental: an item's result is stored under the shared item key AND
-   ;; inside the vector map-each collects into. Both are real blackboard
-   ;; values. ~0.5 is therefore the floor, not a defect — this budget exists
-   ;; to catch duplication ABOVE the floor.
+                           and never read or written by it
+     :duplication-ratio    fraction of large-payload bytes that are a second
+                           copy of something already stored; 0.0 means every
+                           value is stored exactly once
+     :map-each-duplication map-each has a structural floor near 0.5 — an item's
+                           result is stored under the shared item key AND inside
+                           the vector map-each collects into, and both are real
+                           blackboard values. This budget catches duplication
+                           ABOVE that floor."
+  {:amplification        2.85
+   :started-scaling      1.05
+   :doc-occurrences         1
+   :seed-amplification    1.1
+   :duplication-ratio    0.01
    :map-each-duplication 0.55})
 
 ;; =============================================================================
@@ -66,8 +57,8 @@
 ;; =============================================================================
 
 (def ^:private payload-unit
-  "One unit of synthetic payload. Deliberately incompressible-ish and
-   distinctive so occurrence counting is unambiguous."
+  "One unit of synthetic payload, distinctive so occurrence counting is
+   unambiguous."
   (apply str (repeat 1000 "abcdefghij")))
 
 (defn produce-doc
@@ -84,9 +75,8 @@
     {:current-item (update item :value * 2)}))
 
 (defn expand-item
-  "map-each child: turns each item into a large DISTINCT value, so
-   cross-iteration contamination would be visible and so the per-item
-   payload is big enough to dominate the byte accounting."
+  "map-each child: turns each item into a large distinct value, big enough to
+   dominate the byte accounting."
   [{:keys [inputs]}]
   (let [i (:current-item inputs)]
     {:current-item (str "ITEM-" i "-" (apply str (repeat 200 (char (+ 97 (mod i 26))))))}))
@@ -98,11 +88,9 @@
 (defn- fq [sym] (str "ai.obney.orc.orc-service.storage-budget-test/" sym))
 
 (defn- setup-fanout-sheet!
-  "producer writes :doc; three consumers each read :doc.
-
-   This is the shape that makes copy-count visible: one large value, M
-   readers. Every redundant inlining of resolved reads shows up as an
-   O(M) term."
+  "producer writes :doc; three consumers each read :doc. One large value with
+   M readers, so any redundant inlining of resolved reads shows up as an O(M)
+   term."
   [ctx]
   (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Fanout"))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]

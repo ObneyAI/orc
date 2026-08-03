@@ -1,19 +1,14 @@
 (ns ai.obney.orc.orc-service.core.profile
   "Value shape profiling — size/density indicators for blackboard values.
 
-   Events record the SHAPE of the values a node read and wrote rather than
-   the values themselves: every value is already durable in that node's
-   :sheet/execution-value-written events, which are the canonical record of
-   every write. Storing them again on lifecycle and trace events made those
-   events the bulk of the log.
+   Lifecycle and trace events record the SHAPE of what a node read and wrote
+   rather than the values, which are durable in that node's
+   :sheet/execution-value-written events. A profile is what stays useful
+   without the value: enough to render a run, or to decide what is worth
+   fetching in full.
 
-   A profile is what remains useful without the value — enough for a
-   dashboard to render a run, and enough for a judge or the RLM drill-down
-   to decide what is worth fetching in full.
-
-   Dependency-free by design: both the command side (commands.clj) and the
-   processor side (todo_processors.clj) profile values, and neither should
-   have to depend on the other to do it."
+   Dependency-free: both commands.clj and todo_processors.clj profile values
+   and neither should depend on the other to do it."
   (:require [clojure.string :as str]))
 
 (defn profile-value

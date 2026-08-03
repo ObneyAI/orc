@@ -920,12 +920,10 @@
         nodes-by-id (:nodes-by-id tick-ctx)
         root-node (when root-id (get nodes-by-id root-id))]
     (when root-node
-      ;; STORAGE: the root's declared reads are NOT inlined here. They are
-      ;; already in the tick blackboard (seeded by tree-tick-started), and
-      ;; execute-leaf-node resolves that blackboard itself — inlining them
-      ;; would store the same values a second time. :inputs carries only
-      ;; values that cannot be resolved from the blackboard (map-each item
-      ;; overrides and execution context); the root has neither.
+      ;; :inputs carries only what cannot be resolved from the tick
+      ;; blackboard — execution context and map-each item overrides. The
+      ;; root's declared reads are already in the blackboard and
+      ;; execute-leaf-node resolves them there.
       {:result/events
        [(->event
          {:type :sheet/node-execution-started
@@ -1191,26 +1189,20 @@
                          ;; <node-id>) can retrieve the full text for diagnosis.
                          (and (= :failure status) raw-response)
                          (assoc :raw-response raw-response)
-                         ;; F1: capture what this leaf actually READ.
-                         ;;
-                         ;; node-execution-started no longer inlines resolved
-                         ;; reads (that was the storage amplification), so this
-                         ;; is now the only place the reads are observed. Without
-                         ;; it every leaf's trace has no :read-keys, and grounding
-                         ;; judges score against {} — silently, since an empty
-                         ;; map reads as "no context" rather than an error.
-                         ;;
-                         ;; Costs no storage: complete-node-execution reduces
-                         ;; these to :read-keys + :input-profile before they
-                         ;; reach the event (storage_budget_test guards it).
+                         ;; The only place a leaf's reads are observed —
+                         ;; node-execution-started does not inline them. Omitting
+                         ;; this leaves the trace with no :read-keys and grounding
+                         ;; judges scoring against {}. complete-node-execution
+                         ;; reduces these to :read-keys + :input-profile before
+                         ;; they reach the event, so it costs no storage.
                          :always
                          (as-> cmd
                                (let [reads (extract-read-inputs (:reads node) blackboard)]
                                  (cond-> cmd
                                    (or (seq exec-context) (seq reads))
                                    (assoc :inputs (merge exec-context reads))
-                                   ;; F2: which write each read resolved to, so
-                                   ;; rehydration is an exact lookup instead of
+                                   ;; Which write each read resolved to, so
+                                   ;; rehydration is an exact lookup rather than
                                    ;; a last-write-wins guess on the key name.
                                    (seq reads)
                                    (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
@@ -1465,9 +1457,9 @@
                          ;; map-each correlation intact.
                          (or (seq read-inputs) (seq exec-context))
                          (assoc :inputs (merge read-inputs exec-context))
-                         ;; F2: which write each read resolved to, so a
-                         ;; consumer rehydrates exactly what this node saw
-                         ;; rather than the last write to that key.
+                         ;; Which write each read resolved to, so a consumer
+                         ;; rehydrates what this node saw rather than the last
+                         ;; write to that key.
                          (seq read-inputs)
                          (assoc :read-sources (read-sources (:reads base-node) blackboard exec-context))
                          ;; WS-2a: a Phase-2 leaf blocked -> the RLM loop
@@ -1593,7 +1585,7 @@
                          ;; context; exec-context keys win to keep correlation.
                          (or (seq read-inputs) (seq exec-context))
                          (assoc :inputs (merge read-inputs exec-context))
-                         ;; F2: exact read provenance — see the leaf path.
+                         ;; Exact read provenance — see the leaf path.
                          (seq read-inputs)
                          (assoc :read-sources (read-sources read-keys blackboard exec-context))
                          (:error result) (assoc :error (:error result))))))
@@ -1771,11 +1763,11 @@
                       (seq exec-context) (assoc :inputs exec-context))})]}
           ;; Start first child
           (let [first-child-id (first children-ids)
-                ;; STORAGE: the child's declared reads are not inlined — they
-                ;; are in the tick blackboard and the child resolves them
-                ;; itself. event-inputs IS forwarded: it carries the map-each
-                ;; item override, which is keyed on a shared blackboard key
-                ;; and so cannot be safely re-resolved under concurrency.
+                ;; Declared reads are not inlined; the child resolves them
+                ;; from the tick blackboard. event-inputs IS forwarded — it
+                ;; carries the map-each item override, which lives on a shared
+                ;; blackboard key and cannot be safely re-resolved under
+                ;; concurrency.
                 inputs (merge exec-context event-inputs)]
             {:result/events
              [(->event
@@ -1819,10 +1811,9 @@
                              :node-id node-id
                              :status :success}
                       (seq exec-context) (assoc :inputs exec-context))})]}
-          ;; Start ALL children concurrently.
-          ;; STORAGE: declared reads are not inlined (see execute-tree-tick).
-          ;; This matters most here — a parallel node with N children would
-          ;; otherwise store N copies of every value they share.
+          ;; Start ALL children concurrently. Declared reads are not inlined
+          ;; (see execute-tree-tick); with N children that would store N copies
+          ;; of every value they share.
           {:result/events
            (vec
             (for [child-id children-ids]
@@ -1947,25 +1938,17 @@
               ;; Continue to next child
               (let [next-index (inc child-index)
                     total-children (count siblings)
-                    ;; STORAGE: the next child's declared reads are not
-                    ;; inlined — it resolves them from the tick blackboard,
-                    ;; which is read-your-own-write (rmp/project reads cached
-                    ;; state plus everything after the watermark straight from
-                    ;; the store, and these models set no :l1-ttl-ms).
+                    ;; Declared reads are not inlined — the next child resolves
+                    ;; them from the tick blackboard, which is
+                    ;; read-your-own-write.
                     ;;
-                    ;; CORRECTNESS: the completing child's writes ARE inlined
-                    ;; when we are inside a map-each iteration. Consistency is
-                    ;; not the issue there — isolation is. Concurrent
-                    ;; iterations share one blackboard slot per key, so by the
-                    ;; time the next step in THIS iteration's sequence runs,
-                    ;; another iteration may have overwritten the item. Seeing
-                    ;; your own writes does not help when the value belongs to
-                    ;; someone else. Handing the sibling its predecessor's
-                    ;; actual writes is what keeps an iteration's chain intact.
-                    ;;
-                    ;; Bounded: one node's outputs, and only inside map-each.
-                    ;; Sequences outside a map-each have no competing writer
-                    ;; and resolve from the blackboard as before.
+                    ;; The completing child's writes ARE inlined inside a
+                    ;; map-each iteration. Concurrent iterations share one
+                    ;; blackboard slot per key, so by the time the next step in
+                    ;; this iteration runs another iteration may have
+                    ;; overwritten it; read-your-own-write does not help when
+                    ;; the value belongs to a different iteration. Bounded to
+                    ;; one node's outputs, and only inside map-each.
                     inputs (if (seq exec-context)
                              (merge exec-context child-writes)
                              exec-context)]
@@ -2116,9 +2099,9 @@
             (:failure :timeout)
             (if next-child-id
               ;; Continue to next child
-              ;; STORAGE: declared reads not inlined (see the :sequence branch).
-              ;; A fallback retries siblings against the SAME inputs, so
-              ;; inlining them stored one copy per attempt.
+              ;; Declared reads not inlined (see the :sequence branch). A
+              ;; fallback retries siblings against the same inputs, so inlining
+              ;; would store one copy per attempt.
               (let [inputs exec-context]
                 {:result/events
                  [(->event
@@ -2693,19 +2676,12 @@
                                      (>= current-iteration max-ticks))
                              :failure
                              status)
-              ;; STORAGE: emit only keys this tick actually WROTE, not the
-              ;; whole blackboard.
-              ;;
-              ;; A tick is seeded with its caller's working set (RLM Phase 2
-              ;; passes the entire parent blackboard — see
-              ;; rlm-tree-executor/execute-tree). Echoing every seeded key
-              ;; back out meant a document that was never read and never
-              ;; written still cost its full size again on the way out, once
-              ;; per nested tick.
-              ;;
-              ;; Callers still see the FULL blackboard: deliver-execution-result
-              ;; rehydrates it from the tick-execution-context read model, so
-              ;; runtime/execute's :outputs contract is unchanged.
+              ;; Only the keys this tick WROTE, not the whole blackboard. A
+              ;; tick is seeded with its caller's working set, so echoing every
+              ;; seeded key back out re-stores values the tick never touched.
+              ;; Callers still see the full blackboard —
+              ;; deliver-execution-result rehydrates it from the
+              ;; tick-execution-context read model.
               output-keys (when tick-ctx
                             (let [bb (:blackboard (rm/get-tick-execution-context context tick-id))
                                   written (tick-written-keys event-store
@@ -2880,14 +2856,10 @@
   [{:keys [event event-store tenant-id] :as context}]
   (let [tick-id (:tick-id event)
         root-status (:root-status event)
-        ;; STORAGE: complete-tree-tick stores only the keys this tick wrote
-        ;; (see the note there). Callers get the FULL blackboard, rehydrated
-        ;; here from the tick-execution-context read model, which is
-        ;; projected from tree-tick-started + execution-value-written — the
-        ;; canonical records. runtime/execute's :outputs is unchanged.
-        ;;
-        ;; Falls back to the event's own :outputs for legacy ticks dispatched
-        ;; without an execution snapshot, which have no tick context.
+        ;; complete-tree-tick stores only the keys this tick wrote, so the
+        ;; full blackboard is rehydrated here from the tick-execution-context
+        ;; read model. Falls back to the event's own :outputs for legacy ticks
+        ;; dispatched without an execution snapshot.
         outputs (or (when-let [bb (rm/get-tick-blackboard context tick-id)]
                       (reduce-kv (fn [acc k entry] (assoc acc k (:value entry)))
                                  {} bb))
@@ -2995,18 +2967,10 @@
             started-event (first (filter #(= :sheet/tree-tick-started (:event/type %)) tick-events))
             started-at (when started-event (:event/timestamp started-event))
             completed-at (:event/timestamp event)
-            ;; STORAGE: the snapshots record which blackboard keys the tick
-            ;; touched and how big each value was — not the values.
-            ;;
-            ;; Both used to be built from the SAME post-completion tick
-            ;; blackboard, so "input-snapshot" and "output-snapshot" were
-            ;; byte-identical copies of the final state: the tick's entire
-            ;; working set, stored twice, in the largest event in the log.
-            ;;
-            ;; They are now distinguishable and cheap: the output snapshot
-            ;; profiles the keys this tick WROTE, the input snapshot profiles
-            ;; the keys it was given and did not write. Values are rehydrated
-            ;; on demand via the node-trace-detail query.
+            ;; Which keys the tick touched and how big each value was — not
+            ;; the values. :output-snapshot profiles the keys this tick wrote;
+            ;; :input-snapshot profiles the keys it was given and did not
+            ;; write. Values rehydrate via the node-trace-detail query.
             written-keys (or (tick-written-keys event-store (:tenant-id context) tick-id)
                              #{})
             final-bb (or (:blackboard (rm/get-tick-execution-context context tick-id)) {})
@@ -3039,43 +3003,31 @@
                             (cond-> {:node-id node-id
                                      :node-name (:name node)
                                      :node-type (:type node)
-                                     ;; F4: :node-type and :executor are two
-                                     ;; different axes and consumers need both.
-                                     ;; A leaf is :leaf whether it calls an LLM
-                                     ;; or runs Clojure; only :executor says
-                                     ;; which. Dropping it left every consumer
-                                     ;; filtering on "is this an LLM node?"
-                                     ;; testing a key that was never present.
+                                     ;; :node-type and :executor are separate
+                                     ;; axes and consumers need both — a leaf is
+                                     ;; :leaf whether it calls an LLM or runs
+                                     ;; Clojure, and only :executor says which.
                                      :executor (:executor node)
                                      :parent-id (:parent-id node)
-                                     ;; F3: a node-id is NOT unique within a
-                                     ;; tick — map-each runs the same child once
-                                     ;; per item. Carrying the execution context
-                                     ;; makes each entry addressable, so
-                                     ;; rehydration can hand every iteration its
-                                     ;; OWN inputs/outputs instead of collapsing
-                                     ;; them all onto whichever ran last.
-                                     ;; Same key shape value-log/execution-key
-                                     ;; reads off lifecycle events.
+                                     ;; A node-id is not unique within a tick —
+                                     ;; map-each runs the same child once per
+                                     ;; item — so this is what makes each entry
+                                     ;; addressable. Same shape
+                                     ;; value-log/execution-key reads off
+                                     ;; lifecycle events.
                                      :exec-context (trace-execution-context (:inputs started))
                                      :status (or (:status completed) :unknown)
                                      :started-at (str (:event/timestamp started))
                                      :completed-at (when completed (str (:event/timestamp completed)))}
                               (:duration-ms completed) (assoc :duration-ms (:duration-ms completed))
                               (:error completed) (assoc :error (:error completed))
-                              ;; STORAGE: the trace records the SHAPE of each
-                              ;; node's I/O, not the values. Every value here
-                              ;; was already durable — writes in
-                              ;; :sheet/execution-value-written, reads in the
-                              ;; blackboard those writes build — so inlining
-                              ;; them stored the tick's whole working set
-                              ;; again, per node. This was the single largest
-                              ;; event type in a measured production run.
-                              ;;
-                              ;; Values are rehydrated on demand by the
-                              ;; :sheet/node-trace-detail query. Profiles keep
-                              ;; the trace useful on its own for dashboards
-                              ;; and for judges deciding what to drill into.
+                              ;; Shape, not values — every value here is
+                              ;; already durable in
+                              ;; :sheet/execution-value-written. The
+                              ;; :sheet/node-trace-detail query rehydrates them
+                              ;; on demand; the profiles keep the trace useful
+                              ;; on its own for dashboards and for deciding
+                              ;; what to drill into.
                               (seq (:write-keys completed))
                               (assoc :write-keys (:write-keys completed)
                                      :output-profile (:write-profile completed))

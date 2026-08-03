@@ -1,20 +1,13 @@
 (ns ai.obney.orc.orc-service.trace-assembly-test
   "Integration coverage for assemble-execution-trace.
 
-   That function produced ~47% of the bytes in a measured production run and
-   had NO integration test — only a unit test of the pure helper
-   extract-read-inputs, and a schema test asserting the event accepts
-   :partial. This file is the safety net for changing it.
-
-   The split matters:
+   Two halves, asserted differently:
      - STRUCTURE (node identity, parenthood, status, timing, correlation)
-       is asserted against the trace read model. That is what the trace is
-       FOR and it must not change.
-     - VALUES are asserted through the :sheet/node-trace-detail query, which
-       is the supported way to get a node's inputs/outputs. Asserting values
-       through the query rather than off the raw event keeps these tests
-       honest about the contract while leaving the storage layer free to
-       stop inlining them."
+       against the trace read model — that is what the trace is for.
+     - VALUES through the :sheet/node-trace-detail query, the supported way
+       to get a node's inputs/outputs. Asserting through the query rather
+       than off the raw event keeps the storage layer free to stop inlining
+       them."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]

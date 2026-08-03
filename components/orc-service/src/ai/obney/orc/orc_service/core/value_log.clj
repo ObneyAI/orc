@@ -1,22 +1,16 @@
 (ns ai.obney.orc.orc-service.core.value-log
   "Resolving blackboard VALUES from the canonical write log.
 
-   :sheet/execution-value-written is the canonical record of every
-   blackboard write. Lifecycle and trace events therefore record only the
-   SHAPE of what a node read and wrote (:write-keys, :read-keys, profiles) —
-   inlining the values as well stored the tick's whole working set several
-   times over, which was the bulk of the event log.
+   :sheet/execution-value-written is the canonical record of every blackboard
+   write; lifecycle and trace events record only shape (:write-keys,
+   :read-keys, profiles). This namespace is the one place that turns those
+   events back into values.
 
-   This namespace is the one place that turns those events back into values.
-
-   ATTRIBUTION. A key alone is not enough to answer \"what did THIS node
-   write\": a later node may overwrite the same key, and under map-each the
-   same child node-id executes once per item against a shared item key. So
-   writes are indexed by the pair (node-id, exec-context), where exec-context
-   is the map-each correlation carried on both the write events and the
-   node lifecycle events. That pair identifies one node EXECUTION, matching
-   how todo-processors/trace-execution-key correlates started/completed
-   events."
+   ATTRIBUTION. A key alone cannot answer \"what did THIS node write\": a
+   later node may overwrite the same key, and under map-each the same child
+   node-id executes once per item against a shared item key. Writes are
+   therefore indexed by (node-id, exec-context) — one node EXECUTION, the
+   same identity todo-processors/trace-execution-key uses."
   (:require [ai.obney.grain.event-store-v3.interface :as es]))
 
 (def ^:private map-each-index-key
@@ -56,8 +50,8 @@
   "Index a tick's OUTPUT writes as {[node-id exec-context] {key value}}.
 
    Later writes win within one execution, matching blackboard semantics.
-   Input seeds are excluded — they are inputs TO the named execution, not
-   outputs OF it, and including them would let a map-each item masquerade as
+   Input seeds are excluded: they are inputs TO the named execution, not
+   outputs OF it, so including them would let a map-each item masquerade as
    the child's own result for the same key."
   [events]
   (reduce (fn [acc e]
@@ -91,18 +85,13 @@
 (defn writes-for
   "The {key value} map a specific node execution wrote.
 
-   `completion` is that node's :sheet/node-execution-completed event — its
+   `completion` is that node's :sheet/node-execution-completed event; its
    :node-id and :inputs supply the correlation key.
 
-   Prefers the canonical write log. Falls back to an inlined :writes map on
-   the completion event itself when the log has nothing for this execution,
-   which keeps the resolver total for any caller that hands it a completion
-   event carrying values. Emission-side strictness — that the engine does
-   NOT inline values — is enforced where it matters, by the byte budgets in
-   storage_budget_test.
-
-   Returns {} when neither source has anything, the honest answer for a node
-   that wrote nothing."
+   Prefers the canonical write log, falling back to an inlined :writes map on
+   the completion event when the log has nothing for this execution — which
+   is the case for non-tick-scoped completions. Returns {} when neither has
+   anything."
   [events completion]
   (let [from-log (get (writes-by-execution events) (execution-key completion))]
     (or (not-empty from-log)

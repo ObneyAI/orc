@@ -294,14 +294,10 @@
   {:authorized? authenticated?}
   "Get a single execution trace by ID.
 
-   BREAKING (payload reduction): node-traces carry the SHAPE of each node's
-   I/O — :read-keys, :write-keys and size profiles — not the values, and the
-   :input-snapshot / :output-snapshot are key -> profile maps. The values are
-   durable in the tick's :sheet/execution-value-written events; storing them
-   in the trace as well made it the largest event type in the log.
-
-   For a node's actual inputs/outputs use :sheet/node-trace-detail, which
-   rehydrates them on demand."
+   Node traces carry the SHAPE of each node's I/O — :read-keys, :write-keys
+   and size profiles — not the values, and :input-snapshot / :output-snapshot
+   are key -> profile maps. For a node's actual inputs/outputs use
+   :sheet/node-trace-detail, which rehydrates them on demand."
   [{{:keys [trace-id]} :query
     :keys [event-store] :as ctx}]
   (let [trace (rm/get-trace ctx trace-id)]
@@ -427,11 +423,10 @@
   {:authorized? authenticated?}
   "Fetch inputs/outputs for a specific node trace on demand.
 
-   The trace itself stores only the SHAPE of each node's I/O (:read-keys,
-   :write-keys and size profiles) — the values are already durable in the
-   tick's :sheet/execution-value-written events, and storing them twice made
-   :sheet/execution-traced the largest event type in the log. This query is
-   the supported way to get the values, and rehydrates them here.
+   The trace stores only the SHAPE of each node's I/O (:read-keys,
+   :write-keys and size profiles); the values are durable in the tick's
+   :sheet/execution-value-written events. This query is the supported way to
+   get them and rehydrates them here.
 
    The trace-id IS the tick-id (see assemble-execution-trace), so the tick's
    events are reachable by tag.

@@ -3,25 +3,16 @@
 
    storage_budget_test guards the byte discipline: values are stored once and
    everything else references them by key. This file guards the other half —
-   that the values you get BACK are the ones that node actually saw.
+   that the values rehydration returns are the ones that node actually saw.
 
-   The three defects this was written for were all silent. None threw; each
-   returned plausible data:
+   The general oracle is the trace's own stored profiles. :input-profile and
+   :output-profile are recorded per execution at completion time; if a
+   rehydrated value does not profile identically to what that execution
+   recorded, the wrong value came back.
 
-     F1  A leaf's reads were never captured, so its trace had no :read-keys and
-         rehydration returned {}. Grounding judges scored against no context.
-     F2  Reads resolved by key name against a last-write-wins map, so a node
-         that read a key rewritten later in the tick got the LATER value —
-         one produced after it had already finished.
-     F3  Rehydrated I/O was filed under a bare node-id, so N map-each
-         iterations overwrote each other and every iteration was served the
-         last one's inputs and outputs.
-
-   The oracle is the trace's OWN stored profiles. :input-profile and
-   :output-profile are recorded per execution at completion time and are cheap
-   ground truth; if a rehydrated value does not profile identically to what
-   that execution recorded, the wrong value came back. That single assertion
-   catches all three defects and anything else of the same shape."
+   That oracle is a LOWER bound: it cannot see a wrong value that happens to
+   share a shape, which is the common case for map-each items. The map-each
+   tests therefore assert on item IDENTITY instead."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.read-models :as rm]
@@ -65,16 +56,13 @@
     {:current-item (assoc item :seen (:id item))}))
 
 (defn read-enriched-item
-  "Third sequence step: reads the item AFTER echo-item rewrote it. Must see the
-   ENRICHED value (carrying :seen), not the original seed — the distinction a
-   fixture without a post-rewrite reader cannot make."
+  "Third sequence step: reads the item after echo-item rewrote it."
   [{:keys [inputs]}]
   (let [item (:current-item inputs)]
     {:noted {:from (:id item) :saw-enriched (contains? item :seen)}}))
 
 (defn note-item
-  "Grandchild that reads the item without writing it — proves a DESCENDANT of
-   the map-each child resolves its own iteration's item."
+  "Grandchild that reads the item without writing it."
   [{:keys [inputs]}]
   {:noted {:from (:id (:current-item inputs))}})
 
@@ -87,10 +75,9 @@
 (defn- setup!
   "sequence[ seed-doc, consume-doc, rewrite-doc, map-each(expand-item) ]
 
-   (a) consume-doc is a leaf with a declared read        -> exercises F1
-   (b) :doc is written twice, the second time AFTER the
-       node that read it finished                        -> exercises F2
-   (c) map-each runs one child node-id 4 times           -> exercises F3"
+   Covers three shapes at once: a leaf with a declared read; a key written
+   twice, the second write landing after the node that read it finished; and
+   one child node-id executing several times under map-each."
   [ctx]
   (let [sr (h/run-and-apply! ctx (h/make-create-sheet-command :name "Trace Fidelity"))
         sheet-id (-> sr :command-result/events first :sheet-id)
@@ -121,9 +108,8 @@
        :rewriter rewriter :map-each me-id :child child})))
 
 (defn- setup-identity-map-each!
-  "map-each whose items are same-shape, distinct-value maps, at a concurrency
-   that actually races. The profile oracle is blind here by construction; the
-   assertion has to be on item IDENTITY."
+  "map-each over same-shape, distinct-value items at a racing concurrency.
+   The profile oracle is blind here, so assertions are on item IDENTITY."
   [ctx]
   (let [sr (h/run-and-apply! ctx (h/make-create-sheet-command :name "Item Identity"))
         sheet-id (-> sr :command-result/events first :sheet-id)]
@@ -146,11 +132,10 @@
 (defn- setup-composite-map-each!
   "map-each whose child is a SEQUENCE, not a leaf.
 
-   This is the shape production actually uses and the one a leaf-child fixture
-   cannot produce: the node that reads the item is a DESCENDANT of the child
-   the item write is stamped with, so any lookup keyed on node-id misses it.
-   The iteration identity — (map-each parent, index) — is shared by the whole
-   subtree and is what must be keyed on."
+   The node reading the item is then a DESCENDANT of the child the item write
+   is stamped with, so a lookup keyed on node-id misses it. The iteration
+   identity — (map-each parent, index) — is shared by the whole subtree and is
+   what must be keyed on."
   [ctx]
   (let [sr (h/run-and-apply! ctx (h/make-create-sheet-command :name "Composite MapEach"))
         sheet-id (-> sr :command-result/events first :sheet-id)]
@@ -174,10 +159,8 @@
           ;; sibling has run, so it cannot rely on an :inputs overlay either.
           note (add! 0 "note-item" [:current-item] [:noted])
           echo (add! 1 "echo-item" [:current-item] [:current-item])
-          ;; Reads the item AFTER step 1 rewrote it. Round 4: one
-          ;; (key, iteration) pair legitimately has several writes, and a
-          ;; reader must see the last one at or before its own start — not
-          ;; the original seed, and not a later iteration's.
+          ;; Reads the item AFTER step 1 rewrote it: one (key, iteration)
+          ;; pair legitimately has several writes.
           after (add! 2 "read-enriched-item" [:current-item] [:noted])]
       (h/run-and-apply! ctx (h/make-set-map-each-config-command
                              sheet-id me-id :items :current-item :results
@@ -186,10 +169,8 @@
        :note note :echo echo :after after})))
 
 (defn- setup-nested!
-  "Parent sheet whose leaf delegates to a child sheet. The child READS a key it
-   was SEEDED with rather than one written inside its own tick — the shape that
-   makes a seeded-key resolution failure visible. A single-tick fixture cannot
-   produce it."
+  "Parent sheet whose leaf delegates to a child sheet, so the child READS a key
+   it was SEEDED with rather than one written inside its own tick."
   [ctx]
   (let [csr (h/run-and-apply! ctx (h/make-create-sheet-command :name "Child Sheet"))
         child-sheet (-> csr :command-result/events first :sheet-id)]
@@ -300,9 +281,9 @@
 
 (deftest f2-reads-resolve-to-the-write-the-node-actually-saw
   (testing "a key rewritten later in the tick does not leak backwards into an earlier reader"
-    ;; consume-doc reads :doc (v1, 100 chars). rewrite-doc then writes :doc
-    ;; again (v2, 500 chars) AFTER consume-doc finished. Resolving :doc by key
-    ;; name yields v2 — a value that did not exist when the node ran.
+    ;; consume-doc reads :doc (v1). rewrite-doc writes :doc again (v2) AFTER
+    ;; consume-doc finished, so resolving by key name alone yields a value that
+    ;; did not exist when the node ran.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id consumer]} (setup! ctx)
             [result trace-id] (run! ctx sheet-id {:items [0 1]})
@@ -320,11 +301,9 @@
 
 (deftest f2a-every-read-key-resolves-to-something
   (testing "no declared read is silently dropped during rehydration"
-    ;; The cheapest oracle in this file and the broadest: it needs no ground
-    ;; truth at all, only that a key a node recorded reading comes back with
-    ;; SOME value. A resolver that treats any of its lookup steps as terminal
-    ;; drops keys instead of falling through, and drops are invisible — an
-    ;; absent key reads downstream as "this node had no context".
+    ;; Needs no ground truth: only that a key a node recorded reading comes
+    ;; back with SOME value. A resolver whose lookup steps are terminal rather
+    ;; than falling through drops keys silently.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id]} (setup! ctx)
             [_ trace-id] (run! ctx sheet-id {:items [0 1 2 3]})
@@ -340,11 +319,10 @@
 
 (deftest f2a-nested-tick-seeded-reads-resolve
   (testing "a child tick reading a key it was SEEDED with rehydrates that key"
-    ;; The value was written in the PARENT tick, so the child's own write log
-    ;; does not contain it; it arrives via the child's tree-tick-started
-    ;; :inputs. If those keys are stored in a different form than the node
-    ;; declares in :reads — strings vs keywords — the lookup silently misses
-    ;; and the read is dropped.
+    ;; The value was written in the PARENT tick, so it arrives via the child's
+    ;; tree-tick-started :inputs rather than its own write log. If those keys
+    ;; are stored in a different form than the node declares in :reads —
+    ;; strings vs keywords — the read is silently dropped.
     (h/with-async-test-context [ctx]
       (let [{:keys [parent-sheet child-sheet child-leaf]} (setup-nested! ctx)
             [result _] (run! ctx parent-sheet {})]
@@ -365,10 +343,9 @@
 
 (deftest f2b-map-each-items-resolve-to-their-own-iteration
   (testing "each iteration rehydrates the item it actually ran on, by identity"
-    ;; Deliberately built so the profile oracle CANNOT see the error: every
-    ;; item is {:type :map :length 2}, so a cross-iteration mix-up profiles
-    ;; identically and only an identity check catches it. This is the gap that
-    ;; let 85 of 94 real misattributions through.
+    ;; Built so the profile oracle cannot see the error: every item profiles
+    ;; as {:type :map :length 2}, so a cross-iteration mix-up is invisible to
+    ;; shape equality and only an identity check catches it.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id child]} (setup-identity-map-each! ctx)
             items (mapv (fn [i] {:id i :tag (str "item-" i)}) (range 12))
@@ -420,12 +397,10 @@
 (deftest f2b-composite-child-descendants-resolve-their-own-item
   (testing "a map-each child that is a SEQUENCE: its grandchildren each resolve
             the item for THEIR iteration, not another's"
-    ;; Round 3's finding. When the map-each child is a composite, the node
-    ;; reading the item is a descendant of the node the item write is stamped
-    ;; with, so any lookup keyed on node-id misses and falls back to the shared
-    ;; blackboard slot that concurrent iterations clobber. A leaf-child fixture
-    ;; cannot produce this shape — which is why two rounds passed here and
-    ;; failed in production.
+    ;; When the map-each child is a composite, the node reading the item is a
+    ;; descendant of the node the item write is stamped with, so a lookup keyed
+    ;; on node-id misses and falls back to the shared blackboard slot that
+    ;; concurrent iterations clobber.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id note echo]} (setup-composite-map-each! ctx)
             items (mapv (fn [i] {:id i :tag (str "item-" i)}) (range 12))
@@ -449,10 +424,9 @@
 (deftest f2b-read-sources-never-name-another-iterations-write
   (testing "every :read-sources entry resolves to a write stamped with the
             reader's own map-each index"
-    ;; Round 3's proposed check, verbatim, and it needs no fixture ground
-    ;; truth — it runs against any real trace. A :read-sources entry captured
-    ;; from the shared blackboard slot names an arbitrary iteration's write;
-    ;; this fails loudly on that, where shape equality reports nothing.
+    ;; No fixture ground truth needed — runs against any real trace. A
+    ;; :read-sources entry captured from the shared blackboard slot names an
+    ;; arbitrary iteration's write; shape equality reports nothing on that.
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id]} (setup-composite-map-each! ctx)
             items (mapv (fn [i] {:id i :tag (str "item-" i)}) (range 12))
@@ -515,12 +489,64 @@
 
 (deftest f4-get-llm-traces-returns-populated-rows
   (testing "the documented evaluation entry point returns LLM rows, populated"
-    ;; This is the gap round 4 found: every other assertion in this file calls
-    ;; tick-node-io directly, so all of them passed while the public API — the
-    ;; one the docs point consumers at — returned [] for every sheet. The
-    ;; filter tested :executor (which node traces did not carry) against
-    ;; node-TYPE values (which the executor enum does not contain), so it
-    ;; could never match.
+    ;; Every other assertion in this file calls tick-node-io directly, so all
+    ;; of them pass even when the public API returns [] for every sheet. This
+    ;; asserts the path the docs point consumers at.
+    (h/with-async-test-context [ctx]
+      ;; The leaf's executor really is :ai — that is what get-llm-traces
+      ;; filters on — so the model call is stubbed at the root var. Leaf
+      ;; execution happens on a processor thread, so a dynamic `binding`
+      ;; would not reach it; with-redefs alters the root and does.
+      (let [{:keys [sheet-id ai-node]} (setup-ai-sheet! ctx)
+            [result _] (with-redefs [dscloj/predict mock-ai-predict]
+                         (run! ctx sheet-id {}))]
+        (is (= :success (:status result)) (str "run failed: " (:error result)))
+        (let [rows (tx/get-llm-traces ctx {:sheet-id sheet-id})]
+          (is (seq rows)
+              "get-llm-traces returned no rows — the LLM filter is not matching")
+          (let [row (first (filter #(= ai-node (:node-id %)) rows))]
+            (is (some? row) "the :ai leaf appears in the results")
+            (testing "and its row is populated, not a shell"
+              (is (seq (:inputs row)) ":inputs rehydrated")
+              (is (seq (:outputs row)) ":outputs rehydrated")
+              (is (= v1 (:doc (:inputs row))) "the real read value came back")
+              (is (= "answered-from-the-document" (:answer (:outputs row)))
+                  "the model's output came back")
+              (is (seq (:instruction row)) ":instruction resolved from the sheet")
+              (is (some? (:model row)) ":model resolved from the sheet"))))))))
+
+(deftest f4-llm-filter-uses-both-axes
+  (testing "node-type and executor are separate axes and both select LLM nodes"
+    (let [pred #'tx/is-llm-node?]
+      (testing "executor axis"
+        (is (pred {:node-type :leaf :executor :ai}) ":ai leaf is an LLM node")
+        (is (not (pred {:node-type :leaf :executor :code})) ":code leaf is not")
+        (is (not (pred {:node-type :leaf :executor :tool})) ":tool leaf is not"))
+      (testing "node-type axis"
+        (is (pred {:node-type :repl-researcher}))
+        (is (pred {:node-type :llm-condition}))
+        (is (not (pred {:node-type :sequence})))
+        (is (not (pred {:node-type :map-each}))))
+      (testing "falls back to node metadata when the trace predates :executor"
+        (is (pred {:node-type :leaf} {:executor :ai}))
+        (is (not (pred {:node-type :leaf} {:executor :code})))))))
+
+
+;; No assertion here that rehydration equals what a step ACTUALLY read.
+;; map-each with a composite body at concurrency > 1 races on the shared item
+;; key: steps after the first resolve the item from the blackboard and can
+;; observe another iteration's value (F5 in docs/trace-fidelity-assessment.md,
+;; pre-existing). While that holds no per-iteration rule can be faithful — the
+;; value read belonged to a different iteration — so such an assertion would
+;; encode the idealization as the contract.
+;; f2b-composite-child-descendants-resolve-their-own-item covers what is
+;; well-defined: per-iteration resolution.
+
+(deftest f4-get-llm-traces-returns-populated-rows
+  (testing "the documented evaluation entry point returns LLM rows, populated"
+    ;; Every other assertion in this file calls tick-node-io directly, so all
+    ;; of them pass even when the public API returns [] for every sheet. This
+    ;; asserts the path the docs point consumers at.
     (h/with-async-test-context [ctx]
       ;; The leaf's executor really is :ai — that is what get-llm-traces
       ;; filters on — so the model call is stubbed at the root var. Leaf

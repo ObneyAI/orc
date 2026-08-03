@@ -165,25 +165,16 @@ Every event has a standard structure:
 write.** No other event stores a blackboard value. Everything else references
 values by key and resolves them on demand.
 
-This is enforced, not merely intended — see
-`components/orc-service/test/.../storage_budget_test.clj`, which asserts a
+This is enforced, not merely intended — `storage_budget_test` asserts a
 duplication ratio of 0 and that a payload appears in exactly one event.
 
-The rule exists because the log used to violate it badly. A measured production
-run stored **137 MB across 4,705 events**, of which roughly 85% was the same
-blackboard content re-serialized under different event types. For a value `V`
-written by one node and read by `M` downstream nodes, the log held about
-`4 + 3M` copies:
-
-| Event | Used to store | Now stores |
-|---|---|---|
-| `:sheet/execution-value-written` | the value | the value (canonical) |
-| `:sheet/node-execution-completed` | `:writes` values, `:inputs` values | `:write-keys`, `:read-keys`, size profiles |
-| `:sheet/node-execution-started` | every resolved read | execution context + genuine overrides only |
-| `:sheet/tree-tick-completed` | the entire blackboard | `:output-keys` |
-| `:sheet/execution-traced` | per-node I/O + two full blackboard snapshots | keys + size profiles |
-
-The same workflow now stores **77% fewer bytes**, with every value stored once.
+| Event | Stores |
+|---|---|
+| `:sheet/execution-value-written` | the value (canonical) |
+| `:sheet/node-execution-completed` | `:write-keys`, `:read-keys`, size profiles |
+| `:sheet/node-execution-started` | execution context and genuine overrides only |
+| `:sheet/tree-tick-completed` | `:output-keys` |
+| `:sheet/execution-traced` | keys + size profiles |
 
 #### Resolving values
 
@@ -198,8 +189,8 @@ Use `core/value-log` — the one place that turns write events back into values:
 
 Attribution is by the pair `(node-id, exec-context)`, not by key alone. A later
 node may overwrite a key, and under `map-each` one child node-id executes once
-per item against a shared item key — so resolving by key alone would give every
-iteration whichever value happened to land last.
+per item against a shared item key — so resolving by key alone gives every
+iteration whichever value landed last.
 
 Higher-level accessors already do this for you:
 
@@ -212,46 +203,32 @@ Higher-level accessors already do this for you:
 
 #### If you add an event type
 
-Store keys and profiles, not values. If you genuinely need a value inline,
-you are probably reaching for something `value-log` can resolve — and the byte
-budget test will fail if you inline it.
+Store keys and profiles, not values. If you need a value inline you are
+probably reaching for something `value-log` can resolve, and the byte budget
+test will fail if you inline it.
 
-#### Content-addressed payloads: measured, not needed
+#### Content-addressed payloads
 
-A further step was considered — hashing large values into a
-`:sheet/payload-stored` event and referencing them by hash — to remove
-*semantic* duplication (the same document seeded into several nested ticks),
-which structural changes cannot reach.
+Hashing large values into a separate event and referencing them by hash would
+only pay off where the *same* content is stored more than once. Measured
+duplicate-bytes ratio by workload shape:
 
-It was gated on measurement. The measurement splits by workload shape:
+| Fixture | Ratio |
+|---|---:|
+| Fan-out (one value, many readers) | 0.00 |
+| Nested tick (RLM Phase 2 seed) | 0.00 |
+| `map-each` (8 items, concurrency 4) | 0.50 |
 
-| Fixture | Duplicate-bytes ratio | Nature |
-|---|---:|---|
-| Fan-out (one value, many readers) | **0.00** | none left |
-| Nested tick (RLM Phase 2 seed) | **0.00** | none left |
-| `map-each` (8 items, concurrency 4) | **0.50** | structural, see below |
+Only `map-each` shows duplication, and it is structural: an iteration's result
+is stored under the shared item key and again inside the vector the map-each
+collects into, and both are real blackboard values a consumer reads.
+Content-addressing would store those bytes once and reference them twice — a
+real saving for large per-item payloads, and the only shape where it applies.
 
-For everything except `map-each`, **the answer is no**: every value is stored
-exactly once, so a content-addressed layer would add a resolver and a
-GC/retention policy to deduplicate nothing.
-
-`map-each` is genuinely different, and the duplication there is **not
-removable by this mechanism either**. An iteration's result is stored under
-the shared item key, and again inside the vector the map-each collects into
-its `:into` key. Both are real blackboard values that consumers read — the
-aggregate *is* the node's output. Content-addressing would store the bytes
-once and reference them twice, which is a real saving for large per-item
-payloads, but it is the only shape where that holds.
-
-So: worth revisiting **only** for map-each-heavy workloads with large items,
-and worth measuring first. `storage_budget_test` pins the 0.5 floor so any
-duplication *above* it — which would be incidental and removable without new
-machinery — fails the build.
+Re-measure before revisiting:
 
 ```clojure
 (h/payload-duplication-report (h/read-all-events ctx))
-;; fan-out / nested tick => {:ratio 0.0  :occurrences 1  :distinct 1}
-;; map-each              => {:ratio 0.5  :occurrences 16 :distinct 8}
 ```
 
 ### Tags
