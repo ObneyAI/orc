@@ -19,7 +19,11 @@
             ;; DSL for workflow building
             [ai.obney.orc.orc-service.core.dsl :as dsl]
             ;; WS-2a: the orc block-signal primitive (opaque payload)
-            [ai.obney.orc.orc-service.core.block :as block]))
+            [ai.obney.orc.orc-service.core.block :as block]
+            ;; Storage-amplification fix: resolving blackboard values from the
+            ;; canonical write log (evaluation needs this cross-brick; Error 101
+            ;; forbids reaching into orc-service.core.* directly).
+            [ai.obney.orc.orc-service.core.value-log :as value-log]))
 
 ;; =============================================================================
 ;; Read Models
@@ -79,6 +83,17 @@
 ;; C-2a-2: cross-sheet rolling metrics for the Living Description system.
 (def get-node-type-metrics rm/get-node-type-metrics)
 (def get-tree-fingerprint-metrics rm/get-tree-fingerprint-metrics)
+
+;; =============================================================================
+;; Value Log — resolving blackboard values from the canonical write log
+;; =============================================================================
+(def exec-context value-log/exec-context)
+(def execution-key value-log/execution-key)
+(def writes-for value-log/writes-for)
+(def latest-values value-log/latest-values)
+(def input-seeds-by-iteration value-log/input-seeds-by-iteration)
+(def read-tick-events value-log/read-tick-events)
+(def resolve-writes value-log/resolve-writes)
 
 ;; =============================================================================
 ;; Synchronous Execution

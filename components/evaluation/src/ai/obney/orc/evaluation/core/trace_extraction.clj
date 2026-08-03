@@ -8,7 +8,7 @@
    - get-llm-traces: Query traces for specific LLM nodes
    - extract-trace-data: Transform raw trace into evaluation format"
   (:require [ai.obney.grain.event-store-v3.interface :as event-store]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]))
+            [ai.obney.orc.orc-service.interface :as orc]))
 
 ;; =============================================================================
 ;; Event Types (from orc-service)
@@ -173,24 +173,24 @@
                                 {}))
           ;; Last-write-wins, used ONLY as a final fallback for events that
           ;; predate :read-sources.
-          latest (value-log/latest-values events)
+          latest (orc/latest-values events)
           completions (filter #(= :sheet/node-execution-completed (:event/type %)) events)
           ;; Keyed by execution, so map-each iterations stay distinct.
-          by-execution (reduce (fn [acc c] (assoc acc (value-log/execution-key c) c))
+          by-execution (reduce (fn [acc c] (assoc acc (orc/execution-key c) c))
                                {}
                                completions)
           ;; Values seeded FOR a specific node execution (map-each items).
           ;; Kept separate from that execution's own outputs — a child that
           ;; reads and writes the same key would otherwise resolve its input
           ;; to its own result.
-          input-seeds (value-log/input-seeds-by-iteration events)
+          input-seeds (orc/input-seeds-by-iteration events)
           resolve-reads
           (fn [c]
-            (let [ek (value-log/execution-key c)
+            (let [ek (orc/execution-key c)
                   ;; The ITERATION this execution belongs to, if any. Shared by
                   ;; every node inside it regardless of node-id — which is why
                   ;; the item lookup keys on this and not on the node.
-                  iter (value-log/exec-context (:inputs c))
+                  iter (orc/exec-context (:inputs c))
                   sources (:read-sources c)
                   ;; Ordered candidates, most specific first. Each step is a
                   ;; FALLTHROUGH, not a terminal branch: a miss moves on rather
@@ -221,7 +221,7 @@
                         c (get by-execution k)]
                   :when c]
               [k {:inputs (resolve-reads c)
-                  :outputs (value-log/writes-for events c)}])))
+                  :outputs (orc/writes-for events c)}])))
     (catch Exception _ {})))
 
 (defn- filter-node-traces
