@@ -18,6 +18,8 @@
             [ai.obney.orc.orc-service.interface.stream-schemas :as stream-schemas]
             ;; DSL for workflow building
             [ai.obney.orc.orc-service.core.dsl :as dsl]
+            ;; Resolving blackboard values from the canonical write log
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             ;; WS-2a: the orc block-signal primitive (opaque payload)
             [ai.obney.orc.orc-service.core.block :as block]))
 
@@ -79,6 +81,24 @@
 ;; C-2a-2: cross-sheet rolling metrics for the Living Description system.
 (def get-node-type-metrics rm/get-node-type-metrics)
 (def get-tree-fingerprint-metrics rm/get-tree-fingerprint-metrics)
+
+;; =============================================================================
+;; Value log — resolving blackboard VALUES from the write log
+;;
+;; :sheet/execution-value-written is the canonical record of every blackboard
+;; write; lifecycle and trace events record only shape (:write-keys, :read-keys,
+;; profiles). These turn those events back into values, with the attribution
+;; needed to answer "what did THIS node execution write" rather than "what does
+;; this key hold now" — the two differ whenever a key is written more than once
+;; or a map-each runs the same child node against several items.
+;; =============================================================================
+
+(def value-log-exec-context value-log/exec-context)
+(def value-log-execution-key value-log/execution-key)
+(def value-log-writes-for value-log/writes-for)
+(def value-log-latest-values value-log/latest-values)
+(def value-log-input-seeds-by-iteration value-log/input-seeds-by-iteration)
+(def value-log-read-tick-events value-log/read-tick-events)
 
 ;; =============================================================================
 ;; Synchronous Execution

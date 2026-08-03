@@ -22,7 +22,6 @@
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.interface :as orc]
-            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.orc.evaluation.core.heuristic-structural :as heuristic-structural]
             [com.brunobonacci.mulog :as u]))
@@ -125,8 +124,8 @@
      ;; (node-id, exec-context) so judges score against what THIS node
      ;; execution actually produced. An empty map here would silently
      ;; degrade every grounding score rather than fail loudly.
-     :outputs (value-log/writes-for
-               (value-log/read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
+     :outputs (orc/value-log-writes-for
+               (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
                event)
      :instruction (or (:instruction node) "")}))
 

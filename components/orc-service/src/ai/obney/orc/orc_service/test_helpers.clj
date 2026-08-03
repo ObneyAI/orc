@@ -6,8 +6,10 @@
             [ai.obney.orc.orc-service.core.todo-processors]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.kv-store.interface :as kv]
+            [ai.obney.grain.kv-store.interface.protocol :as kvp]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
+            [ai.obney.grain.read-model-processor-v2.core :as rmp-core]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
             [ai.obney.grain.pubsub.interface :as pubsub]
@@ -15,8 +17,195 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.fressian-util.interface :as fressian-util]
             [clojure.data.fressian :as fressian]
+            [clojure.string :as str]
             [clojure.walk :as walk])
   (:import [java.io File]))
+
+;; =============================================================================
+;; Counting KV store — L2 write-traffic accounting
+;; =============================================================================
+;;
+;; The resting size of a read model's cache entry is only half the story. The
+;; partitioned projection path rewrites its whole entry on every batch of
+;; events it observes (read-model-processor-v2/core.clj p-partitioned-full),
+;; so a read model that holds large values pays that size back on every
+;; projection, not once. This decorator makes that traffic measurable: it is
+;; the difference between "the entry is 2 KB" and "we wrote 200 MB to get
+;; there."
+
+(defn- record-put
+  "Accumulate one put into the stats map, both in total and per cache key.
+   Per-key is what names the offending read model in a failure message."
+  [s ^String key-str ^long n]
+  (-> s
+      (update :put-count inc)
+      (update :put-bytes + n)
+      (update-in [:by-key key-str :n] (fnil inc 0))
+      (update-in [:by-key key-str :bytes] (fnil + 0) n)))
+
+(def ^:private empty-kv-stats
+  {:put-count 0 :put-bytes 0 :get-count 0 :get-bytes 0 :by-key {}})
+
+(defrecord CountingKV [inner stats]
+  kvp/KVStore
+  (start [this] (assoc this :inner (kvp/start inner)))
+  (stop [_] (kvp/stop inner))
+  (get! [_ args]
+    (let [v (kvp/get! inner args)]
+      (swap! stats (fn [s]
+                     (-> s
+                         (update :get-count inc)
+                         (update :get-bytes + (if v (alength ^bytes v) 0)))))
+      v))
+  (put! [_ {:keys [k v] :as args}]
+    (swap! stats record-put (String. ^bytes k) (count v))
+    (kvp/put! inner args))
+  (put-batch! [_ {:keys [entries] :as args}]
+    (swap! stats (fn [s]
+                   (reduce (fn [acc {:keys [k v]}]
+                             (record-put acc (String. ^bytes k) (count v)))
+                           s entries)))
+    (kvp/put-batch! inner args)))
+
+(defn counting-kv
+  "Wrap a started KV store so every put/get is accounted. Returns the wrapper;
+   read its counters with l2-stats."
+  [inner]
+  (->CountingKV inner (atom empty-kv-stats)))
+
+(defn l2-stats
+  "Current KV accounting for a context whose cache is a counting-kv.
+   Returns nil when the cache is not instrumented."
+  [ctx]
+  (some-> (:cache ctx) :stats deref))
+
+(defn l2-reset-stats!
+  "Zero the KV counters. Call after fixture setup so a measurement covers only
+   the tick under test, not the sheet-building commands that preceded it."
+  [ctx]
+  (some-> (:cache ctx) :stats (reset! empty-kv-stats))
+  nil)
+
+(defn l2-write-bytes
+  "Bytes written to L2, optionally restricted to cache keys beginning with
+   `key-prefix` (a read model's name, e.g. \"tick-execution-contexts\").
+
+   Cache keys are `<name>-<version>-<scope-hash>` plus a `:p<hash>`/`:s<n>`/
+   `:eidx` suffix, so a name prefix selects exactly one read model across all
+   its scopes, partitions and segments."
+  (^long [ctx] (:put-bytes (l2-stats ctx) 0))
+  (^long [ctx key-prefix]
+   (->> (:by-key (l2-stats ctx))
+        (filter (fn [[k _]] (str/starts-with? k key-prefix)))
+        (map (comp :bytes val))
+        (reduce + 0))))
+
+(defn format-l2-stats
+  "Render L2 accounting as a sorted table, biggest writer first."
+  [stats]
+  (let [rows (sort-by (comp - :bytes val) (:by-key stats))]
+    (str (format "%-58s %6s %12s%n" "CACHE KEY" "PUTS" "BYTES")
+         (apply str
+                (for [[k {:keys [n bytes]}] rows]
+                  (format "%-58s %6d %12d%n" k n bytes)))
+         (format "%-58s %6d %12d%n" "TOTAL"
+                 (:put-count stats) (:put-bytes stats)))))
+
+;; =============================================================================
+;; L2 cache entry inspection
+;; =============================================================================
+;;
+;; Reads the bytes actually resident in LMDB for a given read model, so a test
+;; can assert on what was STORED rather than on what an accessor returned. An
+;; accessor-level assertion can be satisfied by a resolver that quietly re-adds
+;; the values; this cannot.
+
+(defn l2-cache-key
+  "The LMDB key a read model's state is stored under, reconstructed the same
+   way read-model-processor-v2 constructs it (core.clj format-scoped-key /
+   partition-cache-key). `scope` is the map passed to rmp/project.
+
+   Mirrors p-partitioned's key derivation: :partition-key is stripped from the
+   scope hash, because it selects a partition ENTRY rather than a key space."
+  ^bytes [ctx rm-name version scope partition-key]
+  (let [cache-scope (not-empty (dissoc scope :partition-key))
+        base (rmp-core/format-scoped-key
+              rm-name version
+              (if cache-scope [(:tenant-id ctx) cache-scope] (:tenant-id ctx)))]
+    (if partition-key
+      (rmp-core/partition-cache-key base partition-key)
+      base)))
+
+(defn l2-entry-raw
+  "Raw stored bytes for a read model entry, or nil if absent."
+  ^bytes [ctx rm-name version scope partition-key]
+  (kv/get! (:cache ctx) {:k (l2-cache-key ctx rm-name version scope partition-key)}))
+
+(defn l2-entry-bytes
+  "Size in bytes of a read model's stored entry, 0 when absent.
+   No ^long hint: Clojure allows primitive hints only up to 4 args."
+  [ctx rm-name version scope partition-key]
+  (if-let [b (l2-entry-raw ctx rm-name version scope partition-key)]
+    (alength ^bytes b)
+    0))
+
+(defn l2-entry-state
+  "Fressian-decoded state of a read model's stored entry, or nil.
+   Returns the decoded wrapper — {:data ... :watermark ...} for a partition
+   entry, or the manifest for a base key."
+  [ctx rm-name version scope partition-key]
+  (when-let [b (l2-entry-raw ctx rm-name version scope partition-key)]
+    (fressian-util/decode b)))
+
+(defn tick-context-l2-entry
+  "The stored tick-execution-contexts entry for one tick.
+
+   get-tick-execution-context projects with {:tags #{[:tick tick-id]}} as
+   SCOPE (not :partition-key), so each tick mints its own key space and the
+   sheet-id is the partition within it."
+  [ctx sheet-id tick-id version]
+  (l2-entry-state ctx "tick-execution-contexts" version
+                  {:tags #{[:tick tick-id]}} sheet-id))
+
+(defn tick-context-l2-bytes
+  "Size in bytes of one tick's stored execution-context entry."
+  [ctx sheet-id tick-id version]
+  (l2-entry-bytes ctx "tick-execution-contexts" version
+                  {:tags #{[:tick tick-id]}} sheet-id))
+
+(defn contains-value-key?
+  "True when `:value` appears anywhere in x, at any depth. Used to assert that
+   a cached blackboard holds metadata only — a top-level check would miss a
+   value nested under a per-key entry."
+  [x]
+  (let [found (volatile! false)]
+    (walk/postwalk (fn [node]
+                     (when (and (map? node) (contains? node :value))
+                       (vreset! found true))
+                     node)
+                   x)
+    @found))
+
+(defn bytes-contain?
+  "True when the byte array contains the UTF-8 encoding of `needle`.
+
+   The strongest available proof that a payload is absent from storage: it
+   makes no assumption about the stored shape, so it cannot be satisfied by
+   moving a value to a different key."
+  [^bytes haystack ^String needle]
+  (when haystack
+    (let [n (.getBytes needle "UTF-8")
+          hl (alength haystack)
+          nl (alength n)]
+      (and (pos? nl)
+           (loop [i 0]
+             (cond
+               (> (+ i nl) hl) false
+               (loop [j 0]
+                 (cond (= j nl) true
+                       (= (aget haystack (+ i j)) (aget n j)) (recur (inc j))
+                       :else false)) true
+               :else (recur (inc i))))))))
 
 ;; =============================================================================
 ;; Test Context
@@ -75,8 +264,15 @@
 (defn create-async-test-context
   "Create a test context with real pubsub and todo processors.
    Events are published and trigger todo processor handlers asynchronously.
-   Returns context map with :processors key containing started processors."
-  []
+   Returns context map with :processors key containing started processors.
+
+   Options:
+     :count-cache? - wrap the LMDB cache so every put/get is accounted
+                     (see l2-stats / l2-write-bytes). The wrapper must be in
+                     place BEFORE processors start, since each processor
+                     captures the context by value."
+  ([] (create-async-test-context {}))
+  ([{:keys [count-cache?]}]
   (rmp/l1-clear!)
   (let [dir (str "/tmp/sheet-async-test-" (random-uuid))
         ps (pubsub/start {:type :core-async
@@ -84,7 +280,8 @@
         event-store (es/start {:conn {:type :in-memory}
                                :event-pubsub ps
                                :logger nil})
-        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir dir :db-name "test"}))
+        cache (cond-> (kv/start (lmdb/->KV-Store-LMDB {:storage-dir dir :db-name "test"}))
+                count-cache? counting-kv)
         base-ctx {:event-store event-store
                   :cache cache
                   :tenant-id #uuid "00000000-0000-0000-0000-000000000000"
@@ -104,7 +301,7 @@
                     @tp/processor-registry*)]
     (assoc base-ctx
            :event-pubsub ps
-           :processors processors)))
+           :processors processors))))
 
 (defn stop-async-context
   "Stop and clean up async test context."
@@ -125,13 +322,44 @@
 
 (defmacro with-async-test-context
   "Execute body with an async test context (pubsub + todo processors).
-   Cleans up afterward."
-  [[ctx-sym] & body]
-  `(let [~ctx-sym (create-async-test-context)]
+   Cleans up afterward. An optional opts map is passed to
+   create-async-test-context (e.g. {:count-cache? true})."
+  [[ctx-sym & [opts]] & body]
+  `(let [~ctx-sym (create-async-test-context (or ~opts {}))]
      (try
        ~@body
        (finally
          (stop-async-context ~ctx-sym)))))
+
+(defn settle-until!
+  "Block until `pred` returns truthy, or the timeout elapses. Returns true if
+   the predicate was satisfied.
+
+   Completion processors (trace assembly, result delivery) run in futures off
+   the pubsub thread, so a test that accounts for storage must wait for them.
+   A fixed sleep either flakes or wastes time; this waits for the actual
+   condition and stops as soon as it holds."
+  [pred & {:keys [timeout-ms interval-ms] :or {timeout-ms 15000 interval-ms 25}}]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (pred) true
+        (> (System/currentTimeMillis) deadline) false
+        :else (do (Thread/sleep interval-ms) (recur))))))
+
+(defn trace-stored?
+  "True once an execution trace has been appended for `tick-id`. Trace
+   assembly is the last thing a completed tick writes, so it is the settle
+   signal for whole-run byte accounting.
+
+   Reads directly rather than via read-all-events, which is defined below in
+   the byte-accounting section. es/read returns a reducible, not a seq — it
+   must be materialized before any seq operation."
+  [ctx tick-id]
+  (boolean (some #(and (= :sheet/execution-traced (:event/type %))
+                       (= tick-id (:trace-id %)))
+                 (into [] (es/read (:event-store ctx)
+                                   {:tenant-id (:tenant-id ctx)})))))
 
 ;; =============================================================================
 ;; Command/Query Execution

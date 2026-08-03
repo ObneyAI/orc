@@ -4,6 +4,7 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]))
 
@@ -142,7 +143,19 @@
             {:keys [tick-id promise]} (dispatch-async-execute! ctx sheet-id {:input "test"})
             result (wait-for-completion promise)]
         (is (= :success (:status result)))
-        ;; Verify tick-scoped blackboard has the values
+        ;; The tick-scoped blackboard holds METADATA — key, schema, version,
+        ;; size profile, and a :source-event-id for written keys. Values are
+        ;; resolved on demand from the write log; see core.value-log and
+        ;; tick_context_equivalence_test for the round-trip proof.
         (let [tick-bb (rm/get-tick-blackboard ctx tick-id)]
           (is (some? tick-bb) "Tick should have a scoped blackboard")
-          (is (= "test" (get-in tick-bb [:input :value]))))))))
+          (is (contains? tick-bb :input) "the seeded key is present")
+          (is (not (contains? (get tick-bb :input) :value))
+              "the cache must not carry values")
+          (is (some? (get-in tick-bb [:input :profile]))
+              "a seeded key records the shape of its value")
+          ;; And the value is still recoverable.
+          (is (= "test" (get (value-log/resolve-values
+                              (:event-store ctx) (:tenant-id ctx) tick-id
+                              tick-bb [:input])
+                             :input))))))))

@@ -6,7 +6,11 @@
    - Multimethod projections for sheets, nodes, blackboard, and ticks
    - defreadmodel registrations for L1/L2 caching
    - Helper functions for common queries (via rmp/project)"
-  (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]))
+  (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
+            ;; Value SHAPE for the tick blackboard, which caches metadata only.
+            ;; profile is deliberately dependency-free so both this namespace
+            ;; and the command/processor side can describe a value.
+            [ai.obney.orc.orc-service.core.profile :as profile]))
 
 ;; =============================================================================
 ;; Event Type Sets
@@ -894,9 +898,25 @@
 ;; =============================================================================
 ;;
 ;; When a tick is started with an execution-snapshot (async path), this read
-;; model stores the full execution context per tick: nodes-by-id, blackboard
-;; (with schemas), options, etc. The blackboard values are updated as
-;; execution-value-written events arrive.
+;; model stores the execution context per tick: nodes-by-id, blackboard
+;; METADATA, options, etc.
+;;
+;; The blackboard here holds SHAPE, NOT VALUES. Each key records its schema,
+;; version, a size :profile, and — when a write produced the current value —
+;; the :source-event-id of that write. Values are resolved on demand from
+;; :sheet/execution-value-written via core.value-log; :source-event-id makes
+;; that an exact pointer fetch rather than a last-write-wins search.
+;;
+;; Why: this read model is projected with a {:tags #{[:tick ...]}} SCOPE, which
+;; routes to p-partitioned-full — a path that never consults L1 and re-encodes
+;; its whole entry on every projection that observes a new event, with no
+;; >=10-event threshold. Seven processors project it on each
+;; :sheet/node-execution-started, so embedding values paid the whole blackboard
+;; back to LMDB once per write-bearing projection and the entry tracked payload
+;; size. Measured on the l2-storage-test fan-out fixture (four leaves): a 40 KB
+;; payload wrote 425 KB to L2 across 11 full re-encodes, with a 42 KB resting
+;; entry that grew 8.35x when the payload grew 10x. Metadata-only brings that
+;; to 27 KB of traffic, a 2.4 KB entry, and 1.00x scaling.
 ;;
 ;; For ticks without execution-snapshot (legacy UI ticks), no context is stored
 ;; and processors fall back to reading live sheet state.
@@ -906,39 +926,59 @@
   #{:sheet/tree-tick-started
     :sheet/execution-value-written})
 
+(defn- metadata-entry
+  "A blackboard entry reduced to shape: no :value, plus a size :profile when
+   there is a value to describe. nil values get no profile — there is no shape
+   to record — but the ENTRY still exists, which is what tells a consumer the
+   key was declared."
+  [entry value]
+  (cond-> (dissoc entry :value)
+    (some? value) (assoc :profile (profile/profile-value value))))
+
 (defmulti tick-execution-contexts*
   "Apply event to tick execution contexts read model.
    State structure: {tick-id {:nodes-by-id {...}
                               :root-node-id uuid
-                              :blackboard {\"key\" {:key k :schema s :value v :version n}}
+                              :blackboard {key {:key k :schema s :version n
+                                                :profile {...}
+                                                :source-event-id uuid}}
                               :version-number int?
-                              :options {...}}}"
+                              :options {...}}}
+
+   Note the blackboard carries no :value — see the section comment above."
   (fn [_state event] (:event/type event)))
 
 (defmethod tick-execution-contexts* :sheet/tree-tick-started
   [state event]
   (if-let [snapshot (:execution-snapshot event)]
     ;; Snapshot-based tick: store full execution context
-    (let [bb-entries (:blackboard-entries snapshot)
+    (let [;; The snapshot carries the sheet's stored values; keep only their
+          ;; shape. The values themselves stay resolvable from this event,
+          ;; which value-log/seeded-values reads.
+          bb-entries (reduce-kv (fn [acc k entry]
+                                  (assoc acc k (metadata-entry entry (:value entry))))
+                                {}
+                                (or (:blackboard-entries snapshot) {}))
           inputs (or (:inputs event) {})
           ;; Merge inputs into blackboard entries
           ;; Note: inputs may have string keys from runtime/execute, but blackboard uses keyword keys
           ;; If bb-entries is empty (cache miss), create entries from inputs directly
           blackboard (reduce (fn [bb [key-name value]]
                                (let [kw-key (if (string? key-name) (keyword key-name) key-name)]
-                                 (if (get bb kw-key)
-                                   ;; Key exists - update value
-                                   (-> bb
-                                       (assoc-in [kw-key :value] value)
-                                       (assoc-in [kw-key :version] 1))
+                                 (if-let [existing (get bb kw-key)]
+                                   ;; Key exists - the input overrides it
+                                   (assoc bb kw-key
+                                          (assoc (metadata-entry existing value)
+                                                 :version 1))
                                    ;; Key doesn't exist - create entry from input
                                    ;; This handles cache misses where bb-entries is empty
                                    (assoc bb kw-key
-                                          {:sheet-id (:sheet-id event)
-                                           :key kw-key
-                                           :schema :any  ;; Unknown schema, but value is provided
-                                           :value value
-                                           :version 1}))))
+                                          (metadata-entry
+                                           {:sheet-id (:sheet-id event)
+                                            :key kw-key
+                                            :schema :any  ;; Unknown schema, but value is provided
+                                            :version 1}
+                                           value)))))
                              bb-entries
                              inputs)]
       (assoc state (:tick-id event)
@@ -965,7 +1005,12 @@
         v (:value event)]
     (if (contains? state tick-id)
       (-> state
-          (assoc-in [tick-id :blackboard k :value] v)
+          ;; Shape, not the value. update-in (rather than assoc-in on :profile)
+          ;; so a write of nil still CREATES the entry — the key becoming
+          ;; present is itself information, and assoc-in on a nil profile would
+          ;; record it as a key with a nil shape.
+          (update-in [tick-id :blackboard k]
+                     (fn [entry] (metadata-entry (or entry {}) v)))
           (update-in [tick-id :blackboard k :version] (fnil inc 0))
           ;; Provenance: which write event produced the value currently under
           ;; this key. A key can be written several times in one tick, so
@@ -984,8 +1029,15 @@
   [initial-state events]
   (reduce tick-execution-contexts* (or initial-state {}) events))
 
+;; Version 3: the cached blackboard holds metadata only (no :value), plus a
+;; size :profile per key. The bump is mandatory, not cosmetic — the version is
+;; part of the L2 cache key, so without it a pre-existing v2 entry would be
+;; found by read-partition-manifest, incrementally updated from its watermark,
+;; and left holding :value for every key written before the deploy: a
+;; mixed-shape blackboard. A fresh key space forces re-derivation from events,
+;; which reproduces the metadata exactly (including every :source-event-id).
 (defreadmodel :sheet tick-execution-contexts
-  {:events tick-execution-context-events :version 2
+  {:events tick-execution-context-events :version 3
    :partition-fn :sheet-id
    :entity-id-fn :tick-id}
   [state event] (tick-execution-contexts* state event))

@@ -97,10 +97,13 @@
 
 (defn- check-llm-budget
   "Check if LLM budget exceeded. Returns nil if no budget set (unlimited).
-   Only checks if :llm-call-budget was explicitly set in tick options."
-  [context tick-id]
-  (let [tick-ctx (rm/get-tick-execution-context context tick-id)
-        budget (get-in tick-ctx [:options :llm-call-budget])]
+   Only checks if :llm-call-budget was explicitly set in tick options.
+
+   Takes the ALREADY-PROJECTED tick execution context rather than projecting
+   its own. Every projection of :sheet/tick-execution-contexts decodes the
+   tick's cached blob, and callers here already hold it."
+  [tick-ctx tick-id]
+  (let [budget (get-in tick-ctx [:options :llm-call-budget])]
     ;; CRITICAL: Only check if budget was explicitly set (not nil)
     ;; nil means unlimited - no cap enforced
     (when budget
@@ -118,9 +121,33 @@
   (rm/get-tick-nodes-by-id ctx tick-id))
 
 (defn- resolve-blackboard
-  "Get blackboard for a tick from tick-scoped execution context."
+  "Get blackboard METADATA for a tick from tick-scoped execution context.
+   Entries carry key, schema, version, size profile and (for written keys) a
+   :source-event-id — but NO :value. Use hydrate-values when values are
+   needed."
   [ctx _sheet-id tick-id]
   (rm/get-tick-blackboard ctx tick-id))
+
+(defn- hydrate-values
+  "Fill in :value on a metadata blackboard for `ks` (nil = every key),
+   resolving each from the canonical write log.
+
+   Ask for the keys you actually need. A node's declared :reads is almost
+   always the right set — the exceptions are repl-researcher (whose sandbox
+   can read any key by name at runtime) and result delivery (which owes the
+   caller the whole blackboard).
+
+   nil ks means EVERY key, so narrowing call sites must pass (or (:reads node)
+   []) rather than (:reads node) — a node that declares no reads would
+   otherwise silently hydrate the whole blackboard."
+  [{:keys [event-store tenant-id]} tick-id metadata-bb ks]
+  (value-log/hydrate-blackboard event-store tenant-id tick-id metadata-bb ks))
+
+(defn- resolve-blackboard-values
+  "Project a tick's blackboard metadata and hydrate `ks` in one step, for
+   handlers that do not already hold the projected context."
+  [ctx sheet-id tick-id ks]
+  (hydrate-values ctx tick-id (resolve-blackboard ctx sheet-id tick-id) ks))
 
 (defn- resolve-instruction-overrides
   "Get GEPA instruction overrides for a tick, if any."
@@ -885,9 +912,9 @@
    iteration a given item write was for — and the blackboard slot itself only
    ever holds the most recent one. With it, each item write is addressable by
    the same [node-id exec-context] identity every other write uses."
-  ([_event-store sheet-id tick-id key value _blackboard]
-   (make-bb-write-event nil sheet-id tick-id key value nil nil))
-  ([_event-store sheet-id tick-id key value _blackboard attribution]
+  ([sheet-id tick-id key value]
+   (make-bb-write-event sheet-id tick-id key value nil))
+  ([sheet-id tick-id key value attribution]
    (->event
     {:type :sheet/execution-value-written
      :tags #{[:sheet sheet-id]
@@ -1043,8 +1070,13 @@
         tick-id (:tick-id event)
         node-id (:node-id event)
         event-inputs (:inputs event)
-        nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
-        overrides (resolve-instruction-overrides context tick-id)
+        ;; ONE projection for the whole handler. Every
+        ;; :sheet/tick-execution-contexts projection decodes the tick's cached
+        ;; blob, and this fn used to take five of them (nodes-by-id, overrides,
+        ;; blackboard, tool-context, budget) for a single leaf.
+        tick-ctx (rm/get-tick-execution-context context tick-id)
+        nodes-by-id (:nodes-by-id tick-ctx)
+        overrides (:instruction-overrides tick-ctx)
         node (-> (get nodes-by-id node-id)
                  (apply-instruction-override overrides)
                  ;; R-Inject: leaves don't carry :r05-classifier (only the
@@ -1053,7 +1085,14 @@
                  ;; gives the pipeline a single context-prepend contract.
                  (apply-r05-classifier-context context))]
     (when (= :leaf (:type node))
-      (let [raw-blackboard (resolve-blackboard context sheet-id tick-id)
+      ;; Hydrate only what this leaf declared it reads. gather-inputs,
+      ;; extract-read-inputs and compute-input-profile all restrict themselves
+      ;; to (:reads node); read-sources needs only :source-event-id, which is
+      ;; metadata. Order matters: hydrate FIRST, then overlay event-inputs —
+      ;; a map-each item value arrives on the started event and must win over
+      ;; whatever the shared item key resolves to.
+      (let [raw-blackboard (hydrate-values context tick-id (:blackboard tick-ctx)
+                                           (or (:reads node) []))
             ;; Merge event inputs into blackboard (e.g., map-each item values)
             blackboard (reduce (fn [bb [k v]]
                                  (if (and (keyword? k) (not (= (namespace k) (namespace ::_))))
@@ -1068,7 +1107,7 @@
             ;; unchanged context (no behavior change for non-coding leaves).
             ;; Works at any depth: composites resolve leaves through the same
             ;; per-tick context.
-            tool-context (:tool-context (rm/get-tick-execution-context context tick-id))
+            tool-context (:tool-context tick-ctx)
             leaf-context (cond-> context
                            tool-context (assoc :tool-context tool-context))
             ;; Use provider from context, fall back to default, or use mock if nil
@@ -1093,7 +1132,7 @@
                              (assoc :map-each {:parent (::map-each-parent exec-context)
                                                :index (::map-each-index exec-context)}))))]
         ;; Check budget before execution (only if budget set and this is an LLM call)
-        (if-let [exceeded (and is-llm-call? (check-llm-budget context tick-id))]
+        (if-let [exceeded (and is-llm-call? (check-llm-budget tick-ctx tick-id))]
           ;; Budget exceeded - fail immediately
           (cp/process-command
             (assoc context :command
@@ -1281,8 +1320,10 @@
         tick-id (:tick-id event)
         node-id (:node-id event)
         event-inputs (:inputs event)
-        nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
-        overrides (resolve-instruction-overrides context tick-id)
+        ;; ONE projection for the whole handler — see execute-leaf-node.
+        tick-ctx (rm/get-tick-execution-context context tick-id)
+        nodes-by-id (:nodes-by-id tick-ctx)
+        overrides (:instruction-overrides tick-ctx)
         ;; RR-1 (ADR 0020): the node as it comes off the tick snapshot. The
         ;; auto-classify wedge + R-Inject used to run HERE, synchronously, on
         ;; the dispatch thread — contradicting this function's own docstring
@@ -1299,7 +1340,12 @@
         base-node (-> (get nodes-by-id node-id)
                       (apply-instruction-override overrides))]
     (when (= :repl-researcher (:type base-node))
-      (let [raw-blackboard (resolve-blackboard context sheet-id tick-id)
+      ;; The ONLY site that hydrates everything, and it has to: the RLM
+      ;; sandbox's get-input takes an arbitrary key chosen at runtime by
+      ;; model-authored code, and build-available-variables-section previews
+      ;; every [k v] in the blackboard. There is no declared read set to
+      ;; narrow to. One bulk resolve, on the heaviest node type in the system.
+      (let [raw-blackboard (hydrate-values context tick-id (:blackboard tick-ctx) nil)
             blackboard (reduce (fn [bb [k v]]
                                  (if (and (keyword? k) (not (= (namespace k) (namespace ::_))))
                                    (assoc-in bb [k :value] v)
@@ -1353,7 +1399,10 @@
                   ;; child tick re-threads it to the emitted leaf. Mirrors
                   ;; execute-leaf-node's read (rm/get-tick-execution-context).
                   ;; Absent -> enriched-context unchanged (backward-compatible).
-                  tool-context (:tool-context (rm/get-tick-execution-context context tick-id))
+                  ;; Taken from the handler's single projection: :tool-context
+                  ;; is written once, on tree-tick-started, so it cannot change
+                  ;; between dispatch and this future running.
+                  tool-context (:tool-context tick-ctx)
                   enriched-context (cond-> (assoc context
                                                   :sheet-id sheet-id
                                                   :tick-id tick-id
@@ -1504,7 +1553,10 @@
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         node (get nodes-by-id node-id)]
     (when (= :delegate (:type node))
-      (let [raw-blackboard (resolve-blackboard context sheet-id tick-id)
+      ;; A delegate forwards exactly its declared :reads to the target sheet,
+      ;; and extract-read-inputs captures the same set for the trace.
+      (let [raw-blackboard (resolve-blackboard-values context sheet-id tick-id
+                                                      (or (:reads node) []))
             ;; Merge event inputs into blackboard (ORC pattern)
             blackboard (reduce (fn [bb [k v]]
                                  (if (and (keyword? k)
@@ -1662,8 +1714,10 @@
     (cond
       ;; Static condition - immediate evaluation
       (= :condition node-type)
-      (let [blackboard (resolve-blackboard context sheet-id tick-id)
-            check (:check node)
+      ;; A static check reads exactly one key — see evaluate-condition-check.
+      (let [check (:check node)
+            blackboard (resolve-blackboard-values context sheet-id tick-id
+                                                  (if-let [k (:key check)] [k] []))
             on-fail (get check :on-fail :failure)
             passed? (if check
                       (evaluate-condition-check check blackboard)
@@ -1685,7 +1739,9 @@
 
       ;; LLM condition - async execution via future
       (= :llm-condition node-type)
-      (let [blackboard (resolve-blackboard context sheet-id tick-id)
+      ;; execute-llm-condition assembles its prompt from (:reads node) only.
+      (let [blackboard (resolve-blackboard-values context sheet-id tick-id
+                                                  (or (:reads node) []))
             provider (:dscloj-provider context)]
         (future
           (try
@@ -2276,7 +2332,10 @@
             max-concurrency (or (:max-concurrency node) 1)
             children-ids (:children-ids node)
             child-id (first children-ids) ;; map-each has exactly one child subtree
-            blackboard (resolve-blackboard context sheet-id tick-id)
+            ;; Only the source key needs a value here — it IS the iteration
+            ;; list. Everything else this handler uses is node config.
+            blackboard (resolve-blackboard-values context sheet-id tick-id
+                                                  [source-key])
             ;; Check event inputs first (may contain writes from previous sequence child),
             ;; then fall back to blackboard. This handles race condition where read model
             ;; hasn't yet processed the execution-value-written events.
@@ -2301,7 +2360,7 @@
           (empty? source-list)
           ;; Empty list - succeed with empty results
           {:result/events
-           [(make-bb-write-event event-store sheet-id tick-id output-key [] blackboard)
+           [(make-bb-write-event sheet-id tick-id output-key [])
             (->event
              {:type :sheet/node-execution-completed
               :tags #{[:sheet sheet-id]
@@ -2316,7 +2375,7 @@
           (not child-id)
           ;; No child subtree - succeed with original list
           {:result/events
-           [(make-bb-write-event event-store sheet-id tick-id output-key (vec source-list) blackboard)
+           [(make-bb-write-event sheet-id tick-id output-key (vec source-list))
             (->event
              {:type :sheet/node-execution-completed
               :tags #{[:sheet sheet-id]
@@ -2374,7 +2433,7 @@
                    ;; Attributed to the ITERATION that will read it, so a
                    ;; consumer can tell iteration i's item from iteration j's.
                    ;; The shared blackboard slot cannot — it holds one value.
-                   [(make-bb-write-event event-store sheet-id tick-id item-key item blackboard
+                   [(make-bb-write-event sheet-id tick-id item-key item
                                          {:node-id child-id
                                           :input-seed? true
                                           :exec-context {::map-each-index idx
@@ -2403,12 +2462,16 @@
         completing-node-id (:node-id event)
         child-status (:status event)
         inputs (:inputs event)
+        ;; One read of the tick's events, reused for every resolution below.
+        ;; This used to be a resolve-writes call that read the tick and threw
+        ;; the events away, so holding them costs nothing extra.
+        tick-events (value-log/read-tick-events event-store (:tenant-id context) tick-id)
         ;; This iteration's writes, resolved from the canonical write log by
         ;; (node-id, exec-context). Attribution matters here more than
         ;; anywhere else: with max-concurrency > 1 several iterations of the
         ;; same child node-id race on the SAME item key, so resolving by key
         ;; alone would give every iteration whichever value landed last.
-        writes (value-log/resolve-writes event-store (:tenant-id context) tick-id event)
+        writes (value-log/writes-for tick-events event)
         ;; Check if this is a map-each child
         map-each-parent-id (get inputs ::map-each-parent)
         item-index (get inputs ::map-each-index)]
@@ -2424,20 +2487,47 @@
                 item (nth items item-index)
                 ;; When child is a composite (sequence/fallback), writes may be empty.
                 ;; In that case, read all non-special keys from the blackboard.
-                effective-writes (if (seq writes)
-                                   writes
-                                   ;; Composite child - read from blackboard
-                                   (let [blackboard (resolve-blackboard context sheet-id tick-id)
-                                         source-key (:source-key state)]
-                                     (reduce-kv
-                                      (fn [acc k v]
-                                        (if (and (keyword? k)
-                                                 (not (#{item-key source-key output-key} k))
-                                                 (not (= (namespace k) (namespace ::_))))
-                                          (assoc acc k (:value v))
-                                          acc))
-                                      {}
-                                      blackboard)))
+                effective-writes
+                (let [source-key (:source-key state)
+                      special? #{item-key source-key output-key}]
+                  (or
+                   (not-empty writes)
+                   ;; Composite child: the direct child produced no attributed
+                   ;; writes because the real writers are its DESCENDANTS.
+                   ;; Every node inside one iteration shares that iteration's
+                   ;; exec-context — execute-composite-node forwards :inputs to
+                   ;; its children and complete-node-execution stamps the
+                   ;; namespaced subset onto each write — so keying on the
+                   ;; iteration finds them at any depth.
+                   ;;
+                   ;; This also FIXES a concurrency bug: the previous fallback
+                   ;; swept the shared blackboard, so with max-concurrency > 1
+                   ;; every iteration saw whatever the others had just written.
+                   (not-empty
+                    (reduce-kv (fn [acc k v] (if (special? k) acc (assoc acc k v)))
+                               {}
+                               (get (value-log/writes-by-iteration tick-events)
+                                    {::map-each-index item-index
+                                     ::map-each-parent map-each-parent-id}
+                                    {})))
+                   ;; Conservative fallback, for an iteration that genuinely
+                   ;; wrote nothing anywhere: reproduce the old whole-blackboard
+                   ;; sweep, built from the events already in hand rather than
+                   ;; from the read model.
+                   (let [latest (merge (value-log/seeded-values
+                                        (value-log/tick-started-event
+                                         event-store (:tenant-id context) tick-id))
+                                       (value-log/latest-values tick-events))]
+                     (reduce-kv
+                      (fn [acc k v]
+                        (if (and (keyword? k)
+                                 (not (special? k))
+                                 (not (= (namespace k) (namespace ::_))))
+                          (assoc acc k v)
+                          acc))
+                      {}
+                      latest))
+                   {}))
                 ;; Create result from writes
                 computed-result (if (= :success child-status)
                                   (let [updated-item (get effective-writes item-key item)
@@ -2500,8 +2590,7 @@
                                                    :in-flight in-flight-after-start)))))))))
                 act @action
                 total-items (count items)
-                nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
-                blackboard (resolve-blackboard context sheet-id tick-id)]
+                nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)]
             (case (:type act)
               :complete
               ;; D-008: classify the map-each outcome using the pure deep module.
@@ -2531,7 +2620,7 @@
                     :tags #{[:sheet sheet-id] [:node map-each-parent-id] [:tick tick-id]}
                     :body {:sheet-id sheet-id :tick-id tick-id :node-id map-each-parent-id
                            :item-index (:completed-count act) :total-items total-items}})
-                  (make-bb-write-event event-store sheet-id tick-id output-key into-value blackboard)
+                  (make-bb-write-event sheet-id tick-id output-key into-value)
                   (->event
                    {:type :sheet/node-execution-completed
                     :tags #{[:sheet sheet-id] [:node map-each-parent-id] [:tick tick-id]}
@@ -2549,7 +2638,7 @@
                   ;; Write item to blackboard so children in sequence can read it
                   ;; Attributed to the iteration that will read it — see the
                   ;; batch-dispatch site above.
-                  (make-bb-write-event event-store sheet-id tick-id item-key next-item blackboard
+                  (make-bb-write-event sheet-id tick-id item-key next-item
                                        {:node-id child-id
                                         :input-seed? true
                                         :exec-context {::map-each-index (:next-index act)
@@ -2683,7 +2772,7 @@
               ;; deliver-execution-result rehydrates it from the
               ;; tick-execution-context read model.
               output-keys (when tick-ctx
-                            (let [bb (:blackboard (rm/get-tick-execution-context context tick-id))
+                            (let [bb (:blackboard tick-ctx)
                                   written (tick-written-keys event-store
                                                              (:tenant-id context)
                                                              tick-id)]
@@ -2860,9 +2949,21 @@
         ;; full blackboard is rehydrated here from the tick-execution-context
         ;; read model. Falls back to the event's own :outputs for legacy ticks
         ;; dispatched without an execution snapshot.
+        ;; The caller is owed the tick's END STATE, so this resolves straight
+        ;; from the log rather than through the read model. Delivery is the one
+        ;; place that must not depend on how far the projection has caught up:
+        ;; a node's writes are appended atomically with its completion, so the
+        ;; log is complete by the time we see tree-tick-completed, while the
+        ;; cache can still be catching up under concurrent projections — which
+        ;; would silently drop a key from the caller's :outputs.
+        ;;
+        ;; The cached key set is still unioned in, so a declared-but-unwritten
+        ;; key is reported as nil rather than going missing, as before.
+        ;;
+        ;; MUST run before forget-tick! below, which drops the memoized seeds.
         outputs (or (when-let [bb (rm/get-tick-blackboard context tick-id)]
-                      (reduce-kv (fn [acc k entry] (assoc acc k (:value entry)))
-                                 {} bb))
+                      (merge (zipmap (keys bb) (repeat nil))
+                             (value-log/final-values event-store tenant-id tick-id)))
                     (:outputs event))
         error (:error event)
         ;; WS-2a: the opaque block payload, present on a :blocked tree tick.
@@ -2884,6 +2985,8 @@
         ;; Clean up budget and usage tracking for this tick
         (clear-llm-count! tick-id)
         (clear-tick-usage! tick-id)
+        ;; Safe here and not before: `outputs` above was already resolved.
+        (value-log/forget-tick! tick-id)
         (runtime/deliver-completion! tick-id
           (cond-> {:status (case root-status
                              :success :success
@@ -2929,7 +3032,10 @@
        :error "tick cancelled"
        :cancelled? true
        :outputs {}
-       :trace-id tick-id}))
+       :trace-id tick-id})
+    ;; A cancelled tick never reaches deliver-execution-result, so its seed
+    ;; memo would otherwise be retained for the life of the process.
+    (value-log/forget-tick! tick-id))
   nil)
 
 ;; =============================================================================
@@ -2973,11 +3079,20 @@
             ;; write. Values rehydrate via the node-trace-detail query.
             written-keys (or (tick-written-keys event-store (:tenant-id context) tick-id)
                              #{})
-            final-bb (or (:blackboard (rm/get-tick-execution-context context tick-id)) {})
+            ;; From the projection already bound above. This handler runs on
+            ;; tree-tick-completed, and complete-node-execution appends a
+            ;; node's writes and its completion event in ONE command result,
+            ;; so every write in the tick is visible before we get here.
+            final-bb (or (:blackboard tick-ctx) {})
+            ;; The cached blackboard already carries a :profile per key — it is
+            ;; recorded exactly when there was a value to describe. So trace
+            ;; assembly needs no values at all: it reads the shapes straight
+            ;; off the metadata instead of resolving values only to measure
+            ;; and discard them.
             snapshot-profile (fn [key-pred]
                                (reduce-kv (fn [acc k entry]
-                                            (if (and (key-pred k) (some? (:value entry)))
-                                              (assoc acc k (profile-value (:value entry)))
+                                            (if (and (key-pred k) (some? (:profile entry)))
+                                              (assoc acc k (:profile entry))
                                               acc))
                                           {} final-bb))
             input-snapshot (snapshot-profile #(not (contains? written-keys %)))

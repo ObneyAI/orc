@@ -34,6 +34,7 @@
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.runtime :as runtime]))
 
 ;; =============================================================================
@@ -228,13 +229,20 @@
         {}))
     (catch Exception _ {})))
 
-(defn- tick-blackboard
-  "Best-effort tick blackboard lookup for resolving values the durable event
-   references by key. NOT memoized — unlike nodes-by-id this changes as the
-   tick runs, and it is read once per tick completion, not once per node."
-  [sub tick-id]
+(defn- tick-values
+  "Best-effort resolution of `ks` to values for a tick, for envelope fields the
+   durable event references by key only.
+
+   The tick blackboard read model holds metadata, not values, so these resolve
+   from the canonical write log. NOT memoized — unlike nodes-by-id this changes
+   as the tick runs. Narrow by construction: callers pass the exact key set the
+   event names (:write-keys, :output-keys), never the whole blackboard."
+  [sub tick-id ks]
   (try
-    (rm/get-tick-blackboard (:context sub) tick-id)
+    (let [{:keys [context]} sub]
+      (value-log/resolve-values (:event-store context) (:tenant-id context) tick-id
+                                (rm/get-tick-blackboard context tick-id)
+                                ks))
     (catch Exception _ nil)))
 
 (defn- normalize-durable
@@ -271,12 +279,8 @@
              ;; subscribers. Best-effort, like node-info.
              (when include-values?
                (when-let [ks (seq (:write-keys event))]
-                 (when-let [bb (tick-blackboard sub tick-id)]
-                   {:writes (truncate-values
-                             (into {} (for [k ks
-                                            :let [entry (get bb k)]
-                                            :when entry]
-                                        [k (:value entry)])))})))
+                 (when-let [vs (not-empty (tick-values sub tick-id ks))]
+                   {:writes (truncate-values vs)})))
              (when-let [u (:usage event)] {:usage u})
              (when-let [d (:duration-ms event)] {:duration-ms d})
              (when-let [e (:error event)] {:error e})
@@ -313,12 +317,8 @@
                ;; a resolution failure drops :outputs rather than the event.
                (when include-values?
                  (when-let [ks (seq (:output-keys event))]
-                   (when-let [bb (tick-blackboard sub tick-id)]
-                     {:outputs (truncate-values
-                                (into {} (for [k ks
-                                               :let [entry (get bb k)]
-                                               :when entry]
-                                           [k (:value entry)])))})))
+                   (when-let [vs (not-empty (tick-values sub tick-id ks))]
+                     {:outputs (truncate-values vs)})))
                (when-let [e (:error event)] {:error e})))
 
       :sheet/tick-cancelled
