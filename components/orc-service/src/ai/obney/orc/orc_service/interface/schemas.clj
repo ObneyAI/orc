@@ -1158,7 +1158,14 @@
     ;; Same key shape as node-execution-completed :inputs, so the existing
     ;; trace-execution-key correlation applies unchanged.
     [:node-id {:optional true} :uuid]
-    [:exec-context {:optional true} :map]]
+    [:exec-context {:optional true} :map]
+    ;; Direction. True when the write PROVIDES a value to the execution it
+    ;; names rather than being that execution's output — map-each item writes,
+    ;; which the parent emits before starting each child. A child commonly
+    ;; reads and writes the same item key, so attribution alone is ambiguous
+    ;; without it. See value-log/writes-by-execution vs
+    ;; value-log/input-seeds-by-iteration.
+    [:input-seed? {:optional true} :boolean]]
 
    :sheet/tick-cancelled
    [:map
