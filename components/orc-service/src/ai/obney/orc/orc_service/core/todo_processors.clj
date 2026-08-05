@@ -2800,12 +2800,36 @@
 ;; Execution Completion Delivery
 ;; =============================================================================
 
+(defn- tick-family-ids
+  "Return `tick-id` and every transitively nested child tick.
+
+   Child starts carry a [:parent-tick parent-id] tag, so this walk is bounded
+   by the execution tree. It never scans unrelated tenant history."
+  [event-store tenant-id tick-id]
+  (loop [seen #{tick-id}
+         frontier [tick-id]]
+    (if (empty? frontier)
+      seen
+      (let [children
+            (into #{}
+                  (mapcat (fn [parent-id]
+                            (into []
+                                  (comp (map :tick-id)
+                                        (remove seen))
+                                  (es/read event-store
+                                           (cond-> {:types #{:sheet/tree-tick-started}
+                                                    :tags #{[:parent-tick parent-id]}}
+                                             tenant-id (assoc :tenant-id tenant-id))))))
+                  frontier)]
+        (recur (into seen children) (vec children))))))
+
 (defn- build-node-trace
-  "Build a per-leaf-node execution trace for a completed tick. Reads all
-   `:sheet/node-execution-completed` events with timestamp >= the tick's
-   start time, capturing the parent tick's nodes AND any Phase 2 child
-   sheet/tick events (which have different tick-ids but are spawned from
-   within this tick's lifecycle).
+  "Build a per-node execution trace for a completed tick and its descendants.
+
+   The trace is lineage-scoped through :parent-tick tags. Completion and write
+   events are read only for that tick family, and writes are indexed once for
+   constant-time lookup per completion. Runtime is therefore linear in this
+   execution's event count, independent of accumulated tenant history.
 
    Returns a vector of selected per-event fields, sorted by timestamp.
    The shape mirrors what bench harnesses (predict_rlm_comparison, R-Inject)
@@ -2822,38 +2846,29 @@
    returns an empty vector. Never throws."
   [event-store tenant-id tick-id]
   (try
-    (when event-store
-      (let [;; Find this tick's :sheet/tree-tick-started timestamp so we
-            ;; filter out completions from prior runs.
-            tick-events (into [] (es/read event-store
-                                  (cond-> {:tags #{[:tick tick-id]}}
-                                    tenant-id (assoc :tenant-id tenant-id))))
-            started-event (first (filter #(= :sheet/tree-tick-started (:event/type %))
-                                         tick-events))
-            start-ts (some-> started-event :event/timestamp)
-            ;; Query ALL completions across the event store (parent +
-            ;; any child sheets spawned during Phase 2). The timestamp
-            ;; filter scopes us to events emitted on or after this
-            ;; tick's start.
-            ;; Completions AND the write events they reference: the
-            ;; completion carries only :write-keys, so the values come from
-            ;; the canonical write log.
-            all-events (into [] (es/read event-store
-                                  (cond-> {:types #{:sheet/node-execution-completed
-                                                    :sheet/execution-value-written}}
-                                    tenant-id (assoc :tenant-id tenant-id))))
-            in-window? (fn [ev]
-                         (let [ts (:event/timestamp ev)]
-                           (or (nil? start-ts)
-                               (.isAfter ^java.time.OffsetDateTime ts start-ts)
-                               (.isEqual ^java.time.OffsetDateTime ts start-ts))))
-            in-window-events (filterv in-window? all-events)]
-        (->> all-events
+    (if-not event-store
+      []
+      (let [family-ids (tick-family-ids event-store tenant-id tick-id)
+            family-events
+            (into []
+                  (mapcat (fn [family-tick-id]
+                            (into []
+                                  (es/read event-store
+                                           (cond-> {:types #{:sheet/node-execution-completed
+                                                            :sheet/execution-value-written}
+                                                    :tags #{[:tick family-tick-id]}}
+                                             tenant-id (assoc :tenant-id tenant-id))))))
+                  family-ids)
+            writes-by-execution (value-log/writes-by-execution family-events)]
+        (->> family-events
              (filter #(= :sheet/node-execution-completed (:event/type %)))
-             (filter in-window?)
              (sort-by :event/timestamp)
              (mapv (fn [ev]
-                     (let [writes (value-log/writes-for in-window-events ev)]
+                     (let [writes (or (not-empty
+                                       (get writes-by-execution
+                                            (value-log/execution-key ev)))
+                                      (:writes ev)
+                                      {})]
                        (cond-> {:node-id (:node-id ev)
                                 :sheet-id (:sheet-id ev)
                                 :tick-id (:tick-id ev)
@@ -2981,7 +2996,13 @@
             ;; First-class field — consumers (bench harnesses, eval frameworks,
             ;; ontology consolidators) read `:node-trace` from the result
             ;; instead of querying the event store themselves.
-            node-trace (build-node-trace event-store tenant-id tick-id)]
+            trace-start-ms (System/currentTimeMillis)
+            node-trace (build-node-trace event-store tenant-id tick-id)
+            trace-duration-ms (- (System/currentTimeMillis) trace-start-ms)
+            _ (u/log ::execution-result-trace-built
+                     :tick-id tick-id
+                     :node-count (count node-trace)
+                     :duration-ms trace-duration-ms)]
         ;; Clean up budget and usage tracking for this tick
         (clear-llm-count! tick-id)
         (clear-tick-usage! tick-id)

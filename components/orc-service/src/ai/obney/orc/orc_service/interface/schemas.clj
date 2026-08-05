@@ -1575,8 +1575,8 @@
 (defschemas read-models
   {:sheet/sheets       [:map-of :uuid ::sheet]
    :sheet/nodes        [:map-of :uuid ::node]
-   :sheet/blackboard   [:map-of :keyword ::blackboard-entry]
-   :sheet/judges       [:map-of :string :map]
+   :sheet/blackboard   [:map-of [:tuple :uuid :keyword] ::blackboard-entry]
+   :sheet/judges       [:map-of [:tuple :uuid :string] :map]
    :sheet/ticks        [:map-of :uuid :map]
    :sheet/versions     [:map-of :uuid [:map-of :int ::version-snapshot]]
    :sheet/stashes      [:map-of :uuid :map]

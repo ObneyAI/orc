@@ -226,6 +226,33 @@
       (is (= :answer (:name (first (:outputs module)))))
       (is (nil? (get-in module [:output-mapping :answer :nested-key]))))))
 
+(deftest build-module-requires-declared-schemas-test
+  (testing "missing read and write schemas fail before an LLM request is built"
+    (let [node {:name "schema-guard"
+                :instruction "Produce structured output"
+                :reads [:present :missing-input]
+                :writes [:missing-output]}
+          blackboard {:present {:key :present :schema :string :value "x"}}
+          error (try
+                  (executor/build-module node blackboard)
+                  nil
+                  (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? error))
+      (is (str/includes? (.getMessage error) "schema-guard"))
+      (is (= [:missing-input] (:missing-reads (ex-data error))))
+      (is (= [:missing-output] (:missing-writes (ex-data error))))
+      (is (= [:present] (:blackboard-keys (ex-data error))))))
+
+  (testing "an explicit :any schema is declared and remains valid"
+    (let [node {:name "any-schema"
+                :reads [:input]
+                :writes [:output]}
+          blackboard {:input {:key :input :schema :any :value {:anything true}}
+                      :output {:key :output :schema :any :value nil}}
+          module (executor/build-module node blackboard)]
+      (is (= :any (get-in module [:inputs 0 :spec])))
+      (is (= :any (get-in module [:outputs 0 :spec]))))))
+
 ;; =============================================================================
 ;; Warning Test for [:map-of ...] schemas
 ;; =============================================================================

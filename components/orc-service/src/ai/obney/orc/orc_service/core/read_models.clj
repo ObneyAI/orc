@@ -437,13 +437,21 @@
 ;; Blackboard Projection
 ;; =============================================================================
 
+(defn- blackboard-entity-id
+  "Blackboard key names are local to a sheet. Grain's partitioned projection
+   engine requires entity ids to be globally unique across all partitions, so
+   include the sheet id instead of letting a same-named key look like an entity
+   moving from one sheet partition to another."
+  [event-or-entry]
+  [(:sheet-id event-or-entry) (:key event-or-entry)])
+
 (defmulti blackboard*
   "Apply event to blackboard read model"
   (fn [_state event] (:event/type event)))
 
 (defmethod blackboard* :sheet/key-declared
   [state event]
-  (assoc state (:key event)
+  (assoc state (blackboard-entity-id event)
          {:sheet-id (:sheet-id event)
           :key (:key event)
           :schema (:schema event)
@@ -452,17 +460,17 @@
 
 (defmethod blackboard* :sheet/key-schema-updated
   [state event]
-  (assoc-in state [(:key event) :schema] (:schema event)))
+  (assoc-in state [(blackboard-entity-id event) :schema] (:schema event)))
 
 (defmethod blackboard* :sheet/key-value-set
   [state event]
   (-> state
-      (assoc-in [(:key event) :value] (:value event))
-      (assoc-in [(:key event) :version] (:version event))))
+      (assoc-in [(blackboard-entity-id event) :value] (:value event))
+      (assoc-in [(blackboard-entity-id event) :version] (:version event))))
 
 (defmethod blackboard* :sheet/key-deleted
   [state event]
-  (dissoc state (:key event)))
+  (dissoc state (blackboard-entity-id event)))
 
 (defmethod blackboard* :default [state _] state)
 
@@ -472,14 +480,19 @@
   (reduce blackboard* (or initial-state {}) events))
 
 (defreadmodel :sheet blackboard
-  {:events blackboard-events :version 2
+  {:events blackboard-events :version 3
    :partition-fn :sheet-id
-   :entity-id-fn :key}
+   :entity-id-fn blackboard-entity-id}
   [state event] (blackboard* state event))
 
 ;; =============================================================================
 ;; Judges Projection
 ;; =============================================================================
+
+(defn- judge-entity-id
+  "Judge names, like blackboard keys, are local to their host sheet."
+  [event-or-entry]
+  [(:sheet-id event-or-entry) (:judge-name event-or-entry)])
 
 (defmulti judges*
   "Apply event to judges read model"
@@ -497,7 +510,7 @@
   (let [jc (:judge-config event)
         jc+eval (cond-> jc
                   (:sheet-id jc) (assoc :eval-sheet-id (:sheet-id jc)))]
-    (assoc state (:judge-name event)
+    (assoc state (judge-entity-id event)
            (merge jc+eval
                   {:sheet-id (:sheet-id event)
                    :judge-name (:judge-name event)
@@ -511,9 +524,9 @@
   (reduce judges* (or initial-state {}) events))
 
 (defreadmodel :sheet judges
-  {:events judge-events :version 2
+  {:events judge-events :version 3
    :partition-fn :sheet-id
-   :entity-id-fn :judge-name}
+   :entity-id-fn judge-entity-id}
   [state event] (judges* state event))
 
 ;; =============================================================================
@@ -693,12 +706,16 @@
 (defn get-blackboard-by-key
   "Get the blackboard for a sheet as a map keyed by key name"
   [ctx sheet-id]
-  (rmp/project ctx :sheet/blackboard {:partition-key sheet-id}))
+  (into {}
+        (map (juxt :key identity))
+        (vals (rmp/project ctx :sheet/blackboard {:partition-key sheet-id}))))
 
 (defn get-judges
   "Get all judges declared for a sheet as a map keyed by judge name"
   [ctx sheet-id]
-  (rmp/project ctx :sheet/judges {:partition-key sheet-id}))
+  (into {}
+        (map (juxt :judge-name identity))
+        (vals (rmp/project ctx :sheet/judges {:partition-key sheet-id}))))
 
 (defn get-judge
   "Get a single judge by name"

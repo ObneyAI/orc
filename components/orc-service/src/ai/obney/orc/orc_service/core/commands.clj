@@ -962,8 +962,12 @@
           {:command-result/events
            [(->event
              {:type :sheet/tree-tick-started
-              :tags #{[:sheet sheet-id]
-                      [:tick new-tick-id]}
+              :tags (cond-> #{[:sheet sheet-id]
+                              [:tick new-tick-id]}
+                      ;; Durable lineage index. Result delivery uses this to
+                      ;; collect only this execution's descendant ticks rather
+                      ;; than scanning every completion in the tenant.
+                      parent-tick-id (conj [:parent-tick parent-tick-id]))
               :body (cond-> {:sheet-id sheet-id
                              :tick-id new-tick-id
                              :inputs inputs
@@ -994,8 +998,9 @@
           {:command-result/events
            [(->event
              {:type :sheet/tree-tick-started
-              :tags #{[:sheet sheet-id]
-                      [:tick new-tick-id]}
+              :tags (cond-> #{[:sheet sheet-id]
+                              [:tick new-tick-id]}
+                      parent-tick-id (conj [:parent-tick parent-tick-id]))
               :body (cond-> {:sheet-id sheet-id
                              :tick-id new-tick-id}
                       parent-tick-id (assoc :parent-tick-id parent-tick-id)

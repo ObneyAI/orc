@@ -80,6 +80,25 @@
   (let [result (deref p timeout-ms ::timeout)]
     (if (= result ::timeout) :timeout result)))
 
+(deftest child-tick-start-carries-parent-tag
+  (testing "tick-tree indexes durable lineage for bounded result traces"
+    (h/with-async-test-context [ctx]
+      (let [{:keys [sheet-id]} (setup-simple-sheet! ctx)
+            tick-id (random-uuid)
+            parent-tick-id (random-uuid)
+            result (cp/process-command
+                    (assoc ctx :command
+                           {:command/id (random-uuid)
+                            :command/timestamp (time/now)
+                            :command/name :sheet/tick-tree
+                            :sheet-id sheet-id
+                            :tick-id tick-id
+                            :parent-tick-id parent-tick-id
+                            :inputs {:input "hello"}}))
+            event (first (:command-result/events result))]
+        (is (= parent-tick-id (:parent-tick-id event)))
+        (is (contains? (:event/tags event) [:parent-tick parent-tick-id]))))))
+
 ;; =============================================================================
 ;; Async Execution Tests
 ;; =============================================================================

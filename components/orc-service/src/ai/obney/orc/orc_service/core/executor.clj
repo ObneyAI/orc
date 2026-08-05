@@ -416,6 +416,48 @@
            (str "\nDid you mean: " suggestion "?")))))
 
 ;; =============================================================================
+;; Bounded provider calls
+;; =============================================================================
+
+(def llm-call-timeout-ms
+  "Wall-clock ceiling on ONE provider call (env: ORC_LLM_CALL_TIMEOUT_MS).
+
+  Sits well under the delegate/tick ceilings (300s / 600s) so a hung call fails
+  its own leaf rather than surfacing as an ancestor timeout. Healthy calls on the
+  recommendation pipeline run 6-26s, with a slow tail near 130s."
+  (or (some-> (System/getenv "ORC_LLM_CALL_TIMEOUT_MS") parse-long) 120000))
+
+(defn- predict!
+  "dscloj/predict, bounded.
+
+  litellm's `:timeout` does NOT bound a provider call. It maps to hato's request
+  timeout, which is java.net.http's HttpRequest.timeout, and that covers
+  time-to-response-HEADERS only. A provider that answers 200 and then stalls its
+  body leaves the provider's own `@response` deref blocking forever. Proven in
+  isolation (hato-repro/): against a server that sends headers then no body, a
+  2000ms `:timeout` had still not fired after 12s — while the same timeout fires
+  in 2005ms when the stall comes BEFORE headers.
+
+  Unbounded, that is close to undiagnosable from orc's side: the leaf emits no
+  completion, so its tick simply goes quiet, and the first sign of trouble is an
+  ANCESTOR failing with :timeout minutes later at a node that was fine. Observed
+  live: 1043 LLM subcalls started, 1041 completed, the two stragglers still open
+  28 and 31 minutes later against a 30s provider timeout.
+
+  Bounding here turns that into an ordinary leaf failure attributed to the node
+  that actually hung. future-cancel cannot interrupt a socket read blocked in
+  native code, so the underlying thread may linger until the connection drops —
+  orc is freed regardless, which is the point."
+  [provider module inputs opts]
+  (let [f (future (dscloj/predict provider module inputs opts))
+        v (deref f llm-call-timeout-ms ::timeout)]
+    (if (= v ::timeout)
+      (do (future-cancel f)
+          (throw (ex-info "LLM provider call exceeded orc's ceiling"
+                          {:timeout-ms llm-call-timeout-ms})))
+      v)))
+
+;; =============================================================================
 ;; Usage Normalization
 ;; =============================================================================
 
@@ -695,25 +737,33 @@
    E.g., 'academic-score' with schema [:map [:score :double] [:reasoning :string]]
    becomes separate fields: 'score', 'reasoning' - matching how Python DSPy works."
   [node blackboard]
-  (let [inputs (mapv (fn [key-name]
-                       (if-let [entry (get blackboard key-name)]
-                         (build-field key-name entry)
-                         {:name key-name
-                          :original-key key-name
-                          :spec :string
-                          :description (str "Input: " key-name)}))
+  (let [missing-reads (->> (:reads node)
+                           (remove #(some? (get-in blackboard [% :schema])))
+                           vec)
+        missing-writes (->> (:writes node)
+                            (remove #(some? (get-in blackboard [% :schema])))
+                            vec)
+        _ (when (or (seq missing-reads) (seq missing-writes))
+            (throw
+             (ex-info
+              (str "LLM node '" (:name node)
+                   "' is missing blackboard schemas"
+                   (when (seq missing-reads) (str " for reads " missing-reads))
+                   (when (seq missing-writes) (str " for writes " missing-writes)))
+              {:node-name (:name node)
+               :missing-reads missing-reads
+               :missing-writes missing-writes
+               :blackboard-keys (vec (sort (keys blackboard)))})))
+        inputs (mapv (fn [key-name]
+                       (build-field key-name (get blackboard key-name)))
                      (:reads node))
         ;; Flatten output schemas to match Python DSPy's approach
         ;; Each :map field becomes a separate output field
         outputs (->> (:writes node)
                      (mapcat (fn [key-name]
-                               (if-let [entry (get blackboard key-name)]
-                                 (flatten-output-schema key-name (:schema entry))
-                                 [{:name key-name
-                                   :original-key key-name
-                                   :nested-key nil
-                                   :spec :string
-                                   :description (str "Output: " key-name)}])))
+                               (flatten-output-schema
+                                key-name
+                                (get-in blackboard [key-name :schema]))))
                      vec)
         ;; Warn about map-of schemas - they work but explicit [:map ...] is more reliable
         _ (when (some #(map-of-schema? (:spec %)) outputs)
@@ -1130,7 +1180,7 @@
         try-once (fn [attempt]
                    (if predict-stream-v2
                      (try-once-streaming attempt)
-                     (let [result (dscloj/predict provider dscloj-module inputs dscloj-options)
+                     (let [result (predict! provider dscloj-module inputs dscloj-options)
                            ;; DSCloj returns outputs directly as a flat map, not wrapped in {:outputs ...}
                            raw-outputs (or (:outputs result) result)
                            ;; Reassemble flattened outputs back into nested structure
@@ -1281,7 +1331,7 @@
         dscloj-options (cond-> (assoc options :validate? false)
                          (:model node) (assoc :model (:model node)))]
     (try
-      (let [response (dscloj/predict provider module input-values dscloj-options)
+      (let [response (predict! provider module input-values dscloj-options)
             ;; Response now has {:outputs {...} :usage {...} :model "..."}
             bool-result (get-in response [:outputs :result])
             duration-ms (- (System/currentTimeMillis) start-time)]
@@ -1609,7 +1659,7 @@
                 dscloj-options (cond-> (assoc execution-options :validate? false :with-metadata? true)
                                  (:model node) (assoc :model (:model node)))
 
-                llm-result (dscloj/predict provider module inputs dscloj-options)
+                llm-result (predict! provider module inputs dscloj-options)
                 ;; Extract code from LLM result
                 ;; With :with-metadata? true, dscloj returns {:outputs {:code "..."} :usage {...}}
                 ;; Code may be a string or a parsed Clojure form (if function calling mode parsed it)
@@ -2479,7 +2529,7 @@
                 _ (dbg "inputs :inputs-info =" (:inputs-info inputs))
                 _ (dbg "calling dscloj/predict...")
                 llm-result (try
-                             (dscloj/predict provider module inputs dscloj-options)
+                             (predict! provider module inputs dscloj-options)
                              (catch Exception e
                                (dbg "dscloj/predict EXCEPTION:" (.getMessage e))
                                {:code nil :error (.getMessage e)}))
