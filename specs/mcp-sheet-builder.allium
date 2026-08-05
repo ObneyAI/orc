@@ -1,0 +1,352 @@
+-- allium: 3
+-- mcp-sheet-builder.allium
+--
+-- Scope: turning MCP tool catalogs into runnable, inspectable ORC workflows.
+-- Includes: connections and multi-server routing, schema preservation, semantic
+-- analysis, relationship and agent-pattern selection, workflow generation and
+-- validation, executor generation/integrity, runtime loading, building, and
+-- portable export.
+-- Excludes: MCP wire transports, HTTP/stdio/nREPL process mechanics, JSON/Malli
+-- syntax, generated Clojure source layout, SCI internals, filesystem APIs, and
+-- ORC's execution semantics (governed by orc-service.allium).
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity SheetBuilderConsumer {}
+
+external entity OrcWorkflow {
+    name: String
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value ConnectionOptions {
+    connection_type: String
+    destination: String?
+    preset: String?
+}
+
+value ToolSchema {
+    definition: Any
+}
+
+value ToolResult {
+    value: Any
+}
+
+value ToolRelationship {
+    relationship_type: sequential | parallel | alternative | complementary | refinement
+    from_tool: String
+    to_tool: String
+    confidence: Decimal
+    reason: String?
+}
+
+value PatternCandidate {
+    pattern: AgentPattern
+    confidence: Decimal
+    description: String?
+    tool_groups: List<List<String>>?
+}
+
+value ValidationResult {
+    valid: Boolean
+    errors: List<String>
+    warnings: List<String>
+}
+
+value ExecutorDefinition {
+    tool_name: String
+    source_definition: String
+    required_namespaces: List<String>
+    checksum: String
+    function_reference: String
+}
+
+value PortablePackage {
+    workflow_location: String
+    executors_location: String
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract McpToolTransport {
+    list_tools: (connection: McpConnection) -> List<McpTool>
+    call_tool: (connection: McpConnection, tool_name: String, arguments: Any) -> ToolResult
+    route_tool: (registry: ToolRegistry, routed_name: String, arguments: Any) -> ToolResult
+
+    @invariant ClosedConnectionsRejectCalls
+        -- Discovery and calls require an active connection.
+
+    @invariant UnambiguousRouting
+        -- A server-qualified tool name routes to that server; an unqualified
+        -- name is accepted only when exactly one registered server exposes it.
+
+    @invariant SchemaFaithfulness
+        -- Tool input and output schemas, required fields, defaults, nested
+        -- objects, arrays, and descriptions survive discovery and conversion.
+}
+
+contract GeneratedExecutorRuntime {
+    generate_executor: (tool: McpTool) -> ExecutorDefinition
+    load_executor: (definition: ExecutorDefinition, force: Boolean) -> Any
+    resolve_executor: (identifier: String) -> Any
+    list_loaded_executors: () -> List<ExecutorDefinition>
+    clear_executors: () -> Any
+
+    @invariant StandardExecutorContract
+        -- A generated executor reads declared inputs, invokes its originating
+        -- MCP tool through execution context, and returns declared outputs.
+
+    @invariant SourceIntegrity
+        -- Runtime loading rejects a definition whose source does not match its
+        -- supplied checksum unless explicitly replaced by an authorized force load.
+
+    @invariant StableResolution
+        -- A loaded executor resolves by tool identity, tool name, or its fully
+        -- qualified function reference to the same callable behavior.
+}
+
+contract PortableWorkflowExport {
+    export_workflow: (workflow: GeneratedWorkflow, destination: String, format: String) -> String
+    export_package: (workflow: GeneratedWorkflow, executors: List<ExecutorDefinition>, destination: String) -> PortablePackage
+
+    @invariant SelfContainedPackage
+        -- A portable package contains the workflow and every generated executor
+        -- it references, with workflow references targeting the exported namespace.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum ConnectionStatus { active | closed }
+
+enum Capability {
+    retrieval | search | create | update | delete | transform | validate |
+    generate | aggregate | route
+}
+
+enum SemanticCategory {
+    data_access | data_mutation | transformation | side_effect | aggregation
+}
+
+enum AgentPattern {
+    sequential_pipeline | coordinator_dispatcher | parallel_fan_out |
+    hierarchical_decomposition | generator_critic | iterative_refinement |
+    research_compilation | adversarial | repl_researcher
+}
+
+enum GeneratedWorkflowStatus { generated | valid | invalid | built }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity McpConnection {
+    name: String
+    status: ConnectionStatus
+    options: ConnectionOptions
+    closed_at: Timestamp when status = closed
+
+    transitions status {
+        active -> closed
+        terminal: closed
+    }
+
+    tools: McpTool with connection = this
+}
+
+entity McpTool {
+    connection: McpConnection
+    name: String
+    description: String?
+    input_schema: ToolSchema
+    output_schema: ToolSchema?
+    capabilities: Set<Capability>
+    category: SemanticCategory
+    idempotent: Boolean
+}
+
+entity ToolRegistry {
+    name: String
+    connections: Set<McpConnection>
+}
+
+entity ToolAnalysis {
+    tools: Set<McpTool>
+    relationships: List<ToolRelationship>
+    pattern_candidates: List<PatternCandidate>
+    created_at: Timestamp
+}
+
+entity GeneratedWorkflow {
+    analysis: ToolAnalysis
+    selected_pattern: AgentPattern
+    status: GeneratedWorkflowStatus
+    definition: Any
+    blackboard_schema: ToolSchema
+    validation: ValidationResult?
+    built_workflow: OrcWorkflow?
+
+    transitions status {
+        generated -> valid
+        generated -> invalid
+        valid -> built
+        terminal: invalid, built
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule ConnectMcpServer {
+    when: ConnectMcpServer(consumer, name, options)
+    requires: not exists McpConnection{name: name}
+
+    ensures: McpConnection.created(
+        name: name,
+        status: active,
+        options: options,
+        closed_at: null
+    )
+}
+
+rule CloseMcpConnection {
+    when: CloseMcpConnection(consumer, connection)
+    requires: connection.status = active
+
+    ensures: connection.status = closed
+    ensures: connection.closed_at = now
+}
+
+rule DiscoverMcpTools {
+    when: DiscoverMcpTools(consumer, connection, definitions)
+    requires: connection.status = active
+
+    ensures:
+        for definition in definitions:
+            McpTool.created(
+                connection: connection,
+                name: definition.name,
+                description: definition.description,
+                input_schema: definition.input_schema,
+                output_schema: definition.output_schema,
+                capabilities: classify_capabilities(definition),
+                category: classify_semantic_category(definition),
+                idempotent: classify_idempotence(definition)
+            )
+}
+
+rule CreateToolRegistry {
+    when: CreateToolRegistry(consumer, name, connections)
+    requires: connections.all(c => c.status = active)
+
+    ensures: ToolRegistry.created(name: name, connections: connections)
+}
+
+rule AnalyzeToolCatalog {
+    when: AnalyzeToolCatalog(consumer, tools, include_creative_patterns)
+    requires: tools.count > 0
+    requires: tools.all(t => t.connection.status = active)
+
+    ensures: ToolAnalysis.created(
+        tools: tools,
+        relationships: detect_tool_relationships(tools),
+        pattern_candidates: rank_agent_patterns(tools, include_creative_patterns),
+        created_at: now
+    )
+}
+
+rule GenerateWorkflowDraft {
+    when: GenerateWorkflowDraft(consumer, analysis, selected_pattern, problem_description)
+    requires: selected_pattern in supported_patterns(analysis)
+
+    ensures: GeneratedWorkflow.created(
+        analysis: analysis,
+        selected_pattern: selected_pattern,
+        status: generated,
+        definition: generate_orc_workflow(analysis, selected_pattern, problem_description),
+        blackboard_schema: derive_blackboard_schema(analysis),
+        validation: null,
+        built_workflow: null
+    )
+}
+
+rule ValidateGeneratedWorkflow {
+    when: ValidateGeneratedWorkflow(consumer, workflow)
+    requires: workflow.status = generated
+    let validation = validate_generated_workflow(workflow)
+    requires: validation.valid = true
+
+    ensures: workflow.status = valid
+    ensures: workflow.validation = validation
+}
+
+rule RejectInvalidGeneratedWorkflow {
+    when: ValidateGeneratedWorkflow(consumer, workflow)
+    requires: workflow.status = generated
+    let validation = validate_generated_workflow(workflow)
+    requires: validation.valid = false
+
+    ensures: workflow.status = invalid
+    ensures: workflow.validation = validation
+}
+
+rule BuildValidatedWorkflow {
+    when: BuildValidatedWorkflow(consumer, workflow)
+    requires: workflow.status = valid
+
+    ensures: workflow.status = built
+    ensures: workflow.built_workflow = build_orc_workflow(workflow.definition)
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ToolNamesUniqueWithinConnection {
+    for a in McpTools:
+        for b in McpTools:
+            a != b and a.connection = b.connection implies a.name != b.name
+}
+
+invariant BuiltWorkflowsWereValidated {
+    for workflow in GeneratedWorkflows:
+        workflow.status = built implies workflow.validation.valid = true
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface McpWorkflowConstruction {
+    facing consumer: SheetBuilderConsumer
+
+    provides:
+        ConnectMcpServer(consumer, name, options)
+        CloseMcpConnection(consumer, connection)
+        DiscoverMcpTools(consumer, connection, definitions)
+        CreateToolRegistry(consumer, name, connections)
+        AnalyzeToolCatalog(consumer, tools, include_creative_patterns)
+        GenerateWorkflowDraft(consumer, analysis, selected_pattern, problem_description)
+        ValidateGeneratedWorkflow(consumer, workflow)
+        BuildValidatedWorkflow(consumer, workflow)
+
+    contracts:
+        fulfils McpToolTransport
+        fulfils GeneratedExecutorRuntime
+        fulfils PortableWorkflowExport
+
+    @guarantee OrdinaryOrcOutput
+        -- A built sheet is an ordinary inspectable ORC workflow that can be
+        -- edited, versioned, delegated to, judged, and executed normally.
+}
+

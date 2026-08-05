@@ -236,6 +236,9 @@
      :tick-id - Optional caller-supplied execution id for correlating live progress
      :parent-tick-id - Optional lineage marker when this execution is a child of
                        another tick (RLM Phase 2 trees, delegate nodes)
+     :correlation-id - Optional UUID grouping independent root executions into
+                       one caller-defined operation. Overrides
+                       :orc/correlation-id on context.
      :input-sources - Internal {key {:tick-id :event-id}} provenance map; values
                       already durable elsewhere are referenced, not copied
      :return-references? - Internal flag to include :output-sources for delegates
@@ -250,9 +253,10 @@
   [context sheet-id inputs & {:keys [timeout-ms use-version force-draft
                                       trace? langfuse-client store-trace?
                                       max-ticks llm-call-budget tick-id parent-tick-id
-                                      input-sources return-references?]
+                                      correlation-id input-sources return-references?]
                                :or {timeout-ms 300000 store-trace? true}}]
-  (let [tick-id (or tick-id (random-uuid))
+  (let [correlation-id (or correlation-id (:orc/correlation-id context))
+        tick-id (or tick-id (random-uuid))
         p (register-completion! tick-id)
         start-time (System/currentTimeMillis)
         cmd-result (cp/process-command
@@ -270,6 +274,7 @@
                                                  max-ticks (assoc :max-ticks max-ticks)
                                                  llm-call-budget (assoc :llm-call-budget llm-call-budget))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)
+                              correlation-id (assoc :correlation-id correlation-id)
                               (seq input-sources) (assoc :input-sources input-sources)
                               use-version (assoc :use-version use-version)
                               force-draft (assoc :force-draft force-draft)

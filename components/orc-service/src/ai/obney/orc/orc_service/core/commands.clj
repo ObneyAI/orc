@@ -932,7 +932,7 @@
   "Start a tree tick (execute from root).
    When inputs are provided, stores a structure-only execution snapshot and
    canonical seed writes/references for isolated async execution."
-  [{{:keys [sheet-id tick-id parent-tick-id inputs input-sources use-version force-draft options
+  [{{:keys [sheet-id tick-id parent-tick-id correlation-id inputs input-sources use-version force-draft options
             tool-context]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))
@@ -1003,12 +1003,14 @@
                       ;; Durable lineage index. Result delivery uses this to
                       ;; collect only this execution's descendant ticks rather
                       ;; than scanning every completion in the tenant.
-                      parent-tick-id (conj [:parent-tick parent-tick-id]))
+                      parent-tick-id (conj [:parent-tick parent-tick-id])
+                      correlation-id (conj [:correlation correlation-id]))
               :body (cond-> {:sheet-id sheet-id
                              :tick-id new-tick-id
                              :seed-sources seed-sources
                              :execution-snapshot structural-snapshot}
                       parent-tick-id (assoc :parent-tick-id parent-tick-id)
+                      correlation-id (assoc :correlation-id correlation-id)
                       (:version-number snapshot) (assoc :version-number (:version-number snapshot))
                       options (assoc :options options)
                       ;; G1 (ADR 0018): carry the opaque :tool-context across the
@@ -1038,10 +1040,12 @@
              {:type :sheet/tree-tick-started
               :tags (cond-> #{[:sheet sheet-id]
                               [:tick new-tick-id]}
-                      parent-tick-id (conj [:parent-tick parent-tick-id]))
+                      parent-tick-id (conj [:parent-tick parent-tick-id])
+                      correlation-id (conj [:correlation correlation-id]))
               :body (cond-> {:sheet-id sheet-id
                              :tick-id new-tick-id}
                       parent-tick-id (assoc :parent-tick-id parent-tick-id)
+                      correlation-id (assoc :correlation-id correlation-id)
                       ;; G1 (ADR 0018): opaque :tool-context also rides the
                       ;; snapshot-less UI tick path for symmetry.
                       tool-context (assoc :tool-context tool-context))})]})))))
@@ -1346,24 +1350,30 @@
 (defcommand :sheet emit-tick-completed
   {:authorized? authenticated?}
   "System command: record that a tree tick execution has completed."
-  [{{:keys [sheet-id tick-id root-status]} :command}]
+  [{{:keys [sheet-id tick-id correlation-id root-status]} :command}]
   {:command-result/events
    [(->event {:type :sheet/tree-tick-completed
-              :tags #{[:sheet sheet-id] [:tick tick-id]}
-              :body {:sheet-id sheet-id
-                     :tick-id tick-id
-                     :root-status root-status}})]})
+              :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
+                      correlation-id (conj [:correlation correlation-id]))
+              :body (cond-> {:sheet-id sheet-id
+                             :tick-id tick-id
+                             :root-status root-status}
+                      correlation-id (assoc :correlation-id correlation-id))})]})
 
 (defcommand :sheet store-execution-trace
   {:authorized? authenticated?}
   "System command: store a full execution trace for analytics and debugging."
-  [{{:keys [trace-id sheet-id version-number started-at completed-at
+  [{{:keys [trace-id sheet-id parent-trace-id correlation-id root-trace-id child-trace-ids
+            version-number started-at completed-at
             duration-ms status input-snapshot output-snapshot node-traces error]} :command}]
   {:command-result/events
    [(->event {:type :sheet/execution-traced
-              :tags #{[:sheet sheet-id] [:trace trace-id]}
+              :tags (cond-> #{[:sheet sheet-id] [:trace trace-id]}
+                      correlation-id (conj [:correlation correlation-id]))
               :body (cond-> {:trace-id trace-id
                              :sheet-id sheet-id
+                             :root-trace-id root-trace-id
+                             :child-trace-ids child-trace-ids
                              :started-at started-at
                              :completed-at completed-at
                              :duration-ms duration-ms
@@ -1371,6 +1381,8 @@
                              :input-snapshot input-snapshot
                              :output-snapshot output-snapshot
                              :node-traces node-traces}
+                      parent-trace-id (assoc :parent-trace-id parent-trace-id)
+                      correlation-id (assoc :correlation-id correlation-id)
                       version-number (assoc :version-number version-number)
                       error (assoc :error error))})]})
 

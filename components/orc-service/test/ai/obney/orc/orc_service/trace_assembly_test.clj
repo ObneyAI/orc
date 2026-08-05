@@ -87,18 +87,17 @@
     (is (not (:cognitect.anomalies/category res))
         (str "dispatch failed: " (:cognitect.anomalies/message res)))
     (let [result (deref p 20000 ::timeout)]
-      ;; assemble-execution-trace stores the trace from a future, so the
-      ;; trace lands slightly after the caller's promise is delivered.
-      (Thread/sleep 1500)
+      (is (h/settle-until! #(h/trace-stored? ctx tick-id))
+          "execution trace was not stored before the timeout")
       [result tick-id])))
 
 (defn- node-detail
   "Fetch a node's inputs/outputs the supported way."
-  [ctx trace-id node-id]
+  [ctx trace-id trace-instance-id]
   (:query/result
    (h/run-query ctx {:query/name :sheet/node-trace-detail
                      :trace-id trace-id
-                     :node-id node-id})))
+                     :trace-instance-id trace-instance-id})))
 
 ;; =============================================================================
 ;; Structure
@@ -128,14 +127,22 @@
             (is (= :sequence (:node-type (by-id seq-id))))
             (is (= :leaf (:node-type (by-id upcase))))
             (is (= seq-id (:parent-id (by-id upcase))))
-            (is (= seq-id (:parent-id (by-id exclaim)))))
+            (is (= seq-id (:parent-id (by-id exclaim))))
+            (is (= (:trace-instance-id (by-id seq-id))
+                   (:parent-trace-instance-id (by-id upcase))))
+            (is (= (:trace-instance-id (by-id seq-id))
+                   (:parent-trace-instance-id (by-id exclaim)))))
 
           (testing "per-node status and timing"
             (doseq [nid [seq-id upcase exclaim]]
               (is (= :success (:status (by-id nid)))
                   (str "node " nid " status"))
               (is (some? (:started-at (by-id nid)))
-                  (str "node " nid " started-at")))))))))
+                  (str "node " nid " started-at"))
+              (is (uuid? (:trace-instance-id (by-id nid)))
+                  (str "node " nid " trace instance"))
+              (is (nat-int? (:duration-ms (by-id nid)))
+                  (str "node " nid " duration")))))))))
 
 (deftest trace-records-failure
   (testing "a failing leaf is recorded with :failure and an error string"
@@ -163,7 +170,15 @@
         (is (= [2 4 6] (:results (:outputs result))) "map-each doubled each item")
         (is (= 3 (count child-entries))
             (str "expected one entry per iteration, got " (count child-entries)))
-        (is (every? #(= :success (:status %)) child-entries))))))
+        (is (= 3 (count (set (map :trace-instance-id child-entries))))
+            "each iteration has its own stable execution identity")
+        (is (every? #(= :success (:status %)) child-entries))
+        (is (= #{{:current-item 1} {:current-item 2} {:current-item 3}}
+               (set (map #(-> (node-detail ctx trace-id (:trace-instance-id %)) :inputs)
+                         child-entries))))
+        (is (= #{{:current-item 2} {:current-item 4} {:current-item 6}}
+               (set (map #(-> (node-detail ctx trace-id (:trace-instance-id %)) :outputs)
+                         child-entries))))))))
 
 ;; =============================================================================
 ;; Values, through the supported query
@@ -173,14 +188,30 @@
   (testing "node-trace-detail resolves a node's inputs and outputs"
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id upcase exclaim]} (setup-pipeline! ctx)
-            [_ trace-id] (run! ctx sheet-id {:phrase "hello"})]
+            [_ trace-id] (run! ctx sheet-id {:phrase "hello"})
+            trace (rm/get-trace ctx trace-id)
+            by-id (into {} (map (juxt :node-id identity) (:node-traces trace)))]
         (testing "first leaf: reads :phrase, writes :shout"
-          (let [d (node-detail ctx trace-id upcase)]
+          (let [d (node-detail ctx trace-id (:trace-instance-id (by-id upcase)))]
             (is (= upcase (:node-id d)))
             (is (= "HELLO" (get-in d [:outputs :shout])))))
         (testing "second leaf: reads the first leaf's output"
-          (let [d (node-detail ctx trace-id exclaim)]
+          (let [d (node-detail ctx trace-id (:trace-instance-id (by-id exclaim)))]
             (is (= "HELLO!" (get-in d [:outputs :loud])))))))))
+
+(deftest trace-query-contracts-use-exact-identities
+  (testing "get-trace uses its declared envelope and node detail rejects unknown instances"
+    (h/with-async-test-context [ctx]
+      (let [{:keys [sheet-id]} (setup-pipeline! ctx)
+            [_ trace-id] (run! ctx sheet-id {:phrase "hello"})
+            get-result (h/run-query ctx {:query/name :sheet/get-trace
+                                         :trace-id trace-id})
+            missing (h/run-query ctx {:query/name :sheet/node-trace-detail
+                                      :trace-id trace-id
+                                      :trace-instance-id (random-uuid)})]
+        (is (= trace-id (get-in get-result [:query/result :trace :trace-id])))
+        (is (nil? (get-in get-result [:query/result :trace-id])))
+        (is (h/is-anomaly? missing))))))
 
 (deftest trace-snapshots-cover-the-tick-blackboard
   (testing "the trace reports the blackboard keys the tick touched"

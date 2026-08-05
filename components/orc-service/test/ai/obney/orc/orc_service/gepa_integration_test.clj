@@ -126,7 +126,7 @@
     (let [result (h/run-query ctx (h/make-get-trace-query trace-id))]
       (cond
         (and (not (h/is-anomaly? result)) (:query/result result))
-        (:query/result result)
+        (get-in result [:query/result :trace])
 
         (< attempt max-attempts)
         (do (Thread/sleep delay-ms)

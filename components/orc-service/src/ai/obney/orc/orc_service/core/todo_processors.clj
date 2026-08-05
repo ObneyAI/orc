@@ -1406,6 +1406,7 @@
                   ;; is written once, on tree-tick-started, so it cannot change
                   ;; between dispatch and this future running.
                   tool-context (:tool-context tick-ctx)
+                  correlation-id (:correlation-id tick-ctx)
                   enriched-context (cond-> (assoc context
                                                   :sheet-id sheet-id
                                                   :tick-id tick-id
@@ -1413,7 +1414,8 @@
                                                   ;; events (iteration/phase2) carry the
                                                   ;; hosting repl-researcher node.
                                                   :node-id node-id)
-                                     tool-context (assoc :tool-context tool-context))
+                                     tool-context (assoc :tool-context tool-context)
+                                     correlation-id (assoc :orc/correlation-id correlation-id))
                   result (if provider
                            (executor/execute-repl-researcher node blackboard provider enriched-context)
                            {:status :failure :error "No DSCloj provider configured"})
@@ -1569,6 +1571,8 @@
                                raw-blackboard
                                event-inputs)
             exec-context (extract-execution-context event-inputs)
+            correlation-id (:correlation-id
+                            (rm/get-tick-execution-context context tick-id))
 
             target-sheet-id (:target-sheet-id node)
             read-keys (:reads node)
@@ -1605,6 +1609,7 @@
                                           :timeout-ms timeout-ms
                                           :tick-id child-tick-id
                                           :parent-tick-id tick-id
+                                          :correlation-id correlation-id
                                           :input-sources target-input-sources
                                           :return-references? true)
                   duration-ms (- (System/currentTimeMillis) start-time)
@@ -2727,6 +2732,7 @@
         ;; result carries it. orc never interprets it.
         block-payload (:block-payload event)
         tick-ctx (rm/get-tick-execution-context context tick-id)
+        correlation-id (:correlation-id tick-ctx)
         root-node-id (:root-node-id tick-ctx)
         ;; Per-execution override from options, else global dynamic default
         max-ticks (or (get-in tick-ctx [:options :max-ticks]) *max-tick-iterations*)
@@ -2746,12 +2752,13 @@
         {:result/events
          [(->event
            {:type :sheet/tree-tick-completed
-            :tags #{[:sheet sheet-id]
-                    [:tick tick-id]}
-            :body {:sheet-id sheet-id
-                   :tick-id tick-id
-                   :iteration current-iteration
-                   :root-status :failure}})]}
+            :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
+                    correlation-id (conj [:correlation correlation-id]))
+            :body (cond-> {:sheet-id sheet-id
+                           :tick-id tick-id
+                           :iteration current-iteration
+                           :root-status :failure}
+                    correlation-id (assoc :correlation-id correlation-id))})]}
 
         ;; Status is running and we haven't hit max iterations - re-tick
         (and (= status :running)
@@ -2759,19 +2766,21 @@
         {:result/events
          [(->event
            {:type :sheet/tree-tick-completed
-            :tags #{[:sheet sheet-id]
-                    [:tick tick-id]}
-            :body {:sheet-id sheet-id
-                   :tick-id tick-id
-                   :iteration current-iteration
-                   :root-status :running}})
+            :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
+                    correlation-id (conj [:correlation correlation-id]))
+            :body (cond-> {:sheet-id sheet-id
+                           :tick-id tick-id
+                           :iteration current-iteration
+                           :root-status :running}
+                    correlation-id (assoc :correlation-id correlation-id))})
           (->event
            {:type :sheet/tree-tick-started
-            :tags #{[:sheet sheet-id]
-                    [:tick tick-id]}
-            :body {:sheet-id sheet-id
-                   :tick-id tick-id
-                   :iteration (inc current-iteration)}})]}
+            :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
+                    correlation-id (conj [:correlation correlation-id]))
+            :body (cond-> {:sheet-id sheet-id
+                           :tick-id tick-id
+                           :iteration (inc current-iteration)}
+                    correlation-id (assoc :correlation-id correlation-id))})]}
 
         ;; Either success/failure, or hit max iterations
         :else
@@ -2798,13 +2807,14 @@
           {:result/events
            [(->event
              {:type :sheet/tree-tick-completed
-              :tags #{[:sheet sheet-id]
-                      [:tick tick-id]}
+              :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
+                      correlation-id (conj [:correlation correlation-id]))
               :body (cond-> {:sheet-id sheet-id
                              :tick-id tick-id
                              :iteration current-iteration
                              :root-status final-status}
                       output-keys (assoc :output-keys output-keys)
+                      correlation-id (assoc :correlation-id correlation-id)
                       ;; WS-2a: carry the opaque payload when the tree blocked.
                       (= :blocked final-status) (assoc :block-payload block-payload)
                       error (assoc :error error))})]})))))
@@ -3091,6 +3101,60 @@
   [event]
   [(:node-id event) (trace-execution-context (:inputs event))])
 
+(defn- originating-tick-started
+  [event-store tenant-id tick-id]
+  (some #(when (:execution-snapshot %) %)
+        (into [] (es/read event-store
+                          {:types #{:sheet/tree-tick-started}
+                           :tags #{[:tick tick-id]}
+                           :tenant-id tenant-id}))))
+
+(defn- trace-lineage
+  "Return durable parent/root/direct-child tick IDs for a trace."
+  [event-store tenant-id tick-id]
+  (let [started (originating-tick-started event-store tenant-id tick-id)
+        parent-id (:parent-tick-id started)
+        root-id (loop [current tick-id, seen #{}, depth 0]
+                  (if (or (contains? seen current) (>= depth 100))
+                    tick-id
+                    (if-let [parent (:parent-tick-id
+                                     (originating-tick-started event-store tenant-id current))]
+                      (recur parent (conj seen current) (inc depth))
+                      current)))
+        children (->> (es/read event-store
+                               {:types #{:sheet/tree-tick-started}
+                                :tags #{[:parent-tick tick-id]}
+                                :tenant-id tenant-id})
+                      (into [])
+                      (map :tick-id)
+                      distinct
+                      (sort-by str)
+                      vec)]
+    {:parent-trace-id parent-id
+     :root-trace-id root-id
+     :child-trace-ids children}))
+
+(defn- timestamp-ms [timestamp]
+  (cond
+    (instance? java.time.Instant timestamp) (.toEpochMilli ^java.time.Instant timestamp)
+    (instance? java.time.OffsetDateTime timestamp) (-> ^java.time.OffsetDateTime timestamp .toInstant .toEpochMilli)
+    :else (-> (java.time.OffsetDateTime/parse (str timestamp)) .toInstant .toEpochMilli)))
+
+(defn- elapsed-ms [started completed]
+  (when (and started completed)
+    (max 0 (- (timestamp-ms (:event/timestamp completed))
+              (timestamp-ms (:event/timestamp started))))))
+
+(defn- trace-node-path [nodes-by-id node-id]
+  (loop [current node-id, path (), seen #{}, depth 0]
+    (if (or (nil? current) (contains? seen current) (>= depth 100))
+      (vec path)
+      (let [node (get nodes-by-id current)]
+        (recur (:parent-id node)
+               (conj path (:name node))
+               (conj seen current)
+               (inc depth))))))
+
 (defn assemble-execution-trace
   "After a tick completes, assemble an execution trace from events and store it.
    Only runs for tick-scoped executions (snapshot-based).
@@ -3105,6 +3169,7 @@
     (when tick-ctx
       (let [nodes-by-id (:nodes-by-id tick-ctx)
             version-number (:version-number tick-ctx)
+            correlation-id (:correlation-id tick-ctx)
             ;; Read all events for this tick (into [] to realize reducible)
             tick-events (into [] (es/read event-store {:tags #{[:tick tick-id]} :tenant-id (:tenant-id context)}))
             ;; Find tick-started event for timing
@@ -3115,8 +3180,10 @@
             ;; the values. :output-snapshot profiles the keys this tick wrote;
             ;; :input-snapshot profiles the keys it was given and did not
             ;; write. Values rehydrate via the node-trace-detail query.
-            written-keys (or (tick-written-keys event-store (:tenant-id context) tick-id)
-                             #{})
+            written-keys (apply disj
+                                (or (tick-written-keys event-store (:tenant-id context) tick-id)
+                                    #{})
+                                (keys (:seed-sources started-event)))
             ;; From the projection already bound above. This handler runs on
             ;; tree-tick-completed, and complete-node-execution appends a
             ;; node's writes and its completion event in ONE command result,
@@ -3138,6 +3205,7 @@
             ;; Correlate node-execution-started and completed events
             started-events (filter #(= :sheet/node-execution-started (:event/type %)) tick-events)
             completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) tick-events)
+            started-by-execution (into {} (map (juxt trace-execution-key identity) started-events))
             ;; Build completed map by node plus execution context. Map-each runs
             ;; the same child node-id once per item, so keying only by node-id
             ;; collapses all child completions into whichever event was seen last.
@@ -3151,28 +3219,37 @@
                                 :let [node-id (:node-id started)
                                       node (get nodes-by-id node-id)
                                       completed (get completed-by-execution
-                                                     (trace-execution-key started))]
+                                                     (trace-execution-key started))
+                                      exec-context (trace-execution-context (:inputs started))
+                                      parent-started (when-let [parent-id (:parent-id node)]
+                                                       (or (get started-by-execution [parent-id exec-context])
+                                                           (get started-by-execution [parent-id {}])))
+                                      node-duration (or (:duration-ms completed)
+                                                        (elapsed-ms started completed))]
                                 :when node]
                             (cond-> {:node-id node-id
+                                     :trace-instance-id (:event/id started)
                                      :node-name (:name node)
                                      :node-type (:type node)
+                                     :path (trace-node-path nodes-by-id node-id)
                                      ;; :node-type and :executor are separate
                                      ;; axes and consumers need both — a leaf is
                                      ;; :leaf whether it calls an LLM or runs
                                      ;; Clojure, and only :executor says which.
-                                     :executor (:executor node)
-                                     :parent-id (:parent-id node)
                                      ;; A node-id is not unique within a tick —
                                      ;; map-each runs the same child once per
                                      ;; item — so this is what makes each entry
                                      ;; addressable. Same shape
                                      ;; value-log/execution-key reads off
                                      ;; lifecycle events.
-                                     :exec-context (trace-execution-context (:inputs started))
+                                     :exec-context exec-context
                                      :status (or (:status completed) :unknown)
                                      :started-at (str (:event/timestamp started))
                                      :completed-at (when completed (str (:event/timestamp completed)))}
-                              (:duration-ms completed) (assoc :duration-ms (:duration-ms completed))
+                              (:executor node) (assoc :executor (:executor node))
+                              (:parent-id node) (assoc :parent-id (:parent-id node))
+                              parent-started (assoc :parent-trace-instance-id (:event/id parent-started))
+                              (some? node-duration) (assoc :duration-ms node-duration)
                               (:error completed) (assoc :error (:error completed))
                               ;; Shape, not values — every value here is
                               ;; already durable in
@@ -3195,10 +3272,12 @@
                                      :input-profile (:input-profile completed)))))
             ;; Calculate duration
             duration-ms (if (and started-at completed-at)
-                          (- (.toEpochMilli (java.time.Instant/parse (str completed-at)))
-                             (.toEpochMilli (java.time.Instant/parse (str started-at))))
+                          (max 0 (- (timestamp-ms completed-at)
+                                    (timestamp-ms started-at)))
                           0)
             trace-id tick-id
+            {:keys [parent-trace-id root-trace-id child-trace-ids]}
+            (trace-lineage event-store (:tenant-id context) tick-id)
             final-status (case root-status
                            :success :success
                            :failure :failure
@@ -3219,6 +3298,8 @@
                               :command/name :sheet/store-execution-trace
                               :trace-id trace-id
                               :sheet-id sheet-id
+                              :root-trace-id root-trace-id
+                              :child-trace-ids child-trace-ids
                               :started-at (str (or started-at (time/now)))
                               :completed-at (str (or completed-at (time/now)))
                               :duration-ms duration-ms
@@ -3226,6 +3307,8 @@
                               :input-snapshot input-snapshot
                               :output-snapshot output-snapshot
                               :node-traces node-traces}
+                       parent-trace-id (assoc :parent-trace-id parent-trace-id)
+                       correlation-id (assoc :correlation-id correlation-id)
                        version-number (assoc :version-number version-number)
                        (:error event) (assoc :error (:error event)))))
             (catch Exception _e

@@ -1,0 +1,76 @@
+-- allium: 3
+-- observability.allium
+--
+-- Scope: optional forwarding of ORC trace, span, and generation events to an
+-- external observability service.
+-- Includes: client configuration, batching, disabled behavior, and reporting
+-- whether the remote service accepted a batch.
+-- Excludes: HTTP, JSON, Basic authentication, environment lookup, host defaults,
+-- and Langfuse-specific endpoint construction.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity OrcRuntime {}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value ObservabilityConfiguration {
+    destination: String
+    public_credential: String?
+    secret_credential: String?
+
+    enabled: public_credential != null and secret_credential != null
+}
+
+value ObservabilityEvent {
+    identifier: String
+    occurred_at: Timestamp
+    kind: trace | span | generation
+    body: Any
+}
+
+value IngestionResult {
+    attempted: Boolean
+    accepted: Boolean
+    response_status: Integer?
+    response_body: String?
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract TraceExporter {
+    create_configuration: () -> ObservabilityConfiguration
+    ingest: (configuration: ObservabilityConfiguration, events: List<ObservabilityEvent>) -> IngestionResult
+
+    @invariant DisabledExporterIsInert
+        -- A missing credential or an empty event batch produces no remote
+        -- ingestion attempt.
+
+    @invariant BatchIntegrity
+        -- When enabled, one ingestion request contains every supplied event in
+        -- input order and reports whether the destination accepted the batch.
+
+    @guidance
+        -- Callers may continue execution after a rejected observability batch;
+        -- the result makes the failure explicit for their own policy decision.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface RuntimeObservabilityIntegration {
+    facing runtime: OrcRuntime
+
+    contracts:
+        fulfils TraceExporter
+
+    @guarantee OptionalIntegration
+        -- ORC behavior remains available when export configuration is absent.
+}

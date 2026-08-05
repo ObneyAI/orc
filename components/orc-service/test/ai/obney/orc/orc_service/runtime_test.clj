@@ -1,8 +1,10 @@
 (ns ai.obney.orc.orc-service.runtime-test
   "Tests for the execute API (dispatch + wait via async pipeline)."
   (:require [clojure.test :refer [deftest testing is]]
+            [malli.core :as m]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.orc-service.interface.schemas :as schemas]
             [ai.obney.grain.event-store-v3.interface :as es]))
 
 ;; =============================================================================
@@ -222,3 +224,63 @@
             (is (= 1 (count tick-completed-events)))
             (is (= sheet-id (:sheet-id (first tick-completed-events))))
             (is (= :success (:root-status (first tick-completed-events))))))))))
+
+(deftest execute-correlation-id-test
+  (testing "an explicit correlation UUID overrides the context default"
+    (h/with-async-test-context [ctx]
+      (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command
+                                                :name "Operation Correlation"))
+            sheet-id (-> sheet-result :command-result/events first :sheet-id)
+            context-correlation (random-uuid)
+            explicit-correlation (random-uuid)]
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :output :string))
+        (let [leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf))
+              leaf-id (-> leaf-result :command-result/events first :node-id)]
+          (h/run-and-apply! ctx (h/make-set-node-executor-command
+                                 sheet-id leaf-id :code
+                                 :fn "ai.obney.orc.orc-service.runtime-test/identity-fn"))
+          (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [] [:output]))
+          (is (= :success
+                 (:status (sheet/execute (assoc ctx :orc/correlation-id context-correlation)
+                                         sheet-id {}
+                                         :correlation-id explicit-correlation))))
+          (let [started (first (read-events-by-type (:event-store ctx)
+                                                    :sheet/tree-tick-started))]
+            (is (= explicit-correlation (:correlation-id started)))
+            (is (contains? (:event/tags started)
+                           [:correlation explicit-correlation])))))))
+  (testing "command and query schemas require UUIDs"
+    (is (m/validate (schemas/commands :sheet/tick-tree)
+                    {:sheet-id (random-uuid)
+                     :correlation-id (random-uuid)}))
+    (is (not (m/validate (schemas/commands :sheet/tick-tree)
+                         {:sheet-id (random-uuid)
+                          :correlation-id "not-a-uuid"})))
+    (is (not (m/validate (schemas/queries :sheet/get-correlated-traces)
+                         {:correlation-id "not-a-uuid"})))))
+
+(deftest execute-stream-correlation-id-test
+  (testing "streamed execution uses the same context-level correlation contract"
+    (h/with-async-test-context [ctx]
+      (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command
+                                                :name "Stream Correlation"))
+            sheet-id (-> sheet-result :command-result/events first :sheet-id)
+            correlation-id (random-uuid)]
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :output :string))
+        (let [leaf-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf))
+              leaf-id (-> leaf-result :command-result/events first :node-id)]
+          (h/run-and-apply! ctx (h/make-set-node-executor-command
+                                 sheet-id leaf-id :code
+                                 :fn "ai.obney.orc.orc-service.runtime-test/identity-fn"))
+          (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [] [:output]))
+          (let [stream (sheet/execute-stream (assoc ctx :orc/correlation-id correlation-id)
+                                             sheet-id {} :timeout-ms 20000)
+                result (deref (:result stream) 25000 ::timeout)
+                started (first (read-events-by-type (:event-store ctx)
+                                                    :sheet/tree-tick-started))]
+            ((:close! stream))
+            (is (not= ::timeout result))
+            (is (= :success (:status result)))
+            (is (= correlation-id (:correlation-id started)))
+            (is (contains? (:event/tags started)
+                           [:correlation correlation-id]))))))))

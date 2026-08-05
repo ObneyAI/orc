@@ -1,0 +1,247 @@
+-- allium: 3
+-- colbert.allium
+--
+-- Scope: event-audited late-interaction indexing, retrieval, score
+-- normalization, batching, and in-memory reranking.
+-- Includes: rebuildable index source data, passage splitting constraints,
+-- exact token-level scoring, document aggregation, soft deletion, RRF-shaped
+-- results, and encoder lifecycle.
+-- Excludes: DJL/ONNX/tokenizer APIs, binary artifact layout, filesystem cache,
+-- model download mechanics, Grain plumbing, and the historical Python bridge.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity RetrievalConsumer {}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value DocumentMetadata {
+    value: Any
+}
+
+value IndexConfiguration {
+    model_name: String
+    split_documents: Boolean
+    maximum_passage_tokens: Integer
+}
+
+value SearchResult {
+    content: String
+    score: Decimal
+    rank: Integer
+    document_identifier: String?
+    document_metadata: DocumentMetadata?
+}
+
+value FusionResult {
+    uri: String
+    score: Decimal
+}
+
+value NormalizationOptions {
+    method: linear | sigmoid | batch_relative
+    maximum_score: Decimal?
+    minimum_score: Decimal?
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract LateInteractionRetrieval {
+    search: (index: RetrievalIndex, query: String, count: Integer) -> List<SearchResult>
+    search_batch: (index: RetrievalIndex, queries: List<String>, count: Integer) -> List<List<SearchResult>>
+    rerank: (query: String, documents: List<String>, count: Integer) -> List<SearchResult>
+    normalize_score: (score: Decimal, options: NormalizationOptions) -> Decimal
+    normalize_results: (results: List<SearchResult>, options: NormalizationOptions) -> List<SearchResult>
+    search_for_fusion: (index: RetrievalIndex, query: String, count: Integer, weight: Decimal) -> List<FusionResult>
+
+    @invariant ExactLateInteraction
+        -- A query-document score is the sum, over query token rows, of each
+        -- row's maximum similarity to eligible document token rows.
+
+    @invariant PassageAggregation
+        -- A document's search score and content come from its highest-scoring
+        -- passage, and each document appears at most once in results.
+
+    @invariant DescendingStableRanks
+        -- Results are ordered by descending score and carry consecutive
+        -- one-based ranks after limiting.
+
+    @invariant BatchAlignment
+        -- Batch output contains one result list per query in input order, and
+        -- each list is equivalent to searching that query individually.
+
+    @invariant BoundedNormalization
+        -- Normalized scores lie from zero through one while preserving relative
+        -- order among retained results.
+
+    @invariant FusionIdentity
+        -- Fusion results retain the source document identifier as their URI and
+        -- apply the requested weight after optional normalization.
+}
+
+contract RebuildableIndexArtifact {
+    rebuild: (index: RetrievalIndex) -> Any
+    release_encoders: () -> Any
+
+    @invariant SourceOfTruth
+        -- The durable index record retains source documents, identifiers,
+        -- metadata, model identity, and splitting configuration sufficient to
+        -- rebuild a lost derived index artifact.
+
+    @invariant CompatibleArtifact
+        -- An incompatible, incomplete, or unreadable derived artifact is
+        -- rejected with a rebuild remedy instead of being searched silently.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum IndexStatus { active | deleted }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity RetrievalIndex {
+    name: String
+    status: IndexStatus
+    documents: List<String>
+    document_identifiers: List<String>
+    document_metadatas: List<DocumentMetadata>?
+    document_count: Integer
+    passage_count: Integer
+    configuration: IndexConfiguration
+    created_at: Timestamp
+    deleted_at: Timestamp when status = deleted
+
+    transitions status {
+        active -> deleted
+        terminal: deleted
+    }
+}
+
+entity SearchAudit {
+    index: RetrievalIndex
+    query: String
+    requested_count: Integer
+    result_count: Integer
+    top_score: Decimal?
+    performed_at: Timestamp
+}
+
+entity RerankAudit {
+    query: String
+    input_count: Integer
+    output_count: Integer
+    top_score: Decimal?
+    performed_at: Timestamp
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule CreateRetrievalIndex {
+    when: CreateRetrievalIndex(consumer, name, documents, document_identifiers, document_metadatas, configuration)
+    requires: documents.count = document_identifiers.count
+    requires: document_metadatas = null or document_metadatas.count = documents.count
+    requires: configuration.maximum_passage_tokens > 0
+
+    ensures: RetrievalIndex.created(
+        name: name,
+        status: active,
+        documents: documents,
+        document_identifiers: document_identifiers,
+        document_metadatas: document_metadatas,
+        document_count: documents.count,
+        passage_count: resulting_passage_count(documents, configuration),
+        configuration: configuration,
+        created_at: now,
+        deleted_at: null
+    )
+}
+
+rule DeleteRetrievalIndex {
+    when: DeleteRetrievalIndex(consumer, index)
+    requires: index.status = active
+
+    ensures: index.status = deleted
+    ensures: index.deleted_at = now
+}
+
+rule SearchActiveIndex {
+    when: SearchActiveIndex(consumer, index, query, count)
+    requires: index.status = active
+    requires: count >= 0
+    let results = late_interaction_search(index, query, count)
+
+    ensures: SearchAudit.created(
+        index: index,
+        query: query,
+        requested_count: count,
+        result_count: results.count,
+        top_score: if results.count > 0: results.first.score else: null,
+        performed_at: now
+    )
+    ensures: SearchResultsReturned(consumer: consumer, results: results)
+}
+
+rule RerankDocuments {
+    when: RerankDocuments(consumer, query, documents, count)
+    requires: count >= 0
+    let results = late_interaction_rerank(query, documents, count)
+
+    ensures: RerankAudit.created(
+        query: query,
+        input_count: documents.count,
+        output_count: results.count,
+        top_score: if results.count > 0: results.first.score else: null,
+        performed_at: now
+    )
+    ensures: SearchResultsReturned(consumer: consumer, results: results)
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant AlignedIndexSourceData {
+    for index in RetrievalIndexes:
+        index.documents.count = index.document_identifiers.count
+        and (index.document_metadatas = null or index.document_metadatas.count = index.documents.count)
+}
+
+invariant UniqueDocumentIdentifiersWithinIndex {
+    for index in RetrievalIndexes:
+        index.document_identifiers.unique.count = index.document_identifiers.count
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface ColbertRetrieval {
+    facing consumer: RetrievalConsumer
+
+    provides:
+        CreateRetrievalIndex(consumer, name, documents, document_identifiers, document_metadatas, configuration)
+        DeleteRetrievalIndex(consumer, index)
+        SearchActiveIndex(consumer, index, query, count)
+        RerankDocuments(consumer, query, documents, count)
+
+    contracts:
+        fulfils LateInteractionRetrieval
+        fulfils RebuildableIndexArtifact
+
+    @guarantee DeletedIndexesAreNotSearchable
+        -- Soft deletion preserves rebuild source data and audit history but
+        -- rejects subsequent indexed searches.
+}
+

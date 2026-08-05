@@ -1,0 +1,84 @@
+-- allium: 3
+-- file-storage.allium
+--
+-- Scope: the durable file-storage behavior exposed by file-store and supplied
+-- by the local and S3 adapters.
+-- Includes: lifecycle, replacement writes, byte-preserving reads, and stable
+-- location descriptions.
+-- Excludes: filesystem paths, directory creation, S3 buckets and keys, AWS
+-- clients, LocalStack, tracing, and other implementation/configuration details.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity StorageConsumer {}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value FileIdentifier {
+    value: String
+}
+
+value FileContents {
+    value: Any
+}
+
+value FileLocation {
+    value: Any
+}
+
+value StorageConfiguration {
+    value: Any
+}
+
+value StorageSession {
+    value: Any
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract FileStorage {
+    start: (configuration: StorageConfiguration) -> StorageSession
+    stop: (session: StorageSession) -> StorageSession
+    put_file: (session: StorageSession, identifier: FileIdentifier, contents: FileContents) -> Any
+    get_file: (session: StorageSession, identifier: FileIdentifier) -> FileContents
+    locate_file: (session: StorageSession, identifier: FileIdentifier) -> FileLocation
+
+    @invariant RetrievalRoundtrip
+        -- Reading an identifier after a successful write returns exactly the
+        -- file contents supplied by the most recent successful write.
+
+    @invariant Replacement
+        -- Writing an existing identifier replaces its previous contents.
+
+    @invariant IdentifierContainment
+        -- An identifier cannot address data outside the configured store.
+
+    @invariant StableLocation
+        -- Locating the same identifier in the same configured store yields an
+        -- equivalent location description without changing stored contents.
+
+    @guidance
+        -- Implementations may represent locations differently; consumers must
+        -- treat them as opaque descriptions suitable for that implementation.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface FileStorageIntegration {
+    facing consumer: StorageConsumer
+
+    contracts:
+        fulfils FileStorage
+
+    @guarantee UnsupportedStoreRejected
+        -- Starting a store whose implementation type is unavailable is
+        -- rejected instead of silently selecting a different implementation.
+}

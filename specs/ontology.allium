@@ -1,0 +1,571 @@
+-- allium: 3
+-- ontology.allium
+--
+-- ORC's event-sourced semantic memory: static and learned concepts, Living
+-- Descriptions, hybrid retrieval, and batch or incremental ontology building.
+
+external entity OntologyConsumer {}
+external entity EvaluationTrace { tree_id: String }
+
+value ConceptDefinition {
+    uri: String
+    label: String
+    description: String
+    scope: ConceptScope
+}
+
+value Principle {
+    trait: String
+    context_guard: String
+    recommendation: String
+    confidence: Decimal
+    evidence_count: Integer
+}
+
+value DescriptionBody {
+    capabilities: List<String>
+    strengths: List<Principle>
+    weaknesses: List<Principle>
+    representative_uses: List<String>
+    avoid_when: List<String>
+    summary: String
+    version: Integer
+    consolidated_event_count: Integer
+    behavioral_subtree_identifiers: List<String>
+}
+
+value SearchResult {
+    document_identifier: String
+    content: String
+    graph_score: Decimal?
+    embedding_score: Decimal?
+    colbert_score: Decimal?
+    fitness_score: Decimal?
+    reasoning: String?
+}
+
+value BuildConfiguration {
+    base_uri: String
+    similarity_threshold: Decimal
+    emit_same_as: Boolean
+    include_metadata: Boolean
+}
+
+value SourceSpecification {
+    source_uri: String?
+    source_type: SourceType
+    content: String?
+    namespace: String?
+    metadata: Any
+}
+
+value ResolutionSummary {
+    exact_matches: Integer
+    semantic_matches: Integer
+    unmatched: Integer
+}
+
+contract TextEmbedding {
+    embed: (text: String) -> List<Decimal>
+    embed_batch: (texts: List<String>) -> List<List<Decimal>>
+
+    @invariant ComparableDimensions
+        -- Embeddings compared in one search use the same configured model.
+}
+
+contract SemanticReranking {
+    rerank: (intent: String, candidates: List<SearchResult>) -> List<SearchResult>
+
+    @invariant DeltaOnlyResults
+        -- Reranking adds identity, reasoning, and bounded fitness; stored content
+        -- and metadata are joined back after ranking.
+
+    @invariant FailureIsVisible
+        -- Timeout or malformed output is surfaced and original candidates survive.
+}
+
+contract OntologyExtraction {
+    extract: (source: SourceSpecification, context: Any) -> Any
+
+    @invariant SourceAwareExtraction
+        -- CSV, JSON, SQL, RDF, and text retain provenance and use their extractor.
+}
+
+enum ConceptScope {
+    failure | success | problem | node_type | custom | tree_class | behavioral_subtree
+}
+enum SourceType { csv | json | sql | rdf | text }
+enum BuildMode { batch | incremental }
+enum BuildStatus { running | completed | failed }
+enum DescriptionGranularity { node_type | node_instance | tree_fingerprint }
+
+entity Ontology {
+    name: String
+    scope: ConceptScope
+    base_uri: String
+    created_at: Timestamp
+
+    concepts: Concept with ontology = this
+    builds: OntologyBuild with ontology = this
+}
+
+entity Concept {
+    ontology: Ontology
+    uri: String
+    label: String
+    description: String
+    scope: ConceptScope
+    embedding: List<Decimal>?
+    created_at: Timestamp
+    updated_at: Timestamp?
+
+    outgoing: ConceptRelationship with source = this
+    incoming: ConceptRelationship with target = this
+}
+
+entity ConceptRelationship {
+    source: Concept
+    target: Concept
+    predicate: String
+    properties: Any
+    created_at: Timestamp
+}
+
+entity TreeProfile {
+    tree_id: String
+    strengths: List<Principle>
+    weaknesses: List<Principle>
+    problem_mappings: Any
+    learned_rules: Any
+    embedding: List<Decimal>?
+}
+
+entity LivingDescription {
+    granularity: DescriptionGranularity
+    target_identifier: String
+    current_body: DescriptionBody
+    version: Integer
+    updated_at: Timestamp
+
+    versions: DescriptionVersion with description = this
+}
+
+entity DescriptionVersion {
+    description: LivingDescription
+    body: DescriptionBody
+    recorded_at: Timestamp
+    evidence_event_count: Integer
+}
+
+entity ConsolidationPolicy {
+    target_type: String
+    event_threshold: Integer
+    hourly_budget: Integer
+    enabled: Boolean
+}
+
+entity RegisteredSource {
+    source_identifier: String
+    source_uri: String?
+    source_type: SourceType
+    content_hash: String
+    namespace: String?
+    registered_at: Timestamp
+
+    extractions: SourceExtraction with source = this
+}
+
+entity OntologyBuild {
+    ontology: Ontology
+    mode: BuildMode
+    status: BuildStatus
+    configuration: BuildConfiguration
+    started_at: Timestamp
+    completed_at: Timestamp?
+    failure_reason: String?
+    triple_count: Integer
+    ttl_output: String?
+    checksum: String?
+    resolution: ResolutionSummary?
+
+    transitions status {
+        running -> completed
+        running -> failed
+        terminal: completed, failed
+    }
+
+    source_extractions: SourceExtraction with build = this
+}
+
+entity SourceExtraction {
+    build: OntologyBuild
+    source: RegisteredSource
+    extracted_concept_count: Integer
+    extracted_relationship_count: Integer
+    extracted_schema: Any
+}
+
+entity CanonicalMapping {
+    ontology: Ontology
+    source_uri: String
+    canonical_uri: String
+    match_type: String
+    similarity: Decimal
+}
+
+rule InitializeOntology {
+    when: InitializeOntologyRequested(consumer, name, scope, base_uri)
+
+    ensures: Ontology.created(
+        name: name,
+        scope: scope,
+        base_uri: base_uri,
+        created_at: now
+    )
+}
+
+rule AddConcept {
+    when: ConceptCreationRequested(ontology, definition)
+    requires: ontology.concepts.none(concept => concept.uri = definition.uri)
+
+    ensures: Concept.created(
+        ontology: ontology,
+        uri: definition.uri,
+        label: definition.label,
+        description: definition.description,
+        scope: definition.scope,
+        embedding: null,
+        created_at: now,
+        updated_at: null
+    )
+}
+
+rule LinkConcepts {
+    when: RelationshipCreationRequested(ontology, source, target, predicate, properties)
+    requires: source.ontology = ontology
+    requires: target.ontology = ontology
+
+    ensures: ConceptRelationship.created(
+        source: source,
+        target: target,
+        predicate: predicate,
+        properties: properties,
+        created_at: now
+    )
+}
+
+rule ClassifyEvaluationFailure {
+    when: EvaluationClassified(trace, failure_uri, severity, triggers)
+
+    ensures: TreeWeaknessRecorded(
+        tree_id: trace.tree_id,
+        failure_uri: failure_uri,
+        severity: severity,
+        triggers: triggers
+    )
+}
+
+rule RecordSuccessfulPattern {
+    when: SuccessfulTreeOutcomeObserved(trace, pattern_uri, confidence, context, action)
+
+    ensures: TreeStrengthRecorded(
+        tree_id: trace.tree_id,
+        pattern_uri: pattern_uri,
+        confidence: confidence,
+        context: context,
+        action: action
+    )
+}
+
+rule ExtractLearnedRules {
+    when: LearnedRuleExtractionRequested(tree_profile, minimum_confidence)
+    requires: tree_profile.strengths.count + tree_profile.weaknesses.count > 0
+
+    ensures: LearnedRulesExtracted(
+        tree_id: tree_profile.tree_id,
+        rules: infer_condition_action_rules(tree_profile, minimum_confidence)
+    )
+}
+
+rule SeedBaselineDescriptions {
+    when: BaselineCorpusSeedingRequested(consumer)
+
+    ensures: BaselineDescriptionsRecorded(
+        scopes: { node_type, tree_class, behavioral_subtree },
+        preserve_history: true
+    )
+}
+
+rule RequestThresholdConsolidation {
+    when: RelevantLearningEventRecorded(target_type, target_identifier, delta)
+    let policy = policy_for(target_type)
+    requires: policy.enabled = true
+    requires: delta >= policy.event_threshold
+    requires: recent_consolidations(target_type) < policy.hourly_budget
+
+    ensures: DescriptionConsolidationRequested(
+        target_type: target_type,
+        target_identifier: target_identifier
+    )
+}
+
+rule ConsolidateDescription {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count)
+    let existing = current_description(granularity, target_identifier)
+    requires: anti_recency_accepts(existing, candidate_body, evidence_count) = true
+
+    ensures: LivingDescription.created_or_updated(
+        granularity: granularity,
+        target_identifier: target_identifier,
+        current_body: candidate_body,
+        version: next_version(existing),
+        updated_at: now
+    )
+    ensures: DescriptionVersion.created(
+        description: description_for(granularity, target_identifier),
+        body: candidate_body,
+        recorded_at: now,
+        evidence_event_count: evidence_count
+    )
+}
+
+rule RejectRecencyBiasedDescription {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count)
+    let existing = current_description(granularity, target_identifier)
+    requires: anti_recency_accepts(existing, candidate_body, evidence_count) = false
+
+    ensures: AntiRecencyRejectionRecorded(
+        granularity: granularity,
+        target_identifier: target_identifier,
+        candidate_body: candidate_body
+    )
+}
+
+rule MintNovelBehavior {
+    when: NovelBehaviorConfirmed(tree_class, behavior_body, supporting_evidence)
+    requires: supporting_evidence.count > 0
+
+    ensures: BehavioralSubtreeMinted(
+        tree_class: tree_class,
+        body: behavior_body,
+        supporting_evidence: supporting_evidence
+    )
+}
+
+rule SearchOntologyMemory {
+    when: OntologySearchRequested(consumer, ontology, query, scopes, limit, rerank)
+    requires: limit > 0
+    let graph_candidates = spreading_activation(ontology, query, scopes)
+    let semantic_candidates = embedding_search(ontology, query, scopes)
+    let fused = reciprocal_rank_fusion(graph_candidates, semantic_candidates)
+
+    ensures: OntologySearchCompleted(
+        consumer: consumer,
+        results: optionally_rerank(fused, query, rerank).take(limit)
+    )
+}
+
+rule SearchLivingDescriptions {
+    when: DescriptionSearchRequested(consumer, intent, granularities, limit, rerank)
+    requires: limit > 0
+
+    ensures: DescriptionSearchCompleted(
+        consumer: consumer,
+        results: search_description_corpus(intent, granularities, rerank).take(limit)
+    )
+}
+
+rule StartBatchBuild {
+    when: BuildFromSourcesRequested(consumer, name, scope, sources, configuration)
+    requires: sources.count > 0
+    let ontology = new_ontology(name, scope, configuration.base_uri)
+
+    ensures: OntologyBuild.created(
+        ontology: ontology,
+        mode: batch,
+        status: running,
+        configuration: configuration,
+        started_at: now,
+        completed_at: null,
+        failure_reason: null,
+        triple_count: 0,
+        ttl_output: null,
+        checksum: null,
+        resolution: null
+    )
+    ensures: SourcesSubmittedForExtraction(build: created, sources: sources)
+}
+
+rule StartIncrementalBuild {
+    when: EvolveOntologyRequested(consumer, ontology, sources, configuration)
+    requires: sources.count > 0
+
+    ensures: OntologyBuild.created(
+        ontology: ontology,
+        mode: incremental,
+        status: running,
+        configuration: configuration,
+        started_at: now,
+        completed_at: null,
+        failure_reason: null,
+        triple_count: 0,
+        ttl_output: null,
+        checksum: null,
+        resolution: null
+    )
+    ensures: SourcesSubmittedForExtraction(build: created, sources: sources)
+}
+
+rule RegisterUniqueSource {
+    when: SourceRegistrationRequested(build, specification, content_hash)
+    requires: no_registered_source_has_hash(content_hash)
+
+    ensures: RegisteredSource.created(
+        source_identifier: new_identifier(),
+        source_uri: specification.source_uri,
+        source_type: specification.source_type,
+        content_hash: content_hash,
+        namespace: specification.namespace,
+        registered_at: now
+    )
+    ensures: SourceExtractionRequested(build: build, source: created)
+}
+
+rule SkipDuplicateSource {
+    when: SourceRegistrationRequested(build, specification, content_hash)
+    requires: no_registered_source_has_hash(content_hash) = false
+
+    ensures: DuplicateSourceSkipped(build: build, source: source_with_hash(content_hash))
+}
+
+rule RecordSourceExtraction {
+    when: SourceExtractionCompleted(build, source, concepts, relationships, schema)
+    requires: build.status = running
+
+    ensures: SourceExtraction.created(
+        build: build,
+        source: source,
+        extracted_concept_count: concepts.count,
+        extracted_relationship_count: relationships.count,
+        extracted_schema: schema
+    )
+    ensures: ExtractedGraphContributionRecorded(
+        build: build,
+        source: source,
+        concepts: concepts,
+        relationships: relationships
+    )
+}
+
+rule ResolveAndMergeBuild {
+    when: AllBuildSourcesExtracted(build)
+    requires: build.status = running
+    let resolution = resolve_entities_by_type_then_similarity(build)
+
+    ensures: CanonicalMappingsRecorded(build: build, resolution: resolution)
+    ensures: UnifiedGraphMerged(build: build, resolution: resolution)
+    ensures: TurtleSnapshotRequested(build: build)
+}
+
+rule CompleteBuild {
+    when: TurtleSnapshotCreated(build, ttl_output, triple_count, checksum, resolution)
+    requires: build.status = running
+
+    ensures: build.status = completed
+    ensures: build.completed_at = now
+    ensures: build.ttl_output = ttl_output
+    ensures: build.triple_count = triple_count
+    ensures: build.checksum = checksum
+    ensures: build.resolution = resolution
+    ensures: OntologyBuildCompleted(build: build)
+}
+
+rule FailBuild {
+    when: OntologyBuildCannotContinue(build, reason)
+    requires: build.status = running
+
+    ensures: build.status = failed
+    ensures: build.completed_at = now
+    ensures: build.failure_reason = reason
+    ensures: OntologyBuildFailed(build: build, reason: reason)
+}
+
+invariant ConceptUrisAreUniqueWithinOntology {
+    for a in Concepts:
+        for b in Concepts:
+            a != b and a.ontology = b.ontology implies a.uri != b.uri
+}
+
+invariant RelationshipsStayWithinOntology {
+    for relationship in ConceptRelationships:
+        relationship.source.ontology = relationship.target.ontology
+}
+
+invariant DescriptionHistoryIsAppendOnly {
+    for version in DescriptionVersions:
+        version.recorded_at <= version.description.updated_at
+}
+
+invariant DescriptionConfidenceIsBounded {
+    for description in LivingDescriptions:
+        description.current_body.strengths.all(principle => principle.confidence >= 0 and principle.confidence <= 1)
+        and description.current_body.weaknesses.all(principle => principle.confidence >= 0 and principle.confidence <= 1)
+}
+
+invariant ContentHashesDeduplicateSources {
+    for a in RegisteredSources:
+        for b in RegisteredSources:
+            a != b implies a.content_hash != b.content_hash
+}
+
+invariant BuildResolutionScoresAreBounded {
+    for mapping in CanonicalMappings:
+        mapping.similarity >= 0 and mapping.similarity <= 1
+}
+
+invariant CompletedBuildHasSnapshot {
+    for build in OntologyBuilds:
+        build.status = completed implies
+            build.ttl_output != null and build.checksum != null and build.completed_at != null
+}
+
+surface SemanticMemory {
+    facing consumer: OntologyConsumer
+
+    provides:
+        InitializeOntologyRequested(consumer, name, scope, base_uri)
+        ConceptCreationRequested(ontology, definition)
+        RelationshipCreationRequested(ontology, source, target, predicate, properties)
+        BaselineCorpusSeedingRequested(consumer)
+        LearnedRuleExtractionRequested(tree_profile, minimum_confidence)
+        OntologySearchRequested(consumer, ontology, query, scopes, limit, rerank)
+        DescriptionSearchRequested(consumer, intent, granularities, limit, rerank)
+        BuildFromSourcesRequested(consumer, name, scope, sources, configuration)
+        EvolveOntologyRequested(consumer, ontology, sources, configuration)
+
+    exposes:
+        Ontology
+        Concept
+        ConceptRelationship
+        TreeProfile
+        LivingDescription
+        RegisteredSource
+        OntologyBuild
+        CanonicalMapping
+
+    contracts:
+        demands TextEmbedding
+        demands SemanticReranking
+        fulfils OntologyExtraction
+
+    @guarantee ScopedMemory
+        -- Every concept query and traversal is scoped to one ontology.
+
+    @guarantee AuditableEvolution
+        -- Graph changes, description versions, sources, resolution decisions,
+        -- and snapshots remain reconstructable from events.
+
+    @guarantee ReadWriteOptInSeparation
+        -- Description retrieval and description-writing consolidation are
+        -- independently enabled.
+}

@@ -560,7 +560,9 @@
                ;; child tick spawned around the moment its parent was
                ;; cancelled still self-terminates.
                (:parent-tick-id event)
-               (assoc :parent-tick-id (:parent-tick-id event)))))))
+               (assoc :parent-tick-id (:parent-tick-id event))
+               (:correlation-id event)
+               (assoc :correlation-id (:correlation-id event)))))))
 
 (defmethod ticks* :sheet/tree-tick-completed
   [state event]
@@ -854,17 +856,22 @@
   [state event]
   (let [trace-id (:trace-id event)]
     (assoc state trace-id
-           {:trace-id trace-id
-            :sheet-id (:sheet-id event)
-            :version-number (:version-number event)
-            :started-at (str (:started-at event))
-            :completed-at (str (:completed-at event))
-            :duration-ms (:duration-ms event)
-            :status (:status event)
-            :input-snapshot (:input-snapshot event)
-            :output-snapshot (:output-snapshot event)
-            :node-traces (:node-traces event)
-            :error (:error event)})))
+           (cond-> {:trace-id trace-id
+                    :sheet-id (:sheet-id event)
+                    :correlation-id (:correlation-id event)
+                    :root-trace-id (:root-trace-id event)
+                    :child-trace-ids (vec (or (:child-trace-ids event) []))
+                    :started-at (str (:started-at event))
+                    :completed-at (str (:completed-at event))
+                    :duration-ms (:duration-ms event)
+                    :status (:status event)
+                    :input-snapshot (:input-snapshot event)
+                    :output-snapshot (:output-snapshot event)
+                    :node-traces (:node-traces event)}
+             (nil? (:correlation-id event)) (dissoc :correlation-id)
+             (:parent-trace-id event) (assoc :parent-trace-id (:parent-trace-id event))
+             (:version-number event) (assoc :version-number (:version-number event))
+             (:error event) (assoc :error (:error event))))))
 
 (defmethod traces* :default [state _] state)
 
@@ -874,7 +881,7 @@
   (reduce traces* (or initial-state {}) events))
 
 (defreadmodel :sheet traces
-  {:events trace-events :version 2
+  {:events trace-events :version 4
    :partition-fn :sheet-id
    :entity-id-fn :trace-id}
   [state event] (traces* state event))
@@ -893,6 +900,12 @@
   "Get all execution traces for a sheet"
   [ctx sheet-id]
   (vals (rmp/project ctx :sheet/traces {:partition-key sheet-id})))
+
+(defn get-traces-for-correlation
+  "Get traces carrying a caller-defined operation correlation UUID."
+  [ctx correlation-id]
+  (vals (rmp/project ctx :sheet/traces
+                     {:tags #{[:correlation correlation-id]}})))
 
 (defn get-traces-for-version
   "Get all execution traces for a specific version of a sheet"
@@ -993,6 +1006,8 @@
                       :options (:options event)}
                (:instruction-overrides snapshot)
                (assoc :instruction-overrides (:instruction-overrides snapshot))
+               (:correlation-id event)
+               (assoc :correlation-id (:correlation-id event))
                ;; G1 (ADR 0018): surface the opaque :tool-context per tick so
                ;; execute-leaf-node can assoc it onto the leaf's context at any
                ;; depth. Absent -> not stored (backward-compatible).
@@ -1056,7 +1071,7 @@
 ;; mixed-shape blackboard. A fresh key space forces re-derivation from events,
 ;; which reproduces the metadata exactly (including every :source).
 (defreadmodel :sheet tick-execution-contexts
-  {:events tick-execution-context-events :version 3
+  {:events tick-execution-context-events :version 4
    :partition-fn :sheet-id
    :entity-id-fn :tick-id}
   [state event] (tick-execution-contexts* state event))

@@ -13,7 +13,9 @@
 (deftest execution-traced-event-accepts-partial-status
   (testing ":sheet/execution-traced (trace event) accepts :status :partial"
     (let [schema (schemas/events :sheet/execution-traced)
-          ev {:trace-id (random-uuid) :sheet-id (random-uuid)
+          trace-id (random-uuid)
+          ev {:trace-id trace-id :sheet-id (random-uuid)
+              :root-trace-id trace-id :child-trace-ids []
               :started-at "t0" :completed-at "t1" :duration-ms 1
               :status :partial
               :input-snapshot {} :output-snapshot {} :node-traces []}]
@@ -41,7 +43,9 @@
 (deftest runs-screen-result-summary-accepts-partial-status
   (testing ":sheet/runs-screen-result trace summaries accept :status :partial"
     (let [schema (schemas/queries :sheet/runs-screen-result)
-          summary {:trace-id (random-uuid) :sheet-id (random-uuid)
+          trace-id (random-uuid)
+          summary {:trace-id trace-id :sheet-id (random-uuid)
+                   :root-trace-id trace-id :child-trace-ids []
                    :sheet-name "s" :status :partial
                    :started-at "t0" :duration-ms 1 :node-count 1}]
       (is (m/validate schema {:traces [summary] :total 1})

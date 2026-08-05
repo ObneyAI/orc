@@ -544,7 +544,7 @@
 
    Accepts every runtime/execute option (:timeout-ms :use-version
    :force-draft :trace? :langfuse-client :store-trace? :max-ticks
-   :llm-call-budget :tick-id) plus subscription opts (:include-values?
+   :llm-call-budget :tick-id :correlation-id) plus subscription opts (:include-values?
    :buffer :ttl-ms).
 
    Returns {:tick-id uuid
@@ -555,11 +555,13 @@
   [context sheet-id inputs & {:keys [timeout-ms use-version force-draft
                                      trace? langfuse-client store-trace?
                                      max-ticks llm-call-budget tick-id
+                                     correlation-id
                                      include-values? llm-deltas? raw-deltas? buffer ttl-ms]
                               :or {timeout-ms 300000 store-trace? true
                                    include-values? true
                                    buffer default-buffer}}]
-  (let [tick-id (or tick-id (random-uuid))
+  (let [correlation-id (or correlation-id (:orc/correlation-id context))
+        tick-id (or tick-id (random-uuid))
         subscription (subscribe-execution context tick-id
                                           :include-values? include-values?
                                           :llm-deltas? llm-deltas?
@@ -588,6 +590,7 @@
                                                    llm-call-budget (assoc :llm-call-budget llm-call-budget))}
                                  use-version (assoc :use-version use-version)
                                  force-draft (assoc :force-draft force-draft)
+                                 correlation-id (assoc :correlation-id correlation-id)
                                  ;; CE-5b FIX A (ADR 0018): carry the OPAQUE
                                  ;; :tool-context off the execute-stream context
                                  ;; onto the root :sheet/tick-tree command so it

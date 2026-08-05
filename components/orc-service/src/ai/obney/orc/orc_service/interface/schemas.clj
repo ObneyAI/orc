@@ -222,11 +222,9 @@
     [:parent-id {:optional true} :uuid]           ;; Parent node ID (for reference only)
     [:path [:vector :string]]                     ;; Path from root e.g. ["root" "fallback-1" "task-a"]
     [:child-index {:optional true} :int]          ;; Which child of parent (0-indexed)
-    ;; Execution context (map-each correlation). A node-id is NOT unique within
-    ;; a tick — map-each runs the same child node once per item — so
-    ;; (node-id, exec-context) is what identifies ONE execution. Consumers
-    ;; rehydrating per-node values must key on the pair; see
-    ;; value-log/execution-key. Empty map for nodes outside a map-each.
+    ;; Internal map-each correlation context. Public consumers address one
+    ;; execution by :trace-instance-id; the service uses this context to join
+    ;; that instance back to its lifecycle and canonical value events.
     [:exec-context {:optional true} :map]
     [:status [:enum :success :failure :running :skipped :partial :timeout]]
     [:started-at :any]
@@ -245,6 +243,10 @@
    [:map
     [:trace-id :uuid]
     [:sheet-id :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
     [:version-number {:optional true} :int]       ;; nil = draft execution
     [:started-at :any]
     [:completed-at :any]
@@ -513,6 +515,7 @@
     ;; Lineage: tick that spawned this one (RLM Phase 2 trees, delegate
     ;; nodes). Lets observers correlate a child-tick cascade to its root.
     [:parent-tick-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
     ;; Fields for async execution with isolated blackboard
     [:inputs {:optional true} :map]
     ;; Canonical sources for inputs already durable in another tick.
@@ -703,12 +706,17 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
+    [:correlation-id {:optional true} :uuid]
     [:root-status :keyword]]
 
    :sheet/store-execution-trace
    [:map
     [:trace-id :uuid]
     [:sheet-id :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
     [:version-number {:optional true} :int]
     [:started-at :any]
     [:completed-at :any]
@@ -999,6 +1007,7 @@
     ;; Lineage: tick that spawned this one (RLM Phase 2 trees, delegate
     ;; nodes). Absent for root ticks and on events from older versions.
     [:parent-tick-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
     [:iteration {:optional true} :int]
     ;; Fields for async execution with isolated blackboard
     [:seed-sources {:optional true} [:map-of :keyword
@@ -1135,6 +1144,7 @@
    [:map
     [:sheet-id :uuid]
     [:tick-id :uuid]
+    [:correlation-id {:optional true} :uuid]
     [:iteration {:optional true} :int]
     ;; D-008: :partial added so map-each can surface partial outcomes.
     ;; D-003: :timeout added so RLM repl-researcher can surface Phase 2
@@ -1266,6 +1276,10 @@
    [:map
     [:trace-id :uuid]
     [:sheet-id :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
     [:version-number {:optional true} :int]
     [:started-at :any]
     [:completed-at :any]
@@ -1466,6 +1480,43 @@
    [:map
     [:trace ::execution-trace]]
 
+   :sheet/get-trace-family
+   [:map
+    [:trace-id :uuid]]
+
+   ::trace-family-summary
+   [:map
+    [:trace-id :uuid]
+    [:sheet-id :uuid]
+    [:correlation-id {:optional true} :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
+    [:status [:enum :success :failure :timeout :partial]]
+    [:started-at :any]
+    [:duration-ms :int]
+    [:node-count :int]]
+
+   :sheet/get-trace-family-result
+   [:map
+    [:root-trace-id :uuid]
+    [:traces [:vector ::trace-family-summary]]]
+
+   :sheet/get-correlated-traces
+   [:map
+    [:correlation-id :uuid]]
+
+   ::correlated-trace-family
+   [:map
+    [:root-trace-id :uuid]
+    [:traces [:vector ::trace-family-summary]]]
+
+   :sheet/get-correlated-traces-result
+   [:map
+    [:correlation-id :uuid]
+    [:traces [:vector ::trace-family-summary]]
+    [:families [:vector ::correlated-trace-family]]]
+
    :sheet/get-traces
    [:map
     [:sheet-id :uuid]
@@ -1501,6 +1552,9 @@
    [:map
     [:trace-id :uuid]
     [:sheet-id :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
     [:sheet-name :string]
     [:status [:enum :success :failure :timeout :partial]]
     [:started-at :any]
@@ -1512,11 +1566,13 @@
    :sheet/node-trace-detail
    [:map
     [:trace-id :uuid]
-    [:node-id :uuid]]
+    [:trace-instance-id :uuid]]
 
    :sheet/node-trace-detail-result
    [:map
     [:node-id :uuid]
+    [:trace-instance-id :uuid]
+    [:exec-context {:optional true} :map]
     [:inputs {:optional true} :map]
     [:outputs {:optional true} :map]]
 

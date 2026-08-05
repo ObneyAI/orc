@@ -1,0 +1,308 @@
+-- allium: 3
+-- evaluation.allium
+--
+-- Scope: post-execution quality evaluation for ORC traces and node completions.
+-- Includes: criteria/stance/scale separation, discrete band scoring, typed
+-- evidence before verdict, no-run-through validation, four built-in LLM judges,
+-- structural and custom judges, weighted aggregation, asynchronous per-node
+-- evaluation, idempotent score recording, composite scores, and trace summaries.
+-- Excludes: model-provider calls, prompt/tool-schema implementation, Grain
+-- processor mechanics, logging, and ORC trace storage.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity EvaluationConsumer {}
+
+external entity OrcNode {
+    node_type: String
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value TraceEvidence {
+    sheet_identifier: String
+    node_identifier: String
+    tick_identifier: String
+    instruction: String
+    inputs: Any
+    outputs: Any
+    execution_trace: Any?
+    completion_kind: String?
+}
+
+value DiscreteScale {
+    minimum_level: Integer
+    maximum_level: Integer
+    band_descriptions: Any
+}
+
+value BandedJudgeOutput {
+    reasoning: String
+    positive_evidence: List<String>
+    negative_evidence: List<String>
+    level: Integer
+    feedback: String
+}
+
+value MetricDimension {
+    name: String
+    weight: Decimal
+    score: Decimal
+    feedback: String
+}
+
+value ScoreWithFeedback {
+    score: Decimal
+    feedback: String
+    dimensions: List<MetricDimension>
+}
+
+value EvaluationStatistics {
+    average_score: Decimal
+    minimum_score: Decimal
+    maximum_score: Decimal
+    low_scoring_results: List<ScoreWithFeedback>
+}
+
+value JudgeConfiguration {
+    definition: Any
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract DiscreteBandScoring {
+    validate_scale: (scale: DiscreteScale) -> Any
+    score_level: (scale: DiscreteScale, level: Integer) -> Decimal
+    gate_output: (scale: DiscreteScale, output: BandedJudgeOutput) -> ScoreWithFeedback
+
+    @invariant CompleteBands
+        -- Minimum is lower than maximum and every integer level in the closed
+        -- range has a non-empty, explicit quality description.
+
+    @invariant DeterministicMapping
+        -- A valid level maps to (level - minimum) / (maximum - minimum), yielding
+        -- zero at the lowest band and one at the highest.
+
+    @invariant NoRunThrough
+        -- Nil, empty, missing-level, non-integral, and out-of-range judge output
+        -- is rejected rather than silently converted to a score.
+
+    @invariant ScoreNotSelfReported
+        -- The model chooses a discrete level after producing reasoning and
+        -- evidence; the continuous score is derived by the evaluator.
+}
+
+contract TraceJudge {
+    evaluate: (judge: Judge, trace: TraceEvidence) -> ScoreWithFeedback
+    evaluate_all: (judges: List<Judge>, trace: TraceEvidence) -> ScoreWithFeedback
+    evaluate_many: (judges: List<Judge>, traces: List<TraceEvidence>, low_score_threshold: Decimal) -> EvaluationStatistics
+
+    @invariant CriteriaStanceScaleSeparation
+        -- What a judge evaluates, its adversarial review stance, and its scoring
+        -- scale are independent artifacts composed only at evaluation time.
+
+    @invariant ReasonBeforeVerdict
+        -- Typed judge output orders reasoning and concrete positive/negative
+        -- evidence before the discrete level and actionable feedback.
+
+    @invariant FailureIsolation
+        -- A judge failure or timeout does not suppress successful results from
+        -- other judges evaluating the same completion.
+
+    @invariant CustomJudgeConfinement
+        -- A custom judge runs as a bounded ORC subworkflow, must return a numeric
+        -- score from zero through one, and cannot recurse beyond configured depth.
+}
+
+contract EvaluationAttachmentResolver {
+    effective_judges: (node: OrcNode, completion_kind: String?, living_description_enabled: Boolean) -> List<Judge>
+
+    @invariant ExplicitAttachmentWins
+        -- An explicit node attachment, including an empty attachment, overrides
+        -- all defaults.
+
+    @invariant OptInDefaults
+        -- With no explicit attachment, the five default judges apply only to
+        -- repl-researcher nodes when Living Descriptions are enabled.
+
+    @invariant CompletionKindFiltering
+        -- A judge declaring completion kinds runs only for matching non-null
+        -- kinds; judges without such a filter apply to every completion.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum JudgeType {
+    grounding | instruction_following | reasoning | completeness |
+    heuristic_structural | custom
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity Judge {
+    name: String
+    judge_type: JudgeType
+    criteria: String
+    adversarial_stance: String
+    scale: DiscreteScale?
+    weight: Decimal?
+    configuration: JudgeConfiguration
+    applicable_completion_kinds: Set<String>?
+}
+
+entity JudgeScore {
+    sheet_identifier: String
+    node_identifier: String
+    tick_identifier: String
+    judge: Judge
+    score: Decimal
+    feedback: String
+    dimensions: List<MetricDimension>
+    emitted_at: Timestamp
+}
+
+entity CompositeScore {
+    sheet_identifier: String
+    node_identifier: String
+    tick_identifier: String
+    score: Decimal
+    contributing_scores: Set<JudgeScore>
+    emitted_at: Timestamp
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule EvaluateCompletedNode {
+    when: NodeCompletionAvailable(trace, effective_judges)
+    requires: effective_judges.count > 0
+
+    ensures:
+        for judge in effective_judges:
+            JudgeEvaluationRequested(judge: judge, trace: trace)
+}
+
+rule RecordSuccessfulJudgeEvaluation {
+    when: JudgeEvaluationSucceeded(judge, trace, result)
+    requires: result.score >= 0
+    requires: result.score <= 1
+    requires: not exists JudgeScore{
+        sheet_identifier: trace.sheet_identifier,
+        node_identifier: trace.node_identifier,
+        tick_identifier: trace.tick_identifier,
+        judge: judge
+    }
+
+    ensures: JudgeScore.created(
+        sheet_identifier: trace.sheet_identifier,
+        node_identifier: trace.node_identifier,
+        tick_identifier: trace.tick_identifier,
+        judge: judge,
+        score: result.score,
+        feedback: result.feedback,
+        dimensions: result.dimensions,
+        emitted_at: now
+    )
+    ensures: CompositeEvaluationRequested(
+        sheet_identifier: trace.sheet_identifier,
+        node_identifier: trace.node_identifier,
+        tick_identifier: trace.tick_identifier
+    )
+}
+
+rule RecordCompositeEvaluation {
+    when: CompositeEvaluationRequested(sheet_identifier, node_identifier, tick_identifier)
+    let scores = JudgeScores where
+        sheet_identifier = sheet_identifier
+        and node_identifier = node_identifier
+        and tick_identifier = tick_identifier
+    requires: scores.count >= 2
+    requires: not exists CompositeScore{
+        sheet_identifier: sheet_identifier,
+        node_identifier: node_identifier,
+        tick_identifier: tick_identifier
+    }
+
+    ensures: CompositeScore.created(
+        sheet_identifier: sheet_identifier,
+        node_identifier: node_identifier,
+        tick_identifier: tick_identifier,
+        score: normalized_weighted_score(scores),
+        contributing_scores: scores,
+        emitted_at: now
+    )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant JudgeScoresAreBounded {
+    for result in JudgeScores:
+        result.score >= 0 and result.score <= 1
+}
+
+invariant CompositeScoresAreBounded {
+    for result in CompositeScores:
+        result.score >= 0 and result.score <= 1
+}
+
+invariant OneJudgeScorePerCompletion {
+    for a in JudgeScores:
+        for b in JudgeScores:
+            a != b implies not (
+                a.sheet_identifier = b.sheet_identifier
+                and a.node_identifier = b.node_identifier
+                and a.tick_identifier = b.tick_identifier
+                and a.judge = b.judge
+            )
+}
+
+invariant OneCompositePerCompletion {
+    for a in CompositeScores:
+        for b in CompositeScores:
+            a != b implies not (
+                a.sheet_identifier = b.sheet_identifier
+                and a.node_identifier = b.node_identifier
+                and a.tick_identifier = b.tick_identifier
+            )
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface EvaluationAccess {
+    facing consumer: EvaluationConsumer
+
+    exposes:
+        Judge
+        JudgeScore
+        CompositeScore
+
+    contracts:
+        fulfils DiscreteBandScoring
+        fulfils TraceJudge
+        fulfils EvaluationAttachmentResolver
+
+    @guarantee NonBlockingCompletionProcessing
+        -- Node completion processing schedules judge work without waiting for
+        -- model latency; results are recorded asynchronously through idempotent
+        -- score commands.
+
+    @guarantee ActionableFeedback
+        -- Every successful score carries dimension-specific feedback suitable
+        -- for human diagnosis and downstream instruction optimization.
+}
+

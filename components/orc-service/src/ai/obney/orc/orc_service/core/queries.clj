@@ -305,7 +305,50 @@
     (if-not trace
       {::anom/category ::anom/not-found
        ::anom/message "Trace not found"}
-      {:query/result trace})))
+      {:query/result {:trace trace}})))
+
+(defn- trace-family-summary [trace]
+  (cond-> (select-keys (assoc trace :node-count (count (:node-traces trace)))
+                       [:trace-id :sheet-id :correlation-id :root-trace-id :child-trace-ids
+                        :status :started-at :duration-ms :node-count])
+    (:parent-trace-id trace) (assoc :parent-trace-id (:parent-trace-id trace))))
+
+(defquery :sheet get-trace-family
+  {:authorized? authenticated?}
+  "Get the stored traces belonging to the same root execution as trace-id."
+  [{{:keys [trace-id]} :query :as ctx}]
+  (if-let [trace (rm/get-trace ctx trace-id)]
+    (let [root-trace-id (:root-trace-id trace)
+          traces (->> (rm/get-all-traces ctx)
+                      (filter #(= root-trace-id (:root-trace-id %)))
+                      (sort-by (juxt :started-at (comp str :trace-id)))
+                      (mapv trace-family-summary))]
+      {:query/result {:root-trace-id root-trace-id
+                      :traces traces}})
+    {::anom/category ::anom/not-found
+     ::anom/message "Trace not found"}))
+
+(defquery :sheet get-correlated-traces
+  {:authorized? authenticated?}
+  "Get every stored trace belonging to one caller-defined operation.
+
+   Correlation spans independent root executions; :families preserves the
+   structural root/delegate grouping used by get-trace-family."
+  [{{:keys [correlation-id]} :query :as ctx}]
+  (let [traces (->> (rm/get-traces-for-correlation ctx correlation-id)
+                    (sort-by (juxt :started-at (comp str :trace-id)))
+                    (mapv trace-family-summary))
+        families (->> traces
+                      (group-by :root-trace-id)
+                      (map (fn [[root-trace-id family-traces]]
+                             {:root-trace-id root-trace-id
+                              :traces (vec family-traces)}))
+                      (sort-by (juxt #(get-in % [:traces 0 :started-at])
+                                     (comp str :root-trace-id)))
+                      vec)]
+    {:query/result {:correlation-id correlation-id
+                    :traces traces
+                    :families families}}))
 
 (defquery :sheet get-traces
   {:authorized? authenticated?}
@@ -402,14 +445,17 @@
         sorted (sort-by :started-at #(compare %2 %1) filtered)
         limited (take (or limit 100) sorted)
         summaries (mapv (fn [t]
-                          {:trace-id (:trace-id t)
-                           :sheet-id (:sheet-id t)
-                           :sheet-name (get sheets-map (:sheet-id t) "Unknown")
-                           :status (:status t)
-                           :started-at (instant->str (:started-at t))
-                           :duration-ms (:duration-ms t)
-                           :node-count (count (:node-traces t))
-                           :version-number (:version-number t)})
+                          (cond-> {:trace-id (:trace-id t)
+                                   :sheet-id (:sheet-id t)
+                                   :root-trace-id (:root-trace-id t)
+                                   :child-trace-ids (:child-trace-ids t)
+                                   :sheet-name (get sheets-map (:sheet-id t) "Unknown")
+                                   :status (:status t)
+                                   :started-at (instant->str (:started-at t))
+                                   :duration-ms (:duration-ms t)
+                                   :node-count (count (:node-traces t))}
+                            (:parent-trace-id t) (assoc :parent-trace-id (:parent-trace-id t))
+                            (:version-number t) (assoc :version-number (:version-number t))))
                         limited)
 
         ;; Get full trace if requested
@@ -434,39 +480,37 @@
 
    Query params:
      :trace-id - The execution trace ID.
-     :node-id - The node ID within the trace."
-  [{{:keys [trace-id node-id]} :query
+     :trace-instance-id - The unique node-start event ID within the trace."
+  [{{:keys [trace-id trace-instance-id]} :query
     :keys [event-store] :as ctx}]
   (let [trace (rm/get-trace ctx trace-id)
-        node-trace (some #(when (= (:node-id %) node-id) %)
+        node-trace (some #(when (= (:trace-instance-id %) trace-instance-id) %)
                          (:node-traces trace))]
     (if node-trace
       (let [tick-events (into [] (es/read event-store
                                           {:tags #{[:tick trace-id]}
                                            :tenant-id (:tenant-id ctx)}))
-            values (value-log/final-values ctx (:tenant-id ctx) trace-id)
+            node-id (:node-id node-trace)
+            execution-key [node-id (value-log/exec-context (:exec-context node-trace))]
             completed (some #(when (and (= :sheet/node-execution-completed (:event/type %))
-                                        (= node-id (:node-id %)))
+                                        (= execution-key (value-log/execution-key %)))
                                %)
-                            tick-events)
-            pick (fn [ks] (when (seq ks)
-                            (into {} (for [k ks :when (contains? values k)]
-                                       [k (get values k)]))))]
+                            tick-events)]
         {:query/result
          {:node-id node-id
-          ;; Reads resolve from the blackboard the tick built. Writes prefer
-          ;; the node's own completion event, which attributes values to THIS
-          ;; node — the blackboard alone cannot, since a later node may have
-          ;; overwritten the same key.
-          :inputs (pick (:read-keys node-trace))
+          :trace-instance-id trace-instance-id
+          :exec-context (:exec-context node-trace)
+          :inputs (when completed
+                    (not-empty (value-log/resolve-reads ctx
+                                                        (:tenant-id ctx)
+                                                        trace-id completed)))
           :outputs (or (:writes completed)
                        (when completed
                          (not-empty (value-log/resolve-writes ctx
                                                               (:tenant-id ctx)
-                                                              trace-id completed)))
-                       (pick (:write-keys node-trace)))}})
+                                                              trace-id completed))))}})
       {::anom/category ::anom/not-found
-       ::anom/message (str "Node trace not found: " node-id)})))
+       ::anom/message (str "Node trace not found: " trace-instance-id)})))
 
 (defquery :sheet run-detail-screen
   {:authorized? authenticated?}

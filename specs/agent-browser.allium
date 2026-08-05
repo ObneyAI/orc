@@ -1,0 +1,163 @@
+-- allium: 3
+-- agent-browser.allium
+--
+-- Scope: browser capabilities exposed to ORC agents and RLM sandboxes.
+-- Includes: isolated named sessions, navigation, accessibility snapshots,
+-- element interaction and inspection, screenshots, batch actions, headed and
+-- paced operation, and explicit session closure.
+-- Excludes: shell command construction, process environment, Playwright and
+-- CLI implementation, JSON parsing, tracing, and selector implementation.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity BrowserAgent {}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value BrowserConfiguration {
+    session_name: String?
+    headed: Boolean
+    action_delay: Duration?
+}
+
+value BrowserResult {
+    success: Boolean
+    output: Any?
+    error: String?
+}
+
+value SnapshotOptions {
+    interactive_only: Boolean
+    compact: Boolean
+    maximum_depth: Integer?
+    scope: String?
+}
+
+value AccessibilitySnapshot {
+    content: String
+}
+
+value ElementLocator {
+    value: String
+}
+
+value ElementBox {
+    x: Decimal
+    y: Decimal
+    width: Decimal
+    height: Decimal
+}
+
+value ScreenshotOptions {
+    destination: String?
+    full_page: Boolean
+    annotate: Boolean
+}
+
+value SessionInfo {
+    name: String
+    headed: Boolean
+    current_url: String?
+}
+
+value PageInfo {
+    title: String
+    url: String
+    interactive_elements: AccessibilitySnapshot
+}
+
+value BrowserCommand {
+    value: String
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract BrowserAutomation {
+    ensure_session: (configuration: BrowserConfiguration, initial_url: String?) -> SessionInfo
+    list_sessions: () -> List<SessionInfo>
+    close_session: (session_name: String) -> BrowserResult
+    close_all_sessions: () -> BrowserResult
+
+    open: (configuration: BrowserConfiguration, url: String) -> BrowserResult
+    back: (configuration: BrowserConfiguration) -> BrowserResult
+    forward: (configuration: BrowserConfiguration) -> BrowserResult
+    reload: (configuration: BrowserConfiguration) -> BrowserResult
+    current_url: (configuration: BrowserConfiguration) -> BrowserResult
+    current_title: (configuration: BrowserConfiguration) -> BrowserResult
+
+    snapshot: (configuration: BrowserConfiguration, options: SnapshotOptions) -> AccessibilitySnapshot
+    page_info: (configuration: BrowserConfiguration) -> PageInfo
+    screenshot: (configuration: BrowserConfiguration, options: ScreenshotOptions) -> BrowserResult
+
+    click: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    double_click: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    hover: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    drag: (configuration: BrowserConfiguration, source: ElementLocator, destination: ElementLocator) -> BrowserResult
+    fill: (configuration: BrowserConfiguration, element: ElementLocator, text: String) -> BrowserResult
+    append_text: (configuration: BrowserConfiguration, element: ElementLocator, text: String) -> BrowserResult
+    press_key: (configuration: BrowserConfiguration, key: String) -> BrowserResult
+    scroll: (configuration: BrowserConfiguration, direction: String, distance: Integer?) -> BrowserResult
+    wait: (configuration: BrowserConfiguration, condition: Any) -> BrowserResult
+
+    text: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    html: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    value: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    matching_count: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    visible: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    enabled: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    checked: (configuration: BrowserConfiguration, element: ElementLocator) -> BrowserResult
+    bounding_box: (configuration: BrowserConfiguration, element: ElementLocator) -> ElementBox
+
+    find_by_role: (configuration: BrowserConfiguration, role: String, accessible_name: String?) -> BrowserResult
+    find_by_text: (configuration: BrowserConfiguration, text: String) -> BrowserResult
+    find_by_label: (configuration: BrowserConfiguration, label: String) -> BrowserResult
+    find_by_placeholder: (configuration: BrowserConfiguration, placeholder: String) -> BrowserResult
+
+    press_and_hold: (configuration: BrowserConfiguration, element: ElementLocator, duration: Duration) -> BrowserResult
+    move_pointer: (configuration: BrowserConfiguration, x: Decimal, y: Decimal) -> BrowserResult
+    scroll_pointer: (configuration: BrowserConfiguration, horizontal: Decimal, vertical: Decimal) -> BrowserResult
+    evaluate_page_script: (configuration: BrowserConfiguration, script: String) -> BrowserResult
+    batch: (configuration: BrowserConfiguration, commands: List<BrowserCommand>) -> List<BrowserResult>
+
+    @invariant SessionIsolation
+        -- Named sessions maintain independent page state, navigation history,
+        -- and current URLs even when commands execute concurrently.
+
+    @invariant ReferenceUsability
+        -- Element references returned by an accessibility snapshot can be used
+        -- as locators for subsequent interactions in that session.
+
+    @invariant OrderedBatch
+        -- Batch commands execute in the supplied order and return aligned
+        -- results; a command observes effects of earlier successful commands.
+
+    @invariant ExplicitFailure
+        -- A failed browser action returns an unsuccessful result with diagnostic
+        -- information rather than presenting unsuccessful output as success.
+
+    @guidance
+        -- Headed and delayed operation alter browser presentation and pacing,
+        -- not the semantics or isolation of browser actions.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface AgentBrowserTools {
+    facing agent: BrowserAgent
+
+    contracts:
+        fulfils BrowserAutomation
+
+    @guarantee SandboxCompatibleTools
+        -- The advertised tool bindings expose only the documented browser
+        -- operations and preserve the same result contract inside ORC sandboxes.
+}
+

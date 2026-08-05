@@ -1,0 +1,566 @@
+-- allium: 3
+-- orc-service.allium
+--
+-- Scope: the public behavior of ORC's behavior-tree authoring, versioning,
+-- execution, delegation, RLM exploration, tracing, streaming, and cancellation.
+-- Includes: workflow and node structure, typed blackboards, immutable published
+-- versions, isolated executions, node outcomes, value attribution, retry,
+-- partial/blocked/timeout outcomes, and parent-child execution lineage.
+-- Excludes: Grain command/event plumbing, Malli representation, Clojure/SCI
+-- mechanics, HTTP/provider details, logging, layout coordinates, caches, and
+-- serialization formats.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity WorkflowConsumer {}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value DataSchema {
+    definition: Any
+}
+
+value BlackboardValue {
+    value: Any
+}
+
+value NodeConfiguration {
+    value: Any
+}
+
+value RetryPolicy {
+    maximum_attempts: Integer
+    backoff: List<Duration>
+}
+
+value ExecutionOptions {
+    timeout: Duration?
+    llm_call_budget: Integer?
+    version_number: Integer?
+    force_draft: Boolean
+}
+
+value Usage {
+    prompt_tokens: Integer?
+    completion_tokens: Integer?
+    total_tokens: Integer?
+}
+
+value StreamEnvelope {
+    sequence_number: Integer
+    occurred_at: Timestamp
+    execution_identifier: String
+    kind: String
+    body: Any
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract LeafExecutor {
+    execute: (configuration: NodeConfiguration, inputs: Any) -> Any
+
+    @invariant DeclaredInputsOnly
+        -- A leaf receives only the blackboard values named by its read contract.
+
+    @invariant DeclaredOutputsOnly
+        -- A successful leaf may update only keys named by its write contract,
+        -- and every update must satisfy the key's declared schema.
+}
+
+contract ExecutionEventStream {
+    subscribe: (execution_identifier: String, include_values: Boolean) -> Any
+    next_envelope: (subscription: Any) -> StreamEnvelope
+    close: (execution_identifier: String) -> Any
+
+    @invariant MonotonicSequence
+        -- Envelope sequence numbers strictly increase within one subscription;
+        -- a gap explicitly indicates that ephemeral events were lost.
+
+    @invariant DurableRecovery
+        -- Every durable fact represented by the ephemeral stream remains
+        -- recoverable from the execution record and its lineage.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum ExecutionMode { draft | published }
+
+enum NodeKind {
+    llm | code | tool | condition | llm_condition | sequence | fallback |
+    parallel | map_each | repl_researcher | delegate
+}
+
+enum ExecutionStatus {
+    running | success | failure | partial | timeout | blocked | cancelled
+}
+
+enum NodeExecutionStatus {
+    running | success | failure | partial | timeout | blocked | skipped
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity Workflow {
+    name: String
+    execution_mode: ExecutionMode
+    draft_dirty: Boolean
+    published_version_number: Integer?
+    content_fingerprint: String?
+
+    nodes: WorkflowNode with workflow = this
+    keys: BlackboardKey with workflow = this
+    versions: WorkflowVersion with workflow = this
+    executions: WorkflowExecution with workflow = this
+}
+
+entity BlackboardKey {
+    workflow: Workflow
+    name: String
+    schema: DataSchema
+    draft_value: BlackboardValue?
+    version: Integer
+}
+
+entity WorkflowNode {
+    workflow: Workflow
+    name: String
+    kind: NodeKind
+    parent: WorkflowNode?
+    child_order: Integer
+    reads: Set<BlackboardKey>
+    writes: Set<BlackboardKey>
+    configuration: NodeConfiguration
+    retry_policy: RetryPolicy?
+
+    children: WorkflowNode with parent = this
+}
+
+entity WorkflowVersion {
+    workflow: Workflow
+    number: Integer
+    description: String?
+    published_at: Timestamp
+    definition: Any
+}
+
+entity DraftStash {
+    workflow: Workflow
+    stashed_at: Timestamp
+    definition: Any
+}
+
+entity WorkflowExecution {
+    workflow: Workflow
+    status: ExecutionStatus
+    started_at: Timestamp
+    version_number: Integer?
+    parent: WorkflowExecution?
+    correlation_identifier: String
+    options: ExecutionOptions
+    error: String?
+
+    transitions status {
+        running -> success
+        running -> failure
+        running -> partial
+        running -> timeout
+        running -> blocked
+        running -> cancelled
+        terminal: success, failure, partial, timeout, blocked, cancelled
+    }
+
+    node_executions: NodeExecution with execution = this
+    values: ExecutionValue with execution = this
+    child_executions: WorkflowExecution with parent = this
+}
+
+entity NodeExecution {
+    execution: WorkflowExecution
+    node: WorkflowNode
+    status: NodeExecutionStatus
+    started_at: Timestamp
+    completed_at: Timestamp?
+    error: String?
+    usage: Usage?
+    iteration_index: Integer?
+
+    transitions status {
+        running -> success
+        running -> failure
+        running -> partial
+        running -> timeout
+        running -> blocked
+        running -> skipped
+        terminal: success, failure, partial, timeout, blocked, skipped
+    }
+
+    writes: ExecutionValue with node_execution = this
+}
+
+entity ExecutionValue {
+    execution: WorkflowExecution
+    node_execution: NodeExecution?
+    key: BlackboardKey
+    value: BlackboardValue
+    written_at: Timestamp
+    iteration_index: Integer?
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule RegisterWorkflow {
+    when: RegisterWorkflow(consumer, name)
+    requires: not exists Workflow{name: name}
+
+    ensures: Workflow.created(
+        name: name,
+        execution_mode: draft,
+        draft_dirty: false,
+        published_version_number: null,
+        content_fingerprint: null
+    )
+}
+
+rule AddWorkflowNode {
+    when: AddWorkflowNode(consumer, workflow, name, kind, parent, child_order, reads, writes, configuration)
+    requires: reads.all(k => k.workflow = workflow)
+    requires: writes.all(k => k.workflow = workflow)
+    requires: parent = null or parent.workflow = workflow
+
+    ensures: WorkflowNode.created(
+        workflow: workflow,
+        name: name,
+        kind: kind,
+        parent: parent,
+        child_order: child_order,
+        reads: reads,
+        writes: writes,
+        configuration: configuration,
+        retry_policy: null
+    )
+    ensures: workflow.draft_dirty = true
+}
+
+rule DeclareBlackboardKey {
+    when: DeclareBlackboardKey(consumer, workflow, name, schema)
+    requires: not exists BlackboardKey{workflow: workflow, name: name}
+
+    ensures: BlackboardKey.created(
+        workflow: workflow,
+        name: name,
+        schema: schema,
+        draft_value: null,
+        version: 1
+    )
+    ensures: workflow.draft_dirty = true
+}
+
+rule PublishWorkflow {
+    when: PublishWorkflow(consumer, workflow, description)
+    let next_number = (workflow.published_version_number ?? 0) + 1
+
+    ensures: WorkflowVersion.created(
+        workflow: workflow,
+        number: next_number,
+        description: description,
+        published_at: now,
+        definition: snapshot(workflow)
+    )
+    ensures: workflow.published_version_number = next_number
+    ensures: workflow.draft_dirty = false
+}
+
+rule RevertDraftToVersion {
+    when: RevertDraftToVersion(consumer, workflow, version)
+    requires: version.workflow = workflow
+
+    ensures: DraftStash.created(
+        workflow: workflow,
+        stashed_at: now,
+        definition: snapshot(workflow)
+    )
+    ensures: ApplyVersionDefinition(workflow: workflow, definition: version.definition)
+    ensures: workflow.draft_dirty = true
+}
+
+rule RestoreDraftStash {
+    when: RestoreDraftStash(consumer, workflow, stash)
+    requires: stash.workflow = workflow
+
+    ensures: ApplyVersionDefinition(workflow: workflow, definition: stash.definition)
+    ensures: workflow.draft_dirty = true
+    ensures: not exists stash
+}
+
+rule StartWorkflowExecution {
+    when: RunWorkflow(consumer, workflow, inputs, options)
+    requires: inputs_valid_for(workflow, inputs)
+    requires: options.version_number = null or exists WorkflowVersion{workflow: workflow, number: options.version_number}
+
+    ensures:
+        let execution = WorkflowExecution.created(
+            workflow: workflow,
+            status: running,
+            started_at: now,
+            version_number: selected_version(workflow, options),
+            parent: null,
+            correlation_identifier: new_correlation_identifier(),
+            options: options,
+            error: null
+        )
+        for input in input_entries(inputs):
+            ExecutionValue.created(
+                execution: execution,
+                node_execution: null,
+                key: input.key,
+                value: input.value,
+                written_at: now,
+                iteration_index: null
+            )
+        ExecuteRoot(execution: execution)
+}
+
+rule StartNodeExecution {
+    when: ExecuteNode(execution, node, iteration_index)
+    requires: execution.status = running
+    requires: node.workflow = execution.workflow
+
+    ensures: NodeExecution.created(
+        execution: execution,
+        node: node,
+        status: running,
+        started_at: now,
+        completed_at: null,
+        error: null,
+        usage: null,
+        iteration_index: iteration_index
+    )
+}
+
+rule NodeSucceeds {
+    when: NodeCompletes(node_execution, outputs, usage)
+    requires: node_execution.status = running
+    requires: outputs_valid_for(node_execution.node, outputs)
+
+    ensures: node_execution.status = success
+    ensures: node_execution.completed_at = now
+    ensures: node_execution.usage = usage
+    ensures:
+        for output in output_entries(outputs):
+            ExecutionValue.created(
+                execution: node_execution.execution,
+                node_execution: node_execution,
+                key: output.key,
+                value: output.value,
+                written_at: now,
+                iteration_index: node_execution.iteration_index
+            )
+}
+
+rule NodeFails {
+    when: NodeFails(node_execution, error)
+    requires: node_execution.status = running
+
+    ensures: node_execution.status = failure
+    ensures: node_execution.completed_at = now
+    ensures: node_execution.error = error
+}
+
+rule NodePartiallySucceeds {
+    when: MapEachPartiallyCompletes(node_execution, aligned_outputs, failure_details)
+    requires: node_execution.status = running
+    requires: node_execution.node.kind = map_each
+
+    ensures: node_execution.status = partial
+    ensures: node_execution.completed_at = now
+    ensures: PartialOutcomeRecorded(node_execution: node_execution, outputs: aligned_outputs, failures: failure_details)
+}
+
+rule NodeTimesOut {
+    when: NodeBudgetExpires(node_execution)
+    requires: node_execution.status = running
+
+    ensures: node_execution.status = timeout
+    ensures: node_execution.completed_at = now
+}
+
+rule NodeBlocks {
+    when: LeafRequestsBlock(node_execution, opaque_payload)
+    requires: node_execution.status = running
+
+    ensures: node_execution.status = blocked
+    ensures: node_execution.completed_at = now
+    ensures: ExecutionBlocked(execution: node_execution.execution, payload: opaque_payload)
+}
+
+rule NodeSkipped {
+    when: ControlFlowSkipsNode(node_execution)
+    requires: node_execution.status = running
+
+    ensures: node_execution.status = skipped
+    ensures: node_execution.completed_at = now
+}
+
+rule WorkflowSucceeds {
+    when: WorkflowTreeCompletes(execution, outputs)
+    requires: execution.status = running
+    requires: all_required_outputs_present(execution, outputs)
+
+    ensures: execution.status = success
+}
+
+rule WorkflowFails {
+    when: WorkflowTreeFails(execution, error)
+    requires: execution.status = running
+
+    ensures: execution.status = failure
+    ensures: execution.error = error
+}
+
+rule WorkflowPartiallySucceeds {
+    when: WorkflowTreePartiallyCompletes(execution, summary)
+    requires: execution.status = running
+
+    ensures: execution.status = partial
+    ensures: PartialOutcomeRecorded(execution: execution, summary: summary)
+}
+
+rule WorkflowTimesOut {
+    when: WorkflowBudgetExpires(execution)
+    requires: execution.status = running
+
+    ensures: execution.status = timeout
+}
+
+rule WorkflowBlocks {
+    when: ExecutionBlocked(execution, payload)
+    requires: execution.status = running
+
+    ensures: execution.status = blocked
+    ensures: BlockingPayloadReturned(execution: execution, payload: payload)
+}
+
+rule CancelWorkflowExecution {
+    when: CancelWorkflowExecution(consumer, execution)
+    requires: execution.status = running
+
+    ensures: execution.status = cancelled
+    ensures:
+        for child in execution.child_executions where status = running:
+            CancelWorkflowExecution(consumer: consumer, execution: child)
+}
+
+rule DelegateToWorkflow {
+    when: ExecuteDelegateNode(node_execution, target_workflow, mapped_inputs, options)
+    requires: node_execution.status = running
+    requires: node_execution.node.kind = delegate
+    requires: inputs_valid_for(target_workflow, mapped_inputs)
+
+    ensures: WorkflowExecution.created(
+        workflow: target_workflow,
+        status: running,
+        started_at: now,
+        version_number: selected_version(target_workflow, options),
+        parent: node_execution.execution,
+        correlation_identifier: node_execution.execution.correlation_identifier,
+        options: options,
+        error: null
+    )
+}
+
+rule ReplResearcherEmitsTree {
+    when: ResearchIterationEmitsTree(node_execution, generated_tree)
+    requires: node_execution.status = running
+    requires: node_execution.node.kind = repl_researcher
+    requires: generated_tree_valid(generated_tree)
+
+    ensures: GeneratedTreeExecutionRequested(
+        parent_node_execution: node_execution,
+        tree: generated_tree,
+        remaining_budget: remaining_budget(node_execution)
+    )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant UniqueWorkflowName {
+    for a in Workflows:
+        for b in Workflows:
+            a != b implies a.name != b.name
+}
+
+invariant UniqueVersionNumberPerWorkflow {
+    for a in WorkflowVersions:
+        for b in WorkflowVersions:
+            a != b and a.workflow = b.workflow implies a.number != b.number
+}
+
+invariant NodeContractsUseOwnBlackboard {
+    for node in WorkflowNodes:
+        node.reads.all(k => k.workflow = node.workflow)
+        and node.writes.all(k => k.workflow = node.workflow)
+}
+
+invariant ExecutionValuesBelongToWorkflow {
+    for value in ExecutionValues:
+        value.key.workflow = value.execution.workflow
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface WorkflowAuthoring {
+    facing consumer: WorkflowConsumer
+
+    provides:
+        RegisterWorkflow(consumer, name)
+        AddWorkflowNode(consumer, workflow, name, kind, parent, child_order, reads, writes, configuration)
+        DeclareBlackboardKey(consumer, workflow, name, schema)
+        PublishWorkflow(consumer, workflow, description)
+        RevertDraftToVersion(consumer, workflow, version)
+        RestoreDraftStash(consumer, workflow, stash)
+}
+
+surface WorkflowExecutionAccess {
+    facing consumer: WorkflowConsumer
+    context workflow: Workflow
+
+    exposes:
+        workflow.name
+        workflow.execution_mode
+        workflow.published_version_number
+        workflow.nodes
+        workflow.keys
+        workflow.versions
+        workflow.executions
+
+    provides:
+        RunWorkflow(consumer, workflow, inputs, options)
+        CancelWorkflowExecution(consumer, execution)
+
+    contracts:
+        fulfils ExecutionEventStream
+        demands LeafExecutor
+
+    @guarantee IsolatedBlackboard
+        -- Each run begins from its supplied inputs and cannot mutate draft
+        -- blackboard values or another execution's values.
+
+    @guarantee OpaqueBlockingPayload
+        -- ORC propagates a leaf's blocking payload without interpreting it.
+}

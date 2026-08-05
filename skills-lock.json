@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "allium": {
+      "source": "juxt/allium",
+      "sourceType": "github",
+      "skillPath": "skills/allium/SKILL.md",
+      "computedHash": "b532892d777318e995025e9a80aade825091c8b1d78268e576b66f796808171f"
+    },
+    "distill": {
+      "source": "juxt/allium",
+      "sourceType": "github",
+      "skillPath": "skills/distill/SKILL.md",
+      "computedHash": "912adbc10d73516c4e2674d98157fae1fd5acd19ef6b7e896cbf01a9152558da"
+    },
+    "elicit": {
+      "source": "juxt/allium",
+      "sourceType": "github",
+      "skillPath": "skills/elicit/SKILL.md",
+      "computedHash": "ff8e31a4508e8491ec5175c15c25a88e65bbbf44f9fa93db09c444973d76c293"
+    },
+    "propagate": {
+      "source": "juxt/allium",
+      "sourceType": "github",
+      "skillPath": "skills/propagate/SKILL.md",
+      "computedHash": "2fa94dcc0bccdc9d8cd9d2e4c55d89d0abac0ecbfd515f30d13efa57c6a29808"
+    },
+    "tend": {
+      "source": "juxt/allium",
+      "sourceType": "github",
+      "skillPath": "skills/tend/SKILL.md",
+      "computedHash": "2469047e5da43ecceeca152d5bf90a17799836d3b406b23172c6cb3eae944172"
+    },
+    "weed": {
+      "source": "juxt/allium",
+      "sourceType": "github",
+      "skillPath": "skills/weed/SKILL.md",
+      "computedHash": "09a879e68614ba5cd57ab746aa8e7d375528a7f1c4dde3ba6654ce43d92f2ab3"
+    }
+  }
+}

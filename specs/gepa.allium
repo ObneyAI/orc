@@ -1,0 +1,430 @@
+-- allium: 3
+-- gepa.allium
+--
+-- Scope: offline evolution of static ORC LLM-node instructions through
+-- reflective mutation, Pareto selection, subsample gating, and crossover.
+-- Includes: event-sourced runs, persisted train/validation data, metric budget,
+-- score-plus-feedback evaluation, candidate ancestry, round-robin component
+-- selection, per-example Pareto diversity, cross-run inheritance, and terminal
+-- completion/failure.
+-- Excludes: Grain processor mechanics, Clojure/Python representation details,
+-- model-provider calls, ORC execution internals, and ontology/RLM tree design.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity OptimizationConsumer {}
+
+external entity OrcWorkflow {
+    name: String
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value DatasetExample {
+    inputs: Any
+    expected: Any?
+}
+
+value OptimizationConfiguration {
+    maximum_metric_calls: Integer
+    reflection_minibatch_size: Integer
+    reflection_model: String
+    use_merge: Boolean
+    validation_overlap_floor: Integer
+    skip_perfect_score: Boolean
+    inherit_from_previous: Boolean
+}
+
+value MetricResult {
+    score: Decimal
+    feedback: String?
+}
+
+value ReflectiveExample {
+    inputs: Any
+    generated_outputs: Any
+    feedback: String
+}
+
+value CandidateEvaluation {
+    scores: List<Decimal>
+    feedback: List<String?>
+    aggregate_score: Decimal
+    metric_calls: Integer
+    trace_identifiers: List<String>
+}
+
+value InstructionProposal {
+    instruction: String
+    raw_response: String
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract CandidateMetric {
+    evaluate: (example: DatasetExample, actual_output: Any) -> MetricResult
+
+    @invariant BoundedScore
+        -- Every metric score lies from zero through one.
+
+    @invariant DiagnosticPreservation
+        -- When a metric supplies feedback, the exact diagnosis remains attached
+        -- to that example through reflection and candidate evaluation.
+
+    @guidance
+        -- Structural metrics may omit feedback; judge metrics should aggregate
+        -- dimension feedback from weakest score to strongest.
+}
+
+contract ReflectiveInstructionProposer {
+    build_dataset: (evaluations: List<CandidateEvaluation>) -> List<ReflectiveExample>
+    propose: (current_instruction: String, examples: List<ReflectiveExample>) -> InstructionProposal
+
+    @invariant FailureFocusedReflection
+        -- Reflective examples preferentially expose examples where the current
+        -- candidate underperforms the frontier, including inputs, outputs, and feedback.
+
+    @invariant OneComponentMutation
+        -- A mutation changes the selected named instruction component while
+        -- retaining all other candidate instructions.
+
+    @invariant RoundRobinComponents
+        -- Repeated mutation of a candidate rotates fairly through its named
+        -- instruction components rather than repeatedly selecting one component.
+}
+
+contract ParetoPopulationSelection {
+    non_dominated: (candidates: Set<InstructionCandidate>) -> Set<InstructionCandidate>
+    select_for_mutation: (candidates: Set<InstructionCandidate>) -> InstructionCandidate
+    mergeable_pair: (candidates: Set<InstructionCandidate>) -> Any
+
+    @invariant PerExampleDiversity
+        -- The frontier retains every candidate tied for the best score on each
+        -- validation example, then removes programs dominated across examples.
+
+    @invariant StrictMutationAcceptance
+        -- A proposed mutation proceeds beyond its subsample only when its score
+        -- sum is strictly greater than the parent's on the same examples.
+
+    @invariant CommonAncestorCrossover
+        -- Merge candidates share an ancestor and contribute different improved
+        -- components; an already-attempted pair is not retried.
+
+    @invariant MergeAcceptance
+        -- A merged candidate is accepted only when its validation performance is
+        -- at least as strong as the better parent under the merge criterion.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum OptimizationStatus { running | completed | failed }
+
+enum CandidateStatus {
+    created | subsample_evaluated | evaluated | rejected
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity OptimizationRun {
+    workflow: OrcWorkflow
+    status: OptimizationStatus
+    trainset: List<DatasetExample>
+    validation_set: List<DatasetExample>
+    configuration: OptimizationConfiguration
+    metric_calls_used: Integer
+    started_at: Timestamp
+    completed_at: Timestamp?
+    failure_reason: String?
+    inherited_from: OptimizationRun?
+
+    transitions status {
+        running -> completed
+        running -> failed
+        terminal: completed, failed
+    }
+
+    candidates: InstructionCandidate with optimization = this
+    frontier_entries: ParetoEntry with optimization = this
+}
+
+entity InstructionCandidate {
+    optimization: OptimizationRun
+    status: CandidateStatus
+    instructions: Any
+    generation: Integer
+    source_optimization: OptimizationRun?
+    evaluation: CandidateEvaluation?
+    subsample_evaluation: CandidateEvaluation?
+    mutation_reason: String?
+
+    transitions status {
+        created -> evaluated
+        created -> subsample_evaluated
+        subsample_evaluated -> evaluated
+        subsample_evaluated -> rejected
+        terminal: evaluated, rejected
+    }
+
+    parents: CandidateParent with child = this
+}
+
+entity CandidateParent {
+    child: InstructionCandidate
+    parent: InstructionCandidate
+}
+
+entity ParetoEntry {
+    optimization: OptimizationRun
+    validation_index: Integer
+    best_score: Decimal
+    best_candidates: Set<InstructionCandidate>
+}
+
+entity MergeAttempt {
+    optimization: OptimizationRun
+    first_parent: InstructionCandidate
+    second_parent: InstructionCandidate
+    accepted: Boolean
+    attempted_at: Timestamp
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule StartOptimization {
+    when: StartOptimization(consumer, workflow, trainset, validation_set, configuration, inherited_from)
+    requires: validation_set.count > 0
+    requires: configuration.maximum_metric_calls > 0
+
+    ensures: OptimizationRun.created(
+        workflow: workflow,
+        status: running,
+        trainset: trainset,
+        validation_set: validation_set,
+        configuration: configuration,
+        metric_calls_used: 0,
+        started_at: now,
+        completed_at: null,
+        failure_reason: null,
+        inherited_from: inherited_from
+    )
+}
+
+rule CreateCandidate {
+    when: CreateCandidate(optimization, instructions, parents, mutation_reason, source_optimization)
+    requires: optimization.status = running
+
+    ensures:
+        let candidate = InstructionCandidate.created(
+            optimization: optimization,
+            status: created,
+            instructions: instructions,
+            generation: if parents.count = 0: 0 else: maximum_generation(parents) + 1,
+            source_optimization: source_optimization,
+            evaluation: null,
+            subsample_evaluation: null,
+            mutation_reason: mutation_reason
+        )
+        for parent in parents:
+            CandidateParent.created(child: candidate, parent: parent)
+}
+
+rule EvaluateCandidateFully {
+    when: FullCandidateEvaluationCompleted(candidate, evaluation)
+    requires: candidate.status = created
+    requires: candidate.optimization.status = running
+    requires: candidate.optimization.metric_calls_used + evaluation.metric_calls
+        <= candidate.optimization.configuration.maximum_metric_calls
+
+    ensures: candidate.status = evaluated
+    ensures: candidate.evaluation = evaluation
+    ensures: candidate.optimization.metric_calls_used =
+        candidate.optimization.metric_calls_used + evaluation.metric_calls
+    ensures: UpdateParetoFrontier(candidate: candidate)
+}
+
+rule RecordImprovingSubsample {
+    when: SubsampleEvaluationCompleted(candidate, evaluation, parent_evaluation)
+    requires: candidate.status = created
+    requires: score_sum(evaluation) > score_sum(parent_evaluation)
+
+    ensures: candidate.status = subsample_evaluated
+    ensures: candidate.subsample_evaluation = evaluation
+    ensures: FullEvaluationRequested(candidate: candidate)
+}
+
+rule RejectNonImprovingSubsample {
+    when: SubsampleEvaluationCompleted(candidate, evaluation, parent_evaluation)
+    requires: candidate.status = created
+    requires: score_sum(evaluation) <= score_sum(parent_evaluation)
+
+    ensures: candidate.status = rejected
+    ensures: candidate.subsample_evaluation = evaluation
+}
+
+rule EvaluateSubsampleWinnerFully {
+    when: FullCandidateEvaluationCompleted(candidate, evaluation)
+    requires: candidate.status = subsample_evaluated
+    requires: candidate.optimization.status = running
+
+    ensures: candidate.status = evaluated
+    ensures: candidate.evaluation = evaluation
+    ensures: candidate.optimization.metric_calls_used =
+        candidate.optimization.metric_calls_used + evaluation.metric_calls
+    ensures: UpdateParetoFrontier(candidate: candidate)
+}
+
+rule ProposeReflectiveMutation {
+    when: MutationRoundRequested(optimization)
+    requires: optimization.status = running
+    requires: optimization.metric_calls_used < optimization.configuration.maximum_metric_calls
+    let parent = select_pareto_candidate(optimization.frontier_entries)
+    let component = next_round_robin_component(parent)
+
+    ensures: ReflectiveMutationRequested(
+        optimization: optimization,
+        parent: parent,
+        component: component,
+        examples: reflective_failures(parent, optimization.trainset)
+    )
+}
+
+rule RecordReflectiveMutation {
+    when: ReflectiveMutationProposed(optimization, parent, component, proposal)
+    requires: optimization.status = running
+
+    ensures: CreateCandidate(
+        optimization: optimization,
+        instructions: replace_instruction(parent.instructions, component, proposal.instruction),
+        parents: { parent },
+        mutation_reason: "reflective_mutation",
+        source_optimization: null
+    )
+}
+
+rule RecordAcceptedMerge {
+    when: MergeEvaluated(optimization, first_parent, second_parent, merged_instructions, accepted)
+    requires: optimization.status = running
+    requires: accepted = true
+
+    ensures: MergeAttempt.created(
+        optimization: optimization,
+        first_parent: first_parent,
+        second_parent: second_parent,
+        accepted: true,
+        attempted_at: now
+    )
+    ensures: CreateCandidate(
+        optimization: optimization,
+        instructions: merged_instructions,
+        parents: { first_parent, second_parent },
+        mutation_reason: "common_ancestor_crossover",
+        source_optimization: null
+    )
+}
+
+rule RecordRejectedMerge {
+    when: MergeEvaluated(optimization, first_parent, second_parent, merged_instructions, accepted)
+    requires: optimization.status = running
+    requires: accepted = false
+
+    ensures: MergeAttempt.created(
+        optimization: optimization,
+        first_parent: first_parent,
+        second_parent: second_parent,
+        accepted: false,
+        attempted_at: now
+    )
+}
+
+rule CompleteOptimization {
+    when: OptimizationBudgetExhausted(optimization)
+    requires: optimization.status = running
+    requires: optimization.metric_calls_used >= optimization.configuration.maximum_metric_calls
+
+    ensures: optimization.status = completed
+    ensures: optimization.completed_at = now
+    ensures: BestCandidateReturned(
+        optimization: optimization,
+        candidate: best_aggregate_candidate(optimization.candidates)
+    )
+}
+
+rule FailOptimization {
+    when: OptimizationCannotContinue(optimization, reason)
+    requires: optimization.status = running
+
+    ensures: optimization.status = failed
+    ensures: optimization.completed_at = now
+    ensures: optimization.failure_reason = reason
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant MetricBudgetNotExceeded {
+    for optimization in OptimizationRuns:
+        optimization.metric_calls_used <= optimization.configuration.maximum_metric_calls
+}
+
+invariant CandidateScoresAreBounded {
+    for candidate in InstructionCandidates:
+        candidate.status = evaluated implies
+            candidate.evaluation.scores.all(s => s >= 0 and s <= 1)
+}
+
+invariant ParentsRemainInSameLineage {
+    for relationship in CandidateParents:
+        relationship.child.optimization = relationship.parent.optimization
+        or relationship.child.source_optimization = relationship.parent.optimization
+}
+
+invariant OneParetoEntryPerValidationExample {
+    for a in ParetoEntries:
+        for b in ParetoEntries:
+            a != b and a.optimization = b.optimization implies
+                a.validation_index != b.validation_index
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface PromptOptimization {
+    facing consumer: OptimizationConsumer
+
+    provides:
+        StartOptimization(consumer, workflow, trainset, validation_set, configuration, inherited_from)
+
+    exposes:
+        OptimizationRun
+        InstructionCandidate
+        ParetoEntry
+        MergeAttempt
+
+    contracts:
+        demands CandidateMetric
+        fulfils ReflectiveInstructionProposer
+        fulfils ParetoPopulationSelection
+
+    @guarantee StaticInstructionsOnly
+        -- GEPA changes named static LLM-node instructions; it does not alter
+        -- workflow structure, blackboard contracts, or RLM tree design.
+
+    @guarantee CrossRunMining
+        -- Completed Pareto candidates and their evaluation evidence remain
+        -- queryable as seed material for later runs on the same workflow.
+}
+

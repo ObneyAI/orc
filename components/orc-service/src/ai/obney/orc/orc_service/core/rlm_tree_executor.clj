@@ -637,6 +637,7 @@
           ;; Transitive: a nested execute-tree (a leaf that emits its own tree)
           ;; reads :tool-context off ITS context the same way, re-threading it.
           tool-context (:tool-context context)
+          correlation-id (:orc/correlation-id context)
           tick-cmd-result (cp/process-command
                             (assoc context :command
                                    (cond-> {:command/id (random-uuid)
@@ -647,6 +648,7 @@
                                             :inputs (merge blackboard sandbox-vars)
                                             :options {:timeout-ms timeout-ms}}
                                      parent-tick-id (assoc :parent-tick-id parent-tick-id)
+                                     correlation-id (assoc :correlation-id correlation-id)
                                      tool-context (assoc :tool-context tool-context))))
           tick-anomaly (:cognitect.anomalies/category tick-cmd-result)
           ;; If the command was rejected, short-circuit: deregister the pending

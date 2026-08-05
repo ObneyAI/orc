@@ -1,0 +1,175 @@
+-- allium: 3
+-- predict-rlm-tools.allium
+--
+-- Scope: deterministic host-side capabilities advertised to Predict-RLM
+-- benchmark workflows.
+-- Includes: PDF page inspection, image preparation and exact letter counting,
+-- document redaction, and invoice workbook construction.
+-- Excludes: PDFBox, image encoders, spreadsheet libraries, filesystem APIs,
+-- base64 algorithms, and benchmark task-runner wiring.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity RlmRuntime {}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value DocumentReference {
+    location: String
+}
+
+value ImageReference {
+    location: String
+}
+
+value ImageData {
+    media_type: String
+    data_uri: String
+}
+
+value RenderOptions {
+    dots_per_inch: Integer
+}
+
+value RedactionTarget {
+    page_index: Integer
+    text: String
+    category: String
+    reason: String
+}
+
+value RedactionPageSummary {
+    page_index: Integer
+    redaction_count: Integer
+    categories: List<String>
+}
+
+value RedactionResult {
+    redacted_pages: List<String>
+    total_redactions: Integer
+    page_summaries: List<RedactionPageSummary>
+    targets_applied: List<RedactionTarget>
+    targets_missing: List<RedactionTarget>
+}
+
+value LetterFrequencies {
+    counts: Any
+}
+
+value InvoiceLineItem {
+    description: String
+    quantity: Decimal
+    unit_price: Decimal
+    amount: Decimal
+}
+
+value Invoice {
+    vendor_name: String?
+    invoice_number: String?
+    date: String?
+    due_date: String?
+    subtotal: Decimal?
+    tax: Decimal?
+    total: Decimal?
+    line_items: List<InvoiceLineItem>
+}
+
+value WorkbookReference {
+    location: String
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract PdfInspection {
+    page_count: (document: DocumentReference) -> Integer
+    render_pages: (document: DocumentReference, options: RenderOptions) -> List<ImageData>
+    extract_page_text: (document: DocumentReference) -> List<String>
+
+    @invariant PageOrder
+        -- Rendered images and extracted text contain exactly one item per page
+        -- in the source document's order.
+
+    @invariant StableInspection
+        -- Repeated inspection of unchanged document content with identical
+        -- options produces equivalent results.
+}
+
+contract ImagePreparation {
+    load_image: (image: ImageReference) -> ImageData
+
+    @invariant SupportedImageMedia
+        -- PNG, JPEG, WebP, and GIF images preserve their corresponding media
+        -- type; unsupported image formats are rejected explicitly.
+}
+
+contract ExactLetterCounting {
+    count_letters: (text: String) -> LetterFrequencies
+    format_counts: (frequencies: LetterFrequencies) -> String
+
+    @invariant DenseAlphabet
+        -- Counting is case-insensitive and returns every Latin letter A through
+        -- Z, including zero for letters absent from the input.
+
+    @invariant CanonicalFormatting
+        -- Formatting emits exactly one line per letter in A-through-Z order.
+}
+
+contract ExactDocumentRedaction {
+    apply_redactions: (pages: List<String>, targets: List<RedactionTarget>) -> RedactionResult
+
+    @invariant ExactReplacement
+        -- Every occurrence of target text on its indicated page is replaced by
+        -- a same-length redaction block; non-target text is unchanged.
+
+    @invariant CompleteClassification
+        -- Every supplied target appears exactly once in either targets_applied
+        -- or targets_missing, including targets whose page is out of range.
+
+    @invariant AccurateSummary
+        -- Total and per-page counts describe targets actually applied, while
+        -- category lists are unique and deterministically ordered.
+}
+
+contract InvoiceWorkbookConstruction {
+    build_workbook: (invoices: List<Invoice>, destination: WorkbookReference) -> WorkbookReference
+
+    @invariant SummaryCompleteness
+        -- The summary contains one row per invoice with vendor, invoice number,
+        -- dates, subtotal, tax, and total in input order.
+
+    @invariant InvoiceDetailCompleteness
+        -- Each invoice has one detail sheet containing its line items with
+        -- description, quantity, unit price, and amount in input order.
+
+    @invariant ValidUniqueSheetNames
+        -- Invoice sheet names are valid, at most 31 characters, and made unique
+        -- without dropping an invoice.
+
+    @invariant MissingValuesHaveSafeDefaults
+        -- Missing textual cells are empty and missing numeric cells are zero.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface PredictRlmDeterministicTools {
+    facing runtime: RlmRuntime
+
+    contracts:
+        fulfils PdfInspection
+        fulfils ImagePreparation
+        fulfils ExactLetterCounting
+        fulfils ExactDocumentRedaction
+        fulfils InvoiceWorkbookConstruction
+
+    @guarantee ModelIndependentExecution
+        -- These capabilities perform no language-model calls and can be used as
+        -- exact code nodes after model-driven extraction or reconciliation.
+}

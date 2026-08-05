@@ -304,6 +304,30 @@
       (swap! tick-seeds* assoc tick-id v)
       v)))
 
+(defn resolve-reads
+  "Resolve the exact values read by one node completion.
+
+   Recorded :read-sources win. Inside map-each, where shared blackboard
+   pointers are intentionally not recorded, use the iteration seed selected
+   by the completion's execution context. Remaining keys came from the tick's
+   original seeds."
+  [runtime-source tenant-id tick-id completion]
+  (let [read-keys (or (:read-keys completion) [])
+        sources (or (:read-sources completion) {})
+        events (read-tick-events runtime-source tenant-id tick-id)
+        iteration-seeds (get (input-seeds-by-iteration events)
+                             (exec-context (:inputs completion)))
+        tick-seed-values (tick-seeds runtime-source tenant-id tick-id)]
+    (reduce (fn [acc k]
+              (let [source (get sources k)
+                    value (cond
+                            source (resolve-source runtime-source tenant-id source)
+                            (contains? iteration-seeds k) (get iteration-seeds k)
+                            :else (get tick-seed-values k))]
+                (if (some? value) (assoc acc k value) acc)))
+            {}
+            read-keys)))
+
 (defn values-by-event-id
   "{event-id value} for specific write events of a tick.
 

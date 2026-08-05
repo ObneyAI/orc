@@ -98,6 +98,26 @@
         (is (contains? (:outputs result) :summary)
             "Should return outputs containing :summary key")))))
 
+(deftest phase-two-tree-inherits-operation-correlation
+  (testing "an RLM child tick persists the hosting operation UUID"
+    (with-test-context [ctx]
+      (let [correlation-id (random-uuid)
+            tree (rlm-dsl/rlm-dsl->orc-dsl
+                  [:sequence [:final {:keys [:summary]}]])
+            result (tree-executor/execute-tree
+                    tree (assoc ctx :orc/correlation-id correlation-id)
+                    {:sandbox-vars {:summary "correlated"}
+                     :timeout-ms 10000})
+            events (into []
+                         (es/read (:event-store ctx)
+                                  {:tenant-id (:tenant-id ctx)
+                                   :tags #{[:correlation correlation-id]}}))]
+        (is (= :success (:status result)))
+        (is (= "correlated" (get-in result [:outputs :summary])))
+        (is (= 1 (count (filter #(= :sheet/tree-tick-started (:event/type %))
+                                events))))
+        (is (every? #(= correlation-id (:correlation-id %)) events))))))
+
 (deftest tree-with-blackboard-inputs-executes
   (testing "Tree can access blackboard inputs passed to child tick"
     (with-test-context [ctx]
