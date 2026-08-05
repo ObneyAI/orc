@@ -389,6 +389,28 @@ size indicators. Values live in exactly one place, that tick's
 `:sheet/node-trace-detail` query. See
 [Event Store Patterns](EVENT-STORE-PATTERNS.md#single-write-discipline-values-live-in-exactly-one-event-type).
 
+### Trace identity and operation correlation
+
+A tick has one `:trace-id`. Each time a node runs inside that tick it receives a
+unique `:trace-instance-id`; repeated `map-each` iterations therefore remain
+addressable even when they execute the same node definition. The optional
+`:parent-trace-instance-id` expresses the node-execution tree.
+
+Delegated ticks use `:parent-trace-id` and `:root-trace-id` for structural
+lineage. A separate UUID `:correlation-id` groups every root and descendant that
+belongs to one caller-defined operation, including independent root executions.
+Lineage answers “what invoked this trace?”; correlation answers “which traces
+belong to this business operation?”
+
+### Canonical value placement
+
+`:sheet/execution-value-written` remains the canonical record of a blackboard
+write, but its payload is configurable. The default stores `:value` inline. In
+file-store mode the event stores a verified `:value-reference`, while the Nippy
+bytes live in a local or S3-backed file store. ORC applies no threshold or value
+shape policy: the configured mode applies to every value. See
+[Value Storage](VALUE-STORAGE.md).
+
 ---
 
 ## LLM layer

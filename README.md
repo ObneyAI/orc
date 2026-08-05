@@ -79,6 +79,9 @@ flowchart TB
 
 Start with **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a progressive contract-analysis walkthrough from bare behavior tree through judges, GEPA, ontology, and self-improvement.
 
+For production persistence and diagnostics, see **[Value Storage](docs/VALUE-STORAGE.md)**
+and **[Tracing and Correlation](docs/ORC-SERVICE-GUIDE.md#tracing-correlation-and-exact-node-io)**.
+
 ## Pick your package
 
 ORC ships as standalone packages — **you pull in exactly ONE package and it

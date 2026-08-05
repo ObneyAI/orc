@@ -1150,34 +1150,35 @@ blackboard.)
 #### Get a Single Trace
 
 ```clojure
-;; Retrieve full trace by ID
-(sheet/get-trace ctx trace-id)
-;; => {:trace-id ... :node-traces [...] ...}
+{:query/name :sheet/get-trace :trace-id trace-id}
+;; => {:query/result {:trace {:trace-id ... :node-traces [...] ...}}}
 ```
 
 #### Get Traces for a Sheet
 
 ```clojure
 ;; All recent traces
-(sheet/get-traces ctx {:sheet-id sheet-id})
+{:query/name :sheet/get-traces :sheet-id sheet-id}
 
 ;; Filter by status
-(sheet/get-traces ctx {:sheet-id sheet-id
-                       :status :failure})
+{:query/name :sheet/get-traces :sheet-id sheet-id :status :failure}
 
 ;; Filter by version
-(sheet/get-traces ctx {:sheet-id sheet-id
-                       :version-number 2})
+{:query/name :sheet/get-traces :sheet-id sheet-id :version-number 2}
 
 ;; Filter by time range
-(sheet/get-traces ctx {:sheet-id sheet-id
-                       :since #inst "2025-01-18T00:00:00Z"
-                       :limit 50})
+{:query/name :sheet/get-traces :sheet-id sheet-id
+ :since #inst "2025-01-18T00:00:00Z" :limit 50}
 
 ;; Filter to traces that executed a specific node
-(sheet/get-traces ctx {:sheet-id sheet-id
-                       :node-id problematic-node-id})
+{:query/name :sheet/get-traces :sheet-id sheet-id
+ :node-id problematic-node-id}
 ```
+
+Dispatch these maps through the ORC query registry. Query responses place data
+under `:query/result`. Use `:sheet/get-trace-family` for structural descendants
+and `:sheet/get-correlated-traces` with a caller-supplied operation UUID to
+collect independent roots initiated as one operation.
 
 ### Node Statistics
 
@@ -1324,12 +1325,15 @@ The ORC UI provides rich visualization tools:
 
 ```clojure
 ;; 1. Get recent failures
-(def failures (sheet/get-traces ctx {:sheet-id sheet-id
-                                     :status :failure
-                                     :limit 10}))
+(def failures-query
+  {:query/name :sheet/get-traces
+   :sheet-id sheet-id :status :failure :limit 10})
+;; Dispatch it, then read (get-in response [:query/result :traces]).
 
 ;; 2. Examine a specific failure
-(def trace (sheet/get-trace ctx (:trace-id (first failures))))
+(def trace-query
+  {:query/name :sheet/get-trace :trace-id (:trace-id (first failures))})
+;; Dispatch it, then read (get-in response [:query/result :trace]).
 
 ;; 3. Find the failing node
 (def failed-nodes
@@ -1344,8 +1348,9 @@ The ORC UI provides rich visualization tools:
 ;; get-trace returns SHAPE, not values.
 
 ;; 3b. To see the node's actual input/output values, rehydrate them:
-(sheet/node-trace-detail ctx {:trace-id (:trace-id trace)
-                              :node-id (:node-id (first failed-nodes))})
+{:query/name :sheet/node-trace-detail
+ :trace-id (:trace-id trace)
+ :trace-instance-id (:trace-instance-id (first failed-nodes))}
 
 ;; 4. Check if it's a pattern
 (sheet/node-stats ctx {:sheet-id sheet-id

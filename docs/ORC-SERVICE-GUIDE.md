@@ -560,7 +560,70 @@ The orc-service uses Grain's event store for persistence and observability.
 | `:sheet/node-execution-started` | Node begins | `:sheet-id`, `:node-id`, `:tick-id` |
 | `:sheet/node-execution-completed` | Node ends | `:sheet-id`, `:node-id`, `:status`, `:duration-ms` |
 | `:sheet/tree-tick-completed` | `execute` end | `:sheet-id`, `:tick-id`, `:root-status` |
-| `:sheet/execution-traced` | Trace assembled at execution end | `:trace-id`, `:sheet-id`, `:status`, `:duration-ms`, `:input-snapshot`/`:output-snapshot` (key → size profile, **not** values), `:node-traces` (shape only: `:read-keys`, `:write-keys`, `:input-profile`, `:output-profile`) |
+| `:sheet/execution-traced` | Trace assembled at execution end | `:trace-id`, `:sheet-id`, optional `:correlation-id`, structural lineage, `:status`, `:duration-ms`, profile snapshots, and node trace instances |
+| `:sheet/execution-value-written` | A canonical blackboard write | Inline `:value`, or `:value-reference` when file-store mode is configured |
+
+### Tracing, correlation, and exact node I/O
+
+Every tick becomes one trace. Every node start within it has its own
+`:trace-instance-id`, so repeated or concurrent runs of the same node are not
+ambiguous. `:parent-trace-instance-id` records the node execution tree.
+
+Trace lineage and operation correlation solve different problems:
+
+- `:root-trace-id` and `:parent-trace-id` connect a root tick to delegate and
+  generated child ticks.
+- `:correlation-id` is a caller-supplied UUID that groups all traces for one
+  larger operation, even when that operation launches multiple independent
+  roots.
+
+Specify correlation once when execution begins. An explicit execute option has
+precedence over the context value; descendants inherit it automatically.
+
+```clojure
+(def operation-id (random-uuid))
+
+;; Associate it with a context reused by several independent executions.
+(def operation-ctx (assoc ctx :orc/correlation-id operation-id))
+
+(sheet/execute operation-ctx sheet-a inputs-a)
+(sheet/execute operation-ctx sheet-b inputs-b)
+
+;; Or override it for one call.
+(sheet/execute ctx sheet-a inputs-a :correlation-id operation-id)
+```
+
+The tracing queries are query maps dispatched through the ORC query registry.
+They return their data under `:query/result`:
+
+```clojure
+{:query/name :sheet/get-trace
+ :trace-id trace-id}
+;; => {:query/result {:trace {...}}}
+
+{:query/name :sheet/get-trace-family
+ :trace-id any-family-member}
+;; => {:query/result {:root-trace-id ... :traces [...]}}
+
+{:query/name :sheet/get-correlated-traces
+ :correlation-id operation-id}
+;; => {:query/result {:correlation-id ... :traces [...] :families [...]}}
+
+{:query/name :sheet/node-trace-detail
+ :trace-id trace-id
+ :trace-instance-id trace-instance-id}
+;; => {:query/result {:node-id ... :trace-instance-id ...
+;;                    :exec-context ... :inputs {...} :outputs {...}}}
+```
+
+`get-trace` returns shape and profiles, not raw values. Select the exact
+`:trace-instance-id` from its `:node-traces`, then use `node-trace-detail` to
+rehydrate that instance's inputs and outputs from the canonical value log. This
+also works when canonical values use file-store references. The node's
+instruction is part of the workflow version/draft snapshot used by the trace;
+use its `:node-id` with that definition when explaining the prompt that ran.
+
+See [Value Storage](VALUE-STORAGE.md) for inline and external value placement.
 
 ### Read Model Queries
 
@@ -577,13 +640,15 @@ The orc-service uses Grain's event store for persistence and observability.
 (sheet/get-blackboard-by-key event-store sheet-id)
 ;; => {:input {:schema :string} :output {:schema [:map ...]}}
 
-;; Get execution trace
-(sheet/get-trace event-store trace-id)
+;; Contributor-only read-model access (not the public query envelope)
+(sheet/get-trace ctx trace-id)
 ;; => {:trace-id ... :node-traces [...] :input-snapshot ... :output-snapshot ...}
 
-;; Get traces for a sheet
-(sheet/get-traces-for-sheet event-store sheet-id)
+(sheet/get-traces-for-sheet ctx sheet-id)
 ;; => [{:trace-id ... :status :success ...} ...]
+
+;; Consumer-facing queries use the query maps documented above and return
+;; {:query/result ...}.
 ```
 
 ### Rolling Metrics
@@ -967,6 +1032,8 @@ See [GEPA-GUIDE.md](./GEPA-GUIDE.md) for comprehensive GEPA documentation.
 | Function | Description |
 |----------|-------------|
 | `sheet/execute` | Run workflow with inputs |
+| `sheet/execute-stream` | Run asynchronously and receive live envelopes |
+| `sheet/subscribe-execution` | Subscribe to a known tick and its descendants |
 
 ### Queries
 
@@ -975,8 +1042,11 @@ See [GEPA-GUIDE.md](./GEPA-GUIDE.md) for comprehensive GEPA documentation.
 | `sheet/get-sheet` | Get sheet metadata |
 | `sheet/get-nodes-for-sheet` | Get all nodes |
 | `sheet/get-blackboard-by-key` | Get blackboard schema |
-| `sheet/get-trace` | Get execution trace |
-| `sheet/get-traces-for-sheet` | Get all traces for sheet |
+| `:sheet/get-trace` query | Get one trace's shape and instance IDs |
+| `:sheet/get-trace-family` query | Get one structural root/delegate family |
+| `:sheet/get-correlated-traces` query | Get every trace for an operation UUID |
+| `:sheet/get-traces` query | Filter traces for a sheet |
+| `:sheet/node-trace-detail` query | Rehydrate exact node-instance inputs/outputs |
 | `sheet/get-node-rolling-metrics` | Get node performance metrics |
 | `sheet/get-tree-rolling-metrics` | Get all node metrics |
 

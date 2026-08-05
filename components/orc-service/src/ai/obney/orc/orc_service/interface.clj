@@ -122,6 +122,9 @@
      :timeout-ms - Max execution time in ms (default 300000 = 5 minutes)
      :use-version - Specific version number to execute (overrides execution-mode)
      :force-draft - Force draft execution even if execution-mode is :published
+     :correlation-id - Optional UUID grouping independent roots and all their
+                       descendants into one caller-defined operation. Overrides
+                       :orc/correlation-id in context.
 
    Returns:
      {:status :success | :failure | :timeout

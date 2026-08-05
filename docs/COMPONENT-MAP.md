@@ -14,6 +14,7 @@
 | Layer | Capability | Component(s) needed | DJL required | Evidence |
 |-------|-----------|---------------------|:------------:|---------|
 | 0 | **Core execution** — behavior tree DSL, workflow execution, event-sourced state | `orc-service` | No | `components/orc-service/deps.edn`: an LLM-call layer, structured logging, and a safe Clojure interpreter — no DJL, no model loading |
+| 0a | **External canonical values** — move all raw execution values out of events | `file-store` plus `file-store-local` or `file-store-s3` | No | `orc-service` depends only on the storage protocol; the umbrella package includes both backends |
 | 1 | **LLM judges** — grounding, reasoning, completeness, instruction-following | `evaluation` | No | `evaluation/deps.edn`: JSON handling, the LLM-call layer, and orc-service — **no ontology**. The Living-Description gate in `judge_runtime.clj` is resolved lazily (`requiring-resolve`), so judges run with zero ontology and zero DJL. Verified: `projects/orc-evaluation` resolves with none of those on the classpath. |
 | 2 | **Observability** — Langfuse trace forwarding | `langfuse` | No | `components/langfuse/deps.edn`: empty deps map — no external deps at all |
 | 3 | **Prompt optimization** — GEPA Pareto-frontier instruction evolution | `gepa` + `evaluation` | No | `components/gepa/deps.edn`: deps are mulog, orc/evaluation — no ontology dep, no DJL |
@@ -70,6 +71,9 @@ the target component is absent.
 
 ```
 langfuse          deps: (none — empty deps map)
+file-store        deps: (none — storage protocol and dispatch)
+file-store-local  deps: file-store
+file-store-s3     deps: file-store + Cognitect AWS API
 colbert           deps: mulog, data.json, DJL (api + tokenizers + onnxruntime, in-JVM)
                   (its ontology reference is lazy — fn-body require, not a hard dep)
 ```
@@ -77,7 +81,7 @@ colbert           deps: mulog, data.json, DJL (api + tokenizers + onnxruntime, i
 ### Hard-dependency edges (declared in deps.edn)
 
 ```
-orc-service        →  langfuse                      (tracing layer)
+orc-service        →  langfuse + file-store         (tracing + storage protocol)
 mcp-sheet-builder  →  orc-service → langfuse
 evaluation         →  orc-service → langfuse         (+ lazy ontology gate)
 gepa               →  evaluation → orc-service
@@ -92,6 +96,8 @@ ontology each build without dragging in heavier layers.
 
 ```
 projects/orc  →  orc-service
+                 file-store-local
+                 file-store-s3
                  evaluation   → orc-service
                  gepa         → evaluation
                  ontology

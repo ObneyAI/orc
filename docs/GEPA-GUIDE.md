@@ -802,7 +802,7 @@ Every workflow execution creates a `:sheet/execution-traced` event:
 (require '[ai.obney.orc.orc-service.interface :as sheet])
 
 ;; Get all traces for a sheet
-(def traces (sheet/get-traces-for-sheet event-store sheet-id))
+(def traces (sheet/get-traces-for-sheet ctx sheet-id))
 
 ;; Each trace contains:
 {:trace-id #uuid "..."

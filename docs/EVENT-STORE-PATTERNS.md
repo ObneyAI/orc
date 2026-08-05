@@ -162,15 +162,16 @@ Every event has a standard structure:
 ### Single-Write Discipline: values live in exactly one event type
 
 **`:sheet/execution-value-written` is the canonical record of every blackboard
-write.** No other event stores a blackboard value. Everything else references
-values by key and resolves them on demand.
+write.** In the default mode it contains `:value`; in file-store mode it
+contains a `:value-reference` to the raw bytes. No other event stores another
+copy. Everything else references values by key and resolves them on demand.
 
 This is enforced, not merely intended — `storage_budget_test` asserts a
 duplication ratio of 0 and that a payload appears in exactly one event.
 
 | Event | Stores |
 |---|---|
-| `:sheet/execution-value-written` | the value (canonical) |
+| `:sheet/execution-value-written` | `:value` or `:value-reference` (canonical) |
 | `:sheet/node-execution-completed` | `:write-keys`, `:read-keys`, size profiles |
 | `:sheet/node-execution-started` | execution context and genuine overrides only |
 | `:sheet/tree-tick-completed` | `:output-keys` |
@@ -201,13 +202,23 @@ Higher-level accessors already do this for you:
 | A node's writes, in RLM | the `(node-output …)` sandbox primitive |
 | Live values | `orc/subscribe-execution` with `:include-values? true` |
 
+Reference-backed values are rehydrated and integrity-checked by the same access
+paths. See [Value Storage](VALUE-STORAGE.md) for configuration and failure
+semantics.
+
 #### If you add an event type
 
 Store keys and profiles, not values. If you need a value inline you are
 probably reaching for something `value-log` can resolve, and the byte budget
 test will fail if you inline it.
 
-#### Content-addressed payloads
+#### External payloads are references, not deduplication
+
+File-store mode records a unique object reference with a byte count and SHA-256
+digest. The digest detects corruption; it is not used as the object key and ORC
+does not make content- or size-based storage decisions.
+
+#### Historical deduplication analysis
 
 Hashing large values into a separate event and referencing them by hash would
 only pay off where the *same* content is stored more than once. Measured
@@ -663,6 +674,6 @@ The `test-helpers` namespace provides factory functions:
 
 ## Related Documentation
 
-- [SHEET-SERVICE-GUIDE.md](./SHEET-SERVICE-GUIDE.md) - Sheet service overview
+- [ORC-SERVICE-GUIDE.md](ORC-SERVICE-GUIDE.md) - ORC service overview
 - [ARCHITECTURE.md](./ARCHITECTURE.md) - System architecture
 - [GEPA-GUIDE.md](./GEPA-GUIDE.md) - GEPA prompt optimization

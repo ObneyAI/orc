@@ -31,7 +31,7 @@ obneyai/orc-evaluation                  ;; lib name = the package name
 
 | Package (`:deps/root`) | What you get | Pulls DJL? |
 |---------|-------------|:----------:|
-| **`projects/orc-service`** | The engine: behavior-tree DSL, runtime, event-sourced execution, streaming, RLM (`:repl-researcher`) | No |
+| **`projects/orc-service`** | The engine: behavior-tree DSL, runtime, event-sourced execution, streaming, RLM (`:repl-researcher`), inline value storage, and the external-storage protocol | No |
 | **`projects/orc-evaluation`** | Engine + LLM-as-judge evaluation (grounding, reasoning, completeness, instruction-following) | No |
 | **`projects/orc-gepa`** | Engine + evaluation + GEPA prompt optimization (Pareto + reflective mutation) | No |
 | **`projects/orc-ontology`** | Engine + general-purpose event-sourced concept graph, DJL embeddings, evolutionary builder, self-improving write-side | **Yes** (DJL, in-JVM) |
@@ -49,9 +49,16 @@ obneyai/orc-evaluation                  ;; lib name = the package name
 
 The Layer-0 engine. Behavior-tree DSL (`workflow`, `sequence`, `parallel`,
 `fallback`, `map-each`, `llm`, `code`, `condition`, `delegate`, `repl-researcher`),
-synchronous + streaming execution, event-sourced sheets, versioning. Three
-libraries only: an LLM-call layer (DSCloj), structured logging (mulog), and a
-safe Clojure interpreter (sci). No model loading.
+synchronous + streaming execution, event-sourced sheets, versioning, and the
+generic file-store contract. Its runtime dependencies include the LLM-call
+layer (DSCloj), structured logging (mulog), a safe Clojure interpreter (sci),
+and Nippy value encoding. No model loading.
+
+Canonical values remain inline by default. The engine includes the generic
+file-store protocol used by `:orc/value-storage {:type :file-store}`, but this
+lean package does not bundle a concrete local or S3 backend. Include the
+corresponding component in a source/workspace deployment, or use the umbrella
+package, which bundles both. See [Value Storage](VALUE-STORAGE.md).
 
 ```clojure
 obneyai/orc-service {:git/url "https://github.com/ObneyAI/orc.git"
@@ -129,7 +136,8 @@ obneyai/orc-mcp-sheet-builder {:git/url "https://github.com/ObneyAI/orc.git"
 
 ## orc (umbrella)
 
-Everything: engine + evaluation + gepa + ontology + colbert + mcp-sheet-builder.
+Everything: engine + evaluation + gepa + ontology + colbert + mcp-sheet-builder,
+plus the local and S3 file-store backends.
 This is the package that gives you the **full self-improving loop** — there is no
 separate "self-improving-loop" package because the loop is a *capability* that
 emerges from `ontology` + `colbert` + `evaluation` running on the engine. Pull

@@ -63,7 +63,9 @@ Streaming is an **ephemeral observation layer** — node lifecycle, progress, in
 
 ;; One call: subscribe + dispatch
 (let [{:keys [tick-id events-ch result close!]}
-      (orc/execute-stream ctx sheet-id {:question "..."} :timeout-ms 120000)]
+      (orc/execute-stream ctx sheet-id {:question "..."}
+                          :timeout-ms 120000
+                          :correlation-id operation-id)]
   (async/go-loop []
     (when-let [e (async/<! events-ch)]
       (handle-envelope! e)      ;; push to UI, log, etc.
@@ -85,6 +87,13 @@ Or subscribe separately — useful when you dispatch ticks yourself
 The context needs a reachable Grain pubsub: either `:event-pubsub` directly
 or (the usual case) an `:event-store` started with one — the hub finds it at
 `[:config :event-pubsub]`.
+
+`execute-stream` accepts the same `:correlation-id` UUID as `execute`. You can
+also associate it once at `:orc/correlation-id` in the context. The explicit
+option wins when both are present, and all delegate/RLM child ticks inherit the
+chosen ID. Correlation affects durable trace grouping; it does not change the
+ephemeral stream subscription, which continues to follow the selected root
+tick and its descendants.
 
 ## The envelope
 

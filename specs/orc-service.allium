@@ -42,6 +42,7 @@ value ExecutionOptions {
     llm_call_budget: Integer?
     version_number: Integer?
     force_draft: Boolean
+    correlation_identifier: String?
 }
 
 value Usage {
@@ -187,6 +188,8 @@ entity WorkflowExecution {
 entity NodeExecution {
     execution: WorkflowExecution
     node: WorkflowNode
+    trace_instance_identifier: String
+    parent_node_execution: NodeExecution?
     status: NodeExecutionStatus
     started_at: Timestamp
     completed_at: Timestamp?
@@ -316,7 +319,7 @@ rule StartWorkflowExecution {
             started_at: now,
             version_number: selected_version(workflow, options),
             parent: null,
-            correlation_identifier: new_correlation_identifier(),
+            correlation_identifier: options.correlation_identifier ?? new_correlation_identifier(),
             options: options,
             error: null
         )
@@ -340,6 +343,8 @@ rule StartNodeExecution {
     ensures: NodeExecution.created(
         execution: execution,
         node: node,
+        trace_instance_identifier: new_trace_instance_identifier(),
+        parent_node_execution: current_parent_node_execution(execution),
         status: running,
         started_at: now,
         completed_at: null,
@@ -520,6 +525,22 @@ invariant ExecutionValuesBelongToWorkflow {
         value.key.workflow = value.execution.workflow
 }
 
+invariant CorrelationIdentifiersAreUUIDs {
+    for execution in WorkflowExecutions:
+        is_uuid(execution.correlation_identifier)
+}
+
+invariant TraceInstanceIdentifiersAreUnique {
+    for a in NodeExecutions:
+        for b in NodeExecutions:
+            a != b implies a.trace_instance_identifier != b.trace_instance_identifier
+}
+
+invariant DescendantsRetainOperationCorrelation {
+    for execution in WorkflowExecutions:
+        execution.parent != null implies execution.correlation_identifier = execution.parent.correlation_identifier
+}
+
 ------------------------------------------------------------
 -- Surfaces
 ------------------------------------------------------------
@@ -563,4 +584,18 @@ surface WorkflowExecutionAccess {
 
     @guarantee OpaqueBlockingPayload
         -- ORC propagates a leaf's blocking payload without interpreting it.
+
+    @guarantee ConfigurableCanonicalValuePlacement
+        -- A deployment selects one canonical value placement policy without
+        -- ORC making per-value size or shape decisions. Values remain
+        -- recoverable through the same execution and trace-detail surfaces.
+
+    @guarantee ReferencedValueIntegrity
+        -- If canonical bytes are stored outside the event record, ORC rejects
+        -- missing or corrupted bytes rather than returning a partial value.
+
+    @guarantee ExactNodeExecutionInspection
+        -- Each node execution has a unique trace instance identifier, and its
+        -- inputs and outputs can be inspected without ambiguity when the same
+        -- workflow node runs repeatedly or concurrently.
 }
