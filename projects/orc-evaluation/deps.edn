@@ -13,6 +13,7 @@
         ;; gate in judge_runtime is resolved lazily, so ontology is never
         ;; required here — judges are a standalone capability.
         orc/orc-service {:local/root "../../components/orc-service"}
+        orc/file-store  {:local/root "../../components/file-store"}
         orc/evaluation  {:local/root "../../components/evaluation"}
         orc/langfuse    {:local/root "../../components/langfuse"}}
 

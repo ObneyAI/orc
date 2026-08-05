@@ -12,6 +12,7 @@
         ;;   langfuse    → orc-service's tracing layer
         ;; NO evaluation, NO gepa, NO ontology, NO colbert, NO DJL, NO Python.
         orc/orc-service {:local/root "../../components/orc-service"}
+        orc/file-store  {:local/root "../../components/file-store"}
         orc/langfuse    {:local/root "../../components/langfuse"}}
 
  :aliases {:test {:extra-paths []

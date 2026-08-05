@@ -1005,7 +1005,8 @@
   [state event]
   (let [tick-id (:tick-id event)
         k (:key event)
-        v (:value event)]
+        v (:value event)
+        value-profile (:value-profile event)]
     (if (contains? state tick-id)
       (-> state
           ;; Shape, not the value. update-in (rather than assoc-in on :profile)
@@ -1013,7 +1014,9 @@
           ;; present is itself information, and assoc-in on a nil profile would
           ;; record it as a key with a nil shape.
           (update-in [tick-id :blackboard k]
-                     (fn [entry] (metadata-entry (or entry {}) v)))
+                     (fn [entry]
+                       (cond-> (metadata-entry (or entry {}) v)
+                         value-profile (assoc :profile value-profile))))
           (update-in [tick-id :blackboard k :version] (fnil inc 0))
           ;; Provenance: which write event produced the value currently under
           ;; this key. A key can be written several times in one tick, so

@@ -307,7 +307,7 @@
   [{:keys [provider blackboard declared-writes parent-trace-id
            call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
            recursive? event-store tenant-id cache
-           sheet-id tick-id command-registry]}]
+           sheet-id tick-id command-registry] :as context}]
   (let [;; Atom to capture final! output
         final-output (atom nil)
 
@@ -697,12 +697,10 @@
                                             (assoc event
                                                    :event/type :sheet/execution-value-written
                                                    :value (value-log/resolve-source
-                                                           event-store tenant-id
+                                                           context tenant-id
                                                            (:source event)))
                                             event)))
-                                   (es/read event-store
-                                            (cond-> {:tags #{[:tick tick-id]}}
-                                              tenant-id (assoc :tenant-id tenant-id))))))
+                                   (value-log/read-tick-events context tenant-id tick-id))))
         tree-detail-fn (fn
                          ([] (when-let [entry (find-tree-result nil)]
                                (drill/tree-detail-from-events

@@ -1,0 +1,8 @@
+{:paths ["src" "resources"]
+ :deps {orc/file-store {:local/root "../file-store"}
+        com.brunobonacci/mulog {:mvn/version "0.9.0"}
+        com.cognitect.aws/api {:mvn/version "0.8.723"}
+        com.cognitect.aws/endpoints {:mvn/version "871.2.29.52"}
+        com.cognitect.aws/s3
+        {:mvn/version "871.2.29.52",
+         :aws/serviceFullName "Amazon Simple Storage Service"}}}

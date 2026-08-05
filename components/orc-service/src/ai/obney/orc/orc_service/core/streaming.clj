@@ -240,7 +240,7 @@
   [sub tick-id ks]
   (try
     (let [{:keys [context]} sub]
-      (value-log/resolve-values (:event-store context) (:tenant-id context) tick-id
+      (value-log/resolve-values context (:tenant-id context) tick-id
                                 (rm/get-tick-blackboard context tick-id)
                                 ks))
     (catch Exception _ nil)))

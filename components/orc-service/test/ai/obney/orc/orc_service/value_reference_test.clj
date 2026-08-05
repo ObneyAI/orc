@@ -3,7 +3,9 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
+            [ai.obney.orc.orc-service.core.value-storage :as value-storage]
             [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.file-store.interface.protocol :as file-store]
             [ai.obney.grain.event-store-v3.interface :as es]))
 
 (def ^:private large-value (apply str (repeat 4096 "reference-payload-")))
@@ -11,8 +13,40 @@
 (defn produce-large [_] {:blob large-value})
 (defn copy-input [{:keys [inputs]}] {:output (:input inputs)})
 
+(defrecord MemoryFileStore [objects]
+  file-store/FileStore
+  (start [this] this)
+  (stop [this] this)
+  (put-file [_ {:keys [file-id file-contents]}]
+    (swap! objects assoc file-id file-contents)
+    {})
+  (get-file [_ {:keys [file-id]}] (get @objects file-id))
+  (locate-file [_ {:keys [file-id]}] {:memory/key file-id}))
+
 (defn- event-type [events type]
   (filter #(= type (:event/type %)) events))
+
+(deftest value-storage-is-explicit-and-integrity-checked
+  (let [objects (atom {})
+        store (->MemoryFileStore objects)
+        body {:tick-id (random-uuid) :key :answer :value {:n 42}}
+        context {:tenant-id "tenant-a"
+                 :orc/value-storage {:type :file-store}
+                 :orc/file-store store}
+        external (value-storage/prepare-write context body)
+        file-id (get-in external [:value-reference :file-id])]
+    (testing "event-store remains the default"
+      (is (= body (value-storage/prepare-write {} body))))
+    (testing "file-store mode externalizes and round-trips every value"
+      (is (not (contains? external :value)))
+      (is (= {:n 42} (value-storage/event-value context external))))
+    (testing "missing and corrupt objects fail loudly"
+      (swap! objects dissoc file-id)
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (value-storage/event-value context external)))
+      (swap! objects assoc file-id (byte-array [1 2 3]))
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (value-storage/event-value context external))))))
 
 (defn- setup-nested-producer! [ctx]
   (let [sheet-id (-> (h/run-and-apply! ctx (h/make-create-sheet-command :name "nested-ref"))
@@ -79,6 +113,31 @@
         (is (= 2 (count completions)))
         (is (every? #(= expected-source (get-in % [:write-sources :blob])) completions))
         (is (every? #(not (contains? % :writes)) completions))))))
+
+(deftest runtime-file-store-externalizes-every-canonical-value
+  (testing "one runtime setting stores every write externally and hydration stays transparent"
+    (let [objects (atom {})
+          store (->MemoryFileStore objects)]
+      (h/with-async-test-context
+        [ctx {:context {:orc/value-storage {:type :file-store
+                                            :prefix "test/orc-values"}
+                        :orc/file-store store}}]
+        (let [{:keys [sheet-id]} (setup-nested-producer! ctx)
+              result (runtime/execute ctx sheet-id {})
+              events (h/read-all-events ctx)
+              writes (event-type events :sheet/execution-value-written)
+              blob-write (some #(when (= :blob (:key %)) %) writes)]
+          (is (= :success (:status result)))
+          (is (= large-value (get-in result [:outputs :blob])))
+          (is (seq writes))
+          (is (every? #(not (contains? % :value)) writes))
+          (is (every? :value-reference writes))
+          (is (= (count writes) (count @objects)))
+          (is (= large-value
+                 (value-log/resolve-source
+                  ctx (:tenant-id ctx)
+                  {:tick-id (:tick-id blob-write)
+                   :event-id (:event/id blob-write)}))))))))
 
 (deftest delegate-input-and-output-use-cross-tick-references
   (testing "a delegate neither snapshots its input nor copies its child output"

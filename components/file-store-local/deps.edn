@@ -1,0 +1,3 @@
+{:paths ["src" "resources"]
+ :deps {orc/file-store {:local/root "../file-store"}
+        com.brunobonacci/mulog {:mvn/version "0.9.0"}}}

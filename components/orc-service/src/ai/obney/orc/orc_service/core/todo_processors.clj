@@ -14,6 +14,7 @@
             [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
+            [ai.obney.orc.orc-service.core.value-storage :as value-storage]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
@@ -140,8 +141,8 @@
    nil ks means EVERY key, so narrowing call sites must pass (or (:reads node)
    []) rather than (:reads node) — a node that declares no reads would
    otherwise silently hydrate the whole blackboard."
-  [{:keys [event-store tenant-id]} tick-id metadata-bb ks]
-  (value-log/hydrate-blackboard event-store tenant-id tick-id metadata-bb ks))
+  [{:keys [tenant-id] :as context} tick-id metadata-bb ks]
+  (value-log/hydrate-blackboard context tenant-id tick-id metadata-bb ks))
 
 (defn- resolve-blackboard-values
   "Project a tick's blackboard metadata and hydrate `ks` in one step, for
@@ -912,25 +913,27 @@
    iteration a given item write was for — and the blackboard slot itself only
    ever holds the most recent one. With it, each item write is addressable by
    the same [node-id exec-context] identity every other write uses."
-  ([sheet-id tick-id key value]
-   (make-bb-write-event sheet-id tick-id key value nil))
-  ([sheet-id tick-id key value attribution]
+  ([context sheet-id tick-id key value]
+   (make-bb-write-event context sheet-id tick-id key value nil))
+  ([context sheet-id tick-id key value attribution]
    (->event
     {:type :sheet/execution-value-written
      :tags #{[:sheet sheet-id]
              [:tick tick-id]}
-     :body (cond-> {:tick-id tick-id
-                    :sheet-id sheet-id
-                    :key key
-                    :value value}
-             (:node-id attribution) (assoc :node-id (:node-id attribution))
-             (seq (:exec-context attribution))
-             (assoc :exec-context (:exec-context attribution))
-             ;; Direction matters. A map-each child often reads AND writes the
-             ;; same item key, so "attributed to execution E" is ambiguous
-             ;; without it: is this the value E was given, or the value E
-             ;; produced? :input-seed? marks the former.
-             (:input-seed? attribution) (assoc :input-seed? true))})))
+     :body (value-storage/prepare-write
+            context
+            (cond-> {:tick-id tick-id
+                     :sheet-id sheet-id
+                     :key key
+                     :value value}
+              (:node-id attribution) (assoc :node-id (:node-id attribution))
+              (seq (:exec-context attribution))
+              (assoc :exec-context (:exec-context attribution))
+              ;; Direction matters. A map-each child often reads AND writes the
+              ;; same item key, so "attributed to execution E" is ambiguous
+              ;; without it: is this the value E was given, or the value E
+              ;; produced? :input-seed? marks the former.
+              (:input-seed? attribution) (assoc :input-seed? true)))})))
 
 ;; =============================================================================
 ;; Tick Execution Processor
@@ -1982,7 +1985,7 @@
         ;; Resolved from the write log: the completion event carries only
         ;; :write-keys. Needed to keep a map-each iteration's sequence chained
         ;; to its own values — see the :inputs note in the :sequence branch.
-        child-writes (value-log/resolve-writes event-store (:tenant-id context) tick-id event)
+        child-writes (value-log/resolve-writes context (:tenant-id context) tick-id event)
         event-inputs (:inputs event)
         exec-context (extract-execution-context event-inputs)
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
@@ -2372,7 +2375,7 @@
           (empty? source-list)
           ;; Empty list - succeed with empty results
           {:result/events
-           [(make-bb-write-event sheet-id tick-id output-key [])
+           [(make-bb-write-event context sheet-id tick-id output-key [])
             (->event
              {:type :sheet/node-execution-completed
               :tags #{[:sheet sheet-id]
@@ -2387,7 +2390,7 @@
           (not child-id)
           ;; No child subtree - succeed with original list
           {:result/events
-           [(make-bb-write-event sheet-id tick-id output-key (vec source-list))
+           [(make-bb-write-event context sheet-id tick-id output-key (vec source-list))
             (->event
              {:type :sheet/node-execution-completed
               :tags #{[:sheet sheet-id]
@@ -2445,7 +2448,7 @@
                    ;; Attributed to the ITERATION that will read it, so a
                    ;; consumer can tell iteration i's item from iteration j's.
                    ;; The shared blackboard slot cannot — it holds one value.
-                   [(make-bb-write-event sheet-id tick-id item-key item
+                   [(make-bb-write-event context sheet-id tick-id item-key item
                                          {:node-id child-id
                                           :input-seed? true
                                           :exec-context {::map-each-index idx
@@ -2477,7 +2480,7 @@
         ;; One read of the tick's events, reused for every resolution below.
         ;; This used to be a resolve-writes call that read the tick and threw
         ;; the events away, so holding them costs nothing extra.
-        tick-events (value-log/read-tick-events event-store (:tenant-id context) tick-id)
+        tick-events (value-log/read-tick-events context (:tenant-id context) tick-id)
         ;; This iteration's writes, resolved from the canonical write log by
         ;; (node-id, exec-context). Attribution matters here more than
         ;; anywhere else: with max-concurrency > 1 several iterations of the
@@ -2527,7 +2530,7 @@
                    ;; sweep, built from the events already in hand rather than
                    ;; from the read model.
                    (let [latest (merge (value-log/tick-seeds
-                                        event-store (:tenant-id context) tick-id)
+                                        context (:tenant-id context) tick-id)
                                        (value-log/latest-values tick-events))]
                      (reduce-kv
                       (fn [acc k v]
@@ -2631,7 +2634,7 @@
                     :tags #{[:sheet sheet-id] [:node map-each-parent-id] [:tick tick-id]}
                     :body {:sheet-id sheet-id :tick-id tick-id :node-id map-each-parent-id
                            :item-index (:completed-count act) :total-items total-items}})
-                  (make-bb-write-event sheet-id tick-id output-key into-value)
+                  (make-bb-write-event context sheet-id tick-id output-key into-value)
                   (->event
                    {:type :sheet/node-execution-completed
                     :tags #{[:sheet sheet-id] [:node map-each-parent-id] [:tick tick-id]}
@@ -2649,7 +2652,7 @@
                   ;; Write item to blackboard so children in sequence can read it
                   ;; Attributed to the iteration that will read it — see the
                   ;; batch-dispatch site above.
-                  (make-bb-write-event sheet-id tick-id item-key next-item
+                  (make-bb-write-event context sheet-id tick-id item-key next-item
                                        {:node-id child-id
                                         :input-seed? true
                                         :exec-context {::map-each-index (:next-index act)
@@ -2855,21 +2858,23 @@
 
    When events of that type haven't been emitted (or event-store is nil),
    returns an empty vector. Never throws."
-  [event-store tenant-id tick-id]
+  [{:keys [event-store] :as context} tenant-id tick-id]
   (try
     (if-not event-store
       []
       (let [family-ids (tick-family-ids event-store tenant-id tick-id)
             family-events
-            (into []
-                  (mapcat (fn [family-tick-id]
-                            (into []
-                                  (es/read event-store
-                                           (cond-> {:types #{:sheet/node-execution-completed
-                                                            :sheet/execution-value-written}
-                                                    :tags #{[:tick family-tick-id]}}
-                                             tenant-id (assoc :tenant-id tenant-id))))))
-                  family-ids)
+            (value-storage/hydrate-events
+             context
+             (into []
+                   (mapcat (fn [family-tick-id]
+                             (into []
+                                   (es/read event-store
+                                            (cond-> {:types #{:sheet/node-execution-completed
+                                                             :sheet/execution-value-written}
+                                                     :tags #{[:tick family-tick-id]}}
+                                              tenant-id (assoc :tenant-id tenant-id))))))
+                   family-ids))
             writes-by-execution (value-log/writes-by-execution family-events)]
         (->> family-events
              (filter #(= :sheet/node-execution-completed (:event/type %)))
@@ -2989,7 +2994,7 @@
         ;; MUST run before forget-tick! below, which drops the memoized seeds.
         outputs (or (when-let [bb (rm/get-tick-blackboard context tick-id)]
                       (merge (zipmap (keys bb) (repeat nil))
-                             (value-log/final-values event-store tenant-id tick-id)))
+                             (value-log/final-values context tenant-id tick-id)))
                     (:outputs event))
         error (:error event)
         ;; WS-2a: the opaque block payload, present on a :blocked tree tick.
@@ -3008,7 +3013,7 @@
             ;; ontology consolidators) read `:node-trace` from the result
             ;; instead of querying the event store themselves.
             trace-start-ms (System/currentTimeMillis)
-            node-trace (build-node-trace event-store tenant-id tick-id)
+            node-trace (build-node-trace context tenant-id tick-id)
             trace-duration-ms (- (System/currentTimeMillis) trace-start-ms)
             _ (u/log ::execution-result-trace-built
                      :tick-id tick-id
@@ -3038,7 +3043,7 @@
                              :blocked :blocked
                              :failure)
                    :outputs (or outputs {})
-                   :output-sources (value-log/final-sources event-store tenant-id tick-id)
+                   :output-sources (value-log/final-sources context tenant-id tick-id)
                    ;; Include raw tree for :tree-generated status (canonical form generated at execution time)
                    :generated-tree-raw (get outputs :generated-tree-raw)
                    :trace-id tick-id

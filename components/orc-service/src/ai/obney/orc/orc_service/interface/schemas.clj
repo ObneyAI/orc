@@ -1156,7 +1156,14 @@
     [:tick-id :uuid]
     [:sheet-id :uuid]
     [:key :keyword]
-    [:value :any]
+    [:value {:optional true} :any]
+    [:value-reference {:optional true}
+     [:map
+      [:file-id :string]
+      [:byte-size :int]
+      [:content-hash :string]
+      [:format [:enum :nippy]]]]
+    [:value-profile {:optional true} :any]
     ;; Stable pre-append identity used when another event in the same atomic
     ;; command batch must reference this value.
     [:value-id {:optional true} :uuid]

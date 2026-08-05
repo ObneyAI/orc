@@ -272,7 +272,7 @@
                      place BEFORE processors start, since each processor
                      captures the context by value."
   ([] (create-async-test-context {}))
-  ([{:keys [count-cache?]}]
+  ([{:keys [count-cache? context]}]
   (rmp/l1-clear!)
   (let [dir (str "/tmp/sheet-async-test-" (random-uuid))
         ps (pubsub/start {:type :core-async
@@ -282,13 +282,14 @@
                                :logger nil})
         cache (cond-> (kv/start (lmdb/->KV-Store-LMDB {:storage-dir dir :db-name "test"}))
                 count-cache? counting-kv)
-        base-ctx {:event-store event-store
-                  :cache cache
-                  :tenant-id #uuid "00000000-0000-0000-0000-000000000000"
-                  :command-registry (cp/global-command-registry)
-                  :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
-                  ::cache-dir dir}
+        base-ctx (merge {:event-store event-store
+                         :cache cache
+                         :tenant-id #uuid "00000000-0000-0000-0000-000000000000"
+                         :command-registry (cp/global-command-registry)
+                         :query-registry (qp/global-query-registry)
+                         :dscloj-provider :openrouter
+                         ::cache-dir dir}
+                        context)
         ;; Start a todo processor for each registered processor
         processors (reduce-kv
                     (fn [acc proc-name {:keys [handler-fn topics]}]

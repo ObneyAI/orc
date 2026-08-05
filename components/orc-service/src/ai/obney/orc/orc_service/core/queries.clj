@@ -444,7 +444,7 @@
       (let [tick-events (into [] (es/read event-store
                                           {:tags #{[:tick trace-id]}
                                            :tenant-id (:tenant-id ctx)}))
-            values (value-log/final-values event-store (:tenant-id ctx) trace-id)
+            values (value-log/final-values ctx (:tenant-id ctx) trace-id)
             completed (some #(when (and (= :sheet/node-execution-completed (:event/type %))
                                         (= node-id (:node-id %)))
                                %)
@@ -461,7 +461,7 @@
           :inputs (pick (:read-keys node-trace))
           :outputs (or (:writes completed)
                        (when completed
-                         (not-empty (value-log/resolve-writes event-store
+                         (not-empty (value-log/resolve-writes ctx
                                                               (:tenant-id ctx)
                                                               trace-id completed)))
                        (pick (:write-keys node-trace)))}})

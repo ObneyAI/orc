@@ -31,6 +31,9 @@
                               orc/mcp-sheet-builder {:local/root "components/mcp-sheet-builder"}
                               orc/agent-browser     {:local/root "components/agent-browser"}
                               orc/langfuse          {:local/root "components/langfuse"}
+                              orc/file-store        {:local/root "components/file-store"}
+                              orc/file-store-local  {:local/root "components/file-store-local"}
+                              orc/file-store-s3     {:local/root "components/file-store-s3"}
                               orc/grain-test-utils  {:local/root "components/grain-test-utils"}
                               orc/predict-rlm-pdf   {:local/root "components/predict-rlm-pdf"}
                               orc/predict-rlm-image-tools {:local/root "components/predict-rlm-image-tools"}

@@ -16,6 +16,7 @@
         orc/gepa        {:local/root "../../components/gepa"}
         orc/evaluation  {:local/root "../../components/evaluation"}
         orc/orc-service {:local/root "../../components/orc-service"}
+        orc/file-store  {:local/root "../../components/file-store"}
         orc/langfuse    {:local/root "../../components/langfuse"}}
 
  :aliases {:test {:extra-paths []

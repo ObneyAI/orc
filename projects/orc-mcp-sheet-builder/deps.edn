@@ -13,6 +13,7 @@
         ;; NO ontology, NO colbert, NO DJL, NO Python. Standalone capability.
         orc/mcp-sheet-builder {:local/root "../../components/mcp-sheet-builder"}
         orc/orc-service       {:local/root "../../components/orc-service"}
+        orc/file-store        {:local/root "../../components/file-store"}
         orc/langfuse          {:local/root "../../components/langfuse"}}
 
  :aliases {:test {:extra-paths []

@@ -10,6 +10,7 @@
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.metadata :as metadata]
+            [ai.obney.orc.orc-service.core.value-storage :as value-storage]
             [ai.obney.grain.event-store-v3.interface :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [cognitect.anomalies :as anom]
@@ -977,12 +978,14 @@
                                           [k (->event
                                              {:type :sheet/execution-value-written
                                               :tags #{[:sheet sheet-id] [:tick new-tick-id]}
-                                              :body {:tick-id new-tick-id
-                                                     :sheet-id sheet-id
-                                                     :key k
-                                                     :value v
-                                                     :value-id value-id
-                                                     :tick-seed? true}})])))
+                                              :body (value-storage/prepare-write
+                                                     context
+                                                     {:tick-id new-tick-id
+                                                      :sheet-id sheet-id
+                                                      :key k
+                                                      :value v
+                                                      :value-id value-id
+                                                      :tick-seed? true})})])))
                 seed-sources (merge input-sources
                                     (into {} (map (fn [[k event]]
                                                    [k {:tick-id new-tick-id
@@ -1221,15 +1224,17 @@
                                     {:type :sheet/execution-value-written
                                      :tags #{[:sheet sheet-id]
                                              [:tick tick-id]}
-                                     :body (cond-> {:tick-id tick-id
-                                                    :sheet-id sheet-id
-                                                    :key k
-                                                    :value v
-                                                    :node-id node-id}
-                                             ;; Identifies the ITERATION, not
-                                             ;; just the node — see the schema.
-                                             (seq exec-context)
-                                             (assoc :exec-context exec-context))}))
+                                     :body (value-storage/prepare-write
+                                            ctx
+                                            (cond-> {:tick-id tick-id
+                                                     :sheet-id sheet-id
+                                                     :key k
+                                                     :value v
+                                                     :node-id node-id}
+                                              ;; Identifies the ITERATION, not
+                                              ;; just the node — see the schema.
+                                              (seq exec-context)
+                                              (assoc :exec-context exec-context)))}))
                                 writes))]
     {:command-result/events
      (into [] (concat bb-write-events reference-events [completion-event]))}))

@@ -15,6 +15,7 @@
         ;; to light up the third retrieval signal.
         orc/ontology    {:local/root "../../components/ontology"}
         orc/orc-service {:local/root "../../components/orc-service"}
+        orc/file-store  {:local/root "../../components/file-store"}
         orc/langfuse    {:local/root "../../components/langfuse"}}
 
  :aliases {:test {:extra-paths []

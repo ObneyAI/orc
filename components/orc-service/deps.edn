@@ -2,7 +2,9 @@
  :deps {io.github.ObneyAI/DSCloj {:git/url "https://github.com/ObneyAI/DSCloj.git"
                                   :git/sha "41ef3e20b9bab6e0939ce5486aca38c9b329c18a"}
         com.brunobonacci/mulog {:mvn/version "0.9.0"}
+        com.taoensso/nippy {:mvn/version "3.6.0"}
         org.babashka/sci {:mvn/version "0.8.43"}
+        orc/file-store {:local/root "../file-store"}
         ;; orc-service's tracing layer requires langfuse (tracing.clj).
         ;; Declared so orc-service is self-contained — it builds without the
         ;; projects/orc umbrella putting langfuse on the classpath.

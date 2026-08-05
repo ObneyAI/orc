@@ -12,7 +12,18 @@
    node-id executes once per item against a shared item key. Writes are
    therefore indexed by (node-id, exec-context) — one node EXECUTION, the
    same identity todo-processors/trace-execution-key uses."
-  (:require [ai.obney.grain.event-store-v3.interface :as es]))
+  (:require [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.orc.orc-service.core.value-storage :as value-storage]))
+
+(defn- event-store-of [source]
+  (if (and (map? source) (contains? source :event-store))
+    (:event-store source)
+    source))
+
+(defn- hydrate [source events]
+  (if (and (map? source) (contains? source :event-store))
+    (value-storage/hydrate-events source events)
+    (vec events)))
 
 (def ^:private map-each-index-key
   :ai.obney.orc.orc-service.core.todo-processors/map-each-index)
@@ -122,23 +133,24 @@
           events))
 
 (defn read-tick-events
-  "All events for a tick. Returns [] on failure rather than throwing —
-   every caller here is enriching observability, not gating execution."
-  [event-store tenant-id tick-id]
-  (try
-    (if event-store
-      (into [] (es/read event-store (cond-> {:tags #{[:tick tick-id]}}
-                                      tenant-id (assoc :tenant-id tenant-id))))
-      [])
-    (catch Exception _ [])))
+  "All events for a tick. Event-store read failures return []; external value
+   failures propagate so execution never silently substitutes missing data."
+  [runtime-source tenant-id tick-id]
+  (let [events (try
+                 (if-let [event-store (event-store-of runtime-source)]
+                   (into [] (es/read event-store (cond-> {:tags #{[:tick tick-id]}}
+                                                  tenant-id (assoc :tenant-id tenant-id))))
+                   [])
+                 (catch Exception _ []))]
+    (hydrate runtime-source events)))
 
 (declare resolve-source)
 
 (defn resolve-writes
   "Convenience: read a tick's events and return what one node execution
    wrote. Prefer the `events`-taking fns when you already hold the events."
-  [event-store tenant-id tick-id completion]
-  (let [events (read-tick-events event-store tenant-id tick-id)
+  [runtime-source tenant-id tick-id completion]
+  (let [events (read-tick-events runtime-source tenant-id tick-id)
         ek (execution-key completion)
         sources (reduce (fn [acc event]
                           (if (and (value-event? event)
@@ -149,15 +161,15 @@
                             acc))
                         (or (:write-sources completion) {}) events)]
     (if (seq sources)
-      (reduce-kv (fn [acc k source]
-                   (let [v (resolve-source event-store tenant-id source)]
+      (reduce-kv (fn [acc k value-source]
+                   (let [v (resolve-source runtime-source tenant-id value-source)]
                      (if (some? v) (assoc acc k v) acc)))
                  {} sources)
       (writes-for events completion))))
 
 (defn resolve-write-sources
   "Return {key canonical-source-ref} for a node completion."
-  [event-store tenant-id tick-id completion]
+  [source tenant-id tick-id completion]
   (let [ek (execution-key completion)]
     (reduce (fn [acc event]
               (if (and (value-event? event)
@@ -166,7 +178,7 @@
                 (assoc acc (:key event) (or (:source event) (source-ref event)))
                 acc))
             (or (:write-sources completion) {})
-            (read-tick-events event-store tenant-id tick-id))))
+            (read-tick-events source tenant-id tick-id))))
 
 (defn writes-by-iteration
   "Non-seed writes indexed by ITERATION: {exec-context {key value}} — the
@@ -234,28 +246,29 @@
 
 (defn- read-tick-writes
   "A tick's :sheet/execution-value-written events, oldest first."
-  [event-store tenant-id tick-id]
-  (try
-    (if event-store
-      (into [] (es/read event-store (cond-> {:types #{:sheet/execution-value-written
-                                                       :sheet/execution-value-referenced}
-                                             :tags #{[:tick tick-id]}}
-                                      tenant-id (assoc :tenant-id tenant-id))))
-      [])
-    (catch Exception _ [])))
+  [runtime-source tenant-id tick-id]
+  (let [events (try
+                 (if-let [event-store (event-store-of runtime-source)]
+                   (into [] (es/read event-store (cond-> {:types #{:sheet/execution-value-written
+                                                                   :sheet/execution-value-referenced}
+                                                         :tags #{[:tick tick-id]}}
+                                                  tenant-id (assoc :tenant-id tenant-id))))
+                   [])
+                 (catch Exception _ []))]
+    (hydrate runtime-source events)))
 
 (defn resolve-source
   "Resolve a {:tick-id :event-id} reference, following cross-tick references.
    Missing, foreign, and cyclic references resolve to nil."
-  ([event-store tenant-id source]
-   (resolve-source event-store tenant-id source #{}))
-  ([event-store tenant-id {:keys [tick-id event-id] :as source} seen]
+  ([runtime-source tenant-id source]
+   (resolve-source runtime-source tenant-id source #{}))
+  ([runtime-source tenant-id {:keys [tick-id event-id] :as source} seen]
    (when (and tick-id event-id (not (contains? seen source)))
      (when-let [event (some #(when (or (= event-id (:event/id %))
                                        (= event-id (:value-id %))) %)
-                            (read-tick-writes event-store tenant-id tick-id))]
+                            (read-tick-writes runtime-source tenant-id tick-id))]
        (if (= :sheet/execution-value-referenced (:event/type event))
-         (resolve-source event-store tenant-id (:source event) (conj seen source))
+         (resolve-source runtime-source tenant-id (:source event) (conj seen source))
          (:value event))))))
 
 (defn tick-started-event
@@ -264,12 +277,12 @@
 
    complete-tree-tick emits further events of that type for the SAME tick-id on
    each re-tick, carrying neither, so this returns the snapshot-bearing one."
-  [event-store tenant-id tick-id]
+  [runtime-source tenant-id tick-id]
   (try
-    (when event-store
+    (when-let [event-store (event-store-of runtime-source)]
       (->> (es/read event-store (cond-> {:types #{:sheet/tree-tick-started}
-                                         :tags #{[:tick tick-id]}}
-                                  tenant-id (assoc :tenant-id tenant-id)))
+                                          :tags #{[:tick tick-id]}}
+                                   tenant-id (assoc :tenant-id tenant-id)))
            (into [])
            (some #(when (:execution-snapshot %) %))))
     (catch Exception _ nil)))
@@ -280,12 +293,12 @@
    Safe to memoize without an invalidation rule: the originating
    tree-tick-started is appended by the tick-tree command before any processor
    can run, and events are immutable."
-  [event-store tenant-id tick-id]
+  [runtime-source tenant-id tick-id]
   (if-let [cached (get @tick-seeds* tick-id)]
     cached
-    (let [started (tick-started-event event-store tenant-id tick-id)
-          v (reduce-kv (fn [acc k source]
-                         (let [value (resolve-source event-store tenant-id source)]
+    (let [started (tick-started-event runtime-source tenant-id tick-id)
+          v (reduce-kv (fn [acc k value-source]
+                         (let [value (resolve-source runtime-source tenant-id value-source)]
                            (if (some? value) (assoc acc k value) acc)))
                        {} (or (:seed-sources started) {}))]
       (swap! tick-seeds* assoc tick-id v)
@@ -312,9 +325,9 @@
    under any interleaving. An event whose id was not requested is ignored, so
    a mismatched or foreign pointer resolves to nothing rather than to a
    plausible wrong value."
-  [event-store tenant-id tick-id ids]
+  [source tenant-id tick-id ids]
   (let [ids (set (remove nil? ids))]
-    (if (or (empty? ids) (nil? event-store))
+    (if (or (empty? ids) (nil? (event-store-of source)))
       {}
       (reduce (fn [acc e]
               (let [id (cond
@@ -322,7 +335,7 @@
                          (contains? ids (:value-id e)) (:value-id e))]
                 (if id (assoc acc id (:value e)) acc)))
               {}
-              (read-tick-writes event-store tenant-id tick-id)))))
+              (read-tick-writes source tenant-id tick-id)))))
 
 (defn resolve-values
   "The values behind a METADATA blackboard, for `ks` (nil = every key).
@@ -330,16 +343,16 @@
    `metadata-bb` is the :blackboard of a tick execution context:
    {k {:key :schema :version :source :profile}} with no :value.
    Keys that resolve to nothing are omitted."
-  [event-store tenant-id tick-id metadata-bb ks]
+  [source tenant-id tick-id metadata-bb ks]
   (let [ks (if (nil? ks) (keys metadata-bb) ks)
         entries (into {} (for [k ks :when (contains? metadata-bb k)]
                            [k (get metadata-bb k)]))
         seeds (when (some (fn [[_ e]] (nil? (:source e))) entries)
-                (tick-seeds event-store tenant-id tick-id))]
+                (tick-seeds source tenant-id tick-id))]
     (reduce (fn [acc [k e]]
               (let [src (:source e)
                     v (if src
-                        (resolve-source event-store tenant-id src)
+                        (resolve-source source tenant-id src)
                         (get seeds k))]
                 (if (some? v) (assoc acc k v) acc)))
             {}
@@ -358,23 +371,23 @@
 
    Seeds first, then every write in order, so the last write to a key wins —
    the same end state the cached blackboard converges to."
-  [event-store tenant-id tick-id]
-  (merge (tick-seeds event-store tenant-id tick-id)
+  [source tenant-id tick-id]
+  (merge (tick-seeds source tenant-id tick-id)
          (reduce (fn [acc event]
                    (let [v (if (= :sheet/execution-value-referenced (:event/type event))
-                             (resolve-source event-store tenant-id (:source event))
+                             (resolve-source source tenant-id (:source event))
                              (:value event))]
                      (if (some? v) (assoc acc (:key event) v) acc)))
                  {}
-                 (read-tick-writes event-store tenant-id tick-id))))
+                 (read-tick-writes source tenant-id tick-id))))
 
 (defn final-sources
   "The canonical source reference currently backing each key at tick end."
-  [event-store tenant-id tick-id]
+  [source tenant-id tick-id]
   (reduce (fn [acc event]
             (assoc acc (:key event) (or (:source event) (source-ref event))))
-          (or (:seed-sources (tick-started-event event-store tenant-id tick-id)) {})
-          (read-tick-writes event-store tenant-id tick-id)))
+          (or (:seed-sources (tick-started-event source tenant-id tick-id)) {})
+          (read-tick-writes source tenant-id tick-id)))
 
 (defn hydrate-blackboard
   "`metadata-bb` with :value filled in for `ks` (nil = every key).
@@ -385,10 +398,10 @@
    distinguishes 'entry absent' (skip the key) from 'entry present, value nil'
    (serialize nil, i.e. an empty string), so dropping entries here would
    silently change LLM prompts."
-  ([event-store tenant-id tick-id metadata-bb]
-   (hydrate-blackboard event-store tenant-id tick-id metadata-bb nil))
-  ([event-store tenant-id tick-id metadata-bb ks]
-   (let [vals* (resolve-values event-store tenant-id tick-id metadata-bb ks)]
+  ([source tenant-id tick-id metadata-bb]
+   (hydrate-blackboard source tenant-id tick-id metadata-bb nil))
+  ([source tenant-id tick-id metadata-bb ks]
+   (let [vals* (resolve-values source tenant-id tick-id metadata-bb ks)]
      (reduce-kv (fn [bb k v] (assoc-in bb [k :value] v))
                 (or metadata-bb {})
                 vals*))))
