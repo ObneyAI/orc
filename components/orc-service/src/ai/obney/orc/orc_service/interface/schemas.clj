@@ -515,6 +515,9 @@
     [:parent-tick-id {:optional true} :uuid]
     ;; Fields for async execution with isolated blackboard
     [:inputs {:optional true} :map]
+    ;; Canonical sources for inputs already durable in another tick.
+    [:input-sources {:optional true} [:map-of :keyword
+                                      [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:use-version {:optional true} :int]
     [:force-draft {:optional true} :boolean]
     [:options {:optional true} :map]
@@ -545,7 +548,10 @@
     ;; parent deref returns immediately) instead of the throwable escaping the
     ;; future and hanging the Phase-2 budget.
     [:status [:enum :success :failure :tree-generated :partial :timeout :blocked]]
-    [:writes [:map-of :keyword :any]]
+    [:writes {:optional true} [:map-of :keyword :any]]
+    [:write-sources {:optional true} [:map-of :keyword
+                                      [:map [:tick-id :uuid] [:event-id :uuid]]]]
+    [:write-references? {:optional true} :boolean]
     ;; WS-2a: OPAQUE payload carried on a :blocked completion. orc never
     ;; interprets it (orc-sessions owns its meaning — WS-2c). Optional/
     ;; backward-compatible — present only on :blocked completions.
@@ -557,7 +563,8 @@
     ;; {read-key -> :event/id of the write it resolved to}. Carried through
     ;; onto the event so rehydration is exact rather than last-write-wins —
     ;; see the :sheet/node-execution-completed event schema.
-    [:read-sources {:optional true} [:map-of :keyword :uuid]]
+    [:read-sources {:optional true} [:map-of :keyword
+                                     [:map [:tick-id :uuid] [:event-id :uuid]]]]
     ;; Verbatim raw LLM response text, present only on parse-failure
     ;; completions (the model answered but no value could be extracted
     ;; for declared writes). Persisted so (node-output <node-id>) can
@@ -994,7 +1001,8 @@
     [:parent-tick-id {:optional true} :uuid]
     [:iteration {:optional true} :int]
     ;; Fields for async execution with isolated blackboard
-    [:inputs {:optional true} :map]
+    [:seed-sources {:optional true} [:map-of :keyword
+                                     [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:execution-snapshot {:optional true} :map]
     [:version-number {:optional true} :int]
     [:options {:optional true} :map]
@@ -1022,6 +1030,8 @@
     ;; Resolve them with core/value-log.
     [:write-keys {:optional true} [:vector :keyword]]
     [:write-profile {:optional true} [:map-of :keyword :map]]
+    [:write-sources {:optional true} [:map-of :keyword
+                                      [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:read-keys {:optional true} [:vector :keyword]]
     [:input-profile {:optional true} [:map-of :keyword :map]]
     ;; {read-key -> :event/id of the write this node READ}. A key can be
@@ -1029,7 +1039,8 @@
     ;; yields the last write — possibly one made after this node finished.
     ;; Absent for keys seeded into the tick rather than written during it,
     ;; and inside a map-each iteration (see read-sources).
-    [:read-sources {:optional true} [:map-of :keyword :uuid]]
+    [:read-sources {:optional true} [:map-of :keyword
+                                     [:map [:tick-id :uuid] [:event-id :uuid]]]]
     ;; Values inline ONLY when no write events were emitted for this
     ;; completion (non-tick-scoped execution) — then this event is their
     ;; only home. See complete-node-execution's externalize-writes?.
@@ -1146,6 +1157,9 @@
     [:sheet-id :uuid]
     [:key :keyword]
     [:value :any]
+    ;; Stable pre-append identity used when another event in the same atomic
+    ;; command batch must reference this value.
+    [:value-id {:optional true} :uuid]
     ;; Attribution: which node execution produced this write. This is the
     ;; canonical record of every blackboard value, so consumers that used to
     ;; read values off :sheet/node-execution-completed :writes resolve them
@@ -1159,12 +1173,24 @@
     ;; trace-execution-key correlation applies unchanged.
     [:node-id {:optional true} :uuid]
     [:exec-context {:optional true} :map]
+    [:tick-seed? {:optional true} :boolean]
     ;; Direction. True when the write PROVIDES a value to the execution it
     ;; names rather than being that execution's output — map-each item writes,
     ;; which the parent emits before starting each child. A child commonly
     ;; reads and writes the same item key, so attribution alone is ambiguous
     ;; without it. See value-log/writes-by-execution vs
     ;; value-log/input-seeds-by-iteration.
+    [:input-seed? {:optional true} :boolean]]
+
+   :sheet/execution-value-referenced
+   [:map
+    [:tick-id :uuid]
+    [:sheet-id :uuid]
+    [:key :keyword]
+    [:source [:map [:tick-id :uuid] [:event-id :uuid]]]
+    [:value-id {:optional true} :uuid]
+    [:node-id {:optional true} :uuid]
+    [:exec-context {:optional true} :map]
     [:input-seed? {:optional true} :boolean]]
 
    :sheet/tick-cancelled

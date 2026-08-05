@@ -53,14 +53,13 @@
 ;; =============================================================================
 
 (defn- tick-started
-  "Mirrors commands.clj tick-tree: carries the execution snapshot's blackboard
-   entries and the caller's :inputs, both with values inline."
-  [sheet-id tick-id bb-entries inputs]
+  "Mirrors commands.clj tick-tree: structure plus canonical seed references."
+  [sheet-id tick-id bb-entries seed-sources]
   (es/->event {:type :sheet/tree-tick-started
                :tags #{[:sheet sheet-id] [:tick tick-id]}
                :body {:sheet-id sheet-id
                       :tick-id tick-id
-                      :inputs inputs
+                      :seed-sources seed-sources
                       :execution-snapshot {:blackboard-entries bb-entries
                                            :nodes-by-id {}
                                            :root-node-id nil}}}))
@@ -71,7 +70,9 @@
   (es/->event {:type :sheet/execution-value-written
                :tags #{[:sheet sheet-id] [:tick tick-id]}
                :body (cond-> {:sheet-id sheet-id :tick-id tick-id
-                              :node-id node-id :key k :value v}
+                              :key k :value v
+                              :value-id (random-uuid)}
+                       node-id (assoc :node-id node-id)
                        (seq exec-context) (assoc :exec-context exec-context)
                        input-seed? (assoc :input-seed? true))}))
 
@@ -81,12 +82,25 @@
         (str "append failed: " (:cognitect.anomalies/message r)))
     r))
 
+(defn- value-id [event]
+  (or (:event/id event) (:value-id event)))
+
+(defn- seeded-tick-events [sheet-id tick-id entries values]
+  (let [writes (into {} (for [[k v] values]
+                          [k (value-written sheet-id tick-id nil k v)]))
+        sources (into {} (for [[k event] writes]
+                           [k {:tick-id tick-id :event-id (value-id event)}]))
+        structural (reduce-kv (fn [acc k entry]
+                                (assoc acc k (dissoc entry :value)))
+                              {} entries)]
+    (into [(tick-started sheet-id tick-id structural sources)] (vals writes))))
+
 ;; =============================================================================
-;; The oracle — the v2 reducer's blackboard projection
+;; Independent canonical-reference blackboard oracle
 ;; =============================================================================
 
 (defn- oracle
-  "What the v2 cache would have held, reduced from the events directly."
+  "Expected blackboard state reduced directly from canonical events."
   [events tick-id]
   (:blackboard
    (get (reduce
@@ -94,15 +108,7 @@
            (case (:event/type event)
              :sheet/tree-tick-started
              (let [snapshot (:execution-snapshot event)
-                   blackboard (reduce (fn [bb [kn value]]
-                                        (let [k (if (string? kn) (keyword kn) kn)]
-                                          (if (get bb k)
-                                            (-> bb (assoc-in [k :value] value)
-                                                (assoc-in [k :version] 1))
-                                            (assoc bb k {:key k :schema :any
-                                                         :value value :version 1}))))
-                                      (:blackboard-entries snapshot)
-                                      (or (:inputs event) {}))]
+                   blackboard (:blackboard-entries snapshot)]
                (assoc state (:tick-id event) {:blackboard blackboard}))
 
              :sheet/execution-value-written
@@ -111,7 +117,8 @@
                  (-> state
                      (assoc-in [t :blackboard k :value] (:value event))
                      (update-in [t :blackboard k :version] (fnil inc 0))
-                     (assoc-in [t :blackboard k :source-event-id] (:event/id event)))
+                     (assoc-in [t :blackboard k :source]
+                               {:tick-id t :event-id (:event/id event)}))
                  state))
 
              state))
@@ -136,22 +143,22 @@
             tick-id (random-uuid)
             node-a (random-uuid)
             node-b (random-uuid)
-            events [(tick-started sheet-id tick-id
-                                  {:doc {:key :doc :schema :string
-                                         :value "seeded-doc" :version 1}
-                                   :untouched {:key :untouched :schema :string
-                                               :value "never-written" :version 1}}
-                                  {:scale 3})
-                    (value-written sheet-id tick-id node-a :out "first")
-                    (value-written sheet-id tick-id node-b :out "second")
-                    (value-written sheet-id tick-id node-a :doc "overwritten")]]
+            events (into (seeded-tick-events
+                          sheet-id tick-id
+                          {:doc {:key :doc :schema :string :version 1}
+                           :untouched {:key :untouched :schema :string :version 1}
+                           :scale {:key :scale :schema :int :version 1}}
+                          {:doc "seeded-doc" :untouched "never-written" :scale 3})
+                         [(value-written sheet-id tick-id node-a :out "first")
+                          (value-written sheet-id tick-id node-b :out "second")
+                          (value-written sheet-id tick-id node-a :doc "overwritten")])]
         (append! store tenant-id events)
         (let [stored (into [] (es/read store {:tenant-id tenant-id
                                               :tags #{[:tick tick-id]}}))
               expected (oracle stored tick-id)
               hydrated (value-log/hydrate-blackboard
                         store tenant-id tick-id (metadata-of expected) nil)]
-          (is (= 4 (count stored)) "all events must be readable back")
+          (is (= 7 (count stored)) "all events must be readable back")
           (doseq [[k e] expected]
             (is (= (:value e) (:value (get hydrated k)))
                 (str "key " k " resolved to the wrong value on SQLite")))
@@ -208,18 +215,18 @@
             node (random-uuid)
             ev-a (value-written sheet-id tick-id node :k "value-a")
             ev-b (value-written sheet-id tick-id node :k "value-b")]
-        (is (neg? (compare (:event/id ev-a) (:event/id ev-b)))
+        (is (not= (value-id ev-a) (value-id ev-b))
             "fixture assumes a was created before b")
         ;; Append in reverse: storage order [b a], id order [a b].
         (append! store tenant-id [ev-b])
         (append! store tenant-id [ev-a])
-        (is (= {(:event/id ev-b) "value-b"}
+        (is (= {(value-id ev-b) "value-b"}
                (value-log/values-by-event-id store tenant-id tick-id
-                                             [(:event/id ev-b)]))
+                                             [(value-id ev-b)]))
             "must resolve the requested event, not its append-order neighbour")
-        (is (= {(:event/id ev-a) "value-a"}
+        (is (= {(value-id ev-a) "value-a"}
                (value-log/values-by-event-id store tenant-id tick-id
-                                             [(:event/id ev-a)])))))))
+                                             [(value-id ev-a)])))))))
 
 (deftest resolution-scales-to-many-pointers-on-sqlite
   (testing "every pointer in a large tick resolves"
@@ -233,7 +240,7 @@
                                          (keyword (str "k" %)) (str "v" %))
                          (range n))]
         (append! store tenant-id events)
-        (let [ids (mapv :event/id events)
+        (let [ids (mapv value-id events)
               all-at-once (value-log/values-by-event-id store tenant-id tick-id ids)
               one-at-a-time (reduce (fn [acc id]
                                       (merge acc (value-log/values-by-event-id
@@ -243,19 +250,18 @@
           (is (= all-at-once one-at-a-time)
               "resolving in bulk and one-by-one must agree"))))))
 
-(deftest seeded-values-survive-a-round-trip-on-sqlite
-  (testing "seeds are recovered from the tick-started event, not from a write"
+(deftest referenced-seeds-survive-a-round-trip-on-sqlite
+  (testing "seeds are recovered exclusively through canonical references"
     (with-sqlite-store [store]
       (let [tenant-id (random-uuid)
             sheet-id (random-uuid)
             tick-id (random-uuid)]
         (append! store tenant-id
-                 [(tick-started sheet-id tick-id
-                                {:from-snapshot {:key :from-snapshot :schema :string
-                                                 :value "snap" :version 1}}
-                                ;; String keys, as runtime/execute produces.
-                                {"from-inputs" "inp"})])
+                 (seeded-tick-events
+                  sheet-id tick-id
+                  {:from-snapshot {:key :from-snapshot :schema :string :version 1}
+                   :from-inputs {:key :from-inputs :schema :string :version 1}}
+                  {:from-snapshot "snap" :from-inputs "inp"}))
         (let [seeds (value-log/tick-seeds store tenant-id tick-id)]
           (is (= "snap" (:from-snapshot seeds)))
-          (is (= "inp" (:from-inputs seeds))
-              "string input keys must be keywordized, matching the reducer"))))))
+          (is (= "inp" (:from-inputs seeds))))))))

@@ -236,6 +236,9 @@
      :tick-id - Optional caller-supplied execution id for correlating live progress
      :parent-tick-id - Optional lineage marker when this execution is a child of
                        another tick (RLM Phase 2 trees, delegate nodes)
+     :input-sources - Internal {key {:tick-id :event-id}} provenance map; values
+                      already durable elsewhere are referenced, not copied
+     :return-references? - Internal flag to include :output-sources for delegates
      :llm-call-budget - Max LLM calls before failing (opt-in only, NO default)
 
    Returns:
@@ -246,7 +249,8 @@
       :executed-version ...}     ;; Version number if published version was used"
   [context sheet-id inputs & {:keys [timeout-ms use-version force-draft
                                       trace? langfuse-client store-trace?
-                                      max-ticks llm-call-budget tick-id parent-tick-id]
+                                      max-ticks llm-call-budget tick-id parent-tick-id
+                                      input-sources return-references?]
                                :or {timeout-ms 300000 store-trace? true}}]
   (let [tick-id (or tick-id (random-uuid))
         p (register-completion! tick-id)
@@ -266,6 +270,7 @@
                                                  max-ticks (assoc :max-ticks max-ticks)
                                                  llm-call-budget (assoc :llm-call-budget llm-call-budget))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)
+                              (seq input-sources) (assoc :input-sources input-sources)
                               use-version (assoc :use-version use-version)
                               force-draft (assoc :force-draft force-draft)
                               ;; CE-6c (ADR 0018): parity with execute-stream's
@@ -293,7 +298,10 @@
           {:status :timeout
            :error "Execution timed out"
            :duration-ms duration-ms}
-          (cond-> (assoc result :duration-ms duration-ms)
+          (cond-> (assoc (if return-references?
+                           result
+                           (dissoc result :output-sources))
+                         :duration-ms duration-ms)
             ;; Fold the C-2c-2 auto-classification envelope when an
             ;; :ontology/task-classified event was emitted during this tick.
             (collect-tick-classification context tick-id)

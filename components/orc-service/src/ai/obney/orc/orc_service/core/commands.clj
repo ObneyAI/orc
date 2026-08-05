@@ -929,9 +929,9 @@
 (defcommand :sheet tick-tree
   {:authorized? authenticated?}
   "Start a tree tick (execute from root).
-   When inputs are provided, builds a full execution snapshot for
-   independent async execution with tick-scoped blackboard isolation."
-  [{{:keys [sheet-id tick-id parent-tick-id inputs use-version force-draft options
+   When inputs are provided, stores a structure-only execution snapshot and
+   canonical seed writes/references for isolated async execution."
+  [{{:keys [sheet-id tick-id parent-tick-id inputs input-sources use-version force-draft options
             tool-context]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))
@@ -945,7 +945,10 @@
         inputs (when inputs
                  (reduce-kv (fn [acc k v]
                               (assoc acc (if (string? k) (keyword k) k) v))
-                            {} inputs))]
+                            {} inputs))
+        input-sources (reduce-kv (fn [acc k source]
+                                   (assoc acc (if (string? k) (keyword k) k) source))
+                                 {} (or input-sources {}))]
     (if inputs
       ;; Snapshot-based execution: build full snapshot for isolation
       (let [instruction-overrides (:gepa/patched-instructions context)
@@ -959,8 +962,38 @@
                        :sheet-tenant-id sheet-tenant-id)]
         (if (::anom/category snapshot)
           snapshot ;; Return anomaly if snapshot building failed
-          {:command-result/events
-           [(->event
+          (let [snapshot-values (reduce-kv
+                                  (fn [acc k entry]
+                                    (if (some? (:value entry))
+                                      (assoc acc k (:value entry))
+                                      acc))
+                                  {}
+                                  (:blackboard-entries snapshot))
+                seed-values (merge snapshot-values inputs)
+                new-seed-events (into {}
+                                      (for [[k v] seed-values
+                                            :when (not (contains? input-sources k))]
+                                        (let [value-id (random-uuid)]
+                                          [k (->event
+                                             {:type :sheet/execution-value-written
+                                              :tags #{[:sheet sheet-id] [:tick new-tick-id]}
+                                              :body {:tick-id new-tick-id
+                                                     :sheet-id sheet-id
+                                                     :key k
+                                                     :value v
+                                                     :value-id value-id
+                                                     :tick-seed? true}})])))
+                seed-sources (merge input-sources
+                                    (into {} (map (fn [[k event]]
+                                                   [k {:tick-id new-tick-id
+                                                       :event-id (:value-id event)}])
+                                                 new-seed-events)))
+                structural-snapshot (update snapshot :blackboard-entries
+                                            (fn [entries]
+                                              (reduce-kv (fn [acc k entry]
+                                                           (assoc acc k (dissoc entry :value)))
+                                                         {} (or entries {}))))
+                started-event (->event
              {:type :sheet/tree-tick-started
               :tags (cond-> #{[:sheet sheet-id]
                               [:tick new-tick-id]}
@@ -970,15 +1003,17 @@
                       parent-tick-id (conj [:parent-tick parent-tick-id]))
               :body (cond-> {:sheet-id sheet-id
                              :tick-id new-tick-id
-                             :inputs inputs
-                             :execution-snapshot snapshot}
+                             :seed-sources seed-sources
+                             :execution-snapshot structural-snapshot}
                       parent-tick-id (assoc :parent-tick-id parent-tick-id)
                       (:version-number snapshot) (assoc :version-number (:version-number snapshot))
                       options (assoc :options options)
                       ;; G1 (ADR 0018): carry the opaque :tool-context across the
                       ;; async boundary so the tick-execution-context read model
                       ;; can surface it back at the Phase-2 leaf.
-                      tool-context (assoc :tool-context tool-context))})]}))
+                      tool-context (assoc :tool-context tool-context))})]
+            {:command-result/events
+             (into [started-event] (vals new-seed-events))})))
       ;; Legacy UI tick: no snapshot, reads live sheet state
       (let [read-ctx (if (not= (:system-tenant-id context) (:tenant-id context))
                        (assoc context :tenant-id (:system-tenant-id context))
@@ -1005,7 +1040,7 @@
                              :tick-id new-tick-id}
                       parent-tick-id (assoc :parent-tick-id parent-tick-id)
                       ;; G1 (ADR 0018): opaque :tool-context also rides the
-                      ;; legacy (snapshot-less) tick path for symmetry.
+                      ;; snapshot-less UI tick path for symmetry.
                       tool-context (assoc :tool-context tool-context))})]})))))
 (defcommand :sheet tick-node
   {:authorized? authenticated?}
@@ -1059,7 +1094,7 @@
    atomically with the completion event to avoid race conditions.
 
    Optional :usage carries per-node token counts from LLM calls."
-  [{{:keys [sheet-id tick-id node-id status writes duration-ms error inputs usage
+  [{{:keys [sheet-id tick-id node-id status writes write-sources write-references? duration-ms error inputs usage
             node-type completion-kind raw-response block-payload read-sources]} :command
     :as ctx}]
   (let [;; Gap-7: when the dispatch site didn't explicitly set
@@ -1085,7 +1120,7 @@
         read-values (into {} (filter (fn [[k _]] (and (keyword? k) (nil? (namespace k)))) inputs))
         ;; Whether this completion's writes get their own
         ;; :sheet/execution-value-written events. Only tick-scoped
-        ;; executions have a blackboard to write into; a legacy
+        ;; executions have a blackboard to write into; a snapshot-less UI
         ;; (snapshot-less) tick has none.
         ;;
         ;; This gate decides whether :writes may be reduced to shape on the
@@ -1096,6 +1131,26 @@
         externalize-writes? (and tick-scoped?
                                  (#{:success :tree-generated} status)
                                  (seq writes))
+        forwarded-sources (into {}
+                                (for [[k source] (or write-sources {})]
+                                  [k source]))
+        cross-tick-sources (if write-references?
+                             (into {}
+                                   (filter (fn [[_ source]]
+                                             (not= tick-id (:tick-id source))))
+                                   forwarded-sources)
+                             {})
+        reference-events (mapv (fn [[k source]]
+                                 (->event {:type :sheet/execution-value-referenced
+                                           :tags #{[:sheet sheet-id] [:tick tick-id]}
+                                           :body (cond-> {:tick-id tick-id
+                                                          :sheet-id sheet-id
+                                                          :key k
+                                                          :source source
+                                                          :node-id node-id}
+                                                   (seq exec-context)
+                                                   (assoc :exec-context exec-context))}))
+                               cross-tick-sources)
         completion-event (->event
                            {:type :sheet/node-execution-completed
                             :tags #{[:sheet sheet-id]
@@ -1110,9 +1165,12 @@
                                     ;; events carry :node-id and :exec-context
                                     ;; so consumers can attribute them to this
                                     ;; exact node execution.
-                                    (seq writes)
-                                    (assoc :write-keys (vec (keys writes))
+                                    (or (seq writes) (seq forwarded-sources))
+                                    (assoc :write-keys (vec (distinct (concat (keys writes)
+                                                                             (keys forwarded-sources))))
                                            :write-profile (profile/profile-values writes))
+                                    (seq forwarded-sources)
+                                    (assoc :write-sources forwarded-sources)
                                     ;; No write events for this completion =>
                                     ;; this event is the values' only home.
                                     (and (seq writes) (not externalize-writes?))
@@ -1174,9 +1232,7 @@
                                              (assoc :exec-context exec-context))}))
                                 writes))]
     {:command-result/events
-     (if bb-write-events
-       (into bb-write-events [completion-event])
-       [completion-event])}))
+     (into [] (concat bb-write-events reference-events [completion-event]))}))
 
 (defcommand :sheet record-rlm-tree-node-completion
   {:authorized? authenticated?}

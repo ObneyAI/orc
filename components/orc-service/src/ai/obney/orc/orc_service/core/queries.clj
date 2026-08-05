@@ -4,6 +4,7 @@
    Fat Query Model: One query per screen, each returns all data needed.
    All queries return {:query/result ...} on success."
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.tree-layout :as layout]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -443,10 +444,7 @@
       (let [tick-events (into [] (es/read event-store
                                           {:tags #{[:tick trace-id]}
                                            :tenant-id (:tenant-id ctx)}))
-            values (reduce (fn [acc e] (assoc acc (:key e) (:value e)))
-                           {}
-                           (filter #(= :sheet/execution-value-written (:event/type %))
-                                   tick-events))
+            values (value-log/final-values event-store (:tenant-id ctx) trace-id)
             completed (some #(when (and (= :sheet/node-execution-completed (:event/type %))
                                         (= node-id (:node-id %)))
                                %)
@@ -461,7 +459,12 @@
           ;; node — the blackboard alone cannot, since a later node may have
           ;; overwritten the same key.
           :inputs (pick (:read-keys node-trace))
-          :outputs (or (:writes completed) (pick (:write-keys node-trace)))}})
+          :outputs (or (:writes completed)
+                       (when completed
+                         (not-empty (value-log/resolve-writes event-store
+                                                              (:tenant-id ctx)
+                                                              trace-id completed)))
+                       (pick (:write-keys node-trace)))}})
       {::anom/category ::anom/not-found
        ::anom/message (str "Node trace not found: " node-id)})))
 

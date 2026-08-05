@@ -33,6 +33,7 @@
             [ai.obney.orc.orc-service.core.sci-sandbox :as base-sandbox]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
 
@@ -689,9 +690,19 @@
                                (last entries))))
         read-tick-events (fn [tick-id]
                            (when tick-id
-                             (into [] (es/read event-store
-                                        (cond-> {:tags #{[:tick tick-id]}}
-                                          tenant-id (assoc :tenant-id tenant-id))))))
+                             (into []
+                                   (map (fn [event]
+                                          (if (= :sheet/execution-value-referenced
+                                                 (:event/type event))
+                                            (assoc event
+                                                   :event/type :sheet/execution-value-written
+                                                   :value (value-log/resolve-source
+                                                           event-store tenant-id
+                                                           (:source event)))
+                                            event)))
+                                   (es/read event-store
+                                            (cond-> {:tags #{[:tick tick-id]}}
+                                              tenant-id (assoc :tenant-id tenant-id))))))
         tree-detail-fn (fn
                          ([] (when-let [entry (find-tree-result nil)]
                                (drill/tree-detail-from-events

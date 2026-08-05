@@ -920,8 +920,8 @@
 ;;
 ;; The blackboard here holds SHAPE, NOT VALUES. Each key records its schema,
 ;; version, a size :profile, and — when a write produced the current value —
-;; the :source-event-id of that write. Values are resolved on demand from
-;; :sheet/execution-value-written via core.value-log; :source-event-id makes
+;; the canonical :source of that write. Values are resolved on demand from
+;; the value log; :source makes
 ;; that an exact pointer fetch rather than a last-write-wins search.
 ;;
 ;; Why: this read model is projected with a {:tags #{[:tick ...]}} SCOPE, which
@@ -935,13 +935,14 @@
 ;; entry that grew 8.35x when the payload grew 10x. Metadata-only brings that
 ;; to 27 KB of traffic, a 2.4 KB entry, and 1.00x scaling.
 ;;
-;; For ticks without execution-snapshot (legacy UI ticks), no context is stored
+;; For snapshot-less UI ticks, no execution context is stored
 ;; and processors fall back to reading live sheet state.
 
 (def tick-execution-context-events
   "Events that affect tick-scoped execution contexts"
   #{:sheet/tree-tick-started
-    :sheet/execution-value-written})
+    :sheet/execution-value-written
+    :sheet/execution-value-referenced})
 
 (defn- metadata-entry
   "A blackboard entry reduced to shape: no :value, plus a size :profile when
@@ -958,7 +959,7 @@
                               :root-node-id uuid
                               :blackboard {key {:key k :schema s :version n
                                                 :profile {...}
-                                                :source-event-id uuid}}
+                                                :source {:tick-id uuid :event-id uuid}}}
                               :version-number int?
                               :options {...}}}
 
@@ -969,35 +970,20 @@
   [state event]
   (if-let [snapshot (:execution-snapshot event)]
     ;; Snapshot-based tick: store full execution context
-    (let [;; The snapshot carries the sheet's stored values; keep only their
-          ;; shape. The values themselves stay resolvable from this event,
-          ;; which value-log/seeded-values reads.
+    (let [;; The snapshot carries structure and declared blackboard metadata.
+          ;; Every value is resolved through :seed-sources.
           bb-entries (reduce-kv (fn [acc k entry]
-                                  (assoc acc k (metadata-entry entry (:value entry))))
+                                  (assoc acc k (dissoc entry :value)))
                                 {}
                                 (or (:blackboard-entries snapshot) {}))
-          inputs (or (:inputs event) {})
-          ;; Merge inputs into blackboard entries
-          ;; Note: inputs may have string keys from runtime/execute, but blackboard uses keyword keys
-          ;; If bb-entries is empty (cache miss), create entries from inputs directly
-          blackboard (reduce (fn [bb [key-name value]]
-                               (let [kw-key (if (string? key-name) (keyword key-name) key-name)]
-                                 (if-let [existing (get bb kw-key)]
-                                   ;; Key exists - the input overrides it
-                                   (assoc bb kw-key
-                                          (assoc (metadata-entry existing value)
-                                                 :version 1))
-                                   ;; Key doesn't exist - create entry from input
-                                   ;; This handles cache misses where bb-entries is empty
-                                   (assoc bb kw-key
-                                          (metadata-entry
-                                           {:sheet-id (:sheet-id event)
-                                            :key kw-key
-                                            :schema :any  ;; Unknown schema, but value is provided
-                                            :version 1}
-                                           value)))))
-                             bb-entries
-                             inputs)]
+          blackboard (reduce-kv
+                       (fn [bb key-name source]
+                         (let [k (if (string? key-name) (keyword key-name) key-name)]
+                           (update bb k (fn [entry]
+                                          (assoc (or entry {:key k :schema :any :version 1})
+                                                 :source source)))))
+                       bb-entries
+                       (or (:seed-sources event) {}))]
       (assoc state (:tick-id event)
              (cond-> {:sheet-id (:sheet-id event)
                       :nodes-by-id (:nodes-by-id snapshot)
@@ -1012,7 +998,7 @@
                ;; depth. Absent -> not stored (backward-compatible).
                (:tool-context event)
                (assoc :tool-context (:tool-context event)))))
-    ;; No snapshot - legacy tick, no context stored
+    ;; Snapshot-less UI tick: no execution context stored
     state))
 
 (defmethod tick-execution-contexts* :sheet/execution-value-written
@@ -1034,9 +1020,22 @@
           ;; "the value of k" is ambiguous after the fact — a reader that
           ;; resolves k by name alone gets the LAST write, which may have
           ;; happened after the node that read it already finished.
-          ;; Recording the source event id lets a reader capture exactly
+          ;; Recording the source reference lets a reader capture exactly
           ;; which write it saw, making rehydration an exact lookup.
-          (assoc-in [tick-id :blackboard k :source-event-id] (:event/id event)))
+          (assoc-in [tick-id :blackboard k :source]
+                    {:tick-id tick-id :event-id (:event/id event)}))
+      state)))
+
+(defmethod tick-execution-contexts* :sheet/execution-value-referenced
+  [state event]
+  (let [tick-id (:tick-id event)
+        k (:key event)]
+    (if (contains? state tick-id)
+      (-> state
+          (update-in [tick-id :blackboard k]
+                     (fn [entry] (or entry {:key k :schema :any})))
+          (update-in [tick-id :blackboard k :version] (fnil inc 0))
+          (assoc-in [tick-id :blackboard k :source] (:source event)))
       state)))
 
 (defmethod tick-execution-contexts* :default [state _] state)
@@ -1052,7 +1051,7 @@
 ;; found by read-partition-manifest, incrementally updated from its watermark,
 ;; and left holding :value for every key written before the deploy: a
 ;; mixed-shape blackboard. A fresh key space forces re-derivation from events,
-;; which reproduces the metadata exactly (including every :source-event-id).
+;; which reproduces the metadata exactly (including every :source).
 (defreadmodel :sheet tick-execution-contexts
   {:events tick-execution-context-events :version 3
    :partition-fn :sheet-id
@@ -1061,7 +1060,7 @@
 
 (defn get-tick-execution-context
   "Get the full execution context for a tick-scoped execution.
-   Returns nil if this tick has no snapshot (legacy UI tick)."
+   Returns nil if this is a snapshot-less UI tick."
   [ctx tick-id]
   (get (rmp/project ctx :sheet/tick-execution-contexts {:tags #{[:tick tick-id]}})
        tick-id))

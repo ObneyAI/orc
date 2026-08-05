@@ -259,7 +259,8 @@
              {:orc.stream/type :tick-started}
              (when-let [i (:iteration event)] {:iteration i})
              (when-let [p (:parent-tick-id event)] {:parent-tick-id p})
-             (when-let [ks (keys (:inputs event))] {:input-keys (vec ks)}))
+             (when-let [ks (seq (keys (:seed-sources event)))]
+               {:input-keys (vec ks)}))
 
       :sheet/node-execution-started
       (merge base

@@ -12,7 +12,7 @@
        -> must equal what we started with
 
    Every key in the cache arrives by one of two exhaustive routes — a write
-   (which always records :source-event-id) or a seed from the tick-started
+   (which always records :source) or a seed from the tick-started
    event (which never does) — so a round-trip that holds across the fixture
    matrix below covers the whole space of ways a value can get there.
 
@@ -197,8 +197,8 @@
 
 ;; --- the oracle ------------------------------------------------------------
 
-(defn legacy-tick-execution-contexts*
-  "The v2 reducer's BLACKBOARD projection, verbatim, kept here as an oracle.
+(defn oracle-tick-execution-contexts*
+  "The canonical-reference BLACKBOARD projection used as an independent oracle.
 
    It is a pure function of a tick's events, so reducing it over those events
    reproduces exactly what the cache used to hold — the ground truth every
@@ -209,24 +209,8 @@
   (case (:event/type event)
     :sheet/tree-tick-started
     (if-let [snapshot (:execution-snapshot event)]
-      (let [bb-entries (:blackboard-entries snapshot)
-            inputs (or (:inputs event) {})
-            blackboard (reduce (fn [bb [key-name value]]
-                                 (let [kw-key (if (string? key-name)
-                                                (keyword key-name) key-name)]
-                                   (if (get bb kw-key)
-                                     (-> bb
-                                         (assoc-in [kw-key :value] value)
-                                         (assoc-in [kw-key :version] 1))
-                                     (assoc bb kw-key
-                                            {:sheet-id (:sheet-id event)
-                                             :key kw-key
-                                             :schema :any
-                                             :value value
-                                             :version 1}))))
-                               bb-entries
-                               inputs)]
-        (assoc state (:tick-id event) {:blackboard blackboard}))
+      (assoc state (:tick-id event)
+             {:blackboard (:blackboard-entries snapshot)})
       state)
 
     :sheet/execution-value-written
@@ -235,7 +219,8 @@
         (-> state
             (assoc-in [tick-id :blackboard k :value] v)
             (update-in [tick-id :blackboard k :version] (fnil inc 0))
-            (assoc-in [tick-id :blackboard k :source-event-id] (:event/id event)))
+            (assoc-in [tick-id :blackboard k :source]
+                      {:tick-id tick-id :event-id (:event/id event)}))
         state))
 
     state))
@@ -243,7 +228,7 @@
 (defn- normalize
   "Compare on what a consumer can observe: the value behind each key.
 
-   Drops the fields that exist only to support resolution (:source-event-id,
+   Drops the fields that exist only to support resolution (:source,
    :profile), and treats an absent :value the same as a nil one — the old read
    model stored {:value nil} for a seeded nil, while hydration leaves the key
    off. Both yield nil from (:value entry), which is all any caller reads.
@@ -259,15 +244,15 @@
    :version on the tick blackboard only in docstrings and write paths."
   [bb]
   (reduce-kv (fn [m k e]
-               (assoc m k (cond-> (dissoc e :source-event-id :profile :version)
+               (assoc m k (cond-> (dissoc e :source :profile :version)
                             (nil? (:value e)) (dissoc :value))))
              {}
              (or bb {})))
 
 (defn- oracle-blackboard
-  "What the v2 cache would have held for this tick, derived from its events."
+  "Expected blackboard state for this tick, derived independently from events."
   [ctx tick-id]
-  (:blackboard (get (reduce legacy-tick-execution-contexts* {}
+  (:blackboard (get (reduce oracle-tick-execution-contexts* {}
                             (h/read-tick-events ctx tick-id))
                     tick-id)))
 
@@ -284,7 +269,7 @@
   ;; The exact, freshness-independent invariant, checked on EVERY fixture
   ;; including the concurrent ones:
   ;;
-  ;;   a key with a :source-event-id must resolve to the value carried by
+  ;;   a key with a :source must resolve to the value carried by
   ;;   THAT event — the write the projection last applied, which is precisely
   ;;   the value the old cache held;
   ;;   a key without one must resolve to its seed.
@@ -301,16 +286,13 @@
               (str fixture-name " did not succeed: " (:error result)))
           (h/settle-until! #(h/trace-stored? ctx tick-id))
           (let [cached (rm/get-tick-blackboard ctx tick-id)
-                by-id (into {} (for [e (h/read-tick-events ctx tick-id)
-                                     :when (= :sheet/execution-value-written
-                                              (:event/type e))]
-                                 [(:event/id e) (:value e)]))
                 seeds (value-log/tick-seeds (:event-store ctx) (:tenant-id ctx) tick-id)
                 hydrated (hydrated-blackboard ctx tick-id)]
             (is (seq cached) (str fixture-name ": no cached blackboard"))
             (doseq [[k entry] cached]
-              (let [expected (if-let [src (:source-event-id entry)]
-                               (get by-id src)
+              (let [expected (if-let [src (:source entry)]
+                               (value-log/resolve-source (:event-store ctx)
+                                                         (:tenant-id ctx) src)
                                (get seeds k))]
                 (is (= expected (:value (get hydrated k)))
                     (str fixture-name " key " k
@@ -336,11 +318,11 @@
           (h/settle-until! #(h/trace-stored? ctx tick-id))
           (let [[oracle hydrated] (round-trip ctx tick-id)]
             (is (seq oracle) (str fixture-name ": oracle produced no blackboard"))
-            ;; Whole-map equality against the v2 reducer's output. Not a spot
+            ;; Whole-map equality against the independent reducer. Not a spot
             ;; check: every key the fixture produced, including entry set,
             ;; schema and version.
             (is (= (normalize oracle) (normalize hydrated))
-                (str fixture-name ": resolved blackboard differs from the v2 oracle.\n"
+                (str fixture-name ": resolved blackboard differs from the oracle.\n"
                      "oracle:   " (pr-str (normalize oracle)) "\n"
                      "hydrated: " (pr-str (normalize hydrated))))))))))
 
@@ -387,7 +369,7 @@
                 (str "key " k " still carries a :value in the cache"))))))))
 
 (deftest every-cached-key-resolves-by-exactly-one-route
-  (testing "a key has a :source-event-id (written) or is seeded — never neither"
+  (testing "a key has a canonical :source or no value"
     (h/with-async-test-context [ctx]
       (let [[sheet-id inputs] (fixture:sequence ctx)
             [_ tick-id] (dispatch! ctx sheet-id inputs)]
@@ -400,7 +382,7 @@
             ;; is recorded exactly when there was a value to describe, so it is
             ;; the metadata-side witness for "this key has a value."
             (when (some? (:profile e))
-              (is (or (some? (:source-event-id e)) (contains? seeds k))
+              (is (some? (:source e))
                   (str "key " k " has a value but no route to resolve it")))))))))
 
 (deftest declared-but-unwritten-key-keeps-its-entry
@@ -431,12 +413,13 @@
             [_ tick-b] (dispatch! ctx sheet-id inputs)]
         (h/settle-until! #(h/trace-stored? ctx tick-b))
         (let [bb-b (rm/get-tick-blackboard ctx tick-b)
-              ptr-b (:source-event-id (get bb-b :doc))]
+              ptr-b (:source (get bb-b :doc))]
           (is (some? ptr-b) "fixture must produce a written key")
           ;; Ask tick A to resolve a pointer that belongs to tick B. There ARE
           ;; earlier :doc writes in tick A that :as-of would happily return.
           (let [resolved (value-log/values-by-event-id
-                          (:event-store ctx) (:tenant-id ctx) tick-a [ptr-b])]
+                          (:event-store ctx) (:tenant-id ctx) tick-a
+                          [(:event-id ptr-b)])]
             (is (empty? resolved)
                 (str "pointer from another tick must not resolve; got "
                      (pr-str resolved)))))))))

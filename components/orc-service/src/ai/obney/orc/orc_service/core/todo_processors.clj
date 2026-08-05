@@ -123,7 +123,7 @@
 (defn- resolve-blackboard
   "Get blackboard METADATA for a tick from tick-scoped execution context.
    Entries carry key, schema, version, size profile and (for written keys) a
-   :source-event-id — but NO :value. Use hydrate-values when values are
+   :source — but NO :value. Use hydrate-values when values are
    needed."
   [ctx _sheet-id tick-id]
   (rm/get-tick-blackboard ctx tick-id))
@@ -1008,7 +1008,7 @@
    produced the value the node is about to see: {read-key event-id}.
 
    Returns {} when `exec-context` is non-empty — i.e. inside a map-each
-   iteration. The blackboard holds ONE :source-event-id per key, and
+   iteration. The blackboard holds ONE :source per key, and
    concurrent iterations sharing the item key clobber it, so any id captured
    here would name an arbitrary iteration's write. The iteration's own
    exec-context is the reliable identity and travels on both the completion
@@ -1028,7 +1028,7 @@
    (if (seq exec-context)
      {}
      (reduce (fn [acc k]
-               (if-let [src (get-in blackboard [k :source-event-id])]
+               (if-let [src (get-in blackboard [k :source])]
                  (assoc acc k src)
                  acc))
              {}
@@ -1087,7 +1087,7 @@
     (when (= :leaf (:type node))
       ;; Hydrate only what this leaf declared it reads. gather-inputs,
       ;; extract-read-inputs and compute-input-profile all restrict themselves
-      ;; to (:reads node); read-sources needs only :source-event-id, which is
+      ;; to (:reads node); read-sources needs only :source, which is
       ;; metadata. Order matters: hydrate FIRST, then overlay event-inputs —
       ;; a map-each item value arrives on the started event and must win over
       ;; whatever the shared item key resolves to.
@@ -1580,6 +1580,7 @@
                                acc))
                            {}
                            read-keys)
+            target-input-sources (read-sources read-keys blackboard exec-context)
             ;; Honest-grounding capture (same rationale as repl-researcher):
             ;; the control node that started this delegate dropped its reads
             ;; (delegate is non-leaf), so the eval trace would default the
@@ -1600,7 +1601,9 @@
                                           target-inputs
                                           :timeout-ms timeout-ms
                                           :tick-id child-tick-id
-                                          :parent-tick-id tick-id)
+                                          :parent-tick-id tick-id
+                                          :input-sources target-input-sources
+                                          :return-references? true)
                   duration-ms (- (System/currentTimeMillis) start-time)
                   status (:status result)
 
@@ -1617,7 +1620,14 @@
                                  (assoc acc k v)
                                  acc)))
                            {}
-                           write-keys)]
+                           write-keys)
+                  output-sources (reduce
+                                  (fn [acc k]
+                                    (let [kw-key (if (keyword? k) k (keyword k))
+                                          source (or (get (:output-sources result) kw-key)
+                                                     (get (:output-sources result) (name k)))]
+                                      (if source (assoc acc k source) acc)))
+                                  {} write-keys)]
 
               ;; Complete node execution (ORC pattern)
               (cp/process-command
@@ -1630,7 +1640,8 @@
                                 :node-id node-id
                                 :node-type (:type node)
                                 :status status
-                                :writes (normalize-output-keys outputs)
+                                :write-sources (normalize-output-keys output-sources)
+                                :write-references? true
                                 :duration-ms duration-ms}
                          ;; Carry the node's real read inputs (plus any map-each
                          ;; context) so the eval trace has honest grounding
@@ -2058,8 +2069,9 @@
                                   ;; Propagate the child's writes so the parent's
                                   ;; completion reports them. Resolved from the
                                   ;; write log; the event carries only keys now.
-                                  :writes (value-log/resolve-writes
-                                            event-store (:tenant-id context) tick-id event)}
+                                  :write-sources (value-log/resolve-write-sources
+                                                  event-store (:tenant-id context)
+                                                  tick-id event)}
                            (seq exec-context) (assoc :inputs exec-context))))
                 nil))
 
@@ -2514,9 +2526,8 @@
                    ;; wrote nothing anywhere: reproduce the old whole-blackboard
                    ;; sweep, built from the events already in hand rather than
                    ;; from the read model.
-                   (let [latest (merge (value-log/seeded-values
-                                        (value-log/tick-started-event
-                                         event-store (:tenant-id context) tick-id))
+                   (let [latest (merge (value-log/tick-seeds
+                                        event-store (:tenant-id context) tick-id)
                                        (value-log/latest-values tick-events))]
                      (reduce-kv
                       (fn [acc k v]
@@ -2679,8 +2690,7 @@
 
 (defn- tick-written-keys
   "The set of blackboard keys this tick actually wrote, read from its
-   :sheet/execution-value-written events — the canonical record of every
-   write.
+   canonical value and reference events.
 
    Returns nil when the set cannot be determined (no event store, or the
    read threw). Callers MUST treat nil as \"include every key\" so that a
@@ -2692,7 +2702,8 @@
       (into #{}
             (map :key)
             (es/read event-store
-                     (cond-> {:types #{:sheet/execution-value-written}
+                     (cond-> {:types #{:sheet/execution-value-written
+                                       :sheet/execution-value-referenced}
                               :tags #{[:tick tick-id]}}
                        tenant-id (assoc :tenant-id tenant-id)))))
     (catch Exception _ nil)))
@@ -3027,6 +3038,7 @@
                              :blocked :blocked
                              :failure)
                    :outputs (or outputs {})
+                   :output-sources (value-log/final-sources event-store tenant-id tick-id)
                    ;; Include raw tree for :tree-generated status (canonical form generated at execution time)
                    :generated-tree-raw (get outputs :generated-tree-raw)
                    :trace-id tick-id
