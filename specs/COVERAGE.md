@@ -58,3 +58,24 @@ as domain triggers; they intentionally produce reachability diagnostics during
 
 Audit result: every specification has zero check errors, zero analyse errors,
 and zero process findings under Allium language version 3.
+
+## Current diagnostic baseline
+
+The Allium CLI treats warnings and informational diagnostics as a non-zero
+result, so “zero errors” above does not mean `allium check specs` exits cleanly.
+On 2026-08-06, both `allium check specs` and `allium analyse specs` reported 171
+structural diagnostics across the ten specifications: 143 informational and 28
+warnings. `analyse` reported zero process findings.
+
+| Diagnostic | Count | Interpretation |
+|---|---:|---|
+| `allium.rule.unreachableTrigger` | 37 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.field.unused` | 106 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.externalEntity.missingSourceHint` | 14 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
+| `allium.definition.unused` | 12 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
+
+This is a characterized baseline, not an allowlist for future warnings. Agents
+must review every newly introduced or changed diagnostic, update this table when
+the accepted baseline deliberately changes, and avoid claiming a clean Allium
+gate while either command exits non-zero.
