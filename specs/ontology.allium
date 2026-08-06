@@ -91,6 +91,19 @@ contract OntologyExtraction {
         -- CSV, JSON, SQL, RDF, and text retain provenance and use their extractor.
 }
 
+contract ScopedConceptLookup {
+    get_concept: (ontology: Ontology, uri: String) -> Concept?
+    list_concepts: (ontology: Ontology) -> List<Concept>
+
+    @invariant AmbiguityRejected
+        -- A URI without ontology context resolves only when it identifies one
+        -- concept globally; an ambiguous unscoped lookup returns no concept.
+
+    @invariant CanonicalOntologyIdentity
+        -- Equivalent supported external representations of an ontology
+        -- identifier resolve to the same ontology identity.
+}
+
 enum ConceptScope {
     failure | success | problem | node_type | custom | tree_class | behavioral_subtree
 }
@@ -243,7 +256,7 @@ rule AddConcept {
 rule LinkConcepts {
     when: RelationshipCreationRequested(ontology, source, target, predicate, properties)
     requires: source.ontology = ontology
-    requires: target.ontology = ontology
+    requires: predicate = "behavior:composes-into" or target.ontology = ontology
 
     ensures: ConceptRelationship.created(
         source: source,
@@ -498,7 +511,8 @@ invariant ConceptUrisAreUniqueWithinOntology {
 
 invariant RelationshipsStayWithinOntology {
     for relationship in ConceptRelationships:
-        relationship.source.ontology = relationship.target.ontology
+        relationship.predicate != "behavior:composes-into" implies
+            relationship.source.ontology = relationship.target.ontology
 }
 
 invariant DescriptionHistoryIsAppendOnly {
@@ -557,9 +571,11 @@ surface SemanticMemory {
         demands TextEmbedding
         demands SemanticReranking
         fulfils OntologyExtraction
+        fulfils ScopedConceptLookup
 
     @guarantee ScopedMemory
-        -- Every concept query and traversal is scoped to one ontology.
+        -- Concept identity and traversal remain ontology scoped. Compatibility
+        -- URI lookup never guesses when multiple ontologies contain the URI.
 
     @guarantee AuditableEvolution
         -- Graph changes, description versions, sources, resolution decisions,

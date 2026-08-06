@@ -92,9 +92,10 @@
   (rm/get-concepts ctx opts))
 
 (defn get-concept-by-uri
-  "Get a single concept by URI from the event-sourced graph."
-  [ctx uri]
-  (rm/get-concept-by-uri ctx uri))
+  "Get a concept from the event-sourced graph. Prefer the scoped
+   (ctx ontology-id uri) form; (ctx uri) returns nil when ambiguous."
+  ([ctx uri] (rm/get-concept-by-uri ctx uri))
+  ([ctx ontology-id uri] (rm/get-concept-by-uri ctx ontology-id uri)))
 
 (defn get-narrower-concepts
   "Get all concepts narrower than (children of) the given URI."

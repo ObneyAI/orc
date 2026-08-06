@@ -683,7 +683,11 @@
    description-updated event lands."
   [context shell-id behavior-ids]
   (when (seq behavior-ids)
-    (let [shell-uri (str "tree-class:" shell-id)
+    (let [behavioral-ontology-id (java.util.UUID/nameUUIDFromBytes
+                                  (.getBytes "behavioral-subtree-ontology" "UTF-8"))
+          tree-class-ontology-id (java.util.UUID/nameUUIDFromBytes
+                                  (.getBytes "tree-class-ontology" "UTF-8"))
+          shell-uri (str "tree-class:" shell-id)
           concepts (rmp/project context :ontology/concepts)]
       (doseq [behavior-id behavior-ids]
         (let [behavior-uri (str "behavioral-subtree:" behavior-id)
@@ -695,6 +699,8 @@
                      {:command/name :ontology/create-relationship
                       :command/id (random-uuid)
                       :command/timestamp (time/now)
+                      :source-ontology-id behavioral-ontology-id
+                      :target-ontology-id tree-class-ontology-id
                       :source-uri behavior-uri
                       :target-uri shell-uri
                       :predicate "behavior:composes-into"

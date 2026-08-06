@@ -337,6 +337,7 @@
    :name (str "call-" tool-name)
    :executor :code
    :fn "ai.obney.orc.mcp-sheet-builder.core.executors/call-mcp-tool"
+   :options {:tool-name tool-name}
    :reads (vec (map keyword input-keys))
    :writes [(keyword output-key)]})
 

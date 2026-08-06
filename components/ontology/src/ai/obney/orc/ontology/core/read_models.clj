@@ -78,8 +78,15 @@
 
 (defmethod concepts* :ontology/concept-created
   [state event]
-  (assoc state (:uri event)
-         {:uri (:uri event)
+  (let [uri (:uri event)
+        existing (get state uri)
+        state (if (and existing (not= (:ontology-id existing) (:ontology-id event)))
+                (-> state
+                    (dissoc uri)
+                    (assoc [(:ontology-id existing) uri] existing))
+                state)]
+    (assoc state uri
+         {:uri uri
           :id (:concept-id event)
           :ontology-id (:ontology-id event)
           :label (:label event)
@@ -89,32 +96,46 @@
           :narrower #{}
           :related #{}
           :indicators (or (:indicators event) [])
-          :created-at (str (:created-at event))}))
+          :created-at (str (:created-at event))
+          ::projection-order (count state)})))
 
 (defmethod concepts* :ontology/concept-updated
   [state event]
-  (if-let [concept (get state (some-> event :concept-id str))]
-    (update state (:uri concept) merge (:changes event))
+  (if-let [[concept-key _] (some #(when (= (:concept-id event) (:id (val %))) %)
+                                  state)]
+    (update state concept-key merge (:changes event))
     state))
+
+(defn- concept-keys-for-uri [state uri ontology-id]
+  (->> state
+       (keep (fn [[k concept]]
+               (when (and (= uri (:uri concept))
+                          (or (nil? ontology-id) (= ontology-id (:ontology-id concept))))
+                 k)))))
+
+(defn- update-concepts-by-uri [state uri ontology-id field target-uri]
+  (reduce #(update-in %1 [%2 field] (fnil conj #{}) target-uri)
+          state
+          (concept-keys-for-uri state uri ontology-id)))
 
 (defmethod concepts* :ontology/relationship-created
   [state event]
-  (let [{:keys [source-uri target-uri predicate]} event]
+  (let [{:keys [source-uri target-uri predicate source-ontology-id target-ontology-id]} event]
     (case predicate
       "skos:broader"
       (-> state
-          (update-in [source-uri :broader] (fnil conj #{}) target-uri)
-          (update-in [target-uri :narrower] (fnil conj #{}) source-uri))
+          (update-concepts-by-uri source-uri source-ontology-id :broader target-uri)
+          (update-concepts-by-uri target-uri target-ontology-id :narrower source-uri))
 
       "skos:narrower"
       (-> state
-          (update-in [source-uri :narrower] (fnil conj #{}) target-uri)
-          (update-in [target-uri :broader] (fnil conj #{}) source-uri))
+          (update-concepts-by-uri source-uri source-ontology-id :narrower target-uri)
+          (update-concepts-by-uri target-uri target-ontology-id :broader source-uri))
 
       "skos:related"
       (-> state
-          (update-in [source-uri :related] (fnil conj #{}) target-uri)
-          (update-in [target-uri :related] (fnil conj #{}) source-uri))
+          (update-concepts-by-uri source-uri source-ontology-id :related target-uri)
+          (update-concepts-by-uri target-uri target-ontology-id :related source-uri))
 
       ;; R05a — behavior:composes-into is the bridge from behavioral
       ;; subtrees (Layer 2) to structural shells (Layer 1). The behavior
@@ -124,12 +145,11 @@
       ;; candidates by structural-context.
       "behavior:composes-into"
       (-> state
-          (update-in [source-uri :composes-into] (fnil conj #{}) target-uri)
-          (update-in [target-uri :composed-by] (fnil conj #{}) source-uri))
+          (update-concepts-by-uri source-uri source-ontology-id :composes-into target-uri)
+          (update-concepts-by-uri target-uri target-ontology-id :composed-by source-uri))
 
       ;; Other predicates (owl:causes, etc.) - store as related
-      (-> state
-          (update-in [source-uri :related] (fnil conj #{}) target-uri)))))
+      (update-concepts-by-uri state source-uri source-ontology-id :related target-uri))))
 
 ;; -----------------------------------------------------------------------------
 ;; Evolutionary Event Handlers
@@ -144,7 +164,13 @@
   (let [ontology-id (:ontology-id event)]
     (reduce (fn [acc concept]
               (let [uri (:uri concept)]
-                (assoc acc uri
+                (let [existing (get acc uri)
+                      acc (if (and existing (not= (:ontology-id existing) ontology-id))
+                            (-> acc
+                                (dissoc uri)
+                                (assoc [(:ontology-id existing) uri] existing))
+                            acc)]
+                  (assoc acc uri
                        {:uri uri
                         :id nil  ;; No concept-id from evolutionary path
                         :ontology-id ontology-id
@@ -158,34 +184,36 @@
                         :alt-labels (or (:alt-labels concept) [])
                         :confidence (:confidence concept 1.0)
                         :source-id (:source-id concept)
-                        :created-at (:extracted-at event)})))
+                        :created-at (:extracted-at event)
+                        ::projection-order (count acc)}))))
             state
             (:concepts event))))
 
 (defmethod concepts* :evolutionary/relationships-extracted
   [state event]
   ;; event has :relationships vector, each with :subject :predicate :object
-  (reduce (fn [acc {:keys [subject predicate object]}]
+  (let [ontology-id (:ontology-id event)]
+    (reduce (fn [acc {:keys [subject predicate object]}]
             (case predicate
               "skos:broader"
               (-> acc
-                  (update-in [subject :broader] (fnil conj #{}) object)
-                  (update-in [object :narrower] (fnil conj #{}) subject))
+                  (update-concepts-by-uri subject ontology-id :broader object)
+                  (update-concepts-by-uri object ontology-id :narrower subject))
 
               "skos:narrower"
               (-> acc
-                  (update-in [subject :narrower] (fnil conj #{}) object)
-                  (update-in [object :broader] (fnil conj #{}) subject))
+                  (update-concepts-by-uri subject ontology-id :narrower object)
+                  (update-concepts-by-uri object ontology-id :broader subject))
 
               "skos:related"
               (-> acc
-                  (update-in [subject :related] (fnil conj #{}) object)
-                  (update-in [object :related] (fnil conj #{}) subject))
+                  (update-concepts-by-uri subject ontology-id :related object)
+                  (update-concepts-by-uri object ontology-id :related subject))
 
               ;; Other predicates - store as related by default
-              (update-in acc [subject :related] (fnil conj #{}) object)))
+              (update-concepts-by-uri acc subject ontology-id :related object)))
           state
-          (:relationships event)))
+          (:relationships event))))
 
 (defmethod concepts* :default [state _] state)
 
@@ -920,10 +948,14 @@
      :ontology-id - Filter by single ontology-id
      :ontology-ids - Filter by multiple ontology-ids (returns union)"
   [ctx & [{:keys [scope broader-uri ontology-id ontology-ids]}]]
-  (let [all-concepts (vals (rmp/project ctx :ontology/concepts))
+  (let [normalize-id #(if (string? %)
+                        (java.util.UUID/nameUUIDFromBytes (.getBytes ^String % "UTF-8"))
+                        %)
+        all-concepts (map #(dissoc % ::projection-order)
+                          (vals (rmp/project ctx :ontology/concepts)))
         ont-id-set (cond
-                     ontology-ids (set ontology-ids)
-                     ontology-id #{ontology-id}
+                     ontology-ids (set (map normalize-id ontology-ids))
+                     ontology-id #{(normalize-id ontology-id)}
                      :else nil)]
     (cond->> all-concepts
       scope (filter #(= scope (:scope %)))
@@ -931,9 +963,22 @@
       ont-id-set (filter #(contains? ont-id-set (:ontology-id %))))))
 
 (defn get-concept-by-uri
-  "Get a single concept by URI."
-  [ctx uri]
-  (get (rmp/project ctx :ontology/concepts) uri))
+  "Get a concept by ontology identity and URI. The legacy two-argument form
+   returns a value only when the URI is globally unambiguous."
+  ([ctx uri]
+   (let [matches (filter #(= uri (:uri %))
+                         (vals (rmp/project ctx :ontology/concepts)))]
+     (when (= 1 (count matches))
+       (dissoc (first matches) ::projection-order))))
+  ([ctx ontology-id uri]
+   (let [normalized-id (if (string? ontology-id)
+                         (java.util.UUID/nameUUIDFromBytes (.getBytes ^String ontology-id "UTF-8"))
+                         ontology-id)]
+     (some->> (vals (rmp/project ctx :ontology/concepts))
+              (filter #(and (= uri (:uri %))
+                            (= normalized-id (:ontology-id %))))
+              first
+              (#(dissoc % ::projection-order))))))
 
 (defn get-tree-profile
   "Get profile for a specific tree."

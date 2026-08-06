@@ -6,6 +6,7 @@
    - `build-execution-snapshot` - Load sheet, resolve version, build snapshot
    - Completion registry for sync callers waiting on async execution"
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]))
@@ -71,6 +72,7 @@
                        :model (:model snapshot-node)
                        :fn (:fn snapshot-node)
                        :tools (:tools snapshot-node)
+                       :options (:options snapshot-node)
                        :retry (:retry snapshot-node)
                        ;; Condition fields
                        :check (:check snapshot-node)
@@ -185,6 +187,13 @@
 ;; =============================================================================
 
 (defonce ^:private completion-registry (atom {}))
+(defonce ^:private ephemeral-context-registry (atom {}))
+
+(defn ephemeral-context-for [tick-id]
+  (get @ephemeral-context-registry tick-id))
+
+(defn forget-ephemeral-context! [tick-id]
+  (swap! ephemeral-context-registry dissoc tick-id))
 
 (defn register-completion!
   "Register a promise for a tick-id. Returns the promise."
@@ -258,6 +267,8 @@
   (let [correlation-id (or correlation-id (:orc/correlation-id context))
         tick-id (or tick-id (random-uuid))
         p (register-completion! tick-id)
+        _ (when-let [ephemeral (not-empty (select-keys context [:mcp-session :call-tool-fn]))]
+            (swap! ephemeral-context-registry assoc tick-id ephemeral))
         start-time (System/currentTimeMillis)
         cmd-result (cp/process-command
                      (assoc context :command
@@ -292,6 +303,7 @@
     (if (:cognitect.anomalies/category cmd-result)
       ;; Command failed (e.g., sheet not found, no root node)
       (do (swap! completion-registry dissoc tick-id)
+          (forget-ephemeral-context! tick-id)
           {:status :failure
            :error (:cognitect.anomalies/message cmd-result)
            :duration-ms (- (System/currentTimeMillis) start-time)})
@@ -300,9 +312,37 @@
             duration-ms (- (System/currentTimeMillis) start-time)]
         (swap! completion-registry dissoc tick-id)
         (if (= result ::timeout)
-          {:status :timeout
-           :error "Execution timed out"
-           :duration-ms duration-ms}
+          (let [now (str (time/now))]
+            ;; A caller timeout is a terminal execution decision, not merely a
+            ;; stopped wait. Cancel the durable tick first so processors cannot
+            ;; schedule more work, then store a minimal queryable trace before
+            ;; returning the identity to the caller.
+            (cp/process-command
+             (assoc context :command
+                    {:command/id (random-uuid)
+                     :command/timestamp (time/now)
+                     :command/name :sheet/cancel-tick
+                     :sheet-id sheet-id :tick-id tick-id}))
+            (loop [attempt 0]
+              (let [stored (cp/process-command
+                            (assoc context :command
+                                   {:command/id (random-uuid)
+                                    :command/timestamp (time/now)
+                                    :command/name :sheet/store-execution-trace
+                                    :trace-id tick-id :sheet-id sheet-id
+                                    :root-trace-id tick-id :child-trace-ids []
+                                    :started-at now :completed-at now
+                                    :duration-ms duration-ms :status :timeout
+                                    :input-snapshot (profile/profile-values (or inputs {}))
+                                    :output-snapshot {}
+                                    :node-traces [] :error "Execution timed out"}))]
+                (when (and (:cognitect.anomalies/category stored) (< attempt 4))
+                  (recur (inc attempt)))))
+            (forget-ephemeral-context! tick-id)
+            {:status :timeout
+             :trace-id tick-id
+             :error "Execution timed out"
+             :duration-ms duration-ms})
           (cond-> (assoc (if return-references?
                            result
                            (dissoc result :output-sources))

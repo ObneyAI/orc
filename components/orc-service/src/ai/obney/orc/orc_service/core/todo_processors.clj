@@ -20,6 +20,8 @@
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
             [clojure.string :as str]
+            [malli.core :as m]
+            [malli.error :as me]
             [com.brunobonacci.mulog :as u]))
 
 ;; =============================================================================
@@ -39,6 +41,28 @@
                  (assoc acc (if (keyword? k) k (keyword k)) v))
                {}
                outputs)))
+
+(defn- validate-leaf-outputs
+  "Reject a successful leaf result before its writes become canonical when a
+   declared blackboard schema does not accept the produced value."
+  [blackboard result]
+  (if (not= :success (:status result))
+    result
+    (if-let [[key explanation]
+             (some (fn [[key value]]
+                     (when-let [schema (get-in blackboard [key :schema])]
+                       (try
+                         (when-not (m/validate schema value)
+                           [key (me/humanize (m/explain schema value))])
+                         (catch Exception e
+                           [key {:invalid-schema (.getMessage e)}]))))
+                   (:outputs result))]
+      (-> result
+          (assoc :status :failure
+                 :error (str "Blackboard schema validation failed for "
+                             (pr-str key) ": " explanation)
+                 :outputs {}))
+      result)))
 
 ;; =============================================================================
 ;; LLM Call Budget Tracking (Opt-in Only)
@@ -1111,7 +1135,7 @@
             ;; Works at any depth: composites resolve leaves through the same
             ;; per-tick context.
             tool-context (:tool-context tick-ctx)
-            leaf-context (cond-> context
+            leaf-context (cond-> (merge context (runtime/ephemeral-context-for tick-id))
                            tool-context (assoc :tool-context tool-context))
             ;; Use provider from context, fall back to default, or use mock if nil
             provider (or dscloj-provider *default-dscloj-provider*)
@@ -1182,7 +1206,7 @@
                                  :map-idx map-idx
                                  :thread (.getName (Thread/currentThread))
                                  :instruction-preview instr-preview)))
-                    result (cond
+                    raw-result (cond
                              ;; Code executor doesn't need provider
                              (= :code executor-type)
                              (executor/execute-leaf node blackboard nil
@@ -1195,6 +1219,7 @@
                              ;; No provider - use mock
                              :else
                              (executor/execute-leaf-mock node blackboard))
+                    result (validate-leaf-outputs blackboard raw-result)
                   {:keys [status outputs error duration-ms usage raw-response block-payload]} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
@@ -1996,7 +2021,16 @@
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         child (get nodes-by-id child-id)
         parent-id (:parent-id child)]
-    (when parent-id
+    (when (and parent-id
+               ;; Parent completion is a canonical fact for one execution
+               ;; context. At-least-once delivery of a child completion must
+               ;; not propagate another terminal parent completion.
+               (not (some #(and (= parent-id (:node-id %))
+                                (matches-execution-context? % exec-context))
+                          (into [] (es/read event-store
+                                           {:types #{:sheet/node-execution-completed}
+                                            :tags #{[:tick tick-id]}
+                                            :tenant-id tenant-id})))))
       (let [parent (get nodes-by-id parent-id)
             siblings (:children-ids parent)
             child-index (.indexOf (vec siblings) child-id)
@@ -2509,7 +2543,12 @@
                 ;; In that case, read all non-special keys from the blackboard.
                 effective-writes
                 (let [source-key (:source-key state)
-                      special? #{item-key source-key output-key}]
+                      ;; The iteration item key is a legitimate output: a leaf
+                      ;; commonly transforms and rewrites `:as`. Excluding it
+                      ;; here made composite children fall back to the stale
+                      ;; pre-execution seed. Only collection plumbing keys are
+                      ;; special.
+                      special? #{source-key output-key}]
                   (or
                    (not-empty writes)
                    ;; Composite child: the direct child produced no attributed
@@ -2986,6 +3025,7 @@
   [{:keys [event event-store tenant-id] :as context}]
   (let [tick-id (:tick-id event)
         root-status (:root-status event)
+        executed-version (:version-number (rm/get-tick-execution-context context tick-id))
         ;; complete-tree-tick stores only the keys this tick wrote, so the
         ;; full blackboard is rehydrated here from the tick-execution-context
         ;; read model. Falls back to the event's own :outputs for legacy ticks
@@ -3058,12 +3098,14 @@
                    :generated-tree-raw (get outputs :generated-tree-raw)
                    :trace-id tick-id
                    :error error}
+            executed-version (assoc :executed-version executed-version)
             ;; Include usage if any LLM calls were made
             (pos? (:total-tokens usage 0)) (assoc :usage usage-with-breakdown)
             ;; WS-2a: carry the opaque payload out to the caller's result.
             (= :blocked root-status) (assoc :block-payload block-payload)
             ;; Always include :node-trace when we have any leaf events.
-            (seq node-trace) (assoc :node-trace node-trace)))))
+            (seq node-trace) (assoc :node-trace node-trace)))
+        (runtime/forget-ephemeral-context! tick-id)))
     ;; No events to emit
     nil))
 
@@ -3083,7 +3125,8 @@
        :trace-id tick-id})
     ;; A cancelled tick never reaches deliver-execution-result, so its seed
     ;; memo would otherwise be retained for the life of the process.
-    (value-log/forget-tick! tick-id))
+    (value-log/forget-tick! tick-id)
+    (runtime/forget-ephemeral-context! tick-id))
   nil)
 
 ;; =============================================================================

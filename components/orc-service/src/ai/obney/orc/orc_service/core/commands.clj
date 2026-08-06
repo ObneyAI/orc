@@ -26,6 +26,26 @@
   [ctx]
   (some? (:auth-claims ctx)))
 
+(defn- schema-error
+  "Return a stable explanation when value violates schema, otherwise nil."
+  [key schema value]
+  (try
+    (when-not (m/validate schema value)
+      (str "Blackboard schema validation failed for " (pr-str key) ": "
+           (me/humanize (m/explain schema value))))
+    (catch Exception e
+      (str "Blackboard schema validation failed for " (pr-str key)
+           " because its schema is invalid: " (.getMessage e)))))
+
+(defn- invalid-seed-input
+  "Validate only caller-supplied keys. Blackboard defaults are already durable
+   values and are not reinterpreted as required execution inputs here."
+  [snapshot inputs]
+  (some (fn [[key value]]
+          (when-let [schema (get-in snapshot [:blackboard-entries key :schema])]
+            (schema-error key schema value)))
+        inputs))
+
 ;; =============================================================================
 ;; Sheet Commands
 ;; =============================================================================
@@ -963,7 +983,10 @@
                        :sheet-tenant-id sheet-tenant-id)]
         (if (::anom/category snapshot)
           snapshot ;; Return anomaly if snapshot building failed
-          (let [snapshot-values (reduce-kv
+          (if-let [validation-error (invalid-seed-input snapshot inputs)]
+            {::anom/category ::anom/incorrect
+             ::anom/message validation-error}
+            (let [snapshot-values (reduce-kv
                                   (fn [acc k entry]
                                     (if (some? (:value entry))
                                       (assoc acc k (:value entry))
@@ -1017,8 +1040,8 @@
                       ;; async boundary so the tick-execution-context read model
                       ;; can surface it back at the Phase-2 leaf.
                       tool-context (assoc :tool-context tool-context))})]
-            {:command-result/events
-             (into [started-event] (vals new-seed-events))})))
+              {:command-result/events
+               (into [started-event] (vals new-seed-events))}))))
       ;; Legacy UI tick: no snapshot, reads live sheet state
       (let [read-ctx (if (not= (:system-tenant-id context) (:tenant-id context))
                        (assoc context :tenant-id (:system-tenant-id context))
@@ -1368,7 +1391,7 @@
             duration-ms status input-snapshot output-snapshot node-traces error]} :command}]
   {:command-result/events
    [(->event {:type :sheet/execution-traced
-              :tags (cond-> #{[:sheet sheet-id] [:trace trace-id]}
+              :tags (cond-> #{[:sheet sheet-id] [:trace trace-id] [:tick trace-id]}
                       correlation-id (conj [:correlation correlation-id]))
               :body (cond-> {:trace-id trace-id
                              :sheet-id sheet-id

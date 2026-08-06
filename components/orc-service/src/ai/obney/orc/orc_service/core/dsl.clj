@@ -637,6 +637,33 @@
   (when root-node
     (build-node! ctx sheet-id root-node nil 0)))
 
+(defn- validate-workflow-definition!
+  "Validate graph-wide invariants before the first mutating command. Command
+   handlers still validate each operation, but doing the deterministic checks
+   up front prevents an invalid initial definition from leaving a partial
+   event-sourced graph."
+  [{:keys [workflow-name blackboard-schema root-node]}]
+  (when-not (and (string? workflow-name) (seq workflow-name))
+    (throw (ex-info "Workflow requires a non-empty name" {:workflow-name workflow-name})))
+  (let [declared (set (keys (or blackboard-schema {})))
+        nodes (if root-node (tree-seq #(seq (:children %)) :children root-node) [])
+        names (keep :name nodes)
+        duplicate-names (->> names frequencies (keep (fn [[n c]] (when (> c 1) n))) vec)]
+    (when (seq duplicate-names)
+      (throw (ex-info (str "Workflow node names must be unique: " duplicate-names)
+                      {:duplicate-node-names duplicate-names})))
+    (doseq [node nodes
+            key (concat (:reads node) (:writes node)
+                        (when-let [k (get-in node [:check :key])] [k])
+                        (when (= :map-each (:node-type node))
+                          [(:source-key node) (:item-key node) (:output-key node)]))
+            :when (and key (not (contains? declared key)))]
+      (throw (ex-info (str "Unknown blackboard key " (pr-str key)
+                           " referenced by node " (pr-str (:name node))
+                           " in reads/writes/config")
+                      {:node (:name node) :key key}))))
+  true)
+
 (defn build-workflow!
   "Idempotent workflow builder. Creates or updates a workflow by name.
 
@@ -663,6 +690,7 @@
 
    Returns the sheet-id (deterministic, based on workflow name)."
   [ctx workflow-def]
+  (validate-workflow-definition! workflow-def)
   (let [{:keys [workflow-name]} workflow-def
         ;; Deterministic sheet-id from workflow name
         sheet-id (sheet-id-for-name workflow-name)

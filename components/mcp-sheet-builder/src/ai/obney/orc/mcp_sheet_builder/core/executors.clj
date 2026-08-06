@@ -3,6 +3,7 @@
 
    These executors are invoked by ORC code nodes and wrap MCP tool calls."
   (:require [ai.obney.orc.mcp-sheet-builder.core.mcp-client :as mcp-client]
+            [clojure.string :as str]
             [com.brunobonacci.mulog :as u]
             [cheshire.core :as json]))
 
@@ -20,10 +21,17 @@
 
    Context must include:
    - :mcp-session - An MCP connection"
-  [{:keys [inputs context]}]
-  (let [tool-name (get inputs :tool-name)
-        mcp-session (:mcp-session context)
-        tool-args (dissoc inputs :tool-name)
+  [{:keys [inputs context execution-context] :as invocation}]
+  (let [effective-context (merge invocation context execution-context)
+        tool-name (or (get inputs :tool-name)
+                      (get-in effective-context [:node :options :tool-name])
+                      (some-> (get-in effective-context [:node :name])
+                              (str/replace-first #"^call-" "")))
+        mcp-session (:mcp-session effective-context)
+        raw-args (dissoc inputs :tool-name)
+        tool-args (if (and (= 1 (count raw-args)) (map? (val (first raw-args))))
+                    (val (first raw-args))
+                    raw-args)
         output-key (keyword (str tool-name "-result"))]
     (u/trace ::call-mcp-tool {:tool tool-name :args tool-args}
       (if mcp-session

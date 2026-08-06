@@ -713,6 +713,8 @@
                    {:command/name :ontology/create-relationship
                     :command/id (random-uuid)
                     :command/timestamp (time/now)
+                    :source-ontology-id tree-class-ontology-id
+                    :target-ontology-id tree-class-ontology-id
                     :source-uri target-uri
                     :target-uri parent-uri
                     :predicate "skos:broader"
@@ -811,6 +813,8 @@
                        {:command/name :ontology/create-relationship
                         :command/id (random-uuid)
                         :command/timestamp (time/now)
+                        :source-ontology-id behavioral-subtree-ontology-id
+                        :target-ontology-id behavioral-subtree-ontology-id
                         :source-uri target-uri
                         :target-uri parent-uri
                         :predicate "skos:broader"
@@ -829,6 +833,8 @@
                        {:command/name :ontology/create-relationship
                         :command/id (random-uuid)
                         :command/timestamp (time/now)
+                        :source-ontology-id behavioral-subtree-ontology-id
+                        :target-ontology-id tree-class-ontology-id
                         :source-uri target-uri
                         :target-uri shell-uri
                         :predicate "behavior:composes-into"

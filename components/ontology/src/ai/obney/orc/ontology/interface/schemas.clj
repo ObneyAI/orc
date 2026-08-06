@@ -189,6 +189,8 @@
    :ontology/relationship-created
    [:map
     [:relationship-id :uuid]
+    [:source-ontology-id {:optional true} :uuid]
+    [:target-ontology-id {:optional true} :uuid]
     [:source-uri :string]
     [:target-uri :string]
     [:predicate :string]                  ;; "skos:broader", "skos:related", "owl:causes"
@@ -632,9 +634,12 @@
 
    :ontology/create-relationship
    [:map
+    [:source-ontology-id :uuid]
+    [:target-ontology-id :uuid]
     [:source-uri :string]
     [:target-uri :string]
-    [:predicate :string]]
+    [:predicate :string]
+    [:properties {:optional true} [:map-of :keyword :any]]]
 
    :ontology/initialize-static-ontology
    [:map
@@ -1001,12 +1006,14 @@
 (defschemas queries
   {:ontology/get-concepts
    [:map
+    [:ontology-id {:optional true} [:or :uuid :string]]
     [:scope {:optional true} ontology-scope]
     [:broader-uri {:optional true} :string]
     [:include-narrower? {:optional true} :boolean]]
 
    :ontology/get-concept
    [:map
+    [:ontology-id {:optional true} [:or :uuid :string]]
     [:uri :string]]
 
    :ontology/get-tree-profile

@@ -70,8 +70,21 @@ contract LeafExecutor {
         -- A leaf receives only the blackboard values named by its read contract.
 
     @invariant DeclaredOutputsOnly
-        -- A successful leaf may update only keys named by its write contract,
-        -- and every update must satisfy the key's declared schema.
+        -- A successful leaf supplies a non-null value for every key named by
+        -- its write contract, supplies no undeclared keys, and every supplied
+        -- value satisfies the key's declared schema.
+}
+
+contract WorkflowDefinitionConstruction {
+    build_definition: (definition: Any) -> Any
+
+    @invariant AtomicDefinitionBuild
+        -- A complete workflow definition is validated before any authoring
+        -- state changes. An invalid definition leaves no partial workflow.
+
+    @invariant DeterministicDefinitionIdentity
+        -- Rebuilding an unchanged named definition preserves workflow identity
+        -- and produces no effective authoring changes.
 }
 
 contract ExecutionEventStream {
@@ -555,6 +568,9 @@ surface WorkflowAuthoring {
         PublishWorkflow(consumer, workflow, description)
         RevertDraftToVersion(consumer, workflow, version)
         RestoreDraftStash(consumer, workflow, stash)
+
+    contracts:
+        fulfils WorkflowDefinitionConstruction
 }
 
 surface WorkflowExecutionAccess {

@@ -322,7 +322,7 @@
 
 (defcommand :ontology create-relationship
   "Create a relationship between two concepts."
-  [{{:keys [source-uri target-uri predicate properties]} :command
+  [{{:keys [source-ontology-id target-ontology-id source-uri target-uri predicate properties]} :command
     :keys [event-store]}]
   (let [relationship-id (generate-uuid)
         now (now-str)]
@@ -330,12 +330,14 @@
      [(->event
        {:type :ontology/relationship-created
         :tags #{[:relationship relationship-id]}  ;; Only UUID-based tags allowed
-        :body {:relationship-id relationship-id
-               :source-uri source-uri
-               :target-uri target-uri
-               :predicate predicate
-               :properties properties
-               :created-at now}})]}))
+        :body (cond-> {:relationship-id relationship-id
+                       :source-ontology-id source-ontology-id
+                       :target-ontology-id target-ontology-id
+                       :source-uri source-uri
+                       :target-uri target-uri
+                       :predicate predicate
+                       :created-at now}
+                properties (assoc :properties properties))})]}))
 
 ;; =============================================================================
 ;; Discovery Commands

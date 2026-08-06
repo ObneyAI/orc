@@ -34,9 +34,11 @@
 
 (defquery :ontology get-concept
   "Get a single concept by URI."
-  [{{:keys [uri]} :query
+  [{{:keys [ontology-id uri]} :query
     :keys [event-store] :as ctx}]
-  (if-let [concept (rm/get-concept-by-uri ctx uri)]
+  (if-let [concept (if ontology-id
+                     (rm/get-concept-by-uri ctx ontology-id uri)
+                     (rm/get-concept-by-uri ctx uri))]
     {:query/result concept}
     ;; Fall back to static ontology
     (if-let [static-concept (static/get-concept-by-uri uri)]

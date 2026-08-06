@@ -888,6 +888,13 @@
       {:fn f}
       {:error (str "Ephemeral function not found: " fn-symbol-str)})
 
+    ;; Code nodes are an execution boundary, not a general-purpose Clojure
+    ;; evaluator. Product functions live under the owned namespace; allowing
+    ;; arbitrary clojure.core/java symbols would bypass the code-node catalog.
+    (not (str/starts-with? fn-symbol-str "ai.obney.orc."))
+    {:error (str "Code function is not declared in the ORC allowlist: "
+                 fn-symbol-str)}
+
     ;; Standard namespace/function resolution
     :else
     (try
@@ -974,7 +981,7 @@
               ;; static (:call-tool-fn context) unchanged — so existing code
               ;; nodes are byte-identical.
               call-tool-fn (node-call-tool-fn node blackboard context)
-              code-context (assoc context :call-tool-fn call-tool-fn)
+              code-context (assoc context :call-tool-fn call-tool-fn :node node)
               ;; Call the function with context
               result (f (assoc code-context :inputs inputs :execution-context code-context))
               duration-ms (- (System/currentTimeMillis) start-time)
@@ -1013,19 +1020,26 @@
                         (and (= 1 (count writes)) (map? result))
                         {(first writes) result}
                         :else nil)]
-          (if (map? outputs)
+          (let [missing-or-nil (when (seq writes)
+                                 (filterv #(or (not (contains? outputs %))
+                                               (nil? (get outputs %)))
+                                          writes))]
+          (if (and (map? outputs) (empty? missing-or-nil))
             {:status :success
              :outputs outputs
              :duration-ms duration-ms}
             {:status :failure
-             :error (str "Code executor result could not be reconciled with declared :writes "
-                         (pr-str writes)
-                         ". Function returned: "
-                         (cond
-                           (nil? result) "nil"
-                           (map? result) (str "map with keys " (pr-str (keys result)))
-                           :else (str (type result))))
-             :duration-ms duration-ms}))
+             :error (if (seq missing-or-nil)
+                      (str "Code executor omitted or returned nil for declared writes "
+                           (pr-str missing-or-nil))
+                      (str "Code executor result could not be reconciled with declared :writes "
+                           (pr-str writes)
+                           ". Function returned: "
+                           (cond
+                             (nil? result) "nil"
+                             (map? result) (str "map with keys " (pr-str (keys result)))
+                             :else (str (type result)))))
+             :duration-ms duration-ms})))
         (catch Exception e
           {:status :failure
            :error (.getMessage e)
