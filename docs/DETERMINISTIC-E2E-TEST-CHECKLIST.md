@@ -136,7 +136,7 @@ that verifies the stated observable results.
 - [x] **DET-E2E-097 — PDF pipeline.** Both PDFBox fixtures retain exact page alignment across page count, 72-DPI PNG rendering, text extraction, and per-page metadata aggregation.
 - [x] **DET-E2E-098 — Redaction pipeline.** Multi-page replacements, counts, order, categories, and applied targets are exact; a second pass changes nothing and reports zero applications.
 - [x] **DET-E2E-099 — Invoice workbook pipeline.** Two normalized invoices produce the expected file, ordered sheets, summary rows/totals, and per-invoice line-item row counts.
-- [x] **DET-E2E-100 — Code-node catalog.** Catalog-owned functions execute while undeclared external functions are rejected by the ORC code allowlist.
+- [x] **DET-E2E-100 — Consumer-owned code nodes.** A persisted workflow executes a qualified deterministic function supplied from a consumer-owned namespace, while an unavailable function fails explicitly.
 
 ## P3 — Complex cross-domain system journeys
 

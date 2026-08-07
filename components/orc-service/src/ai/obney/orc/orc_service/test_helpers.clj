@@ -461,6 +461,15 @@
   [ctx]
   (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)})))
 
+(defn install-consumer-code-fixture!
+  "Install a callable in a consumer-owned namespace for code-node boundary tests."
+  []
+  (let [consumer-ns (or (find-ns 'sormo.orc.consumer-code-fixture)
+                        (create-ns 'sormo.orc.consumer-code-fixture))]
+    (intern consumer-ns 'deterministic-decision
+            (fn [{:keys [inputs]}]
+              {:decision (str "act:" (:stimulus inputs))}))))
+
 (defn byte-report
   "Per-event-type byte accounting for a collection of events.
 

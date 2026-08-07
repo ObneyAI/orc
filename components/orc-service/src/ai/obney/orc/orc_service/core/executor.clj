@@ -877,7 +877,9 @@
 ;; =============================================================================
 
 (defn resolve-fn
-  "Resolve a fully-qualified function symbol string to a function.
+  "Resolve a trusted, fully-qualified JVM function symbol string to a function.
+   Consumer applications may reference functions from their own classpath
+   namespaces; model-generated code is constrained separately by SCI.
    Also supports ephemeral functions registered via tree-executor for Phase 2.
    Returns {:fn f} on success or {:error msg} on failure."
   [fn-symbol-str]
@@ -887,13 +889,6 @@
     (if-let [f (tree-executor/lookup-ephemeral-fn fn-symbol-str)]
       {:fn f}
       {:error (str "Ephemeral function not found: " fn-symbol-str)})
-
-    ;; Code nodes are an execution boundary, not a general-purpose Clojure
-    ;; evaluator. Product functions live under the owned namespace; allowing
-    ;; arbitrary clojure.core/java symbols would bypass the code-node catalog.
-    (not (str/starts-with? fn-symbol-str "ai.obney.orc."))
-    {:error (str "Failed to resolve code function: it is not declared in the ORC allowlist: "
-                 fn-symbol-str)}
 
     ;; Standard namespace/function resolution
     :else

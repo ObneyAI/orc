@@ -252,37 +252,51 @@
         (finally
           (io/delete-file path true))))))
 
-(deftest det-e2e-100-code-node-catalog
-  (testing "a catalog-declared code node executes and an undeclared function cannot be invoked"
+(deftest det-e2e-100-consumer-owned-code-node
+  (testing "a persisted workflow executes consumer-owned code and unavailable code fails explicitly"
     (h/with-async-test-context [ctx]
-      (let [path (str "/tmp/det-e2e-100-" (random-uuid) ".xlsx")]
-        (try
-          (is (str/includes? invoice/available-code-nodes
-                             "build-invoice-workbook"))
-          (let [declared-id
-                (sheet/build-workflow!
-                 ctx
-                 (sheet/workflow "declared-code"
-                   (sheet/blackboard {:invoices [:vector :map]
-                                      :output-path :string :workbook-path :string})
-                   (sheet/code "write" :fn "ai.obney.orc.predict-rlm-invoice-tools.interface/build-invoice-workbook"
-                     :reads [:invoices :output-path] :writes [:workbook-path])))
-                declared (sheet/execute ctx declared-id
-                                        {:invoices invoices :output-path path})
-                undeclared-id
-                (sheet/build-workflow!
-                 ctx
-                 (sheet/workflow "undeclared-code"
-                   (sheet/blackboard {:input :string :output :string})
-                   (sheet/code "identity" :fn "clojure.core/identity"
-                     :reads [:input] :writes [:output])))
-                undeclared (sheet/execute ctx undeclared-id {:input "must be blocked"})]
-            (is (= :success (:status declared)))
-            (is (.exists (io/file (get-in declared [:outputs :workbook-path]))))
-            (is (= :failure (:status undeclared)))
-            (is (str/includes? (str (:error undeclared)) "not declared")))
-          (finally
-            (io/delete-file path true)))))))
+      (h/install-consumer-code-fixture!)
+      (let [consumer-id
+            (sheet/build-workflow!
+             ctx
+             (sheet/workflow "consumer-code"
+               (sheet/blackboard {:stimulus :string :decision :string})
+               (sheet/code "decide"
+                 :fn "sormo.orc.consumer-code-fixture/deterministic-decision"
+                 :reads [:stimulus]
+                 :writes [:decision])))
+            consumer-node (first (sheet/get-nodes-for-sheet ctx consumer-id))
+            consumer-result (sheet/execute ctx consumer-id {:stimulus "inspect"})
+            trace-ready? (h/settle-until! #(h/trace-stored? ctx (:trace-id consumer-result)))
+            consumer-trace
+            (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id consumer-result)))
+                    [:query/result :trace])
+            consumer-leaf
+            (first (filter #(= (:id consumer-node) (:node-id %))
+                           (:node-traces consumer-trace)))
+            consumer-detail
+            (:query/result
+             (h/run-query ctx {:query/name :sheet/node-trace-detail
+                               :trace-id (:trace-id consumer-result)
+                               :trace-instance-id (:trace-instance-id consumer-leaf)}))
+            unavailable-id
+            (sheet/build-workflow!
+             ctx
+             (sheet/workflow "unavailable-consumer-code"
+               (sheet/blackboard {:stimulus :string :decision :string})
+               (sheet/code "missing"
+                 :fn "sormo.orc.consumer-code-fixture/missing-decision"
+                 :reads [:stimulus]
+                 :writes [:decision])))
+            unavailable-result (sheet/execute ctx unavailable-id {:stimulus "inspect"})]
+        (is (= "sormo.orc.consumer-code-fixture/deterministic-decision"
+               (:fn consumer-node)))
+        (is (= :success (:status consumer-result)))
+        (is (= "act:inspect" (get-in consumer-result [:outputs :decision])))
+        (is trace-ready?)
+        (is (= "act:inspect" (get-in consumer-detail [:outputs :decision])))
+        (is (= :failure (:status unavailable-result)))
+        (is (str/includes? (str (:error unavailable-result)) "Function not found"))))))
 
 (deftest det-e2e-113-mcp-discovery-to-portable-execution
   (testing "server-qualified tool identity survives export/import and reversed discovery order"

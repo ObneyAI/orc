@@ -7,6 +7,17 @@
  :tag-patterns {:stable "^stable-.*"
                 :release "^v[0-9].*"}
  :projects {"development" {:alias "dev"}
+            ;; Each packaging project validates its primary brick. Transitive
+            ;; brick suites run in their own project and in the aggregate `orc`
+            ;; project, whose classpath contains every cross-component E2E
+            ;; dependency. This prevents a transitive `orc-service` dependency
+            ;; from trying to load its cross-component tests on a deliberately
+            ;; minimal package classpath.
+            "orc-service" {:test {:include ["orc-service"]}}
+            "orc-evaluation" {:test {:include ["evaluation"]}}
+            "orc-gepa" {:test {:include ["gepa"]}}
+            "orc-mcp-sheet-builder" {:test {:include ["mcp-sheet-builder"]}}
+            "orc-ontology" {:test {:include ["ontology"]}}
             ;; orc-colbert is a deps-only packaging project; its brick tests
             ;; already run under the orc project. Re-running them here loads
             ;; the DJL tokenizers native library in a second classloader in

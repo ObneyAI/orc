@@ -66,6 +66,11 @@ value StreamEnvelope {
 contract LeafExecutor {
     execute: (configuration: NodeConfiguration, inputs: Any) -> Any
 
+    @invariant ConsumerCodeIsExecutable
+        -- A deterministic code leaf may name callable behavior supplied by the
+        -- workflow consumer. Successful execution does not require that the
+        -- callable be owned by ORC.
+
     @invariant DeclaredInputsOnly
         -- A leaf receives only the blackboard values named by its read contract.
 

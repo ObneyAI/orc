@@ -38,13 +38,20 @@
       (is (contains? result :fn))
       (is (fn? (:fn result)))))
 
+  (testing "resolves a function supplied by a consumer namespace"
+    (h/install-consumer-code-fixture!)
+    (let [result (executor/resolve-fn "sormo.orc.consumer-code-fixture/deterministic-decision")]
+      (is (contains? result :fn))
+      (is (fn? (:fn result)))))
+
   (testing "returns error for non-existent namespace"
     (let [result (executor/resolve-fn "non.existent.namespace/some-fn")]
       (is (contains? result :error))
       (is (re-find #"Failed to resolve" (:error result)))))
 
   (testing "returns error for non-existent function"
-    (let [result (executor/resolve-fn "ai.obney.orc.orc-service.code-executor-test/non-existent")]
+    (h/install-consumer-code-fixture!)
+    (let [result (executor/resolve-fn "sormo.orc.consumer-code-fixture/non-existent")]
       (is (contains? result :error))
       (is (re-find #"Function not found" (:error result))))))
 
