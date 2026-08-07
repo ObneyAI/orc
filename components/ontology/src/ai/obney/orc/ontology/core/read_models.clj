@@ -992,14 +992,19 @@
 (defn- assemble-summary
   "Derive `:summary` from the claims themselves.
 
-   DELIBERATELY MODEST. `:summary` is today's ColBERT retrieval key, and
-   consumers read it (R-Inject's `derive-seed-name` parses it, EL-2's terse
-   candidates carry it as `:content`), so it cannot be blank — but CC-8
-   replaces it as the retrieval key with a synthesised
-   `retrieval_description`, so investing in phrasing here would be building
-   something scheduled for demolition. What it must be is FAITHFUL: every
-   sentence is claim content, nothing is invented, and the ordering is the
-   support ordering, so the best-corroborated content leads."
+   `:summary` is THE ColBERT retrieval key — permanently, not provisionally.
+   CC-8 would have replaced it with a synthesised `retrieval_description`;
+   CC-8 is CLOSED, not built (ADR 0026: its stated goal measured false and its
+   premise was never in the literature). Nothing is scheduled to demolish this,
+   so 'don't invest in the phrasing, it's going away' is no longer a reason for
+   anything.
+
+   Consumers read it directly (R-Inject's `derive-seed-name` parses it, EL-2's
+   terse candidates carry it as `:content`), so it cannot be blank. What it
+   must be is FAITHFUL: every sentence is claim content, nothing is invented,
+   and the ordering is the support ordering, so the best-corroborated content
+   leads. That faithfulness constraint — not an impending replacement — is what
+   keeps the assembly mechanical."
   [{:keys [capabilities representative-uses strengths weaknesses avoid-when]}]
   (let [section (fn [label items]
                   (when (seq items) (str label ": " (str/join "; " items) ".")))

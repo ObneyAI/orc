@@ -31,13 +31,54 @@
    It used to be written down as the literal 32.0 because that was the
    checkpoint's own query_maxlen. CC-17 made the limit configuration and moved
    the shipped default to 464, so the ceiling MOVED WITH IT; a frozen 32.0
-   here would clamp every real score to 1.0. Derived, not hard-coded."
+   here would clamp every real score to 1.0. Derived, not hard-coded.
+
+   ⚠ THE NO-ARG FORM IS THE PROCESS DEFAULT ONLY (CC-25). It answers 'what
+   limit would an unconfigured encoding use in THIS process', which is the
+   right question ONLY when no particular encoding is in hand. It is NOT the
+   ceiling of any given search or rerank: CC-17 made the limit per-index
+   configuration (`IndexConfiguration.maximum_query_tokens`, threaded into
+   `encoder/encode-query` by `search` / `search-batch`), so an index built
+   above the process default yields raw scores ABOVE this value — every one
+   of which `normalize-colbert-score` then clamps to 1.0, destroying relative
+   order and breaking `invariant.BoundedNormalization`. Below the default it
+   silently compresses the scale instead (an index at 96 against a default of
+   464 tops out at 0.207).
+
+   To normalize scores that an actual encoding produced, use
+   `results-maxsim-ceiling` / `normalize-results-to-ceiling`, which read the
+   limit off the truncation report `attach-truncation` stamped on the result
+   collection — the limit that encoding REALLY ran under."
   (^double [] (maxsim-ceiling nil))
   (^double [maximum-query-tokens]
    (double (or maximum-query-tokens
                (encoder/configured-maximum-query-tokens)
                (get-in (encoder/get-encoder (model-store/resolve-model-dir))
                        [:consts :query-maxlen])))))
+
+(defn results-maxsim-ceiling
+  "The MaxSim ceiling OF THE ENCODING THAT ACTUALLY PRODUCED `results` — i.e.
+   `maximum_query_tokens` as reported by that very encoding, not whatever this
+   process happens to default to (CC-25).
+
+   `search`, `search-batch` and `rerank` all run `attach-truncation`, which
+   stamps the truncation report (`:maximum-query-tokens` among its fields) on
+   the returned collection as metadata. That number IS the row count the
+   encoder built, and therefore the theoretical MaxSim bound for every score
+   in the collection — the two can never disagree because they come from the
+   same encode call.
+
+   Falls back to the process default when the collection carries no report
+   (a hand-built vector, or a collection whose metadata a transformation
+   dropped). That fallback is the exact condition this function exists to
+   avoid, so it is recorded rather than taken silently."
+  ^double [results]
+  (if-let [limit (get-in (meta results) [:query-truncation :maximum-query-tokens])]
+    (maxsim-ceiling limit)
+    (do (mu/log ::maxsim-ceiling-from-process-default
+                :reason :no-truncation-report-on-results
+                :result-count (count results))
+        (maxsim-ceiling))))
 
 (defn normalize-colbert-score
   "Normalize ColBERT score to 0-1 range.
@@ -104,6 +145,48 @@
                          :raw-score (:score r))))
            (filter #(>= (:score %) min-score-threshold))
            vec))))
+
+(defn normalize-results-to-ceiling
+  "FIXED-CEILING normalization of a search/rerank result collection against the
+   ceiling OF THE ENCODING THAT PRODUCED IT (CC-25) — the `normalize_results`
+   form to reach for when scores must stay comparable ACROSS calls, where
+   `normalize-result-scores`'s batch-relative rescaling would make every call's
+   top result 1.0.
+
+   The ceiling comes from `results-maxsim-ceiling`, i.e. the truncation report
+   the encode call stamped on the collection, so a per-index
+   `maximum_query_tokens` can never disagree with the number the scores are
+   divided by. `invariant.BoundedNormalization` therefore holds for ANY legal
+   index configuration: scores stay in [0,1] and no two of them collapse
+   together at the top of the scale.
+
+   The truncation metadata is carried through, exactly as `search-for-rrf`
+   carries it — a normalized collection is still an answer to a query that may
+   have been cut.
+
+   Args:
+     results - Vector of result maps with :score key
+     opts - Options map (NormalizationOptions):
+       :max-score - Explicit ceiling override; nil (default) means the
+                    collection's OWN encoding ceiling
+       :method    - :linear (default) or :sigmoid
+
+   Returns:
+     Results with :score normalized into [0,1] and the raw value kept on
+     :raw-score (the normalize-result-scores idiom)."
+  [results & {:keys [max-score method] :or {method :linear}}]
+  (if (empty? results)
+    []
+    (let [ceiling (double (or max-score (results-maxsim-ceiling results)))]
+      (with-meta
+        (mapv (fn [r]
+                (assoc r
+                       :score (normalize-colbert-score (:score r)
+                                                       :max-score ceiling
+                                                       :method method)
+                       :raw-score (:score r)))
+              results)
+        (meta results)))))
 
 ;; =============================================================================
 ;; Index Creation

@@ -223,6 +223,16 @@
    made the limit configuration, so the ceiling is DERIVED (see
    `maximum-query-tokens` / operations/maxsim-ceiling).
 
+   ⚠ THAT DEFAULT IS THE PROCESS DEFAULT, NOT THIS SCORE'S CEILING (CC-25).
+   CC-17 made the limit PER-INDEX, so a score produced by a search of an index
+   configured away from the process default has a different ceiling — above it
+   every score clamps to 1.0 and relative order is destroyed
+   (`invariant.BoundedNormalization`), below it the scale silently compresses.
+   When you hold a result COLLECTION from search / search-batch / rerank, pass
+   `:max-score (results-maxsim-ceiling results)` or just call
+   `normalize-results-to-ceiling`, which reads the limit off the encoding that
+   actually ran.
+
    This normalizes raw scores for RRF fusion with other retrieval signals
    (graph BFS, embeddings). NB: MASK query expansion gives even unrelated pairs
    a high floor — score-CONTRAST consumers should normalize relative to the
@@ -257,6 +267,48 @@
      Results with normalized scores in [0, 1] range"
   [results & {:keys [min-score-threshold] :as opts}]
   (apply operations/normalize-result-scores results (mapcat identity opts)))
+
+(defn results-maxsim-ceiling
+  "The MaxSim ceiling OF THE ENCODING THAT PRODUCED `results` (CC-25) — i.e.
+   the `maximum_query_tokens` reported by that very encode call, read off the
+   truncation metadata search / search-batch / rerank stamp on the collection.
+
+   This is the number `normalize-colbert-score`'s :max-score wants whenever the
+   scores came from a real retrieval call. Falls back (loudly, via mulog) to the
+   process default only when the collection carries no report.
+
+   Args:
+     results - A result collection from search / search-batch / rerank
+
+   Returns:
+     The ceiling as a double"
+  ^double [results]
+  (operations/results-maxsim-ceiling results))
+
+(defn normalize-results-to-ceiling
+  "Fixed-ceiling normalization of a search/rerank result collection against the
+   ceiling of the encoding that produced it (CC-25).
+
+   Use this instead of mapping `normalize-colbert-score` over a collection:
+   `invariant.BoundedNormalization` (scores in [0,1], relative order preserved)
+   then holds for ANY legal per-index `maximum_query_tokens`, not just for
+   indexes that happen to sit at the process default. Use
+   `normalize-result-scores` instead when you want batch-RELATIVE contrast
+   within a single call rather than a cross-call-comparable scale.
+
+   The truncation metadata is carried through.
+
+   Args:
+     results - Vector of result maps with :score key
+     opts - Options map:
+       :max-score - Explicit ceiling override (default: the collection's own
+                    encoding ceiling)
+       :method    - :linear (default) or :sigmoid
+
+   Returns:
+     Results with :score in [0, 1] and the raw value on :raw-score"
+  [results & {:keys [max-score method] :as opts}]
+  (apply operations/normalize-results-to-ceiling results (mapcat identity opts)))
 
 ;; =============================================================================
 ;; Hybrid Search Integration
