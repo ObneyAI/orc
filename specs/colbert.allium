@@ -27,6 +27,25 @@ value IndexConfiguration {
     model_name: String
     split_documents: Boolean
     maximum_passage_tokens: Integer
+    -- The query-side counterpart. Modelled because it has the same character as
+    -- maximum_passage_tokens — a configured limit that changes retrieval
+    -- behaviour by discarding content — and because its absence hid a live
+    -- defect: 42% of measured queries exceeded it and were silently truncated,
+    -- losing up to 14 word-piece tokens, with no signal to any caller.
+    -- It is also the encoder's per-query row count, so it sets the score
+    -- ceiling that every downstream threshold is calibrated against.
+    maximum_query_tokens: Integer
+}
+
+-- A query longer than the configured limit is TRUNCATED, not rejected: the
+-- excess tokens are discarded and retrieval proceeds against the prefix.
+-- Stated because the discard is otherwise invisible — a caller cannot tell a
+-- fully-matched query from a truncated one, and a retrieval key can never be
+-- matched against text the encoder did not see.
+invariant OverlongQueriesTruncateVisibly {
+    for search in Searches:
+        search.query_token_count > configuration.maximum_query_tokens implies
+            search.truncated = true
 }
 
 value SearchResult {
