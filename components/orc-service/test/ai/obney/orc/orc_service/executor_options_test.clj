@@ -57,6 +57,7 @@
                     (fn [_provider _module _inputs options]
                       (reset! captured-options options)
                       {:outputs {:answer "4"}
+                       :raw-response "verbatim provider response"
                        :usage {:prompt_tokens 10
                                :completion_tokens 2
                                :total_tokens 12}})]
@@ -65,6 +66,7 @@
                        :options {:use-function-calling? false})]
           (is (= :success (:status result)))
           (is (= "4" (get-in result [:outputs :answer])))
+          (is (= "verbatim provider response" (:raw-response result)))
           (is (= false (:validate? @captured-options)))
           (is (= true (:with-metadata? @captured-options)))
           (is (= true (:use-function-calling? @captured-options)))))))

@@ -22,6 +22,8 @@
             [clojure.walk :as walk]
             [cheshire.core :as json]
             [malli.core :as m]
+            [malli.error :as me]
+            [malli.transform :as mt]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -1057,6 +1059,47 @@
 ;; AI Execution
 ;; =============================================================================
 
+(defn validate-leaf-outputs
+  "Decode provider JSON values and normalize object keys according to each
+   declared Malli schema, then reject an invalid successful leaf result before
+   its writes become canonical. Provider JSON numbers are canonicalized through
+   the schema; numeric strings remain invalid. Non-provider leaves receive only
+   schema-directed key normalization and retain strict JVM value types."
+  ([blackboard result]
+   (validate-leaf-outputs blackboard result false))
+  ([blackboard result provider-output?]
+   (if (not= :success (:status result))
+     result
+     (let [key-transformer (mt/key-transformer {:decode keyword :encode name})
+           transformer (if provider-output?
+                         (mt/transformer key-transformer (mt/json-transformer))
+                         key-transformer)
+           rejected-writes (:outputs result)
+           normalized (reduce-kv
+                       (fn [outputs key value]
+                         (assoc outputs key
+                                (if-let [schema (get-in blackboard [key :schema])]
+                                  (m/decode schema value transformer)
+                                  value)))
+                       {}
+                       (:outputs result))]
+       (if-let [[key explanation]
+                (some (fn [[key value]]
+                        (when-let [schema (get-in blackboard [key :schema])]
+                          (try
+                            (when-not (m/validate schema value)
+                              [key (me/humanize (m/explain schema value))])
+                            (catch Exception e
+                              [key {:invalid-schema (.getMessage e)}]))))
+                      normalized)]
+         (-> result
+             (assoc :status :failure
+                    :error (str "Blackboard schema validation failed for "
+                                (pr-str key) ": " explanation)
+                    :outputs {}
+                    :rejected-writes rejected-writes))
+         (assoc result :outputs normalized))))))
+
 (defn- outputs-have-nil?
   "Check if any output values are nil, including nested maps where all values are nil."
   [outputs]
@@ -1082,6 +1125,13 @@
                                 (and (map? v) (every? nil? (vals v))))))
                      outputs))
     outputs))
+
+(defn- merge-usage
+  "Accumulate usage across every provider attempt, including attempts whose
+   structured output fails schema validation."
+  [acc usage]
+  (when (or acc usage)
+    (merge-with + (or acc {}) (or usage {}))))
 
 (defn execute-ai
   "Execute a leaf node using DSCloj AI.
@@ -1208,7 +1258,8 @@
                         (nth retry-delay-ms (min attempt (dec (count retry-delay-ms))))
                         retry-delay-ms))]
 
-    (loop [attempt 0]
+    (loop [attempt 0
+           accumulated-usage nil]
       (let [{:keys [outputs usage model error raw-response]}
             (try
               (try-once attempt)
@@ -1216,7 +1267,17 @@
                 {:error (.getMessage e)}))
             ;; Drop nil best-effort writes so an omitted evidence array is the
             ;; node's declared-optional absence, not a nil-gate failure.
-            outputs (strip-nil-optional-writes outputs optional-writes)]
+            outputs (strip-nil-optional-writes outputs optional-writes)
+            total-usage (merge-usage accumulated-usage usage)
+            schema-result (when (and (not error)
+                                     (not (outputs-have-nil? outputs)))
+                            (validate-leaf-outputs
+                             blackboard
+                             (cond-> {:status :success :outputs outputs}
+                               raw-response (assoc :raw-response raw-response))
+                             true))
+            schema-error (when (= :failure (:status schema-result))
+                           (:error schema-result))]
         (cond
           ;; Exception — retry with backoff (handles rate limits, transient errors)
           (and error (< attempt max-retries))
@@ -1225,16 +1286,18 @@
                  :attempt (inc attempt) :max-attempts (inc max-retries)
                  :reason error :trace-id nil})
               (Thread/sleep (backoff-for attempt))
-              (recur (inc attempt)))
+              (recur (inc attempt) total-usage))
 
           ;; Exception — retries exhausted
           error
-          (let [result {:status :failure :error error
-                        :duration-ms (- (System/currentTimeMillis) start-time)}]
+          (let [result (cond-> {:status :failure :error error
+                                :duration-ms (- (System/currentTimeMillis) start-time)}
+                         total-usage (assoc :usage total-usage)
+                         model (assoc :model model))]
             (obs/log-ai-execution!
-              {:node-id (:id node) :node-name (:name node) :model nil
+              {:node-id (:id node) :node-name (:name node) :model model
                :executor :ai :duration-ms (:duration-ms result)
-               :status :failure :usage nil :trace-id nil :error error})
+               :status :failure :usage total-usage :trace-id nil :error error})
             result)
 
           ;; Nil outputs — the model answered but no value could be extracted
@@ -1243,12 +1306,11 @@
           ;; can't cover, such as structured/multi-write nodes). This is a
           ;; FAILURE, not a success: returning :success with nil writes
           ;; silently corrupts downstream state (a tree can finish "green"
-          ;; with empty deliverables). It is also NOT retried here — rerunning
-          ;; a semantic failure is the node-level :retry primitive's job
-          ;; (execute-with-retry retries any non-:success result). The internal
-          ;; retry above stays reserved for transport errors. The verbatim raw
-          ;; response is carried on the result and logged in full so the parse
-          ;; failure is diagnosable.
+          ;; with empty deliverables). Nil/unextractable output is not retried
+          ;; here; the internal retry covers provider exceptions and structured
+          ;; outputs that fail their declared schemas. A node-level :retry can
+          ;; still retry this parse failure. The verbatim raw response is
+          ;; carried on the result and logged in full so it is diagnosable.
           (outputs-have-nil? outputs)
           (let [nil-keys (vec (for [[k v] outputs
                                     :when (or (nil? v)
@@ -1273,7 +1335,7 @@
                         :duration-ms (- (System/currentTimeMillis) start-time)
                         ;; Usage is preserved — these tokens were really spent
                         ;; and must not vanish from Phase-2 accounting.
-                        :usage usage :model model}]
+                        :usage total-usage :model model}]
             (obs/log-unparseable-output!
               {:node-id (:id node) :node-name (:name node) :model model
                :nil-keys nil-keys :raw-length raw-len
@@ -1281,18 +1343,42 @@
             (obs/log-ai-execution!
               {:node-id (:id node) :node-name (:name node) :model model
                :executor :ai :duration-ms (:duration-ms result)
-               :status :failure :usage usage :trace-id nil :error error-msg})
+               :status :failure :usage total-usage :trace-id nil :error error-msg})
+            result)
+
+          ;; A provider attempt returned structured data, but its decoded value
+          ;; violated the declared blackboard schema. This consumes the same
+          ;; default retry budget as transport/provider exceptions. Only the
+          ;; final exhausted attempt escapes as rejected-write evidence.
+          (and schema-error (< attempt max-retries))
+          (do (obs/log-retry!
+                {:node-id (:id node) :node-name (:name node)
+                 :attempt (inc attempt) :max-attempts (inc max-retries)
+                 :reason schema-error :trace-id nil})
+              (Thread/sleep (backoff-for attempt))
+              (recur (inc attempt) total-usage))
+
+          schema-error
+          (let [result (assoc schema-result
+                              :duration-ms (- (System/currentTimeMillis) start-time)
+                              :usage total-usage
+                              :model model)]
+            (obs/log-ai-execution!
+              {:node-id (:id node) :node-name (:name node) :model model
+               :executor :ai :duration-ms (:duration-ms result)
+               :status :failure :usage total-usage :trace-id nil :error schema-error})
             result)
 
           ;; Success
           :else
-          (let [result {:status :success :outputs outputs
-                        :duration-ms (- (System/currentTimeMillis) start-time)
-                        :usage usage :model model}]
+          (let [result (cond-> {:status :success :outputs (:outputs schema-result)
+                                :duration-ms (- (System/currentTimeMillis) start-time)
+                                :usage total-usage :model model}
+                         raw-response (assoc :raw-response raw-response))]
             (obs/log-ai-execution!
               {:node-id (:id node) :node-name (:name node) :model model
                :executor :ai :duration-ms (:duration-ms result)
-               :status :success :usage usage :trace-id nil})
+               :status :success :usage total-usage :trace-id nil})
             result))))))
 
 (defn execute-llm-condition

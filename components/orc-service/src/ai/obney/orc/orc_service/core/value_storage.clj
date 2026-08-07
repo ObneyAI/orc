@@ -33,7 +33,7 @@
        "/" tick-id "/" value-id ".nippy"))
 
 (defn prepare-write
-  "Prepare a canonical execution-value-written body according to runtime config.
+  "Prepare a value-bearing execution event body according to runtime config.
    In file-store mode the object write completes before this returns, so callers
    append no event that points at an object which was never stored."
   [context {:keys [tick-id value] :as body}]
@@ -82,7 +82,9 @@
     (:value event)))
 
 (defn hydrate-event [context event]
-  (if (and (= :sheet/execution-value-written (:event/type event))
+  (if (and (contains? #{:sheet/execution-value-written
+                        :sheet/execution-value-rejected}
+                      (:event/type event))
            (:value-reference event))
     (assoc event :value (event-value context event))
     event))

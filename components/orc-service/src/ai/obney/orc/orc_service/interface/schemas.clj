@@ -235,8 +235,10 @@
     ;; :sheet/node-trace-detail query, which rehydrates on demand.
     [:read-keys {:optional true} [:vector :keyword]]     ;; keys read
     [:write-keys {:optional true} [:vector :keyword]]    ;; keys written
+    [:rejected-write-keys {:optional true} [:vector :keyword]]
     [:input-profile {:optional true} [:map-of :keyword :map]]
     [:output-profile {:optional true} [:map-of :keyword :map]]
+    [:rejected-output-profile {:optional true} [:map-of :keyword :map]]
     [:error {:optional true} :string]]
 
    ::execution-trace
@@ -563,6 +565,10 @@
     ;; future and hanging the Phase-2 budget.
     [:status [:enum :success :failure :tree-generated :partial :timeout :blocked]]
     [:writes {:optional true} [:map-of :keyword :any]]
+    ;; Values rejected by blackboard schema validation. They are persisted as
+    ;; trace-only :sheet/execution-value-rejected events and never projected
+    ;; into canonical blackboard state.
+    [:rejected-writes {:optional true} [:map-of :keyword :any]]
     [:write-sources {:optional true} [:map-of :keyword
                                       [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:write-references? {:optional true} :boolean]
@@ -1059,6 +1065,8 @@
     ;; Resolve them with core/value-log.
     [:write-keys {:optional true} [:vector :keyword]]
     [:write-profile {:optional true} [:map-of :keyword :map]]
+    [:rejected-write-keys {:optional true} [:vector :keyword]]
+    [:rejected-write-profile {:optional true} [:map-of :keyword :map]]
     [:write-sources {:optional true} [:map-of :keyword
                                       [:map [:tick-id :uuid] [:event-id :uuid]]]]
     [:read-keys {:optional true} [:vector :keyword]]
@@ -1219,6 +1227,25 @@
     ;; without it. See value-log/writes-by-execution vs
     ;; value-log/input-seeds-by-iteration.
     [:input-seed? {:optional true} :boolean]]
+
+   ;; A leaf result that failed its declared blackboard schema. This event is
+   ;; durable diagnostic evidence only: no blackboard read model consumes it.
+   :sheet/execution-value-rejected
+   [:map
+    [:tick-id :uuid]
+    [:sheet-id :uuid]
+    [:key :keyword]
+    [:value {:optional true} :any]
+    [:value-reference {:optional true}
+     [:map
+      [:file-id :string]
+      [:byte-size :int]
+      [:content-hash :string]
+      [:format [:enum :nippy]]]]
+    [:value-profile {:optional true} :any]
+    [:value-id {:optional true} :uuid]
+    [:node-id :uuid]
+    [:exec-context {:optional true} :map]]
 
    :sheet/execution-value-referenced
    [:map
@@ -1596,7 +1623,8 @@
     [:trace-instance-id :uuid]
     [:exec-context {:optional true} :map]
     [:inputs {:optional true} :map]
-    [:outputs {:optional true} :map]]
+    [:outputs {:optional true} :map]
+    [:rejected-outputs {:optional true} :map]]
 
    ;; Run Detail Screen Query (single trace with full data)
    :sheet/run-detail-screen

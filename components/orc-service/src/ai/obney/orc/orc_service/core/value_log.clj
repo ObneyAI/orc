@@ -120,6 +120,19 @@
         (:writes completion)
         {})))
 
+(defn rejected-writes-for
+  "The {key rejected-value} evidence recorded for one failed node execution.
+   Rejected values are trace-only and are never included by writes-for or any
+   canonical blackboard projection."
+  [events completion]
+  (reduce (fn [acc event]
+            (if (and (= :sheet/execution-value-rejected (:event/type event))
+                     (= (execution-key completion) (execution-key event)))
+              (assoc acc (:key event) (:value event))
+              acc))
+          {}
+          events))
+
 (defn latest-values
   "The final {key value} map for a tick, ignoring attribution — last write
    per key wins. Use when you want the blackboard's end state rather than

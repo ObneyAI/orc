@@ -20,9 +20,6 @@
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
             [clojure.string :as str]
-            [malli.core :as m]
-            [malli.error :as me]
-            [malli.transform :as mt]
             [com.brunobonacci.mulog :as u]))
 
 ;; =============================================================================
@@ -42,42 +39,6 @@
                  (assoc acc (if (keyword? k) k (keyword k)) v))
                {}
                outputs)))
-
-(defn- validate-leaf-outputs
-  "Normalize JSON object keys according to each declared Malli schema, then
-   reject an invalid successful leaf result before its writes become canonical.
-
-   Model providers necessarily return JSON string keys. Malli's key transformer
-   changes only keys declared by a :map schema (including nested maps), while
-   preserving keys governed by :map-of, so this is schema-directed rather than
-   a lossy recursive keywordization."
-  [blackboard result]
-  (if (not= :success (:status result))
-    result
-    (let [key-transformer (mt/key-transformer {:decode keyword :encode name})
-          normalized (reduce-kv
-                       (fn [outputs key value]
-                         (assoc outputs key
-                                (if-let [schema (get-in blackboard [key :schema])]
-                                  (m/decode schema value key-transformer)
-                                  value)))
-                       {}
-                       (:outputs result))]
-      (if-let [[key explanation]
-               (some (fn [[key value]]
-                       (when-let [schema (get-in blackboard [key :schema])]
-                         (try
-                           (when-not (m/validate schema value)
-                             [key (me/humanize (m/explain schema value))])
-                           (catch Exception e
-                             [key {:invalid-schema (.getMessage e)}]))))
-                     normalized)]
-        (-> result
-            (assoc :status :failure
-                   :error (str "Blackboard schema validation failed for "
-                               (pr-str key) ": " explanation)
-                   :outputs {}))
-        (assoc result :outputs normalized)))))
 
 ;; =============================================================================
 ;; LLM Call Budget Tracking (Opt-in Only)
@@ -1285,8 +1246,8 @@
                              ;; No provider - use mock
                              :else
                              (executor/execute-leaf-mock node blackboard))
-                    result (validate-leaf-outputs blackboard raw-result)
-                  {:keys [status outputs error duration-ms usage raw-response block-payload]} result
+                    result (executor/validate-leaf-outputs blackboard raw-result is-llm-call?)
+                  {:keys [status outputs rejected-writes error duration-ms usage raw-response block-payload]} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
                              :node-id node-id
@@ -1311,6 +1272,8 @@
                                 :node-type (:type node)
                                 :status status
                                 :writes (normalize-output-keys (or outputs {}))}
+                         (seq rejected-writes)
+                         (assoc :rejected-writes (normalize-output-keys rejected-writes))
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
                          ;; WS-2a: carry the OPAQUE block payload through on a
@@ -3422,6 +3385,11 @@
                               (seq (:write-keys completed))
                               (assoc :write-keys (:write-keys completed)
                                      :output-profile (:write-profile completed))
+
+                              (seq (:rejected-write-keys completed))
+                              (assoc :rejected-write-keys (:rejected-write-keys completed)
+                                     :rejected-output-profile
+                                     (:rejected-write-profile completed))
 
                               ;; Read shape comes straight off the completion
                               ;; event, which captures reads resolved at

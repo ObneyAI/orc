@@ -4,7 +4,8 @@
             [ai.obney.orc.file-store.interface.protocol :as file-store]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [dscloj.core :as dscloj]))
 
 (def ^:private structured-schema
   [:map
@@ -72,6 +73,44 @@
      (sheet/blackboard {:input structured-schema :output structured-schema})
      (sheet/delegate "child" :target-sheet-id target-id
        :reads [:input] :writes [:output]))))
+
+(defn- provider-number-workflow [name]
+  (sheet/workflow name
+    (sheet/blackboard
+     {:academic-context [:map [:gpa :double]]})
+    (sheet/llm "analyze-profile"
+      :instruction "Return the supplied academic context."
+      :writes [:academic-context]
+      :options {:use-function-calling? true
+                :retry-delay-ms 1})))
+
+(defn- execute-provider-values [ctx workflow-name provider-values]
+  (let [remaining (atom provider-values)
+        calls (atom 0)]
+    [(with-redefs [dscloj/predict
+                   (fn [_provider _module _inputs _options]
+                     (swap! calls inc)
+                     (let [provider-value (first @remaining)]
+                       (swap! remaining #(if (next %) (next %) %))
+                       {:outputs {:gpa provider-value}
+                        :raw-response (str "provider response " provider-value)
+                        :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}
+                        :model "deterministic-provider"}))]
+       (let [sheet-id (sheet/build-workflow! ctx (provider-number-workflow workflow-name))]
+         (sheet/execute (assoc ctx :dscloj-provider :deterministic-provider)
+                        sheet-id {})))
+     @calls]))
+
+(defn- execute-provider-number [ctx workflow-name provider-value]
+  (first (execute-provider-values ctx workflow-name [provider-value])))
+
+(defn- failed-leaf-detail [ctx result]
+  (let [trace (trace-for ctx result)
+        leaf (some #(when (= :leaf (:node-type %)) %) (:node-traces trace))]
+    (get-in (h/run-query ctx {:query/name :sheet/node-trace-detail
+                              :trace-id (:trace-id result)
+                              :trace-instance-id (:trace-instance-id leaf)})
+            [:query/result])))
 
 (deftest det-e2e-053-structured-nested-values
   (testing "nested vectors, maps, map-of values, and absent optional fields survive code, map-each, and delegate"
@@ -225,3 +264,72 @@
           (is (= (:outputs inline-result) (:outputs file-result)))
           (is (= (normalized-trace inline-trace) (normalized-trace file-trace)))
           (is (seq @objects)))))))
+
+(deftest det-e2e-124-provider-output-normalization-and-rejection-evidence
+  (testing "schema-equivalent JSON numbers become canonical before blackboard validation"
+    (h/with-async-test-context [ctx]
+      (let [result (execute-provider-number ctx "det-e2e-124-number" (long 3))]
+        (is (= :success (:status result)))
+        (is (= 3.0 (get-in result [:outputs :academic-context :gpa])))
+        (is (double? (get-in result [:outputs :academic-context :gpa]))))))
+
+  (testing "numeric strings fail without a canonical write and remain inspectable inline"
+    (h/with-async-test-context [ctx]
+      (let [result (execute-provider-number ctx "det-e2e-124-inline-rejected" "3.0")
+            detail (failed-leaf-detail ctx result)
+            events (h/read-tick-events ctx (:trace-id result))
+            completion (some #(when (= :sheet/node-execution-completed (:event/type %)) %)
+                             events)]
+        (is (= :failure (:status result)))
+        (is (nil? (get-in result [:outputs :academic-context])))
+        (is (= {:academic-context {:gpa "3.0"}}
+               (:rejected-outputs detail)))
+        (is (empty? (:outputs detail)))
+        (is (= "provider response 3.0"
+               (:raw-response completion)))
+        (is (not-any? #(and (= :sheet/execution-value-written (:event/type %))
+                            (= :academic-context (:key %)))
+                      events)))))
+
+  (testing "file-store mode externalizes rejected evidence and rehydrates it through trace detail"
+    (let [objects (atom {}) store (->MemoryFileStore objects)]
+      (h/with-async-test-context
+        [ctx {:context {:orc/value-storage {:type :file-store :prefix "det-e2e-124"}
+                        :orc/file-store store}}]
+        (let [result (execute-provider-number ctx "det-e2e-124-referenced-rejected" "3.0")
+              events (h/read-tick-events ctx (:trace-id result))
+              rejected (some #(when (= :sheet/execution-value-rejected (:event/type %)) %)
+                             events)
+              detail (failed-leaf-detail ctx result)]
+          (is (= :failure (:status result)))
+          (is (map? (:value-reference rejected)))
+          (is (not (contains? rejected :value)))
+          (is (= {:academic-context {:gpa "3.0"}}
+                 (:rejected-outputs detail)))
+          (is (seq @objects)))))))
+
+(deftest det-e2e-125-provider-schema-failure-consumes-default-retry
+  (testing "one schema-invalid response consumes the default retry and a valid retry succeeds"
+    (h/with-async-test-context [ctx]
+      (let [[result calls] (execute-provider-values
+                            ctx "det-e2e-125-retry-success" ["3.0" (long 3)])]
+        (is (= 2 calls))
+        (is (= :success (:status result)))
+        (is (= 3.0 (get-in result [:outputs :academic-context :gpa])))
+        (is (= 4 (get-in result [:usage :total-tokens]))
+            "usage accounts for both provider attempts"))))
+
+  (testing "two invalid responses exhaust the default retry and persist only final evidence"
+    (h/with-async-test-context [ctx]
+      (let [[result calls] (execute-provider-values
+                            ctx "det-e2e-125-retry-exhausted" ["first" "second"])
+            detail (failed-leaf-detail ctx result)
+            rejected-events (filter #(= :sheet/execution-value-rejected (:event/type %))
+                                    (h/read-tick-events ctx (:trace-id result)))]
+        (is (= 2 calls))
+        (is (= :failure (:status result)))
+        (is (= {:academic-context {:gpa "second"}}
+               (:rejected-outputs detail)))
+        (is (= 1 (count rejected-events)))
+        (is (= 4 (get-in result [:usage :total-tokens]))
+            "exhausted retry still accounts for both attempts")))))

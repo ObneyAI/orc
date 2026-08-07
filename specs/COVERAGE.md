@@ -63,22 +63,38 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-06, both `allium check specs` and `allium analyse specs` reported 176
-structural diagnostics across the ten specifications: 147 informational and 29
+On 2026-08-07, both `allium check specs` and `allium analyse specs` reported 174
+structural diagnostics across the ten specifications: 146 informational and 28
 warnings. `analyse` reported zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
 | `allium.rule.unreachableTrigger` | 38 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 109 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.field.unused` | 108 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 14 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
-| `allium.definition.unused` | 13 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.definition.unused` | 12 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents
 must review every newly introduced or changed diagnostic, update this table when
 the accepted baseline deliberately changes, and avoid claiming a clean Allium
 gate while either command exits non-zero.
+
+## Provider output normalization and rejection evidence (2026-08-07)
+
+The ORC service now schema-decodes provider-originated JSON values before its
+authoritative blackboard validation. Schema-equivalent JSON numeric forms are
+canonicalized without treating numeric strings as numbers. Invalid outputs do
+not become execution values; they are retained as trace-only rejected-value
+events under the configured inline or file-store placement policy and rehydrate
+through exact node trace detail. DET-E2E-124 verifies the successful and rejected
+paths through the public workflow boundary.
+
+The provider's default internal retry also covers decoded structured outputs
+that fail their declared schemas. DET-E2E-125 verifies invalid-to-valid recovery
+and invalid-to-invalid exhaustion, including exact call count, final-only
+rejection evidence, and usage accumulated across both attempts.
+
 # Custom ontology lifecycle alignment (2026-08-07)
 
 The ontology domain now specifies an empty custom-ontology lifecycle, typed

@@ -5,6 +5,7 @@
    All queries return {:query/result ...} on success."
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
+            [ai.obney.orc.orc-service.core.value-storage :as value-storage]
             [ai.obney.orc.orc-service.core.tree-layout :as layout]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -487,9 +488,11 @@
         node-trace (some #(when (= (:trace-instance-id %) trace-instance-id) %)
                          (:node-traces trace))]
     (if node-trace
-      (let [tick-events (into [] (es/read event-store
-                                          {:tags #{[:tick trace-id]}
-                                           :tenant-id (:tenant-id ctx)}))
+      (let [tick-events (value-storage/hydrate-events
+                         ctx
+                         (into [] (es/read event-store
+                                           {:tags #{[:tick trace-id]}
+                                            :tenant-id (:tenant-id ctx)})))
             node-id (:node-id node-trace)
             execution-key [node-id (value-log/exec-context (:exec-context node-trace))]
             completed (some #(when (and (= :sheet/node-execution-completed (:event/type %))
@@ -508,7 +511,10 @@
                        (when completed
                          (not-empty (value-log/resolve-writes ctx
                                                               (:tenant-id ctx)
-                                                              trace-id completed))))}})
+                                                              trace-id completed))))
+          :rejected-outputs (when completed
+                              (not-empty
+                               (value-log/rejected-writes-for tick-events completed)))}})
       {::anom/category ::anom/not-found
        ::anom/message (str "Node trace not found: " trace-instance-id)})))
 

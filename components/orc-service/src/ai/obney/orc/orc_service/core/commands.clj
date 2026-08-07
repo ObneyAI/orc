@@ -1171,7 +1171,7 @@
    atomically with the completion event to avoid race conditions.
 
    Optional :usage carries per-node token counts from LLM calls."
-  [{{:keys [sheet-id tick-id node-id status writes write-sources write-references? duration-ms error inputs usage model
+  [{{:keys [sheet-id tick-id node-id status writes rejected-writes write-sources write-references? duration-ms error inputs usage model
             node-type completion-kind raw-response block-payload read-sources]} :command
     :as ctx}]
   (let [;; Gap-7: when the dispatch site didn't explicitly set
@@ -1246,6 +1246,9 @@
                                     (assoc :write-keys (vec (distinct (concat (keys writes)
                                                                              (keys forwarded-sources))))
                                            :write-profile (profile/profile-values writes))
+                                    (seq rejected-writes)
+                                    (assoc :rejected-write-keys (vec (keys rejected-writes))
+                                           :rejected-write-profile (profile/profile-values rejected-writes))
                                     (seq forwarded-sources)
                                     (assoc :write-sources forwarded-sources)
                                     ;; No write events for this completion =>
@@ -1310,9 +1313,27 @@
                                               ;; just the node — see the schema.
                                               (seq exec-context)
                                               (assoc :exec-context exec-context)))}))
-                                writes))]
+                                writes))
+        ;; Rejected values are durable trace evidence, not blackboard writes.
+        ;; They use the same configured storage policy but have no read-model
+        ;; reducer, so they can never become canonical execution state.
+        rejected-write-events
+        (mapv (fn [[k v]]
+                (->event
+                 {:type :sheet/execution-value-rejected
+                  :tags #{[:sheet sheet-id] [:tick tick-id]}
+                  :body (value-storage/prepare-write
+                         ctx
+                         (cond-> {:tick-id tick-id
+                                  :sheet-id sheet-id
+                                  :key k
+                                  :value v
+                                  :node-id node-id}
+                           (seq exec-context)
+                           (assoc :exec-context exec-context)))}))
+              rejected-writes)]
     {:command-result/events
-     (into [] (concat bb-write-events reference-events [completion-event]))}))
+     (into [] (concat bb-write-events rejected-write-events reference-events [completion-event]))}))
 
 (defcommand :sheet record-rlm-tree-node-completion
   {:authorized? authenticated?}

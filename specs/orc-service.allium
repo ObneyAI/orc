@@ -78,6 +78,12 @@ contract LeafExecutor {
         -- A successful leaf supplies a non-null value for every key named by
         -- its write contract, supplies no undeclared keys, and every supplied
         -- value satisfies the key's declared schema.
+
+    @invariant ProviderRetryCoversSchemaFailure
+        -- The default provider retry applies when a returned structured output
+        -- violates its declared schema, as well as when the provider attempt
+        -- fails by exception. Only the final exhausted schema failure becomes
+        -- durable rejected-output evidence.
 }
 
 contract WorkflowDefinitionConstruction {
@@ -230,6 +236,7 @@ entity NodeExecution {
     error: String?
     usage: Usage?
     iteration_index: Integer?
+    rejected_outputs: Any?
 
     transitions status {
         running -> success
@@ -384,7 +391,8 @@ rule StartNodeExecution {
         completed_at: null,
         error: null,
         usage: null,
-        iteration_index: iteration_index
+        iteration_index: iteration_index,
+        rejected_outputs: null
     )
 }
 
@@ -415,6 +423,14 @@ rule NodeFails {
     ensures: node_execution.status = failure
     ensures: node_execution.completed_at = now
     ensures: node_execution.error = error
+    ensures: node_execution.rejected_outputs = rejected_outputs_for(node_execution)
+
+    @guidance
+        -- Provider-originated values are decoded through each declared data
+        -- schema before validation. JSON numeric representations that have the
+        -- same schema meaning are canonicalized, while strings are not treated
+        -- as numbers. Rejected values remain inspection evidence and never
+        -- become execution values or blackboard state.
 }
 
 rule NodePartiallySucceeds {
@@ -642,6 +658,7 @@ surface WorkflowExecutionAccess {
 
     @guarantee ExactNodeExecutionInspection
         -- Each node execution has a unique trace instance identifier, and its
-        -- inputs and outputs can be inspected without ambiguity when the same
-        -- workflow node runs repeatedly or concurrently.
+        -- inputs, accepted outputs, and schema-rejected outputs can be inspected
+        -- without ambiguity when the same workflow node runs repeatedly or
+        -- concurrently.
 }
