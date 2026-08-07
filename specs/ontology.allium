@@ -286,8 +286,11 @@ entity LivingDescription {
     target_identifier: String
     -- Assembled from this description's claims; no longer authored wholesale.
     current_body: DescriptionBody
-    -- The search key, synthesised from the claims. Distinct from body.summary,
-    -- which is prompt-facing.
+    -- The search key. NOT CURRENTLY PRODUCED — see ADR 0026. Retained as an
+    -- optional field because the idea is deferred, not refuted in general: the
+    -- measured payoff for description quality is at the LLM SELECTION layer,
+    -- not at embedding rank, and that has never been measured here. Anything
+    -- reading this must handle nil, which is the whole of its contract today.
     retrieval_description: String?
     -- The body's own revision counter, advanced per assembly.
     version: Integer
@@ -723,7 +726,11 @@ rule AssembleDescriptionFromClaims {
     when: ClaimSetChanged(description)
 
     ensures: description.current_body = assemble_body(description.claims)
-    ensures: description.retrieval_description = synthesise_retrieval_key(description.claims)
+    -- NOTE: assembly no longer synthesises a retrieval key. Measured null
+    -- (ADR 0026): a synthesised key does not improve retrieval rank on this
+    -- corpus, and while the key sat on the positive side of the domain
+    -- penalty's own rerank call, improving it actively suppressed the guard.
+    -- retrieval_description is therefore left unset rather than produced.
     ensures: description.version = description.version + 1
     ensures: description.updated_at = now
     ensures: DescriptionVersion.created(
