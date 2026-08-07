@@ -182,7 +182,16 @@ Commands -> Events -> Read Models -> Queries
                |
                v
          Todo Processors (side effects)
+               ^
+               |
+       Periodic trigger events
 ```
+
+Grain's executable grammar is six macros: `defcommand`, `defquery`,
+`defreadmodel`, `defprocessor`, `defperiodic`, and `defschemas`. ORC uses the v2
+processor stack over the v3 event-store protocol; every event-store operation
+and projection is tenant-scoped. The store, not callers, assigns UUIDv7 event
+IDs and timestamps when an append commits.
 
 - **Sheets** are behavior trees stored as event streams
 - **Nodes** are composable: `sequence`, `fallback`, `parallel`, `map-each`, `llm`, `code`, `condition`, `repl-researcher`
@@ -356,7 +365,10 @@ orc/
 
 ORC is a library — consumers provide:
 
-- **Grain infrastructure**: event store (in-memory or Postgres), LMDB cache, control plane
+- **Grain infrastructure**: tenant-scoped event store (in-memory, embedded SQLite,
+  or Postgres), LMDB projection cache, and—when deploying multiple
+  instances—the control plane; add the event tailer when shared-store events
+  must reach each node's local live-update pub/sub
 - **LLM provider**: DSCloj configuration (`:dscloj-provider` in context)
 - **Optional**: Langfuse client for tracing, MCP servers for tool calling
 

@@ -11,7 +11,7 @@ Restructure `docs/EVENT-STORE-PATTERNS.md` to be useful for ORC consumers (peopl
 
 ## Prototype required?
 
-Yes — run each ORC-specific event query against orc-template: `(es/read event-store {:types #{:sheet/node-execution-completed} :tags #{[:sheet sheet-id]}})`, `(eval/get-judge-scores ...)`, `(orc/get-node-rolling-metrics ...)`. Capture output.
+Yes — run each ORC-specific event query against orc-template: `(es/read event-store {:tenant-id tenant-id :types #{:sheet/node-execution-completed} :tags #{[:sheet sheet-id]}})`, `(eval/get-judge-scores ...)`, `(orc/get-node-rolling-metrics ...)`. Capture output.
 
 ## TDD cycle
 

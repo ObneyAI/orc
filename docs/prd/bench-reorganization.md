@@ -46,7 +46,7 @@ The resulting structure makes each task a clean, runnable, self-explanatory exam
 
 ### Modules to be built / modified
 
-**`runner` module (new)** — Deep module containing all shared infrastructure for running an RLM benchmark task. Public interface is small (3 functions: `start!`, `stop!`, `run!`) but the implementation handles the entire grain-v2 system bringup (event store, pubsub, kv store, processors, command/query registries). This is the cleanest deep-module opportunity in the reorganization.
+**`runner` module (new)** — Deep module containing all shared infrastructure for running an RLM benchmark task. Public interface is small (3 functions: `start!`, `stop!`, `run!`) but the implementation handles Grain's v2 processor stack, tenant-scoped v3 event store, KV projection cache, and globally registered commands/queries/processors. This is the cleanest deep-module opportunity in the reorganization.
 
 - `(runner/start!)` — initializes the system state (returns nothing useful, mutates internal atom). Same lifecycle semantics as the current `rlm-gen-bench/start!`.
 - `(runner/run! task-map)` — given a task definition map, runs the task end-to-end and saves the result EDN. Takes the same task map shape as the current `tasks` map values.

@@ -1,4 +1,7 @@
-**Archived (2025).** This section described features that have since shipped. See the current docs for their actual state.
+**Archived (2025).** This section described features that have since shipped.
+Its unscoped event reads and non-UUID tag sketches predate Grain's current
+tenant-scoped v3 event-store schema and must not be copied. See the current docs
+for actual behavior.
 
 For current shipping status, see [COMPONENT-MAP.md](../COMPONENT-MAP.md), [GEPA-GUIDE.md](../GEPA-GUIDE.md), [ONTOLOGY.md](../ONTOLOGY.md), [LIVING-DESCRIPTIONS.md](../LIVING-DESCRIPTIONS.md), and [SELF-IMPROVING-LOOP.md](../SELF-IMPROVING-LOOP.md).
 
@@ -977,5 +980,4 @@ User Request: "Build a lead qualification tree"
 | `components/evaluation/interface.clj` | Modify | Add `classify-failures` function |
 | `components/mcp-sheet-builder/interface.clj` | Modify | Add `ontology-context` option |
 | `components/sheet-service/interface/schemas.clj` | Modify | Add ontology event types |
-
 

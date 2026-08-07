@@ -384,7 +384,8 @@ All events use Grain's tagging for efficient filtering:
 
 Query events by tag:
 ```clojure
-(es/read event-store {:types #{:ontology/tree-strength-recorded}
+(es/read event-store {:tenant-id tenant-id
+                      :types #{:ontology/tree-strength-recorded}
                       :tags #{[:tree tree-id]}})
 ```
 

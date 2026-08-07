@@ -1,4 +1,10 @@
-> **Archived.** This document predates the RLM architecture (2025). The self-improving loop pipeline it describes is now implemented differently. See [SELF-IMPROVING-LOOP.md](../SELF-IMPROVING-LOOP.md) for the current consumer guide and [LIVING-DESCRIPTIONS.md](../LIVING-DESCRIPTIONS.md) for architecture detail.
+> **Archived.** This document predates the RLM architecture. Its architectural
+> pipeline is historical; Grain forms have been refreshed only to prevent stale
+> API examples from circulating.
+> See [SELF-IMPROVING-LOOP.md](../SELF-IMPROVING-LOOP.md) for the current consumer
+> guide, [LIVING-DESCRIPTIONS.md](../LIVING-DESCRIPTIONS.md) for architecture,
+> and [CONTRIBUTOR-GRAIN-PATTERNS.md](../contributors/CONTRIBUTOR-GRAIN-PATTERNS.md)
+> for current Grain forms.
 
 ---
 
@@ -198,10 +204,18 @@ When `auto-record? true`, failures are automatically recorded to the ontology.
 **Component:** `components/ontology/core/commands.clj`
 
 ```clojure
-(require '[ai.obney.grain.command-processor.interface :as cp])
+(require '[ai.obney.grain.command-processor-v2.interface :as cp]
+         '[ai.obney.grain.time.interface :as time])
+
+(defn run-command! [ctx command-name payload]
+  (cp/process-command
+   (assoc ctx :command (merge {:command/id (random-uuid)
+                               :command/timestamp (time/now)
+                               :command/name command-name}
+                              payload))))
 
 ;; Classify evaluation and auto-record failures
-(cp/run-command! ctx :ontology/classify-evaluation
+(run-command! ctx :ontology/classify-evaluation
   {:trace-id (:trace-id trace)
    :sheet-id sheet-id
    :node-id node-id
@@ -467,7 +481,8 @@ Run the feedback loop manually for development and testing:
 (require '[ai.obney.orc.orc-service.interface :as sheet])
 (require '[ai.obney.orc.evaluation.interface :as eval])
 (require '[ai.obney.orc.ontology.interface :as ontology])
-(require '[ai.obney.grain.command-processor.interface :as cp])
+(require '[ai.obney.grain.command-processor-v2.interface :as cp]
+         '[ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]])
 
 ;; 1. Execute a sheet and capture trace
 (def result (sheet/execute ctx lead-qualifier-sheet
@@ -484,7 +499,7 @@ Run the feedback loop manually for development and testing:
                    {:traces traces}))
 
 ;; 4. Classify and auto-record to ontology
-(cp/run-command! ctx :ontology/classify-evaluation
+(run-command! ctx :ontology/classify-evaluation
   {:trace-id trace-id
    :sheet-id (:sheet-id result)
    :node-id (-> traces first :node-id)
@@ -542,17 +557,19 @@ Design for automated continuous improvement:
 
 ```clojure
 ;; Todo processor that watches evaluation events
-(deftodo :ontology on-low-score-evaluation
-  "Auto-classify low-scoring evaluations"
-  {:event-types #{:evaluation/trace-evaluated}}
-  (fn [ctx event]
-    (when (< (get-in event [:body :aggregate-score]) 0.7)
-      (cp/run-command! ctx :ontology/classify-evaluation
-        {:trace-id (get-in event [:body :trace-id])
-         :sheet-id (get-in event [:body :sheet-id])
-         :node-id (get-in event [:body :node-id])
-         :evaluation-result (get-in event [:body])
-         :auto-record? true}))))
+(defprocessor :ontology on-low-score-evaluation
+  {:topics #{:evaluation/trace-evaluated}}
+  "Auto-classify low-scoring evaluations."
+  [{:keys [event] :as ctx}]
+  (when (< (:aggregate-score event) 0.7)
+    {:result/effect
+     #(run-command! ctx :ontology/classify-evaluation
+        {:trace-id (:trace-id event)
+         :sheet-id (:sheet-id event)
+         :node-id (:node-id event)
+         :evaluation-result event
+         :auto-record? true})
+     :result/checkpoint :after}))
 ```
 
 ---

@@ -1723,16 +1723,14 @@ Memory:
 
 ## Tag Strategy for Multi-Level Scoping
 
-Events use tags for efficient querying:
+Grain v3 tags are strictly `[:tuple :keyword :uuid]`. Tag durable UUID
+identities such as trees and traces; keep string URIs, domain names, and node
+type keywords in the event body and filter them through read models.
 
 ```clojure
 (->event
   {:type :ontology/tree-weakness-recorded
-   :tags #{[:ontology ontology-id]      ;; Query all events in ontology
-           [:tree tree-id]              ;; Query by tree
-           [:failure failure-uri]       ;; Query by failure type
-           [:domain domain-name]        ;; Query by domain
-           [:node-type node-type]}      ;; Query by node type
+   :tags #{[:tree tree-id]}             ;; tree-id is a UUID
    :body {...}})
 ```
 
@@ -1740,16 +1738,15 @@ Query examples:
 
 ```clojure
 ;; All events for a specific tree
-(es/read event-store {:types tree-profile-events
+(es/read event-store {:tenant-id tenant-id
+                      :types tree-profile-events
                       :tags #{[:tree tree-id]}})
 
-;; All hallucination failures
-(es/read event-store {:types #{:ontology/tree-weakness-recorded}
-                      :tags #{[:failure "failure:Hallucination"]}})
+;; Failure URI is a string body field, so query the projection.
+(ontology/find-trees-with-weakness ctx "failure:Hallucination")
 
-;; All LLM node patterns
-(es/read event-store {:types node-learning-events
-                      :tags #{[:node-type :llm]}})
+;; Node type is also projected body data, not a Grain tag.
+(get (ontology/get-all-node-learnings ctx) :llm)
 ```
 
 ## Static Ontology Reference

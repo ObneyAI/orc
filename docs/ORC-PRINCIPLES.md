@@ -242,11 +242,14 @@ consistent with the rest of a Grain application.
 rebuildable contract the whole system depends on. And a function's *return value* is
 not proof anything landed — only the projection is.
 
-**How.** Use the Grain building blocks (`defcommand` / `defreadmodel` / `defquery`
-/ `defprocessor`); never a raw append. **Assert events LANDED by reading the
+**How.** Use Grain's six-macro grammar (`defcommand`, `defquery`, `defreadmodel`,
+`defprocessor`, `defperiodic`, and `defschemas`) and construct appendable events
+with `event-store-v3/->event`; the store assigns UUIDv7 IDs and timestamps during
+append. Never use a raw append from domain code. Every direct event-store
+operation is tenant-scoped. **Assert events LANDED by reading the
 projection back** — read the relevant read model and confirm the expected
 keys/values are present — rather than trusting what a call returned. See also:
-`docs/EVENT-STORE-PATTERNS.md`, `CLAUDE.md` (Grain v2 / Architecture).
+`docs/EVENT-STORE-PATTERNS.md`, `AGENTS.md` (Grain conventions).
 
 ## 9. Put a `:reasoning` field first on `:llm` nodes
 
@@ -396,6 +399,6 @@ specific capabilities:
 - **`:repl-researcher` / RLM mode:** `docs/RLM-GUIDE.md`
 - **Self-improvement, living descriptions, feedback:** `docs/SELF-IMPROVING-LOOP.md`,
   `docs/LIVING-DESCRIPTIONS.md`, `docs/PATTERN-RECORDING.md`
-- **Events-first / Grain patterns:** `docs/EVENT-STORE-PATTERNS.md`, `CLAUDE.md`
+- **Events-first / Grain patterns:** `docs/EVENT-STORE-PATTERNS.md`, `AGENTS.md`
 - **Live streaming / observability:** `docs/STREAMING.md`
 - **Architecture overview:** `docs/ARCHITECTURE.md`

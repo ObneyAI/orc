@@ -1,4 +1,9 @@
-> **Archived.** This was a Phase-0 planning document. GEPA is now shipped as a native-Clojure implementation inside orc. See [GEPA-GUIDE.md](../GEPA-GUIDE.md) for the current consumer guide.
+> **Archived.** This was a Phase-0 planning document. Grain forms have been
+> refreshed only to prevent stale API examples from circulating. GEPA is now shipped as a
+> native-Clojure implementation inside ORC. See [GEPA-GUIDE.md](../GEPA-GUIDE.md)
+> for the current consumer guide and
+> [CONTRIBUTOR-GRAIN-PATTERNS.md](../contributors/CONTRIBUTOR-GRAIN-PATTERNS.md)
+> for current Grain forms.
 
 ---
 
@@ -493,15 +498,16 @@ Current infrastructure:
 
 **Event-driven loop via todo processor:**
 ```clojure
-;; Todo processor: React to evaluation-completed events
-(deftodo on-candidate-evaluated
-  :gepa/candidate-evaluated
-  [ctx event]
+;; Todo processor: react to evaluation-completed events
+(defprocessor :gepa on-candidate-evaluated
+  {:topics #{:gepa/candidate-evaluated}}
+  [ctx]
+  (let [event (:event ctx)]
   ;; 1. Update Pareto frontier (via command)
   ;; 2. Check if generation complete
   ;; 3. If complete: select parents, propose mutations, create new candidates
   ;; 4. If budget exhausted: emit :gepa/optimization-completed
-  )
+    {:result/events [...]}))
 ```
 
 **Budget configuration (from Python):**

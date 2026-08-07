@@ -637,7 +637,7 @@ the runner). Contents include:
 
 For debugging deeper, the event store has every node-execution-completed
 event tagged with `[:sheet sheet-id]` and `[:tick tick-id]`. Use
-`(es/read event-store {:tags #{[:tick tick-id]}})` to pull the full
+`(es/read event-store {:tenant-id tenant-id :tags #{[:tick tick-id]}})` to pull the full
 chronological event log.
 
 ### How to spot-check the corpus body for a pattern
@@ -819,20 +819,25 @@ low-score events to your own ontology workflows — you can add a todo
 processor:
 
 ```clojure
-(require '[ai.obney.grain.command-processor.interface :as cp])
+(require '[ai.obney.grain.command-processor-v2.interface :as cp]
+         '[ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
+         '[ai.obney.grain.time.interface :as time])
 
 ;; Consumer-owned todo processor for custom low-score routing.
 ;; Not required — body evolution via Living Descriptions is automatic.
-(deftodo :your-domain on-low-score-rlm-eval
-  "Route low-scoring RLM evaluations to custom handling"
-  {:event-types #{:judge/score-emitted}}
-  (fn [ctx event]
-    (when (< (get-in event [:body :score]) 0.7)
+(defprocessor :your-domain on-low-score-rlm-eval
+  {:topics #{:judge/score-emitted}}
+  "Route low-scoring RLM evaluations to custom handling."
+  [{:keys [event] :as ctx}]
+    (when (< (:score event) 0.7)
       ;; Your custom handling here — e.g., alert, record to a separate
       ;; ontology, or trigger a manual curator review workflow.
-      (cp/run-command! ctx :your-domain/flag-for-review
-        {:trace-id (get-in event [:body :trace-id])
-         :score    (get-in event [:body :score])}))))
+      (cp/process-command
+       (assoc ctx :command {:command/id (random-uuid)
+                            :command/timestamp (time/now)
+                            :command/name :your-domain/flag-for-review
+                            :trace-id (:trace-id event)
+                            :score (:score event)})))))
 ```
 
 ### Troubleshooting
@@ -892,8 +897,9 @@ strengths or weaknesses.
 ;; The system needs ~10 relevant events before a cycle triggers.
 
 ;; Check judge events for a specific tick
-(es/read event-store {:tags #{[:tick tick-id]}
-                      :event-types #{:judge/score-emitted}})
+(es/read event-store {:tenant-id tenant-id
+                      :tags #{[:tick tick-id]}
+                      :types #{:judge/score-emitted}})
 ;; Should show score-emitted events if judges are wired correctly.
 ```
 

@@ -91,25 +91,32 @@ See [GETTING-STARTED.md — Phase 2](GETTING-STARTED.md#phase-2--llm-judges) for
 
 ### Raw event queries — the `(into [])` materialization rule
 
-`es/read` returns a **reducible collection** — it is lazy and consumed-once. **Always wrap with `(into [])` before `count`, `seq`, or any operation that requires a realized collection.**
+`es/read` returns a **reducible collection**, not a sequence. **Always wrap with
+`(into [])` before `count`, `seq`, or any operation that requires a realized
+collection.**
 
-**Why:** `es/read` returns a reducible (satisfies `IReduceInit`) but NOT `Counted` or `Seqable`. Calling `(count ...)` on an unrealized reducible returns 0; `(seq ...)` can throw `UnsupportedOperationException`. Wrapping with `(into [] ...)` forces full materialization into a vector before further operations.
+**Why:** `es/read` satisfies `IReduceInit` but not `Counted` or `Seqable`, so
+sequence operations such as `count` and `seq` throw. Wrapping with `(into [] ...)`
+materializes its events into a vector.
 
 ```clojure
 (require '[ai.obney.grain.event-store-v3.interface :as es])
 
-;; WRONG — throws UnsupportedOperationException or returns 0
-(count (es/read event-store {:types #{:sheet/node-execution-completed}}))
+;; WRONG — throws UnsupportedOperationException
+(count (es/read event-store {:tenant-id tenant-id
+                             :types #{:sheet/node-execution-completed}}))
 
 ;; CORRECT — materialize with (into []) first
 (into [] (es/read event-store
-           {:types #{:sheet/node-execution-completed}
+           {:tenant-id tenant-id
+            :types #{:sheet/node-execution-completed}
             :tags  #{[:sheet sheet-id]}
             :limit 50}))
 
 ;; Filter by tick tag — all node events for one execution run
 (into [] (es/read event-store
-           {:types #{:sheet/node-execution-completed}
+           {:tenant-id tenant-id
+            :types #{:sheet/node-execution-completed}
             :tags  #{[:tick tick-id]}}))
 ```
 
@@ -117,12 +124,15 @@ See [GETTING-STARTED.md — Phase 2](GETTING-STARTED.md#phase-2--llm-judges) for
 
 ## Overview
 
-The Grain event store provides:
+The Grain v3 event store provides:
 
 - **Immutable Event Log** - Every state change is recorded as an event
 - **Tag-Based Filtering** - Efficient queries using semantic tags
 - **Read Model Projections** - Derive queryable state from events
-- **In-Memory Testing** - Fast tests without database dependencies
+- **Mandatory Tenant Isolation** - Every read and append is scoped by `:tenant-id`
+- **Swappable Backends** - In-memory, embedded SQLite, and Postgres implementations
+- **Atomic Persistence Envelopes** - The backend assigns monotonic UUIDv7 IDs,
+  one microsecond-precision UTC timestamp for the batch, and a `:grain/tx` marker
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -148,15 +158,15 @@ The Grain event store provides:
 Every event has a standard structure:
 
 ```clojure
-{:event/id #uuid "abc123..."         ;; Unique event ID
+{:event/id event-id                   ;; UUIDv7 assigned during append
  :event/type :sheet/node-execution-completed  ;; Event type keyword
- :event/created-at #inst "2025-01-18T..."     ;; Timestamp
+ :event/timestamp offset-date-time             ;; Assigned during append
  :event/tags #{[:sheet sheet-id]              ;; Semantic tags for filtering
                [:node node-id]}
- :body {:sheet-id sheet-id                    ;; Event-specific payload
-        :node-id node-id
-        :status :success
-        :duration-ms 423}}
+ :sheet-id sheet-id                           ;; Body fields are merged into
+ :node-id node-id                             ;; the stored event on read
+ :status :success
+ :duration-ms 423}
 ```
 
 ### Single-Write Discipline: values live in exactly one event type
@@ -257,7 +267,7 @@ Tags enable efficient filtering. Common patterns:
 ### Creating Events (in Commands)
 
 ```clojure
-(require '[ai.obney.grain.commands.interface :refer [->event]])
+(require '[ai.obney.grain.event-store-v3.interface :refer [->event]])
 
 (->event {:type :sheet/node-execution-completed
           :tags #{[:sheet sheet-id] [:node node-id]}
@@ -266,6 +276,18 @@ Tags enable efficient filtering. Common patterns:
                  :status :success
                  :duration-ms 423}})
 ```
+
+Always use `->event` to construct the appendable event body. Do not supply
+`:event/id` or `:event/timestamp`: the latest v3 store rejects that persistence
+metadata on input and assigns a UUIDv7 ID and `OffsetDateTime` atomically during
+append. UUIDv7 ordering is the basis for `:after` and `:as-of` watermarks.
+
+One append may contain multiple domain events and optional `:tx-metadata`. The
+backend persists the domain events plus a final `:grain/tx` marker whose
+`:event-ids` set identifies the atomic batch; all share the same UTC timestamp.
+`append` returns the persisted domain events (not the transaction marker), so
+callers can observe their assigned IDs. An unfiltered `read` includes transaction
+markers; filter by domain `:types` when they are not part of the analysis.
 
 ---
 
@@ -303,23 +325,30 @@ Use `es/read` only for audit trails, cross-aggregate queries, or custom event an
 (require '[ai.obney.grain.event-store-v3.interface :as es])
 
 ;; WRONG - will throw UnsupportedOperationException
-(count (es/read event-store {:types #{:sheet/execution-traced}}))
+(count (es/read event-store {:tenant-id tenant-id
+                             :types #{:sheet/execution-traced}}))
 
 ;; CORRECT - materialize first
-(count (into [] (es/read event-store {:types #{:sheet/execution-traced}})))
+(count (into [] (es/read event-store {:tenant-id tenant-id
+                                      :types #{:sheet/execution-traced}})))
 ```
 
 ### Query Options
 
 ```clojure
 (into [] (es/read event-store
-           {:types #{:type1 :type2}     ;; Filter by event types
+           {:tenant-id tenant-id        ;; Required on every v3 operation
+            :types #{:type1 :type2}     ;; Filter by event types
             :tags #{[:sheet sheet-id]}  ;; Filter by tags (AND logic)
-            :limit 100                   ;; Max events to return
-            :order :desc                 ;; :asc (default) or :desc
-            :since #inst "2025-01-01"   ;; Events after this time
-            :until #inst "2025-01-31"})) ;; Events before this time
+            :after event-id              ;; Events after this UUIDv7 watermark
+            :reverse? true                ;; Newest first
+            :limit 100}))                 ;; Max events to return
 ```
+
+Use either `:after` (exclusive) or `:as-of` (inclusive), never both in one read;
+the v3 schema rejects that combination. Batch reads accept a vector of query
+maps, require one shared tenant ID, merge results in event-ID order, and
+deduplicate events matched by more than one query.
 
 ### Query Examples
 
@@ -327,37 +356,40 @@ Use `es/read` only for audit trails, cross-aggregate queries, or custom event an
 
 ```clojure
 (into [] (es/read event-store
-           {:tags #{[:sheet sheet-id]}}))
+           {:tenant-id tenant-id
+            :tags #{[:sheet sheet-id]}}))
 ```
 
 #### Get Failed Executions
 
 ```clojure
 (->> (es/read event-store
-       {:types #{:sheet/tree-tick-completed}
+       {:tenant-id tenant-id
+        :types #{:sheet/tree-tick-completed}
         :tags #{[:sheet sheet-id]}})
      (into [])
-     (filter #(= :failure (get-in % [:body :root-status]))))
+     (filter #(= :failure (:root-status %))))
 ```
 
 #### Get Recent Node Executions
 
 ```clojure
 (into [] (es/read event-store
-           {:types #{:sheet/node-execution-completed}
+           {:tenant-id tenant-id
+            :types #{:sheet/node-execution-completed}
             :tags #{[:sheet sheet-id] [:node node-id]}
             :limit 50
-            :order :desc}))
+            :reverse? true}))
 ```
 
-#### Get Traces in Time Range
+#### Get Traces Through an Event Watermark
 
 ```clojure
 (into [] (es/read event-store
-           {:types #{:sheet/execution-traced}
+           {:tenant-id tenant-id
+            :types #{:sheet/execution-traced}
             :tags #{[:sheet sheet-id]}
-            :since #inst "2025-01-18T00:00:00Z"
-            :until #inst "2025-01-19T00:00:00Z"}))
+            :as-of ending-event-id}))
 ```
 
 ---
@@ -395,19 +427,19 @@ Complete reference of all `:sheet/*` event types.
 ### Example: Node Execution Completed Event
 
 ```clojure
-{:event/id #uuid "..."
+{:event/id event-id
  :event/type :sheet/node-execution-completed
- :event/created-at #inst "2025-01-18T12:00:00Z"
- :event/tags #{[:sheet #uuid "sheet-123"]
-               [:node #uuid "node-456"]
-               [:tick #uuid "tick-789"]}
- :body {:sheet-id #uuid "sheet-123"
-        :node-id #uuid "node-456"
-        :tick-id #uuid "tick-789"
-        :status :success
-        :duration-ms 423
-        :started-at #inst "2025-01-18T11:59:59.577Z"
-        :completed-at #inst "2025-01-18T12:00:00Z"}}
+ :event/timestamp (java.time.OffsetDateTime/parse "2025-01-18T12:00:00Z")
+ :event/tags #{[:sheet sheet-id]
+               [:node node-id]
+               [:tick tick-id]}
+ :sheet-id sheet-id
+ :node-id node-id
+ :tick-id tick-id
+ :status :success
+ :duration-ms 423
+ :started-at #inst "2025-01-18T11:59:59.577Z"
+ :completed-at #inst "2025-01-18T12:00:00Z"}
 ```
 
 ### Example: Execution Traced Event
@@ -416,28 +448,28 @@ Note this event records **shape, not values** — see
 [Single-Write Discipline](#single-write-discipline-values-live-in-exactly-one-event-type).
 
 ```clojure
-{:event/id #uuid "..."
+{:event/id event-id
  :event/type :sheet/execution-traced
- :event/created-at #inst "2025-01-18T12:00:01Z"
- :event/tags #{[:sheet #uuid "sheet-123"]
-               [:trace #uuid "trace-abc"]}
- :body {:trace-id #uuid "trace-abc"
-        :sheet-id #uuid "sheet-123"
-        :status :success
-        :duration-ms 2500
-        ;; key -> size profile. :input-snapshot = keys the tick was given and
-        ;; did NOT write; :output-snapshot = keys it wrote. Disjoint sets.
-        :input-snapshot {:question {:type :string :length 12 :word-count 3 :line-count 1}}
-        :output-snapshot {:answer {:type :string :length 1 :word-count 1 :line-count 1}}
-        :node-traces [{:node-id #uuid "node-456"
-                       :node-name "answer"
-                       :node-type :leaf
-                       :status :success
-                       :duration-ms 423
-                       :read-keys [:question]
-                       :input-profile {:question {:type :string :length 12 :word-count 3 :line-count 1}}
-                       :write-keys [:answer]
-                       :output-profile {:answer {:type :string :length 1 :word-count 1 :line-count 1}}}]}}
+ :event/timestamp (java.time.OffsetDateTime/parse "2025-01-18T12:00:01Z")
+ :event/tags #{[:sheet sheet-id]
+               [:trace trace-id]}
+ :trace-id trace-id
+ :sheet-id sheet-id
+ :status :success
+ :duration-ms 2500
+ ;; key -> size profile. :input-snapshot = keys the tick was given and
+ ;; did NOT write; :output-snapshot = keys it wrote. Disjoint sets.
+ :input-snapshot {:question {:type :string :length 12 :word-count 3 :line-count 1}}
+ :output-snapshot {:answer {:type :string :length 1 :word-count 1 :line-count 1}}
+ :node-traces [{:node-id node-id
+                :node-name "answer"
+                :node-type :leaf
+                :status :success
+                :duration-ms 423
+                :read-keys [:question]
+                :input-profile {:question {:type :string :length 12 :word-count 3 :line-count 1}}
+                :write-keys [:answer]
+                :output-profile {:answer {:type :string :length 1 :word-count 1 :line-count 1}}}]}
 ```
 
 Fetch a node's actual inputs/outputs with the `:sheet/node-trace-detail` query,
@@ -518,13 +550,16 @@ Track node performance over a sliding window:
 ```clojure
 (defn low-scoring-traces
   "Get traces with evaluation scores below threshold."
-  [event-store sheet-id threshold]
-  (let [eval-events (into [] (es/read event-store
-                               {:types #{:evaluation/completed}
+  [ctx sheet-id threshold]
+  (let [event-store (:event-store ctx)
+        tenant-id (:tenant-id ctx)
+        eval-events (into [] (es/read event-store
+                               {:tenant-id tenant-id
+                                :types #{:evaluation/completed}
                                 :tags #{[:sheet sheet-id]}}))]
     (->> eval-events
-         (filter #(< (get-in % [:body :score]) threshold))
-         (mapv :body))))
+         (filter #(< (:score %) threshold))
+         (mapv #(apply dissoc % [:event/id :event/type :event/timestamp :event/tags])))))
 ```
 
 ### Aggregating Node Performance
@@ -532,17 +567,19 @@ Track node performance over a sliding window:
 ```clojure
 (defn node-failure-analysis
   "Analyze which nodes fail most frequently."
-  [event-store sheet-id]
-  (let [events (into [] (es/read event-store
-                          {:types #{:sheet/node-execution-completed}
+  [ctx sheet-id]
+  (let [event-store (:event-store ctx)
+        events (into [] (es/read event-store
+                          {:tenant-id (:tenant-id ctx)
+                           :types #{:sheet/node-execution-completed}
                            :tags #{[:sheet sheet-id]}}))]
     (->> events
-         (group-by #(get-in % [:body :node-id]))
+         (group-by :node-id)
          (map (fn [[node-id evts]]
                 {:node-id node-id
                  :total (count evts)
-                 :failures (count (filter #(= :failure (get-in % [:body :status])) evts))
-                 :failure-rate (double (/ (count (filter #(= :failure (get-in % [:body :status])) evts))
+                 :failures (count (filter #(= :failure (:status %)) evts))
+                 :failure-rate (double (/ (count (filter #(= :failure (:status %)) evts))
                                           (count evts)))}))
          (sort-by :failure-rate >))))
 ```
@@ -552,16 +589,18 @@ Track node performance over a sliding window:
 ```clojure
 (defn node-execution-history
   "Get detailed execution history for a specific node."
-  [event-store sheet-id node-id & {:keys [limit] :or {limit 50}}]
-  (let [events (into [] (es/read event-store
-                          {:types #{:sheet/node-execution-completed}
+  [ctx sheet-id node-id & {:keys [limit] :or {limit 50}}]
+  (let [event-store (:event-store ctx)
+        events (into [] (es/read event-store
+                          {:tenant-id (:tenant-id ctx)
+                           :types #{:sheet/node-execution-completed}
                            :tags #{[:sheet sheet-id] [:node node-id]}
                            :limit limit
-                           :order :desc}))]
-    (mapv (fn [{:keys [body event/created-at]}]
-            {:timestamp created-at
-             :status (:status body)
-             :duration-ms (:duration-ms body)})
+                           :reverse? true}))]
+    (mapv (fn [{:keys [status duration-ms event/timestamp]}]
+            {:timestamp timestamp
+             :status status
+             :duration-ms duration-ms})
           events)))
 ```
 
@@ -597,7 +636,8 @@ Track node performance over a sliding window:
 
       ;; IMPORTANT: Materialize with into []
       (let [tick-events (into [] (es/read event-store
-                                   {:types #{:sheet/tree-tick-started
+                                   {:tenant-id (:tenant-id ctx)
+                                    :types #{:sheet/tree-tick-started
                                             :sheet/tree-tick-completed}
                                     :tags #{[:sheet sheet-id]}}))]
 
@@ -664,10 +704,11 @@ The `test-helpers` namespace provides factory functions:
 
       ;; Verify events
       (let [events (into [] (es/read event-store
-                              {:types #{:sheet/node-execution-completed}
+                              {:tenant-id (:tenant-id ctx)
+                               :types #{:sheet/node-execution-completed}
                                :tags #{[:sheet sheet-id]}}))]
         (is (= 1 (count events)))
-        (is (= :success (get-in (first events) [:body :status])))))))
+        (is (= :success (:status (first events))))))))
 ```
 
 ---

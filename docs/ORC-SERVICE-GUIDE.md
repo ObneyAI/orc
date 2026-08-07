@@ -701,10 +701,11 @@ Track node performance over a sliding window:
 
 ;; Query events by type and tags
 (into [] (es/read event-store
-           {:types #{:sheet/node-execution-completed}
+           {:tenant-id tenant-id
+            :types #{:sheet/node-execution-completed}
             :tags #{[:sheet sheet-id]}
             :limit 100
-            :order :desc}))
+            :reverse? true}))
 ```
 
 See [EVENT-STORE-PATTERNS.md](./EVENT-STORE-PATTERNS.md) for detailed query patterns.
@@ -803,7 +804,8 @@ Create deterministic executors for testing:
 
           ;; Query events (must materialize!)
           events (into [] (es/read event-store
-                           {:types #{:sheet/node-execution-completed}
+                           {:tenant-id (:tenant-id ctx)
+                            :types #{:sheet/node-execution-completed}
                             :tags #{[:sheet sheet-id]}}))]
 
       (is (= :success (:status result)))

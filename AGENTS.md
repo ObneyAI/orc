@@ -98,13 +98,21 @@ suite.
 
 ## Grain and Repository Conventions
 
-ORC uses Grain v2 event sourcing and CQRS:
+ORC uses Grain's current CQRS/event-sourcing DSL: v2 processors over the
+tenant-scoped v3 event-store protocol.
 
 - `defcommand` validates intent and emits events.
 - `defreadmodel` projects events into state.
 - `defquery` composes read models and returns data.
 - `defprocessor` handles event-driven side effects.
 - `defperiodic` emits scheduled triggers.
+- `defschemas` registers Malli schemas for commands, queries, and events.
+
+Construct appendable events with `event-store-v3/->event`; the v3 store assigns
+their UUIDv7 IDs and timestamps atomically during append. Callers must not supply
+`:event/id` or `:event/timestamp`. Every direct v3 event-store read or append
+must include `:tenant-id`. Commands and queries exposed through adapters are deny-by-default
+and therefore require an explicit `:authorized?` predicate.
 
 Use public component interfaces across Polylith boundaries. Production code is
 under `components/{component}/src/ai/obney/orc/`; tests live in the corresponding

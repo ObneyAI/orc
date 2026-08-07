@@ -5,11 +5,15 @@
 
 A complete guide to the backend patterns used in this project. Written for AI agents and developers who need to understand how things work and build new features that fit naturally.
 
+> Audited against the sibling Grain checkout at commit `774c4db` (2026-08-07).
+> Source and registered schemas are authoritative when older Grain prose differs.
+
 ---
 
 ## Architecture Overview
 
-This is a **Polylith monolith** powered by **Grain** (event-sourced CQRS framework).
+This is a **Polylith monolith** powered by Grain's constrained CQRS/event-sourcing
+DSL. ORC uses the v2 processor stack on the tenant-scoped v3 event store.
 
 **Stack:** Clojure + Grain
 
@@ -20,7 +24,7 @@ This is a **Polylith monolith** powered by **Grain** (event-sourced CQRS framewo
 
 This compendium covers patterns and conventions, but the **Grain framework** is the real source of truth for how things work at the protocol level. When something is unclear:
 
-1. **Grain source** — Ask the user where the grain repo lives locally (typically `../grain/`). Key files:
+1. **Grain source** — Use the sibling `../grain/` checkout. Key files:
    - `components/command-processor-v2/` — how commands are processed, CAS, event storage
    - `components/read-model-processor-v2/` — how projections, L1/L2 caching, and partitioning work
    - `components/event-store-v3/` — how append/read work, tenant isolation, schema validation
@@ -41,9 +45,15 @@ This compendium covers patterns and conventions, but the **Grain framework** is 
 
 ## Part 1: Backend Patterns
 
+Grain's complete executable grammar is `defcommand`, `defquery`, `defreadmodel`,
+`defprocessor`, `defperiodic`, and `defschemas`. The first five register their
+handlers globally when their namespaces load; schemas register validation rules.
+
 ### 1.1 Command Handlers
 
-Commands are defined with `defcommand` from `grain.command-processor-v2.interface`. Each lives in `{service}/core/commands.clj`.
+Commands are defined with `defcommand` from
+`ai.obney.grain.command-processor-v2.interface`. Each lives in
+`{service}/core/commands.clj`.
 
 **Structure:**
 ```clojure
@@ -62,6 +72,9 @@ Commands are defined with `defcommand` from `grain.command-processor-v2.interfac
 - `(constantly true)` — public
 - `(fn [ctx] (some? (:auth-claims ctx)))` — requires login
 - Custom role checks on `(:auth-claims ctx)`
+
+Request-handler and Datastar adapters deny by default: omitting
+`:authorized?`, or returning anything other than `true`, rejects the request.
 
 **Validation pattern** — use `cond` with early anomaly returns:
 ```clojure
@@ -99,7 +112,9 @@ Commands are defined with `defcommand` from `grain.command-processor-v2.interfac
 
 ### 1.2 Query Handlers
 
-Queries are defined with `defquery` from `grain.query-processor.interface`. Each lives in `{service}/core/queries.clj`.
+Queries are defined with `defquery` from
+`ai.obney.grain.query-processor.interface`. Each lives in
+`{service}/core/queries.clj`.
 
 **Basic query:**
 ```clojure
@@ -124,7 +139,9 @@ Queries are defined with `defquery` from `grain.query-processor.interface`. Each
 
 ### 1.3 Read Models
 
-Read models are defined with `defreadmodel` from `grain.read-model-processor-v2.interface`. Each lives in `{service}/core/read_models.clj`.
+Read models are defined with `defreadmodel` from
+`ai.obney.grain.read-model-processor-v2.interface`. Each lives in
+`{service}/core/read_models.clj`.
 
 **Pattern:**
 ```clojure
@@ -165,7 +182,7 @@ State is a flat map: `{entity-id entity-data, ...}`. Increment `:version` when t
   {:events thing-event-types
    :version 1
    :partition-fn (fn [entity] (:category-id entity))
-   :entity-id-fn :id}
+   :entity-id-fn :thing-id}
   [state event] (things* state event))
 ```
 
@@ -189,16 +206,19 @@ Event-driven side effects. Defined in `{service}/core/todo_processors.clj`.
   {:topics #{:service/thing-happened}}
   "Dispatch the durable follow-up command."
   [{{:keys [user-id message]} :event :as context}]
-  (cp/process-command
-   (assoc context :command {:command/id (random-uuid)
-                            :command/timestamp (time/now)
-                            :command/name :notifications/send
-                            :user-id user-id
-                            :message message})))
+  {:result/effect
+   #(cp/process-command
+     (assoc context :command {:command/id (random-uuid)
+                              :command/timestamp (time/now)
+                              :command/name :notifications/send
+                              :user-id user-id
+                              :message message}))
+   :result/checkpoint :after})
 ```
 
 - Receive the triggering `:event` in context
-- Typically dispatch a follow-up command via `cp/process-command`
+- Return `:result/events` for pure reactions, or an explicit `:result/effect`
+  with `:result/checkpoint :before` (at-most-once) or `:after` (at-least-once)
 - `:topics` is the set of event types that trigger the processor
 - `defprocessor` registers the processor globally when its namespace loads;
   there is no hand-maintained processor map to export or concatenate
@@ -228,19 +248,21 @@ Scheduled background jobs. Defined in `{service}/core/periodic_tasks.clj`.
 Do not manually iterate the event store's tenants inside a periodic handler;
 the framework supplies the tenant iteration and scoping.
 
-**CAS for idempotency** — when multiple instances run the same task, use CAS to prevent duplicate work:
+**CAS for idempotency** — return CAS with the trigger events; Grain performs the
+tenant-scoped append and only one node wins:
 ```clojure
-(es/append (:event-store ctx)
-           {:tenant-id (:tenant-id ctx)
-            :events [(->event {:type :service/reminder-sent :tags #{[:item item-id]} :body {...}})]
-            :cas {:types #{:service/reminder-sent}
-                  :tags #{[:item item-id]}
-                  :predicate-fn (fn [existing] (empty? (into [] existing)))}})
+{:result/events [(->event {:type :service/reminder-check-triggered
+                           :body {:period period}})]
+ :result/cas {:types #{:service/reminder-check-triggered}
+              :predicate-fn (fn [existing]
+                              (not (some #(= period (:period %))
+                                         (into [] existing))))}}
 ```
 
 ### 1.5 Schemas
 
-Defined with `defschemas` from `grain.schema-util.interface` in `{service}/interface/schemas.clj`.
+Defined with `defschemas` from `ai.obney.grain.schema-util.interface` in
+`{service}/interface/schemas.clj`.
 
 Three sections — `events`, `commands`, `queries`:
 ```clojure
@@ -290,7 +312,10 @@ Uses Malli syntax. Common patterns: `:uuid`, `:string`, `[:enum :a :b]`, `[:mayb
 
 ### 1.7 Event Tagging Strategy
 
-Every event carries a `:tags` set — tuples of `[:entity-type entity-id]`. Tags serve the purpose of efficient filtered reads.
+Every event carries a `:tags` set — tuples of `[:entity-type entity-id]` where
+the entity type is a keyword and the entity ID is a UUID. String URIs and enum
+keywords belong in the event body/read model, not in tags. Tags enable efficient
+filtered reads.
 
 **Tag design rules:**
 
@@ -409,13 +434,21 @@ validation + anomaly check
 emit events (->event)
   |
 command-processor/append
+  |                  \
+  v                   v
+shared event store    optional local pubsub
+  |                   (live UI/stream notification)
+  v
+tenant pollers run defprocessor handlers
   |
-pubsub broadcast
-  /             \
- v               v
-[Todo Processors]   [Read Model Cache]
-(side effects)      (invalidation)
+  v
+read models project on demand with L1/L2 caching
 ```
+
+Todo processors poll the durable event store and checkpoint with CAS; they do
+not depend on pub/sub delivery. Pub/sub is an optional low-latency notification
+path. In multi-node Datastar deployments, the event tailer republishes shared
+store events into each node's local pub/sub.
 
 ---
 
@@ -465,7 +498,8 @@ When something doesn't work, use **nREPL** (`/nrepl-connect`) and **the server c
 ;; Via nREPL — read events directly:
 (into [] (es/read (:event-store ctx) {:tenant-id tenant-id :types #{:service/thing-created}}))
 ;; Empty? Check if the command schema is registered (defschemas in interface/schemas.clj loaded?)
-;; The v3 event store validates events against schemas — unregistered types silently fail.
+;; The command processor validates events against registered schemas and returns
+;; a Cognitect anomaly (with validation details) when a type is unregistered.
 ```
 
 **Read model returns nil or empty map:**
@@ -473,7 +507,7 @@ When something doesn't work, use **nREPL** (`/nrepl-connect`) and **the server c
 ;; Via nREPL — check if events exist:
 (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx) :types #{:service/thing-created}}))
 ;; Check if the read model is registered:
-(get @(ai.obney.grain.read-model-processor-v2.interface/global-read-model-registry) :service/things)
+(get (ai.obney.grain.read-model-processor-v2.interface/global-read-model-registry) :service/things)
 ;; nil means the namespace wasn't loaded (require the interface)
 ```
 
@@ -503,5 +537,5 @@ When something doesn't work, use **nREPL** (`/nrepl-connect`) and **the server c
 (keys (cp/global-command-registry))
 
 ;; Check registered queries:
-(keys @(ai.obney.grain.query-processor.interface/query-registry*))
+(keys (ai.obney.grain.query-processor.interface/global-query-registry))
 ```

@@ -91,8 +91,18 @@ Description events retain model/usage provenance when available.
 ### Self-Learning
 
 ```clojure
+(require '[ai.obney.grain.command-processor-v2.interface :as cp]
+         '[ai.obney.grain.time.interface :as time])
+
+(defn run-command! [ctx command-name payload]
+  (cp/process-command
+   (assoc ctx :command (merge {:command/id (random-uuid)
+                               :command/timestamp (time/now)
+                               :command/name command-name}
+                              payload))))
+
 ;; Record success with rich domain-agnostic context
-(cp/run-command! ctx :ontology/record-tree-strength
+(run-command! ctx :ontology/record-tree-strength
   {:tree-id tree-uuid
    :pattern-uri "success:PrecisionHover"
    :confidence 0.92
@@ -128,10 +138,8 @@ Description events retain model/usage provenance when available.
 ### Discovery & Learning
 
 ```clojure
-(require '[ai.obney.grain.command-processor.interface :as cp])
-
 ;; Propose a new failure subtype
-(cp/run-command! ctx :ontology/propose-failure-subtype
+(run-command! ctx :ontology/propose-failure-subtype
   {:parent-uri "failure:Hallucination"
    :proposed-uri "failure:Hallucination.NumericHallucination"
    :label "Numeric Hallucination"
@@ -139,14 +147,14 @@ Description events retain model/usage provenance when available.
    :evidence-count 5})
 
 ;; Record a tree's weakness
-(cp/run-command! ctx :ontology/record-tree-weakness
+(run-command! ctx :ontology/record-tree-weakness
   {:tree-id tree-uuid
    :failure-uri "failure:Hallucination"
    :severity :high
    :trigger-phrase "invented statistics"})
 
 ;; Classify evaluation results (with auto-recording)
-(cp/run-command! ctx :ontology/classify-evaluation
+(run-command! ctx :ontology/classify-evaluation
   {:trace-id trace-uuid
    :evaluation-result eval-result
    :auto-record? true})

@@ -59,7 +59,10 @@ Both slices are entirely self-contained inside `orc-service` and depend on nothi
 
 ### Architecture
 
-This is a Polylith library on top of Grain v2. All changes are inside `components/orc-service`. The top namespace is `ai.obney.orc`. Two slices, sequenced — D-008 lands first because (a) higher real-world urgency and (b) cleaner data layer for the future C-phase judges.
+This is a Polylith library on Grain's v2 processor stack and tenant-scoped v3
+event store. All changes are inside `components/orc-service`. The top namespace
+is `ai.obney.orc`. Two slices, sequenced — D-008 lands first because (a) higher
+real-world urgency and (b) cleaner data layer for the future C-phase judges.
 
 D-008 builds entirely on top of the existing per-child-retry infrastructure from Issue 007 (already DONE). D-003 builds entirely on top of the existing `:sheet cancel-tick` command in `commands.clj`. No new infrastructure invented.
 

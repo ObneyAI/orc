@@ -100,48 +100,60 @@ runtime.*
 
 ### Wiring a context
 
-Every ORC call takes a **context** (`ctx`) — the Grain handle that carries the
-event store, the command/query registries, and your LLM provider. You build it
-once with a small [Integrant](https://github.com/weavejester/integrant) system
-that wires Grain's pieces together and loads the ORC component you want. Nothing
-here depends on anything beyond `grain` and `orc`.
+Every ORC call takes a **context** (`ctx`) containing Grain's event store,
+tenant-scoped LMDB projection cache, and your LLM provider. The current Grain
+registries are global and are loaded as namespace side effects; they do not need
+to be copied into the context. For a single process, start a standalone tenant
+poller for all registered `defprocessor` handlers. The distributed control plane
+is only needed for multi-instance tenant assignment.
 
 ```clojure
 (ns my-app.system
   (:require ;; Grain — the event-sourcing substrate
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.grain.command-processor-v2.interface :as cp]
-            [ai.obney.grain.query-processor.interface :as qp]
+            [ai.obney.grain.kv-store.interface :as kv]
+            [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.pubsub.interface :as ps]
-            [ai.obney.grain.control-plane.interface :as control-plane]
+            [ai.obney.grain.todo-processor-v2.interface :as tp]
             ;; ORC — load the engine for side-effect registration of its
             ;; commands, queries, and todo-processors
-            [ai.obney.orc.orc-service.interface :as orc]
-            [integrant.core :as ig]))
+            [ai.obney.orc.orc-service.interface :as orc]))
 
 (def tenant-id #uuid "00000000-0000-0000-0000-000000000000")
 
-(def system
-  {::event-pubsub {:type :core-async :topic-fn :event/type}
+(defn start []
+  (let [event-pubsub (ps/start {:type :core-async :topic-fn :event/type})
+        event-store (es/start {:conn {:type :in-memory}
+                               :event-pubsub event-pubsub})
+        cache (kv/start
+               (lmdb/->KV-Store-LMDB
+                {:storage-dir (str "/tmp/my-orc-app-" (random-uuid))
+                 :db-name "projections"}))
+        ctx {:tenant-id tenant-id
+             :event-store event-store
+             :event-pubsub event-pubsub
+             :cache cache
+             ;; Your LLM provider keyword, registered below.
+             :dscloj-provider :openrouter}
+        poller (tp/start-tenant-poller
+                {:event-store event-store
+                 :tenant-ids #{tenant-id}
+                 :context {:cache cache :dscloj-provider :openrouter}
+                 :poll-interval-ms 250})]
+    {:ctx ctx :event-store event-store :event-pubsub event-pubsub
+     :cache cache :poller poller}))
 
-   ::event-store  {:event-pubsub (ig/ref ::event-pubsub)
-                   :conn {:type :in-memory}}   ; swap for :sqlite / :postgres in prod
-
-   ;; The control plane runs ORC's todo-processors (the async tick engine)
-   ::control-plane {:event-store (ig/ref ::event-store)
-                    :context     (ig/ref ::context)}
-
-   ::context {:tenant-id        tenant-id
-              :event-store      (ig/ref ::event-store)
-              :event-pubsub     (ig/ref ::event-pubsub)
-              :command-registry (cp/global-command-registry)
-              :query-registry   (qp/global-query-registry)
-              ;; Your LLM provider keyword — registered with litellm at startup
-              :dscloj-provider  :openrouter}})
-
-(defn start [] (ig/init system))
-(defn stop  [sys] (ig/halt! sys))
+(defn stop [{:keys [poller cache event-store event-pubsub]}]
+  (tp/stop-tenant-poller poller)
+  (kv/stop cache)
+  (es/stop event-store)
+  (ps/stop event-pubsub))
 ```
+
+Use `grain-event-store-sqlite-v3` for an embedded durable single-process store,
+or `grain-event-store-postgres-v3` plus `grain-control-plane` for a multi-instance
+deployment. Grain's event tailer republishes shared-store events into each node's
+local pub/sub when distributed Datastar SSE is in use.
 
 Register an LLM provider once (OpenRouter reaches every vendor through one key;
 swap the provider keyword for `:openai`, `:anthropic`, etc. as you like):

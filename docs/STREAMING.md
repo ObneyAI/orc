@@ -150,7 +150,7 @@ Notes:
 
 ## Ordering, loss, and reconnection
 
-**Plain summary:** `:seq` is a strictly monotonic integer per subscription. A gap in `:seq` means your consumer fell behind the sliding buffer and lost events. For lost events, reconstruct from the event store using `(es/read event-store {:tags #{[:tick tick-id]}})`. This is why streaming is not a replacement for event store queries — it is a live feed, not a guarantee.
+**Plain summary:** `:seq` is a strictly monotonic integer per subscription. A gap in `:seq` means your consumer fell behind the sliding buffer and lost events. For lost events, reconstruct from the event store using `(es/read event-store {:tenant-id tenant-id :tags #{[:tick tick-id]}})`. Grain v3 event-store operations are always tenant-scoped. This is why streaming is not a replacement for event store queries — it is a live feed, not a guarantee.
 
 - `:seq` is strictly monotonic per subscription, assigned by a single
   router in arrival order. In practice a node's `:node-started` precedes
