@@ -65,6 +65,23 @@ value DescriptionBody {
     behavioral_subtree_identifiers: List<String>
 }
 
+-- One proposed change to a claim set. A consolidation emits a list of these
+-- instead of a replacement body; the merge that applies them is deterministic.
+value ClaimDelta {
+    operation: ClaimOperation
+    target_claim: String?
+    kind: ClaimKind
+    content: String
+    context_guard: String?
+    recommendation: String?
+    episodes: List<String>
+    from_legacy_corpus: Boolean
+    -- Absent means judged_occurrences: every delta written before this field
+    -- existed keeps exactly its old meaning, so a new field cannot loosen an
+    -- old delta.
+    evidence_basis: EvidenceBasis?
+}
+
 value SearchResult {
     document_identifier: String
     content: String
@@ -162,9 +179,57 @@ enum ConceptScope {
 enum SourceType { csv | json | sql | rdf | text }
 enum BuildMode { batch | incremental }
 enum BuildStatus { running | completed | failed }
-enum DescriptionGranularity { node_type | node_instance | tree_fingerprint }
+enum DescriptionGranularity { node_type | node_instance | tree_fingerprint | tree_class | behavioral_subtree }
 enum ConceptOriginKind {
     human_authored | agent_authored | source_extracted | imported | system_static
+}
+
+-- A Claim is the atomic unit of a Living Description: one insight carrying the
+-- episodes it was derived from and support earned over time. Claim kinds mirror
+-- the assembled body's sections; a claim's kind is MUTABLE, so an insight that
+-- migrates between sections keeps its accumulated support.
+enum ClaimKind { capability | strength | weakness | guard | representative_use }
+
+-- candidate: recorded and visible, but not enforcing. validated: earned enough
+-- post-guard evidence to influence retrieval ranking.
+enum ClaimStatus { candidate | validated }
+
+-- The complete set of operations a consolidation may express over a claim set.
+-- Deletion is deliberately absent: a claim leaves only when its support decays
+-- to zero.
+enum ClaimOperation { add | support | contradict | edit }
+
+-- What a delta's knowledge RESTS ON. Most claims rest on judged occurrences.
+-- The others are deterministic writers whose evidence is real but is not a
+-- judgement: a classification signature, an emitted artifact, or a body
+-- converted from the pre-claim corpus. Declaring the basis is what lets those
+-- writers through the evidence guard without pretending to be something they
+-- are not — and a declaration is honoured ONLY when the delta names no
+-- occurrence, so it can never excuse evidence that exists and failed.
+enum EvidenceBasis {
+    judged_occurrences | legacy_corpus | classification_signature | emitted_artifact
+}
+
+-- Why a proposed delta was refused before it could become a claim. The guard
+-- distinguishes "the judge had nothing to judge" from "this was judged badly" —
+-- conflating them is the incident that motivated the guard.
+enum EvidenceExclusionReason {
+    no_judge_evidence | starved_evidence | judge_abstained
+    | no_episodes | unverified_explanation
+}
+
+-- Calibrated values. They are stated here because two of them are coupled:
+-- validation_support_threshold is DERIVED as the least support whose
+-- confidence clears enforcement_confidence_floor under the curve
+-- c(s) = s / (s + confidence_support_scale). Keeping them as independent
+-- literals would make "validated implies confidence >= floor" true today and
+-- silently false after the first re-tuning.
+config {
+    initial_claim_support: Integer = 2
+    confidence_support_scale: Integer = 3
+    enforcement_confidence_floor: Decimal = 0.6
+    validation_support_threshold: Integer = 5
+    description_recurrence_threshold: Integer = 2
 }
 
 entity Ontology {
@@ -215,11 +280,54 @@ entity TreeProfile {
 entity LivingDescription {
     granularity: DescriptionGranularity
     target_identifier: String
+    -- Assembled from this description's claims; no longer authored wholesale.
     current_body: DescriptionBody
+    -- The search key, synthesised from the claims. Distinct from body.summary,
+    -- which is prompt-facing.
+    retrieval_description: String?
+    -- The body's own revision counter, advanced per assembly.
     version: Integer
+    -- DISTINCT from version: the optimistic-concurrency value, advanced per
+    -- recorded claim-delta event (including one whose deltas all no-op). This
+    -- is what a consolidation reads, what it must present unchanged to write,
+    -- and what the append compares against.
+    claim_set_version: Integer
     updated_at: Timestamp
 
     versions: DescriptionVersion with description = this
+    claims: Claim with description = this
+}
+
+entity Claim {
+    description: LivingDescription
+    -- Deterministic identity derived from the recording event, so a rebuild
+    -- from the log reproduces it byte-identically. This is what a delta's
+    -- target_claim names and what every ordering tie-breaks on.
+    claim_id: String
+    kind: ClaimKind
+    content: String
+    context_guard: String?
+    recommendation: String?
+    -- Support is earned: seeded on creation, incremented by support/edit,
+    -- decremented by contradict. A claim is removed only at zero.
+    support: Integer
+    status: ClaimStatus
+    -- Occurrence identity, not event identity: the [source_sheet, source_tick]
+    -- pair that identifies one turn. This is what lets a claim be re-pooled if
+    -- the identity of its target ever changes.
+    supporting_episodes: List<String>
+    contradicting_episodes: List<String>
+    -- true for claims converted from pre-claim bodies or re-derived from the
+    -- historical rejection corpus. Legacy evidence counts toward support but
+    -- cannot by itself validate a claim.
+    legacy_provenance: Boolean
+    created_at: Timestamp
+    updated_at: Timestamp
+
+    transitions status {
+        candidate -> validated
+        validated -> candidate
+    }
 }
 
 entity DescriptionVersion {
@@ -414,38 +522,233 @@ rule RequestThresholdConsolidation {
     )
 }
 
-rule ConsolidateDescription {
-    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count, model_provenance)
-    let existing = current_description(granularity, target_identifier)
-    requires: anti_recency_accepts(existing, candidate_body, evidence_count) = true
+-- Consolidation no longer proposes a replacement body. It proposes DELTAS over
+-- the target's existing claims, and the merge is deterministic. Whole-body
+-- rewriting is unrepresentable, which is what makes both failure modes
+-- impossible: context collapse (an LLM compressing accumulated knowledge away)
+-- and protection-induced starvation (a safeguard rejecting rephrased insight).
+-- Evidence is judged PER DELTA, never per batch. One ungrounded delta must not
+-- reject a consolidation's valid work — that all-or-nothing shape is the
+-- protection-induced starvation this design exists to end, and it is why the
+-- excluded deltas are recorded rather than silently dropped.
+--
+-- The claim-existence condition is enforced at the MERGE, not here: a delta
+-- naming a claim that has since retired is a normal outcome of concurrent
+-- learning, and the fold tolerates it as a no-op.
+rule RecordClaimDeltas {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
+    let description = current_description(granularity, target_identifier)
+    let grounded = deltas.filter(delta => evidence_is_grounded(delta))
+    requires: claim_set_version = current_claim_set_version(description)
+    requires: grounded.count > 0
 
-    ensures: LivingDescription.created_or_updated(
+    ensures: ClaimDeltasRecorded(
         granularity: granularity,
         target_identifier: target_identifier,
-        current_body: candidate_body,
-        version: next_version(existing),
-        updated_at: now
-    )
-    ensures: DescriptionVersion.created(
-        description: description_for(granularity, target_identifier),
-        body: candidate_body,
-        recorded_at: now,
-        evidence_event_count: evidence_count,
-        model_provenance: model_provenance
+        deltas: grounded,
+        evidence_event_count: evidence_count
     )
 }
 
-rule RejectRecencyBiasedDescription {
-    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count, model_provenance)
-    let existing = current_description(granularity, target_identifier)
-    requires: anti_recency_accepts(existing, candidate_body, evidence_count) = false
+-- A delta whose evidence cannot be trusted is refused individually and the
+-- refusal is recorded: a silent drop destroys the ability to measure how much
+-- of our evidence was starved.
+rule ExcludeUngroundedDelta {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
+    let ungrounded = deltas.filter(delta => evidence_is_grounded(delta) = false)
+    requires: ungrounded.count > 0
 
-    ensures: AntiRecencyRejectionRecorded(
+    ensures: PromotionEvidenceExcluded(
         granularity: granularity,
         target_identifier: target_identifier,
-        candidate_body: candidate_body,
-        model_provenance: model_provenance
+        deltas: ungrounded
     )
+}
+
+-- When NOTHING survives the guard, no claim event is recorded and the
+-- claim-set version deliberately does not advance — a consolidation that
+-- produced no trustworthy knowledge must not look like one that did.
+rule RecordNothingWhenAllDeltasExcluded {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
+    let grounded = deltas.filter(delta => evidence_is_grounded(delta))
+    requires: claim_set_version = current_claim_set_version(description_for(granularity, target_identifier))
+    requires: grounded.count = 0
+
+    ensures: ClaimSetUnchanged(granularity: granularity, target_identifier: target_identifier)
+}
+
+-- A consolidation that reasoned over a stale claim set is refused, not merged:
+-- concurrent consolidations must re-read rather than overwrite each other.
+rule RefuseStaleClaimDeltas {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
+    let description = current_description(granularity, target_identifier)
+    requires: claim_set_version != current_claim_set_version(description)
+
+    ensures: ClaimDeltasRefused(
+        granularity: granularity,
+        target_identifier: target_identifier,
+        reason: stale_claim_set
+    )
+}
+
+rule ApplyAddClaim {
+    when: ClaimDeltaApplied(description, delta)
+    requires: delta.operation = add
+
+    ensures: Claim.created(
+        description: description,
+        kind: delta.kind,
+        content: delta.content,
+        context_guard: delta.context_guard,
+        recommendation: delta.recommendation,
+        support: initial_claim_support,
+        status: candidate,
+        supporting_episodes: delta.episodes,
+        contradicting_episodes: [],
+        legacy_provenance: delta.from_legacy_corpus,
+        created_at: now,
+        updated_at: now
+    )
+}
+
+-- support/edit reinforce; edit may also change a claim's KIND, so an insight
+-- that migrates between body sections keeps the support it earned.
+rule ReinforceClaim {
+    when: ClaimDeltaApplied(description, delta)
+    let claim = claim_for(description, delta.target_claim)
+    requires: delta.operation = support or delta.operation = edit
+
+    ensures: claim.support = claim.support + 1
+    ensures: claim.supporting_episodes = claim.supporting_episodes + delta.episodes
+    ensures: claim.updated_at = now
+    -- An edit additionally rewords the claim and may migrate its kind, keeping
+    -- the support it earned. Guards and advice are refreshed only when the
+    -- delta supplies them: a silent edit must not erase what an earlier one
+    -- established.
+    ensures:
+        if delta.operation = edit:
+            claim.content = delta.content
+    ensures:
+        if delta.operation = edit:
+            claim.kind = delta.kind
+}
+
+rule ContradictClaim {
+    when: ClaimDeltaApplied(description, delta)
+    let claim = claim_for(description, delta.target_claim)
+    requires: delta.operation = contradict
+    requires: claim.support > 1
+
+    ensures: claim.support = claim.support - 1
+    ensures: claim.contradicting_episodes = claim.contradicting_episodes + delta.episodes
+    ensures: claim.updated_at = now
+}
+
+-- The ONLY removal path, and it removes the claim from the entity set rather
+-- than moving it to a terminal state — which is why Claim's transition graph
+-- has no `retired` member. A retirement record is kept so that "retired" stays
+-- distinguishable from "silently deleted".
+--
+-- Derived safety property, worth stating because nothing enforces it directly:
+-- retirement requires support <= 1 while validation requires support >= the
+-- threshold, so a VALIDATED claim can never be retired in one step. It must be
+-- demoted first.
+rule RetireExhaustedClaim {
+    when: ClaimDeltaApplied(description, delta)
+    let claim = claim_for(description, delta.target_claim)
+    requires: delta.operation = contradict
+    requires: claim.support <= 1
+
+    ensures: ClaimRetired(description: description, claim: claim, reason: support_exhausted)
+}
+
+-- A claim starts non-enforcing and earns the right to influence ranking with
+-- evidence gathered under the evidence guard. Legacy evidence counts toward
+-- support but cannot by itself validate.
+-- The reverse edge, which had no witnessing rule: enforcement is continuously
+-- earned, not granted once. A claim whose support decays below the threshold
+-- returns to candidate rather than keeping a privilege it no longer merits.
+rule DemoteUnderSupportedClaim {
+    when: ClaimSupportChanged(description, claim)
+    requires: claim.status = validated
+    requires: claim.support < validation_support_threshold
+
+    ensures: claim.status = candidate
+}
+
+rule ValidateWellSupportedClaim {
+    when: ClaimSupportChanged(description, claim)
+    requires: claim.status = candidate
+    requires: claim.support >= validation_support_threshold
+    requires: post_guard_episode_count(claim) > 0
+
+    ensures: claim.status = validated
+}
+
+-- The body and the retrieval key are DERIVED from claims, never authored.
+-- NOTE: assembly replaces the description's KNOWLEDGE, not the target's place
+-- in the graph. The parent/scope/composes-into axes are carried forward from
+-- the previous body, so landing a claim on a tree-class cannot silently
+-- unparent it. Assembly is therefore not a pure function of the claims alone.
+rule AssembleDescriptionFromClaims {
+    when: ClaimSetChanged(description)
+
+    ensures: description.current_body = assemble_body(description.claims)
+    ensures: description.retrieval_description = synthesise_retrieval_key(description.claims)
+    ensures: description.version = description.version + 1
+    ensures: description.updated_at = now
+    ensures: DescriptionVersion.created(
+        description: description,
+        body: assemble_body(description.claims),
+        recorded_at: now,
+        evidence_event_count: evidence_count_for(description)
+    )
+}
+
+-- HARVEST — the only automatic path that CREATES a durable behavior, and
+-- previously unmodelled in this spec despite being shipped. Describing a class
+-- is earned by RECURRENCE; promoting one is earned by CONSISTENT, per-dimension
+-- quality. Separating them is what lets a recurring-but-mediocre class accrue an
+-- honest account of what it is bad at.
+rule DescribeRecurringClass {
+    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    requires: occurrences >= description_recurrence_threshold
+
+    ensures: DescriptionConsolidationRequested(
+        target_type: tree_class_target,
+        target_identifier: tree_class
+    )
+}
+
+rule PromoteWellScoredClass {
+    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    let quality = dimension_scores(tree_class)
+    requires: occurrences >= promotion_occurrence_threshold
+    requires: not already_harvested(tree_class)
+    -- Per-dimension floors: one catastrophic dimension vetoes promotion, and
+    -- cannot be compensated for by strength elsewhere.
+    requires: quality.all(dimension => dimension.score >= dimension_floor(dimension))
+    -- Consistency, not average: durable creation requires the class to have
+    -- qualified repeatedly, so a single disastrous occurrence is not averaged away.
+    requires: consistently_qualified(tree_class, consistency_window)
+    -- Coherence: a tight cluster, not a grab-bag.
+    requires: distinct_shape_ratio(tree_class) <= maximum_shape_ratio
+    let parent = nearest_abstract_behavior(tree_class)
+    requires: parent != null
+
+    ensures: BehavioralSubtreeMinted(
+        tree_class: tree_class,
+        body: synthesised_behavior_body(tree_class),
+        supporting_evidence: validated_claims(tree_class)
+    )
+}
+
+-- Abstained evaluations carry no score and are SKIPPED by promotion, never
+-- counted as zero. A judge that saw no evidence has not judged.
+rule ExcludeAbstainedEvaluations {
+    when: EvaluationAbstained(tree_class, occurrence)
+
+    ensures: PromotionEvidenceExcluded(tree_class: tree_class, occurrence: occurrence)
 }
 
 rule MintNovelBehavior {
@@ -625,6 +928,29 @@ invariant DescriptionConfidenceIsBounded {
     for description in LivingDescriptions:
         description.current_body.strengths.all(principle => principle.confidence >= 0 and principle.confidence <= 1)
         and description.current_body.weaknesses.all(principle => principle.confidence >= 0 and principle.confidence <= 1)
+}
+
+-- Claims leave only by decay. No consolidation, and no single judgement, can
+-- delete accumulated knowledge outright.
+invariant ClaimsAreRetiredOnlyWhenUnsupported {
+    for claim in Claims:
+        claim.support >= 1
+}
+
+-- Enforcement (retrieval ranking) acts on validated claims only; candidates are
+-- visible to the model but cannot suppress a behavior's retrieval.
+invariant OnlyValidatedClaimsEnforce {
+    for claim in Claims:
+        claim.status = validated implies post_guard_episode_count(claim) > 0
+}
+
+-- Every claim can be re-pooled from its own provenance. This is what keeps a
+-- future re-partition of class identity (cluster splitting) possible: claims
+-- follow their evidence rather than being orphaned by it.
+invariant ClaimsCarryResolvableProvenance {
+    for claim in Claims:
+        claim.supporting_episodes.count > 0
+        or declared_basis(claim) != judged_occurrences
 }
 
 invariant ContentHashesDeduplicateSources {

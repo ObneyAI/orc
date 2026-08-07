@@ -1859,3 +1859,26 @@
              :tags #{[:sheet sheet-id]}
              :body {:sheet-id sheet-id
                     :metadata final-metadata}})]}))))
+
+;; =============================================================================
+;; CC-13 — Injection Record
+;; =============================================================================
+
+(defcommand :sheet record-injection
+  {:authorized? authenticated?}
+  "Record ONE R-Inject render occurrence as an `:intervention/injection-recorded`
+   event — what corpus content was put in front of the model on this turn.
+
+   Dispatched in-process by the render (todo-processors
+   apply-r05-classifier-context), the same way store-execution-trace is
+   dispatched from trace assembly.
+
+   Tagged [:sheet] [:tick] [:node] so the row is reachable by the same
+   occurrence pair the judge score events carry."
+  [{{:keys [sheet-id tick-id node-id recorded-at] :as command} :command}]
+  {:command-result/events
+   [(->event
+      {:type :intervention/injection-recorded
+       :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+       :body (assoc (dissoc command :command/name :command/id :command/timestamp)
+                    :recorded-at (or recorded-at (str (java.time.Instant/now))))})]})

@@ -118,6 +118,147 @@
   [:tuple :uuid :uuid])
 
 ;; =============================================================================
+;; CC-1 (ADR 0021) — Claim-based consolidation shapes
+;; =============================================================================
+;;
+;; Consolidation stops proposing replacement BODIES and starts proposing
+;; CLAIM DELTAS that deterministic code merges. Whole-body rewriting — and
+;; therefore both catastrophic collapse and rejection-by-wording — becomes
+;; unrepresentable.
+
+(def description-granularity
+  "The granularities a Living Description (and therefore its claim set)
+   can be keyed at. Mirrors the spec's DescriptionGranularity enum."
+  [:enum :node-type :node-instance :tree-fingerprint :tree-class
+   :behavioral-subtree])
+
+(def claim-kind
+  "The section of an assembled description body a claim belongs to. A
+   claim's kind is MUTABLE (CC-2's `edit` op), so an insight that migrates
+   between sections keeps its accumulated support."
+  [:enum :capability :strength :weakness :guard :representative-use])
+
+(def claim-status
+  "`:candidate` — recorded and visible, but NOT enforcing. `:validated` —
+   earned enough post-guard evidence to influence retrieval ranking.
+   Every newly-added claim starts `:candidate`."
+  [:enum :candidate :validated])
+
+(def evidence-basis
+  "CC-6 — WHAT A DELTA SAYS ITS CONTENT RESTS ON.
+
+   CC-4's guard resolves `:episodes` against real judge evidence and refuses
+   what it cannot resolve. That is right for a consolidation, which reasons
+   over turns a judge already scored, and it is fatal for a DETERMINISTIC
+   writer that runs before any judge exists: CV-1's provisional capture fires
+   at classify time, so under a resolve-or-refuse guard it could never write at
+   all — a designed path blocked by construction, which the orchestrator
+   recorded as a forward conflict when CC-4 landed.
+
+   `:from-legacy-corpus` was the first member of this idea rather than a
+   special case of nothing. Naming the idea is what stops `legacy` from
+   quietly acquiring a second meaning — CC-7's `:legacy-provenance` reads it
+   as *converted from a pre-claim body*, and a CV-1 signature is not that.
+
+     :judged-occurrences        the delta rests on the turns it names, and the
+                                guard must RESOLVE them. Every LLM-authored
+                                consolidation delta. The default when nothing
+                                is declared.
+     :legacy-corpus             a prior whole-body description (CC-5's
+                                just-in-time backfill; CC-12's migration).
+     :classification-signature  the deterministic task signature the
+                                classifier itself keyed on (CV-1). Asserts an
+                                INPUT, not a quality judgement.
+     :emitted-artifact          a verbatim artifact the engine produced and
+                                recorded — CV-2's emitted worked-DSL. Asserts
+                                that the tree was emitted, not that it was good.
+
+   WHAT A DECLARATION BUYS: admission past the guard, and nothing else. A
+   declared delta names no occurrence, so it contributes no post-guard episode,
+   so CC-7 cannot validate the claim and CC-9's gate cannot let it enforce, at
+   any level of accumulated support. Mechanical knowledge is visible and never
+   authoritative; it earns enforcement the only way anything does, by being
+   reinforced from occurrences a judge actually scored."
+  [:enum :judged-occurrences :legacy-corpus :classification-signature
+   :emitted-artifact])
+
+(def claim-operation
+  "The complete set of operations a consolidation may express over a claim
+   set. Deletion is deliberately absent: a claim leaves only when its
+   support decays to zero (CC-2's retire path).
+
+   CC-1 implements `:add` only. The other three are declared here so a
+   consolidation that proposes them is still a schema-valid, recordable
+   event — the projection fold treats them as no-ops until CC-2 lands,
+   rather than throwing on an event that is already permanent."
+  [:enum :add :support :contradict :edit])
+
+(def episode-ref
+  "One episode — the HP-2 occurrence pair [source-sheet-id source-tick-id]
+   that identifies a single turn. Occurrence identity, NOT event identity:
+   a static task-shape's sheet-id is shared across every turn, so the tick
+   is what makes the reference resolvable (the SJ-1 join lesson)."
+  [:tuple :uuid :uuid])
+
+(def claim-delta
+  "One proposed change to a claim set. A consolidation emits a vector of
+   these instead of a replacement body; the merge that applies them is
+   deterministic.
+
+   `:target-claim` names the claim an op applies to and is absent (or nil)
+   for `:add`, which creates one.
+
+   CC-6: `:evidence-basis` is what the writer DECLARES its content rests on
+   (see `evidence-basis`). Optional, and derived when absent — a delta that
+   says nothing is read as `:legacy-corpus` when `:from-legacy-corpus` is set
+   and `:judged-occurrences` otherwise, so every delta written before CC-6
+   keeps exactly the meaning it had. `:from-legacy-corpus` therefore remains
+   the boolean spelling of one basis rather than a second, competing axis."
+  [:map
+   [:operation          claim-operation]
+   [:target-claim       {:optional true} [:maybe :string]]
+   [:kind               claim-kind]
+   [:content            :string]
+   [:context-guard      {:optional true} [:maybe :string]]
+   [:recommendation     {:optional true} [:maybe :string]]
+   [:episodes           [:vector episode-ref]]
+   [:from-legacy-corpus :boolean]
+   [:evidence-basis     {:optional true} [:maybe evidence-basis]]])
+
+(def claim
+  "One accumulated claim — the shape `get-claims` returns.
+
+   `:claim-id` is derived deterministically from the recording event's id
+   plus the delta's index, so a projection rebuild from the log reproduces
+   identical claim identities. `:support` is EARNED (seeded at
+   `initial_support`, raised by support/edit, lowered by contradict) and is
+   always positive: a claim that reaches exhausted support retires out of
+   the claim set rather than lingering at zero."
+  [:map
+   [:claim-id               :string]
+   [:kind                   claim-kind]
+   [:content                :string]
+   [:context-guard          [:maybe :string]]
+   [:recommendation         [:maybe :string]]
+   [:support                :int]
+   [:status                 claim-status]
+   [:supporting-episodes    [:vector episode-ref]]
+   [:contradicting-episodes [:vector episode-ref]]
+   [:legacy-provenance      :boolean]
+   [:created-at             :string]
+   [:updated-at             :string]])
+
+(def claim-retirement
+  "CC-2: the spec's `ClaimRetired` fact — the shape `get-retired-claims`
+   returns. Retirement at exhausted support is the ONLY path out of a
+   claim set (there is no delete operation), so `:reason` has exactly one
+   member and the fact log never shrinks."
+  [:map
+   [:claim      claim]
+   [:reason     [:enum :support-exhausted]]
+   [:retired-at :string]])
+
+;; =============================================================================
 ;; C-2b-2 — Reranker output shape
 ;; =============================================================================
 
@@ -425,6 +566,79 @@
     ;; (present only when :provenance :harvested).
     [:harvested-from-tree-class {:optional true} [:or :uuid :string]]
     [:minted-at          :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-1 (ADR 0021) — Claim delta events
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; The spec's ClaimDeltasRecorded. Carries the granularity + target
+   ;; identifier of the Living Description the claims hang off, the deltas
+   ;; themselves, the evidence count the consolidation reasoned over, and
+   ;; the claim-set version it was computed AGAINST — the value the append
+   ;; CAS compares, so a consolidation that read a stale claim set cannot
+   ;; silently win.
+
+   :ontology/claim-deltas-recorded
+   [:map
+    [:granularity          description-granularity]
+    ;; Same target-identifier shapes the description events use: a UUID for
+    ;; :tree-class, a SHA string for :tree-fingerprint, etc.
+    [:target-identifier    [:or :string :uuid]]
+    [:deltas               [:vector claim-delta]]
+    ;; How many source events the consolidation reasoned over. Supplied by
+    ;; the consolidator (CC-5/CC-6); 0 when a caller records deltas
+    ;; directly, which is why it carries a default rather than being
+    ;; optional — the audit trail always has a number.
+    [:evidence-event-count :int]
+    ;; The claim-set version the deltas were computed against.
+    [:claim-set-version    :int]
+    [:recorded-at          :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-4 (ADRs 0023, 0021) — the evidence guard's rejection facts
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Two rejected-write facts, both emitted by `record-claim-deltas`.
+   ;;
+   ;; PromotionEvidenceExcluded is the spec's ExcludeAbstainedEvaluations
+   ;; made observable: one event per DELTA the guard refused, never one per
+   ;; batch, because a batch keeps its grounded deltas. Without it a drop
+   ;; would be silent, and a silent drop destroys the ability to measure
+   ;; how much historical evidence was starved.
+   ;;
+   ;; ClaimDeltasRefused is the spec's RefuseStaleClaimDeltas `ensures`.
+   ;; CC-1's CAS already made a stale consolidation lose; this makes the
+   ;; loss QUERYABLE, carrying BOTH versions so a collision can be
+   ;; diagnosed without reading the log.
+
+   :ontology/promotion-evidence-excluded
+   [:map
+    [:granularity       description-granularity]
+    [:target-identifier [:or :string :uuid]]
+    [:reason            [:enum :no-judge-evidence :starved-evidence
+                         :judge-abstained :no-episodes
+                         :unverified-explanation]]
+    ;; The occurrences whose evidence could not be trusted — the same
+    ;; [sheet-id tick-id] pairs the delta carried.
+    [:episodes          [:vector episode-ref]]
+    [:operation         claim-operation]
+    [:kind              claim-kind]
+    [:content           :string]
+    ;; Which layer settled it: the deterministic check, or the
+    ;; explanation verifier it hands the residue to.
+    [:settled-by        [:enum :deterministic :verifier]]
+    [:excluded-at       :string]]
+
+   :ontology/claim-deltas-refused
+   [:map
+    [:granularity       description-granularity]
+    [:target-identifier [:or :string :uuid]]
+    [:reason            [:enum :stale-claim-set]]
+    ;; BOTH versions: what the loser had read, and what had already won.
+    [:attempted-version :int]
+    [:current-version   :int]
+    [:delta-count       :int]
+    [:refused-at        :string]]
 
    ;; -------------------------------------------------------------------------
    ;; Gap-6 — Anti-recency runtime audit events
@@ -794,36 +1008,30 @@
     [:body description-body]
     [:model-provenance {:optional true} [:maybe :map]]]
 
-   ;; Gap-6: audit-trail commands for the anti-recency validator.
-   ;; Dispatched by the consolidator processor when the validator
-   ;; intervenes; emit :ontology/anti-recency-rejection or
-   ;; :ontology/anti-recency-clamp-applied respectively. These exist
-   ;; instead of direct es/append calls so the consolidator follows
-   ;; the standard Grain pattern: events flow through command handlers,
-   ;; never bypassing them.
+   ;; -------------------------------------------------------------------------
+   ;; CC-1 (ADR 0021) — Claim delta command
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Records a consolidation's proposed claim deltas against the target's
+   ;; claim set. Appends under CAS on :claim-set-version.
 
-   :ontology/record-anti-recency-rejection
+   :ontology/record-claim-deltas
    [:map
-    [:target-type     [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
-    [:target-id       :any]
-    [:bucket          [:enum :strengths :weaknesses]]
-    [:entry-trait     :string]
-    [:prior-confidence number?]
-    [:prior-evidence-count :int]
-    [:reason          :keyword]
-    [:rejected-body   :map]
-    [:model-provenance {:optional true} [:maybe :map]]]
+    [:granularity          description-granularity]
+    [:target-identifier    [:or :string :uuid]]
+    [:deltas               [:vector claim-delta]]
+    ;; Optional on the COMMAND (defaults to 0 on the event) — a caller
+    ;; recording deltas outside the consolidator has no evidence window to
+    ;; report. CC-5/CC-6 wire the consolidator's real count through.
+    [:evidence-event-count {:optional true} :int]
+    [:claim-set-version    :int]]
 
-   :ontology/record-anti-recency-clamp
-   [:map
-    [:target-type     [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
-    [:target-id       :any]
-    [:bucket          [:enum :strengths :weaknesses]]
-    [:entry-trait     :string]
-    [:prior-confidence number?]
-    [:llm-confidence  number?]
-    [:clamped-confidence number?]
-    [:reason          :keyword]]
+   ;; Gap-6's two anti-recency AUDIT COMMAND schemas were removed by CC-5, with
+   ;; the validator and the handlers that were their only callers. Nothing can
+   ;; dispatch them, so a schema for them would describe a command that does not
+   ;; exist. Their EVENT schemas survive below, because events the valve already
+   ;; wrote are permanent and a log stops being replayable the moment the shape
+   ;; its events validate against is deleted.
 
    ;; -------------------------------------------------------------------------
    ;; C-2c-1 — Auto-classifier command
@@ -1730,6 +1938,23 @@
                               [:pattern :string]
                               [:metrics [:map-of :keyword :double]]
                               [:evidence-count :int]]]]]]]
+
+   ;; CC-1 (ADR 0021) — the shape `get-claims` returns, one entry per claim.
+   ;; `:claim-id` is derived deterministically from the recording event's id
+   ;; plus the delta's index, so a projection rebuild from the log reproduces
+   ;; identical claim identities.
+
+   :ontology/claim claim
+
+   ;; CC-2 (ADR 0021) — the shape `get-retired-claims` returns. The spec's
+   ;; `ClaimRetired` fact, materialised in the projection rather than emitted
+   ;; as a second event: retirement is a CONSEQUENCE of folding a contradict
+   ;; delta over accumulated support, not a decision a command can take, so
+   ;; it is derived where the support is known. `:reason` is the spec's
+   ;; `support_exhausted` and is the only reason there is — there is no
+   ;; delete operation for another reason to come from.
+
+   :ontology/claim-retirement claim-retirement
 
    ;; Embedding Read Models (Phase 4)
 

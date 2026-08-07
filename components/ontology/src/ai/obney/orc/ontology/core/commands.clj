@@ -11,6 +11,7 @@
 
    All commands emit events that are processed by read models."
   (:require [ai.obney.orc.ontology.core.read-models :as rm]
+            [ai.obney.orc.ontology.core.evidence-guard :as guard]
             [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.classifier :as classifier]
             [ai.obney.orc.ontology.core.embedding :as embedding]
@@ -937,52 +938,198 @@
              :recorded-at (now-str)
              :model-provenance model-provenance}})]})
 
-(defcommand :ontology record-anti-recency-rejection
-  "Gap-6: record an audit event when the anti-recency validator
-   REJECTED an emission because the LLM-produced body dropped a
-   protected entry (high confidence + high evidence-count) from the
-   prior body. Emits :ontology/anti-recency-rejection. Audit trail
-   only — does not affect the description read-model."
-  [{{:keys [target-type target-id bucket entry-trait prior-confidence
-            prior-evidence-count reason rejected-body model-provenance]} :command}]
-  {:command-result/events
-   [(->event
-     {:type :ontology/anti-recency-rejection
-      :tags #{[:description-target (stable-uuid-from
-                                     (str target-type ":" target-id))]}
-      :body {:target-type target-type
-             :target-id target-id
-             :bucket bucket
-             :entry-trait entry-trait
-             :prior-confidence prior-confidence
-             :prior-evidence-count prior-evidence-count
-             :reason reason
-             :rejected-body rejected-body
-             :model-provenance model-provenance
-             :detected-at (now-str)}})]})
+;; The two Gap-6 anti-recency AUDIT COMMANDS used to live here. CC-5 deleted
+;; them along with the validator that was their only caller: a runtime valve
+;; that compared a new body against the prior one by matching :trait STRINGS,
+;; so every rephrasing of a protected insight read as an erasure. It rejected
+;; 145 of 145 real consolidations and about nine in ten of those rejections
+;; were wrong. Under ADR 0021 the property it was defending is structural
+;; instead: a claim-path consolidation cannot express "replace the body", and
+;; no single contradiction can retire a claim.
+;;
+;; Their EVENT schemas (:ontology/anti-recency-rejection and
+;; :ontology/anti-recency-clamp-applied) are deliberately KEPT in
+;; interface/schemas.clj. Events already written by the valve are permanent,
+;; and removing the shape a permanent event validates against is how a log
+;; stops being replayable. Nothing writes them any more.
 
-(defcommand :ontology record-anti-recency-clamp
-  "Gap-6: record an audit event when the anti-recency validator
-   CLAMPED a protected entry's confidence because the LLM dropped it
-   by more than max-confidence-decrease-per-cycle. Emits :ontology/
-   anti-recency-clamp-applied. Audit trail only — the clamped body
-   is still emitted normally via record-description."
-  [{{:keys [target-type target-id bucket entry-trait prior-confidence
-            llm-confidence clamped-confidence reason]} :command}]
-  {:command-result/events
-   [(->event
-     {:type :ontology/anti-recency-clamp-applied
-      :tags #{[:description-target (stable-uuid-from
-                                     (str target-type ":" target-id))]}
-      :body {:target-type target-type
-             :target-id target-id
-             :bucket bucket
-             :entry-trait entry-trait
-             :prior-confidence prior-confidence
-             :llm-confidence llm-confidence
-             :clamped-confidence clamped-confidence
-             :reason reason
-             :detected-at (now-str)}})]})
+;; =============================================================================
+;; CC-1 (ADR 0021) — Claim deltas
+;; =============================================================================
+;;
+;; Consolidation stops proposing a replacement BODY and starts proposing
+;; DELTAS over the target's existing claims, which deterministic code
+;; merges. Whole-body rewriting becomes unrepresentable, which is what
+;; makes both failure modes impossible: context collapse (an LLM
+;; compressing accumulated knowledge away) and protection-induced
+;; starvation (a safeguard rejecting rephrased insight).
+
+(defn evidence-grounded?
+  "The spec's `evidence_is_grounded(delta)` precondition — CC-1's seam,
+   filled in by CC-4.
+
+   A delta must be trustworthy in provenance before it is recorded: its
+   episodes must resolve to occurrences that were actually judged, by a
+   judge that actually had input to judge. `evidence-guard/evidence-verdict`
+   answers that — deterministically first (no model call, which is what
+   makes the starved shape free to catch), then via an injected
+   explanation-verifier for the residue the cheap check cannot settle.
+
+   Kept as the same public 2-arity boolean predicate CC-1 published; the
+   handler uses the richer verdict directly so it can RECORD why a delta
+   was excluded."
+  [ctx delta]
+  (:grounded? (guard/evidence-verdict ctx delta)))
+
+(defn- claim-target-uuid
+  "Tag value for a claim set. Event-store tags must be UUIDs, and a
+   target-identifier may be a UUID (tree-class) or a string (fingerprint),
+   so derive a stable one. Namespaced by granularity so two granularities
+   that happen to share an identifier keep DISJOINT claim sets — the SJ-1
+   join lesson applied to the CAS query as well as the projection."
+  [granularity target-identifier]
+  (stable-uuid-from (str "claims:" (name granularity) ":" target-identifier)))
+
+(defn- recorded-claim-delta-count
+  "The target's CURRENT claim-set version, computed exactly as the append
+   CAS computes it: the number of claim-delta events carrying this target's
+   tag.
+
+   Read from the STORE rather than the descriptions projection on purpose.
+   The projection is one fold away from the log and could lag, and a
+   staleness verdict that disagrees with the CAS would either refuse a
+   valid consolidation or emit a refusal for a write that then succeeded.
+   Same query, same answer."
+  [{:keys [event-store tenant-id]} target-uuid]
+  (count (into [] (es/read event-store
+                           {:types #{:ontology/claim-deltas-recorded}
+                            :tags #{[:claim-target target-uuid]}
+                            :tenant-id tenant-id}))))
+
+(defcommand :ontology record-claim-deltas
+  "CC-1: record a consolidation's proposed claim deltas against a target's
+   claim set. Emits :ontology/claim-deltas-recorded.
+
+   Appends under CAS on the claim-set version. The version IS the count of
+   claim-delta events already recorded for this target, so the predicate
+   compares the caller's `:claim-set-version` against that count inside the
+   store's own transaction: a consolidation computed against a stale
+   version writes nothing, rather than racing a concurrent consolidation
+   and last-write-winning.
+
+   CC-4 adds the two things that make a REJECTED write observable, since
+   both are the same concern and both live on this seam:
+
+   1. The stale-refusal FACT — the spec's `ClaimDeltasRefused`. The
+      handler compares the caller's version against the store's own count
+      first and emits `:ontology/claim-deltas-refused` (carrying BOTH
+      versions) instead of recording. The CAS stays as the authority for
+      a consolidation that goes stale between that read and the append:
+      that one still loses at the store with ::anom/conflict, and emits
+      no fact. Callers that must retry read `:ontology/refused` on the
+      result; observers read `get-claim-delta-refusals`.
+
+   2. The evidence guard — the spec's `evidence_is_grounded` precondition
+      (see `evidence-grounded?`), applied PER DELTA. A batch keeps its
+      grounded deltas and drops only the ungrounded ones, each recorded
+      as `:ontology/promotion-evidence-excluded` and readable through
+      `get-excluded-evidence`. Rejecting the whole batch (what the
+      inert-seam version of this handler did) would be the same
+      protection-induced starvation the `claim_exists` decision below
+      rejects.
+
+   CC-2 RE-DECISION — no handler-side `claim_exists` guard. The spec's
+   `RecordClaimDeltas` has a third precondition, that every non-add delta
+   names an existing claim. It stays enforced at the FOLD (an unresolvable
+   `:target-claim` merges to nothing) rather than here, and CC-2 makes
+   that choice stronger rather than weaker: now that a claim can RETIRE at
+   exhausted support, a delta naming a claim that has since left is a
+   normal outcome of concurrent learning, not a malformed command.
+   Rejecting the command would fail the whole batch — including its valid
+   `:add`s — over one stale reference, which is exactly the
+   protection-induced starvation ADR 0021 exists to remove. It would also
+   make command validity depend on projection freshness. The two
+   preconditions that protect the WRITE (`evidence_is_grounded`, the
+   claim-set version) are enforced here, where they belong."
+  [{{:keys [granularity target-identifier deltas
+            evidence-event-count claim-set-version]} :command
+    :as ctx}]
+  (let [target-uuid (claim-target-uuid granularity target-identifier)
+        current-version (recorded-claim-delta-count ctx target-uuid)]
+    (if (not= claim-set-version current-version)
+      ;; CC-4, the spec's RefuseStaleClaimDeltas `ensures`. The CAS below
+      ;; already made a stale consolidation lose; what it could not do is
+      ;; leave a trace, because a refusal reached the caller only as a
+      ;; return value. This emits the fact instead — carrying BOTH
+      ;; versions, so a collision is a query rather than a forensic. The
+      ;; CAS is still the authority: a consolidation that goes stale
+      ;; BETWEEN this read and the append loses at the store, returning
+      ;; the conflict anomaly with no fact — narrower than before, never
+      ;; wrong.
+      {:command-result/events
+       [(->event
+          {:type :ontology/claim-deltas-refused
+           :tags #{[:claim-target target-uuid]}
+           :body {:granularity granularity
+                  :target-identifier target-identifier
+                  :reason :stale-claim-set
+                  :attempted-version claim-set-version
+                  :current-version current-version
+                  :delta-count (count deltas)
+                  :refused-at (now-str)}})]
+       ;; A caller that must RETRY needs to know it lost. Before CC-4 that
+       ;; signal was the store's ::anom/conflict; now that the handler
+       ;; refuses first, the command succeeds (it wrote the refusal fact),
+       ;; so the signal moves here. Tests still assert on the projection —
+       ;; this is for the consolidator's retry loop, not for assertions.
+       :ontology/refused {:reason :stale-claim-set
+                          :attempted-version claim-set-version
+                          :current-version current-version}}
+      (let [verdicts (mapv #(guard/evidence-verdict ctx %) deltas)
+            paired (mapv vector deltas verdicts)
+            kept (mapv first (filterv (comp :grounded? second) paired))
+            dropped (filterv (comp not :grounded? second) paired)
+            ;; PER-DELTA, never per-batch. One starved delta must not cost
+            ;; a consolidation its valid ones — rejecting the batch is the
+            ;; protection-induced starvation ADR 0021 exists to remove, and
+            ;; it is what the pre-CC-4 handler did.
+            exclusion-events
+            (mapv (fn [[delta verdict]]
+                    (->event
+                      {:type :ontology/promotion-evidence-excluded
+                       :tags #{[:claim-target target-uuid]}
+                       :body {:granularity granularity
+                              :target-identifier target-identifier
+                              :reason (:reason verdict)
+                              :episodes (vec (:episodes verdict))
+                              :operation (:operation delta)
+                              :kind (:kind delta)
+                              :content (:content delta)
+                              :settled-by (:settled-by verdict)
+                              :excluded-at (now-str)}}))
+                  dropped)]
+        (if (and (seq deltas) (empty? kept))
+          ;; Nothing survived the guard: record WHY, and leave the claim
+          ;; set — and its version — untouched. Recording an empty batch
+          ;; would advance the version and make a consolidation that
+          ;; learned nothing look like one that did.
+          {:command-result/events exclusion-events}
+          {:command-result/events
+           (into [(->event
+                    {:type :ontology/claim-deltas-recorded
+                     :tags #{[:claim-target target-uuid]}
+                     :body {:granularity granularity
+                            :target-identifier target-identifier
+                            :deltas kept
+                            :evidence-event-count (or evidence-event-count 0)
+                            :claim-set-version claim-set-version
+                            :recorded-at (now-str)}})]
+                 exclusion-events)
+           :command-result/cas
+           {:types #{:ontology/claim-deltas-recorded}
+            :tags #{[:claim-target target-uuid]}
+            :predicate-fn (fn [existing]
+                            (= claim-set-version (count (into [] existing))))}})))))
 
 ;; =============================================================================
 ;; C-2a-3a — Consolidation trigger commands

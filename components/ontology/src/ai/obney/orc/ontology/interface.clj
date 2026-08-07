@@ -34,6 +34,7 @@
             [ai.obney.orc.ontology.core.domain-penalty :as domain-penalty]
             [ai.obney.orc.ontology.core.task-classifier :as task-classifier]
             [ai.obney.orc.ontology.core.seeds :as seeds]
+            [ai.obney.orc.ontology.core.evidence-guard :as evidence-guard] ;; CC-4: the guard's rejection log
             [ai.obney.grain.event-store-v3.interface :as event-store]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
@@ -175,16 +176,151 @@
    - :node-instance    → [sheet-id node-id] tuple of UUIDs
    - :tree-fingerprint → string (the canonical-tree-raw hash)
 
-   Returns nil if no description has been recorded for the target."
+   Returns nil if no description has been recorded for the target.
+
+   CC-3 (ADR 0021) — WHERE THE BODY COMES FROM. The returned SHAPE is
+   unchanged (`schemas/description-body`), and every existing consumer
+   reads it unchanged. What changed is provenance: a target that has
+   claims gets an ASSEMBLED body, recomputed from its claim set on every
+   `:ontology/record-claim-deltas` (kind → section; strengths/weaknesses
+   principle-shaped; `:confidence` DERIVED from earned support rather
+   than asserted by an LLM). A target described the legacy wholesale way
+   still returns exactly what was recorded. Both paths write the same
+   `:current` slot, so the LAST WRITE WINS on a target that uses both —
+   except that an assembly carries forward the previous body's graph
+   metadata (`:parent-tree-id`, `:scope`, `:composes-into`,
+   `:parent-behavior`, `:behavioral-subtree-ids`), which is not
+   derivable from claims.
+
+   ORDER IS PART OF THE CONTRACT: `:strengths`, `:weaknesses`,
+   `:capabilities`, `:representative-uses` and `:avoid-when` come back
+   BEST-SUPPORTED FIRST on an assembled body, so consumers that truncate
+   without sorting (EL-2's `enrich-candidate-evidence` takes 3 in body
+   order) keep the strongest evidence."
   [ctx granularity target-id]
   (rm/get-description ctx granularity target-id))
 
 (defn get-description-history
   "Return the full chronological history of every description version
    recorded for the (granularity, target-id) target. Each entry is
-   {:body :recorded-at :event-id}. Empty vector if none recorded."
+   {:body :recorded-at :event-id}. Empty vector if none recorded.
+
+   CC-3: append-only across BOTH write paths — a wholesale
+   `record-*-description` and a claim-set change each append one entry,
+   in the same shape, and nothing ever rewrites or removes one."
   [ctx granularity target-id]
   (rm/get-description-history ctx granularity target-id))
+
+(defn get-claims
+  "CC-1 (ADR 0021): return the CLAIM SET for the given target — the vector
+   of claims accumulated from every claim-delta event recorded against it,
+   in the order they were added. Empty vector when the target has none.
+
+   Same (granularity, target-id) key and arg order as `get-description`;
+   a target's claims and its assembled body are two views of one Living
+   Description. Disjoint targets never share claims.
+
+   Each claim is
+   {:claim-id :kind :content :context-guard :recommendation :support
+    :status :supporting-episodes :contradicting-episodes
+    :legacy-provenance :created-at :updated-at}."
+  [ctx granularity target-id]
+  (rm/get-claims ctx granularity target-id))
+
+(defn get-retired-claims
+  "CC-2 (ADR 0021): return the target's ClaimRetired facts, oldest first;
+   empty vector when nothing has retired.
+
+   Each entry is
+   {:claim <the claim as it stood, including the contradiction that
+            finished it>
+    :reason :support-exhausted
+    :retired-at <string>}.
+
+   Retirement at exhausted support is the ONLY way a claim leaves the
+   claim set — there is no delete operation — so this is the complete
+   record of everything the target has stopped believing, and it never
+   shrinks. Retired claims do NOT appear in `get-claims`."
+  [ctx granularity target-id]
+  (rm/get-retired-claims ctx granularity target-id))
+
+(defn get-enforcing-claims
+  "CC-7 (ADRs 0021/0022): return only the target's VALIDATED claims —
+   those that have earned the right to influence retrieval ranking —
+   BEST-SUPPORTED FIRST. Empty vector when none.
+
+   Same (granularity, target-id) key and arg order as `get-claims`, and the
+   claim maps are the identical shape; this is a filtered, ranked VIEW.
+
+   A claim is validated when its net support has reached the validation
+   threshold AND at least one of its supporting occurrences was resolved by
+   CC-4's evidence guard. Legacy-provenance claims carrying no resolvable
+   occurrence therefore accumulate support and stay visible, but never
+   appear here: pre-guard evidence has unknown starvation content by
+   definition.
+
+   Use this — never `get-claims` — anywhere a claim is allowed to ACT.
+   Under ADR 0022 a negative claim suppresses retrieval, so the difference
+   between the two functions is the difference between showing the model
+   what a target believes and letting a belief mute a behavior.
+
+   Ordering is deliberate and differs from `get-claims`' insertion order:
+   the consumer is a ranker, and downstream truncation is unsorted, so the
+   strongest claim must arrive first. Tie-break is `:claim-id`, so the order
+   is stable across a rebuild from the log."
+  [ctx granularity target-id]
+  (rm/get-enforcing-claims ctx granularity target-id))
+
+(defn get-claim-set-version
+  "CC-1 (ADR 0021): return the target's current claim-set version (0 when
+   it has no claim-delta events yet).
+
+   A consolidation reads this BEFORE reasoning and passes it back on
+   :ontology/record-claim-deltas; the append CAS compares it, so a
+   consolidation that reasoned over a stale claim set loses instead of
+   overwriting a concurrent one."
+  [ctx granularity target-id]
+  (rm/get-claim-set-version ctx granularity target-id))
+
+(defn get-excluded-evidence
+  "CC-4 (ADR 0023): return every claim delta the evidence guard REFUSED to
+   record for this target, oldest first; empty vector when none.
+
+   Each entry is
+   {:reason <:no-judge-evidence | :starved-evidence | :judge-abstained
+             | :no-episodes | :unverified-explanation>
+    :episodes <the occurrence pairs whose evidence could not be trusted>
+    :operation :kind :content <the delta as proposed>
+    :settled-by <:deterministic | :verifier>
+    :excluded-at <string>}.
+
+   A silently dropped delta would destroy the ability to measure how much
+   of our historical evidence was starved — the number the migration
+   (CC-12) and the engine-side proposal (CC-14) both rest on. Exclusion is
+   per-DELTA: a batch keeps its grounded deltas and loses only the ones
+   listed here."
+  [ctx granularity target-id]
+  (evidence-guard/get-excluded-evidence ctx granularity target-id))
+
+(defn get-claim-delta-refusals
+  "CC-4 (ADR 0021), the spec's `ClaimDeltasRefused`: return every
+   consolidation REFUSED for this target, oldest first; empty vector when
+   none.
+
+   Each entry is
+   {:reason :stale-claim-set
+    :attempted-version <the version the loser had read>
+    :current-version <the version that had already won>
+    :delta-count <how many deltas were lost with it>
+    :refused-at <string>}.
+
+   CC-1's CAS already prevented a stale consolidation from corrupting the
+   claim set, but the refusal existed only as a command return value — and
+   a return value cannot be asserted on or queried later. This turns 'how
+   often do concurrent consolidations collide' from a forensic into a
+   query."
+  [ctx granularity target-id]
+  (evidence-guard/get-claim-delta-refusals ctx granularity target-id))
 
 (defn seed-baseline-corpus!
   "C-Baseline: emit the baseline seed corpus that ships with the ontology
@@ -400,13 +536,23 @@
     (string? tid) (try (java.util.UUID/fromString tid) (catch Exception _ tid))
     :else tid))
 
-(defn- fetch-evidence-body
-  "Return the candidate's Living Description body, fetched from the RIGHT
-   read-model scope. Tries the candidate's stated granularity, then
-   :tree-fingerprint, then :tree-class (deduped). Returns nil if no body."
+(defn- resolve-evidence-source
+  "Return `{:body :granularity :target-id}` for the candidate's Living
+   Description, fetched from the RIGHT read-model scope. Tries the candidate's
+   stated granularity, then :tree-fingerprint, then :tree-class (deduped).
+   Returns nil if no scope carries a body.
+
+   CC-9a: this returns the RESOLVED SCOPE, not just the body, because the
+   enforcement gate below must read the claim set of the very target the body
+   came from. Resolving a body from one scope and its claims from another
+   would silently mismatch them — and the failure mode would be an EMPTY
+   enforcing set, i.e. a target that quietly stops enforcing."
   [ctx granularity target-id]
   (let [tid (coerce-evidence-target-id target-id)]
-    (some (fn [scope] (when scope (get-description ctx scope tid)))
+    (some (fn [scope]
+            (when scope
+              (when-let [body (get-description ctx scope tid)]
+                {:body body :granularity scope :target-id tid})))
           (distinct [granularity :tree-fingerprint :tree-class]))))
 
 (defn- compact-strengths [strengths]
@@ -423,18 +569,60 @@
                        (:avoid-when e) (assoc :avoid-when (:avoid-when e))
                        (:recommended-alternative e) (assoc :recommended-alternative (:recommended-alternative e)))))))
 
+(defn- enforcing-avoid-strings
+  "CC-9a (ADR 0022, `invariant.OnlyValidatedClaimsEnforce`) — THE ENFORCEMENT
+   GATE: the subset of a target's negative signals that has EARNED the right
+   to suppress retrieval.
+
+   Returns nil for a target with NO claims — the legacy corpus, which is every
+   live target until CC-12 migrates it. nil means 'no claim set to gate on',
+   and EL-5's `avoid-strings` then reads the body exactly as it did before, so
+   a wholesale-recorded body keeps enforcing its guards unchanged. A CLAIM-BACKED
+   target returns a vector, possibly EMPTY — and empty means 'nothing here has
+   earned enforcement', which is a different statement from nil.
+
+   Both doors, from one source. `assemble-body` puts a `:guard` claim's
+   `:content` into the body-level `:avoid-when` and a `:weakness` claim's
+   `:context-guard` into that weakness's `:avoid-when`; EL-5's `avoid-strings`
+   unions the two. So the gate has to reproduce that union over
+   `get-enforcing-claims` — narrowing only the body-level list would leave the
+   per-weakness guards as an open second door for exactly the same unproven
+   claim."
+  [ctx granularity target-id]
+  (when (seq (get-claims ctx granularity target-id))
+    (into []
+          (comp (keep (fn [{:keys [kind content context-guard]}]
+                        (case kind
+                          :guard    content
+                          :weakness context-guard
+                          nil)))
+                (distinct))
+          (get-enforcing-claims ctx granularity target-id))))
+
 (defn- enrich-candidate-evidence
   "Add :avoid-when (top-level body guards + per-weakness guards) and compact
    :strengths/:weaknesses from the candidate's body to the candidate map.
    No-op (returns the candidate unchanged) when no body is found — the
-   reranker simply sees the summary, as before."
+   reranker simply sees the summary, as before.
+
+   CC-9a: this is where VISIBLE and ENFORCING split. `:avoid-when` and
+   `:weaknesses` keep carrying everything the body carries — the reranker
+   still reads every caution the target has recorded, proven or not. The
+   penalty's negative signal is stamped SEPARATELY, under
+   `::domain-penalty/enforcing-avoid-when`, from `get-enforcing-claims`. This
+   seam is the one place both facts are in scope: the body (what to show) and
+   the claim set behind it (what has earned the right to act)."
   [ctx c]
   (let [{:keys [granularity target-id]} (:document-metadata c)
-        body (fetch-evidence-body ctx granularity target-id)
+        source (resolve-evidence-source ctx granularity target-id)
+        body (:body source)
         weaknesses (:weaknesses body)
         per-weakness-guards (into [] (keep :avoid-when) weaknesses)
-        avoid-when (vec (distinct (concat (:avoid-when body) per-weakness-guards)))]
+        avoid-when (vec (distinct (concat (:avoid-when body) per-weakness-guards)))
+        enforcing (when source
+                    (enforcing-avoid-strings ctx (:granularity source) (:target-id source)))]
     (cond-> c
+      (some? enforcing) (assoc ::domain-penalty/enforcing-avoid-when enforcing)
       (seq avoid-when)        (assoc :avoid-when avoid-when)
       (seq (:strengths body)) (assoc :strengths (compact-strengths (:strengths body)))
       (seq weaknesses)        (assoc :weaknesses (compact-weaknesses weaknesses))
@@ -507,7 +695,12 @@
    keep everything, the rest are cut to `terse-candidate-keys`.
 
    Candidate ORDER and COUNT are unchanged — this only shrinks per-candidate
-   detail, never the ranking task."
+   detail, never the ranking task.
+
+   CC-9a: `::domain-penalty/enforcing-avoid-when` is stripped here alongside
+   `::parent-behavior`. It is an internal signal for the deterministic penalty,
+   and its strings are already in the candidate's `:avoid-when` — putting it in
+   the prompt would duplicate every guard the model reads."
   [annotated]
   (let [keep-ids (into #{}
                        (map :document-id)
@@ -516,7 +709,7 @@
                             (sort-by #(or (:score %) 0.0) >)
                             (take child-full-richness-top-n)))]
     (mapv (fn [c]
-            (let [c' (dissoc c ::parent-behavior)]
+            (let [c' (dissoc c ::parent-behavior ::domain-penalty/enforcing-avoid-when)]
               (if (and (child-candidate? c)
                        (not (contains? keep-ids (:document-id c))))
                 (select-keys c' terse-candidate-keys)
@@ -561,6 +754,13 @@
    re-sorts by the new fitness BEFORE (take k …). Output contract
    ({:document-id :reasoning :fitness-score}) is UNCHANGED (the extra
    :domain-penalty/:cos-* keys are additive observability).
+
+   CC-9a (ADR 0022): on a CLAIM-BACKED candidate the penalty's negative
+   signal is no longer the body's `:avoid-when` but the enrichment's
+   `::domain-penalty/enforcing-avoid-when` stamp — the VALIDATED subset. The
+   reranker prompt is unaffected: it still receives every guard the body
+   carries. Visible and enforcing are now different sets, which is exactly
+   `invariant.OnlyValidatedClaimsEnforce`.
 
    RR-2: `model` is an OPTIONAL override for the reranker's :model,
    threaded straight through to `reranker/rerank!`'s own :model opt —
@@ -612,7 +812,10 @@
             penalty-config (merge domain-penalty/default-penalty-config
                                   (:domain-penalty-config ctx))
             penalized (domain-penalty/penalize-candidates ctx joined query penalty-config)]
-        (vec (take k penalized)))
+        ;; CC-9a: the enforcement stamp has done its job by here (the penalty
+        ;; pass above read it). Strip it on the way out, same as RR-3's
+        ;; ::parent-behavior — no caller-visible shape change.
+        (mapv #(dissoc % ::domain-penalty/enforcing-avoid-when) (take k penalized)))
       (let [;; RR-1: de-conflate a TIMEOUT (transient infra, retried once and
             ;; still out of budget) from a genuine rerank failure (throw / nil
             ;; / empty). Same fallback ordering, same nil fitness/reasoning,

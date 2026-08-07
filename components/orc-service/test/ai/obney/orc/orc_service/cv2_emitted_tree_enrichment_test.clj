@@ -132,21 +132,33 @@
             :was-fresh-mint? true})))
 
 (defn- record-floor! [ctx class-id signature]
-  ;; CV-1's provisional floor: signature as :summary, empty strengths.
+  ;; CV-1's provisional floor, as CC-6 writes it: a :representative-use CLAIM
+  ;; carrying the task signature, admitted past CC-4's guard on its declared
+  ;; :classification-signature basis (no judge has run at classify time). The
+  ;; body — including the :summary ColBERT indexes — is ASSEMBLED from this
+  ;; claim by CC-3, so the floor is the same floor; it simply is no longer a
+  ;; second writer of a slot the claim path owns.
   (cp/process-command
     (assoc ctx :command
-           {:command/name :ontology/record-tree-class-description
+           {:command/name :ontology/record-claim-deltas
             :command/id (random-uuid)
             :command/timestamp (time/now)
-            :target-id class-id
-            :body {:summary signature
-                   :capabilities []
-                   :strengths []
-                   :weaknesses []
-                   :representative-uses []
-                   :avoid-when []
-                   :version 1
-                   :consolidated-from-event-count 0}})))
+            :granularity :tree-class
+            :target-identifier class-id
+            :deltas [{:operation :add :kind :representative-use
+                      :content signature :episodes []
+                      :from-legacy-corpus false
+                      :evidence-basis :classification-signature}]
+            :evidence-event-count 0
+            :claim-set-version (ontology/get-claim-set-version
+                                 ctx :tree-class class-id)})))
+
+(defn- floor-signature-present?
+  "CV-1's floor is retrievable when the signature is in the assembled body —
+   in :representative-uses, and therefore in the :summary CC-3 derives from it."
+  [desc signature]
+  (boolean (and (some #{signature} (:representative-uses desc))
+                (clojure.string/includes? (str (:summary desc)) signature))))
 
 (defn- complete-emit! [ctx source-sheet-id tree]
   ;; The Phase-2 bookend: an ephemeral :sheet-id (distinct from the source),
@@ -250,8 +262,9 @@
         (let [desc (ontology/get-description ctx :tree-class class-id)
               strength (emit-strength desc)]
           (is (some? desc) "the class description still exists")
-          (is (= signature (:summary desc))
-              "CV-1's :summary (the retrieval floor) is PRESERVED, not clobbered")
+          (is (floor-signature-present? desc signature)
+              "CV-1's retrieval floor is PRESERVED, not clobbered — the signature
+               is still in the assembled body (and so in the indexed :summary)")
           (is (some? strength)
               "a :strengths entry carrying :recommended-pattern was added")
           (is (= (pr-str emitted-tree) (:recommended-pattern strength))
@@ -298,7 +311,8 @@
         (Thread/sleep 300)
         (let [desc (ontology/get-description ctx :tree-class class-id)]
           (is (some? desc) "the class remains retrievable (CV-1 floor)")
-          (is (= signature (:summary desc)) "CV-1's signature summary is intact")
+          (is (floor-signature-present? desc signature)
+              "CV-1's signature floor is intact")
           (is (nil? (emit-strength desc))
               "no :recommended-pattern strength added on the no-emit path"))))))
 
@@ -313,26 +327,40 @@
             "no class resolves for an unclassified sheet — enrichment is a no-op")))))
 
 ;; ===========================================================================
-;; CYCLE 5 — thrash-safe: an identical re-emit records nothing new
+;; CYCLE 5 — an identical re-emit adds NO DUPLICATE.
+;;
+;; CC-6 CHANGED THE MECHANISM HERE, DELIBERATELY, so this test changed with it
+;; and the change is worth stating rather than burying. Under the whole-body
+;; writer, an identical re-emit was SKIPPED, because re-recording a byte-equal
+;; body would have been a pure cost: one more :tree-description-updated, one
+;; more reindex tick, no new information. Under claim operations the same event
+;; carries information the old shape had nowhere to put — this class emitted
+;; this pattern AGAIN — so it lands as a `:support`, and the mechanical entry
+;; becomes a counter instead of a string the reflection LLM had to reproduce
+;; verbatim (14 of the 145 historical rejections).
+;;
+;; What must NOT change is the property the old assertion was really defending:
+;; a re-emit must never DUPLICATE. That is asserted below, and the reinforcement
+;; itself is pinned in cc6_cv2_claim_enrichment_test.
 ;; ===========================================================================
 
-(deftest cycle5-identical-re-emit-does-not-rerecord
-  (testing "re-emitting the SAME DSL enriches once (idempotent) — no redundant tree-description-updated (no reindex thrash), and exactly one emit strength"
+(deftest cycle5-identical-re-emit-does-not-duplicate
+  (testing "re-emitting the SAME DSL leaves exactly ONE worked-pattern entry in the assembled body, and ZERO whole-body tree-class writes on either pass"
     (with-test-ctx [ctx]
       (let [source-sheet-id (random-uuid)
             class-id (random-uuid)]
         (classify! ctx source-sheet-id class-id)
         (record-floor! ctx class-id "implement: summarize a document")
         (Thread/sleep 150)
-        ;; floor recorded => 1 tree-class description update so far.
         (complete-emit! ctx source-sheet-id emitted-tree)
         (Thread/sleep 400)
         (complete-emit! ctx source-sheet-id emitted-tree)  ;; identical re-emit
         (Thread/sleep 400)
         (let [desc (ontology/get-description ctx :tree-class class-id)
               updates (tree-class-description-updates ctx class-id)]
-          (is (= 2 (count updates))
-              "exactly 2 records: CV-1 floor + ONE enrichment (the identical re-emit no-ops)")
+          (is (zero? (count updates))
+              "no whole-body :tree-class write at all — the projection's assembly
+               is the only writer of that slot (CC-6)")
           (is (= 1 (count (filter :recommended-pattern (:strengths desc))))
               "exactly one emitted-pattern strength — the re-emit did not duplicate it")
           (is (= (pr-str emitted-tree) (:recommended-pattern (emit-strength desc)))

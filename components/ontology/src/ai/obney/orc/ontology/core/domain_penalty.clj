@@ -193,13 +193,27 @@
 ;; =============================================================================
 
 (defn avoid-strings
-  "The candidate's NEGATIVE signals: its enriched top-level :avoid-when vector
-   plus any per-weakness :avoid-when guards. EL-2's enrich-candidate-evidence
-   already folds the per-weakness guards into the top-level vector, but we union
-   defensively so the penalty reads every guard the body carries."
+  "The candidate's NEGATIVE signals — the strings allowed to SUPPRESS it.
+
+   CC-9a (ADR 0022, `invariant.OnlyValidatedClaimsEnforce`): when EL-2's
+   enrichment stamped `::enforcing-avoid-when`, that vector IS the answer.
+   The candidate is CLAIM-BACKED, and the stamp is the subset of its guards
+   that reached `:validated` — an unproven claim stays in `:avoid-when` (the
+   reranker still reads it) but is not here, so it cannot move the ranking.
+   PRESENT-AND-EMPTY is meaningful: 'this target has claims and none of them
+   has earned enforcement yet'.
+
+   ABSENT means there is no claim set to gate on — a legacy wholesale-recorded
+   body, or a candidate map built by hand — and the reading is unchanged from
+   before CC-9a: the top-level :avoid-when vector unioned with any per-weakness
+   :avoid-when guards. EL-2's enrichment already folds the per-weakness guards
+   into the top-level vector, but we union defensively so the penalty reads
+   every guard the body carries."
   [candidate]
-  (vec (distinct (concat (:avoid-when candidate)
-                         (keep :avoid-when (:weaknesses candidate))))))
+  (if (contains? candidate ::enforcing-avoid-when)
+    (vec (distinct (::enforcing-avoid-when candidate)))
+    (vec (distinct (concat (:avoid-when candidate)
+                           (keep :avoid-when (:weaknesses candidate)))))))
 
 (defn positive-strings
   "The candidate's POSITIVE signals: the indexed summary (:content) AND every

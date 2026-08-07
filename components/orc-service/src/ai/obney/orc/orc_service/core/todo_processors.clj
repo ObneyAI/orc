@@ -234,6 +234,51 @@
           (:summary body))))
     (catch Exception _ nil)))
 
+(defn- capture-classification-signature!
+  "CV-1's convergence capture, as a claim operation (CC-6).
+
+   One `:add` delta of kind `:representative-use` carrying the task signature —
+   what this class was minted FOR, which is exactly what a representative use
+   is, and the kind whose contents CC-3's `assemble-summary` renders into
+   `:summary`, the field ColBERT indexes. So the corpus gains the signature by
+   the same route as every other insight rather than by a competing write.
+
+   `:evidence-basis :classification-signature` is a DECLARATION, not a claim of
+   quality: the content is the deterministic input the classifier keyed on,
+   recorded before anything could have judged the answer. `:episodes` is
+   deliberately EMPTY — this turn is real but unjudged, and CC-7 must not be
+   able to mistake an unjudged occurrence for post-guard evidence.
+
+   Version 0 is not assumed: a fresh mint has no claim events, but the version
+   is READ so that a re-used identifier can never silently lose its capture to
+   a stale-version refusal. ontology is resolved lazily, the established
+   pattern for this wedge's optional dependency.
+
+   NO try/catch, deliberately. The body write this replaced had none, and
+   wrapping the replacement would introduce a path where convergence silently
+   stops working while every classification still looks fine — the failure
+   shape hardest to notice and the one this whole arc is about."
+  [context class-id signature]
+  (let [claim-set-version (requiring-resolve
+                            'ai.obney.orc.ontology.interface/get-claim-set-version)]
+    (cp/process-command
+      (assoc context :command
+             {:command/name :ontology/record-claim-deltas
+              :command/id (random-uuid)
+              :command/timestamp (time/now)
+              :granularity :tree-class
+              :target-identifier class-id
+              :deltas [{:operation :add
+                        :kind :representative-use
+                        :content signature
+                        :context-guard nil
+                        :recommendation nil
+                        :episodes []
+                        :from-legacy-corpus false
+                        :evidence-basis :classification-signature}]
+              :evidence-event-count 0
+              :claim-set-version (claim-set-version context :tree-class class-id)}))))
+
 (defn maybe-auto-classify-and-set-context
   "C-2c-2: when the node is an :rlm repl-researcher with
    :auto-classify? true and no :context already set, run the classifier
@@ -351,34 +396,35 @@
                              (count (:behaviors behavioral-result))))
             ;; CV-1 (ADR 0017) Part 1 — CONVERGENCE CAPTURE. On a fresh-mint
             ;; (and only then — we are already past the :uncertain guard), ALSO
-            ;; record a provisional :tree-class description whose SEARCHABLE
-            ;; content is the task `signature` (the same instruction-aware text
-            ;; classify-task searched by). This puts the just-minted class into
-            ;; the corpus immediately, so the NEXT identical/similar signature
-            ;; retrieves + matches it (accrues) instead of scattering a new
-            ;; random-uuid — the capture EL-1b specified but never built.
+            ;; capture the task `signature` (the same instruction-aware text
+            ;; classify-task searched by) against the just-minted class. This
+            ;; puts it into the corpus immediately, so the NEXT identical/similar
+            ;; signature retrieves + matches it (accrues) instead of scattering a
+            ;; new random-uuid — the capture EL-1b specified but never built.
             ;; ONLY on fresh-mint: a MATCH or BUNDLE (:was-fresh-mint? false)
-            ;; records NOTHING, so a recurrence does not re-emit a description
-            ;; and thrash the ColBERT reindex (see orc-sheet-content-hash-thrash).
-            ;; Reuses record-tree-class-description (keys on the fresh-mint root
-            ;; UUID the classifier just assigned). Robust to turn timeouts — it
-            ;; does not depend on the RLM completing.
+            ;; captures NOTHING, so a recurrence does not re-emit and thrash the
+            ;; ColBERT reindex (see orc-sheet-content-hash-thrash). Robust to
+            ;; turn timeouts — it does not depend on the RLM completing.
+            ;;
+            ;; CC-6 (ADR 0021): it is a CLAIM OPERATION, not a body. Writing a
+            ;; body here made this the SECOND writer of a slot the claim path
+            ;; owns — CC-3 re-derives `:current` from the claim set on every
+            ;; claim event, so the first consolidation to land would silently
+            ;; erase the signature this wrote. As an `:add` of kind
+            ;; `:representative-use` the signature reaches `:summary` through
+            ;; the same assembly as every other insight, and survives.
+            ;;
+            ;; It clears CC-4's evidence guard on a DECLARED EVIDENCE BASIS
+            ;; (`:classification-signature`) and NOT on judge evidence, because
+            ;; at classify time no judge has run — the forward conflict the
+            ;; orchestrator recorded when CC-4 landed. It names NO occurrence,
+            ;; deliberately: the turn is real but unjudged, and an unjudged
+            ;; occurrence must not count as post-guard evidence (CC-7). So this
+            ;; claim is VISIBLE and can never enforce until the reflection
+            ;; corroborates it from occurrences a judge actually scored.
             (when (:was-fresh-mint? result)
-              (cp/process-command
-                (assoc context :command
-                       {:command/name :ontology/record-tree-class-description
-                        :command/id (random-uuid)
-                        :command/timestamp (time/now)
-                        :target-id (:assigned-tree-id result)
-                        :body {:summary signature
-                               :capabilities []
-                               :strengths []
-                               :weaknesses []
-                               :representative-uses []
-                               :avoid-when []
-                               :version 1
-                               :consolidated-from-event-count 0}}))
-              (println (format "[DEBUG RLM] node '%s' CONVERGENCE-CAPTURE recorded provisional :tree-class description for %s"
+              (capture-classification-signature! context (:assigned-tree-id result) signature)
+              (println (format "[DEBUG RLM] node '%s' CONVERGENCE-CAPTURE recorded signature claim for :tree-class %s"
                                (or (:name node) (str (:id node)))
                                (:assigned-tree-id result))))))
         ;; R-Inject: stash the full classifier payload on :context so
@@ -675,18 +721,30 @@
          (or content "(no guidance content recorded)") "\n\n"
          (or rich ""))))
 
+(defn- structural-display-candidates
+  "The structural candidates the render actually puts in front of the model.
+
+   Apply the display-confidence floor BEFORE the cap so a weak candidate
+   doesn't push out the slot for a stronger one. In practice classify-task
+   returns 5; the reranker scores spread from 1.00 down to 0.0 — only the
+   >= floor entries reach the model. The fresh-mint branch shows NO
+   candidates at all (it renders guidance instead), so it yields none.
+
+   CC-13: single source of truth for the render AND for the injection record.
+   A record of 'what was injected' computed from a different filter than the
+   render's would be a measurement of something that never happened."
+  [{:keys [was-fresh-mint? top-candidates]}]
+  (if was-fresh-mint?
+    []
+    (->> (or top-candidates [])
+         (filter (fn [c] (>= (double (or (:fitness-score c) 0.0))
+                             min-display-confidence)))
+         (take structural-cap)
+         vec)))
+
 (defn- format-structural-section [ctx structural]
-  (let [{:keys [was-fresh-mint? top-candidates rerank-fallback?]} structural
-        ;; Apply the display-confidence floor BEFORE the cap so a weak
-        ;; candidate doesn't push out the slot for a stronger one. In
-        ;; practice classify-task returns 5; the reranker scores spread
-        ;; from 1.00 down to 0.0 — only the >= floor entries reach the
-        ;; model.
-        strong-candidates (filter
-                            (fn [c] (>= (double (or (:fitness-score c) 0.0))
-                                        min-display-confidence))
-                            (or top-candidates []))
-        candidates (take structural-cap strong-candidates)]
+  (let [{:keys [was-fresh-mint? rerank-fallback?]} structural
+        candidates (structural-display-candidates structural)]
     (cond
       ;; No high-confidence match — caller fresh-minted at root.
       was-fresh-mint?
@@ -835,9 +893,15 @@
              " concrete recommended action + :confidence + :evidence-count) — a vector of bare strings"
              " fails schema validation and the mint is dropped silently.\n")))))
 
+(defn- behavioral-display-entries
+  "The behavioral entries the render puts in front of the model. Companion to
+   structural-display-candidates — shared by the render and the CC-13 record."
+  [{:keys [behaviors]}]
+  (vec (take behavioral-cap (or behaviors []))))
+
 (defn- format-behavioral-section [ctx behavioral]
-  (let [{:keys [behaviors rerank-fallback?]} behavioral
-        entries (take behavioral-cap behaviors)]
+  (let [{:keys [rerank-fallback?]} behavioral
+        entries (behavioral-display-entries behavioral)]
     (when (seq entries)
       (str "### Behavioral competencies (top " (count entries)
            " from corpus retrieval)\n"
@@ -873,6 +937,203 @@
          "you are using. Apply it alongside the retrieved corpus examples.\n"
          (pr-str (:body guidance)) "\n")))
 
+;; =============================================================================
+;; CC-13 — The injection record
+;; =============================================================================
+;;
+;; Every render leaves ONE durable row saying what was put in front of the
+;; model. This replaces the unbounded `/tmp/r-inject-trace-<sheet>.edn` sidecar
+;; the render used to spit on every call: a file per sheet, never cleaned,
+;; outside the store, joinable to nothing.
+;;
+;; The row is a strict SUBSET of the deferred `:intervention/*` ledger
+;; (research-lessons-integration §6) — see the event schema for the
+;; field-by-field correspondence.
+
+(defn- sha256-hex
+  "SHA-256 of a string, lowercase hex. Lets the record IDENTIFY the rendered
+   block — two turns that saw the same thing collapse to the same hash —
+   without storing the block twice."
+  [^String s]
+  (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                        (.getBytes s "UTF-8"))]
+    (apply str (map #(format "%02x" %) digest))))
+
+(def default-baseline-policy-id
+  "Name of the control condition when a holdout config does not supply one.
+
+   A CONSTANT, not a lookup into *injection-holdout*: an experiment binds that
+   var to a partial map, and a row whose baseline is nil is a row that cannot
+   be analysed — the record must stay valid whatever the caller left out."
+  "r-inject/no-injection")
+
+(def ^:dynamic *injection-holdout*
+  "The randomized-holdout policy for R-Inject renders. **OFF BY DEFAULT.**
+
+   A holdout is what makes attribution CAUSAL rather than observational: a
+   recorded fraction of turns render under the control condition, so a change
+   to the render can be compared against turns that ran without it in the SAME
+   codebase state. The earlier pattern-injection study had no such arm — its
+   baseline came from a different build — which is why its cost table carries
+   no defensible quality attribution.
+
+   It is default-off because a standing holdout is a standing tax on output
+   quality. Turning it on is a deliberate, per-experiment choice:
+
+     - process-wide:  (binding [*injection-holdout* {:enabled? true
+                                                     :fraction 0.2}] …)
+     - per-run:       (assoc ctx :injection-holdout {:enabled? true
+                                                     :fraction 0.2})
+
+   Keys:
+     :enabled?           master switch; nothing is held out while false
+     :fraction           P(holdout) in [0.0, 1.0]
+     :baseline-policy-id names the control condition on BOTH arms, so treated
+                         rows say what they were compared against"
+  {:enabled? false
+   :fraction 0.0
+   :baseline-policy-id default-baseline-policy-id})
+
+(def ^:dynamic *capture-rendered-block?*
+  "Whether the injection record carries the VERBATIM rendered block.
+
+   Off by default: the block runs to tens of thousands of characters and the
+   record already carries its hash, its size and the ids+versions it was built
+   from. A bench or experiment run that wants to quote what the model literally
+   saw turns it on — process-wide via binding, or per-run via
+   `(assoc ctx :injection-capture-rendered-block? true)`."
+  false)
+
+(defn- occurrence-bucket
+  "A deterministic, uniform value in [0.0, 1.0) for one render occurrence.
+
+   Hash-bucketing rather than a call to `rand`: the assignment must be STABLE
+   for a given turn, so a retry of the same occurrence cannot switch arms
+   halfway through and produce a row whose arm does not describe the prompt
+   that was actually sent. Uniform across occurrences, reproducible, stateless."
+  [occurrence]
+  (let [bits (Long/parseLong (subs (sha256-hex (str/join "|" (map str occurrence))) 0 15) 16)]
+    (/ (double bits) (double (bit-shift-left 1 60)))))
+
+(defn- default-holdout-assignment
+  "True when this occurrence falls in the holdout arm."
+  [occurrence fraction]
+  (< (occurrence-bucket occurrence) (double fraction)))
+
+(def ^:dynamic *holdout-assignment*
+  "Capability seam for arm assignment: (fn [occurrence fraction] -> holdout?).
+
+   Defaults to the real deterministic bucketing and is faked in tests, so no
+   test has to depend on real randomness to prove the two arms behave."
+  default-holdout-assignment)
+
+(defn- holdout-config
+  "The effective holdout policy: the process default, overridden per-run by
+   `:injection-holdout` on the context."
+  [ctx]
+  (merge *injection-holdout* (:injection-holdout ctx)))
+
+(defn- assign-arm
+  "Which arm this render occurrence is in. :treatment unless a holdout is
+   configured AND this occurrence falls into it."
+  [ctx {:keys [enabled? fraction]} node-id]
+  (let [f (double (or fraction 0.0))]
+    (if (and enabled?
+             (pos? f)
+             (*holdout-assignment* [(:sheet-id ctx) (:tick-id ctx) node-id] f))
+      :holdout
+      :treatment)))
+
+(defn- injected-candidates
+  "The candidate set the render actually showed, each with the VERSION of the
+   description body its content came from.
+
+   Version is per-candidate, not per-turn: the corpus bodies move
+   independently, and 'this turn saw behaviour X at v4' is the granularity an
+   attribution needs. Reads the same bodies the render reads (best-effort —
+   an unavailable body records a nil version rather than dropping the
+   candidate, because the candidate WAS shown)."
+  [ctx {:keys [structural behavioral]}]
+  (vec
+    (concat
+      (for [c (structural-display-candidates structural)
+            :let [tid (get-in c [:document-metadata :target-id])]
+            :when (some? tid)]
+        {:axis :structural
+         :candidate-id (str tid)
+         :version (:version (fetch-tree-body ctx tid))
+         :score (some-> (:fitness-score c) double)})
+      ;; A fresh-mint behavioral entry is a MARKER ("no candidate cleared
+      ;; threshold"), not corpus content: the render shows mint guidance for
+      ;; it and reads no body, so nothing was injected and there is no version
+      ;; to record. Recording it would both misstate what the model saw and
+      ;; fire a read against a concept that does not exist yet.
+      (for [b (behavioral-display-entries behavioral)
+            :let [bid (:behavior-id b)]
+            :when (and (some? bid) (not (:was-fresh-mint? b)))]
+        {:axis :behavioral
+         :candidate-id (str bid)
+         :version (:version (fetch-behavioral-body ctx bid))
+         :score (some-> (:confidence b) double)}))))
+
+(defn- tick-parent-id
+  "The tick that spawned `tick-id`, or nil at the root.
+
+   Reads the tick's own :sheet/tree-tick-started event. Deliberately does NOT
+   require an :execution-snapshot the way trace-lineage's originating-tick-
+   started does: lineage is carried by :parent-tick-id, and the snapshot-less
+   UI tick path stamps it just the same."
+  [{:keys [event-store tenant-id]} tick-id]
+  (some :parent-tick-id
+        (into [] (es/read event-store {:types #{:sheet/tree-tick-started}
+                                       :tags #{[:tick tick-id]}
+                                       :tenant-id tenant-id}))))
+
+(defn- resolve-root-trace-id
+  "The ROOT tick of this tick's lineage — the ledger's `:root-trace-id`, the
+   key it joins to outcomes by.
+
+   An RLM Phase-2 tree and a delegate node run in CHILD ticks, so a record
+   that knew only its own tick would strand that injection from the run it
+   belongs to. Cycle- and depth-guarded, and falls back to the tick itself:
+   a wrong join is worse than a self-join.
+
+   Mirrors the root walk in trace-lineage; kept separate because that helper
+   is defined further down the file and also computes parent/child ids this
+   does not need."
+  [ctx tick-id]
+  (try
+    (loop [current tick-id, seen #{}, depth 0]
+      (if (or (contains? seen current) (>= depth 100))
+        tick-id
+        (if-let [parent (tick-parent-id ctx current)]
+          (recur parent (conj seen current) (inc depth))
+          current)))
+    (catch Exception _ tick-id)))
+
+(defn- record-injection!
+  "Dispatch the injection record for one render occurrence.
+
+   Best-effort and deliberately silent: this is measurement, and measurement
+   must never be able to fail a turn. It also no-ops when there is no command
+   context — apply-r05-classifier-context is called directly (with `{}`) by
+   pure render tests and by bench probes, and those must keep working."
+  [ctx row]
+  (when (and (:event-store ctx) (:sheet-id ctx) (:tick-id ctx) (:node-id row))
+    (try
+      (cp/process-command
+        (assoc ctx :command
+               (merge {:command/name :sheet/record-injection
+                       :command/id (random-uuid)
+                       :command/timestamp (time/now)
+                       :intervention/type :pattern-injection
+                       :sheet-id (:sheet-id ctx)
+                       :tick-id (:tick-id ctx)
+                       :root-trace-id (resolve-root-trace-id ctx (:tick-id ctx))
+                       :correlation-id (:correlation-id ctx)}
+                      row)))
+      (catch Exception _ nil))))
+
 (defn apply-r05-classifier-context
   "R-Inject: prepend R05's classifier output to the node's :instruction
    when the wedge has stashed a :r05-classifier payload on :context.
@@ -891,8 +1152,19 @@
       node
       (let [structural (:structural payload)
             behavioral (:behavioral payload)
-            node-type-guidance (current-node-type-guidance ctx node)
-            block (str "## Suggested patterns from corpus\n\n"
+            ;; CC-13: which experimental arm this turn is in. Decided BEFORE
+            ;; the block is built, so the control condition genuinely does not
+            ;; run the treatment (no prepend, and none of the render's corpus
+            ;; body reads) rather than rendering and discarding.
+            holdout (holdout-config ctx)
+            arm (assign-arm ctx holdout (:id node))
+            ;; sio-era main: node-type Living Description guidance joins the
+            ;; rendered block. Read only on the treatment arm — the control
+            ;; condition performs none of the render's body reads.
+            node-type-guidance (when (= :treatment arm)
+                                 (current-node-type-guidance ctx node))
+            block (when (= :treatment arm)
+                    (str "## Suggested patterns from corpus\n\n"
                        "These are concrete EXAMPLES retrieved from the seed corpus based on "
                        "classification of your task. Each example includes:\n"
                        "  - WHY the candidate fits (reranker reasoning)\n"
@@ -915,27 +1187,45 @@
                        (format-behavioral-section ctx behavioral)
                        "\n"
                        (format-node-type-guidance node-type-guidance)
-                       "\n---\n")
-            result (update node :instruction (fn [inst] (str block inst)))
-            ;; Trace capture: write the rendered prepend + full classifier
-            ;; payload to a sidecar file keyed by sheet-id so the bench
-            ;; runner can pair it with the saved EDN. Best-effort; failures
-            ;; are silent (we don't want trace IO to break the request).
-            sheet-id (:sheet-id ctx)]
-        (when sheet-id
-          (try
-            (spit (str "/tmp/r-inject-trace-" sheet-id ".edn")
-                  (pr-str {:rendered-at (str (java.time.Instant/now))
-                           :prepend block
-                           :prepend-chars (count block)
-                           :original-instruction-chars (- (count (:instruction result))
-                                                          (count block))
-                           :classifier-payload
-                           (cond-> payload
-                             node-type-guidance
-                             (assoc :node-type-guidance node-type-guidance))}))
-            (catch Exception _ nil)))
-        (println (format "[DEBUG R-Inject] prepended %d chars (instruction now %d chars)"
+                       "\n---\n"))
+            result (if block
+                     (update node :instruction (fn [inst] (str block inst)))
+                     ;; Control condition: the UNTREATED prompt.
+                     node)
+            ;; CC-13: the render's durable record, replacing the /tmp sidecar.
+            ;; The candidate set is recorded on BOTH arms — a holdout row that
+            ;; did not say what it was denied could not be compared against a
+            ;; treated row that got it.
+            candidates (injected-candidates ctx payload)]
+        (record-injection! ctx
+          (cond-> {:node-id (:id node)
+                   :arm arm
+                   :baseline-policy-id (or (:baseline-policy-id holdout)
+                                           default-baseline-policy-id)
+                   ;; P(treatment) for this turn: 1.0 when nothing is held out,
+                   ;; which is the honest propensity for "everyone treated".
+                   :selection-propensity (if (:enabled? holdout)
+                                           (- 1.0 (double (or (:fraction holdout) 0.0)))
+                                           1.0)
+                   :candidates candidates
+                   ;; The ledger's PRIMARY candidate is the top-ranked
+                   ;; STRUCTURAL one: the structural pattern is what shapes the
+                   ;; tree, so it is the artifact an intervention is testing.
+                   ;; nil when the structural axis showed nothing (fresh-mint
+                   ;; branch) — honestly saying "no structural candidate was
+                   ;; under test this turn" rather than promoting a behavioral
+                   ;; entry into a slot that isn't its own.
+                   :candidate-id (:candidate-id (first (filter #(= :structural (:axis %))
+                                                               candidates)))
+                   :task-class (->uuid (get-in payload [:structural :assigned-tree-id]))
+                   :model (:model node)
+                   :rendered-chars (count block)}
+            block (assoc :prompt-content-hash (sha256-hex block))
+            (and block (or (:injection-capture-rendered-block? ctx)
+                           *capture-rendered-block?*))
+            (assoc :rendered-block block)))
+        (println (format "[DEBUG R-Inject] arm %s — prepended %d chars (instruction now %d chars)"
+                         (name arm)
                          (count block)
                          (count (:instruction result))))
         result))))
@@ -1474,7 +1764,12 @@
                   ;; prompt assembly, which is the only thing that consumes
                   ;; them. A slow classify->rerank now costs THIS turn's
                   ;; latency and nothing else.
-                  wedge-ctx (assoc context :sheet-id sheet-id :tick-id tick-id)
+                  ;; CC-13: :correlation-id rides along so the injection record
+                  ;; carries the correlated-trace key that joins it to this
+                  ;; run's outcomes. Taken from the handler's single
+                  ;; projection — it is written once, on tree-tick-started.
+                  wedge-ctx (assoc context :sheet-id sheet-id :tick-id tick-id
+                                   :correlation-id (:correlation-id tick-ctx))
                   node (-> base-node
                            (maybe-auto-classify-and-set-context wedge-ctx)
                            ;; R-Inject: replaces the legacy
