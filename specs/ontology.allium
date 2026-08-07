@@ -206,8 +206,12 @@ enum ClaimOperation { add | support | contradict | edit }
 -- writers through the evidence guard without pretending to be something they
 -- are not — and a declaration is honoured ONLY when the delta names no
 -- occurrence, so it can never excuse evidence that exists and failed.
+-- authored: designer-written corpus knowledge. Authorship is a first-class
+-- basis rather than a fabricated support count, so provenance stays honest
+-- while curated guards keep the strength they were proven at.
 enum EvidenceBasis {
-    judged_occurrences | legacy_corpus | classification_signature | emitted_artifact
+    judged_occurrences | legacy_corpus | classification_signature
+    | emitted_artifact | authored
 }
 
 -- Why a proposed delta was refused before it could become a claim. The guard
@@ -321,6 +325,10 @@ entity Claim {
     -- historical rejection corpus. Legacy evidence counts toward support but
     -- cannot by itself validate a claim.
     legacy_provenance: Boolean
+    -- Set at CREATION only; an edit operation preserves it. This is what stops
+    -- a reworded authored guard from being laundered into weaker
+    -- earned-evidence accounting.
+    evidence_basis: EvidenceBasis?
     created_at: Timestamp
     updated_at: Timestamp
 
@@ -668,12 +676,27 @@ rule RetireExhaustedClaim {
 -- The reverse edge, which had no witnessing rule: enforcement is continuously
 -- earned, not granted once. A claim whose support decays below the threshold
 -- returns to candidate rather than keeping a privilege it no longer merits.
+-- Authored-basis claims are exempt: their support number was never a
+-- threshold count, and their enforcement authority comes from authorship, not
+-- accrual. They erode through the ordinary contradiction path instead — a
+-- claim is removed when its support decays to zero.
 rule DemoteUnderSupportedClaim {
     when: ClaimSupportChanged(description, claim)
     requires: claim.status = validated
+    requires: claim.evidence_basis != authored
     requires: claim.support < validation_support_threshold
 
     ensures: claim.status = candidate
+}
+
+-- A claim created with basis authored is BORN validated: curated guards
+-- enforce at full strength from day one (the alternative — seeding them as
+-- candidates — silently disarms the proven regression corpus at seeding).
+rule ValidateAuthoredClaimAtCreation {
+    when: ClaimRecorded(description, claim)
+    requires: claim.evidence_basis = authored
+
+    ensures: claim.status = validated
 }
 
 rule ValidateWellSupportedClaim {
@@ -941,7 +964,8 @@ invariant ClaimsAreRetiredOnlyWhenUnsupported {
 -- visible to the model but cannot suppress a behavior's retrieval.
 invariant OnlyValidatedClaimsEnforce {
     for claim in Claims:
-        claim.status = validated implies post_guard_episode_count(claim) > 0
+        claim.status = validated implies
+            (post_guard_episode_count(claim) > 0 or claim.evidence_basis = authored)
 }
 
 -- Every claim can be re-pooled from its own provenance. This is what keeps a
