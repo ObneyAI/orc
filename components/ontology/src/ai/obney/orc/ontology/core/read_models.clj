@@ -578,25 +578,65 @@
   [event idx]
   (str (:event/id event) "#" idx))
 
+(def ^:private authored-basis
+  "The spec's `EvidenceBasis.authored` — designer-written corpus knowledge.
+
+   Named once because THREE spec constructs compare against this exact value
+   (`ValidateAuthoredClaimAtCreation`, the `evidence_basis != authored`
+   precondition of `DemoteUnderSupportedClaim`, and the widened
+   `OnlyValidatedClaimsEnforce`). Three literal keywords agreeing by
+   coincidence is how the exemption would half-disappear under a rename."
+  :authored)
+
+(defn- authored?
+  "CC-9d: does this claim rest on AUTHORSHIP rather than on accrual?
+
+   Reads the claim's own durable `:evidence-basis`, never a delta's — a claim's
+   basis is set at creation and an edit preserves it, so a later delta cannot
+   argue its way into (or out of) the exemption."
+  [claim]
+  (= authored-basis (:evidence-basis claim)))
+
 (defn- add-claim
-  "Apply an `:add` delta: create a claim in `:candidate` status carrying
-   the episodes that produced it. `recorded-at` comes off the event (the
-   command handler stamped it), never from a clock read inside the fold —
-   a fold that reads the wall clock does not rebuild to the same state."
+  "Apply an `:add` delta: create a claim carrying the episodes that produced it.
+   `recorded-at` comes off the event (the command handler stamped it), never
+   from a clock read inside the fold — a fold that reads the wall clock does not
+   rebuild to the same state.
+
+   CC-9d: `:evidence-basis` is recorded here and ONLY here — the spec's 'set at
+   CREATION only'. It is stored verbatim from the delta (`nil` when the delta
+   declared nothing) rather than normalised through the guard's
+   `declared-basis`, so `nil` keeps meaning 'declared nothing' on the claim,
+   which is exactly the optionality the spec's `evidence_basis: EvidenceBasis?`
+   carries.
+
+   STATUS AT CREATION is `:candidate` — EXCEPT for an authored basis, which is
+   BORN `:validated` (spec `ValidateAuthoredClaimAtCreation`). A curated guard
+   must enforce at full strength from day one; seeding it as a candidate would
+   silently disarm the proven regression corpus at the moment of seeding.
+
+   This is deliberately NOT routed through `with-earned-status`. The two paths
+   stay distinct for the reason that function's docstring gives — so that
+   raising `initial-claim-support` could never quietly mint pre-validated claims
+   — and CC-9d does not weaken that: the ONLY thing that mints a validated claim
+   here is an explicit, auditable declaration of authorship, which the
+   consolidator forbids the reflection LLM from making."
   [claims delta claim-id recorded-at]
-  (conj (or claims [])
-        {:claim-id               claim-id
-         :kind                   (:kind delta)
-         :content                (:content delta)
-         :context-guard          (:context-guard delta)
-         :recommendation         (:recommendation delta)
-         :support                initial-claim-support
-         :status                 :candidate
-         :supporting-episodes    (vec (:episodes delta))
-         :contradicting-episodes []
-         :legacy-provenance      (boolean (:from-legacy-corpus delta))
-         :created-at             recorded-at
-         :updated-at             recorded-at}))
+  (let [basis (:evidence-basis delta)]
+    (conj (or claims [])
+          {:claim-id               claim-id
+           :kind                   (:kind delta)
+           :content                (:content delta)
+           :context-guard          (:context-guard delta)
+           :recommendation         (:recommendation delta)
+           :support                initial-claim-support
+           :status                 (if (= authored-basis basis) :validated :candidate)
+           :supporting-episodes    (vec (:episodes delta))
+           :contradicting-episodes []
+           :legacy-provenance      (boolean (:from-legacy-corpus delta))
+           :evidence-basis         basis
+           :created-at             recorded-at
+           :updated-at             recorded-at})))
 
 ;; -----------------------------------------------------------------------------
 ;; CC-7 (ADRs 0021/0022) — status: earning, and keeping, the right to enforce
@@ -646,10 +686,26 @@
    The apparent asymmetry (promotion needs post-guard evidence, demotion is
    governed by support alone) is not one: `:supporting-episodes` never shrinks,
    because a contradiction files onto `:contradicting-episodes` instead, so the
-   post-guard condition is monotone once satisfied."
+   post-guard condition is monotone once satisfied.
+
+   CC-9d ADDS ONE ARM: an AUTHORED claim is validated at every support level.
+   That is the spec's `evidence_basis != authored` precondition on
+   `DemoteUnderSupportedClaim`, expressed in the same total-function shape
+   rather than as a branch bolted onto the demotion path — the range is still
+   literally `#{:candidate :validated}`, and the exemption is still a pure
+   function of the claim's own durable state.
+
+   IT IS NOT IMMORTALITY, and the distinction matters. This function decides
+   STATUS, not existence. Contradiction still decrements the claim's support on
+   every disagreement, and `apply-claim-delta`'s retirement arm still removes it
+   outright when that support is exhausted — the spec's own stated erosion path
+   for authored knowledge. What authorship buys is that a curated guard is not
+   quietly disarmed by sitting at a support number that was never a threshold
+   count for it in the first place."
   [claim]
-  (if (and (>= (or (:support claim) 0) validation-support-threshold)
-           (pos? (post-guard-episode-count claim)))
+  (if (or (authored? claim)
+          (and (>= (or (:support claim) 0) validation-support-threshold)
+               (pos? (post-guard-episode-count claim))))
     :validated
     :candidate))
 
@@ -693,7 +749,25 @@
 
    `:context-guard` / `:recommendation` are optional on the delta, so they
    are refreshed only when the delta actually SUPPLIES one — an edit that
-   is silent about them must not erase what an earlier delta established."
+   is silent about them must not erase what an earlier delta established.
+
+   CC-9d — `:evidence-basis` IS ABSENT FROM THIS FUNCTION ON PURPOSE, and the
+   omission is load-bearing rather than an oversight. The spec says the basis is
+   set at CREATION only and that an edit PRESERVES it. That is the
+   anti-laundering rule: `:edit` is precisely the operation the reflection LLM
+   uses to reword a claim while it keeps its identity and its earned support, so
+   an edit that also re-set the basis would let an ordinary rewording of a
+   curated guard silently drop it out of enforcement into weaker
+   earned-evidence accounting — at a moment nobody is watching. It cuts both
+   ways: it also stops a delta asserting its way INTO the curated corpus after
+   the fact.
+
+   DO NOT ADD `:evidence-basis` TO THE `assoc` BELOW. If you do, the failure is
+   not even loud: `reinforce-claim` re-derives `:status` BEFORE this `assoc`
+   runs, so the claim would be left with a status derived from the OLD basis and
+   a NEW basis recorded beside it — an internally inconsistent claim that
+   violates `OnlyValidatedClaimsEnforce`. Guarded by
+   `cc9d-authored-evidence-basis-test`, both directions."
   [claim delta recorded-at]
   (cond-> (-> (reinforce-claim claim delta recorded-at)
               (assoc :content (:content delta)

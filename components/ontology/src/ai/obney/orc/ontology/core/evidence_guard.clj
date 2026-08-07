@@ -337,11 +337,27 @@ whose grounding cannot be established must not become a durable claim.")
      :emitted-artifact          a verbatim artifact the engine itself produced,
                                 recorded from the completion event that
                                 produced it.
+     :authored                  designer-written corpus knowledge (CC-9d). A
+                                curated guard has no occurrences by
+                                construction: nothing judged it, because
+                                nothing could have. Authorship is a true,
+                                auditable statement about where the content
+                                came from, which is precisely the category
+                                this set exists for.
 
    `:judged-occurrences` is deliberately ABSENT: it is the arm that means
    'resolve my episodes', and a delta declaring it while naming none is exactly
-   the ungrounded assertion this guard exists to refuse."
-  #{:legacy-corpus :classification-signature :emitted-artifact})
+   the ungrounded assertion this guard exists to refuse.
+
+   CC-9d ADDED `:authored` HERE RATHER THAN BUILDING A SECOND EXEMPTION ROUTE,
+   and that is the whole point: the seeding path needs exactly what this set
+   already grants — admission for a delta that names no occurrence — so a
+   parallel bypass would be a second way past the guard, which is how a guard
+   stops meaning anything. What authorship additionally buys (enforcement) is
+   granted downstream in the claim fold, where the spec puts it, NOT here. The
+   ONE rule below is unchanged: a delta that DOES name occurrences is resolved
+   normally whatever it declares."
+  #{:legacy-corpus :classification-signature :emitted-artifact :authored})
 
 (defn- occurrence-explanations
   [occurrence-verdicts]

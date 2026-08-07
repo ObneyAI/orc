@@ -172,15 +172,35 @@
      :emitted-artifact          a verbatim artifact the engine produced and
                                 recorded — CV-2's emitted worked-DSL. Asserts
                                 that the tree was emitted, not that it was good.
+     :authored                  designer-written corpus knowledge (CC-9d).
+                                Asserts AUTHORSHIP — a true, auditable statement
+                                about provenance.
 
-   WHAT A DECLARATION BUYS: admission past the guard, and nothing else. A
-   declared delta names no occurrence, so it contributes no post-guard episode,
-   so CC-7 cannot validate the claim and CC-9's gate cannot let it enforce, at
-   any level of accumulated support. Mechanical knowledge is visible and never
-   authoritative; it earns enforcement the only way anything does, by being
-   reinforced from occurrences a judge actually scored."
+   WHAT A DECLARATION BUYS: admission past the guard, and — for `:authored`
+   alone — enforcement. The four MECHANICAL bases buy admission and nothing
+   else: such a delta names no occurrence, so it contributes no post-guard
+   episode, so CC-7 cannot validate the claim and CC-9's gate cannot let it
+   enforce, at any level of accumulated support. Mechanical knowledge is visible
+   and never authoritative; it earns enforcement the only way anything does, by
+   being reinforced from occurrences a judge actually scored.
+
+   CC-9d — WHY `:authored` IS THE EXCEPTION, and why it is not a hole. A
+   designer-written corpus guard has no occurrences by construction (nothing
+   judged it; nothing could have), so under the mechanical rule it would seed at
+   `initial_claim_support` = 2, below the validation threshold of 5, and the
+   curated regression corpus would be NON-ENFORCING from the day it was seeded.
+   The two obvious repairs were both rejected in grill GR-2 Q4: seeding at the
+   threshold buys only ~0.6 of full guard strength, and seeding above it
+   FABRICATES episode counts, which breaks `ClaimsCarryResolvableProvenance` at
+   the corpus root and poisons every later calibration. So authorship is carried
+   as what it actually is — a basis, not a number. Authorship grants enforcement
+   from creation and exemption from support-driven demotion; it does NOT grant
+   immortality, because contradiction still decrements support and the ordinary
+   retirement path still removes the claim when that support is exhausted. And
+   the reflection LLM cannot reach it: the consolidator STAMPS
+   `:judged-occurrences` on every model-proposed operation in code."
   [:enum :judged-occurrences :legacy-corpus :classification-signature
-   :emitted-artifact])
+   :emitted-artifact :authored])
 
 (def claim-operation
   "The complete set of operations a consolidation may express over a claim
@@ -233,7 +253,17 @@
    identical claim identities. `:support` is EARNED (seeded at
    `initial_support`, raised by support/edit, lowered by contradict) and is
    always positive: a claim that reaches exhausted support retires out of
-   the claim set rather than lingering at zero."
+   the claim set rather than lingering at zero.
+
+   CC-9d: `:evidence-basis` is the spec's `Claim.evidence_basis` — SET AT
+   CREATION ONLY, from the creating delta's declaration, and `nil` when the
+   delta declared nothing. It is deliberately durable ON THE CLAIM rather than
+   only on the recording event, because two spec rules compare against it
+   (`ValidateAuthoredClaimAtCreation`, `DemoteUnderSupportedClaim`) and the
+   invariant `OnlyValidatedClaimsEnforce` reads it. An `:edit` operation
+   PRESERVES it: that is the anti-laundering rule, without which a reworded
+   authored guard could be reclassified into weaker earned-evidence accounting
+   by whoever wrote last."
   [:map
    [:claim-id               :string]
    [:kind                   claim-kind]
@@ -245,6 +275,7 @@
    [:supporting-episodes    [:vector episode-ref]]
    [:contradicting-episodes [:vector episode-ref]]
    [:legacy-provenance      :boolean]
+   [:evidence-basis         {:optional true} [:maybe evidence-basis]]
    [:created-at             :string]
    [:updated-at             :string]])
 

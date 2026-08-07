@@ -132,11 +132,19 @@
           (is (false? (:legacy-provenance c))
               "and it is NOT recorded as legacy-corpus provenance — CC-7's
                discriminator keeps its single meaning"))
-        ;; The claim MAP deliberately gains no thirteenth key (CC-2 pinned the
-        ;; twelve, and correctness does not need it — a declared delta carries no
-        ;; episode, which is what actually stops CC-7 validating it). The basis
-        ;; is durable all the same: it rides on the permanent recording event, so
-        ;; a rebuild reproduces it and CC-14's maintainer view can read it.
+        ;; AT CC-6 the claim MAP deliberately gained no thirteenth key: for a
+        ;; MECHANICAL basis, correctness does not need one — a declared delta
+        ;; carries no episode, which is what actually stops CC-7 validating it.
+        ;; The basis was durable all the same, riding on the permanent recording
+        ;; event, so a rebuild reproduces it and CC-14's maintainer view can
+        ;; read it.
+        ;;
+        ;; SUPERSEDED BY CC-9d, which added `:authored` — a basis that DOES
+        ;; change the claim's status, so two spec rules and one invariant now
+        ;; compare against `Claim.evidence_basis` directly and it had to become
+        ;; a field on the claim. The event-log assertion below is unaffected and
+        ;; still the stronger of the two: the declaration is permanent there
+        ;; whatever the projection chooses to carry.
         (let [recorded (->> (es/read (:event-store ctx)
                                      {:tenant-id (:tenant-id ctx)
                                       :types #{:ontology/claim-deltas-recorded}})
