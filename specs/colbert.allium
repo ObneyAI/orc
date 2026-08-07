@@ -42,10 +42,17 @@ value IndexConfiguration {
 -- Stated because the discard is otherwise invisible — a caller cannot tell a
 -- fully-matched query from a truncated one, and a retrieval key can never be
 -- matched against text the encoder did not see.
+-- CORRECTED (CC-17 divergence 1, orchestrator): the first draft quantified over
+-- a `Searches` collection that does not exist and left `configuration` unbound.
+-- The real entities are SearchAudit and RerankAudit. Rerank is covered too
+-- (divergence 2): it truncates by the same mechanism and the implementation
+-- reports it, so the spec follows the code rather than excusing the gap.
 invariant OverlongQueriesTruncateVisibly {
-    for search in Searches:
-        search.query_token_count > configuration.maximum_query_tokens implies
-            search.truncated = true
+    for audit in SearchAudits:
+        audit.truncated = (audit.query_token_count > audit.index.configuration.maximum_query_tokens)
+
+    for audit in RerankAudits:
+        audit.truncated implies audit.discarded_token_count > 0
 }
 
 value SearchResult {
@@ -172,6 +179,12 @@ entity SearchAudit {
     requested_count: Integer
     result_count: Integer
     top_score: Decimal?
+    -- CC-17: what the encoder actually saw. Recorded because the discard is
+    -- otherwise invisible, and 100% of real production queries were exceeding
+    -- the limit while every audit record looked normal.
+    query_token_count: Integer
+    truncated: Boolean
+    discarded_token_count: Integer
     performed_at: Timestamp
 }
 
@@ -180,6 +193,11 @@ entity RerankAudit {
     input_count: Integer
     output_count: Integer
     top_score: Decimal?
+    -- Rerank truncates by the same mechanism and needs the same visibility,
+    -- even though it has no index and therefore no IndexConfiguration.
+    query_token_count: Integer
+    truncated: Boolean
+    discarded_token_count: Integer
     performed_at: Timestamp
 }
 
