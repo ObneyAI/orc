@@ -661,6 +661,19 @@
   [target-id]
   (str "tree-class:" target-id))
 
+(defn- ensure-system-ontology!
+  [context ontology-id name scope base-uri]
+  (when-not (rm/ontology-exists? context ontology-id)
+    (command-processor/process-command
+     (assoc context :command
+            {:command/name :ontology/create-ontology
+             :command/id ontology-id
+             :command/timestamp (time/now)
+             :name name
+             :scope scope
+             :description (str "ORC managed " name)
+             :base-uri base-uri}))))
+
 (defn- ensure-tree-class-concept!
   "If a concept with the given target-id's URI doesn't exist in the
    concepts read-model, dispatch :ontology/create-concept to bring it
@@ -669,6 +682,8 @@
   (let [uri (tree-class-uri target-id)
         concepts (rmp/project context :ontology/concepts)]
     (when-not (contains? concepts uri)
+      (ensure-system-ontology! context tree-class-ontology-id
+                               "Tree class ontology" :tree-class "tree-class:")
       (command-processor/process-command
         (assoc context :command
                {:command/name :ontology/create-concept
@@ -680,7 +695,8 @@
                 :description (str "Tree-class concept for " target-id)
                 :scope :tree-class
                 :broader []
-                :indicators []})))
+                :indicators []
+                :provenance {:kind :system-static}})))
     uri))
 
 (defn on-tree-description-updated-project-concept
@@ -717,8 +733,7 @@
                     :target-ontology-id tree-class-ontology-id
                     :source-uri target-uri
                     :target-uri parent-uri
-                    :predicate "skos:broader"
-                    :properties {}})))))))
+                    :predicate "skos:broader"})))))))
 
 (defprocessor :ontology on-tree-description-updated-project-concept
   {:topics #{:ontology/tree-description-updated}}
@@ -769,6 +784,9 @@
   (let [uri (behavioral-subtree-uri target-id)
         concepts (rmp/project context :ontology/concepts)]
     (when-not (contains? concepts uri)
+      (ensure-system-ontology! context behavioral-subtree-ontology-id
+                               "Behavioral subtree ontology" :behavioral-subtree
+                               "behavioral-subtree:")
       (command-processor/process-command
         (assoc context :command
                {:command/name :ontology/create-concept
@@ -780,7 +798,8 @@
                 :description (str "Behavioral subtree concept for " target-id)
                 :scope :behavioral-subtree
                 :broader []
-                :indicators []})))
+                :indicators []
+                :provenance {:kind :system-static}})))
     uri))
 
 (defn on-behavioral-subtree-description-updated-project-concept
@@ -817,8 +836,7 @@
                         :target-ontology-id behavioral-subtree-ontology-id
                         :source-uri target-uri
                         :target-uri parent-uri
-                        :predicate "skos:broader"
-                        :properties {}})))))
+                        :predicate "skos:broader"})))))
 
         (doseq [shell-id composes-into]
           (let [shell-uri (tree-class-uri shell-id)
@@ -837,8 +855,7 @@
                         :target-ontology-id tree-class-ontology-id
                         :source-uri target-uri
                         :target-uri shell-uri
-                        :predicate "behavior:composes-into"
-                        :properties {}})))))))))
+                        :predicate "behavior:composes-into"})))))))))
 
 (defprocessor :ontology on-behavioral-subtree-description-updated-project-concept
   {:topics #{:ontology/tree-description-updated}}

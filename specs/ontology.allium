@@ -12,6 +12,28 @@ value ConceptDefinition {
     label: String
     description: String
     scope: ConceptScope
+    broader_uris: List<String>
+    indicators: List<String>
+    provenance: ConceptProvenance
+}
+
+value ConceptProvenance {
+    kind: ConceptOriginKind
+    source_reference: String?
+    created_by: String?
+    trace_identifier: String?
+}
+
+value ConceptChanges {
+    label: String?
+    description: String?
+    broader_uris: List<String>?
+    indicators: List<String>?
+}
+
+value RelationshipMetadata {
+    source_reference: String?
+    trace_identifier: String?
 }
 
 value ModelProvenance {
@@ -99,12 +121,29 @@ contract OntologyExtraction {
     @invariant SourceAwareExtraction
         -- CSV, JSON, SQL, RDF, and text retain provenance and use their extractor.
 
+    @invariant DeterministicRdfImport
+        -- N-Triples RDF import is deterministic: URI resources receive stable
+        -- ontology-scoped identities and graph predicates join the same concept graph.
+
     @invariant LearnedArtifactModelProvenance
         -- Model-derived descriptions and source extractions retain the resolved
         -- model, trace identity, and usage that produced them.
 }
 
+contract CustomOntologyMutation {
+    create_concept: (ontology: Ontology, definition: ConceptDefinition) -> Concept
+    update_concept: (ontology: Ontology, concept: Concept, changes: ConceptChanges) -> Concept
+    create_relationship: (source: Concept, target: Concept, predicate: String, metadata: RelationshipMetadata) -> ConceptRelationship
+
+    @invariant TenantScopedMutation
+        -- Every mutation resolves ontology and concept identity within the
+        -- initiating consumer's tenant before an event can be emitted.
+}
+
 contract ScopedConceptLookup {
+    get_ontology: (ontology_identifier: String) -> Ontology?
+    list_ontologies: () -> List<Ontology>
+    ontology_exists: (ontology_identifier: String) -> Boolean
     get_concept: (ontology: Ontology, uri: String) -> Concept?
     list_concepts: (ontology: Ontology) -> List<Concept>
 
@@ -124,11 +163,15 @@ enum SourceType { csv | json | sql | rdf | text }
 enum BuildMode { batch | incremental }
 enum BuildStatus { running | completed | failed }
 enum DescriptionGranularity { node_type | node_instance | tree_fingerprint }
+enum ConceptOriginKind {
+    human_authored | agent_authored | source_extracted | imported | system_static
+}
 
 entity Ontology {
     name: String
     scope: ConceptScope
-    base_uri: String
+    description: String?
+    base_uri: String?
     created_at: Timestamp
 
     concepts: Concept with ontology = this
@@ -141,6 +184,9 @@ entity Concept {
     label: String
     description: String
     scope: ConceptScope
+    provenance: ConceptProvenance
+    broader_uris: List<String>
+    indicators: List<String>
     embedding: List<Decimal>?
     created_at: Timestamp
     updated_at: Timestamp?
@@ -153,7 +199,7 @@ entity ConceptRelationship {
     source: Concept
     target: Concept
     predicate: String
-    properties: Any
+    metadata: RelationshipMetadata?
     created_at: Timestamp
 }
 
@@ -242,11 +288,13 @@ entity CanonicalMapping {
 }
 
 rule InitializeOntology {
-    when: InitializeOntologyRequested(consumer, name, scope, base_uri)
+    when: InitializeOntologyRequested(consumer, name, scope, description, base_uri)
+    requires: nonblank(name)
 
     ensures: Ontology.created(
         name: name,
         scope: scope,
+        description: description,
         base_uri: base_uri,
         created_at: now
     )
@@ -254,7 +302,11 @@ rule InitializeOntology {
 
 rule AddConcept {
     when: ConceptCreationRequested(ontology, definition)
+    requires: nonblank(definition.uri)
+    requires: nonblank(definition.label)
+    requires: nonblank(definition.description)
     requires: ontology.concepts.none(concept => concept.uri = definition.uri)
+    requires: definition.broader_uris.all(uri => ontology.concepts.any(concept => concept.uri = uri))
 
     ensures: Concept.created(
         ontology: ontology,
@@ -262,22 +314,47 @@ rule AddConcept {
         label: definition.label,
         description: definition.description,
         scope: definition.scope,
+        provenance: definition.provenance,
+        broader_uris: definition.broader_uris,
+        indicators: definition.indicators,
         embedding: null,
         created_at: now,
         updated_at: null
     )
 }
 
+rule UpdateConcept {
+    when: ConceptUpdateRequested(ontology, concept, changes)
+    requires: concept.ontology = ontology
+    requires: changes.label != null or changes.description != null or changes.broader_uris != null or changes.indicators != null
+    requires: changes.label = null or nonblank(changes.label)
+    requires: changes.description = null or nonblank(changes.description)
+    requires: changes.broader_uris = null or changes.broader_uris.all(uri => ontology.concepts.any(candidate => candidate.uri = uri))
+    ensures:
+        if changes.label != null:
+            concept.label = changes.label
+        if changes.description != null:
+            concept.description = changes.description
+        if changes.broader_uris != null:
+            concept.broader_uris = changes.broader_uris
+        if changes.indicators != null:
+            concept.indicators = changes.indicators
+        concept.updated_at = now
+}
+
 rule LinkConcepts {
-    when: RelationshipCreationRequested(ontology, source, target, predicate, properties)
-    requires: source.ontology = ontology
-    requires: predicate = "behavior:composes-into" or target.ontology = ontology
+    when: RelationshipCreationRequested(source, target, predicate, metadata)
+    requires: source != target
+    requires: nonblank(predicate)
+    requires: predicate in {"skos:broader", "skos:narrower", "skos:related", "behavior:composes-into"}
+    requires: predicate = "behavior:composes-into" or source.ontology = target.ontology
+    requires: source.outgoing.none(relationship => relationship.target = target and relationship.predicate = predicate)
 
     ensures: ConceptRelationship.created(
         source: source,
         target: target,
         predicate: predicate,
-        properties: properties,
+        metadata: metadata,
         created_at: now
     )
 }
@@ -533,6 +610,12 @@ invariant RelationshipsStayWithinOntology {
             relationship.source.ontology = relationship.target.ontology
 }
 
+invariant RelationshipEdgesAreUnique {
+    for a in ConceptRelationships:
+        for b in ConceptRelationships:
+            a != b implies a.source != b.source or a.target != b.target or a.predicate != b.predicate
+}
+
 invariant DescriptionHistoryIsAppendOnly {
     for version in DescriptionVersions:
         version.recorded_at <= version.description.updated_at
@@ -565,9 +648,10 @@ surface SemanticMemory {
     facing consumer: OntologyConsumer
 
     provides:
-        InitializeOntologyRequested(consumer, name, scope, base_uri)
+        InitializeOntologyRequested(consumer, name, scope, description, base_uri)
         ConceptCreationRequested(ontology, definition)
-        RelationshipCreationRequested(ontology, source, target, predicate, properties)
+        ConceptUpdateRequested(ontology, concept, changes)
+        RelationshipCreationRequested(source, target, predicate, metadata)
         BaselineCorpusSeedingRequested(consumer)
         LearnedRuleExtractionRequested(tree_profile, minimum_confidence)
         OntologySearchRequested(consumer, ontology, query, scopes, limit, rerank)
@@ -603,6 +687,15 @@ surface SemanticMemory {
     @guarantee AuditableEvolution
         -- Graph changes, description versions, sources, resolution decisions,
         -- and snapshots remain reconstructable from events.
+
+    @guarantee RetrySafeMutation
+        -- Repeating a lifecycle mutation with the same command identity returns
+        -- the same generated domain identity and appends no duplicate mutation.
+
+    @guarantee UnifiedManualAndExtractedGraph
+        -- Evolution recognizes manually created ontology and concept events;
+        -- manually authored URI identities remain canonical when extracted
+        -- source material refers to the same concept.
 
     @guarantee ReadWriteOptInSeparation
         -- Description retrieval and description-writing consolidation are

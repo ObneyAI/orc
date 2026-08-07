@@ -513,6 +513,93 @@
                        :source-id source-id
                        :status (:status result)})))))
 
+(def ^:private rdf-type-uri
+  "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+
+(def ^:private rdf-label-uris
+  #{"http://www.w3.org/2000/01/rdf-schema#label"
+    "http://www.w3.org/2004/02/skos/core#prefLabel"})
+
+(def ^:private rdf-description-uris
+  #{"http://www.w3.org/2000/01/rdf-schema#comment"
+    "http://www.w3.org/2004/02/skos/core#definition"})
+
+(def ^:private rdf-predicate-aliases
+  {"http://www.w3.org/2004/02/skos/core#broader" "skos:broader"
+   "http://www.w3.org/2004/02/skos/core#narrower" "skos:narrower"
+   "http://www.w3.org/2004/02/skos/core#related" "skos:related"})
+
+(defn- rdf-uri-label [uri]
+  (let [tail (last (str/split uri #"[/#:]"))]
+    (if (str/blank? tail) uri tail)))
+
+(defn- parse-ntriples-line [line-number line]
+  (when-not (or (str/blank? line) (str/starts-with? (str/trim line) "#"))
+    (if-let [[_ subject predicate object-uri literal]
+             (re-matches
+              #"\s*<([^>]+)>\s+<([^>]+)>\s+(?:<([^>]+)>|\"((?:\\.|[^\"])*)\"(?:@[A-Za-z0-9-]+|\^\^<[^>]+>)?)\s*\.\s*"
+              line)]
+      {:subject subject
+       :predicate predicate
+       :object-uri object-uri
+       :literal (some-> literal
+                        (str/replace "\\\"" "\"")
+                        (str/replace "\\n" "\n")
+                        (str/replace "\\\\" "\\"))}
+      (throw (ex-info "Malformed N-Triples statement"
+                      {:line line-number :statement line})))))
+
+(defn extract-concepts-from-rdf
+  "Deterministically import an RDF graph encoded as N-Triples.
+
+   URI subjects become concepts. URI objects also become concepts so every
+   imported edge has a resolvable endpoint. rdfs:label/skos:prefLabel and
+   rdfs:comment/skos:definition populate descriptive fields; SKOS graph
+   predicates are normalized to the relationship vocabulary used by ORC."
+  [source-id content _config]
+  (when-not (string? content)
+    (throw (ex-info "RDF import requires N-Triples string content"
+                    {:source-id source-id})))
+  (let [triples (->> (str/split-lines content)
+                     (map-indexed #(parse-ntriples-line (inc %1) %2))
+                     (remove nil?)
+                     vec)
+        uri-objects (keep :object-uri triples)
+        uris (into #{} (concat (map :subject triples) uri-objects))
+        labels (into {} (keep (fn [{:keys [subject predicate literal]}]
+                                (when (and literal (contains? rdf-label-uris predicate))
+                                  [subject literal])))
+                     triples)
+        descriptions (into {} (keep (fn [{:keys [subject predicate literal]}]
+                                      (when (and literal
+                                                 (contains? rdf-description-uris predicate))
+                                        [subject literal])))
+                           triples)
+        types (into {} (keep (fn [{:keys [subject predicate object-uri]}]
+                               (when (and (= rdf-type-uri predicate) object-uri)
+                                 [subject (rdf-uri-label object-uri)])))
+                    triples)
+        concepts (mapv (fn [uri]
+                         {:uri uri
+                          :label (get labels uri (rdf-uri-label uri))
+                          :definition (get descriptions uri "Imported RDF concept")
+                          :entity-type (get types uri "Concept")
+                          :source-id source-id
+                          :confidence 1.0})
+                       (sort uris))
+        relationships (->> triples
+                           (keep (fn [{:keys [subject predicate object-uri]}]
+                                   (when (and object-uri (not= rdf-type-uri predicate))
+                                     {:subject subject
+                                      :predicate (get rdf-predicate-aliases predicate predicate)
+                                      :object object-uri
+                                      :confidence 1.0})))
+                           vec)]
+    {:concepts concepts
+     :relationships relationships
+     :tbox {:classes [] :object-properties [] :datatype-properties []}
+     :abox []}))
+
 (defn extract-from-source
   "Extract concepts and relationships from a source.
    Dispatches to the appropriate ORC extraction pipeline based on source type.
@@ -545,7 +632,7 @@
                         {:source-id source-id :source-type source-type}))))
 
     "json" (extract-concepts-from-json ctx source-id content config)
-    "rdf" {:concepts [] :relationships []}   ;; TODO: RDF import
+    "rdf" (extract-concepts-from-rdf source-id content config)
 
     ;; Auto-detect based on content/path
     (cond
@@ -573,7 +660,8 @@
   (let [result
         (reduce (fn [{:keys [registered events registry-state]} source]
             (let [{:keys [path content type]} source
-                  content-loaded (when path (load-source-content (assoc source :type type)))
+                  content-loaded (when (and path (nil? content))
+                                   (load-source-content (assoc source :type type)))
                   actual-content (or content (:content content-loaded))
                   db-path (:db-path content-loaded)  ;; For SQL sources
 
@@ -753,6 +841,15 @@
         build-id (java.util.UUID/randomUUID)
         config (assoc config :ontology-id ontology-id)
 
+        lifecycle-event (->event {:type :ontology/ontology-created
+                                  :tags #{[:ontology ontology-id]}
+                                  :body {:ontology-id ontology-id
+                                         :name (or (:name config) (str "Source ontology " ontology-id))
+                                         :scope :custom
+                                         :description "Ontology built from registered sources"
+                                         :base-uri (:base-uri config)
+                                         :created-at (str (java.time.Instant/now))}})
+
         ;; Build start event
         start-event (->event {:type :evolutionary/build-started
                               :tags #{[:ontology ontology-id]
@@ -901,7 +998,7 @@
                                           :completed-at (str (java.time.Instant/now))}})
 
         ;; Collect all events (embedding events may be nil)
-        all-events (concat [start-event]
+        all-events (concat [lifecycle-event start-event]
                            registration-events
                            extraction-events
                            [resolution-event]
@@ -957,7 +1054,10 @@
         ;; Load existing state
         existing-events (into []
                               (event-store/read event-store
-                                                (cond-> {:types #{:evolutionary/source-registered
+                                                (cond-> {:types #{:ontology/ontology-created
+                                                                  :ontology/concept-created
+                                                                  :ontology/relationship-created
+                                                                  :evolutionary/source-registered
                                                                   :evolutionary/concepts-extracted
                                                                   :evolutionary/relationships-extracted
                                                                   :evolutionary/entities-resolved}
@@ -968,18 +1068,33 @@
         read-models (source-registry/build-read-models existing-events)
 
         ;; Get existing labels/URIs for incremental resolution
-        existing-concept-events (filter #(= :evolutionary/concepts-extracted (:event/type %))
+        existing-concept-events (filter #(contains? #{:ontology/concept-created
+                                                      :evolutionary/concepts-extracted}
+                                                    (:event/type %))
                                         existing-events)
         existing-concepts (->> existing-concept-events
-                               (mapcat #(or (get-in % [:body :concepts])
-                                            (:concepts %)))
+                               (mapcat #(if (= :ontology/concept-created (:event/type %))
+                                          [(cond-> {:uri (:uri %)
+                                                    :label (:label %)
+                                                    :definition (:description %)
+                                                    :entity-type (name (:scope %))
+                                                    :concept-id (:concept-id %)
+                                                    :provenance (:provenance %)}
+                                             (:created-at %) (assoc :created-at (:created-at %)))]
+                                          (or (get-in % [:body :concepts])
+                                              (:concepts %))))
                                vec)
         existing-uris (set (map :uri existing-concepts))
         existing-relationships (->> existing-events
-                                    (filter #(= :evolutionary/relationships-extracted
-                                                (:event/type %)))
-                                    (mapcat #(or (get-in % [:body :relationships])
-                                                 (:relationships %)))
+                                    (filter #(contains? #{:ontology/relationship-created
+                                                         :evolutionary/relationships-extracted}
+                                                       (:event/type %)))
+                                    (mapcat #(if (= :ontology/relationship-created (:event/type %))
+                                               [{:subject (:source-uri %)
+                                                 :predicate (:predicate %)
+                                                 :object (:target-uri %)}]
+                                               (or (get-in % [:body :relationships])
+                                                   (:relationships %))))
                                     vec)
 
         ;; Build start event

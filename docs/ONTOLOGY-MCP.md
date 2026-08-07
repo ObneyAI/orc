@@ -2,6 +2,13 @@
 
 This guide covers how to integrate the ObneyAI Ontology MCP Server with external agents, Claude Code, and other MCP-compatible clients.
 
+The MCP tool set documented here is a read/exploration surface and does not expose the
+custom graph lifecycle. JVM consumers that need to create an empty ontology, add or
+update concepts, or create relationships should use the tenant-scoped functions in
+`ai.obney.orc.ontology.interface`. See
+[ONTOLOGY.md — Ontology Lifecycle](ONTOLOGY.md#ontology-lifecycle). Do not load internal
+command namespaces as an external mutation API.
+
 ## Quick Start
 
 ### Starting the Server

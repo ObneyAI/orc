@@ -708,6 +708,18 @@
                                   (.getBytes "tree-class-ontology" "UTF-8"))
           shell-uri (str "tree-class:" shell-id)
           concepts (rmp/project context :ontology/concepts)]
+      (when-not (ontology/ontology-exists? context behavioral-ontology-id)
+        (ontology/create-ontology! context
+                                   {:command/id behavioral-ontology-id
+                                    :name "Behavioral subtree ontology"
+                                    :scope :behavioral-subtree
+                                    :base-uri "behavioral-subtree:"}))
+      (when-not (ontology/ontology-exists? context tree-class-ontology-id)
+        (ontology/create-ontology! context
+                                   {:command/id tree-class-ontology-id
+                                    :name "Tree class ontology"
+                                    :scope :tree-class
+                                    :base-uri "tree-class:"}))
       (doseq [behavior-id behavior-ids]
         (let [behavior-uri (str "behavioral-subtree:" behavior-id)
               already-linked? (contains? (get-in concepts [behavior-uri :composes-into])
@@ -722,8 +734,7 @@
                       :target-ontology-id tree-class-ontology-id
                       :source-uri behavior-uri
                       :target-uri shell-uri
-                      :predicate "behavior:composes-into"
-                      :properties {}}))))))))
+                      :predicate "behavior:composes-into"}))))))))
 
 (defn maybe-hydrate-parent-tree-id
   "Return `body` possibly with :parent-tree-id assoc'ed per the C-2d-2

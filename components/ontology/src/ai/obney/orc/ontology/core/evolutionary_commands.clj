@@ -4,9 +4,11 @@
    These commands replace direct event-store/append calls with proper
    CQRS command processing through the Grain command processor."
   (:require [ai.obney.orc.ontology.core.evolutionary-builder :as builder]
+            [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [ai.obney.grain.event-store-v3.interface :as event-store]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [cognitect.anomalies :as anom]))
 
 (defcommand :ontology build-from-sources
   "Build ontology from sources in batch mode."
@@ -20,11 +22,14 @@
 (defcommand :ontology evolve
   "Evolve existing ontology with new sources."
   [ctx]
-  (let [params (select-keys (:command ctx) [:ontology-id :sources :config])
-        result (builder/evolve ctx params)
-        events (vec (or (:events result) []))]
-    {:command-result/events events
-     :command/result (dissoc result :events)}))
+  (let [params (select-keys (:command ctx) [:ontology-id :sources :config])]
+    (if-not (rm/ontology-exists? ctx (:ontology-id params))
+      {::anom/category ::anom/not-found
+       ::anom/message (str "Ontology not found: " (:ontology-id params))}
+      (let [result (builder/evolve ctx params)
+            events (vec (or (:events result) []))]
+        {:command-result/events events
+         :command/result (dissoc result :events)}))))
 
 (defcommand :ontology record-colbert-index
   "Record that a ColBERT index was created for an ontology."

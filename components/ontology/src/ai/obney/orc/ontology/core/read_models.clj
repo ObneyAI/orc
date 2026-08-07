@@ -67,6 +67,31 @@
              discovery-events))
 
 ;; =============================================================================
+;; Ontology Lifecycle Projection
+;; =============================================================================
+
+(defmulti ontologies* (fn [_state event] (:event/type event)))
+
+(defmethod ontologies* :ontology/ontology-created
+  [state event]
+  (assoc state (:ontology-id event)
+         (cond-> {:ontology-id (:ontology-id event)
+                  :name (:name event)
+                  :scope (:scope event)
+                  :created-at (str (:created-at event))}
+           (contains? event :description) (assoc :description (:description event))
+           (contains? event :base-uri) (assoc :base-uri (:base-uri event)))))
+
+(defmethod ontologies* :default [state _] state)
+
+(defn ontologies [initial-state events]
+  (reduce ontologies* initial-state events))
+
+(defreadmodel :ontology ontologies
+  {:events ontology-events, :version 1}
+  [state event] (ontologies* state event))
+
+;; =============================================================================
 ;; Concepts Projection
 ;; =============================================================================
 ;; Builds the concept graph with broader/narrower/related relationships
@@ -96,6 +121,7 @@
           :narrower #{}
           :related #{}
           :indicators (or (:indicators event) [])
+          :provenance (or (:provenance event) {:kind :system-static})
           :created-at (str (:created-at event))
           ::projection-order (count state)})))
 
@@ -103,7 +129,12 @@
   [state event]
   (if-let [[concept-key _] (some #(when (= (:concept-id event) (:id (val %))) %)
                                   state)]
-    (update state concept-key merge (:changes event))
+    (update state concept-key merge
+            (cond-> (:changes event)
+              (contains? (:changes event) :broader)
+              (update :broader set)
+              true
+              (assoc :updated-at (str (:updated-at event)))))
     state))
 
 (defn- concept-keys-for-uri [state uri ontology-id]
@@ -164,28 +195,38 @@
   (let [ontology-id (:ontology-id event)]
     (reduce (fn [acc concept]
               (let [uri (:uri concept)]
-                (let [existing (get acc uri)
-                      acc (if (and existing (not= (:ontology-id existing) ontology-id))
+                (let [existing-key (first (concept-keys-for-uri acc uri ontology-id))
+                      existing (get acc existing-key)
+                      uri-existing (get acc uri)
+                      acc (if (and uri-existing
+                                   (not= (:ontology-id uri-existing) ontology-id))
                             (-> acc
                                 (dissoc uri)
-                                (assoc [(:ontology-id existing) uri] existing))
+                                (assoc [(:ontology-id uri-existing) uri] uri-existing))
                             acc)]
-                  (assoc acc uri
-                       {:uri uri
-                        :id nil  ;; No concept-id from evolutionary path
-                        :ontology-id ontology-id
-                        :label (:label concept)
-                        :description (or (:definition concept) "")
-                        :scope (keyword (or (:entity-type concept) "entity"))
-                        :broader #{}
-                        :narrower #{}
-                        :related #{}
-                        :indicators []
-                        :alt-labels (or (:alt-labels concept) [])
-                        :confidence (:confidence concept 1.0)
-                        :source-id (:source-id concept)
-                        :created-at (:extracted-at event)
-                        ::projection-order (count acc)}))))
+                  (if existing
+                    acc
+                    (assoc acc uri
+                           {:uri uri
+                            ;; Extraction has no separate create command. Use
+                            ;; ontology-scoped URI identity so replay is stable.
+                            :id (java.util.UUID/nameUUIDFromBytes
+                                 (.getBytes (str ontology-id "|" uri) "UTF-8"))
+                            :ontology-id ontology-id
+                            :label (:label concept)
+                            :description (or (:definition concept) "")
+                            :scope (keyword (or (:entity-type concept) "entity"))
+                            :broader #{}
+                            :narrower #{}
+                            :related #{}
+                            :indicators []
+                            :provenance {:kind :source-extracted
+                                         :source-reference (some-> (:source-id concept) str)}
+                            :alt-labels (or (:alt-labels concept) [])
+                            :confidence (:confidence concept 1.0)
+                            :source-id (:source-id concept)
+                            :created-at (:extracted-at event)
+                            ::projection-order (count acc)})))))
             state
             (:concepts event))))
 
@@ -961,6 +1002,18 @@
       scope (filter #(= scope (:scope %)))
       broader-uri (filter #(contains? (:broader %) broader-uri))
       ont-id-set (filter #(contains? ont-id-set (:ontology-id %))))))
+
+(defn get-ontology [ctx ontology-id]
+  (get (rmp/project ctx :ontology/ontologies) ontology-id))
+
+(defn list-ontologies [ctx]
+  (->> (rmp/project ctx :ontology/ontologies)
+       vals
+       (sort-by (juxt :created-at :ontology-id))
+       vec))
+
+(defn ontology-exists? [ctx ontology-id]
+  (boolean (get-ontology ctx ontology-id)))
 
 (defn get-concept-by-uri
   "Get a concept by ontology identity and URI. The legacy two-argument form

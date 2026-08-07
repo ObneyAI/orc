@@ -69,6 +69,40 @@ See `src/ai/obney/orc/ontology/interface.clj` for the complete public API.
 (ontology/format-context-for-llm context)
 ```
 
+### Supported custom concept graph lifecycle
+
+```clojure
+(require '[ai.obney.orc.ontology.interface :as ontology])
+
+(def ontology-id
+  (:ontology-id
+   (ontology/create-ontology!
+    ctx {:name "Application concepts" :scope :custom})))
+
+(def concept
+  (ontology/create-concept!
+   ctx ontology-id
+   {:uri "urn:app:concept"
+    :label "Application concept"
+    :description "A durable application-owned concept"
+    :scope :custom
+    :provenance {:kind :human-authored}}))
+
+(ontology/update-concept!
+ ctx ontology-id (:concept-id concept)
+ {:description "An updated description with the same identity"})
+
+(ontology/get-ontology ctx ontology-id)
+(ontology/get-concept-by-uri ctx ontology-id "urn:app:concept")
+```
+
+The public interface also provides `list-ontologies`, `ontology-exists?`, and
+`create-relationship!`. Mutations validate tenant-visible lifecycle state, URI and edge
+uniqueness, broader endpoints/cycles, and supported predicates. Reuse a persisted
+`:command/id` to reconcile a retry without appending a duplicate. See
+[ONTOLOGY.md — Ontology Lifecycle](../../docs/ONTOLOGY.md#ontology-lifecycle) for the
+complete contract.
+
 ### Evolutionary sources and tenant-scoped queries
 
 ```clojure
@@ -87,6 +121,11 @@ See `src/ai/obney/orc/ontology/interface.clj` for the complete public API.
 These public reads preserve `:tenant-id` from `ctx`, even when tenants use
 colliding ontology/source/URI identifiers. Model-derived extraction and Living
 Description events retain model/usage provenance when available.
+
+`evolutionary/evolve` can grow an ontology created through `create-ontology!`, including
+an initially empty one. CSV, JSON, SQL, and text use their source-aware extractors;
+`:type "rdf"` accepts deterministic N-Triples. Existing manually authored concepts win
+exact URI resolution and extracted concepts retain source provenance.
 
 ### Self-Learning
 

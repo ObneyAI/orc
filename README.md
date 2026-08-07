@@ -169,7 +169,7 @@ The full opt-in layer table, dependency graph, and known issues live in **[docs/
 | **gepa** | `ai.obney.orc.gepa` | LLM instruction optimization with Pareto frontier selection |
 | **evaluation** | `ai.obney.orc.evaluation` | LLM-as-judge evaluation (grounding, reasoning, completeness) |
 | **colbert** | `ai.obney.orc.colbert` | Pure-JVM late-interaction retrieval (DJL OnnxRuntime, exact MaxSim) |
-| **ontology** | `ai.obney.orc.ontology` | Three-layer concept graph with embeddings and pattern discovery |
+| **ontology** | `ai.obney.orc.ontology` | Event-sourced custom concept graphs, source evolution, embeddings, and pattern discovery |
 | **mcp-sheet-builder** | `ai.obney.orc.mcp-sheet-builder` | Dynamic workflow generation from MCP tool schemas |
 | **langfuse** | `ai.obney.orc.langfuse` | Observability and tracing integration |
 
@@ -246,6 +246,14 @@ controls for long-running and adaptive workloads:
 Model-backed evaluation, optimization, and ontology artifacts retain resolved
 model and usage provenance. All public ontology reads—including aggregate
 statistics—honor `:tenant-id` from the caller context.
+
+The ontology package also exposes a supported event-sourced custom graph lifecycle:
+`create-ontology!`, `create-concept!`, `update-concept!`, and
+`create-relationship!`, with tenant-scoped lifecycle queries, validated identities and
+edges, replay-safe command-ID retries, and typed concept provenance. Manually created
+graphs can later be grown through `evolutionary/evolve`; deterministic N-Triples RDF is
+supported alongside CSV, JSON, SQL, and text sources. See
+[Ontology Lifecycle](docs/ONTOLOGY.md#ontology-lifecycle).
 
 ## Node Types
 

@@ -18,8 +18,27 @@
 ;; Concept Queries
 ;; =============================================================================
 
+(defn tenant-scoped? [ctx]
+  (some? (:tenant-id ctx)))
+
+(defquery :ontology get-ontology
+  "Get an ontology lifecycle record by stable identity."
+  {:authorized? tenant-scoped?}
+  [{{:keys [ontology-id]} :query :as ctx}]
+  (if-let [ontology (rm/get-ontology ctx ontology-id)]
+    {:query/result ontology}
+    {::anom/category ::anom/not-found
+     ::anom/message (str "Ontology not found: " ontology-id)}))
+
+(defquery :ontology list-ontologies
+  "List ontology lifecycle records visible to the caller's tenant."
+  {:authorized? tenant-scoped?}
+  [{:keys [] :as ctx}]
+  {:query/result (rm/list-ontologies ctx)})
+
 (defquery :ontology get-concepts
   "Get concepts from the ontology, optionally filtered by scope or broader URI."
+  {:authorized? tenant-scoped?}
   [{{:keys [scope broader-uri include-narrower?]} :query
     :keys [event-store] :as ctx}]
   (let [concepts (rm/get-concepts ctx {:scope scope :broader-uri broader-uri})
@@ -34,6 +53,7 @@
 
 (defquery :ontology get-concept
   "Get a single concept by URI."
+  {:authorized? tenant-scoped?}
   [{{:keys [ontology-id uri]} :query
     :keys [event-store] :as ctx}]
   (if-let [concept (if ontology-id
@@ -56,6 +76,7 @@
 
 (defquery :ontology concept-statistics
   "Get statistics about the concept graph."
+  {:authorized? tenant-scoped?}
   [{{:keys []} :query
     :keys [event-store] :as ctx}]
   {:query/result (rm/concept-statistics ctx)})

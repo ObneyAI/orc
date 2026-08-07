@@ -256,19 +256,28 @@
   "Lazy-create a tree-class concept (the structural shell) directly so the
    composes-into edge has a target URI to point at."
   [ctx shell-id]
-  (cp/process-command
-    (assoc ctx :command
-           {:command/name :ontology/create-concept
-            :command/id (random-uuid)
-            :command/timestamp (time/now)
-            :ontology-id (java.util.UUID/nameUUIDFromBytes
-                           (.getBytes "tree-class-ontology" "UTF-8"))
-            :uri (str "tree-class:" shell-id)
-            :label (str shell-id)
-            :description (str "Tree-class concept for " shell-id)
-            :scope :tree-class
-            :broader []
-            :indicators []})))
+  (let [ontology-id (java.util.UUID/nameUUIDFromBytes
+                     (.getBytes "tree-class-ontology" "UTF-8"))]
+    (cp/process-command
+      (assoc ctx :command
+             {:command/name :ontology/create-ontology
+              :command/id ontology-id
+              :command/timestamp (time/now)
+              :name "Tree class ontology"
+              :scope :tree-class
+              :base-uri "tree-class:"}))
+    (cp/process-command
+      (assoc ctx :command
+             {:command/name :ontology/create-concept
+              :command/id (random-uuid)
+              :command/timestamp (time/now)
+              :ontology-id ontology-id
+              :uri (str "tree-class:" shell-id)
+              :label (str shell-id)
+              :description (str "Tree-class concept for " shell-id)
+              :scope :tree-class
+              :broader []
+              :indicators []}))))
 
 (defn- count-composes-into [ctx behavior-uri]
   (count (get-in (rmp/project ctx :ontology/concepts)

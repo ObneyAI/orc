@@ -79,3 +79,15 @@ This is a characterized baseline, not an allowlist for future warnings. Agents
 must review every newly introduced or changed diagnostic, update this table when
 the accepted baseline deliberately changes, and avoid claiming a clean Allium
 gate while either command exits non-zero.
+# Custom ontology lifecycle alignment (2026-08-07)
+
+The ontology domain now specifies an empty custom-ontology lifecycle, typed
+concept provenance and updates, explicit concept/edge uniqueness, supported
+relationship predicates, tenant-scoped lifecycle reads, and interoperability
+between manual and evolutionary graph mutations. Deterministic end-to-end
+obligations DET-E2E-121 and DET-E2E-122 are verified through the public command
+path, including retry semantics, tenant collision handling, graph validation,
+and projection replay. DET-E2E-123 exercises a registered deterministic
+N-Triples source through the public evolution boundary, including manual URI
+canonicalization, extracted provenance, unified graph relationships, and
+projection replay.

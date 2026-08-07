@@ -35,6 +35,8 @@
             [ai.obney.orc.ontology.core.task-classifier :as task-classifier]
             [ai.obney.orc.ontology.core.seeds :as seeds]
             [ai.obney.grain.event-store-v3.interface :as event-store]
+            [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [com.brunobonacci.mulog :as u]))
 
@@ -82,6 +84,49 @@
 ;; =============================================================================
 ;; Concept Graph Queries (Event-Sourced)
 ;; =============================================================================
+
+(defn get-ontology [ctx ontology-id]
+  (rm/get-ontology ctx ontology-id))
+
+(defn list-ontologies
+  ([ctx] (rm/list-ontologies ctx))
+  ([ctx _opts] (rm/list-ontologies ctx)))
+
+(defn ontology-exists? [ctx ontology-id]
+  (rm/ontology-exists? ctx ontology-id))
+
+(defn- process-ontology-command [ctx command-name params]
+  (let [command-id (or (:command/id params) (random-uuid))
+        result (cp/process-command
+                (assoc ctx :command
+                       (merge {:command/id command-id
+                               :command/timestamp (or (:command/timestamp params) (time/now))
+                               :command/name command-name}
+                              (dissoc params :command/id :command/timestamp))))]
+    (if (:cognitect.anomalies/category result)
+      result
+      (merge (:command-result/data result)
+             {:events (:command-result/events result)}))))
+
+(defn create-ontology! [ctx params]
+  (process-ontology-command ctx :ontology/create-ontology params))
+
+(defn create-concept! [ctx ontology-id concept]
+  (process-ontology-command ctx :ontology/create-concept
+                            (assoc concept :ontology-id ontology-id)))
+
+(defn update-concept!
+  ([ctx ontology-id concept-id changes]
+   (update-concept! ctx ontology-id concept-id changes nil))
+  ([ctx ontology-id concept-id changes command-meta]
+   (process-ontology-command ctx :ontology/update-concept
+                             (merge {:ontology-id ontology-id
+                                     :concept-id concept-id
+                                     :changes changes}
+                                    command-meta))))
+
+(defn create-relationship! [ctx relationship]
+  (process-ontology-command ctx :ontology/create-relationship relationship))
 
 (defn get-concepts
   "Get concepts from the event-sourced concept graph.
@@ -2194,7 +2239,7 @@
      - \"text\" - Text documents (provide :domain in config)
      - \"sql\"/\"sqlite\"/\"db\" - SQLite databases
      - \"json\" - JSON files/data (provide :domain in config for better extraction)
-     - \"rdf\" - RDF/OWL imports (planned)
+     - \"rdf\" - Deterministic N-Triples RDF imports
 
    Returns:
      {:ontology-id uuid
@@ -2322,7 +2367,7 @@
      - .db/.sqlite → SQL extraction
      - .txt/.md → Text extraction
      - .json → JSON extraction (planned)
-     - .ttl/.rdf/.owl → RDF import (planned)
+     - RDF content with :type \"rdf\" → deterministic N-Triples import
 
    Returns:
      {:status :success/:failed/:not-implemented

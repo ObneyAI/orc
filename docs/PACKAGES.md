@@ -96,15 +96,19 @@ obneyai/orc-gepa {:git/url "https://github.com/ObneyAI/orc.git"
 
 The engine plus the general-purpose ontology: an event-sourced concept graph,
 DJL embeddings (in-JVM, `all-MiniLM-L6-v2` by default, any HuggingFace
-sentence-transformer via `:model-id`), the evolutionary builder (ingest
-CSV/JSON/SQL/text), and the self-improving loop's write-side (consolidator,
-Living Descriptions, classifier). Retrieval runs on **graph BFS + DJL
+sentence-transformer via `:model-id`), a supported custom graph lifecycle, the
+evolutionary builder (ingest CSV/JSON/SQL/text or deterministic N-Triples RDF),
+and the self-improving loop's write-side (consolidator, Living Descriptions,
+classifier). Retrieval runs on **graph BFS + DJL
 embeddings**. ColBERT is resolved lazily; add `orc-colbert` for the
 third signal.
 
 Every evolutionary public read is tenant-scoped through the caller context,
 including source/concept/history/statistics queries. Learned descriptions and
 source extractions retain model provenance when model evidence is available.
+The public lifecycle API creates empty ontologies, validates concept/update/relationship
+mutations, returns stable identities, and supports command-ID retry reconciliation.
+`evolve` can add registered sources to those manually created ontologies.
 
 ```clojure
 obneyai/orc-ontology {:git/url "https://github.com/ObneyAI/orc.git"

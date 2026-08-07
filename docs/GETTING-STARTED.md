@@ -1009,9 +1009,43 @@ you can use for anything:
   parameter isolates each graph so multiple separate graphs coexist in the same event
   store without interfering with each other
 
-### Building a concept graph from CSV
+### Creating a custom graph directly
 
-`build-from-sources` (`interface/evolutionary.clj`) ingests CSV, JSON, text, or SQL and
+For a curated graph, start with an empty ontology and use the supported public mutation
+functions. The lifecycle and every lookup are tenant-scoped through `ctx`.
+
+```clojure
+(require '[ai.obney.orc.ontology.interface :as ontology])
+
+(def memory
+  (ontology/create-ontology!
+   ctx {:name "Contract concepts"
+        :scope :custom
+        :base-uri "urn:contracts:"}))
+
+(def memory-id (:ontology-id memory))
+
+(ontology/create-concept!
+ ctx memory-id
+ {:uri "urn:contracts:governing-law"
+  :label "Governing law"
+  :description "The jurisdiction whose law controls an agreement"
+  :scope :custom
+  :provenance {:kind :human-authored}})
+
+(ontology/get-concept-by-uri ctx memory-id "urn:contracts:governing-law")
+```
+
+Keep a caller-generated `:command/id` with any outbound mutation and reuse it after a
+lost response; retrying the same ID does not append a duplicate. Duplicate URIs within
+one ontology are rejected, while the same URI in a different ontology remains legal.
+See [ONTOLOGY.md — Ontology Lifecycle](ONTOLOGY.md#ontology-lifecycle) for updates,
+relationships, provenance, validation, and recovery semantics.
+
+### Building a concept graph from sources
+
+`build-from-sources` (`interface/evolutionary.clj`) ingests CSV, JSON, text, SQL, or
+deterministic N-Triples RDF and
 extracts concepts. No file on disk required — pass content inline via `:content`:
 
 ```clojure
@@ -1046,6 +1080,10 @@ C005,License Scope,Grants of rights including sub-licensing exclusions.,licensin
 
 Keep the `:ontology-id`. You pass it to embedding and ColBERT search calls to scope
 results to this graph (see BFS scoping note below for an important caveat).
+
+To add sources later, call `evolutionary/evolve` with that ID. It also accepts an
+initially empty ontology returned by `ontology/create-ontology!`; manually created
+concepts remain canonical when extraction encounters the same scoped URI.
 
 ### `embed-text` — 384-dim vector
 

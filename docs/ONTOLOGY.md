@@ -50,10 +50,11 @@ powers `semantic-search-concepts` (query text → most similar stored concepts).
 
 ### Step 2 — Ingest your own source into a concept graph
 
-Point the **evolutionary builder** at your own data — CSV, JSON, SQL, or plain text — and it
-uses ORC behavior trees to LLM-discover concepts, deduplicate them against the existing graph,
-generate definitions, discover relationships, and embed on write. No file on disk needed; pass
-content inline via `:content`:
+Point the **evolutionary builder** at your own data — CSV, JSON, SQL, N-Triples RDF,
+or plain text. Model-backed extractors use ORC behavior trees to discover concepts,
+deduplicate them against the existing graph, generate definitions, and discover
+relationships. RDF import is deterministic. No file on disk is needed; pass content
+inline via `:content`:
 
 ```clojure
 (require '[ai.obney.orc.ontology.interface.evolutionary :as evolutionary])
@@ -185,9 +186,12 @@ The self-improving loop's failure/success/problem taxonomy is the **built-in app
 
 ## The evolutionary builder
 
-The evolutionary builder is the **general write-side adapter** for growing a concept graph from heterogeneous sources. It is **not the system** — it is one of several write-side adapters alongside direct commands (`:ontology/create-concept`) and the static initializer.
+The evolutionary builder is the **general write-side adapter** for growing a concept
+graph from heterogeneous sources. It is **not the system** — it is one of several
+write-side adapters alongside the public custom-graph mutation functions and the static
+initializer.
 
-Given CSV, JSON, SQL, or plain text, the builder uses ORC behavior trees to LLM-discover concepts, compare against the existing graph, deduplicate, generate definitions, discover relationships, and embed on write. Entry points: `build-from-sources` and `evolve` in `interface/evolutionary.clj`.
+Given CSV, JSON, SQL, or plain text, the builder uses ORC behavior trees to LLM-discover concepts, compare against the existing graph, deduplicate, generate definitions, discover relationships, and embed on write. RDF sources use a deterministic N-Triples importer rather than an LLM. Entry points: `build-from-sources` and `evolve` in `interface/evolutionary.clj`.
 
 ```clojure
 (require '[ai.obney.orc.ontology.interface.evolutionary :as evolutionary])
@@ -249,6 +253,10 @@ The ontology component enables:
                     ├─────────────────────────────────────────┤
     Commands ──────►│  commands.clj                           │
                     │    - :ontology/initialize-static-ontology│
+                    │    - :ontology/create-ontology          │
+                    │    - :ontology/create-concept           │
+                    │    - :ontology/update-concept           │
+                    │    - :ontology/create-relationship      │
                     │    - :ontology/record-tree-strength      │
                     │    - :ontology/record-tree-weakness      │
                     │    - :ontology/record-problem-mapping    │
@@ -265,6 +273,7 @@ The ontology component enables:
                     │    - :ontology/tree-profile-embedded    │
                     ├─────────────────────────────────────────┤
                     │  Read Models (Projections)              │
+                    │    - ontologies* → lifecycle state      │
                     │    - concepts* → URI→Concept graph      │
                     │    - tree-profiles* → Strengths/Weak    │
                     │    - node-experiences* → Patterns       │
@@ -429,12 +438,28 @@ The ontology component enables:
 
 | Function | Description |
 |----------|-------------|
+| `get-ontology` | Get one tenant-scoped ontology lifecycle record |
+| `list-ontologies` | List lifecycle records visible to the caller tenant |
+| `ontology-exists?` | Test tenant-scoped ontology existence |
 | `get-concepts` | Query concept graph from events |
-| `get-concept-by-uri` | Get single concept by URI |
+| `get-concept-by-uri` | Get a concept; prefer `(ctx ontology-id uri)` to avoid ambiguity |
 | `get-tree-profile` | Get tree profile with strengths/weaknesses |
 | `get-all-tree-profiles` | Get all tree profiles |
 | `get-node-type-learnings` | Get patterns for a node type |
 | `get-all-node-learnings` | Get all node patterns |
+
+### Custom Graph Mutations
+
+| Function | Description |
+|----------|-------------|
+| `create-ontology!` | Create an initially empty event-sourced ontology |
+| `create-concept!` | Add a validated, ontology-scoped concept with typed provenance |
+| `update-concept!` | Update explicit descriptive fields without changing URI identity |
+| `create-relationship!` | Add a validated edge between existing tenant-visible endpoints |
+
+These wrappers return generated IDs and `:events`, and pass Grain anomalies through
+unchanged. Supply and retry the same `:command/id` when the calling process needs
+crash-safe reconciliation.
 
 ### Serialization
 
@@ -1282,32 +1307,150 @@ Which rule applies? What action should be taken?"
 
 ### Creating New Ontologies
 
-The system includes a built-in three-layer ontology (failure, success, problem). You can extend it:
+ORC supports an empty, event-sourced custom ontology independently of its built-in
+failure/success/problem graph. Use `ai.obney.orc.ontology.interface`; its public
+functions construct Grain command metadata, preserve anomalies, and return generated
+identities plus emitted effects. Loading internal command namespaces is not part of the
+consumer contract. Every call is tenant-scoped through `ctx`.
 
 ```clojure
-;; Initialize the static ontology (built-in concepts)
-(ontology/initialize-static-ontology)
+(require '[ai.obney.orc.ontology.interface :as ontology])
 
-;; Add custom concepts to extend the ontology
-(require '[ai.obney.orc.ontology.core.commands :as cmd])
+(def created
+  (ontology/create-ontology!
+   ctx {:name "Principal concept graph"
+        :scope :custom
+        :description "Durable concepts for one principal relationship"
+        :base-uri "urn:example:principal:"}))
 
-(cmd/ontology-create-concept
-  (assoc ctx :command
-    {:ontology-id ontology-id
-     :uri "custom:MyDomainConcept"
-     :label "My Domain Concept"
-     :description "A custom concept for my domain"
-     :scope :custom
-     :broader ["problem:Analysis"]  ;; Parent concept
-     :indicators ["indicator1" "indicator2"]}))
+(def ontology-id (:ontology-id created))
+;; created => {:ontology-id #uuid "..." :events [...]}
 
-;; Create relationships between concepts
-(cmd/ontology-create-relationship
-  (assoc ctx :command
-    {:source-uri "custom:MyDomainConcept"
-     :target-uri "custom:RelatedConcept"
-     :predicate "skos:related"}))
+(ontology/get-ontology ctx ontology-id)
+;; => {:ontology-id #uuid "..." :name "Principal concept graph"
+;;     :scope :custom :description "..." :base-uri "..." :created-at "..."}
+
+(ontology/ontology-exists? ctx ontology-id) ; => true
+(ontology/list-ontologies ctx)              ; => [{:ontology-id ...} ...]
 ```
+
+Names and base URIs need not be globally unique. Durable identity is the
+tenant-scoped `ontology-id`; equal metadata in another tenant remains isolated.
+
+### Adding and Updating Concepts
+
+```clojure
+(def parent
+  (ontology/create-concept!
+   ctx ontology-id
+   {:uri "urn:example:communication"
+    :label "Communication"
+    :description "Communication preferences"
+    :scope :custom
+    :provenance {:kind :human-authored :created-by "principal:123"}}))
+
+(def child
+  (ontology/create-concept!
+   ctx ontology-id
+   {:uri "urn:example:concise-updates"
+    :label "Concise updates"
+    :description "A preference for concise status updates"
+    :scope :custom
+    :broader ["urn:example:communication"]
+    :indicators ["brief" "summary"]
+    :provenance {:kind :agent-authored
+                 :source-reference "source:conversation:456"
+                 :trace-id trace-id}}))
+
+(ontology/update-concept!
+ ctx ontology-id (:concept-id child)
+ {:description "A preference for concise, decision-oriented status updates"
+  :indicators ["brief" "summary" "decision"]})
+
+(ontology/get-concept-by-uri ctx ontology-id "urn:example:concise-updates")
+```
+
+`concept-id` identifies the creation event; `(ontology-id, uri)` is the scoped graph
+identity. URI is immutable through `update-concept!`; only `:label`, `:description`,
+`:broader`, and `:indicators` can change. Creation rejects nonexistent ontologies,
+blank required text, duplicate same-ontology URIs, and missing broader URIs. Updates
+reject missing identities, empty/no-op changes, missing broader concepts, and cycles.
+The same URI may exist in another ontology. An ambiguous unscoped lookup returns `nil`;
+prefer the three-argument `get-concept-by-uri` form above.
+
+Supported provenance kinds are `:human-authored`, `:agent-authored`,
+`:source-extracted`, `:imported`, and `:system-static`. Provenance records how a concept
+entered ORC. Consumer claims, evidence, access compartments, and judgments remain
+outside ORC and should reference concepts by ID and URI.
+
+### Linking Concepts
+
+```clojure
+(ontology/create-relationship!
+ ctx {:source-ontology-id ontology-id
+      :target-ontology-id ontology-id
+      :source-uri "urn:example:concise-updates"
+      :target-uri "urn:example:communication"
+      :predicate "skos:related"
+      :metadata {:source-reference "source:conversation:456"
+                 :trace-id trace-id}})
+;; => {:relationship-id #uuid "..." :source-uri ... :target-uri ...
+;;     :predicate "skos:related" :events [...]}
+```
+
+Both endpoints must exist in the caller's tenant. Supported predicates are
+`skos:broader`, `skos:narrower`, `skos:related`, and `behavior:composes-into`.
+Self-links and duplicate edges are rejected. SKOS links remain within one ontology;
+`behavior:composes-into` is the explicit cross-ontology composition seam. Metadata is
+limited to `:source-reference` and `:trace-id`.
+
+### Retry and Recovery Semantics
+
+The wrappers generate a Grain `:command/id` unless the caller supplies one. Persist a
+command ID with an outgoing mutation and reuse it for retries:
+
+```clojure
+(ontology/create-concept!
+ ctx ontology-id
+ {:command/id durable-command-id
+  :uri "urn:example:retry-safe"
+  :label "Retry-safe concept"
+  :description "Created at most once for this command identity"
+  :scope :custom})
+```
+
+Retrying ontology, concept, update, or relationship creation with the same command ID
+returns the durable identity without appending the mutation again. Projections rebuild
+the same state after restart. A semantic duplicate under a different command ID remains
+a conflict. Concept updates currently have no public optimistic-version precondition.
+
+### Evolving a Manually Created Ontology
+
+`evolve` accepts an ontology created by `create-ontology!`, including one with no prior
+evolutionary build. Existing manual concepts participate in URI resolution and remain
+canonical when a source extracts the same URI.
+
+```clojure
+(require '[ai.obney.orc.ontology.interface.evolutionary :as evolutionary])
+
+(evolutionary/evolve
+ ctx {:ontology-id ontology-id
+      :sources [{:path "memory://principal-concepts.nt"
+                 :type "rdf"
+                 :content (str
+                           "<urn:example:concise-updates> "
+                           "<http://www.w3.org/2000/01/rdf-schema#label> "
+                           "\"Concise updates\" .\n"
+                           "<urn:example:concise-updates> "
+                           "<http://www.w3.org/2004/02/skos/core#broader> "
+                           "<urn:example:communication> .\n")}]})
+```
+
+RDF import accepts deterministic N-Triples content. URI resources receive stable
+ontology-scoped identities; RDFS/SKOS labels and descriptions populate concept fields,
+and URI-object predicates join the same projected graph. Extracted concepts use
+`:source-extracted` provenance with their registered source identity. CSV, JSON, SQL,
+and text continue through their source-aware extraction pipelines.
 
 ### Evolutionary Data Flow
 

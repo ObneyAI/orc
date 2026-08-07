@@ -255,6 +255,18 @@ Record unexpected outcomes even when the final returned status is successful.
   - **Purpose:** Prove that tenant identity scopes every adaptive artifact and access path, including real model-derived data with colliding human-readable identifiers.
   - **Falsifiable predictions:** Every command/event/model trace includes the initiating tenant and `google/gemini-3.6-flash` where applicable; tenant-A public queries, retrieval results, injected guidance, GEPA population, streams, exports, and value resolution contain zero tenant-B stable IDs or unique sentinel values, and vice versa; tenant-scoped identities differ where required, while a deliberately colliding deterministic workflow ID resolves to each tenant's own distinct content hash; direct lookup returns no foreign artifact (an absent ID is empty and a colliding ID resolves only tenant-local state); replay and index rebuild preserve the same isolation; per-tenant event/projection counts equal independent control runs.
 
+- [x] **DET-E2E-121 — Custom ontology lifecycle, retry, and projection replay.**
+  - **Purpose:** Prove that a consumer can create an empty ontology, add and update concepts, link valid endpoints, retry safely, and reconstruct identical public state from events.
+  - **Falsifiable predictions:** Creation returns stable ontology, concept, and relationship identities; command-ID retry appends no duplicate mutation; duplicate semantic identities are rejected; invalid ontology, broader URI, endpoint, predicate, self-link, and empty update are rejected; typed provenance survives projection; clearing and rebuilding projections returns identical lifecycle and graph state.
+
+- [x] **DET-E2E-122 — Custom ontology tenant isolation under colliding identities.**
+  - **Purpose:** Prove every lifecycle mutation and lookup remains tenant-scoped even when ontology UUIDs, names, base URIs, and concept URIs collide.
+  - **Falsifiable predictions:** Each tenant reads only its own ontology and concept state; a foreign ontology cannot be used for create, update, or relationship endpoints; a relationship cannot bridge tenant state; scoped URI lookup is deterministic; unscoped collision lookup returns no concept; replay preserves isolation.
+
+- [x] **DET-E2E-123 — Manual ontology evolves through the unified graph lifecycle.**
+  - **Purpose:** Prove an initially empty manually created ontology can be evolved from sources without losing or duplicating manually authored concepts.
+  - **Falsifiable predictions:** Evolve recognizes lifecycle-only ontology state; manual concepts participate in URI deduplication and are preferred as existing canonical identities; extracted concepts and relationships join the same public graph; origin metadata distinguishes manual and extracted concepts; replay reconstructs the same unified graph.
+
 ## Recommended complex tranche
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions

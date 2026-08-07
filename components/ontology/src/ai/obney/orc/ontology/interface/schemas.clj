@@ -178,12 +178,25 @@
     [:scope ontology-scope]
     [:broader {:optional true} [:vector :string]]  ;; Parent URIs
     [:indicators {:optional true} [:vector :string]]  ;; Text patterns
+    [:provenance {:optional true}
+     [:map
+      [:kind [:enum :human-authored :agent-authored :source-extracted :imported :system-static]]
+      [:source-reference {:optional true} :string]
+      [:created-by {:optional true} :string]
+      [:trace-id {:optional true} :uuid]]]
     [:created-at :string]]
 
    :ontology/concept-updated
    [:map
+    [:update-id :uuid]
+    [:ontology-id :uuid]
     [:concept-id :uuid]
-    [:changes [:map-of :keyword :any]]
+    [:changes
+     [:map
+      [:label {:optional true} :string]
+      [:description {:optional true} :string]
+      [:broader {:optional true} [:vector :string]]
+      [:indicators {:optional true} [:vector :string]]]]
     [:updated-at :string]]
 
    :ontology/relationship-created
@@ -194,7 +207,10 @@
     [:source-uri :string]
     [:target-uri :string]
     [:predicate :string]                  ;; "skos:broader", "skos:related", "owl:causes"
-    [:properties {:optional true} [:map-of :keyword :any]]
+    [:metadata {:optional true}
+     [:map
+      [:source-reference {:optional true} :string]
+      [:trace-id {:optional true} :uuid]]]
     [:created-at :string]]
 
    ;; -------------------------------------------------------------------------
@@ -646,7 +662,24 @@
     [:description :string]
     [:scope ontology-scope]
     [:broader {:optional true} [:vector :string]]
-    [:indicators {:optional true} [:vector :string]]]
+    [:indicators {:optional true} [:vector :string]]
+    [:provenance {:optional true}
+     [:map
+      [:kind [:enum :human-authored :agent-authored :source-extracted :imported :system-static]]
+      [:source-reference {:optional true} :string]
+      [:created-by {:optional true} :string]
+      [:trace-id {:optional true} :uuid]]]]
+
+   :ontology/update-concept
+   [:map
+    [:ontology-id :uuid]
+    [:concept-id :uuid]
+    [:changes
+     [:map
+      [:label {:optional true} :string]
+      [:description {:optional true} :string]
+      [:broader {:optional true} [:vector :string]]
+      [:indicators {:optional true} [:vector :string]]]]]
 
    :ontology/create-relationship
    [:map
@@ -655,7 +688,10 @@
     [:source-uri :string]
     [:target-uri :string]
     [:predicate :string]
-    [:properties {:optional true} [:map-of :keyword :any]]]
+    [:metadata {:optional true}
+     [:map
+      [:source-reference {:optional true} :string]
+      [:trace-id {:optional true} :uuid]]]]
 
    :ontology/initialize-static-ontology
    [:map
@@ -1025,7 +1061,13 @@
 ;; =============================================================================
 
 (defschemas queries
-  {:ontology/get-concepts
+  {:ontology/get-ontology
+   [:map [:ontology-id :uuid]]
+
+   :ontology/list-ontologies
+   [:map]
+
+   :ontology/get-concepts
    [:map
     [:ontology-id {:optional true} [:or :uuid :string]]
     [:scope {:optional true} ontology-scope]
