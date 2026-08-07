@@ -614,6 +614,12 @@ rule ApplyAddClaim {
         supporting_episodes: delta.episodes,
         contradicting_episodes: [],
         legacy_provenance: delta.from_legacy_corpus,
+        -- Carried from the delta at creation and never rewritten afterwards;
+        -- ValidateAuthoredClaimAtCreation then reads it to decide whether this
+        -- claim is born enforcing. Naming it here is what makes
+        -- Claim.evidence_basis's "set at CREATION only" true of the rules
+        -- rather than only of the field comment.
+        evidence_basis: delta.evidence_basis,
         created_at: now,
         updated_at: now
     )
