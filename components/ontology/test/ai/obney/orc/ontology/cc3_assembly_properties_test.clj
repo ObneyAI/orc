@@ -211,10 +211,17 @@
               "a :guard claim reaches the domain penalty via body-level :avoid-when")
           (is (some #{"the edit produced no changes"} avoid)
               "a weakness's context-guard reaches it via the per-weakness :avoid-when")))
-      (testing "and EL-5's positive signal reads the assembled summary + good-whens"
+      ;; CC-16 (ADR 0026) — LABEL CORRECTED, ASSERTIONS UNCHANGED. The positive
+      ;; signal is the :good-when strings ALONE now; the assembled summary
+      ;; (:content) is no longer part of it. Both assertions below were already
+      ;; about the :good-when reaching the penalty, so they still hold — only the
+      ;; sentence describing them was stale.
+      (testing "and EL-5's positive signal reads the good-whens"
         (let [pos (dp/positive-strings enriched)]
           (is (some #{"gw-top"} pos))
-          (is (every? (complement str/blank?) pos)))))))
+          (is (every? (complement str/blank?) pos))
+          (is (not (some #{(:content enriched)} pos))
+              "the assembled summary is NOT a positive signal (ADR 0026)"))))))
 
 (deftest harvest-picks-the-best-supported-strengths-worked-dsl
   (with-test-ctx [ctx]

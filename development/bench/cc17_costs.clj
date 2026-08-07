@@ -61,7 +61,13 @@
 
 (defn body->candidate
   "The enriched-candidate shape domain-penalty reads (avoid-strings /
-   positive-strings), built from a real living-description body."
+   positive-strings), built from a real living-description body.
+
+   CC-16 note: this bench's document pools now read `legacy-positive-strings`
+   (`:content` + `:good-when`) so it keeps measuring EXACTLY the pool it measured
+   when the CC-17 evidence was captured. `positive-strings` is now the ADR-0026
+   `:good-when` signal alone; see development/bench/cc16_shadow_rate.clj for the
+   contrast distribution under BOTH readings."
   [body]
   {:content (:summary body)
    :avoid-when (vec (:avoid-when body))
@@ -93,7 +99,7 @@
         ;; RAW MaxSim over the same distinct guard set (ceiling + spread).
         docs (vec (distinct (remove str/blank?
                                     (concat (mapcat dp/avoid-strings candidates)
-                                            (mapcat dp/positive-strings candidates)))))
+                                            (mapcat dp/legacy-positive-strings candidates)))))
         raw (rerank {:query task :documents docs})
         scores (mapv :score raw)]
     {:limit limit
@@ -216,7 +222,7 @@
     (doseq [limit limits]
       (let [docs (vec (distinct (remove str/blank?
                                         (concat (mapcat dp/avoid-strings candidates)
-                                                (mapcat dp/positive-strings candidates)))))
+                                                (mapcat dp/legacy-positive-strings candidates)))))
             _ (operations/rerank {} {:query task :documents (vec (take 3 docs))
                                      :maximum-query-tokens limit})
             t0 (System/nanoTime)

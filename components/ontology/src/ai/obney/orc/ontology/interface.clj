@@ -749,11 +749,22 @@
    (domain-penalty/penalize-candidates). The JOIN below keys back onto
    the ENRICHED candidates (not the raw ColBERT ones) so the penalty
    pass can read each candidate's :avoid-when (negative signal) +
-   :content/:good-when (positive signal) — the same EL-2 evidence — and
+   :good-when (positive signal) — the same EL-2 evidence — and
    bite DETERMINISTICALLY where the LLM ignored the veto. The penalty
    re-sorts by the new fitness BEFORE (take k …). Output contract
    ({:document-id :reasoning :fitness-score}) is UNCHANGED (the extra
    :domain-penalty/:cos-* keys are additive observability).
+
+   CC-16 (ADR 0026 + ADR 0027): the positive signal is now the `:good-when`
+   strings ALONE — `:content` (the whole indexed description) was competing
+   with its own guard for the shared batch-relative normalizer. BOTH readings
+   are computed on every pass at zero extra cost and stamped
+   (`:cos-*-with-content` / `:cos-*-sans-content` / the two penalties), and
+   `:positive-signal` in `:domain-penalty-config` selects which one is APPLIED.
+   The shipped default APPLIES the pre-ADR-0026 reading (Stage 1: no behaviour
+   change) and shadows the other; the pass emits `::domain-penalty-pass` with
+   the firing rate and contrast distribution, so a silent gate is
+   distinguishable from an absent one.
 
    CC-9a (ADR 0022): on a CLAIM-BACKED candidate the penalty's negative
    signal is no longer the body's `:avoid-when` but the enrichment's

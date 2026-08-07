@@ -164,7 +164,27 @@
                                              (fn [score & {:keys [max-score]}]
                                                (/ (double score) max-score)))
                     [force-fit-candidate] "task")]
-        (is (= {:cos-avoid 0.5 :cos-good 0.3} (lookup force-fit-candidate)))))))
+        ;; CC-16 (ADR 0026 + 0027) — WIDENED FROM EXACT-MAP TO SUBSET, SAME
+        ;; CONTRACT. The applied cosines are unchanged (0.5 / 0.3); what changed
+        ;; is that every scorer now ALSO reports both positive-signal variants,
+        ;; because ADR 0027 requires the gate to be able to say what it is doing.
+        ;; `=` on the whole map asserted "the scorer reports nothing else", which
+        ;; is not the contract under test here — the contract is "an explicit
+        ;; :linear config still normalizes the group max by the fixed ceiling".
+        ;; The shadow keys are pinned separately below so widening loses nothing.
+        (is (= {:cos-avoid 0.5 :cos-good 0.3}
+               (select-keys (lookup force-fit-candidate) [:cos-avoid :cos-good]))
+            "the APPLIED cosines are the exact pre-Slice-3 fixed-ceiling values")
+        (is (= {:cos-avoid-with-content 0.5 :cos-good-with-content 0.3
+                :cos-avoid-sans-content 0.5 :cos-good-sans-content 0.25
+                :positive-signal :content+good-when}
+               (select-keys (lookup force-fit-candidate)
+                            [:cos-avoid-with-content :cos-good-with-content
+                             :cos-avoid-sans-content :cos-good-sans-content
+                             :positive-signal]))
+            "and BOTH positive-signal variants are reported: dropping :content
+             lowers cos-good from MAX(12,10)/40 to 10/40, the direction ADR 0026
+             predicts, while the applied variant is untouched")))))
 
 (deftest penalize-candidates-default-path-fires-on-relative-force-fit
   (testing "end-to-end through the production hot path (4-arity, default config,

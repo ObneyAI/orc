@@ -39,6 +39,20 @@
    "the task is to extract a helper, pull out a function, or otherwise refactor/restructure code — that is code-building/refactor, NOT a pure identity rename or move of an existing symbol"
    "the symbol is referenced beyond the file that defines it"
    "the task is strictly a rename/move with behavior preserved"])
+;; ⚠ CC-16 (ADR 0026) — READ THIS BEFORE CITING THIS PROBE AS EVIDENCE ABOUT
+;; PRODUCTION. The first string below is a 176-char STUB: the first sentence of
+;; the real rename-move-symbol summary. The REAL production summary is 796 chars
+;; and ENDS by restating the behavior's own avoid-conditions in prose ("Avoid
+;; when the task adds/changes behavior (code-building) or is a data reshape").
+;; P-B measured, same query and same guards, one variable:
+;;     176-char stub  -> batch-relative contrast +0.016049  (fires)
+;;     796-char real  -> batch-relative contrast +0.002612  (inert)
+;; So this probe's force-fit margin is a property of the STUB, not of production,
+;; and it cannot detect a positive signal that cancels its own guard. It is left
+;; unchanged because it pins the NORMALIZATION-VARIANT comparison it was built
+;; for (which is stub-independent); the production-shaped contract lives in
+;; ontology's cc16-positive-signal-test (deterministic, real measured scores)
+;; and development/bench/cc16_shadow_rate.clj (real encoder, real corpus).
 (def rename-good
   ["Rename-move-symbol is a behavior-preserving, EXHAUSTIVE cross-file identity refactor — rename a function everywhere, move a symbol to another namespace — changing NOTHING else."
    "the symbol is referenced from multiple files including tests"
