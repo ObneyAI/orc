@@ -81,6 +81,21 @@
     [:index-id :uuid]
     [:deleted-at :string]]
 
+   :colbert/index-activated
+   [:map
+    [:alias :string]
+    [:index-id :uuid]
+    [:previous-index-id {:optional true} :uuid]
+    [:activated-at :string]]
+
+   :colbert/index-activation-failed
+   [:map
+    [:alias :string]
+    [:index-id :uuid]
+    [:active-index-id {:optional true} :uuid]
+    [:error :string]
+    [:failed-at :string]]
+
    ;; =========================================================================
    ;; Search Audit Events
    ;; =========================================================================
@@ -123,6 +138,11 @@
 
    :colbert/delete-index
    [:map
+    [:index-id :uuid]]
+
+   :colbert/activate-index
+   [:map
+    [:alias :string]
     [:index-id :uuid]]
 
    :colbert/search

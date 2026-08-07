@@ -53,11 +53,37 @@
             [ai.obney.orc.gepa.core.proposer :as proposer]
             [ai.obney.orc.gepa.core.merge :as merge]
             [ai.obney.orc.gepa.core.reflection :as reflection]
-            [ai.obney.orc.gepa.core.todo-processors]
+            [ai.obney.orc.gepa.core.todo-processors :as todo]
             [ai.obney.orc.gepa.core.metrics :as metrics]
             [ai.obney.orc.gepa.core.optimization :as optimization]
+            [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.grain.command-processor-v2.interface :as command-processor]
             [ai.obney.grain.query-processor.interface :as query-processor]
-            [ai.obney.grain.event-store-v3.interface :as event-store]))
+            [ai.obney.grain.event-store-v3.interface :as event-store]
+            [ai.obney.grain.time.interface :as time]))
+
+(defn- sha256 [value]
+  (let [bytes (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                       (.getBytes (pr-str value)
+                                  java.nio.charset.StandardCharsets/UTF_8))]
+    (apply str (map #(format "%02x" (bit-and (int %) 0xff)) bytes))))
+
+(defn- command!
+  [ctx command]
+  (command-processor/process-command
+    (assoc ctx :command (merge {:command/id (random-uuid)
+                                :command/timestamp (time/now)}
+                               command))))
+
+(defn- snapshot-instructions
+  [version]
+  (letfn [(walk [node]
+            (cons (select-keys node [:name :instruction])
+                  (mapcat walk (:children node))))]
+    (->> (walk (get-in version [:snapshot :nodes]))
+         (keep (fn [{:keys [name instruction]}]
+                 (when (and name instruction) [name instruction])))
+         (into (sorted-map)))))
 
 ;; =============================================================================
 ;; Completion Registry (delegated to core.optimization)
@@ -173,6 +199,160 @@
    ```"
   [context opts]
   (optimization/optimize! context opts))
+
+(defn apply-winner!
+  "Apply a completed optimization winner to the workflow draft and publish a
+   new immutable version. `source-version` is mandatory: optimization
+   provenance must never silently follow a moving latest-version pointer.
+
+   Returns the source/target fingerprints and version identities."
+  [ctx optimization-id source-version]
+  (let [summary (rm/get-optimization-summary ctx optimization-id)
+        candidate (rm/get-best-candidate ctx optimization-id)
+        sheet-id (:sheet-id summary)
+        source (sheet/get-version ctx sheet-id source-version)]
+    (when-not (= :completed (:status summary))
+      (throw (ex-info "Only a completed optimization can be applied"
+                      {:optimization-id optimization-id :status (:status summary)})))
+    (when-not source
+      (throw (ex-info "Optimization source workflow version does not exist"
+                      {:sheet-id sheet-id :source-version source-version})))
+    (when-not candidate
+      (throw (ex-info "Completed optimization has no selected candidate"
+                      {:optimization-id optimization-id})))
+    (let [nodes-by-name (->> (sheet/get-nodes-for-sheet ctx sheet-id)
+                             (map (juxt :name identity))
+                             (into {}))
+          instructions (:instructions candidate)
+          missing (remove #(contains? nodes-by-name %) (keys instructions))]
+      (when (seq missing)
+        (throw (ex-info "Winner references workflow components that do not exist"
+                        {:missing-components (vec missing)})))
+      (doseq [[component instruction] instructions
+              :let [node (get nodes-by-name component)]]
+        (command! ctx {:command/name :sheet/set-node-instruction
+                       :sheet-id sheet-id
+                       :node-id (:id node)
+                       :instruction instruction}))
+      (command! ctx {:command/name :sheet/publish-version
+                     :sheet-id sheet-id
+                     :description (str "GEPA winner " (:candidate-id candidate)
+                                       " from workflow v" source-version)})
+      (let [target (sheet/get-latest-version ctx sheet-id)
+            target-version (:version-number target)
+            source-fingerprint (sha256 (snapshot-instructions source))
+            target-fingerprint (sha256 (snapshot-instructions target))]
+        (command! ctx {:command/name :gepa/record-winner-application
+                       :optimization-id optimization-id
+                       :candidate-id (:candidate-id candidate)
+                       :sheet-id sheet-id
+                       :source-version source-version
+                       :target-version target-version
+                       :source-fingerprint source-fingerprint
+                       :target-fingerprint target-fingerprint})
+        {:optimization-id optimization-id
+         :candidate-id (:candidate-id candidate)
+         :sheet-id sheet-id
+         :source-version source-version
+         :target-version target-version
+         :source-fingerprint source-fingerprint
+         :target-fingerprint target-fingerprint}))))
+
+(defn resume!
+  "Resume one incomplete GEPA transition from immutable state.
+
+   The function deliberately advances only the first missing transition. It is
+   safe to call repeatedly (or after process reconstruction): command guards
+   and terminal events remain authoritative, and completed proposer calls are
+   never invoked again merely to reconstruct their proposal."
+  [ctx optimization-id]
+  (let [summary (rm/get-optimization-summary ctx optimization-id)
+        remaining-budget (- (get-in summary [:config :max-metric-calls] 0)
+                            (or (:total-metric-calls summary) 0))
+        events (into []
+                     (filter #(= optimization-id (:optimization-id %)))
+                     (event-store/read (:event-store ctx)
+                                       {:tenant-id (:tenant-id ctx)}))
+        by-type (group-by :event/type events)
+        terminal (last (concat (get by-type :gepa/optimization-completed)
+                               (get by-type :gepa/optimization-failed)))
+        evaluated-ids (set (map :candidate-id
+                                (get by-type :gepa/candidate-evaluated)))
+        evaluation-started-ids (set (map :candidate-id
+                                         (get by-type :gepa/candidate-evaluation-started)))
+        subsample-results (set (map (juxt :parent-id :iteration)
+                                    (get by-type :gepa/subsample-evaluated)))
+        subsample-starts (set (map (juxt :parent-id :iteration)
+                                   (get by-type :gepa/subsample-evaluation-started)))
+        pending-proposal (last
+                           (remove #(contains? subsample-starts
+                                               [(:parent-id %) (:iteration %)])
+                                   (get by-type :gepa/proposal-ready)))
+        pending-subsample (last
+                            (remove #(contains? subsample-results
+                                                [(:parent-id %) (:iteration %)])
+                                    (get by-type :gepa/subsample-evaluation-started)))
+        pending-evaluation (last
+                             (remove #(contains? evaluated-ids (:candidate-id %))
+                                     (get by-type :gepa/candidate-evaluation-started)))
+        pending-candidate (last
+                            (remove #(or (contains? evaluated-ids (:candidate-id %))
+                                         (contains? evaluation-started-ids (:candidate-id %)))
+                                    (get by-type :gepa/candidate-created)))]
+    (cond
+      terminal
+      {:optimization-id optimization-id :status :already-terminal
+       :terminal-event (:event/type terminal)}
+
+      pending-subsample
+      (do (todo/on-subsample-evaluation-started (assoc ctx :event pending-subsample))
+          {:optimization-id optimization-id :status :resumed
+           :boundary :subsample-evaluation
+           :parent-id (:parent-id pending-subsample)})
+
+      pending-proposal
+      (do (command! ctx {:command/name :gepa/mark-optimization-resumed
+                         :optimization-id optimization-id})
+          (let [started (command! ctx
+                                  {:command/name :gepa/evaluate-on-subsample
+                                   :optimization-id optimization-id
+                                   :parent-id (:parent-id pending-proposal)
+                                   :proposed-instructions
+                                   (:proposed-instructions pending-proposal)
+                                   :component-updated
+                                   (:component-updated pending-proposal)
+                                   :subsample-indices
+                                   (:subsample-indices pending-proposal)
+                                   :iteration (:iteration pending-proposal)})
+                start-event (some #(when (= :gepa/subsample-evaluation-started
+                                                (:event/type %)) %)
+                                  (:command-result/events started))]
+            ;; Recovery cannot depend on a just-restarted subscriber having
+            ;; completed registration before this live event was published.
+            ;; Advance the durable start synchronously; stable task-call IDs
+            ;; make this safe if a subscriber observed it concurrently.
+            (when start-event
+              (todo/on-subsample-evaluation-started
+                (assoc ctx :event start-event))))
+          {:optimization-id optimization-id :status :resumed
+           :boundary :proposal-ready
+           :remaining-budget remaining-budget
+           :parent-id (:parent-id pending-proposal)})
+
+      pending-evaluation
+      (do (todo/on-candidate-evaluation-started (assoc ctx :event pending-evaluation))
+          {:optimization-id optimization-id :status :resumed
+           :boundary :candidate-evaluation
+           :candidate-id (:candidate-id pending-evaluation)})
+
+      pending-candidate
+      (do (todo/on-candidate-created (assoc ctx :event pending-candidate))
+          {:optimization-id optimization-id :status :resumed
+           :boundary :candidate-created
+           :candidate-id (:candidate-id pending-candidate)})
+
+      :else
+      {:optimization-id optimization-id :status :no-recoverable-boundary})))
 
 (defn get-progress
   "Get progress of an optimization run.

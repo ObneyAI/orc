@@ -251,11 +251,11 @@
                        (pr-str (keys resolved)))))))))))
 
 ;; =============================================================================
-;; Cycle 3 — Backward-compat: absent :tool-context changes nothing
+;; Cycle 3 — absent :tool-context obeys the nil-output contract
 ;; =============================================================================
 
 (deftest cycle3-absent-tool-context-is-backward-compatible
-  (testing "a turn WITHOUT :tool-context succeeds identically; root command + enriched-context stay unchanged (no :tool-context stored, leaf sees nil)"
+  (testing "a turn without tool context stores none and fails its declared non-nil marker write"
     (h/with-async-test-context [ctx]
       (with-redefs [dscloj/predict mock-predict-emitting-recorder]
         (let [{:keys [sheet-id]} (setup-repl-researcher-sheet! ctx)
@@ -264,14 +264,17 @@
               root-tick-id (:tick-id stream)
               result       (deref (:result stream) 30000 ::timeout)]
           (drain-close! stream)
-          (is (= :success (:status result))
-              (str "the non-coding turn still succeeds; got " (:status result) " error " (:error result)))
-          (let [tick-starts (events-of-type ctx :sheet/tree-tick-started)
+          (is (= :failure (:status result)))
+          (let [terminal (first (filter #(= root-tick-id (:tick-id %))
+                                       (events-of-type ctx :sheet/tree-tick-completed)))
+                tick-starts (events-of-type ctx :sheet/tree-tick-started)
                 root-start  (first (filter #(= root-tick-id (:tick-id %)) tick-starts))
                 markers     (value-written-markers ctx)]
+            (is (= :failure (:root-status terminal))
+                "the durable terminal event preserves the failure outcome")
             (is (some? root-start) "root tick-tree-started event exists")
             (is (nil? (:tool-context root-start))
                 "no :tool-context stored on the root command/event when absent (cond-> skips it)")
             (is (not-any? #(and (string? %) (re-find #"^CE5B-" %)) markers)
-                (str "the leaf saw nil :tool-context -> wrote nil marker (no behavior change); "
+                (str "the leaf saw nil :tool-context and persisted no invalid marker; "
                      "markers: " (pr-str (set markers))))))))))

@@ -101,6 +101,22 @@ contract ExecutionEventStream {
         -- recoverable from the execution record and its lineage.
 }
 
+contract ExecutionRecovery {
+    resume: (execution: WorkflowExecution) -> Any
+
+    @invariant StableExecutionIdentity
+        -- Recovery continues the abandoned execution and node identities; it
+        -- does not create a replacement run for unfinished frontier work.
+
+    @invariant CompletedWorkIsNotRepeated
+        -- Durable completion evidence is authoritative. Recovery reconstructs
+        -- only unfinished frontier work and does not repeat completed effects.
+
+    @invariant IdempotentResume
+        -- Repeated recovery requests converge on the same frontier and do not
+        -- duplicate resumptions, completions, or externally visible effects.
+}
+
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
@@ -480,6 +496,13 @@ rule CancelWorkflowExecution {
             CancelWorkflowExecution(consumer: consumer, execution: child)
 }
 
+rule ResumeWorkflowExecution {
+    when: ResumeWorkflowExecution(consumer, execution)
+    requires: execution.status = running
+
+    ensures: RecoveryFrontierReconstructed(execution: execution)
+}
+
 rule DelegateToWorkflow {
     when: ExecuteDelegateNode(node_execution, target_workflow, mapped_inputs, options)
     requires: node_execution.status = running
@@ -589,9 +612,11 @@ surface WorkflowExecutionAccess {
     provides:
         RunWorkflow(consumer, workflow, inputs, options)
         CancelWorkflowExecution(consumer, execution)
+        ResumeWorkflowExecution(consumer, execution)
 
     contracts:
         fulfils ExecutionEventStream
+        fulfils ExecutionRecovery
         demands LeafExecutor
 
     @guarantee IsolatedBlackboard

@@ -11,6 +11,7 @@
 
    Designed for databases like IPEDS (Integrated Postsecondary Education Data System)."
   (:require [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.ontology.sheets.model-pinning :as model-pinning]
             [litellm.router :as litellm-router]
             [litellm.config :as litellm-config]
             [clojure.string :as str]
@@ -812,8 +813,10 @@
 
 (defn build-sql-ontology-pipeline!
   "Build the SQL-to-ontology pipeline workflow. Returns sheet-id."
-  [context]
-  (sheet/build-workflow! context sql-to-ontology-pipeline))
+  ([context] (build-sql-ontology-pipeline! context nil))
+  ([context model]
+   (sheet/build-workflow! context
+                          (model-pinning/pin-model sql-to-ontology-pipeline model))))
 
 (defn run-sql-to-ontology
   "Run the SQL-to-ontology pipeline with given inputs.
@@ -861,6 +864,7 @@
                  {:timeout-ms timeout-ms})]
     (if (= :success (:status result))
       {:status :success
+       :trace-id (:trace-id result)
        :domain (get-in result [:outputs :domain])
        :domain-description (get-in result [:outputs :domain-description])
        :database-purpose (get-in result [:outputs :database-purpose])
@@ -870,6 +874,7 @@
        :owl-output (get-in result [:outputs :owl-output])
        :statistics (get-in result [:outputs :statistics])}
       {:status :failed
+       :trace-id (:trace-id result)
        :error (:error result)})))
 
 (comment

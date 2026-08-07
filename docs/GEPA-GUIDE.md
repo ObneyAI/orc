@@ -490,6 +490,37 @@ For exact / substring matching against an expected value in the example:
 (gepa/list-optimizations context :sheet-id sheet-id)
 ```
 
+#### Resuming and publishing a winner
+
+GEPA persists proposal, task-call, evaluation, and budget boundaries. After a
+process restart, advance one missing transition at a time:
+
+```clojure
+(gepa/resume! context optimization-id)
+;; => {:status :resumed :boundary :proposal-ready ...}
+;;  or {:status :already-terminal ...}
+;;  or {:status :no-recoverable-boundary}
+```
+
+Repeated calls are safe: completed proposer/task calls retain stable call IDs
+and usage and are not repeated merely to reconstruct the frontier.
+
+Optimization does not silently rewrite a workflow. Once the run is completed,
+apply its winner against the exact immutable source version it optimized:
+
+```clojure
+(gepa/apply-winner! context optimization-id 1)
+;; => {:source-version 1
+;;     :target-version 2
+;;     :source-fingerprint "..."
+;;     :target-fingerprint "..." ...}
+```
+
+The source version remains unchanged. GEPA updates the draft instructions,
+publishes a distinct version, and records `:gepa/winner-applied` linking the
+candidate and both fingerprints. Missing source versions, incomplete runs, and
+winners naming nonexistent workflow components are rejected explicitly.
+
 ### 2. Algorithm Implementation
 
 The shipped implementation is **native Clojure**. All optimization logic runs in the JVM, event-sourced through Grain.
@@ -502,6 +533,11 @@ The shipped implementation is **native Clojure**. All optimization logic runs in
 | `components/gepa/core/reflection.clj` | `ReflectiveExample` triplet formatting |
 
 > The full optimization loop — Pareto selection, reflective mutation, common-ancestor merge, and cross-run inheritance — is implemented natively in Clojure and stored as Grain events, so every step is observable on the event stream.
+
+Completed proposer and task-model calls are durable evidence, including stable
+call identity, resolved model, usage, and their optimization/candidate context.
+Replay and `resume!` consume that evidence instead of issuing replacement model
+calls.
 
 ### 3. Evaluation Judges
 

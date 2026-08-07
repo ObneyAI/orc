@@ -471,6 +471,12 @@ The foundational return type. Every evaluation produces a score (0.0-1.0) paired
    {:name "Completeness" :weight 0.20 :score 0.6 :feedback "..."}])
 ```
 
+Model-backed results may also carry `:model-provenance` with the resolved
+provider, model, and usage. When a score is recorded asynchronously, that
+provenance is copied onto the durable `:judge/score-emitted` evidence together
+with the score's sheet/node/tick identity. Deterministic structural judges may
+omit it.
+
 ### MetricDimension
 
 A weighted evaluation dimension with its own score and feedback.

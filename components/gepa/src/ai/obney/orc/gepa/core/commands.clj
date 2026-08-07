@@ -11,7 +11,7 @@
    4. Emit events or return anomaly"
   (:require [ai.obney.orc.gepa.core.read-models :as rm]
             [ai.obney.orc.gepa.core.pareto :as pareto]
-            [ai.obney.grain.event-store-v3.interface :refer [->event]]
+            [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :as command-processor :refer [defcommand]]
             [ai.obney.grain.time.interface :as time]
             [cognitect.anomalies :as anom]))
@@ -228,8 +228,13 @@
    Determines which instances (if any) this candidate is best at
    and emits a frontier update event if it's Pareto-optimal."
   [{{:keys [optimization-id candidate-id scores]} :command
-    :keys [event-store] :as ctx}]
-  (let [frontier (rm/get-pareto-frontier-state ctx optimization-id)
+    :keys [event-store tenant-id] :as ctx}]
+  (let [already-updated? (some #(when (and (= optimization-id (:optimization-id %))
+                                           (= candidate-id (:candidate-id %))) %)
+                               (into [] (es/read event-store
+                                                {:tenant-id tenant-id
+                                                 :types #{:gepa/frontier-updated}})))
+        frontier (rm/get-pareto-frontier-state ctx optimization-id)
         ;; Check which instances this candidate is now best at
         instances-best-at
         (reduce-kv
@@ -241,7 +246,14 @@
           []
           (zipmap (range) scores))]
 
-    (if (seq instances-best-at)
+    (cond
+      already-updated?
+      {:command-result/events []
+       :command/result {:pareto-optimal? true
+                        :instances-best-at (:instances-best-at already-updated?)
+                        :reused? true}}
+
+      (seq instances-best-at)
       ;; Candidate is Pareto-optimal
       {:command-result/events
        [(->event {:type :gepa/frontier-updated
@@ -255,6 +267,7 @@
                         :instances-best-at instances-best-at}}
 
       ;; Not Pareto-optimal
+      :else
       {:command/result {:pareto-optimal? false
                         :instances-best-at []}})))
 
@@ -325,17 +338,30 @@
 
    The acceptance criterion matches Python GEPA:
    proposed_sum > parent_sum (strict improvement, not >=)"
-  [{{:keys [optimization-id parent-id proposed-instructions component-updated
-            subsample-indices parent-scores proposed-scores accepted? metric-calls]} :command
-    :keys [event-store] :as ctx}]
+  [{{:keys [optimization-id proposal-id parent-id proposed-instructions component-updated
+            subsample-indices iteration parent-scores proposed-scores accepted? metric-calls]} :command
+    :keys [event-store tenant-id] :as ctx}]
   (let [opt-state (rm/get-optimization-summary ctx optimization-id)
         parent-sum (reduce + parent-scores)
-        proposed-sum (reduce + proposed-scores)]
+        proposed-sum (reduce + proposed-scores)
+        already-recorded?
+        (some #(and (= optimization-id (:optimization-id %))
+                    (= parent-id (:parent-id %))
+                    (= iteration (:iteration %)))
+              (into [] (es/read event-store
+                                {:tenant-id tenant-id
+                                 :types #{:gepa/subsample-evaluated}})))]
     (cond
       ;; Optimization not found
       (nil? (:optimization-id opt-state))
       {::anom/category ::anom/not-found
        ::anom/message "Optimization not found"}
+
+      already-recorded?
+      {:command-result/events []
+       :command/result {:status :already-evaluated
+                        :parent-id parent-id
+                        :iteration iteration}}
 
       ;; Record the subsample result
       :else
@@ -348,6 +374,7 @@
                          :proposed-instructions proposed-instructions
                          :component-updated component-updated
                          :subsample-indices (vec subsample-indices)
+                         :iteration iteration
                          :parent-scores (vec parent-scores)
                          :proposed-scores (vec proposed-scores)
                          :parent-sum parent-sum
@@ -422,6 +449,125 @@
                        :proposed-at (time/now)}})]
      :command/result {:new-candidate-id new-candidate-id
                       :new-instructions new-instructions}}))
+
+(defcommand :gepa record-proposer-call
+  "Persist an actual reflection-model call independently of whether its
+   proposal is later accepted. Rejected proposals still consume budget and
+   must remain attributable during replay and auditing."
+  [{{:keys [optimization-id parent-candidate-id component model provider usage
+            prompt response prompt-sha256 response-sha256 call-id]} :command
+    :keys [event-store tenant-id]}]
+  (if (some #(= call-id (:call-id %))
+            (into [] (es/read event-store {:tenant-id tenant-id
+                                           :types #{:gepa/proposer-call-completed}})))
+    {:command-result/events [] :command/result {:call-id call-id :reused? true}}
+    {:command-result/events
+     [(->event {:type :gepa/proposer-call-completed
+              :tags #{[:optimization optimization-id]
+                      [:parent parent-candidate-id]}
+              :body {:optimization-id optimization-id
+                     :parent-candidate-id parent-candidate-id
+                     :component component
+                     :call-id call-id
+                     :provider provider
+                     :model model
+                     :usage usage
+                     :prompt prompt
+                     :response response
+                     :prompt-sha256 prompt-sha256
+                     :response-sha256 response-sha256
+                     :completed-at (time/now)}})]
+     :command/result {:call-id call-id}}))
+
+(defcommand :gepa mark-optimization-resumed
+  "Durably release a pause-after-proposal optimization. The marker is
+   idempotent and makes the pause a one-shot crash boundary rather than a
+   permanent stop after every subsequent proposal."
+  [{{:keys [optimization-id]} :command :keys [event-store tenant-id]}]
+  (if (seq (into [] (es/read event-store
+                             {:tenant-id tenant-id
+                              :types #{:gepa/optimization-resumed}
+                              :tags #{[:optimization optimization-id]}})))
+    {:command-result/events [] :command/result {:status :already-resumed}}
+    {:command-result/events
+     [(->event {:type :gepa/optimization-resumed
+                :tags #{[:optimization optimization-id]}
+                :body {:optimization-id optimization-id
+                       :resumed-at (time/now)}})]
+     :command/result {:status :resumed}}))
+
+(defcommand :gepa record-task-call
+  "Persist one completed GEPA workflow/metric evaluation under a stable call
+   identity so restart can reuse it without another model call or charge."
+  [{{:keys [optimization-id call-id role example-index trace-id output score
+            feedback model usage]} :command
+    :keys [event-store tenant-id]}]
+  (if (some #(= call-id (:call-id %))
+            (into [] (es/read event-store {:tenant-id tenant-id
+                                           :types #{:gepa/task-call-completed}})))
+    {:command-result/events [] :command/result {:call-id call-id :reused? true}}
+    {:command-result/events
+     [(->event {:type :gepa/task-call-completed
+                :tags #{[:optimization optimization-id]
+                        [:call call-id]}
+                :body {:optimization-id optimization-id
+                       :call-id call-id
+                       :role role
+                       :example-index example-index
+                       :trace-id trace-id
+                       :output output
+                       :score score
+                       :feedback feedback
+                       :model model
+                       :usage usage
+                       :completed-at (time/now)}})]
+     :command/result {:call-id call-id}}))
+
+(defcommand :gepa record-proposal-ready
+  "Persist the complete proposal before its first evaluation. This is the
+   explicit crash/resume boundary between a billable proposer call and task
+   model evaluation."
+  [{{:keys [optimization-id proposal-id parent-id proposed-instructions component-updated
+            subsample-indices iteration]} :command
+    :keys [event-store tenant-id]}]
+  (if (some #(= proposal-id (:proposal-id %))
+            (into [] (es/read event-store {:tenant-id tenant-id
+                                           :types #{:gepa/proposal-ready}})))
+    {:command-result/events [] :command/result {:status :already-ready}}
+    {:command-result/events
+     [(->event {:type :gepa/proposal-ready
+                :tags #{[:optimization optimization-id]
+                        [:proposal proposal-id]
+                        [:parent parent-id]}
+                :body {:optimization-id optimization-id
+                       :proposal-id proposal-id
+                       :parent-id parent-id
+                       :proposed-instructions proposed-instructions
+                       :component-updated component-updated
+                       :subsample-indices subsample-indices
+                       :iteration iteration
+                       :ready-at (time/now)}})]
+     :command/result {:status :ready}}))
+
+(defcommand :gepa record-winner-application
+  "Link an immutable optimization winner to the new workflow version created
+   from it. The source version remains explicit so provenance cannot drift to
+   whatever version happens to be latest later."
+  [{{:keys [optimization-id candidate-id sheet-id source-version target-version
+            source-fingerprint target-fingerprint]} :command}]
+  {:command-result/events
+   [(->event {:type :gepa/winner-applied
+              :tags #{[:optimization optimization-id]
+                      [:candidate candidate-id]
+                      [:sheet sheet-id]}
+              :body {:optimization-id optimization-id
+                     :candidate-id candidate-id
+                     :sheet-id sheet-id
+                     :source-version source-version
+                     :target-version target-version
+                     :source-fingerprint source-fingerprint
+                     :target-fingerprint target-fingerprint
+                     :applied-at (time/now)}})]})
 
 ;; =============================================================================
 ;; Perform Crossover

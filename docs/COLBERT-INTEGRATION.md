@@ -245,6 +245,19 @@ components/colbert/
   "List all indexes (optionally :include-deleted)."
   [ctx & {:keys [include-deleted]}])
 
+(defn activate-index!
+  "Atomically point a stable alias at a fully readable index. A rejected
+   activation preserves the alias's prior index."
+  [ctx alias index-id])
+
+(defn get-active-index
+  "Return the event-sourced alias pointer and its resolved index."
+  [ctx alias])
+
+(defn search-active
+  "Resolve an alias once and search exactly that immutable snapshot."
+  [ctx {:keys [alias query k]}])
+
 ;; === Search Operations ===
 
 (defn search
@@ -320,6 +333,21 @@ The index artifact on disk is a materialized view; the event store is the source
     [:index-id :uuid]
     [:deleted-at :string]]
 
+   :colbert/index-activated
+   [:map
+    [:alias :string]
+    [:index-id :uuid]
+    [:previous-index-id {:optional true} :uuid]
+    [:activated-at :string]]
+
+   :colbert/index-activation-failed
+   [:map
+    [:alias :string]
+    [:index-id :uuid]
+    [:active-index-id {:optional true} :uuid]
+    [:error :string]
+    [:failed-at :string]]
+
    ;; Search audit
    :colbert/search-performed
    [:map
@@ -346,6 +374,27 @@ The index artifact on disk is a materialized view; the event store is the source
 ---
 
 ## Usage Examples
+
+### Stable production alias
+
+Build a new immutable index, validate it, then switch consumers without a gap
+or a partially visible artifact:
+
+```clojure
+(def built (colbert/create-index! ctx
+             {:collection documents
+              :document-ids document-ids
+              :index-name "knowledge-2026-08-06"}))
+
+(colbert/activate-index! ctx "knowledge-current" (:index-id built))
+
+(colbert/search-active ctx
+  {:alias "knowledge-current" :query "restart recovery" :k 10})
+```
+
+`search-active` resolves the alias once and searches one snapshot. If a later
+activation targets a missing, deleted, or unreadable index, the command emits
+`:colbert/index-activation-failed` and the previous pointer remains active.
 
 ### Basic Search
 

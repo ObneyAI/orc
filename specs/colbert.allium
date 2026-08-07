@@ -99,6 +99,20 @@ contract RebuildableIndexArtifact {
         -- rejected with a rebuild remedy instead of being searched silently.
 }
 
+contract AtomicAliasActivation {
+    activate: (alias: String, index: RetrievalIndex) -> Any
+    resolve: (alias: String) -> RetrievalIndex
+
+    @invariant OneResolvedSnapshot
+        -- An alias resolves to exactly one complete immutable index snapshot;
+        -- searches never observe an activation in progress or combine snapshots.
+
+    @invariant FailurePreservesPriorActivation
+        -- If the requested index is absent, deleted, or otherwise unusable,
+        -- activation is rejected and the alias continues to resolve to its
+        -- previously active snapshot.
+}
+
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
@@ -125,6 +139,12 @@ entity RetrievalIndex {
         active -> deleted
         terminal: deleted
     }
+}
+
+entity RetrievalAlias {
+    name: String
+    index: RetrievalIndex
+    activated_at: Timestamp
 }
 
 entity SearchAudit {
@@ -176,6 +196,36 @@ rule DeleteRetrievalIndex {
     ensures: index.deleted_at = now
 }
 
+rule ActivateRetrievalAlias {
+    when: ActivateRetrievalAlias(consumer, alias_name, index)
+    requires: index.status = active
+    let alias = RetrievalAlias{name: alias_name}
+
+    ensures:
+        if exists alias:
+            alias.index = index
+            alias.activated_at = now
+        else:
+            RetrievalAlias.created(name: alias_name, index: index, activated_at: now)
+}
+
+rule SearchRetrievalAlias {
+    when: SearchRetrievalAlias(consumer, alias, query, count)
+    requires: alias.index.status = active
+    requires: count >= 0
+    let results = late_interaction_search(alias.index, query, count)
+
+    ensures: SearchAudit.created(
+        index: alias.index,
+        query: query,
+        requested_count: count,
+        result_count: results.count,
+        top_score: if results.count > 0: results.first.score else: null,
+        performed_at: now
+    )
+    ensures: SearchResultsReturned(consumer: consumer, results: results)
+}
+
 rule SearchActiveIndex {
     when: SearchActiveIndex(consumer, index, query, count)
     requires: index.status = active
@@ -223,6 +273,12 @@ invariant UniqueDocumentIdentifiersWithinIndex {
         index.document_identifiers.unique.count = index.document_identifiers.count
 }
 
+invariant UniqueRetrievalAliasName {
+    for a in RetrievalAliases:
+        for b in RetrievalAliases:
+            a != b implies a.name != b.name
+}
+
 ------------------------------------------------------------
 -- Surfaces
 ------------------------------------------------------------
@@ -233,15 +289,17 @@ surface ColbertRetrieval {
     provides:
         CreateRetrievalIndex(consumer, name, documents, document_identifiers, document_metadatas, configuration)
         DeleteRetrievalIndex(consumer, index)
+        ActivateRetrievalAlias(consumer, alias_name, index)
+        SearchRetrievalAlias(consumer, alias, query, count)
         SearchActiveIndex(consumer, index, query, count)
         RerankDocuments(consumer, query, documents, count)
 
     contracts:
         fulfils LateInteractionRetrieval
         fulfils RebuildableIndexArtifact
+        fulfils AtomicAliasActivation
 
     @guarantee DeletedIndexesAreNotSearchable
         -- Soft deletion preserves rebuild source data and audit history but
         -- rejects subsequent indexed searches.
 }
-

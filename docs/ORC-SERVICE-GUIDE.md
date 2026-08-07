@@ -540,6 +540,30 @@ Prevent runaway workflows in nested iteration scenarios by setting an LLM call l
 - Counter cleared automatically on completion
 - Only AI executor calls count (not code nodes)
 
+### Restart recovery
+
+If a process stops after a leaf start was persisted but before its completion,
+restart the Grain processors against the same event store and call:
+
+```clojure
+(sheet/resume-in-progress! ctx)
+;; => [{:tick-id tick-id
+;;      :sheet-id sheet-id
+;;      :node-id node-id
+;;      :original-start-event-id event-id
+;;      :resumed? true
+;;      :command-result {...}}
+;;     ...]
+```
+
+The runtime reconstructs active leaf frontiers from durable state. It never
+re-enqueues a completed node, and each recovery start references the abandoned
+start event. Repeated calls are idempotent. Recovery preserves the existing
+tick/node identities rather than creating a replacement execution.
+
+This is distinct from reconnecting to `execute-stream`: streams are ephemeral,
+while `resume-in-progress!` resumes durable execution work.
+
 ---
 
 ## Event Store Integration
@@ -673,7 +697,7 @@ Track node performance over a sliding window:
 **IMPORTANT:** `es/read` returns a reducible collection that must be materialized with `(into [] ...)` before calling `count` or other sequence functions.
 
 ```clojure
-(require '[ai.obney.grain.event-store-v2.interface :as es])
+(require '[ai.obney.grain.event-store-v3.interface :as es])
 
 ;; Query events by type and tags
 (into [] (es/read event-store
@@ -1034,6 +1058,32 @@ See [GEPA-GUIDE.md](./GEPA-GUIDE.md) for comprehensive GEPA documentation.
 | `sheet/execute` | Run workflow with inputs |
 | `sheet/execute-stream` | Run asynchronously and receive live envelopes |
 | `sheet/subscribe-execution` | Subscribe to a known tick and its descendants |
+| `sheet/resume-in-progress!` | Idempotently recover abandoned durable leaf frontiers after restart |
+
+### Failure-isolated telemetry export
+
+```clojure
+(def exporter
+  (sheet/start-telemetry-exporter!
+    (:event-pubsub ctx)
+    #{:sheet/node-execution-completed :judge/score-emitted}
+    export-fn
+    :capacity 256
+    :max-attempts 3))
+
+(sheet/telemetry-exporter-stats exporter)
+;; => {:offered ... :accepted ... :retried ... :dropped ...
+;;     :failures ... :accepted-ids [...] :dropped-ids [...]
+;;     :occupancy ... :capacity 256 :running? true}
+
+(sheet/stop-telemetry-exporter! exporter :timeout-ms 2000)
+;; => final stats plus :stopped?
+```
+
+Publication callbacks only perform a non-blocking queue offer. A full queue is
+an explicit drop; exceptions and missing per-event acknowledgements retry up to
+`:max-attempts` and then become explicit drops. Export failure cannot block or
+fail workflow execution.
 
 ### Queries
 

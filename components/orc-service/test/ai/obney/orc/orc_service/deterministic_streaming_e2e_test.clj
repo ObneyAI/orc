@@ -3,7 +3,9 @@
   (:require [clojure.core.async :as async]
             [clojure.set :as set]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
             [ai.obney.orc.orc-service.test-helpers :as h]))
 
@@ -24,6 +26,16 @@
 (defn slow-value [{:keys [inputs]}]
   (Thread/sleep 1500)
   {:output (:input inputs)})
+
+(def cancellation-race-state (atom nil))
+
+(defn cancellation-race-item [{:keys [inputs]}]
+  (let [item (:item inputs)
+        {:keys [release-first release-blocked started completed]} @cancellation-race-state]
+    (swap! started conj item)
+    @(if (zero? item) release-first release-blocked)
+    (swap! completed conj item)
+    {:item item}))
 
 (defn- fq [function-name]
   (str "ai.obney.orc.orc-service.deterministic-streaming-e2e-test/"
@@ -203,6 +215,10 @@
                                             (= :code (:node-type %)))
                                       envelopes))
             preview (get-in completion [:writes :output])
+            _ (is (h/settle-until!
+                   #(h/trace-stored? ctx (:tick-id stream))
+                   :timeout-ms 10000)
+                  "durable trace assembly must finish after the ephemeral stream closes")
             trace (get-in (h/run-query ctx (h/make-get-trace-query (:tick-id stream)))
                           [:query/result :trace])
             leaf (first (filter #(= :leaf (:node-type %)) (:node-traces trace)))
@@ -247,6 +263,103 @@
           (is (not-any? #(and (= :node-started (:orc.stream/type %))
                               (= later-id (:node-id %)))
                         envelopes)))))))
+
+(deftest det-e2e-107-cancellation-race-across-delegated-tree
+  (testing "one completed iteration survives while cancellation stops blocked and queued delegated work"
+    (h/with-async-test-context [ctx]
+      (let [release-first (promise)
+            release-blocked (promise)
+            started (atom [])
+            completed (atom [])]
+        (reset! cancellation-race-state
+                {:release-first release-first
+                 :release-blocked release-blocked
+                 :started started
+                 :completed completed})
+        (let [child-id (sheet/build-workflow!
+                        ctx
+                        (sheet/workflow "det-e2e-107-child"
+                          (sheet/blackboard {:items [:vector :int]
+                                             :item :int
+                                             :results [:vector :int]})
+                          (sheet/map-each "bounded-work"
+                            :from :items :as :item :into :results :parallel 2
+                            (sheet/code "racing-item" :fn (fq "cancellation-race-item")
+                              :reads [:item] :writes [:item]))))
+              root-id (sheet/build-workflow!
+                       ctx
+                       (sheet/workflow "det-e2e-107-root"
+                         (sheet/blackboard {:items [:vector :int]
+                                            :results [:vector :int]})
+                         (sheet/delegate "delegated-map" :target-sheet-id child-id
+                           :reads [:items] :writes [:results])))
+              racing-node-id (->> (sheet/get-nodes-for-sheet ctx child-id)
+                                  (some #(when (= "racing-item" (:name %)) (:id %))))
+              stream (sheet/execute-stream ctx root-id {:items [0 1 2 3 4]}
+                                           :timeout-ms 15000)]
+          (try
+            (is (h/settle-until! #(= #{0 1} (set @started)) :timeout-ms 3000)
+                "only the parallel frontier should start")
+            (deliver release-first true)
+            (is (h/settle-until! #(= [0] @completed) :timeout-ms 3000)
+                "the deliberately released iteration must complete before cancellation")
+            (let [cancelled (:cancelled (sheet/cancel! ctx (:tick-id stream)))
+                  execution (deref (:result stream) 5000 ::timeout)
+                  envelopes (drain! (:events-ch stream) :timeout-ms 5000)
+                  types (mapv :orc.stream/type envelopes)]
+              (is (= 2 (count cancelled)) "root and delegated child must both be cancelled")
+              (is (not= ::timeout execution))
+              (is (true? (:cancelled? execution)))
+              (is (= [0] @completed))
+              (is (= #{0 1} (set @started)))
+              (is (= 1 (count (filter #{:tick-cancelled} types))))
+              (is (= [:tick-cancelled :stream-closed] (vec (take-last 2 types))))
+              (is (= :cancelled (:reason (last envelopes))))
+              (is (= (range 1 (inc (count envelopes))) (map :seq envelopes)))
+              (let [events (into [] (es/read (:event-store ctx)
+                                             {:tenant-id (:tenant-id ctx)}))
+                    live (into {} (map (fn [tick-id]
+                                         [tick-id (select-keys (rm/get-tick ctx tick-id)
+                                                               [:tick-id :sheet-id :status
+                                                                :parent-tick-id :root-tick-id])]))
+                               cancelled)
+                    replayed-ticks (reduce rm/ticks* {} events)
+                    replayed (into {} (map (fn [tick-id]
+                                             [tick-id (select-keys (get replayed-ticks tick-id)
+                                                                   [:tick-id :sheet-id :status
+                                                                    :parent-tick-id :root-tick-id])]))
+                                   cancelled)
+                    leaf-completions (filter #(and (= :sheet/node-execution-completed
+                                                       (:event/type %))
+                                                   (= racing-node-id (:node-id %)))
+                                             events)
+                    leaf-writes (filter #(and (= :sheet/execution-value-written
+                                                  (:event/type %))
+                                              (= racing-node-id (:node-id %))
+                                              (= :item (:key %))
+                                              (not (:input-seed? %)))
+                                        events)
+                    cancellations (filter #(= :sheet/tick-cancelled (:event/type %)) events)]
+                (is (= 1 (count leaf-completions))
+                    (str "only the deliberately released iteration completes durably: "
+                         (pr-str (mapv #(select-keys % [:event/id :status :inputs
+                                                       :write-keys :error])
+                                       leaf-completions))))
+                (is (= 1 (count leaf-writes)))
+                (is (= 0 (:value (first leaf-writes)))
+                    "the completed iteration's result remains resolvable")
+                (is (= (set cancelled) (set (map :tick-id cancellations)))
+                    "root and delegate each have one durable cancellation")
+                (is (every? #(= 1 (count (filter (fn [event]
+                                                   (= % (:tick-id event)))
+                                                 cancellations)))
+                            cancelled))
+                (is (= (pr-str live) (pr-str replayed))
+                    "normalized terminal tick projections must be byte-equivalent after replay")))
+            (finally
+              (deliver release-first true)
+              (deliver release-blocked true)
+              (reset! cancellation-race-state nil))))))))
 
 (deftest det-e2e-072-concurrent-stream-isolation
   (testing "each concurrent envelope belongs to exactly one tick and correlation context"

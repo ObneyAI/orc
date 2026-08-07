@@ -352,11 +352,13 @@
         ;; litellm router as a per-request override, so the judge model
         ;; actually applies instead of the provider registration's default.
         result (dscloj/predict provider module inputs
-                               {:with-metadata? false
+                               {:with-metadata? true
                                 :validate? false
                                 :model model})]
-    ;; Result is already a map of keyword -> value
-    (or (:outputs result) result)))
+    (assoc (or (:outputs result) result)
+           :model-provenance {:provider provider
+                              :model (or (:model result) model)
+                              :usage (:usage result)})))
 
 (defn call-grounding-judge-llm
   "PA-3 tier-1 grounding LLM call. Sends the trace data as typed INPUT fields
@@ -379,10 +381,13 @@
                 :response (str response)
                 :producer_instruction (or (:instruction trace-data) "No instruction provided")}
         result (dscloj/predict provider module inputs
-                               {:with-metadata? false
+                               {:with-metadata? true
                                 :validate? false
                                 :model model})]
-    (or (:outputs result) result)))
+    (assoc (or (:outputs result) result)
+           :model-provenance {:provider provider
+                              :model (or (:model result) model)
+                              :usage (:usage result)})))
 
 (defn call-tier1-judge-llm
   "PA-4 tier-1 LLM call for the instruction-following / reasoning / completeness
@@ -409,10 +414,13 @@
                 :response (str response)
                 :inputs (coerce-source-string (:inputs trace-data))}
         result (dscloj/predict provider module inputs
-                               {:with-metadata? false
+                               {:with-metadata? true
                                 :validate? false
                                 :model model})]
-    (or (:outputs result) result)))
+    (assoc (or (:outputs result) result)
+           :model-provenance {:provider provider
+                              :model (or (:model result) model)
+                              :usage (:usage result)})))
 
 ;; =============================================================================
 ;; Mock LLM Responses (for testing)
@@ -492,7 +500,8 @@
       :grounded-claims (vec (:grounded-claims gated))
       :ungrounded-claims (vec (:ungrounded-claims gated))
       :reasoning (or (:reasoning gated) "")
-      :feedback (or (:feedback gated) "")}}))
+      :feedback (or (:feedback gated) "")
+      :model-provenance (:model-provenance raw)}}))
 
 (defn instruction-following-judge
   "PA-4 tier-1 instruction-following judge: adversarial compliance auditor,
@@ -525,7 +534,8 @@
       :requirements-met (vec (:requirements-met gated))
       :requirements-missed (vec (:requirements-missed gated))
       :reasoning (or (:reasoning gated) "")
-      :feedback (or (:feedback gated) "")}}))
+      :feedback (or (:feedback gated) "")
+      :model-provenance (:model-provenance raw)}}))
 
 (defn reasoning-judge
   "PA-4 tier-1 reasoning-quality judge: adversarial logician, reason-before-
@@ -553,7 +563,8 @@
       :reasoning-strengths (vec (:reasoning-strengths gated))
       :reasoning-weaknesses (vec (:reasoning-weaknesses gated))
       :reasoning (or (:reasoning gated) "")
-      :feedback (or (:feedback gated) "")}}))
+      :feedback (or (:feedback gated) "")
+      :model-provenance (:model-provenance raw)}}))
 
 (defn completeness-judge
   "PA-4 tier-1 completeness judge: adversarial coverage auditor, reason-before-
@@ -581,7 +592,8 @@
       :aspects-covered (vec (:aspects-covered gated))
       :aspects-missing (vec (:aspects-missing gated))
       :reasoning (or (:reasoning gated) "")
-      :feedback (or (:feedback gated) "")}}))
+      :feedback (or (:feedback gated) "")
+      :model-provenance (:model-provenance raw)}}))
 
 ;; =============================================================================
 ;; Aggregation Executor

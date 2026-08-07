@@ -28,8 +28,12 @@
    output expects (six writes keys)."
   [f]
   (with-redefs [dscloj/predict
-                (fn [_provider _module _inputs _options]
-                  {:outputs {:capabilities ["x"]
+                (fn [_provider module _inputs _options]
+                  (let [output-fields (:outputs module)
+                        declared (set (map :name output-fields))
+                        entities-spec (:spec (some #(when (= :entities (:name %)) %)
+                                                   output-fields))
+                        description {:capabilities ["x"]
                              :strengths [{:trait "fake-strength"
                                           :good-when "ctx"
                                           :recommended-pattern "[:llm {:reads [:x] :writes [:y]}]"
@@ -41,8 +45,24 @@
                              :representative-uses ["x"]
                              :avoid-when ["x"]
                              :summary "Fake summary."}
+                        entity-value (cond
+                                       (= :string entities-spec) "FixtureEntity"
+                                       (and (vector? entities-spec)
+                                            (#{:vector :sequential} (first entities-spec))
+                                            (= :string (last entities-spec)))
+                                       ["FixtureEntity"]
+                                       :else
+                                       [{:name "FixtureEntity"
+                                         :source_columns ["fixture"]
+                                         :description "Schema-valid fixture entity"}])
+                        outputs (cond
+                                  (contains? declared :entities)
+                                  {:entities entity-value}
+                                  (contains? declared :capabilities) description
+                                  :else (into {} (map (fn [k] [k "fixture"]) declared)))]
+                  {:outputs outputs
                    :usage {:total-tokens 100}
-                   :model "fake"})]
+                   :model "fake"}))]
     (f)))
 
 (deftest live-verify-runs-without-crashing
@@ -81,8 +101,12 @@
                   ;; module declared as outputs. dscloj uses them to fill
                   ;; the blackboard.
                   (let [output-fields (or (:outputs module) [])
-                        outputs (into {} (map (fn [{:keys [name]}]
-                                                [name (str "stubbed-" (clojure.core/name name))])
+                        outputs (into {} (map (fn [{:keys [name spec]}]
+                                                [name (if (and (= :entities name)
+                                                               (vector? spec)
+                                                               (#{:vector :sequential} (first spec)))
+                                                        [(str "stubbed-" (clojure.core/name name))]
+                                                        (str "stubbed-" (clojure.core/name name)))])
                                               output-fields))]
                     {:outputs outputs
                      :usage {:total-tokens 50}
@@ -213,4 +237,5 @@
                   "Phases are in order: X (control), Y (failure-burst), Z (recovery)"))
             (let [bodies (mapv :body (:phases a))]
               (is (every? some? bodies)
-                  "Each phase captures a description body"))))))))
+                  (str "Each phase captures a description body: "
+                       (pr-str (:phases a)))))))))))

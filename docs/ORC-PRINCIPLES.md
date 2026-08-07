@@ -346,6 +346,12 @@ poisons the loop.
 **How.** Bound each live run and confirm no orphan processes survive it (stop them
 by their specific process id, never with a blunt kill-all that would take down other
 work). When capturing or comparing model-authored artifacts, record them verbatim.
+For a real service restart, reconstruct processors against the same event store and
+call `orc/resume-in-progress!`; do not manufacture a replacement execution. Recovery
+must retain the original tick, sheet, node, and task-call identities, and a repeated
+recovery pass must be a no-op. Keep telemetry delivery outside the execution path:
+use the bounded managed exporter and inspect its retry/drop counters instead of
+letting an unavailable observability destination stall useful work.
 
 ## 14. A parallel `:map-each` leaf must be a primitive with explicit `:writes`
 

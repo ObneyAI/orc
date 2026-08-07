@@ -148,80 +148,24 @@
      :read-sources — the write the node actually saw — rather than by key
      name, which yields the last write even if it landed after the node
      finished."
-  [{:keys [event-store tenant-id]} trace-id node-traces]
+  [{:keys [event-store tenant-id] :as ctx} trace-id node-traces]
   (try
     (let [events (into [] (event-store/read
                            event-store
                            (cond-> {:tags #{[:tick trace-id]}}
                              tenant-id (assoc :tenant-id tenant-id))))
-          writes (filter #(= :sheet/execution-value-written (:event/type %)) events)
-          ;; Exact resolution: write event id -> value.
-          by-event-id (reduce (fn [acc e] (assoc acc (:event/id e) (:value e))) {} writes)
-          ;; Values seeded into the tick have no write event; they arrive on
-          ;; tree-tick-started :inputs. Fallback source for reads of keys the
-          ;; tick was given rather than produced.
-          ;; Keys are normalized here as well as at the emission site: a node
-          ;; declares its :reads as simple keywords, so a seeded key stored as
-          ;; the string "student-analysis" would never match :student-analysis
-          ;; and the read would be dropped. Normalizing on both sides keeps
-          ;; events written before that fix resolvable.
-          seeded (reduce-kv (fn [acc k v] (assoc acc (if (string? k) (keyword k) k) v))
-                            {}
-                            (or (some #(when (= :sheet/tree-tick-started (:event/type %))
-                                         (:inputs %))
-                                      events)
-                                {}))
-          ;; Last-write-wins, used ONLY as a final fallback for events that
-          ;; predate :read-sources.
-          latest (orc/value-log-latest-values events)
           completions (filter #(= :sheet/node-execution-completed (:event/type %)) events)
           ;; Keyed by execution, so map-each iterations stay distinct.
           by-execution (reduce (fn [acc c] (assoc acc (orc/value-log-execution-key c) c))
                                {}
-                               completions)
-          ;; Values seeded FOR a specific node execution (map-each items).
-          ;; Kept separate from that execution's own outputs — a child that
-          ;; reads and writes the same key would otherwise resolve its input
-          ;; to its own result.
-          input-seeds (orc/value-log-input-seeds-by-iteration events)
-          resolve-reads
-          (fn [c]
-            (let [ek (orc/value-log-execution-key c)
-                  ;; The ITERATION this execution belongs to, if any. Shared by
-                  ;; every node inside it regardless of node-id — which is why
-                  ;; the item lookup keys on this and not on the node.
-                  iter (orc/value-log-exec-context (:inputs c))
-                  sources (:read-sources c)
-                  ;; Ordered candidates, most specific first. Each step is a
-                  ;; FALLTHROUGH, not a terminal branch: a miss moves on rather
-                  ;; than dropping the key. Treating any of these as terminal
-                  ;; silently loses reads — which is how 172 of them vanished.
-                  resolve-one
-                  (fn [k]
-                    (or ;; 1. A value seeded FOR this execution — exact for
-                        ;;    map-each items, where every iteration shares the
-                        ;;    key and the blackboard slot holds only the last.
-                        (get-in input-seeds [iter k])
-                        ;; 2. The specific write this node recorded reading.
-                        (some->> (get sources k) (get by-event-id))
-                        ;; 3. Seeded into the tick (no write event exists).
-                        (get seeded k)
-                        ;; 4. Last write to the key. Ambiguous when a key is
-                        ;;    written more than once, but better than nothing
-                        ;;    and the only option for events predating (2).
-                        (get latest k)))]
-              (into {}
-                    (for [k (:read-keys c)
-                          :let [v (resolve-one k)]
-                          :when (some? v)]
-                      [k v]))))]
+                               completions)]
       (into {}
             (for [nt node-traces
                   :let [k [(:node-id nt) (or (:exec-context nt) {})]
                         c (get by-execution k)]
                   :when c]
-              [k {:inputs (resolve-reads c)
-                  :outputs (orc/value-log-writes-for events c)}])))
+              [k {:inputs (orc/value-log-resolve-reads ctx tenant-id trace-id c)
+                  :outputs (orc/value-log-resolve-writes ctx tenant-id trace-id c)}])))
     (catch Exception _ {})))
 
 (defn- filter-node-traces

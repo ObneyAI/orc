@@ -6,7 +6,8 @@
 
    The index read model stores full document content, so an index artifact
    on disk (derived data) can always be rebuilt from the event store."
-  (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]))
+  (:require [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]))
 
 ;; =============================================================================
 ;; Event Types
@@ -15,12 +16,16 @@
 (def colbert-event-types
   #{:colbert/index-created
     :colbert/index-deleted
+    :colbert/index-activated
+    :colbert/index-activation-failed
     :colbert/search-performed
     :colbert/rerank-performed})
 
 (def index-event-types
   #{:colbert/index-created
-    :colbert/index-deleted})
+    :colbert/index-deleted
+    :colbert/index-activated
+    :colbert/index-activation-failed})
 
 ;; =============================================================================
 ;; Index Read Model
@@ -57,6 +62,17 @@
       (assoc-in [:indexes index-id :status] :deleted)
       (assoc-in [:indexes index-id :deleted-at] (str deleted-at))))
 
+(defmethod apply-index-event :colbert/index-activated
+  [state {:keys [alias index-id activated-at]}]
+  (assoc-in state [:active-aliases alias]
+            {:alias alias :index-id index-id :activated-at (str activated-at)}))
+
+(defmethod apply-index-event :colbert/index-activation-failed
+  [state {:keys [alias index-id active-index-id error failed-at]}]
+  (assoc-in state [:activation-failures alias]
+            {:alias alias :index-id index-id :active-index-id active-index-id
+             :error error :failed-at (str failed-at)}))
+
 (defmethod apply-index-event :default
   [state _event]
   state)
@@ -67,7 +83,7 @@
   (reduce apply-index-event {:indexes {}} events))
 
 (defreadmodel :colbert indexes
-  {:events index-event-types :version 1}
+  {:events index-event-types :version 2}
   [state event] (apply-index-event state event))
 
 ;; =============================================================================
@@ -98,3 +114,21 @@
     (when (= :active (:status index))
       (select-keys index [:index-id :index-name :documents :document-ids
                           :document-metadatas :model-name :config]))))
+
+(defn get-active-index
+  "Resolve one active alias from its event-sourced pointer."
+  [ctx alias]
+  ;; Alias activation is a single-writer event pointer. Read it directly so
+  ;; command-side validation observes the latest committed activation even
+  ;; when a cached read-model projection has not yet incorporated that event.
+  ;; Failed activations are deliberately ignored: they are audit evidence and
+  ;; never replace the last successfully validated pointer.
+  (when-let [{:keys [index-id] :as activation}
+             (->> (es/read (:event-store ctx)
+                           {:tenant-id (:tenant-id ctx)
+                            :types #{:colbert/index-activated}})
+                  (into [])
+                  (filter #(= alias (:alias %)))
+                  last)]
+    (assoc (select-keys activation [:alias :index-id :activated-at])
+           :index (get-index ctx index-id))))

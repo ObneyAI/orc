@@ -131,48 +131,60 @@
 ;; =============================================================================
 
 (def ^:private orc-sheet-ids
-  "Atom to cache built ORC sheet IDs."
+  "Atom to cache built ORC sheet IDs by infrastructure, tenant, source type,
+  and pinned model. A process-global type-only cache leaks sheet IDs across
+  tenants and clean replay contexts."
   (atom {}))
+
+(defn- sheet-cache-key [ctx source-type model]
+  [(System/identityHashCode (:event-store ctx))
+   (:tenant-id ctx)
+   source-type
+   model])
 
 (defn- ensure-csv-sheet!
   "Ensure the CSV ontology ORC sheet is built, return its ID."
-  [ctx]
-  (or (get @orc-sheet-ids :csv)
+  [ctx model]
+  (let [cache-key (sheet-cache-key ctx :csv model)]
+    (or (get @orc-sheet-ids cache-key)
       (let [;; Require dynamically to avoid circular deps at compile time
             csv-ns (requiring-resolve 'ai.obney.orc.ontology.sheets.csv-ontology/build-csv-ontology-pipeline!)
-            sheet-id (csv-ns ctx)]
-        (swap! orc-sheet-ids assoc :csv sheet-id)
-        sheet-id)))
+            sheet-id (csv-ns ctx model)]
+        (swap! orc-sheet-ids assoc cache-key sheet-id)
+        sheet-id))))
 
 (defn- ensure-text-sheet!
   "Ensure the taxonomy ORC sheet is built, return its ID."
-  [ctx]
-  (or (get @orc-sheet-ids :text)
+  [ctx model]
+  (let [cache-key (sheet-cache-key ctx :text model)]
+    (or (get @orc-sheet-ids cache-key)
       (let [;; Require dynamically to avoid circular deps at compile time
             text-ns (requiring-resolve 'ai.obney.orc.ontology.sheets.ontology-exploration/build-taxonomy-pipeline!)
-            sheet-id (text-ns ctx)]
-        (swap! orc-sheet-ids assoc :text sheet-id)
-        sheet-id)))
+            sheet-id (text-ns ctx model)]
+        (swap! orc-sheet-ids assoc cache-key sheet-id)
+        sheet-id))))
 
 (defn- ensure-sql-sheet!
   "Ensure the SQL ontology ORC sheet is built, return its ID."
-  [ctx]
-  (or (get @orc-sheet-ids :sql)
+  [ctx model]
+  (let [cache-key (sheet-cache-key ctx :sql model)]
+    (or (get @orc-sheet-ids cache-key)
       (let [;; Require dynamically to avoid circular deps at compile time
             sql-ns (requiring-resolve 'ai.obney.orc.ontology.sheets.sql-ontology/build-sql-ontology-pipeline!)
-            sheet-id (sql-ns ctx)]
-        (swap! orc-sheet-ids assoc :sql sheet-id)
-        sheet-id)))
+            sheet-id (sql-ns ctx model)]
+        (swap! orc-sheet-ids assoc cache-key sheet-id)
+        sheet-id))))
 
 (defn- ensure-json-sheet!
   "Ensure the JSON ontology ORC sheet is built, return its ID."
-  [ctx]
-  (or (get @orc-sheet-ids :json)
+  [ctx model]
+  (let [cache-key (sheet-cache-key ctx :json model)]
+    (or (get @orc-sheet-ids cache-key)
       (let [;; Require dynamically to avoid circular deps at compile time
             json-ns (requiring-resolve 'ai.obney.orc.ontology.sheets.json-ontology/build-json-ontology-pipeline!)
-            sheet-id (json-ns ctx)]
-        (swap! orc-sheet-ids assoc :json sheet-id)
-        sheet-id)))
+            sheet-id (json-ns ctx model)]
+        (swap! orc-sheet-ids assoc cache-key sheet-id)
+        sheet-id))))
 
 ;; =============================================================================
 ;; NOTE: Fallback extractors have been REMOVED
@@ -212,7 +224,7 @@
                           "name")
 
         ;; Build/get ORC sheet
-        sheet-id (ensure-csv-sheet! ctx)
+        sheet-id (ensure-csv-sheet! ctx (:model config))
 
         ;; Require run function dynamically
         run-fn (requiring-resolve 'ai.obney.orc.ontology.sheets.csv-ontology/run-csv-to-ontology)
@@ -232,15 +244,24 @@
             tbox (:tbox result)
             abox (:abox result)]
         {:concepts
-         (mapv (fn [e]
-                 (let [name (or (get e "name") (get e :name) "Unknown")]
-                   {:uri (str (:base-uri config) (str/replace name #"\s+" "_"))
-                    :label name
-                    :definition (or (get e "description") (get e :description) "")
+         (if (seq abox)
+           (mapv (fn [individual]
+                   {:uri (:uri individual)
+                    :label (:label individual)
+                    :definition (str (or (get-in individual [:properties "purpose"]) ""))
                     :entity-type (or (:entity-type config) "Entity")
                     :source-id source-id
-                    :confidence 1.0}))
-               entities)
+                    :confidence 1.0})
+                 abox)
+           (mapv (fn [e]
+                   (let [name (or (get e "name") (get e :name) "Unknown")]
+                     {:uri (str (:base-uri config) (str/replace name #"\s+" "_"))
+                      :label name
+                      :definition (or (get e "description") (get e :description) "")
+                      :entity-type (or (:entity-type config) "Entity")
+                      :source-id source-id
+                      :confidence 1.0}))
+                 entities))
 
          :relationships
          (into
@@ -264,11 +285,14 @@
          ;; A-box: OWL individuals (instances)
          :abox (or abox [])
 
-         :owl-output (:owl-output result)})
+         :owl-output (:owl-output result)
+         :trace-id (:trace-id result)})
 
       ;; NEVER fall back - throw so the issue can be debugged and fixed
-      (throw (ex-info "ORC CSV extraction failed"
+      (throw (ex-info (str "ORC CSV extraction failed: "
+                           (or (:error result) "unknown execution failure"))
                       {:error (:error result)
+                       :trace-id (:trace-id result)
                        :source-id source-id
                        :status (:status result)})))))
 
@@ -285,7 +309,7 @@
      {:concepts [...] :relationships [...] :skos-output string}"
   [ctx source-id text-content config]
   (let [;; Build/get ORC sheet
-        sheet-id (ensure-text-sheet! ctx)
+        sheet-id (ensure-text-sheet! ctx (:model config))
 
         ;; Require run function dynamically
         run-fn (requiring-resolve 'ai.obney.orc.ontology.sheets.ontology-exploration/run-taxonomy-pipeline)
@@ -343,11 +367,14 @@
                  (or (:related-pairs result) [])))
 
          :top-concepts (:top-concepts result)
-         :skos-output (:skos-output result)})
+         :skos-output (:skos-output result)
+         :trace-id (:trace-id result)})
 
       ;; NEVER fall back - throw so the issue can be debugged and fixed
-      (throw (ex-info "ORC text extraction failed"
+      (throw (ex-info (str "ORC text extraction failed: "
+                           (or (:error result) "unknown execution failure"))
                       {:error (:error result)
+                       :trace-id (:trace-id result)
                        :source-id source-id
                        :status (:status result)})))))
 
@@ -364,7 +391,7 @@
      {:concepts [...] :relationships [...] :tbox {...} :abox [...] :owl-output string}"
   [ctx source-id db-path config]
   (let [;; Build/get ORC sheet
-        sheet-id (ensure-sql-sheet! ctx)
+        sheet-id (ensure-sql-sheet! ctx (:model config))
 
         ;; Require run function dynamically
         run-fn (requiring-resolve 'ai.obney.orc.ontology.sheets.sql-ontology/run-sql-to-ontology)
@@ -407,7 +434,8 @@
          :abox abox
          :domain (:domain result)
          :domain-description (:domain-description result)
-         :owl-output (:owl-output result)})
+         :owl-output (:owl-output result)
+         :trace-id (:trace-id result)})
 
       ;; NEVER fall back - throw so the issue can be debugged and fixed
       (throw (ex-info "ORC SQL extraction failed"
@@ -434,7 +462,7 @@
                       json-data)
 
         ;; Build/get ORC sheet
-        sheet-id (ensure-json-sheet! ctx)
+        sheet-id (ensure-json-sheet! ctx (:model config))
 
         ;; Require run function dynamically
         run-fn (requiring-resolve 'ai.obney.orc.ontology.sheets.json-ontology/run-json-to-ontology)
@@ -474,11 +502,14 @@
                 :datatype-properties (or (:datatype-properties tbox) [])}
 
          :abox abox
-         :owl-output (:owl-output result)})
+         :owl-output (:owl-output result)
+         :trace-id (:trace-id result)})
 
       ;; NEVER fall back - throw so the issue can be debugged and fixed
-      (throw (ex-info "ORC JSON extraction failed"
+      (throw (ex-info (str "ORC JSON extraction failed: "
+                           (or (:error result) "unknown execution failure"))
                       {:error (:error result)
+                       :trace-id (:trace-id result)
                        :source-id source-id
                        :status (:status result)})))))
 
@@ -536,27 +567,53 @@
 
 (defn register-sources
   "Register all sources, returning registration results and events."
-  [read-models sources]
-  (reduce (fn [{:keys [registered events]} source]
+  ([read-models sources]
+   (register-sources read-models sources nil))
+  ([read-models sources ontology-id]
+  (let [result
+        (reduce (fn [{:keys [registered events registry-state]} source]
             (let [{:keys [path content type]} source
                   content-loaded (when path (load-source-content (assoc source :type type)))
                   actual-content (or content (:content content-loaded))
                   db-path (:db-path content-loaded)  ;; For SQL sources
 
                   result (source-registry/register-source!
-                           read-models
+                           registry-state
                            {:source-uri path
                             :source-type type
-                            :content actual-content})]
+                            :content actual-content})
+                  emitted-events (cond->> (:events result)
+                                   ontology-id
+                                   (mapv #(update % :event/tags
+                                                  (fnil conj #{})
+                                                  [:ontology ontology-id])))
+                  next-events (into events emitted-events)
+                  ;; Make registrations earlier in this same batch visible to
+                  ;; later inputs. Otherwise duplicate content in positions N
+                  ;; and N+1 is only deduplicated on a future command.
+                  next-registry-state
+                  (reduce (fn [state event]
+                            {:source-registry
+                             (source-registry/source-registry-projection
+                              (:source-registry state) event)
+                             :content-hash-index
+                             (source-registry/content-hash-index-projection
+                              (:content-hash-index state) event)})
+                          registry-state
+                          emitted-events)]
 
               {:registered (conj registered
                                  (assoc result
                                         :source source
                                         :loaded-content actual-content
                                         :db-path db-path))  ;; Preserve db-path for SQL
-               :events (into events (:events result))}))
-          {:registered [] :events []}
-          sources))
+               :events next-events
+               :registry-state next-registry-state}))
+          {:registered []
+           :events []
+           :registry-state read-models}
+          sources)]
+    (dissoc result :registry-state))))
 
 (defn extract-from-all-sources
   "Extract concepts from all registered sources.
@@ -578,6 +635,19 @@
                                (:type source)
                                loaded-content
                                source-config)
+                  model-calls (when-let [trace-id (:trace-id extraction)]
+                                (->> (event-store/read
+                                      (:event-store ctx)
+                                      {:tenant-id (:tenant-id ctx)
+                                       :types #{:sheet/node-execution-completed}})
+                                     (into [])
+                                     (filter #(and (= trace-id (:tick-id %)) (:model %)))
+                                     vec))
+                  model-provenance (when (seq model-calls)
+                                     {:trace-id (:trace-id extraction)
+                                      :models (vec (distinct (map :model model-calls)))
+                                      :calls (mapv #(select-keys % [:node-id :model :usage])
+                                                   model-calls)})
                   ;; Tag concepts with source-id (may already be tagged by ORC extraction)
                   tagged-concepts (mapv #(if (:source-id %)
                                            %
@@ -590,13 +660,16 @@
 
                   ;; Create extraction events (concepts + relationships)
                   base-events [(->event {:type :evolutionary/concepts-extracted
-                                         :tags #{[:source source-id]}
+                                         :tags #{[:source source-id]
+                                                 [:ontology (:ontology-id config)]}
                                          :body {:source-id source-id
                                                 :ontology-id (:ontology-id config)
                                                 :concepts tagged-concepts
+                                                :model-provenance model-provenance
                                                 :extracted-at (str (java.time.Instant/now))}})
                                (->event {:type :evolutionary/relationships-extracted
-                                         :tags #{[:source source-id]}
+                                         :tags #{[:source source-id]
+                                                 [:ontology (:ontology-id config)]}
                                          :body {:source-id source-id
                                                 :ontology-id (:ontology-id config)
                                                 :relationships (:relationships extraction)
@@ -607,7 +680,8 @@
                                        (seq (:object-properties tbox))
                                        (seq (:datatype-properties tbox)))
                                (->event {:type :evolutionary/tbox-extracted
-                                         :tags #{[:source source-id]}
+                                         :tags #{[:source source-id]
+                                                 [:ontology (:ontology-id config)]}
                                          :body {:source-id source-id
                                                 :ontology-id (:ontology-id config)
                                                 :classes (vec (:classes tbox))
@@ -618,7 +692,8 @@
                   ;; Add A-box event if we have individuals
                   abox-event (when (seq abox)
                                (->event {:type :evolutionary/abox-extracted
-                                         :tags #{[:source source-id]}
+                                         :tags #{[:source source-id]
+                                                 [:ontology (:ontology-id config)]}
                                          :body {:source-id source-id
                                                 :ontology-id (:ontology-id config)
                                                 :individuals (vec abox)
@@ -692,12 +767,16 @@
         start-time (System/currentTimeMillis)
 
         ;; Phase 1: Load existing read models
-        existing-events (event-store/read event-store
-                                          {:types #{:evolutionary/source-registered}})
+        existing-events (into []
+                              (event-store/read event-store
+                                                (cond-> {:types #{:evolutionary/source-registered}
+                                                         :tags #{[:ontology ontology-id]}}
+                                                  (:tenant-id ctx)
+                                                  (assoc :tenant-id (:tenant-id ctx)))))
         read-models (source-registry/build-read-models existing-events)
 
         ;; Phase 2: Register sources
-        {:keys [registered events]} (register-sources read-models sources)
+        {:keys [registered events]} (register-sources read-models sources ontology-id)
         registration-events events
 
         ;; Phase 3: Extract from sources (using ORC sheets)
@@ -876,11 +955,15 @@
         config (assoc config :ontology-id ontology-id)
 
         ;; Load existing state
-        existing-events (event-store/read event-store
-                                          {:types #{:evolutionary/source-registered
-                                                    :evolutionary/concepts-extracted
-                                                    :evolutionary/entities-resolved}
-                                           :tags #{[:ontology ontology-id]}})
+        existing-events (into []
+                              (event-store/read event-store
+                                                (cond-> {:types #{:evolutionary/source-registered
+                                                                  :evolutionary/concepts-extracted
+                                                                  :evolutionary/relationships-extracted
+                                                                  :evolutionary/entities-resolved}
+                                                         :tags #{[:ontology ontology-id]}}
+                                                  (:tenant-id ctx)
+                                                  (assoc :tenant-id (:tenant-id ctx)))))
 
         read-models (source-registry/build-read-models existing-events)
 
@@ -888,10 +971,16 @@
         existing-concept-events (filter #(= :evolutionary/concepts-extracted (:event/type %))
                                         existing-events)
         existing-concepts (->> existing-concept-events
-                               (mapcat #(get-in % [:body :concepts]))
+                               (mapcat #(or (get-in % [:body :concepts])
+                                            (:concepts %)))
                                vec)
-        existing-labels (mapv :label existing-concepts)
         existing-uris (set (map :uri existing-concepts))
+        existing-relationships (->> existing-events
+                                    (filter #(= :evolutionary/relationships-extracted
+                                                (:event/type %)))
+                                    (mapcat #(or (get-in % [:body :relationships])
+                                                 (:relationships %)))
+                                    vec)
 
         ;; Build start event
         start-event (->event {:type :evolutionary/build-started
@@ -907,7 +996,7 @@
         start-time (System/currentTimeMillis)
 
         ;; Register new sources (will skip duplicates)
-        {:keys [registered events]} (register-sources read-models sources)
+        {:keys [registered events]} (register-sources read-models sources ontology-id)
         registration-events events
 
         ;; Extract only from new sources (using ORC sheets)
@@ -920,7 +1009,7 @@
         ;; Incremental entity resolution
         resolution-result (entity-resolver/resolve-incremental
                             all-concepts
-                            existing-labels
+                            existing-concepts
                             existing-uris
                             {:similarity-threshold (:similarity-threshold config)
                              :prefer-existing-uris? true})
@@ -928,12 +1017,15 @@
                            ontology-id :incremental resolution-result)
 
         ;; Load existing graph for merging
-        existing-graph-events (event-store/read event-store
-                                                {:types #{:evolutionary/graph-merged}
-                                                 :tags #{[:ontology ontology-id]}})
+        existing-graph-events (into []
+                                    (event-store/read event-store
+                                                      (cond-> {:types #{:evolutionary/graph-merged}
+                                                               :tags #{[:ontology ontology-id]}}
+                                                        (:tenant-id ctx)
+                                                        (assoc :tenant-id (:tenant-id ctx)))))
         ;; For simplicity, rebuild from concepts (full graph would need more state)
         existing-graph {:concepts (into {} (map (juxt :uri identity) existing-concepts))
-                        :relationships []}
+                        :relationships existing-relationships}
 
         ;; Graph evolution
         source-ids (mapv :source-id new-sources)
@@ -999,17 +1091,17 @@
 (defn get-build-result
   "Get the result of a completed build by build-id."
   [event-store build-id]
-  (let [events (event-store/read event-store
-                                 {:types #{:evolutionary/build-completed}
-                                  :tags #{[:build build-id]}})]
+  (let [events (into [] (event-store/read event-store
+                                          {:types #{:evolutionary/build-completed}
+                                           :tags #{[:build build-id]}}))]
     (some-> events first :body)))
 
 (defn get-ontology-ttl
   "Get the latest TTL snapshot for an ontology."
   [event-store ontology-id]
-  (let [events (event-store/read event-store
-                                 {:types #{:evolutionary/ttl-snapshot-created}
-                                  :tags #{[:ontology ontology-id]}})]
+  (let [events (into [] (event-store/read event-store
+                                          {:types #{:evolutionary/ttl-snapshot-created}
+                                           :tags #{[:ontology ontology-id]}}))]
     (some-> events last :body)))
 
 (comment

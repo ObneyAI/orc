@@ -6,6 +6,7 @@
    encoder/MaxSim pipeline, ADR 0002), and emit events via the command
    processor return value."
   (:require [ai.obney.orc.colbert.core.operations :as operations]
+            [ai.obney.orc.colbert.core.index-store :as index-store]
             [ai.obney.orc.colbert.core.read-models :as read-models]
             [ai.obney.grain.event-store-v3.interface :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
@@ -16,6 +17,11 @@
 ;; =============================================================================
 ;; Index Commands
 ;; =============================================================================
+
+(defn- alias-tag-id [alias]
+  (java.util.UUID/nameUUIDFromBytes
+   (.getBytes (str "colbert-index-alias:" alias)
+              java.nio.charset.StandardCharsets/UTF_8)))
 
 (defcommand :colbert create-index
   "Create a ColBERT index from documents.
@@ -80,6 +86,42 @@
                          :deleted-at (str (time/now))}})]})
     {::anom/category ::anom/not-found
      ::anom/message "Index not found"}))
+
+(defcommand :colbert activate-index
+  "Atomically point a stable alias at a fully readable index artifact.
+
+   The artifact is opened before the activation event is emitted. A failed
+   validation emits visible failure evidence and deliberately leaves the
+   existing alias projection unchanged."
+  [{{:keys [alias index-id]} :command :as ctx}]
+  (let [active-index-id (:index-id (read-models/get-active-index ctx alias))
+        index (read-models/get-index ctx index-id)]
+    (try
+      (when-not (and index (= :active (:status index)))
+        (throw (ex-info "Index not found or deleted" {:index-id index-id})))
+      (index-store/read-index (:index-path index))
+      {:command-result/events
+       [(->event {:type :colbert/index-activated
+                  :tags #{[:index index-id] [:index-alias (alias-tag-id alias)]}
+                  :body (cond-> {:alias alias
+                                 :index-id index-id
+                                 :activated-at (str (time/now))}
+                          active-index-id (assoc :previous-index-id active-index-id))})]
+       :command/result {:status :activated :alias alias :index-id index-id}}
+      (catch Exception e
+        {:command-result/events
+         [(->event {:type :colbert/index-activation-failed
+                    :tags #{[:index index-id] [:index-alias (alias-tag-id alias)]}
+                    :body (cond-> {:alias alias
+                                   :index-id index-id
+                                   :error (ex-message e)
+                                   :failed-at (str (time/now))}
+                            active-index-id (assoc :active-index-id active-index-id))})]
+         :command/result {:status :failed
+                          :alias alias
+                          :index-id index-id
+                          :active-index-id active-index-id
+                          :error (ex-message e)}}))))
 
 ;; =============================================================================
 ;; Search Commands (with audit events)

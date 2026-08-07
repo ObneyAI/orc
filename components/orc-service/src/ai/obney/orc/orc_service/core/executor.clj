@@ -892,7 +892,7 @@
     ;; evaluator. Product functions live under the owned namespace; allowing
     ;; arbitrary clojure.core/java symbols would bypass the code-node catalog.
     (not (str/starts-with? fn-symbol-str "ai.obney.orc."))
-    {:error (str "Code function is not declared in the ORC allowlist: "
+    {:error (str "Failed to resolve code function: it is not declared in the ORC allowlist: "
                  fn-symbol-str)}
 
     ;; Standard namespace/function resolution
@@ -1032,7 +1032,7 @@
              :error (if (seq missing-or-nil)
                       (str "Code executor omitted or returned nil for declared writes "
                            (pr-str missing-or-nil))
-                      (str "Code executor result could not be reconciled with declared :writes "
+                      (str "Code executor functions must return a map compatible with declared :writes "
                            (pr-str writes)
                            ". Function returned: "
                            (cond
@@ -1708,8 +1708,39 @@
                :duration-ms (- (System/currentTimeMillis) start-time)
                :usage @total-usage}
 
+              ;; A provider may follow the public REPL-researcher contract by
+              ;; returning the terminal marker directly instead of wrapping it
+              ;; in executable Clojure. Do not feed that marker to SCI: it is
+              ;; data, and treating it as code both loses the answer and spends
+              ;; another model call before convergence.
+              (sci-sandbox/contains-final-answer? code)
+              (let [final-answer (sci-sandbox/extract-final-answer code)
+                    write-keys (:writes node)
+                    outputs (if (map? final-answer)
+                              (let [extracted
+                                    (reduce (fn [acc k]
+                                              (let [kw (if (keyword? k) k (keyword k))
+                                                    v (or (get final-answer kw)
+                                                          (get final-answer (name kw)))]
+                                                (cond-> acc (some? v) (assoc kw v))))
+                                            {}
+                                            write-keys)]
+                                (if (seq extracted)
+                                  extracted
+                                  {(first write-keys) final-answer}))
+                              {(first write-keys) final-answer})]
+                {:status :success
+                 :outputs outputs
+                 :final-answer final-answer
+                 :iterations (conj history {:code code
+                                            :result code
+                                            :stdout ""
+                                            :error nil})
+                 :duration-ms (- (System/currentTimeMillis) start-time)
+                 :usage @total-usage})
+
               :else
-              ;; Execute code in SCI sandbox (always execute, even if code contains FINAL_ANSWER pattern)
+              ;; Execute generated Clojure in the SCI sandbox.
               (let [exec-result (sci-sandbox/execute-code sci-ctx code)
                     new-history (conj history
                                       {:code code

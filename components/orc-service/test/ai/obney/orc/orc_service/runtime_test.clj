@@ -16,6 +16,9 @@
   [{:keys [inputs]}]
   {:output (get inputs :input)})
 
+(defn constant-output-fn [_]
+  {:output "ok"})
+
 (defn transform-fn
   "Transforms input by uppercasing."
   [{:keys [inputs]}]
@@ -238,7 +241,7 @@
               leaf-id (-> leaf-result :command-result/events first :node-id)]
           (h/run-and-apply! ctx (h/make-set-node-executor-command
                                  sheet-id leaf-id :code
-                                 :fn "ai.obney.orc.orc-service.runtime-test/identity-fn"))
+                                 :fn "ai.obney.orc.orc-service.runtime-test/constant-output-fn"))
           (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [] [:output]))
           (is (= :success
                  (:status (sheet/execute (assoc ctx :orc/correlation-id context-correlation)
@@ -271,7 +274,7 @@
               leaf-id (-> leaf-result :command-result/events first :node-id)]
           (h/run-and-apply! ctx (h/make-set-node-executor-command
                                  sheet-id leaf-id :code
-                                 :fn "ai.obney.orc.orc-service.runtime-test/identity-fn"))
+                                 :fn "ai.obney.orc.orc-service.runtime-test/constant-output-fn"))
           (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id leaf-id [] [:output]))
           (let [stream (sheet/execute-stream (assoc ctx :orc/correlation-id correlation-id)
                                              sheet-id {} :timeout-ms 20000)

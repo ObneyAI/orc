@@ -43,6 +43,7 @@
    data, always rebuildable), :colbert/index-deleted, :colbert/search-performed,
    :colbert/rerank-performed."
   (:require [ai.obney.orc.colbert.core.commands]
+            [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.orc.colbert.core.encoder :as encoder]
             [ai.obney.orc.colbert.core.operations :as operations]
             [ai.obney.orc.colbert.core.queries]
@@ -95,6 +96,28 @@
                          :command/id (random-uuid)
                          :command/timestamp (time/now)
                          :index-id index-id})))
+
+(defn activate-index!
+  "Atomically activate a fully readable index under a stable alias."
+  [ctx alias index-id]
+  (cp/process-command
+   (assoc ctx :command {:command/name :colbert/activate-index
+                        :command/id (random-uuid)
+                        :command/timestamp (time/now)
+                        :alias alias
+                        :index-id index-id})))
+
+(defn get-active-index
+  "Return the event-sourced active pointer and resolved index for an alias."
+  [ctx alias]
+  (read-models/get-active-index ctx alias))
+
+(defn search-active
+  "Search exactly one atomic snapshot of a stable active-index alias."
+  [ctx {:keys [alias] :as opts}]
+  (if-let [index-id (:index-id (read-models/get-active-index ctx alias))]
+    (operations/search ctx (-> opts (dissoc :alias) (assoc :index-id index-id)))
+    (throw (ex-info "No active ColBERT index for alias" {:alias alias}))))
 
 ;; =============================================================================
 ;; Search Operations

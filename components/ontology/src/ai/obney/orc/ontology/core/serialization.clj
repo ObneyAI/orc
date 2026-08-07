@@ -360,7 +360,9 @@
       (when (odd? quote-count)
         (swap! errors conj "Unbalanced quotes")))
     ;; Check for prefix usage (strip URIs first to avoid matching inside <...>)
-    (let [without-uris (str/replace turtle-str #"<[^>]+>" "")
+    (let [without-uris (-> turtle-str
+                           (str/replace #"<[^>]+>" "")
+                           (str/replace #"\"(?:\\\\.|[^\"\\\\])*\"" ""))
           ;; Extract just the prefix names (capture group) from used prefixes
           used-prefixes (->> (re-seq #"(\w+):" without-uris)
                              (map second)  ; Get capture group (prefix name)

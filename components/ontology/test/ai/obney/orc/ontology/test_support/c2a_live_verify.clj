@@ -151,24 +151,41 @@
   (Thread/sleep 200))
 
 (defn- consolidate-on-demand! [ctx target-node-type]
-  (cp/process-command
-    (assoc ctx :command
-           {:command/name :ontology/request-consolidation
-            :command/id (random-uuid)
-            :command/timestamp (time/now)
-            :target-type :node-type
-            :target-id target-node-type
-            :on-demand? true}))
-  ;; Allow the consolidator processor (async) time to run the LLM call
-  ;; and emit the description-updated event.
-  (Thread/sleep 30000))
+  (let [before-version (:version (ontology/get-description ctx :node-type target-node-type))]
+    (cp/process-command
+      (assoc ctx :command
+             {:command/name :ontology/request-consolidation
+              :command/id (random-uuid)
+              :command/timestamp (time/now)
+              :target-type :node-type
+              :target-id target-node-type
+              :on-demand? true}))
+    ;; The processor is asynchronous. Poll for the observable state transition
+    ;; instead of imposing a fixed delay on every phase. This legacy verifier
+    ;; uses a two-second ceiling so rejected/no-op fake consolidations do not
+    ;; dominate the brick runtime. Dedicated gated real-LLM candidates own
+    ;; their longer network timeout explicitly.
+    (let [deadline (+ (System/currentTimeMillis) 2000)]
+      (loop []
+        (let [after-version (:version (ontology/get-description ctx :node-type target-node-type))]
+          (cond
+            (and after-version (not= before-version after-version)) true
+            (>= (System/currentTimeMillis) deadline) false
+            :else (do (Thread/sleep 25) (recur))))))))
 
 (defn- run-phase! [ctx target-node-type n-success n-failure phase-label]
   (emit-events! ctx target-node-type n-success n-failure)
-  (consolidate-on-demand! ctx target-node-type)
-  {:phase phase-label
-   :events-emitted {:success n-success :failure n-failure}
-   :body (ontology/get-description ctx :node-type target-node-type)})
+  (let [consolidated? (consolidate-on-demand! ctx target-node-type)
+        body (ontology/get-description ctx :node-type target-node-type)
+        ontology-events (into []
+                              (filter #(= "ontology" (namespace (:event/type %))))
+                              (es/read (:event-store ctx)
+                                       {:tenant-id (:tenant-id ctx)}))]
+    {:phase phase-label
+     :events-emitted {:success n-success :failure n-failure}
+     :consolidated? consolidated?
+     :ontology-event-types (frequencies (map :event/type ontology-events))
+     :body body}))
 
 (defn- scenario-a-passed?
   "Qualitative gate for Scenario A — checked structurally, not via string

@@ -25,22 +25,15 @@ Each judge returns a score (0.0-1.0) with structured feedback.
 
 ## Built-in Judges
 
-### Grounding Judge
+### Evaluate one trace
 ```clojure
-(eval/grounding-judge ctx
-  {:instruction "Original instruction given to the LLM"
-   :input "The input that was provided"
-   :output "The output that was generated"})
-;; => {:score 0.85 :feedback {:strengths [...] :weaknesses [...]}}
-```
-
-### Completeness Judge
-```clojure
-(eval/completeness-judge ctx
+(eval/evaluate-trace
   {:instruction "Summarize the article covering all main points"
-   :input "Long article text..."
-   :output "Short summary..."})
-;; => {:score 0.7 :feedback {:missing-aspects [...]}}
+   :inputs {:article "Long article text..."}
+   :outputs {:summary "Short summary..."}}
+  {:judges [:grounding :completeness]})
+;; => ScoreWithFeedback with :score, :feedback, :dimensions, and—when
+;;    model-backed—durable :model-provenance on the recorded score event
 ```
 
 ## Workflow Judges (DSL Integration)
@@ -71,13 +64,15 @@ When executed with tracing enabled, each judged node produces evaluation scores 
 Evaluate a workflow across multiple test cases:
 
 ```clojure
-(eval/evaluate-batch ctx
-  {:sheet-id sheet-id
-   :examples [{"question" "What is AI?" "expected" "Artificial intelligence..."}
-              {"question" "What is ML?" "expected" "Machine learning..."}]
-   :judges [{:type :grounding :weight 0.5}
-            {:type :completeness :weight 0.5}]})
-;; => {:avg-score 0.82 :per-example [{:scores {...}} ...]}
+(eval/evaluate-traces
+  [{:instruction "Answer the question"
+    :inputs {:question "What is AI?"}
+    :outputs {:answer "Artificial intelligence..."}}
+   {:instruction "Answer the question"
+    :inputs {:question "What is ML?"}
+    :outputs {:answer "Machine learning..."}}]
+  {:judges [:grounding :completeness]})
+;; => {:avg-score 0.82 :results [...] :min-score ... :max-score ...}
 ```
 
 ## GEPA Integration
@@ -89,13 +84,11 @@ Evaluation judges feed directly into GEPA optimization. When GEPA proposes instr
 (gepa/optimize! ctx
   {:sheet-id sheet-id
    :node-name "answer"
-   :metrics [(gepa/judge-metric "answer"
-               {:instruction "Rate answer quality"
-                :model "google/gemini-2.0-flash-001"})]
+   :judges {:grounding 0.5 :completeness 0.5}
    ...})
 ```
 
 ## Reference
 - `docs/EVALUATION-COMPONENT.md` — Full evaluation guide
-- `docs/FEEDBACK-LOOP.md` — Evaluation → GEPA feedback loop
+- `docs/SELF-IMPROVING-LOOP.md` — Evaluation and continuous improvement
 - `docs/GEPA-GUIDE.md` — How judges integrate with optimization

@@ -28,15 +28,17 @@ Metrics score how well a candidate instruction performs on each training example
 
 ```clojure
 ;; Exact match (binary: 0 or 1)
-(gepa/exact-match-metric "answer" "expected-answer")
+(gepa/make-exact-match-metric "answer")
 
 ;; Contains check
-(gepa/contains-metric "answer" "expected-substring")
+(gepa/make-contains-metric "answer")
 
 ;; Judge-based (LLM evaluates quality)
-(gepa/judge-metric "answer"
-  {:instruction "Rate the answer quality 0-1."
-   :model "google/gemini-2.0-flash-001"})
+(gepa/make-judge-metric
+  {:grounding 0.35
+   :completeness 0.25
+   :instruction-following 0.25
+   :reasoning 0.15})
 ```
 
 ### 2. Define Training Examples
@@ -54,11 +56,11 @@ Metrics score how well a candidate instruction performs on each training example
 (gepa/optimize! ctx
   {:sheet-id sheet-id
    :node-name "answer-node"          ;; which LLM node to optimize
-   :examples examples
-   :metrics [(gepa/exact-match-metric "answer" "expected-answer")]
-   :budget {:max-generations 5
-            :candidates-per-generation 3}
-   :seed-instruction "Answer the question concisely."})
+   :trainset examples
+   :valset examples
+   :metric-fn (gepa/make-exact-match-metric "answer")
+   :config {:max-metric-calls 30}
+   :block? false})
 ```
 
 ### 4. Check Results
@@ -71,15 +73,30 @@ Metrics score how well a candidate instruction performs on each training example
 (gepa/get-pareto-frontier ctx optimization-id)
 
 ;; Get optimization progress
-(gepa/get-optimization-progress ctx optimization-id)
+(gepa/get-progress ctx optimization-id)
 ```
 
-### 5. Apply the Best Instruction
+If the process stops during an optimization, reconstruct the same Grain context
+and advance one durable missing transition at a time:
 
 ```clojure
-;; Update the LLM node with the optimized instruction
-(gepa/apply-best-instruction! ctx optimization-id sheet-id "answer-node")
+(gepa/resume! ctx optimization-id)
+;; => {:status :resumed :boundary ...}
+;; or {:status :already-terminal ...}
 ```
+
+### 5. Apply and Publish the Winner
+
+```clojure
+;; The exact immutable source version is mandatory.
+(gepa/apply-winner! ctx optimization-id 3)
+;; => {:source-version 3 :target-version 4
+;;     :source-fingerprint ... :target-fingerprint ...}
+```
+
+Optimization never silently mutates a published workflow. Applying a completed
+winner updates the draft and publishes a new immutable version with source and
+target fingerprints.
 
 ## Key Concepts
 
@@ -90,4 +107,4 @@ Metrics score how well a candidate instruction performs on each training example
 
 ## Reference
 - `docs/GEPA-GUIDE.md` — Full GEPA integration guide
-- `docs/FEEDBACK-LOOP.md` — How evaluation feeds back into optimization
+- `docs/SELF-IMPROVING-LOOP.md` — How evaluation feeds continuous improvement

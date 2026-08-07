@@ -38,6 +38,17 @@
       (is (= original-uuid result)
           "UUID should pass through unchanged"))))
 
+(deftest duplicate-content-is-deduplicated-within-one-registration-batch
+  (let [source {:type "text" :content "same immutable source"}
+        result (builder/register-sources
+                {:source-registry {} :content-hash-index {}}
+                [source source])]
+    (is (= 2 (count (:registered result))))
+    (is (= [false true] (mapv :already-registered? (:registered result)))
+        "the second input must observe the first registration immediately")
+    (is (= 1 (count (:events result)))
+        "duplicate content emits one registration event")))
+
 ;; =============================================================================
 ;; Issue 004: Integration Test - Grain Schema Compliance
 ;; =============================================================================

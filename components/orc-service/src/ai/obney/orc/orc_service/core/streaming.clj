@@ -401,7 +401,15 @@
                            (if (:orc.stream/type m)
                              (ephemeral-for-sub sub m)
                              (normalize-durable sub m include-values?))
-                           (catch Exception _ nil))]
+                           (catch Exception _ nil))
+                ;; Descendant ticks remain part of the progress stream, but
+                ;; their cancellation is not the subscribed execution's
+                ;; terminal lifecycle. Emitting it makes one root cancellation
+                ;; look like N terminal signals for a delegated tree.
+                envelope (when-not (and (= :tick-cancelled (:orc.stream/type envelope))
+                                        (not= (:tick-id envelope)
+                                              (:root-tick-id sub)))
+                           envelope)]
             (when envelope
               (let [n (swap! (:seq-counter sub) inc)
                     terminal? (and (contains? #{:tick-completed :tick-cancelled}
@@ -413,11 +421,23 @@
                                    :ts (time/now)
                                    :root-tick-id (:root-tick-id sub)))
                 (when terminal?
-                  (close-subscription! sub-id
-                                       (if (= :tick-cancelled (:orc.stream/type envelope))
-                                         :cancelled
-                                         :completed)))))
-            (recur)))))))
+                  ;; Close immediately after the root terminal envelope. A
+                  ;; queued descendant event must not slip between the root
+                  ;; cancellation and :stream-closed.
+                  (let [close-n (swap! (:seq-counter sub) inc)
+                        reason (if (= :tick-cancelled (:orc.stream/type envelope))
+                                 :cancelled
+                                 :completed)]
+                    (async/put! (:events-ch sub)
+                                {:orc.stream/type :stream-closed
+                                 :seq close-n
+                                 :ts (time/now)
+                                 :tick-id (:root-tick-id sub)
+                                 :root-tick-id (:root-tick-id sub)
+                                 :reason reason})
+                    (finalize-subscription! sub-id)))))
+            (when (get @subscriptions sub-id)
+              (recur))))))))
 
 ;; =============================================================================
 ;; Pubsub tap

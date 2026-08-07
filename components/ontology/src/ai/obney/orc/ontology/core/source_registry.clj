@@ -197,13 +197,14 @@
   "Reduce function for source-registry read model.
    State: {source-id -> source-entry}"
   [state event]
-  (case (:type event)
+  (case (or (:event/type event) (:type event))
     :evolutionary/source-registered
-    (let [{:keys [source-id] :as body} (:body event)]
+    (let [{:keys [source-id] :as body} (or (:body event) event)]
       (assoc state source-id body))
 
     :evolutionary/source-stats-updated
-    (let [{:keys [source-id concepts-extracted triples-generated entities-resolved]} (:body event)]
+    (let [{:keys [source-id concepts-extracted triples-generated entities-resolved]}
+          (or (:body event) event)]
       (update state source-id merge
               {:concepts-extracted concepts-extracted
                :triples-generated triples-generated
@@ -216,9 +217,9 @@
   "Reduce function for content-hash-index read model.
    State: {content-hash -> source-id}"
   [state event]
-  (case (:type event)
+  (case (or (:event/type event) (:type event))
     :evolutionary/source-registered
-    (let [{:keys [content-hash source-id]} (:body event)]
+    (let [{:keys [content-hash source-id]} (or (:body event) event)]
       (assoc state content-hash source-id))
 
     ;; Default - unchanged

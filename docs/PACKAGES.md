@@ -31,7 +31,7 @@ obneyai/orc-evaluation                  ;; lib name = the package name
 
 | Package (`:deps/root`) | What you get | Pulls DJL? |
 |---------|-------------|:----------:|
-| **`projects/orc-service`** | The engine: behavior-tree DSL, runtime, event-sourced execution, streaming, RLM (`:repl-researcher`), inline value storage, and the external-storage protocol | No |
+| **`projects/orc-service`** | The engine: behavior-tree DSL, runtime, idempotent restart recovery, streaming, bounded telemetry export, RLM (`:repl-researcher`), inline value storage, and the external-storage protocol | No |
 | **`projects/orc-evaluation`** | Engine + LLM-as-judge evaluation (grounding, reasoning, completeness, instruction-following) | No |
 | **`projects/orc-gepa`** | Engine + evaluation + GEPA prompt optimization (Pareto + reflective mutation) | No |
 | **`projects/orc-ontology`** | Engine + general-purpose event-sourced concept graph, DJL embeddings, evolutionary builder, self-improving write-side | **Yes** (DJL, in-JVM) |
@@ -49,8 +49,9 @@ obneyai/orc-evaluation                  ;; lib name = the package name
 
 The Layer-0 engine. Behavior-tree DSL (`workflow`, `sequence`, `parallel`,
 `fallback`, `map-each`, `llm`, `code`, `condition`, `delegate`, `repl-researcher`),
-synchronous + streaming execution, event-sourced sheets, versioning, and the
-generic file-store contract. Its runtime dependencies include the LLM-call
+synchronous + streaming execution, idempotent recovery of abandoned leaf
+frontiers, bounded failure-isolated telemetry export, event-sourced sheets,
+versioning, and the generic file-store contract. Its runtime dependencies include the LLM-call
 layer (DSCloj), structured logging (mulog), a safe Clojure interpreter (sci),
 and Nippy value encoding. No model loading.
 
@@ -81,7 +82,10 @@ obneyai/orc-evaluation {:git/url "https://github.com/ObneyAI/orc.git"
 
 The engine plus evaluation plus GEPA instruction optimization. Optimizes the
 `:instruction` on your static `:llm` nodes via Pareto-frontier selection and
-reflective mutation, scored by the evaluation judges. No ontology.
+reflective mutation, scored by the evaluation judges. Runs can resume from
+durable model-call/evaluation boundaries, and completed winners can be applied
+to an explicit source version to publish a new immutable workflow version. No
+ontology.
 
 ```clojure
 obneyai/orc-gepa {:git/url "https://github.com/ObneyAI/orc.git"
@@ -97,6 +101,10 @@ CSV/JSON/SQL/text), and the self-improving loop's write-side (consolidator,
 Living Descriptions, classifier). Retrieval runs on **graph BFS + DJL
 embeddings**. ColBERT is resolved lazily; add `orc-colbert` for the
 third signal.
+
+Every evolutionary public read is tenant-scoped through the caller context,
+including source/concept/history/statistics queries. Learned descriptions and
+source extractions retain model provenance when model evidence is available.
 
 ```clojure
 obneyai/orc-ontology {:git/url "https://github.com/ObneyAI/orc.git"

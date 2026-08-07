@@ -39,7 +39,9 @@
     (tu/with-test-context [ctx]
       (let [cp (control-plane/start {:event-store (:event-store ctx)
                                      :cache (:cache ctx)
-                                     :context ctx})
+                                     :context ctx
+                                     :heartbeat-interval-ms 100
+                                     :staleness-threshold-ms 1000})
             sheet-id (sheet/build-workflow! ctx (make-echo-workflow))
             data [{"input" "banana"} {"input" "kiwi"}]
             result (gepa/optimize! ctx
@@ -47,17 +49,21 @@
                       :trainset data
                       :valset data
                       :metric-fn fake-judge-metric
-                      :config {:max-metric-calls 4
+                      :config {:max-metric-calls 2
                                :reflection-lm "us.anthropic.claude-sonnet-4-20250514-v1:0"}
                       :inherit-from-previous false
                       :block? true
-                      :timeout-ms 60000})
+                      :timeout-ms 10000})
             opt-id (:optimization-id result)
             all (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)}))
             evaluated (filter #(and (= :gepa/candidate-evaluated (:event/type %))
                                     (= opt-id (:optimization-id %))) all)
             seed (first (sort-by (comp str :evaluated-at) evaluated))
             seed-id (:candidate-id seed)]
+
+        (is (= :completed (:status result))
+            (str "code-only GEPA timed out; durable event inventory: "
+                 (pr-str (frequencies (map :event/type all)))))
 
         (testing "the seed candidate-evaluated event carries per-instance outputs"
           (is (seq evaluated) "at least one candidate was evaluated")

@@ -35,8 +35,8 @@
             [ai.obney.orc.ontology.core.source-registry :as source-registry]
             [ai.obney.orc.ontology.core.entity-resolver :as entity-resolver]
             [ai.obney.orc.ontology.core.graph-evolver :as graph-evolver]
-            [ai.obney.orc.ontology.core.read-models :as read-models]
             [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.event-store-v3.interface :as event-store]
             [ai.obney.grain.time.interface :as time]))
 
 ;; =============================================================================
@@ -92,9 +92,13 @@
                           :command/timestamp (time/now)
                           :command/name :ontology/build-from-sources}
                          params)))]
-    ;; Return the builder result shape for backward compatibility
-    (merge (:command/result result)
-           {:events (:command-result/events result)})))
+    ;; Preserve Grain anomalies. Merging nil :command/result used to turn a
+    ;; rejected live build into the misleading value {:events nil}, erasing
+    ;; the provider/schema failure that operators and acceptance tests need.
+    (if (:cognitect.anomalies/category result)
+      result
+      (merge (:command/result result)
+             {:events (:command-result/events result)}))))
 
 (defn evolve
   "Evolve existing ontology with new sources (INCREMENTAL mode).
@@ -129,8 +133,10 @@
                           :command/timestamp (time/now)
                           :command/name :ontology/evolve}
                          params)))]
-    (merge (:command/result result)
-           {:events (:command-result/events result)})))
+    (if (:cognitect.anomalies/category result)
+      result
+      (merge (:command/result result)
+             {:events (:command-result/events result)}))))
 
 ;; =============================================================================
 ;; Source Registry Operations
@@ -278,10 +284,28 @@
 ;; Query Operations
 ;; =============================================================================
 
+(defn- read-events
+  "Read immutable evolutionary evidence within the caller's tenant. Public
+  evolutionary queries must never silently widen a tenant-scoped context to
+  the whole shared event store."
+  ([{:keys [event-store tenant-id]} types]
+   (into [] (event-store/read event-store
+                              (cond-> {:types types}
+                                tenant-id (assoc :tenant-id tenant-id)))))
+  ([{:keys [event-store tenant-id]} types tags]
+   (into [] (event-store/read event-store
+                              (cond-> {:types types :tags tags}
+                                tenant-id (assoc :tenant-id tenant-id))))))
+
+(defn- body [event] (or (:body event) event))
+
 (defn get-source
   "Get source entry by ID."
-  [{:keys [event-store]} source-id]
-  (read-models/get-source event-store source-id))
+  [ctx source-id]
+  (-> (read-events ctx #{:evolutionary/source-registered})
+      source-registry/build-read-models
+      :source-registry
+      (source-registry/get-source source-id)))
 
 (defn get-all-sources
   "Get all registered sources.
@@ -292,8 +316,12 @@
        :source-type - Filter by type (optional)
 
    Returns: Vector of source entries"
-  [{:keys [event-store]} & [opts]]
-  (read-models/get-all-sources event-store opts))
+  [ctx & [opts]]
+  (let [registry (-> (read-events ctx #{:evolutionary/source-registered})
+                     source-registry/build-read-models
+                     :source-registry)]
+    (vec (source-registry/all-sources registry
+                                     :source-type (:source-type opts)))))
 
 (defn get-concepts
   "Get concepts extracted for an ontology.
@@ -303,33 +331,48 @@
      ontology-id - UUID of the ontology
 
    Returns: Vector of concept maps"
-  [{:keys [event-store]} ontology-id]
-  (read-models/get-evolutionary-concepts event-store ontology-id))
+  [ctx ontology-id]
+  (->> (read-events ctx #{:evolutionary/concepts-extracted}
+                    #{[:ontology ontology-id]})
+       (mapcat (comp :concepts body))
+       vec))
 
 (defn get-concepts-by-source
   "Get concepts extracted from a specific source."
-  [{:keys [event-store]} source-id]
-  (read-models/get-concepts-by-source event-store source-id))
+  [ctx source-id]
+  (->> (read-events ctx #{:evolutionary/concepts-extracted}
+                    #{[:source source-id]})
+       (mapcat (comp :concepts body))
+       vec))
 
 (defn get-concepts-by-type
   "Get concepts of a specific entity type."
-  [{:keys [event-store]} entity-type]
-  (read-models/get-concepts-by-type event-store entity-type))
+  [ctx entity-type]
+  (->> (read-events ctx #{:evolutionary/concepts-extracted})
+       (mapcat (comp :concepts body))
+       (filterv #(= entity-type (:entity-type %)))))
 
 (defn get-canonical-uri
   "Get canonical URI for a given URI."
-  [{:keys [event-store]} uri]
-  (read-models/get-canonical-uri event-store uri))
+  [ctx uri]
+  (get (reduce entity-resolver/canonical-uri-map-projection {}
+               (read-events ctx #{:evolutionary/entities-resolved
+                                  :evolutionary/canonical-uri-assigned}))
+       uri))
 
 (defn get-all-canonical-mappings
   "Get all canonical URI mappings."
-  [{:keys [event-store]}]
-  (read-models/get-all-canonical-mappings event-store))
+  [ctx]
+  (reduce entity-resolver/canonical-uri-map-projection {}
+          (read-events ctx #{:evolutionary/entities-resolved
+                             :evolutionary/canonical-uri-assigned})))
 
 (defn get-evolution-state
   "Get current evolution state for an ontology."
-  [{:keys [event-store]} ontology-id]
-  (read-models/get-evolution-state event-store ontology-id))
+  [ctx ontology-id]
+  (some-> (read-events ctx #{:evolutionary/graph-merged}
+                       #{[:ontology ontology-id]})
+          last body))
 
 (defn get-build-history
   "Get build history for an ontology.
@@ -341,13 +384,22 @@
        :limit - Max results (default: 10)
 
    Returns: Vector of build completion records"
-  [{:keys [event-store]} ontology-id & [opts]]
-  (read-models/get-build-history event-store ontology-id opts))
+  [ctx ontology-id & [opts]]
+  (let [limit (or (:limit opts) 10)]
+    (->> (read-events ctx #{:evolutionary/build-completed}
+                      #{[:ontology ontology-id]})
+         (take-last limit)
+         (mapv body))))
 
 (defn get-statistics
   "Get comprehensive statistics about the evolutionary ontology."
-  [{:keys [event-store]} ontology-id]
-  (read-models/evolutionary-statistics event-store ontology-id))
+  [ctx ontology-id]
+  (let [history (get-build-history ctx ontology-id)
+        concepts (get-concepts ctx ontology-id)]
+    {:ontology-id ontology-id
+     :build-count (count history)
+     :concept-count (count concepts)
+     :latest-build (last history)}))
 
 ;; =============================================================================
 ;; Utility Functions

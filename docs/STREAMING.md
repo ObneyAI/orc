@@ -183,6 +183,12 @@ Notes:
   from the live stream of a fresh subscription (child ticks must be
   re-discovered from `:parent-tick-id` on their `tree-tick-started`
   events).
+- **Execution restart is separate from stream reconnection.** After rebuilding
+  processors against the same event store, call
+  `(orc/resume-in-progress! ctx)` to reconstruct abandoned leaf frontiers.
+  Completed nodes are not rerun and repeated calls are idempotent. A fresh
+  subscription observes only new live events; rebuild earlier UI state from
+  durable events first.
 - Streams self-close on the root's terminal event. A TTL backstop
   (`:ttl-ms`, default 1h) closes streams whose tick never completes.
   `close!` is idempotent.

@@ -666,7 +666,7 @@
   "Record (or update) the description for a node-type — a cross-sheet
    aggregation across every node of this :type. Emits the
    :ontology/node-type-description-updated event."
-  [{{:keys [target-id body]} :command}]
+  [{{:keys [target-id body model-provenance]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/node-type-description-updated
@@ -674,13 +674,14 @@
       :body {:target-type :node-type
              :target-id target-id
              :body body
-             :recorded-at (now-str)}})]})
+             :recorded-at (now-str)
+             :model-provenance model-provenance}})]})
 
 (defcommand :ontology record-node-instance-description
   "Record (or update) the description for a specific node instance —
    keyed by [sheet-id node-id]. Emits the
    :ontology/node-instance-description-updated event."
-  [{{:keys [target-id body]} :command}]
+  [{{:keys [target-id body model-provenance]} :command}]
   (let [[sheet-id node-id] target-id]
     {:command-result/events
      [(->event
@@ -692,13 +693,14 @@
         :body {:target-type :node-instance
                :target-id target-id
                :body body
-               :recorded-at (now-str)}})]}))
+               :recorded-at (now-str)
+               :model-provenance model-provenance}})]}))
 
 (defcommand :ontology record-tree-description
   "Record (or update) the description for a tree-fingerprint —
    identifying all trees with the same canonical structure. Emits the
    :ontology/tree-description-updated event."
-  [{{:keys [target-id body]} :command}]
+  [{{:keys [target-id body model-provenance]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/tree-description-updated
@@ -707,7 +709,8 @@
       :body {:target-type :tree-fingerprint
              :target-id target-id
              :body body
-             :recorded-at (now-str)}})]})
+             :recorded-at (now-str)
+             :model-provenance model-provenance}})]})
 
 (defcommand :ontology record-tree-class-description
   "C-Loop-1: record (or update) the description for a tree-class —
@@ -716,7 +719,7 @@
    SHAs of observed trees; :tree-class keys on the stable seed UUID
    (or fresh-mint root UUID) the classifier assigns. Emits the same
    :ontology/tree-description-updated event with :target-type :tree-class."
-  [{{:keys [target-id body]} :command}]
+  [{{:keys [target-id body model-provenance]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/tree-description-updated
@@ -725,7 +728,8 @@
       :body {:target-type :tree-class
              :target-id target-id
              :body body
-             :recorded-at (now-str)}})]})
+             :recorded-at (now-str)
+             :model-provenance model-provenance}})]})
 
 (defcommand :ontology record-anti-recency-rejection
   "Gap-6: record an audit event when the anti-recency validator
@@ -734,7 +738,7 @@
    prior body. Emits :ontology/anti-recency-rejection. Audit trail
    only — does not affect the description read-model."
   [{{:keys [target-type target-id bucket entry-trait prior-confidence
-            prior-evidence-count reason rejected-body]} :command}]
+            prior-evidence-count reason rejected-body model-provenance]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/anti-recency-rejection
@@ -748,6 +752,7 @@
              :prior-evidence-count prior-evidence-count
              :reason reason
              :rejected-body rejected-body
+             :model-provenance model-provenance
              :detected-at (now-str)}})]})
 
 (defcommand :ontology record-anti-recency-clamp

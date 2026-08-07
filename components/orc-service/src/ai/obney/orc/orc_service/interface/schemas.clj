@@ -496,6 +496,8 @@
                     ;; remaining-mass policy. Negative weights are rejected
                     ;; because they're nonsensical for a probability mass.
                     [:weight {:optional true} [:and number? [:>= 0.0]]]
+                    [:provider {:optional true} :keyword]
+                    [:model {:optional true} :string]
                     [:sheet-id {:optional true} :uuid]]]] ;; For :custom type - reference to judge sheet
 
    :sheet/set-node-judges
@@ -538,7 +540,16 @@
    :sheet/cancel-tick
    [:map
     [:sheet-id :uuid]
-    [:tick-id :uuid]]
+    [:tick-id :uuid]
+    [:reason {:optional true} [:maybe :string]]]
+
+   :sheet/resume-node-execution
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:original-start-event-id :uuid]
+    [:inputs [:map-of :keyword :any]]]
 
    ;; Internal commands (issued by todo processors)
    :sheet/complete-node-execution
@@ -583,6 +594,9 @@
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
       [:total-tokens {:optional true} :int]]]
+    ;; Resolved provider model for durable LLM-call provenance. Present on
+    ;; every model-backed leaf completion; absent on deterministic leaves.
+    [:model {:optional true} :string]
     ;; D-008: present when a map-each terminates in :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
     ;; C-2a-2: node-type keyword (:llm, :code, :map-each, :parallel, ...).
@@ -986,6 +1000,8 @@
                     [:criteria {:optional true} :string]
                     ;; Mirror of :sheet/declare-judge :weight constraint.
                     [:weight {:optional true} [:and number? [:>= 0.0]]]
+                    [:provider {:optional true} :keyword]
+                    [:model {:optional true} :string]
                     [:sheet-id {:optional true} :uuid]]]
     [:criteria-version {:optional true} :int]]
 
@@ -1024,7 +1040,11 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
-    [:inputs [:map-of :keyword :any]]]
+    [:inputs [:map-of :keyword :any]]
+    ;; Durable idempotency key for restart recovery. A resumed start points to
+    ;; the exact abandoned start it supersedes; repeat recovery scans therefore
+    ;; do not enqueue the same frontier twice.
+    [:resumed-from-event-id {:optional true} :uuid]]
 
    :sheet/node-execution-completed
    [:map
@@ -1070,6 +1090,7 @@
       [:prompt-tokens {:optional true} :int]
       [:completion-tokens {:optional true} :int]
       [:total-tokens {:optional true} :int]]]
+    [:model {:optional true} :string]
     ;; D-008: present on map-each completion events when status is :partial or :failure.
     [:partial-summary {:optional true} partial-summary]
     ;; C-2a-2: node-type keyword carried through from the command for the
@@ -1213,7 +1234,8 @@
    :sheet/tick-cancelled
    [:map
     [:sheet-id :uuid]
-    [:tick-id :uuid]]
+    [:tick-id :uuid]
+    [:reason {:optional true} [:maybe :string]]]
 
    :sheet/sequence-progress-updated
    [:map

@@ -221,6 +221,49 @@
 ;; Public API
 ;; =============================================================================
 
+(defn resume-in-progress!
+  "Resume abandoned leaf frontiers from durable execution state.
+
+   Intended to be called after todo processors have been rebuilt against the
+   same event store. Completed nodes are never re-enqueued. Each recovery start
+   durably references the abandoned start event, making repeated calls
+   idempotent. Returns one result map per active leaf frontier inspected."
+  [context]
+  (vec
+   (mapcat
+    (fn [{:keys [tick-id sheet-id nodes-in-progress]}]
+      (let [tick-ctx (rm/get-tick-execution-context context tick-id)
+            nodes-by-id (:nodes-by-id tick-ctx)
+            tick-events (into [] (es/read (:event-store context)
+                                          {:tenant-id (:tenant-id context)
+                                           :tags #{[:tick tick-id]}}))]
+        (keep
+         (fn [node-id]
+           (when (= :leaf (:type (get nodes-by-id node-id)))
+             (when-let [start (last (filter #(and (= :sheet/node-execution-started
+                                                      (:event/type %))
+                                                   (= node-id (:node-id %)))
+                                             tick-events))]
+               (when-not (:resumed-from-event-id start)
+                 (let [result (cp/process-command
+                             (assoc context :command
+                                    {:command/id (random-uuid)
+                                     :command/timestamp (time/now)
+                                     :command/name :sheet/resume-node-execution
+                                     :sheet-id sheet-id
+                                     :tick-id tick-id
+                                     :node-id node-id
+                                     :original-start-event-id (:event/id start)
+                                     :inputs (:inputs start)}))]
+                 {:tick-id tick-id
+                  :sheet-id sheet-id
+                  :node-id node-id
+                  :original-start-event-id (:event/id start)
+                  :resumed? (boolean (seq (:command-result/events result)))
+                  :command-result result})))))
+         nodes-in-progress)))
+    (rm/get-all-active-executions context))))
+
 (defn execute
   "Execute a sheet (behavior tree) by dispatching to async pipeline and waiting.
 

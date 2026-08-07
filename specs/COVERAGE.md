@@ -15,7 +15,7 @@ are represented in a checked Allium specification.
 | `file-store-s3` | S3 implementation of storage contract | `file-storage.allium` | Distilled and checked as adapter |
 | `gepa` | Pareto-based prompt optimization | `gepa.allium` | Distilled and checked |
 | `grain-test-utils` | Test-only Grain helpers | — | Excluded: test infrastructure |
-| `langfuse` | Trace export | `observability.allium` | Distilled and checked |
+| `langfuse` | Trace destination adapter | `observability.allium` | Distilled and checked with the managed exporter lifecycle exposed by `orc-service` |
 | `llm` | — | — | Excluded: empty placeholder directory; no production source or dependency manifest |
 | `mcp-sheet-builder` | Workflow generation from MCP tools | `mcp-sheet-builder.allium` | Distilled and checked |
 | `ontology` | Ontology discovery, evolution, and retrieval | `ontology.allium` | Distilled and checked |
@@ -63,16 +63,16 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-06, both `allium check specs` and `allium analyse specs` reported 171
-structural diagnostics across the ten specifications: 143 informational and 28
+On 2026-08-06, both `allium check specs` and `allium analyse specs` reported 176
+structural diagnostics across the ten specifications: 147 informational and 29
 warnings. `analyse` reported zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 37 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 106 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.rule.unreachableTrigger` | 38 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.field.unused` | 109 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 14 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
-| `allium.definition.unused` | 12 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.definition.unused` | 13 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents

@@ -638,6 +638,13 @@
           ;; reads :tool-context off ITS context the same way, re-threading it.
           tool-context (:tool-context context)
           correlation-id (:orc/correlation-id context)
+          llm-call-budget (get-in context [:tick-options :llm-call-budget])
+          llm-budget-root-tick-id
+          (or (get-in context [:tick-options :llm-budget-root-tick-id])
+              parent-tick-id)
+          llm-budget-root-sheet-id
+          (or (get-in context [:tick-options :llm-budget-root-sheet-id])
+              (:sheet-id context))
           tick-cmd-result (cp/process-command
                             (assoc context :command
                                    (cond-> {:command/id (random-uuid)
@@ -645,8 +652,23 @@
                                             :command/name :sheet/tick-tree
                                             :sheet-id sheet-id
                                             :tick-id tick-id
-                                            :inputs (merge blackboard sandbox-vars)
-                                            :options {:timeout-ms timeout-ms}}
+                                            ;; The parent blackboard also holds
+                                            ;; output placeholders. An absent
+                                            ;; output is not a caller input and
+                                            ;; must not be seeded as explicit
+                                            ;; nil through the child schema gate.
+                                            :inputs (into {}
+                                                          (remove (comp nil? val))
+                                                          (merge blackboard sandbox-vars))
+                                            :options (cond-> {:timeout-ms timeout-ms}
+                                                       llm-call-budget
+                                                       (assoc :llm-call-budget llm-call-budget)
+                                                       llm-budget-root-tick-id
+                                                       (assoc :llm-budget-root-tick-id
+                                                              llm-budget-root-tick-id)
+                                                       llm-budget-root-sheet-id
+                                                       (assoc :llm-budget-root-sheet-id
+                                                              llm-budget-root-sheet-id))}
                                      parent-tick-id (assoc :parent-tick-id parent-tick-id)
                                      correlation-id (assoc :correlation-id correlation-id)
                                      tool-context (assoc :tool-context tool-context))))

@@ -28,6 +28,10 @@
     :gepa/example-evaluated           ;; Per-example results
     :gepa/frontier-updated
     :gepa/reflective-dataset-built    ;; Track reflection data
+    :gepa/proposer-call-completed     ;; Durable real-model provenance/usage
+    :gepa/task-call-completed         ;; Restart-safe evaluated example ledger
+    :gepa/proposal-ready              ;; Durable proposer/evaluation boundary
+    :gepa/winner-applied              ;; Winner-to-workflow publication link
     :gepa/mutation-proposed
     :gepa/candidate-acceptance-decision ;; Track acceptance
     :gepa/subsample-evaluation-started  ;; Subsample eval flow (Python GEPA parity)
@@ -324,38 +328,53 @@
               (assoc :optimization-id (:optimization-id event))
               (assoc :max-scores {})
               (assoc :best-at {})
+              (assoc :scores-by-candidate {})
               (assoc :frontier-members #{}))
 
           :gepa/candidate-evaluated
           (let [{:keys [candidate-id scores]} event]
-            (reduce-kv
-              (fn [f idx score]
-                (let [current-best (get-in f [:max-scores idx] Double/NEGATIVE_INFINITY)]
-                  (cond
-                    (> score current-best)
-                    (-> f
-                        (assoc-in [:max-scores idx] score)
-                        (assoc-in [:best-at idx] #{candidate-id})
-                        (update :frontier-members conj candidate-id))
-
-                    (== score current-best)
-                    (-> f
-                        (update-in [:best-at idx] (fnil conj #{}) candidate-id)
-                        (update :frontier-members conj candidate-id))
-
-                    :else f)))
-              frontier
-              (zipmap (range) scores)))
+            (let [all-scores (assoc (:scores-by-candidate frontier)
+                                    candidate-id (vec scores))
+                  dominates? (fn [a b]
+                               (and (every? true? (map >= a b))
+                                    (some true? (map > a b))))
+                  members (into #{}
+                                (keep (fn [[id candidate-scores]]
+                                        (when-not
+                                          (some (fn [[other-id other-scores]]
+                                                  (and (not= id other-id)
+                                                       (dominates? other-scores
+                                                                   candidate-scores)))
+                                                all-scores)
+                                          id)))
+                                all-scores)
+                  max-scores (reduce (fn [maxima candidate-scores]
+                                       (mapv max maxima candidate-scores))
+                                     (repeat (count scores)
+                                             Double/NEGATIVE_INFINITY)
+                                     (vals all-scores))
+                  best-at (into {}
+                                (map-indexed
+                                  (fn [idx maximum]
+                                    [idx (into #{}
+                                               (keep (fn [id]
+                                                       (when (== maximum
+                                                                  (nth (get all-scores id)
+                                                                       idx))
+                                                         id)))
+                                               members)]))
+                                max-scores)]
+              (assoc frontier
+                     :scores-by-candidate all-scores
+                     :max-scores (into {} (map-indexed vector max-scores))
+                     :best-at best-at
+                     :frontier-members members)))
 
           :gepa/frontier-updated
-          (let [{:keys [candidate-id instances-best-at]} event]
-            (-> frontier
-                (update :frontier-members conj candidate-id)
-                (as-> f
-                      (reduce (fn [acc idx]
-                                (update-in acc [:best-at idx] (fnil conj #{}) candidate-id))
-                              f
-                              instances-best-at))))
+          ;; `candidate-evaluated` has the complete score vector and therefore
+          ;; computes the true nondominated set. This observability event must
+          ;; not re-add a candidate that a later vector globally dominates.
+          frontier
 
           ;; Default: return unchanged
           frontier)))

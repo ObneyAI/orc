@@ -863,6 +863,18 @@ Generated code includes checksums for tamper detection:
    - Registry for executor lookup by name/ID/qualified-reference
    - `build-sheet-with-executors!` - Build + persist executors
 
+### Published schemas do not drift silently
+
+A generated executor captures the discovered MCP input/output schema at
+generation time. Publishing the workflow makes that captured schema part of
+the workflow contract; a later incompatible server schema does not mutate or
+reinterpret the published definition.
+
+Invocation against incompatible drift fails explicitly. To adopt the changed
+schema, rediscover the tool, regenerate its executor/workflow, validate it, and
+publish a distinct definition identity. The original published workflow and
+executor checksum remain reproducible.
+
 **Use cases:**
 - Share workflows with teams who don't have MCP access
 - Deploy to production servers with minimal dependencies

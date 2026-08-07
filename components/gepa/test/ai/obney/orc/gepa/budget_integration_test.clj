@@ -31,7 +31,9 @@
       (let [;; Start control plane so todo processors run
             cp (control-plane/start {:event-store (:event-store ctx)
                                      :cache (:cache ctx)
-                                     :context ctx})
+                                     :context ctx
+                                     :heartbeat-interval-ms 100
+                                     :staleness-threshold-ms 1000})
             ;; Build workflow
             sheet-id (sheet/build-workflow! ctx (make-identity-workflow))
             ;; Simple trainset
@@ -48,14 +50,14 @@
                       :trainset trainset
                       :valset trainset
                       :metric-fn metric-fn
-                      :config {:max-metric-calls 10
+                      :config {:max-metric-calls 2
                                :max-generations 2
                                :reflection-lm "us.anthropic.claude-sonnet-4-20250514-v1:0"}
-               :inherit-from-previous false
+                      :inherit-from-previous false
                       :block? true
-                      :timeout-ms 60000})]
+                      :timeout-ms 10000})]
         (try
-          (println "GEPA result:" (select-keys result [:status :best-score :duration-ms]))
+          (println "GEPA result:" (select-keys result [:status :best-score :duration-ms :error]))
           (println "Metric calls:" @call-count)
           ;; Trace GEPA events for this optimization
           (let [all (into [] (es/read (:event-store ctx) {:tenant-id (:tenant-id ctx)}))
@@ -70,17 +72,14 @@
                                 [:total-metric-calls :status]))
 
           ;; The test: metric calls should be bounded
-          (is (#{:completed :timeout} (:status result))
-              "Optimization should complete or timeout, not error")
-          ;; With budget=10 and minibatch=3, expect ~20-40 actual metric calls
-          ;; (seed eval on valset + a few subsample evaluations before budget stops)
-          ;; Note: concurrent execution can cause metric-fn to be called 100+ times
-          (is (<= @call-count 150)
-              (str "Metric calls should be bounded near budget, got " @call-count))
+          (is (= :completed (:status result))
+              "An instant code-only optimization must complete; timeout is a lifecycle failure")
+          (is (= 2 @call-count)
+              (str "The two-example seed evaluation must consume the exact budget, got " @call-count))
           (let [summary (rm/get-optimization-summary ctx (:optimization-id result))]
             (println "Budget accounting: total-metric-calls=" (:total-metric-calls summary)
                      "max=" (get-in summary [:config :max-metric-calls]))
-            (is (<= (:total-metric-calls summary 0) 30)
-                (str "Tracked metric calls should be near budget, got " (:total-metric-calls summary))))
+            (is (= 2 (:total-metric-calls summary 0))
+                (str "Tracked metric calls must equal the configured budget, got " (:total-metric-calls summary))))
           (finally
             (control-plane/stop cp)))))))

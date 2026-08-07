@@ -74,7 +74,8 @@
                   ;; made the old timestamp-window implementation include it.
                   (write-event sheet-id unrelated-tick unrelated-node :result :unrelated)
                   (completion-event sheet-id unrelated-tick unrelated-node)])
-        (let [trace (#'processors/build-node-trace store tenant-id root-tick)
+        (let [trace (#'processors/build-node-trace {:event-store store}
+                                                   tenant-id root-tick)
               by-tick (into {} (map (juxt :tick-id identity)) trace)]
           (is (= #{root-tick child-tick grandchild-tick} (set (keys by-tick))))
           (is (= {:result :root} (:writes (get by-tick root-tick))))
@@ -98,7 +99,8 @@
                                (completion-event sheet-id tick-id node-id)]))
                           (range 1000))
                   [(completion-event sheet-id target-tick target-node)]))
-        (let [trace (#'processors/build-node-trace store tenant-id target-tick)]
+        (let [trace (#'processors/build-node-trace {:event-store store}
+                                                   tenant-id target-tick)]
           (is (= 1 (count trace)))
           (is (= target-tick (:tick-id (first trace))))
           (is (= target-node (:node-id (first trace)))))))))

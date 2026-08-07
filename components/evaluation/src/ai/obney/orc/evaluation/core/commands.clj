@@ -84,7 +84,7 @@
    Emitted event shape is identical to the pre-async judge runtime's
    `->score-emitted-event` so downstream consumers are unchanged."
   [{{:keys [sheet-id node-id tick-id judge-name judge-config
-            score feedback dimensions emitted-at]} :command
+            score feedback dimensions model-provenance emitted-at]} :command
     :as ctx}]
   (if (existing-judge-score? ctx sheet-id node-id tick-id judge-name)
     ;; Idempotent no-op: a score for this tuple already exists.
@@ -103,6 +103,7 @@
                 :score score
                 :feedback feedback
                 :dimensions dimensions
+                :model-provenance model-provenance
                 :emitted-at (or emitted-at (str (java.time.Instant/now)))}})]}))
 
 (defcommand :evaluation record-composite-score

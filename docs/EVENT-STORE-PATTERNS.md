@@ -96,7 +96,7 @@ See [GETTING-STARTED.md — Phase 2](GETTING-STARTED.md#phase-2--llm-judges) for
 **Why:** `es/read` returns a reducible (satisfies `IReduceInit`) but NOT `Counted` or `Seqable`. Calling `(count ...)` on an unrealized reducible returns 0; `(seq ...)` can throw `UnsupportedOperationException`. Wrapping with `(into [] ...)` forces full materialization into a vector before further operations.
 
 ```clojure
-(require '[ai.obney.grain.event-store-v2.interface :as es])
+(require '[ai.obney.grain.event-store-v3.interface :as es])
 
 ;; WRONG — throws UnsupportedOperationException or returns 0
 (count (es/read event-store {:types #{:sheet/node-execution-completed}}))
@@ -577,7 +577,7 @@ Track node performance over a sliding window:
 (ns my-app.test
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.grain.event-store-v2.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]))
 
 (deftest my-test
   (testing "event store integration"

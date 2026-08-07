@@ -355,9 +355,8 @@
               result (sheet/execute ctx sheet-id {:question "go"}
                                     :timeout-ms 30000
                                     :tick-id root-tick-id)]
-          (is (= :success (:status result))
-              (str "the turn still succeeds without :tool-context; got "
-                   (:status result) " error " (:error result)))
+          (is (= :failure (:status result))
+              "the recorder's declared marker write is nil without tool context")
           (let [tick-starts (events-of-type* ctx :sheet/tree-tick-started)
                 root-start  (first (filter #(= root-tick-id (:tick-id %)) tick-starts))]
             (is (some? root-start) "root tree-tick-started event exists")

@@ -111,6 +111,16 @@ contract GeneratedExecutorRuntime {
     @invariant StableResolution
         -- A loaded executor resolves by tool identity, tool name, or its fully
         -- qualified function reference to the same callable behavior.
+
+    @invariant PublishedSchemaSnapshot
+        -- A published workflow and executor retain the exact discovered schema
+        -- captured when they were generated. Later incompatible tool-schema
+        -- drift causes an explicit invocation failure; it does not mutate the
+        -- published definition or silently reinterpret its inputs or outputs.
+
+    @invariant RegenerationHasNewIdentity
+        -- Adopting a changed tool schema requires regeneration and publication
+        -- of a distinct definition identity, leaving the original reproducible.
 }
 
 contract PortableWorkflowExport {
@@ -349,4 +359,3 @@ surface McpWorkflowConstruction {
         -- A built sheet is an ordinary inspectable ORC workflow that can be
         -- edited, versioned, delegated to, judged, and executed normally.
 }
-

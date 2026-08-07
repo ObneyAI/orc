@@ -16,4 +16,14 @@
         orc/langfuse    {:local/root "../../components/langfuse"}}
 
  :aliases {:test {:extra-paths []
-                  :extra-deps {}}}}
+                  ;; The brick owns cross-component E2E namespaces. Keep
+                  ;; these out of the production graph above, but make the
+                  ;; standalone project's test classpath explicit.
+                  :extra-deps {orc/evaluation {:local/root "../../components/evaluation"}
+                               orc/gepa {:local/root "../../components/gepa"}
+                               orc/ontology {:local/root "../../components/ontology"}
+                               orc/colbert {:local/root "../../components/colbert"}
+                               orc/mcp-sheet-builder {:local/root "../../components/mcp-sheet-builder"}
+                               orc/predict-rlm-pdf {:local/root "../../components/predict-rlm-pdf"}
+                               orc/predict-rlm-redaction-tools {:local/root "../../components/predict-rlm-redaction-tools"}
+                               orc/predict-rlm-invoice-tools {:local/root "../../components/predict-rlm-invoice-tools"}}}}}

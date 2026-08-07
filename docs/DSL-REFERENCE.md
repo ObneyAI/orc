@@ -1396,6 +1396,39 @@ Executes a workflow with the given inputs.
 Options:
 - `:use-version n` - Execute a specific published version
 
+#### `sheet/resume-in-progress!`
+```clojure
+(sheet/resume-in-progress! ctx)
+;; => summary of recovered execution frontiers
+```
+
+After restarting processors against the same durable event store, resumes
+abandoned leaf frontiers without creating a new logical execution. Tick, sheet,
+node, and task-call identities remain stable, so repeated calls are idempotent.
+This repairs execution progress; it is separate from reconnecting an ephemeral
+stream consumer.
+
+### Operational Telemetry
+
+#### Managed exporter lifecycle
+```clojure
+(def exporter
+  (sheet/start-telemetry-exporter!
+    (:event-pubsub ctx)
+    #{:sheet/node-execution-completed :judge/score-emitted}
+    export-one!
+    :capacity 1024
+    :max-attempts 3))
+
+(sheet/telemetry-exporter-stats exporter)
+(sheet/stop-telemetry-exporter! exporter)
+```
+
+The exporter keeps telemetry failures off the workflow execution path. Its queue
+is bounded and non-blocking; delivery is acknowledged per event, failed exports
+are retried, and events that cannot be retained are counted explicitly in the
+statistics. Stop is bounded rather than waiting forever on a failing destination.
+
 ### Export/Import
 
 #### `sheet/export-sheet`

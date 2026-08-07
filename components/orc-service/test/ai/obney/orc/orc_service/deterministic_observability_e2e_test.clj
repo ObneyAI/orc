@@ -2,7 +2,8 @@
   "Deterministic end-to-end coverage for durable execution observability."
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.orc-service.test-helpers :as h]))
+            [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.grain.event-store-v3.interface :as es]))
 
 (defn uppercase [{:keys [inputs]}]
   {:middle (.toUpperCase ^String (:input inputs))})
@@ -224,3 +225,68 @@
         (is (= 1 (count (:traces combined))))
         (is (= (:trace-id failed-trace) (:trace-id failed-result)))
         (is (= (:trace-id draft-trace) (:trace-id draft-result)))))))
+
+(deftest det-e2e-118-observability-outage-does-not-corrupt-execution
+  (testing "blocking, failed, and unacknowledged exports remain bounded and isolated"
+    (h/with-async-test-context [ctx]
+      (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-118-export-isolation"))
+            control (sheet/execute ctx sheet-id {:input "same"})
+            control-trace (trace-for ctx control)
+            release-first (promise)
+            calls (atom 0)
+            exporter (sheet/start-telemetry-exporter!
+                      (:event-pubsub ctx)
+                      #{:sheet/tree-tick-completed}
+                      (fn [[event]]
+                        (case (swap! calls inc)
+                          1 (do (deref release-first 2000 nil)
+                                {:accepted-ids #{(:event/id event)}})
+                          2 (throw (ex-info "induced exporter outage" {}))
+                          3 {:accepted-ids #{}}
+                          {:accepted-ids #{(:event/id event)}}))
+                      :capacity 4 :max-attempts 3)
+            results (mapv (fn [_] (sheet/execute ctx sheet-id {:input "same"}))
+                          (range 4))]
+        ;; The exporter worker is deliberately blocked while all workflows run.
+        (is (every? #(= (select-keys control [:status :outputs])
+                        (select-keys % [:status :outputs]))
+                    results))
+        (let [expected (mapv (juxt :node-id :node-type :status)
+                             (:node-traces control-trace))]
+          (is (every?
+               (fn [result]
+                 (is (h/settle-until!
+                      #(= (count expected)
+                          (count (get-in (h/run-query
+                                         ctx (h/make-get-trace-query (:trace-id result)))
+                                        [:query/result :trace :node-traces])))))
+                 (= expected
+                    (mapv (juxt :node-id :node-type :status)
+                          (:node-traces (trace-for ctx result)))))
+               results)
+              "export state cannot alter durable trace counts or order"))
+        (deliver release-first true)
+        (let [result-ticks (set (map :trace-id results))
+              terminals (->> (es/read (:event-store ctx)
+                                      {:tenant-id (:tenant-id ctx)
+                                       :types #{:sheet/tree-tick-completed}})
+                             (into [])
+                             (filter #(contains? result-ticks (:tick-id %)))
+                             vec)]
+          (is (h/settle-until!
+               #(= (count terminals)
+                   (:accepted (sheet/telemetry-exporter-stats exporter)))))
+          (let [before-stop (sheet/telemetry-exporter-stats exporter)
+                t0 (System/nanoTime)
+                stopped (sheet/stop-telemetry-exporter! exporter :timeout-ms 2000)
+                elapsed-ms (/ (- (System/nanoTime) t0) 1000000.0)]
+            (is (= (mapv :event/id terminals) (:accepted-ids before-stop))
+                "acknowledged stable IDs retain source correlation order exactly once")
+            (is (= (count terminals) (count (distinct (:accepted-ids before-stop)))))
+            (is (pos? (:failures before-stop)) "exporter failure is observable")
+            (is (>= (:retried before-stop) 2)
+                "throws and missing acknowledgements are explicitly retried")
+            (is (zero? (:dropped before-stop)))
+            (is (<= (:max-occupancy before-stop) (:capacity before-stop)))
+            (is (:stopped? stopped))
+            (is (< elapsed-ms 2000.0))))))))

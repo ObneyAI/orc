@@ -23,6 +23,36 @@
     (tu/apply-events! ctx result)
     (get-in result [:command/result :optimization-id])))
 
+(deftest subsample-result-is-idempotent-on-durable-correlation-key
+  (tu/with-test-context [ctx]
+    (let [opt-id (start-optimization! ctx (random-uuid))
+          parent-id (random-uuid)
+          command {:command/name :gepa/record-subsample-result
+                   :optimization-id opt-id
+                   :parent-id parent-id
+                   :proposed-instructions {"instruction" "improved"}
+                   :component-updated "instruction"
+                   :subsample-indices [0]
+                   :iteration 3
+                   :parent-scores [0.0]
+                   :proposed-scores [1.0]
+                   :accepted? true
+                   :metric-calls 2}
+          first-result (tu/process-command! ctx command)
+          duplicate-result (tu/process-command! ctx command)
+          matching (filter #(and (= :gepa/subsample-evaluated (:event/type %))
+                                 (= opt-id (:optimization-id %))
+                                 (= parent-id (:parent-id %))
+                                 (= 3 (:iteration %)))
+                           (into [] (es/read (:event-store ctx)
+                                            {:tenant-id (:tenant-id ctx)})))]
+      (is (= 1 (count (:command-result/events first-result))))
+      (is (empty? (:command-result/events duplicate-result)))
+      (is (= :already-evaluated
+             (get-in duplicate-result [:command/result :status])))
+      (is (= 1 (count matching))
+          "replayed or concurrently observed starts have one terminal result"))))
+
 (deftest subsample-metric-calls-counted-in-budget-test
   (testing "subsample-evaluated events increment total-metric-calls in optimization-state"
     (tu/with-test-context [ctx]

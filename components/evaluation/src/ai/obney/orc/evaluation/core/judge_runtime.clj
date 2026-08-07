@@ -138,21 +138,26 @@
    the canonical {:score :feedback :dimensions} shape if the judge
    produced a score, otherwise nil. Each judge function resolves its
    var on every call so with-redefs / mock bindings take effect."
-  [judge-type trace-data]
+  [judge-type judge-config trace-data]
   (let [executor-ctx {:inputs {:trace-data trace-data}}
         [judge-output result-key]
-        (case judge-type
-          :grounding             [(judges/grounding-judge executor-ctx)             :grounding-result]
-          :reasoning             [(judges/reasoning-judge executor-ctx)             :reasoning-result]
-          :completeness          [(judges/completeness-judge executor-ctx)          :completeness-result]
-          :instruction-following [(judges/instruction-following-judge executor-ctx) :instruction-result]
-          [nil nil])
+        (binding [judges/*judge-provider* (or (:provider judge-config)
+                                              judges/*judge-provider*)
+                  judges/*judge-model* (or (:model judge-config)
+                                           judges/*judge-model*)]
+          (case judge-type
+            :grounding             [(judges/grounding-judge executor-ctx)             :grounding-result]
+            :reasoning             [(judges/reasoning-judge executor-ctx)             :reasoning-result]
+            :completeness          [(judges/completeness-judge executor-ctx)          :completeness-result]
+            :instruction-following [(judges/instruction-following-judge executor-ctx) :instruction-result]
+            [nil nil]))
         inner (when (and judge-output result-key)
                 (get judge-output result-key))]
     (when (and inner (:score inner))
       {:score (double (:score inner))
        :feedback (or (:feedback inner) "")
-       :dimensions []})))
+       :dimensions []
+       :model-provenance (:model-provenance inner)})))
 
 (def ^:private llm-judge-types
   "Set of judge types that route to evaluation/core/judges functions."
@@ -278,7 +283,7 @@
   (let [judge-type (:type judge-config)]
     (cond
       (contains? llm-judge-types judge-type)
-      (invoke-llm-judge judge-type trace-data)
+      (invoke-llm-judge judge-type judge-config trace-data)
 
       (= :heuristic-structural judge-type)
       (invoke-heuristic-structural trace-data)
@@ -309,6 +314,7 @@
    :score (:score result)
    :feedback (:feedback result)
    :dimensions (:dimensions result)
+   :model-provenance (:model-provenance result)
    :emitted-at (str (java.time.Instant/now))})
 
 ;; =============================================================================

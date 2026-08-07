@@ -29,11 +29,65 @@
             [ai.obney.orc.gepa.core.optimization :as optimization]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
+            [ai.obney.grain.event-store-v3.interface :as event-store]
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
             [clojure.string :as string]
             [dscloj.core :as dscloj]
             [com.brunobonacci.mulog :as u]))
+
+(defn- sha256
+  [s]
+  (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                        (.getBytes (str s) java.nio.charset.StandardCharsets/UTF_8))]
+    (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest))))
+
+(defn- normalize-usage
+  [usage]
+  {:prompt-tokens (int (or (:prompt-tokens usage) (:prompt_tokens usage) 0))
+   :completion-tokens (int (or (:completion-tokens usage) (:completion_tokens usage) 0))
+   :total-tokens (int (or (:total-tokens usage) (:total_tokens usage) 0))})
+
+(defn- stable-call-id
+  [& parts]
+  (java.util.UUID/nameUUIDFromBytes
+    (.getBytes (pr-str (vec parts)) java.nio.charset.StandardCharsets/UTF_8)))
+
+(defn- completed-proposer-call
+  [ctx call-id]
+  (some #(when (= call-id (:call-id %)) %)
+        (into [] (event-store/read (:event-store ctx)
+                                   {:tenant-id (:tenant-id ctx)
+                                    :types #{:gepa/proposer-call-completed}}))))
+
+(defn- completed-task-call
+  [ctx call-id]
+  (some #(when (= call-id (:call-id %)) %)
+        (into [] (event-store/read (:event-store ctx)
+                                   {:tenant-id (:tenant-id ctx)
+                                    :types #{:gepa/task-call-completed}}))))
+
+(defn- optimization-resumed?
+  [ctx optimization-id]
+  (seq (into []
+             (event-store/read (:event-store ctx)
+                               {:tenant-id (:tenant-id ctx)
+                                :types #{:gepa/optimization-resumed}
+                                :tags #{[:optimization optimization-id]}}))))
+
+(defn- trace-model-provenance
+  [ctx trace-id]
+  (let [calls (into []
+                    (filter #(and (= trace-id (:tick-id %)) (:model %)))
+                    (event-store/read (:event-store ctx)
+                                      {:tenant-id (:tenant-id ctx)
+                                       :types #{:sheet/node-execution-completed}}))]
+    (when (seq calls)
+      {:model (:model (first calls))
+       :usage (reduce (fn [total call]
+                        (merge-with + total (normalize-usage (:usage call))))
+                      {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}
+                      calls)})))
 
 ;; =============================================================================
 ;; Helper Functions
@@ -201,20 +255,41 @@
    Returns {:output map :trace-id uuid :score double :feedback string-or-nil
             :success? bool}. The :feedback is the judges' rich per-example
    feedback when the metric is the judge metric, else nil (back-compat)."
-  [context sheet-id instructions input metric-fn]
+  ([context sheet-id instructions input metric-fn]
+   (execute-workflow-with-instructions context sheet-id instructions input metric-fn nil))
+  ([context sheet-id instructions input metric-fn
+    {:keys [optimization-id role example-index call-scope]}]
+  (let [call-id (when optimization-id
+                  (stable-call-id :gepa/task optimization-id call-scope role example-index))
+        completed (when call-id (completed-task-call context call-id))]
+    (if completed
+      {:output (:output completed)
+       :trace-id (:trace-id completed)
+       :score (:score completed)
+       :feedback (:feedback completed)
+       :success? true
+       :charged? false
+       :model (:model completed)
+       :usage (:usage completed)}
   (let [;; Build input map from the example — use keyword keys to match blackboard
         input-map (if (map? input)
                     (into {} (map (fn [[k v]] [(keyword k) v]) input))
                     {:input input})
-        ;; Execute the workflow
+        ;; Supply the durable execution identity ourselves. Successful
+        ;; synchronous results do not otherwise promise to echo it, but GEPA's
+        ;; call ledger must always point at the actual ORC trace.
+        trace-id (random-uuid)
         result (try
-                 (sheet/execute
-                   (patch-workflow-instructions context sheet-id instructions)
-                   sheet-id
-                   input-map
-                   :timeout-ms 300000)
+                 (assoc (sheet/execute
+                          (patch-workflow-instructions context sheet-id instructions)
+                          sheet-id
+                          input-map
+                          :tick-id trace-id
+                          :timeout-ms 300000)
+                        :trace-id trace-id)
                  (catch Exception e
                    {:status :failure
+                    :trace-id trace-id
                     :error (.getMessage e)
                     :outputs {}}))]
 
@@ -235,11 +310,33 @@
             (catch Exception e
               (u/log ::metric-error :error (.getMessage e))
               {:score 0.0 :feedback nil}))]
-      {:output output
-       :trace-id (random-uuid)  ;; TODO: Get from actual trace
+      (let [provenance (trace-model-provenance context (:trace-id result))
+            completed-result {:output output
+       ;; This must be the durable ORC trace identity. A fabricated UUID makes
+       ;; candidate evaluations impossible to audit or replay cross-component.
+       :trace-id (:trace-id result)
        :score score
        :feedback feedback
-       :success? (= :success (:status result))})))
+       :success? (= :success (:status result))
+       :charged? true
+       :model (:model provenance)
+       :usage (:usage provenance)}]
+        (when (and call-id (= :success (:status result)))
+          (run-command! context
+            {:command/id (random-uuid)
+             :command/timestamp (time/now)
+             :command/name :gepa/record-task-call
+             :optimization-id optimization-id
+             :call-id call-id
+             :role role
+             :example-index example-index
+             :trace-id (:trace-id result)
+             :output (or output {})
+             :score score
+             :feedback feedback
+             :model (:model provenance)
+             :usage (:usage provenance)}))
+        completed-result)))))))
 
 (defn evaluate-candidate-on-valset
   "Evaluate a candidate's instructions on the full validation set.
@@ -251,7 +348,9 @@
    feedback (the judge metric); structural metrics leave it empty. :outputs
    carries the per-instance generated output blackboard so the reflective
    dataset can show the proposer the actual (bad) answer text."
-  [context sheet-id instructions valset metric-fn]
+  ([context sheet-id instructions valset metric-fn]
+   (evaluate-candidate-on-valset context sheet-id instructions valset metric-fn nil))
+  ([context sheet-id instructions valset metric-fn call-context]
   (let [results (doall  ;; Force evaluation for side effects
                   (map-indexed
                     (fn [idx example]
@@ -259,7 +358,8 @@
                              :index idx
                              :total (count valset))
                       (execute-workflow-with-instructions
-                        context sheet-id instructions example metric-fn))
+                        context sheet-id instructions example metric-fn
+                        (assoc call-context :example-index idx)))
                     valset))]
     {:scores (mapv :score results)
      :trace-ids (mapv :trace-id results)
@@ -269,7 +369,7 @@
      :outputs (into {} (keep-indexed (fn [idx r]
                                        (when (some? (:output r)) [idx (:output r)]))
                                      results))
-     :metric-calls (count valset)}))
+     :metric-calls (count (filter :charged? results))})))
 
 (defn evaluate-candidate-on-subsample
   "Evaluate a candidate's instructions on a subsample (minibatch) of trainset.
@@ -288,7 +388,9 @@
      metric-fn: Scoring function
 
    Returns {:scores [double ...] :trace-ids [uuid ...] :metric-calls int}."
-  [context sheet-id instructions trainset indices metric-fn]
+  ([context sheet-id instructions trainset indices metric-fn]
+   (evaluate-candidate-on-subsample context sheet-id instructions trainset indices metric-fn nil))
+  ([context sheet-id instructions trainset indices metric-fn call-context]
   (let [subsample (mapv #(nth trainset %) indices)
         results (doall
                   (map-indexed
@@ -298,11 +400,12 @@
                              :trainset-index (nth indices idx)
                              :total (count indices))
                       (execute-workflow-with-instructions
-                        context sheet-id instructions example metric-fn))
+                        context sheet-id instructions example metric-fn
+                        (assoc call-context :example-index (nth indices idx))))
                     subsample))]
     {:scores (mapv :score results)
      :trace-ids (mapv :trace-id results)
-     :metric-calls (count indices)}))
+     :metric-calls (count (filter :charged? results))})))
 
 (defn default-metric-fn
   "Default metric: exact string match on 'answer' or 'expected' field.
@@ -345,7 +448,9 @@
    empty output for those models. The single typed :response output field
    carries the proposer's full text (the proposer then extracts the
    instruction from its ``` block), per the validated reference harness."
-  [context model-name]
+  ([context model-name]
+   (make-llm-fn context model-name nil))
+  ([context model-name completed!]
   (let [provider (or (:dscloj-provider context) :openrouter)
         module {:inputs [{:name :prompt :spec :string
                           :description "the full proposer prompt"}]
@@ -356,14 +461,24 @@
                                    "include the full new instruction inside a ``` block.")}]
     (fn [prompt]
       (u/log ::calling-llm :model model-name :prompt-length (count prompt))
-      (let [response (str (:response
-                           (dscloj/predict provider module {:prompt prompt}
-                             {:model model-name
-                              :use-function-calling? true
-                              :validate? false
-                              :with-metadata? false})))]
+      (let [result (dscloj/predict provider module {:prompt prompt}
+                     {:model model-name
+                      :use-function-calling? true
+                      :validate? false
+                      :with-metadata? true})
+            outputs (or (:outputs result) result)
+            response (str (:response outputs))]
+        (when completed!
+          (completed! {:call-id (random-uuid)
+                       :provider provider
+                       :model (or (:model result) model-name)
+                       :usage (normalize-usage (:usage result))
+                       :prompt prompt
+                       :response response
+                       :prompt-sha256 (sha256 prompt)
+                       :response-sha256 (sha256 response)}))
         (u/log ::llm-response-received :response-length (count response))
-        response))))
+        response)))))
 
 (defn generate-mutated-instruction
   "Generate a mutated instruction using the proposer.
@@ -377,10 +492,31 @@
 
    Returns:
    New instruction string."
-  [context parent-instructions component reflective-examples model-name]
+  ([context parent-instructions component reflective-examples model-name]
+   (generate-mutated-instruction context parent-instructions component
+                                 reflective-examples model-name nil nil nil))
+  ([context parent-instructions component reflective-examples model-name
+    optimization-id parent-candidate-id iteration]
   (let [current-instruction (get parent-instructions component)
         formatted-examples (reflection/format-reflective-examples reflective-examples)
-        llm-fn (make-llm-fn context model-name)]
+        call-id (when (and optimization-id parent-candidate-id (some? iteration))
+                  (stable-call-id :gepa/proposer optimization-id parent-candidate-id
+                                  iteration component))
+        completed (when call-id (completed-proposer-call context call-id))
+        llm-fn (make-llm-fn
+                 context model-name
+                 (when (and optimization-id parent-candidate-id)
+                   (fn [provenance]
+                     (run-command!
+                       context
+                       (assoc (merge {:command/id (random-uuid)
+                               :command/timestamp (time/now)
+                               :command/name :gepa/record-proposer-call
+                               :optimization-id optimization-id
+                               :parent-candidate-id parent-candidate-id
+                               :component (str component)}
+                              provenance)
+                              :call-id call-id)))))]
 
     (u/log ::generating-mutation
            :component component
@@ -392,11 +528,14 @@
       ;; If no examples or instruction, make a simple improvement
       (str current-instruction " Be more precise and complete in your answers.")
       ;; Use the proposer to generate a new instruction
-      (let [result (proposer/propose-new-instruction
-                     llm-fn
+      (let [effective-llm-fn (if completed
+                               (constantly (:response completed))
+                               llm-fn)
+            result (proposer/propose-new-instruction
+                     effective-llm-fn
                      current-instruction
                      formatted-examples)]
-        (:proposed-instruction result)))))
+        (:proposed-instruction result))))))
 
 ;; =============================================================================
 ;; On Optimization Started
@@ -554,55 +693,58 @@
                           (:gepa/metric-fn context)
                           default-metric-fn)
 
-            ;; Evaluate: Execute workflow on each validation example
-            ;; If valset is empty or workflow execution fails, fall back to simulated scores
+            ;; Evaluate the actual workflow. Fabricated scores would make a
+            ;; provider/runtime failure look like optimization evidence.
             eval-result
             (if (and valset (seq valset) sheet-id)
-              ;; Real evaluation using workflow execution
               (try
                 (evaluate-candidate-on-valset
-                  context sheet-id instructions valset metric-fn)
+                  context sheet-id instructions valset metric-fn
+                  {:optimization-id optimization-id
+                   :role :candidate
+                   :call-scope candidate-id})
                 (catch Exception e
                   (u/log ::evaluation-error
                          :error (.getMessage e)
                          :candidate-id candidate-id)
-                  ;; Fallback to simulated scores on error
-                  (let [num-instances (count valset)]
-                    {:scores (vec (repeatedly num-instances #(+ 0.3 (* 0.4 (rand)))))
-                     :trace-ids (vec (repeatedly num-instances random-uuid))
-                     :metric-calls num-instances})))
-              ;; Simulated evaluation when valset not available
-              ;; (useful for testing without a real workflow)
-              (let [num-instances (or (count valset) 10)]
-                (u/log ::simulating-evaluation
-                       :reason (if valset "empty-valset" "no-valset")
-                       :num-instances num-instances)
-                {:scores (vec (repeatedly num-instances #(+ 0.5 (* 0.5 (rand)))))
-                 :trace-ids (vec (repeatedly num-instances random-uuid))
-                 :metric-calls num-instances}))]
+                  (run-command! context
+                    {:command/id (random-uuid)
+                     :command/timestamp (time/now)
+                     :command/name :gepa/fail-optimization
+                     :optimization-id optimization-id
+                     :error-message (str "Candidate evaluation failed: " (.getMessage e))})
+                  nil))
+              (do
+                (run-command! context
+                  {:command/id (random-uuid)
+                   :command/timestamp (time/now)
+                   :command/name :gepa/fail-optimization
+                   :optimization-id optimization-id
+                   :error-message "Candidate evaluation requires a persisted non-empty validation set and workflow"})
+                nil))]
 
-        (u/log ::evaluation-complete
-               :candidate-id candidate-id
-               :mean-score (when (seq (:scores eval-result))
-                             (/ (reduce + (:scores eval-result))
-                                (count (:scores eval-result)))))
+        (when eval-result
+          (u/log ::evaluation-complete
+                 :candidate-id candidate-id
+                 :mean-score (when (seq (:scores eval-result))
+                               (/ (reduce + (:scores eval-result))
+                                  (count (:scores eval-result)))))
 
-        ;; Record the evaluation results (including any per-instance judge
-        ;; feedback so the reflective dataset can use it instead of the
-        ;; score-only string).
-        (run-command! context
-          {:command/id (random-uuid)
-           :command/timestamp (time/now)
-           :command/name :gepa/record-evaluation-result
-           :optimization-id optimization-id
-           :candidate-id candidate-id
-           :scores (:scores eval-result)
-           :trace-ids (:trace-ids eval-result)
-           :feedbacks (:feedbacks eval-result)
-           ;; Per-instance generated outputs so the reflective dataset can
-           ;; show the proposer the actual (bad) answer text.
-           :outputs (:outputs eval-result)
-           :metric-calls (:metric-calls eval-result)})))))
+          ;; Record the evaluation results (including any per-instance judge
+          ;; feedback so the reflective dataset can use it instead of the
+          ;; score-only string). Omit absent optional values rather than
+          ;; submitting schema-invalid nils.
+          (run-command! context
+            (cond-> {:command/id (random-uuid)
+                     :command/timestamp (time/now)
+                     :command/name :gepa/record-evaluation-result
+                     :optimization-id optimization-id
+                     :candidate-id candidate-id
+                     :scores (:scores eval-result)
+                     :trace-ids (:trace-ids eval-result)
+                     :metric-calls (:metric-calls eval-result)}
+              (:feedbacks eval-result) (assoc :feedbacks (:feedbacks eval-result))
+              (:outputs eval-result) (assoc :outputs (:outputs eval-result)))))))))
 
 ;; =============================================================================
 ;; On Candidate Evaluated
@@ -685,39 +827,71 @@
                :subsample-indices subsample-indices
                :num-reflective-examples (count reflective-examples))
 
-        ;; Generate new instruction using the proposer
-        (let [new-instruction (generate-mutated-instruction
-                                context
-                                parent-instructions
-                                component
-                                reflective-examples
-                                reflection-model)
-              ;; Create new instructions map with mutation
-              new-instructions (assoc parent-instructions component new-instruction)]
+        ;; Generate new instruction using the proposer. Provider failures are
+        ;; terminal and visible; they must not cause event retries to create
+        ;; repeated frontier updates or fabricated candidates.
+        (try
+          (let [new-instruction (generate-mutated-instruction
+                                  context
+                                  parent-instructions
+                                  component
+                                  reflective-examples
+                                  reflection-model
+                                  optimization-id
+                                  parent-id
+                                  iteration)
+                ;; Create new instructions map with mutation
+                new-instructions (assoc parent-instructions component new-instruction)]
 
           (u/log ::mutation-generated
                  :component component
                  :new-instruction-length (count new-instruction))
 
-          ;; Trigger subsample evaluation WITHOUT creating candidate first
-          ;; The candidate will be created ONLY if subsample evaluation shows improvement
-          ;; This is the key efficiency optimization from Python GEPA
-          ;; Note: skip-perfect-score check happens IN the subsample handler
-          ;; after evaluating parent on the minibatch (not valset)
-          (run-command! context
-            {:command/id (random-uuid)
-             :command/timestamp (time/now)
-             :command/name :gepa/evaluate-on-subsample
-             :optimization-id optimization-id
-             :parent-id parent-id
-             :proposed-instructions new-instructions
-             :component-updated component
-             :subsample-indices subsample-indices
-             :iteration iteration}))))))
+          ;; First persist the complete proposal as its own crash boundary.
+          ;; A separate processor advances it to subsample evaluation.
+            (run-command! context
+              {:command/id (random-uuid)
+               :command/timestamp (time/now)
+               :command/name :gepa/record-proposal-ready
+               :optimization-id optimization-id
+               :proposal-id (stable-call-id :gepa/proposal optimization-id parent-id iteration component)
+               :parent-id parent-id
+               :proposed-instructions new-instructions
+               :component-updated component
+               :subsample-indices subsample-indices
+               :iteration iteration}))
+          (catch Exception e
+            (run-command! context
+              {:command/id (random-uuid)
+               :command/timestamp (time/now)
+               :command/name :gepa/fail-optimization
+               :optimization-id optimization-id
+               :error-message (str "Instruction proposal failed: " (.getMessage e))})))))))
 
 ;; =============================================================================
 ;; On Subsample Evaluation Started
 ;; =============================================================================
+
+(defn on-proposal-ready
+  "Advance a durable proposal into evaluation unless an operator requested a
+   pause at this exact recovery boundary. `gepa/resume!` advances paused work
+   explicitly after reconstruction."
+  [{:keys [event] :as context}]
+  (let [{:keys [optimization-id parent-id proposed-instructions
+                component-updated subsample-indices iteration]} event
+        config (:config (rm/get-optimization-summary context optimization-id))]
+    (when-not (and (:pause-after-proposal? config)
+                   (not (optimization-resumed? context optimization-id)))
+      (run-command! context
+        {:command/id (random-uuid)
+         :command/timestamp (time/now)
+         :command/name :gepa/evaluate-on-subsample
+         :optimization-id optimization-id
+         :parent-id parent-id
+         :proposed-instructions proposed-instructions
+         :component-updated component-updated
+         :subsample-indices subsample-indices
+         :iteration iteration}))))
 
 (defn on-subsample-evaluation-started
   "Handle subsample-evaluation-started event.
@@ -764,7 +938,10 @@
           (let [;; Evaluate PARENT on subsample FIRST
                 parent-result (evaluate-candidate-on-subsample
                                 context sheet-id parent-instructions
-                                trainset subsample-indices metric-fn)
+                                trainset subsample-indices metric-fn
+                                {:optimization-id optimization-id
+                                 :role :subsample-parent
+                                 :call-scope [parent-id iteration]})
                 parent-scores (:scores parent-result)
                 parent-sum (reduce + parent-scores)
                 ;; Check if parent got perfect score on minibatch (Python GEPA behavior)
@@ -788,6 +965,7 @@
                    :proposed-instructions proposed-instructions
                    :component-updated component-updated
                    :subsample-indices subsample-indices
+                   :iteration iteration
                    :parent-scores parent-scores
                    :proposed-scores parent-scores  ;; Use parent scores (didn't evaluate proposed)
                    :accepted? false                 ;; Not accepted - parent was perfect
@@ -797,7 +975,11 @@
               (let [;; Evaluate PROPOSED on same subsample
                     proposed-result (evaluate-candidate-on-subsample
                                       context sheet-id proposed-instructions
-                                      trainset subsample-indices metric-fn)
+                                      trainset subsample-indices metric-fn
+                                      {:optimization-id optimization-id
+                                       :role :subsample-proposed
+                                       :call-scope [parent-id iteration
+                                                    (sha256 proposed-instructions)]})
                     proposed-scores (:scores proposed-result)
                     proposed-sum (reduce + proposed-scores)
 
@@ -826,6 +1008,7 @@
                    :proposed-instructions proposed-instructions
                    :component-updated component-updated
                    :subsample-indices subsample-indices
+                   :iteration iteration
                    :parent-scores parent-scores
                    :proposed-scores proposed-scores
                    :accepted? accepted?
@@ -859,6 +1042,7 @@
            :proposed-instructions proposed-instructions
            :component-updated component-updated
            :subsample-indices subsample-indices
+           :iteration iteration
            :parent-scores simulated-parent-scores
            :proposed-scores simulated-proposed-scores
            :accepted? accepted?
@@ -953,14 +1137,18 @@
                                     parent-instructions
                                     component
                                     reflective-examples
-                                    reflection-model)
+                                    reflection-model
+                                    optimization-id
+                                    new-parent-id
+                                    iteration)
                   new-instructions (assoc parent-instructions component new-instruction)]
 
               (run-command! context
                 {:command/id (random-uuid)
                  :command/timestamp (time/now)
-                 :command/name :gepa/evaluate-on-subsample
+                 :command/name :gepa/record-proposal-ready
                  :optimization-id optimization-id
+                 :proposal-id (stable-call-id :gepa/proposal optimization-id new-parent-id iteration component)
                  :parent-id new-parent-id
                  :proposed-instructions new-instructions
                  :component-updated component
@@ -1094,6 +1282,12 @@
   "Handle subsample-evaluation-started: evaluate parent and proposed on minibatch."
   [context]
   (on-subsample-evaluation-started context))
+
+(defprocessor :gepa on-proposal-ready
+  {:topics #{:gepa/proposal-ready}}
+  "Advance a persisted proposal to its subsample evaluation boundary."
+  [context]
+  (on-proposal-ready context))
 
 (defprocessor :gepa on-subsample-evaluated
   {:topics #{:gepa/subsample-evaluated}}

@@ -285,6 +285,10 @@
         base-ctx (merge {:event-store event-store
                          :cache cache
                          :tenant-id #uuid "00000000-0000-0000-0000-000000000000"
+                         ;; Effect processors capture base-ctx by value. Custom
+                         ;; evaluators sub-execute workflows and therefore need
+                         ;; the same pubsub handle as top-level executions.
+                         :event-pubsub ps
                          :command-registry (cp/global-command-registry)
                          :query-registry (qp/global-query-registry)
                          :dscloj-provider :openrouter
@@ -294,10 +298,21 @@
         processors (reduce-kv
                     (fn [acc proc-name {:keys [handler-fn topics]}]
                       (assoc acc proc-name
-                             (tp/start {:event-pubsub ps
-                                        :topics topics
-                                        :handler-fn handler-fn
-                                        :context base-ctx})))
+                             ;; Evaluation processors return :result/effect and
+                             ;; therefore require a stable processor identity
+                             ;; for Grain's checkpointed effect path. This
+                             ;; mirrors production and the evaluation
+                             ;; component's own integration harness. Pure
+                             ;; processors remain unnamed because naming them
+                             ;; would opt them into checkpoint semantics they
+                             ;; do not use.
+                             (tp/start
+                              (cond-> {:event-pubsub ps
+                                       :topics topics
+                                       :handler-fn handler-fn
+                                       :context base-ctx}
+                                (= "evaluation" (namespace proc-name))
+                                (assoc :processor-name proc-name)))))
                     {}
                     @tp/processor-registry*)]
     (assoc base-ctx

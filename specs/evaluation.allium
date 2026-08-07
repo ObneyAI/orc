@@ -6,8 +6,9 @@
 -- evidence before verdict, no-run-through validation, four built-in LLM judges,
 -- structural and custom judges, weighted aggregation, asynchronous per-node
 -- evaluation, idempotent score recording, composite scores, and trace summaries.
--- Excludes: model-provider calls, prompt/tool-schema implementation, Grain
--- processor mechanics, logging, and ORC trace storage.
+-- Excludes: model-provider transport mechanics, prompt/tool-schema
+-- implementation, Grain processor mechanics, logging, and ORC trace storage.
+-- Durable resolved-model and usage provenance are included.
 
 ------------------------------------------------------------
 -- External Entities
@@ -32,6 +33,12 @@ value TraceEvidence {
     outputs: Any
     execution_trace: Any?
     completion_kind: String?
+}
+
+value ModelProvenance {
+    provider: String?
+    model: String
+    usage: Any?
 }
 
 value DiscreteScale {
@@ -59,6 +66,7 @@ value ScoreWithFeedback {
     score: Decimal
     feedback: String
     dimensions: List<MetricDimension>
+    model_provenance: ModelProvenance?
 }
 
 value EvaluationStatistics {
@@ -118,6 +126,11 @@ contract TraceJudge {
     @invariant CustomJudgeConfinement
         -- A custom judge runs as a bounded ORC subworkflow, must return a numeric
         -- score from zero through one, and cannot recurse beyond configured depth.
+
+    @invariant DurableModelProvenance
+        -- A successful model-backed score retains the resolved model, trace
+        -- identity, and token usage that produced it; provider mechanics remain
+        -- outside this contract.
 }
 
 contract EvaluationAttachmentResolver {
@@ -168,6 +181,7 @@ entity JudgeScore {
     score: Decimal
     feedback: String
     dimensions: List<MetricDimension>
+    model_provenance: ModelProvenance?
     emitted_at: Timestamp
 }
 
@@ -212,6 +226,7 @@ rule RecordSuccessfulJudgeEvaluation {
         score: result.score,
         feedback: result.feedback,
         dimensions: result.dimensions,
+        model_provenance: result.model_provenance,
         emitted_at: now
     )
     ensures: CompositeEvaluationRequested(
@@ -305,4 +320,3 @@ surface EvaluationAccess {
         -- Every successful score carries dimension-specific feedback suitable
         -- for human diagnosis and downstream instruction optimization.
 }
-

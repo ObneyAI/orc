@@ -19,6 +19,24 @@
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
             [ai.obney.orc.ontology.interface :as ontology]))
 
+(deftest r-inject-includes-current-node-type-living-description
+  (let [body {:summary "Use evaluated evidence from the prior execution."
+              :capabilities ["retain evidence"]
+              :strengths [] :weaknesses [] :representative-uses []
+              :avoid-when [] :version 7 :consolidated-from-event-count 4}
+        node {:type :repl-researcher
+              :instruction "Answer the question."
+              :context {:r05-classifier {:structural {}
+                                         :behavioral {}}}}
+        result (with-redefs [ontology/get-description
+                             (fn [_ctx granularity target-id]
+                               (when (= [:node-type :repl-researcher]
+                                        [granularity target-id])
+                                 body))]
+                 (tp/apply-r05-classifier-context node {}))]
+    (is (str/includes? (:instruction result) (:summary body)))
+    (is (str/includes? (:instruction result) "version 7"))))
+
 ;; =============================================================================
 ;; Test data builders — hand-built classifier payloads matching the live shapes
 ;; =============================================================================

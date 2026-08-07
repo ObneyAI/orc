@@ -111,6 +111,17 @@ Every workflow has three parts:
 (orc/execute ctx sheet-id inputs :use-version 2)
 ```
 
+After a processor restart against the same durable event store, recover
+abandoned execution frontiers without creating replacement ticks:
+
+```clojure
+(orc/resume-in-progress! ctx)
+```
+
+The recovery call is idempotent and preserves tick, sheet, node, and task-call
+identity. It is distinct from reconnecting a live stream, which does not replay
+history.
+
 ## Key Rules
 
 - All node `:reads` and `:writes` must be declared in the blackboard
@@ -118,6 +129,8 @@ Every workflow has three parts:
 - Code node `:fn` must be a namespace-qualified symbol string, not inline code
 - `build-workflow!` is idempotent — same workflow name produces the same sheet-id, and unchanged definitions are a true no-op (zero events) via content hashing
 - Workflows are versioned — use `orc/publish-version` for production snapshots
+- Keep observability failure-isolated with `orc/start-telemetry-exporter!`; inspect
+  retry/drop counters with `orc/telemetry-exporter-stats` and stop it explicitly
 
 ## Judges (optional quality gates)
 

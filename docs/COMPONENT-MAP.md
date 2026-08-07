@@ -13,10 +13,10 @@
 
 | Layer | Capability | Component(s) needed | DJL required | Evidence |
 |-------|-----------|---------------------|:------------:|---------|
-| 0 | **Core execution** — behavior tree DSL, workflow execution, event-sourced state | `orc-service` | No | `components/orc-service/deps.edn`: an LLM-call layer, structured logging, and a safe Clojure interpreter — no DJL, no model loading |
+| 0 | **Core execution** — behavior tree DSL, workflow execution, restart recovery, event-sourced state, bounded durable-event export | `orc-service` | No | `components/orc-service/deps.edn`: an LLM-call layer, structured logging, core.async, and a safe Clojure interpreter — no DJL, no model loading |
 | 0a | **External canonical values** — move all raw execution values out of events | `file-store` plus `file-store-local` or `file-store-s3` | No | `orc-service` depends only on the storage protocol; the umbrella package includes both backends |
 | 1 | **LLM judges** — grounding, reasoning, completeness, instruction-following | `evaluation` | No | `evaluation/deps.edn`: JSON handling, the LLM-call layer, and orc-service — **no ontology**. The Living-Description gate in `judge_runtime.clj` is resolved lazily (`requiring-resolve`), so judges run with zero ontology and zero DJL. Verified: `projects/orc-evaluation` resolves with none of those on the classpath. |
-| 2 | **Observability** — Langfuse trace forwarding | `langfuse` | No | `components/langfuse/deps.edn`: empty deps map — no external deps at all |
+| 2 | **Observability destination** — Langfuse trace forwarding; `orc-service` owns the bounded failure-isolated exporter lifecycle | `langfuse` | No | `components/langfuse/deps.edn`: empty deps map — no external deps at all; `orc-service/core/telemetry_exporter.clj` owns queueing, acknowledgement, retry/drop statistics, and bounded stop |
 | 3 | **Prompt optimization** — GEPA Pareto-frontier instruction evolution | `gepa` + `evaluation` | No | `components/gepa/deps.edn`: deps are mulog, orc/evaluation — no ontology dep, no DJL |
 | 4 | **DJL embeddings** — dense vector embeddings, semantic concept search | `ontology` | **Yes** | `components/ontology/deps.edn`: deps are ai.djl/api, ai.djl.pytorch/pytorch-engine; `embedding.clj:53` calls `(Criteria/builder)` from DJL directly — pure JVM model loading |
 | 5 | **ColBERT retrieval** — pure-JVM late-interaction scoring (exact MaxSim over a versioned index artifact) | `colbert` | **Yes** | `components/colbert/deps.edn`: ai.djl/api + huggingface tokenizers + onnxruntime engine (0.31.1) run the `answerai-colbert-small-v1` encoder checkpoint natively — no Python process (ADR 0002) |
@@ -81,7 +81,7 @@ colbert           deps: mulog, data.json, DJL (api + tokenizers + onnxruntime, i
 ### Hard-dependency edges (declared in deps.edn)
 
 ```
-orc-service        →  langfuse + file-store         (tracing + storage protocol)
+orc-service        →  langfuse + file-store         (destination adapter + storage protocol; exporter lifecycle is core)
 mcp-sheet-builder  →  orc-service → langfuse
 evaluation         →  orc-service → langfuse         (+ lazy ontology gate)
 gepa               →  evaluation → orc-service

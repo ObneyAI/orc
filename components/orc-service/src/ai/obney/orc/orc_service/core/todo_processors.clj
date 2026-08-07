@@ -22,6 +22,7 @@
             [clojure.string :as str]
             [malli.core :as m]
             [malli.error :as me]
+            [malli.transform :as mt]
             [com.brunobonacci.mulog :as u]))
 
 ;; =============================================================================
@@ -43,26 +44,40 @@
                outputs)))
 
 (defn- validate-leaf-outputs
-  "Reject a successful leaf result before its writes become canonical when a
-   declared blackboard schema does not accept the produced value."
+  "Normalize JSON object keys according to each declared Malli schema, then
+   reject an invalid successful leaf result before its writes become canonical.
+
+   Model providers necessarily return JSON string keys. Malli's key transformer
+   changes only keys declared by a :map schema (including nested maps), while
+   preserving keys governed by :map-of, so this is schema-directed rather than
+   a lossy recursive keywordization."
   [blackboard result]
   (if (not= :success (:status result))
     result
-    (if-let [[key explanation]
-             (some (fn [[key value]]
-                     (when-let [schema (get-in blackboard [key :schema])]
-                       (try
-                         (when-not (m/validate schema value)
-                           [key (me/humanize (m/explain schema value))])
-                         (catch Exception e
-                           [key {:invalid-schema (.getMessage e)}]))))
-                   (:outputs result))]
-      (-> result
-          (assoc :status :failure
-                 :error (str "Blackboard schema validation failed for "
-                             (pr-str key) ": " explanation)
-                 :outputs {}))
-      result)))
+    (let [key-transformer (mt/key-transformer {:decode keyword :encode name})
+          normalized (reduce-kv
+                       (fn [outputs key value]
+                         (assoc outputs key
+                                (if-let [schema (get-in blackboard [key :schema])]
+                                  (m/decode schema value key-transformer)
+                                  value)))
+                       {}
+                       (:outputs result))]
+      (if-let [[key explanation]
+               (some (fn [[key value]]
+                       (when-let [schema (get-in blackboard [key :schema])]
+                         (try
+                           (when-not (m/validate schema value)
+                             [key (me/humanize (m/explain schema value))])
+                           (catch Exception e
+                             [key {:invalid-schema (.getMessage e)}]))))
+                     normalized)]
+        (-> result
+            (assoc :status :failure
+                   :error (str "Blackboard schema validation failed for "
+                               (pr-str key) ": " explanation)
+                   :outputs {}))
+        (assoc result :outputs normalized)))))
 
 ;; =============================================================================
 ;; LLM Call Budget Tracking (Opt-in Only)
@@ -73,16 +88,6 @@
 
 ;; Tracks LLM call counts per tick-id for budget enforcement.
 (defonce ^:private tick-llm-counts (atom {}))
-
-(defn- increment-llm-count!
-  "Increment LLM call count for a tick."
-  [tick-id]
-  (swap! tick-llm-counts update tick-id (fnil inc 0)))
-
-(defn- get-llm-count
-  "Get current LLM call count for a tick."
-  [tick-id]
-  (get @tick-llm-counts tick-id 0))
 
 (defn clear-llm-count!
   "Clear LLM count for a tick (called on tick completion)."
@@ -120,21 +125,32 @@
   [tick-id]
   (swap! tick-usage dissoc tick-id))
 
-(defn- check-llm-budget
-  "Check if LLM budget exceeded. Returns nil if no budget set (unlimited).
-   Only checks if :llm-call-budget was explicitly set in tick options.
+(defn- reserve-llm-call!
+  "Atomically reserve one call against the root tick's shared LLM budget.
+   Returns nil when reserved, or an exceeded descriptor when no capacity
+   remains. With no explicit budget, records the call without imposing a cap.
 
    Takes the ALREADY-PROJECTED tick execution context rather than projecting
    its own. Every projection of :sheet/tick-execution-contexts decodes the
    tick's cached blob, and callers here already hold it."
   [tick-ctx tick-id]
-  (let [budget (get-in tick-ctx [:options :llm-call-budget])]
-    ;; CRITICAL: Only check if budget was explicitly set (not nil)
-    ;; nil means unlimited - no cap enforced
-    (when budget
-      (let [current (get-llm-count tick-id)]
-        (when (>= current budget)
-          {:exceeded true :current current :budget budget})))))
+  (let [budget (get-in tick-ctx [:options :llm-call-budget])
+        budget-tick-id (or (get-in tick-ctx [:options :llm-budget-root-tick-id])
+                           tick-id)
+        budget-sheet-id (get-in tick-ctx [:options :llm-budget-root-sheet-id])
+        outcome (atom nil)]
+    (swap! tick-llm-counts
+           (fn [counts]
+             (let [current (get counts budget-tick-id 0)]
+               (if (and budget (>= current budget))
+                 (do (reset! outcome {:exceeded true
+                                      :current current
+                                      :budget budget
+                                      :root-tick-id budget-tick-id
+                                      :root-sheet-id budget-sheet-id})
+                     counts)
+                 (assoc counts budget-tick-id (inc current))))))
+    @outcome))
 
 ;; =============================================================================
 ;; Tick-Scoped Resolution Helpers
@@ -818,6 +834,32 @@
                 (map-indexed (partial format-behavioral-entry ctx))
                 (str/join "\n"))))))
 
+(defn- current-node-type-guidance
+  "Read the current Living Description for this node type when the ontology
+   component is present. R-Inject already marks the execution as opted into
+   adaptive guidance; this adds the complementary node-type learning to the
+   retrieved tree/behavior guidance without introducing a production
+   dependency from orc-service to ontology."
+  [ctx node]
+  (when-let [node-type (:type node)]
+    (try
+      (when-let [get-description
+                 (requiring-resolve
+                  'ai.obney.orc.ontology.interface/get-description)]
+        (when-let [body (get-description ctx :node-type node-type)]
+          {:target-id node-type
+           :version (:version body)
+           :body body}))
+      (catch Throwable _ nil))))
+
+(defn- format-node-type-guidance [guidance]
+  (when guidance
+    (str "### Current learned guidance for node type `"
+         (:target-id guidance) "` (version " (:version guidance) ")\n"
+         "This is the current persisted Living Description for the executor "
+         "you are using. Apply it alongside the retrieved corpus examples.\n"
+         (pr-str (:body guidance)) "\n")))
+
 (defn apply-r05-classifier-context
   "R-Inject: prepend R05's classifier output to the node's :instruction
    when the wedge has stashed a :r05-classifier payload on :context.
@@ -836,6 +878,7 @@
       node
       (let [structural (:structural payload)
             behavioral (:behavioral payload)
+            node-type-guidance (current-node-type-guidance ctx node)
             block (str "## Suggested patterns from corpus\n\n"
                        "These are concrete EXAMPLES retrieved from the seed corpus based on "
                        "classification of your task. Each example includes:\n"
@@ -857,6 +900,8 @@
                        (format-structural-section ctx structural)
                        "\n"
                        (format-behavioral-section ctx behavioral)
+                       "\n"
+                       (format-node-type-guidance node-type-guidance)
                        "\n---\n")
             result (update node :instruction (fn [inst] (str block inst)))
             ;; Trace capture: write the rendered prepend + full classifier
@@ -872,7 +917,10 @@
                            :prepend-chars (count block)
                            :original-instruction-chars (- (count (:instruction result))
                                                           (count block))
-                           :classifier-payload payload}))
+                           :classifier-payload
+                           (cond-> payload
+                             node-type-guidance
+                             (assoc :node-type-guidance node-type-guidance))}))
             (catch Exception _ nil)))
         (println (format "[DEBUG R-Inject] prepended %d chars (instruction now %d chars)"
                          (count block)
@@ -987,7 +1035,14 @@
           :body {:sheet-id sheet-id
                  :tick-id tick-id
                  :node-id root-id
-                 :inputs {}}})]})))
+                 ;; A re-tick reuses the durable tick identity, so iteration
+                 ;; must participate in node-execution identity. Without it,
+                 ;; duplicate-completion defense mistakes iteration N's
+                 ;; parent completion for iteration N+1 and suppresses the
+                 ;; newly started tree.
+                 :inputs (cond-> {}
+                           (> (or (:iteration event) 1) 1)
+                           (assoc ::tick-iteration (:iteration event)))}})]})))
 
 ;; =============================================================================
 ;; Node Execution Processor
@@ -1000,7 +1055,7 @@
   "Extract map-each execution context from inputs.
    Returns a map with only the context keys needed for correlation."
   [inputs]
-  (select-keys inputs [::map-each-index ::map-each-parent]))
+  (select-keys inputs [::map-each-index ::map-each-parent ::tick-iteration]))
 
 ;; =============================================================================
 ;; Input Profile Computation (deep module — pure function, testable in isolation)
@@ -1135,7 +1190,9 @@
             ;; Works at any depth: composites resolve leaves through the same
             ;; per-tick context.
             tool-context (:tool-context tick-ctx)
-            leaf-context (cond-> (merge context (runtime/ephemeral-context-for tick-id))
+            leaf-context (cond-> (assoc (merge context
+                                                (runtime/ephemeral-context-for tick-id))
+                                        :tick-options (:options tick-ctx))
                            tool-context (assoc :tool-context tool-context))
             ;; Use provider from context, fall back to default, or use mock if nil
             provider (or dscloj-provider *default-dscloj-provider*)
@@ -1143,7 +1200,7 @@
             ;; Extract execution context for correlation
             exec-context (extract-execution-context event-inputs)
             ;; Check LLM budget ONLY for AI executor types (not code)
-            is-llm-call? (and (= :ai executor-type) provider)
+            is-llm-call? (and (#{:ai :repl-researcher} executor-type) provider)
             ;; Stage 2 token streaming: only built when a live subscriber
             ;; opted into deltas for this tick. execute-ai falls back to
             ;; blocking predict when nil (or when DSCloj lacks
@@ -1159,18 +1216,29 @@
                              (assoc :map-each {:parent (::map-each-parent exec-context)
                                                :index (::map-each-index exec-context)}))))]
         ;; Check budget before execution (only if budget set and this is an LLM call)
-        (if-let [exceeded (and is-llm-call? (check-llm-budget tick-ctx tick-id))]
+        (if-let [exceeded (and is-llm-call? (reserve-llm-call! tick-ctx tick-id))]
           ;; Budget exceeded - fail immediately
-          (cp/process-command
-            (assoc context :command
-                   {:command/id (random-uuid)
-                    :command/timestamp (time/now)
-                    :command/name :sheet/fail-node-execution
-                    :sheet-id sheet-id
-                    :tick-id tick-id
-                    :node-id node-id
-                    :error (str "LLM call budget exceeded: "
-                               (:current exceeded) "/" (:budget exceeded))}))
+          (let [reason (str "LLM call budget exceeded: "
+                            (:current exceeded) "/" (:budget exceeded))]
+            (cp/process-command
+              (assoc context :command
+                     {:command/id (random-uuid)
+                      :command/timestamp (time/now)
+                      :command/name :sheet/cancel-tick
+                      :sheet-id sheet-id
+                      :tick-id tick-id
+                      :reason reason}))
+            (when (and (:root-sheet-id exceeded)
+                       (:root-tick-id exceeded)
+                       (not= tick-id (:root-tick-id exceeded)))
+              (cp/process-command
+                (assoc context :command
+                       {:command/id (random-uuid)
+                        :command/timestamp (time/now)
+                        :command/name :sheet/cancel-tick
+                        :sheet-id (:root-sheet-id exceeded)
+                        :tick-id (:root-tick-id exceeded)
+                        :reason reason}))))
           ;; Run execution in a future to avoid blocking
           (do
             (when is-llm-call?
@@ -1194,8 +1262,6 @@
                           :node-id node-id
                           :error "tick cancelled"}))
                 (do
-              ;; Increment LLM count before making the call (if applicable)
-              (when is-llm-call? (increment-llm-count! tick-id))
               (let [start-ms (System/currentTimeMillis)
                     _ (when is-llm-call?
                         (let [instr (or (:instruction node) "")
@@ -1273,7 +1339,9 @@
                                    ;; a last-write-wins guess on the key name.
                                    (seq reads)
                                    (assoc :read-sources (read-sources (:reads node) blackboard exec-context)))))
-                         (seq usage) (assoc :usage usage))))
+                         (seq usage) (assoc :usage usage)
+                         (and is-llm-call? (:model node))
+                         (assoc :model (:model node)))))
               ;; ALSO emit the RLM-specific learning-signal event when an LLM
               ;; call has usage. Carries a precomputed structured node-path
               ;; and an :input-profile derived from the node's :reads so
@@ -1390,7 +1458,20 @@
             ;; answers as hallucinations. We carry these into the completion
             ;; event; assemble-execution-trace prefers them over the (empty)
             ;; started inputs.
-            read-inputs (extract-read-inputs (:reads base-node) blackboard)]
+            read-inputs (extract-read-inputs (:reads base-node) blackboard)
+            budget-exceeded (when provider
+                              (reserve-llm-call! tick-ctx tick-id))]
+        (if budget-exceeded
+          (cp/process-command
+            (assoc context :command
+                   {:command/id (random-uuid)
+                    :command/timestamp (time/now)
+                    :command/name :sheet/cancel-tick
+                    :sheet-id sheet-id
+                    :tick-id tick-id
+                    :reason (str "LLM call budget exceeded: "
+                                 (:current budget-exceeded) "/"
+                                 (:budget budget-exceeded))}))
         (future
           (try
             ;; C-Loop-3: thread sheet-id / tick-id / cache through to
@@ -1435,6 +1516,7 @@
                   enriched-context (cond-> (assoc context
                                                   :sheet-id sheet-id
                                                   :tick-id tick-id
+                                                  :tick-options (:options tick-ctx)
                                                   ;; node-id rides along so RLM stream
                                                   ;; events (iteration/phase2) carry the
                                                   ;; hosting repl-researcher node.
@@ -1548,7 +1630,8 @@
                          (= :blocked effective-status) (assoc :block-payload block-payload)
                          ;; Propagate :usage (including :by-node from Phase 2)
                          ;; so per-node detail bubbles up to the parent tick.
-                         (seq usage) (assoc :usage usage)))))
+                         (seq usage) (assoc :usage usage)
+                         (:model node) (assoc :model (:model node))))))
             (catch Exception e
               (cp/process-command
                 (assoc context :command
@@ -1558,7 +1641,7 @@
                         :sheet-id sheet-id
                         :tick-id tick-id
                         :node-id node-id
-                        :error (.getMessage e)})))))
+                        :error (.getMessage e)}))))))
         nil))))
 
 ;; =============================================================================
@@ -1968,6 +2051,21 @@
      :total-children total
      :completed (count child-completions)}))
 
+(defmulti next-child-strategy
+  "Select the next sibling for an ordered control node.
+
+   Custom strategies dispatch on :strategy-id. Missing and unknown ids retain
+   the engine's linear behavior."
+  (fn [{:keys [strategy-id]}] (or strategy-id :linear)))
+
+(defmethod next-child-strategy :linear
+  [{:keys [siblings child-index]}]
+  (get (vec siblings) (inc child-index)))
+
+(defmethod next-child-strategy :default
+  [opts]
+  (next-child-strategy (assoc opts :strategy-id :linear)))
+
 (defn- evaluate-parallel-completion
   "Evaluate if a parallel node should complete based on its policies.
    Returns nil if not ready, or {:status :success/:failure} if ready."
@@ -2000,6 +2098,18 @@
 
       ;; Not all children completed yet
       :else nil)))
+
+(defmulti parallel-completion-strategy
+  "Evaluate parallel completion through an extensible strategy id."
+  (fn [{:keys [strategy-id]}] (or strategy-id :boolean)))
+
+(defmethod parallel-completion-strategy :boolean
+  [{:keys [child-counts success-policy failure-policy]}]
+  (evaluate-parallel-completion child-counts success-policy failure-policy))
+
+(defmethod parallel-completion-strategy :default
+  [opts]
+  (parallel-completion-strategy (assoc opts :strategy-id :boolean)))
 
 (defn handle-child-completion
   "When a child node completes, handle the parent's logic.
@@ -2034,7 +2144,12 @@
       (let [parent (get nodes-by-id parent-id)
             siblings (:children-ids parent)
             child-index (.indexOf (vec siblings) child-id)
-            next-child-id (get (vec siblings) (inc child-index))]
+            next-child-id (next-child-strategy
+                           {:strategy-id (:strategy-id parent)
+                            :siblings siblings
+                            :child-index child-index
+                            :event event
+                            :parent parent})]
         (case (:type parent)
           :sequence
           (cond
@@ -2275,10 +2390,13 @@
           ;; Uses event-store CAS to prevent duplicate completions when
           ;; multiple children complete rapidly and all see the same state.
           (let [child-counts (count-child-statuses context sheet-id tick-id parent exec-context)
-                completion (evaluate-parallel-completion
-                            child-counts
-                            (:success-policy parent)
-                            (:failure-policy parent))]
+                completion (parallel-completion-strategy
+                            {:strategy-id (:strategy-id parent)
+                             :child-counts child-counts
+                             :success-policy (:success-policy parent)
+                             :failure-policy (:failure-policy parent)
+                             :event event
+                             :parent parent})]
             (when completion
               (let [event (->event
                             {:type :sheet/node-execution-completed
@@ -3119,7 +3237,7 @@
   (let [tick-id (:tick-id event)]
     (runtime/deliver-completion! tick-id
       {:status :failure
-       :error "tick cancelled"
+       :error (or (:reason event) "tick cancelled")
        :cancelled? true
        :outputs {}
        :trace-id tick-id})

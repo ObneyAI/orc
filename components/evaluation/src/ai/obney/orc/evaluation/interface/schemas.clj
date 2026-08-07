@@ -38,6 +38,7 @@
     [:score [:and number? [:>= 0.0] [:<= 1.0]]]
     [:feedback :string]
     [:dimensions [:vector DimensionScore]]
+    [:model-provenance {:optional true} [:maybe :map]]
     [:emitted-at :string]]
 
    ;; Gap-8: weighted composite score across all judges that fired
@@ -101,6 +102,7 @@
     [:score [:and number? [:>= 0.0] [:<= 1.0]]]
     [:feedback :string]
     [:dimensions [:vector DimensionScore]]
+    [:model-provenance {:optional true} [:maybe :map]]
     [:emitted-at {:optional true} :string]]
 
    :evaluation/record-composite-score

@@ -6,7 +6,7 @@ Three-layer semantic knowledge system combining **static foundation** with **dyn
 
 - [Full Documentation](../../docs/ONTOLOGY.md) - Complete API reference and architecture
 - [MCP Server Guide](../../docs/ONTOLOGY-MCP.md) - External tool access (13 tools)
-- [Feedback Loop Architecture](../../docs/FEEDBACK-LOOP.md) - End-to-end improvement cycle
+- [Self-Improving Loop](../../docs/SELF-IMPROVING-LOOP.md) - End-to-end improvement cycle
 - [DSL Reference - Context Injection](../../docs/DSL-REFERENCE.md#ontology-context-injection)
 
 ## Overview
@@ -68,6 +68,25 @@ See `src/ai/obney/orc/ontology/interface.clj` for the complete public API.
 ;; Format context as markdown
 (ontology/format-context-for-llm context)
 ```
+
+### Evolutionary sources and tenant-scoped queries
+
+```clojure
+(require '[ai.obney.orc.ontology.interface.evolutionary :as evolutionary])
+
+(def built
+  (evolutionary/build-from-sources ctx
+    {:sources [{:content csv-text :type "csv"}]
+     :config {:base-uri "https://example.test/ontology/"}}))
+
+(evolutionary/get-concepts ctx (:ontology-id built))
+(evolutionary/get-build-history ctx (:ontology-id built))
+(evolutionary/get-statistics ctx (:ontology-id built))
+```
+
+These public reads preserve `:tenant-id` from `ctx`, even when tenants use
+colliding ontology/source/URI identifiers. Model-derived extraction and Living
+Description events retain model/usage provenance when available.
 
 ### Self-Learning
 
@@ -193,5 +212,5 @@ ontology/
 ## Tests
 
 ```bash
-clj -M:dev:test -e "(require '[clojure.test :refer [run-tests]] '[ai.obney.orc.ontology.core-test]) (run-tests 'ai.obney.orc.ontology.core-test)"
+clojure -M:poly test brick:ontology
 ```

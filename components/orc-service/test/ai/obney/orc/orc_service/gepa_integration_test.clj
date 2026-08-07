@@ -27,11 +27,13 @@
         instruction (get inputs :instruction "Answer the question.")]
     {:answer (str "Instruction was: '" instruction "'. Question: " question ". Answer: test-answer")}))
 
-(defn echo-executor
-  "Simple executor that echoes all inputs as output.
-   Useful for testing blackboard flow."
+(defn input->intermediate
+  [_]
+  {:intermediate "step-1-complete"})
+
+(defn intermediate->output
   [{:keys [inputs]}]
-  {:output inputs})
+  {:output (str "step-2:" (:intermediate inputs))})
 
 ;; =============================================================================
 ;; Helper: Create GEPA-Compatible Workflow
@@ -100,7 +102,7 @@
         _ (h/run-and-apply! ctx (h/make-set-node-name-command sheet-id node1-id "step-1"))
         _ (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id node1-id [:input] [:intermediate]))
         _ (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id node1-id :code
-                                  :fn "ai.obney.orc.orc-service.gepa-integration-test/echo-executor"))
+                                  :fn "ai.obney.orc.orc-service.gepa-integration-test/input->intermediate"))
 
         ;; Create node 2
         node2-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :leaf :parent-id seq-id))
@@ -108,7 +110,7 @@
         _ (h/run-and-apply! ctx (h/make-set-node-name-command sheet-id node2-id "step-2"))
         _ (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id node2-id [:intermediate] [:output]))
         _ (h/run-and-apply! ctx (h/make-set-node-executor-command sheet-id node2-id :code
-                                  :fn "ai.obney.orc.orc-service.gepa-integration-test/echo-executor"))]
+                                  :fn "ai.obney.orc.orc-service.gepa-integration-test/intermediate->output"))]
 
     {:sheet-id sheet-id
      :node-ids {:root seq-id
@@ -220,7 +222,7 @@
 
             ;; Execute workflow
             result (sheet/execute ctx sheet-id {:input "test-value"})
-            _ (is (= :success (:status result)))
+            _ (is (= :success (:status result)) (pr-str result))
 
             ;; Wait for trace to be assembled
             trace-id (:trace-id result)

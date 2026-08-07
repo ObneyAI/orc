@@ -185,7 +185,9 @@ Event-driven side effects. Defined in `{service}/core/todo_processors.clj`.
 
 **Pattern:**
 ```clojure
-(defn send-notification
+(defprocessor :service send-notification
+  {:topics #{:service/thing-happened}}
+  "Dispatch the durable follow-up command."
   [{{:keys [user-id message]} :event :as context}]
   (cp/process-command
    (assoc context :command {:command/id (random-uuid)
@@ -193,17 +195,13 @@ Event-driven side effects. Defined in `{service}/core/todo_processors.clj`.
                             :command/name :notifications/send
                             :user-id user-id
                             :message message})))
-
-(def todo-processors
-  {:service/send-notification
-   {:handler-fn #'send-notification
-    :topics [:service/thing-happened]}})
 ```
 
 - Receive the triggering `:event` in context
 - Typically dispatch a follow-up command via `cp/process-command`
-- Use var references (`#'fn`) for REPL reloading
-- `:topics` — event types that trigger this processor
+- `:topics` is the set of event types that trigger the processor
+- `defprocessor` registers the processor globally when its namespace loads;
+  there is no hand-maintained processor map to export or concatenate
 
 ### 1.4.1 Periodic Tasks
 
@@ -211,39 +209,24 @@ Scheduled background jobs. Defined in `{service}/core/periodic_tasks.clj`.
 
 **Pattern:**
 ```clojure
-(defn send-reminders
-  "Scan for items due soon and send notifications."
-  [context _time]
-  (let [items (rm/get-pending-items context)]
-    (doseq [item items]
-      (cp/process-command
-       (assoc context :command {:command/id (random-uuid)
-                                :command/timestamp (time/now)
-                                :command/name :service/send-reminder
-                                :item-id (:id item)})))))
-
-(def periodic-tasks
-  {:service/send-reminders
-   {:handler-fn #'send-reminders
-    :schedule {:cron "0 * * * *" :timezone "America/Chicago"}}})
+(defperiodic :service send-reminders
+  {:schedule {:cron "0 * * * *" :timezone "America/Chicago"}}
+  "Emit a durable reminder trigger for each tenant."
+  [_tenant-id time]
+  {:result/events
+   [(->event {:type :service/reminder-check-triggered
+              :tags #{[:reminder-check (random-uuid)]}
+              :body {:triggered-at (str time)}})]})
 ```
 
-- Function signature: `[context time]` — context is the full system context, time is provided by the scheduler
-- `:schedule` accepts either `{:every N :duration :seconds}` or `{:cron "..." :timezone "..."}`
-- Use var references (`#'fn`) for REPL reloading
-- Wire into the system via the interface, same as todo-processors
+- Handler signature is `[tenant-id time]`; Grain invokes it once per tenant and
+  appends its `:result/events` in that tenant
+- `:schedule` uses `{:cron "..." :timezone "..."}`
+- Put the real work in a `defprocessor` subscribed to the lightweight trigger
+- `defperiodic` registers globally when the namespace loads
 
-**Multi-tenant iteration** — periodic tasks run globally, so iterate over tenants:
-```clojure
-(defn my-task [context _time]
-  (let [tenants (es/tenants (:event-store context))]
-    (doseq [tid (keys tenants)]
-      (let [ctx (assoc context :tenant-id tid)]
-        ;; ... do work scoped to this tenant
-        ))))
-```
-
-`es/tenants` returns `{tenant-id {:tenant/last-event-id uuid-or-nil}}`. Use `(keys ...)` for just the ids, or read per-tenant metadata from the value.
+Do not manually iterate the event store's tenants inside a periodic handler;
+the framework supplies the tenant iteration and scoping.
 
 **CAS for idempotency** — when multiple instances run the same task, use CAS to prevent duplicate work:
 ```clojure
@@ -358,12 +341,10 @@ Every Polylith component has an `interface.clj` that defines its public boundary
   (:require ;; Side-effect requires — loading these registers commands/queries in global registries
             [ai.obney.orc.my-service.core.commands]
             [ai.obney.orc.my-service.core.queries]
+            [ai.obney.orc.my-service.core.todo-processors]
+            [ai.obney.orc.my-service.core.periodic-tasks]
             ;; Aliased requires for re-export
-            [ai.obney.orc.my-service.interface.read-models :as rm]
-            [ai.obney.orc.my-service.core.todo-processors :as tp]))
-
-;; Re-export registries for wiring
-(def todo-processors tp/todo-processors)
+            [ai.obney.orc.my-service.interface.read-models :as rm]))
 
 ;; Re-export read model helpers as stable public API
 (def get-item rm/get-item)
@@ -372,7 +353,8 @@ Every Polylith component has an `interface.clj` that defines its public boundary
 
 **What goes where:**
 - **Commands/queries** — NOT re-exported. They're accessed by keyword name (`:service/create-item`) through global registries. The `require` is side-effect-only.
-- **Todo processors** — re-exported as `todo-processors` map for wiring into Integrant.
+- **Todo processors and periodic tasks** — side-effect-required so their macros
+  register them globally; no registry maps are re-exported.
 - **Read model helpers** — re-exported as stable functions. These are the public API for cross-service data access.
 - **Schemas** — live in `interface/schemas.clj` (separate namespace). Required for side-effect registration.
 
@@ -462,13 +444,13 @@ Adding a new feature? Create these files:
 3. **`components/{service}/core/commands.clj`** — defcommand handlers
 4. **`components/{service}/core/queries.clj`** — defquery handlers
 5. **`components/{service}/core/todo_processors.clj`** — event-driven side effects (if needed)
-6. **`components/{service}/interface.clj`** — public API (re-export commands, queries, read models, todo-processors registries)
+6. **`components/{service}/interface.clj`** — public API; side-effect-require handlers and re-export stable read functions
 7. **`components/{service}/test/test_helpers.clj`** — test factories
 8. **`components/{service}/test/*_test.clj`** — tests
 
-Then wire the interface + schemas into the system:
-- Add `require` for the interface + schemas
-- Add todo-processors to the system's todo-processor concat
+Then require the interface and schemas from the relevant project. Handler,
+processor, and periodic-task discovery uses Grain's global registries; there is
+no project-level processor concatenation step.
 
 ---
 

@@ -11,7 +11,7 @@ Run the Polylith test suite from the workspace root.
 ## Command
 
 ```
-clj -M:poly test $ARGUMENTS
+clojure -M:poly test $ARGUMENTS
 ```
 
 ## Usage
@@ -21,6 +21,12 @@ clj -M:poly test $ARGUMENTS
 - `/test :all-bricks :dev` — run all brick tests including from the development project
 - `/test brick:user-service :dev` — run tests for a specific brick from all projects including dev
 - `/test :project` — run changed brick tests + changed project tests
+
+Prefer a named `brick:NAME` while iterating. Broaden to changed bricks or
+`:all-bricks` only when the change crosses those boundaries. A failing test is
+evidence to investigate; do not weaken, skip, or over-mock it merely to get a
+green run. Real-LLM end-to-end obligations must use the configured real provider,
+be explicitly environment-gated, and must not substitute mocked model behavior.
 
 ## After running
 

@@ -17,6 +17,7 @@
    9. Build A-Box - Construct instances
    10. Serialize - Generate OWL output"
   (:require [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.ontology.sheets.model-pinning :as model-pinning]
             [clojure.string :as str]
             [clojure.data.json :as json]))
 
@@ -315,7 +316,11 @@ Sample Data (first 2 records):
 
        ;; === Phase 6: Definitions ===
        :definition-reasoning [:string {:description "Reasoning for definitions"}]
-       :enriched-definitions [:map-of :string :any]
+       :enriched-definitions [:vector {:description "Formal definitions for discovered entity types"}
+                              [:map
+                               [:entity-type :string]
+                               [:definition :string]
+                               [:scope-note :string]]]
 
        ;; === Phase 7: Relationships ===
        :relationship-reasoning [:string {:description "Reasoning for relationships"}]
@@ -407,8 +412,8 @@ Include:
 2. Key properties/characteristics
 3. How it relates to other entities in the domain
 
-Return as JSON object with entity names as keys:
-{\"Person\": {\"definition\": \"...\", \"scope-note\": \"...\"}}"
+Return as a JSON array with this exact shape:
+[{\"entity-type\": \"Person\", \"definition\": \"...\", \"scope-note\": \"...\"}]"
         :reads [:concepts :domain :domain-description]
         :writes [:definition-reasoning :enriched-definitions]
         :retry {:max-attempts 2 :backoff-ms [200 1000]})
@@ -472,8 +477,10 @@ Return as JSON:
 (defn build-json-ontology-pipeline!
   "Build the JSON ontology extraction pipeline in the given context.
    Returns the sheet-id."
-  [ctx]
-  (sheet/build-workflow! ctx json-to-ontology-pipeline))
+  ([ctx] (build-json-ontology-pipeline! ctx nil))
+  ([ctx model]
+   (sheet/build-workflow! ctx
+                          (model-pinning/pin-model json-to-ontology-pipeline model))))
 
 (defn run-json-to-ontology
   "Run the JSON-to-ontology extraction pipeline.
@@ -503,8 +510,9 @@ Return as JSON:
                  domain (assoc :domain domain))
         result (sheet/execute ctx sheet-id inputs)]
     (if (= :success (:status result))
-      (merge {:status :success}
+      (merge {:status :success :trace-id (:trace-id result)}
              (select-keys (:outputs result)
                           [:domain :concepts :relationships :tbox :abox :owl-output]))
       {:status :failure
+       :trace-id (:trace-id result)
        :error (:error result)})))

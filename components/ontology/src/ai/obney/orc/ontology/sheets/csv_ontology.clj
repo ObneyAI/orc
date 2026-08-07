@@ -12,6 +12,7 @@
    - DetectAmbiguity
    - ValidateColumnMapping"
   (:require [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.ontology.sheets.model-pinning :as model-pinning]
             [clojure.string :as str]
             [clojure.data.csv :as csv]
             [clojure.java.io :as io]))
@@ -202,7 +203,7 @@
                                        (temporal-column? (:name %))))
                           (mapv :name))]
     {:date-columns date-columns
-     "has-temporal-data" (boolean (seq date-columns))}))
+     :has-temporal-data (boolean (seq date-columns))}))
 
 (defn extract-temporal-metadata-fn
   "Extract temporal metadata from entities based on detected date columns.
@@ -265,7 +266,7 @@
             :suggested-property (to-camel-case col-name)
             :is-fk-candidate (boolean (re-find #"(?i)_id$" col-name))})))
 
-     "detected-classes"
+     :detected-classes
      (if entity-col
        [(to-pascal-case entity-col)]
        (when-let [first-label (some #(when (= "label" (:column-type %))
@@ -277,9 +278,9 @@
                                                       (map #(get % col) csv-data))}))]
          [(to-pascal-case first-label)]))
 
-     "detected-properties" []
-     "detected-hierarchies" []
-     "detected-foreign-keys" []}))
+     :detected-properties []
+     :detected-hierarchies []
+     :detected-foreign-keys []}))
 
 (defn build-csv-context-fn
   "Build context strings for LLM schema analysis.
@@ -1024,8 +1025,10 @@
 
 (defn build-csv-ontology-pipeline!
   "Build the CSV-to-ontology pipeline workflow. Returns sheet-id."
-  [context]
-  (sheet/build-workflow! context csv-to-ontology-pipeline))
+  ([context] (build-csv-ontology-pipeline! context nil))
+  ([context model]
+   (sheet/build-workflow! context
+                          (model-pinning/pin-model csv-to-ontology-pipeline model))))
 
 (defn run-csv-to-ontology
   "Run the CSV-to-ontology pipeline with given inputs.
@@ -1051,14 +1054,15 @@
   [context sheet-id {:keys [csv-path csv-data entity-column entity-type base-uri]
                      :or {base-uri "http://example.org/ontology#"
                           entity-type "Entity"}}]
-  (let [result (sheet/execute context sheet-id
-                 {:csv-path csv-path
-                  :csv-data csv-data
-                  :entity-column entity-column
-                  :entity-type entity-type
-                  :base-uri base-uri})]
+  (let [inputs (cond-> {:csv-data csv-data
+                        :entity-column entity-column
+                        :entity-type entity-type
+                        :base-uri base-uri}
+                 csv-path (assoc :csv-path csv-path))
+        result (sheet/execute context sheet-id inputs)]
     (if (= :success (:status result))
       {:status :success
+       :trace-id (:trace-id result)
        :domain (get-in result [:outputs :domain])
        :domain-description (get-in result [:outputs :domain-description])
        :entities (get-in result [:outputs :entities])
@@ -1069,6 +1073,7 @@
        :owl-output (get-in result [:outputs :owl-output])
        :statistics (get-in result [:outputs :statistics])}
       {:status :failed
+       :trace-id (:trace-id result)
        :error (:error result)})))
 
 ;; =============================================================================

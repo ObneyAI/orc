@@ -205,6 +205,11 @@ This makes `build-workflow!` safe to call on every application startup — uncha
 6. Merge outputs into blackboard with version tracking
 7. Return final outputs + duration + trace-id
 
+After a process restart, `sheet/resume-in-progress!` reads the same durable
+execution state and reconstructs only leaf frontiers that have a start without
+a completion. Recovery retains tick/node identity, references the abandoned
+start event, and is idempotent; completed effects are not scheduled again.
+
 ---
 
 ## Blackboard Data Flow
@@ -361,6 +366,12 @@ flowchart TB
    - External observability platform
    - Real-time monitoring
    - Token usage tracking
+
+Durable events may also be forwarded through the managed telemetry exporter in
+`orc-service`. It uses a bounded queue and a single background worker, requires
+an acknowledgement for each event identity, retries failures, and exposes
+accepted/dropped IDs and counters. Queue pressure or destination outages never
+backpressure workflow execution.
 
 **Trace Data Per Node:**
 ```clojure

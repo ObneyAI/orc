@@ -11,7 +11,7 @@
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.metadata :as metadata]
             [ai.obney.orc.orc-service.core.value-storage :as value-storage]
-            [ai.obney.grain.event-store-v3.interface :refer [->event]]
+            [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [cognitect.anomalies :as anom]
             [malli.core :as m]
@@ -1117,6 +1117,53 @@
                    :node-id node-id
                    :inputs inputs-with-overrides}})]}))))
 
+(defcommand :sheet resume-node-execution
+  {:authorized? authenticated?}
+  "Re-enqueue one abandoned leaf start after a processor restart.
+
+   The original start event id is a durable idempotency key. If that start has
+   already completed, or a recovery start already points at it, this command is
+   a no-op. This deliberately resumes only a leaf frontier; composite parents
+   remain in progress and consume the recovered leaf's normal completion."
+  [{{:keys [sheet-id tick-id node-id original-start-event-id inputs]} :command
+    :as ctx}]
+  (let [tick-events (into [] (es/read (:event-store ctx)
+                                      {:tenant-id (:tenant-id ctx)
+                                       :tags #{[:tick tick-id]}}))
+        original-index (first (keep-indexed
+                               (fn [index event]
+                                 (when (= original-start-event-id (:event/id event))
+                                   index))
+                               tick-events))
+        events-after-original (if (some? original-index)
+                                (subvec tick-events (inc original-index))
+                                [])
+        completed? (some #(and (= :sheet/node-execution-completed (:event/type %))
+                               (= node-id (:node-id %)))
+                         events-after-original)
+        already-resumed? (some #(and (= :sheet/node-execution-started (:event/type %))
+                                     (= original-start-event-id
+                                        (:resumed-from-event-id %)))
+                               tick-events)]
+    (cond
+      (nil? original-index)
+      {::anom/category ::anom/not-found
+       ::anom/message "Original node execution start not found"}
+
+      (or completed? already-resumed?)
+      {:command-result/events []}
+
+      :else
+      {:command-result/events
+       [(->event
+         {:type :sheet/node-execution-started
+          :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
+          :body {:sheet-id sheet-id
+                 :tick-id tick-id
+                 :node-id node-id
+                 :inputs inputs
+                 :resumed-from-event-id original-start-event-id}})]})))
+
 (defcommand :sheet complete-node-execution
   {:authorized? authenticated?}
   "Complete a node execution (internal command from todo processor).
@@ -1124,7 +1171,7 @@
    atomically with the completion event to avoid race conditions.
 
    Optional :usage carries per-node token counts from LLM calls."
-  [{{:keys [sheet-id tick-id node-id status writes write-sources write-references? duration-ms error inputs usage
+  [{{:keys [sheet-id tick-id node-id status writes write-sources write-references? duration-ms error inputs usage model
             node-type completion-kind raw-response block-payload read-sources]} :command
     :as ctx}]
   (let [;; Gap-7: when the dispatch site didn't explicitly set
@@ -1229,6 +1276,7 @@
                                     (seq read-sources)
                                     (assoc :read-sources read-sources)
                                     (seq usage) (assoc :usage usage)
+                                    model (assoc :model model)
                                     ;; C-2a-2: propagate :node-type so the
                                     ;; per-node-type aggregator can partition
                                     ;; without looking up via the sheets RM.
@@ -1346,7 +1394,7 @@
 (defcommand :sheet cancel-tick
   {:authorized? authenticated?}
   "Cancel a running tick. Prevents further re-ticks."
-  [{{:keys [sheet-id tick-id]} :command
+  [{{:keys [sheet-id tick-id reason]} :command
     :as ctx}]
   {:command-result/events
    [(->event
@@ -1354,7 +1402,8 @@
       :tags #{[:sheet sheet-id]
               [:tick tick-id]}
       :body {:sheet-id sheet-id
-             :tick-id tick-id}})]})
+             :tick-id tick-id
+             :reason reason}})]})
 
 ;; =============================================================================
 ;; System Commands (called internally via cp/process-command, not via HTTP)

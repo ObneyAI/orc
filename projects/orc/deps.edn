@@ -23,6 +23,13 @@
 
  :aliases {:test {:extra-paths []
                   :extra-deps {orc/grain-test-utils {:local/root "../../components/grain-test-utils"}
+                               ;; orc-service owns cross-component E2E tests for
+                               ;; these tool bricks. Keep them test-only while
+                               ;; making every Poly project that contains the
+                               ;; orc-service brick able to load its test suite.
+                               orc/predict-rlm-pdf {:local/root "../../components/predict-rlm-pdf"}
+                               orc/predict-rlm-redaction-tools {:local/root "../../components/predict-rlm-redaction-tools"}
+                               orc/predict-rlm-invoice-tools {:local/root "../../components/predict-rlm-invoice-tools"}
                                obneyai/grain-control-plane {:git/url "https://github.com/ObneyAI/grain.git"
                                                            :git/sha "1616dacab3e287fbabd6a5ca9fe3d0ee51326cf4"
                                                            :deps/root "projects/grain-control-plane"}}}}}

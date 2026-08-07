@@ -296,6 +296,10 @@
     [:target-type [:= :node-type]]
     [:target-id :keyword]                  ;; e.g. :llm, :map-each
     [:body description-body]
+    [:model-provenance {:optional true} [:maybe [:map
+                                                 [:trace-id :uuid]
+                                                 [:model :string]
+                                                 [:usage [:map-of :keyword :int]]]]]
     [:recorded-at :string]]
 
    :ontology/node-instance-description-updated
@@ -303,6 +307,10 @@
     [:target-type [:= :node-instance]]
     [:target-id node-instance-target]      ;; [sheet-id node-id]
     [:body description-body]
+    [:model-provenance {:optional true} [:maybe [:map
+                                                 [:trace-id :uuid]
+                                                 [:model :string]
+                                                 [:usage [:map-of :keyword :int]]]]]
     [:recorded-at :string]]
 
    :ontology/tree-description-updated
@@ -320,6 +328,10 @@
     ;; model retrieves descriptions against.
     [:target-id [:or :string :uuid]]
     [:body description-body]
+    [:model-provenance {:optional true} [:maybe [:map
+                                                 [:trace-id :uuid]
+                                                 [:model :string]
+                                                 [:usage [:map-of :keyword :int]]]]]
     [:recorded-at :string]]
 
    ;; -------------------------------------------------------------------------
@@ -424,6 +436,10 @@
     [:prior-evidence-count :int]
     [:reason          :keyword]
     [:rejected-body   :map]
+    [:model-provenance {:optional true} [:maybe [:map
+                                                 [:trace-id :uuid]
+                                                 [:model :string]
+                                                 [:usage [:map-of :keyword :int]]]]]
     [:detected-at     :string]]
 
    :ontology/anti-recency-clamp-applied
@@ -716,19 +732,22 @@
    :ontology/record-node-type-description
    [:map
     [:target-id :keyword]
-    [:body description-body]]
+    [:body description-body]
+    [:model-provenance {:optional true} [:maybe :map]]]
 
    :ontology/record-node-instance-description
    [:map
     [:target-id node-instance-target]   ;; [sheet-id node-id]
-    [:body description-body]]
+    [:body description-body]
+    [:model-provenance {:optional true} [:maybe :map]]]
 
    :ontology/record-tree-description
    [:map
     ;; Either a SHA hash or a task-class UUID — see the event schema
     ;; for the rationale.
     [:target-id [:or :string :uuid]]
-    [:body description-body]]
+    [:body description-body]
+    [:model-provenance {:optional true} [:maybe :map]]]
 
    :ontology/record-tree-class-description
    [:map
@@ -736,7 +755,8 @@
     ;; the classifier assigned). Distinct from :tree-fingerprint, which
     ;; keys on observed-tree SHA strings.
     [:target-id [:or :string :uuid]]
-    [:body description-body]]
+    [:body description-body]
+    [:model-provenance {:optional true} [:maybe :map]]]
 
    ;; Gap-6: audit-trail commands for the anti-recency validator.
    ;; Dispatched by the consolidator processor when the validator
@@ -755,7 +775,8 @@
     [:prior-confidence number?]
     [:prior-evidence-count :int]
     [:reason          :keyword]
-    [:rejected-body   :map]]
+    [:rejected-body   :map]
+    [:model-provenance {:optional true} [:maybe :map]]]
 
    :ontology/record-anti-recency-clamp
    [:map
@@ -1153,6 +1174,7 @@
                          [:alt-labels {:optional true} [:vector :string]]
                          [:source-id {:optional true} :uuid]
                          [:confidence {:optional true} :double]]]]
+    [:model-provenance {:optional true} [:maybe :map]]
     [:extracted-at :string]]
 
    :evolutionary/relationships-extracted
@@ -1273,6 +1295,7 @@
     [:ontology-id :uuid]
     [:snapshot-id :uuid]
     [:format ttl-format]
+    [:ttl-string :string]
     [:triple-count :int]
     [:checksum :string]
     [:created-at :string]]

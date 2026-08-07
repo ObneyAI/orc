@@ -115,7 +115,7 @@
        "   :version 1\n"
        "   :consolidated-from-event-count 10}"))
 
-(def ^:private reflection-workflow
+(defn- reflection-workflow
   "Single-:llm-node ORC workflow for the consolidator's reflection call.
 
    The blackboard schemas for each :writes key drive dscloj's structured-
@@ -125,6 +125,7 @@
    principle-entry schema so the LLM is told to produce maps with
    :trait/:good-when/:recommended-pattern/:confidence/:evidence-count/...
    fields, not just `:map`."
+  [model]
   (orc/workflow "ontology-consolidator-reflection"
     (orc/blackboard
       {:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]
@@ -141,20 +142,22 @@
        :avoid-when [:vector :string]
        :summary :string})
 
-    (orc/llm "reflect"
-      :instruction reflection-instruction
-      :reads [:target-type :target-id :current-description
-              :recent-events :aggregate-metrics
-              :recent-vs-historical-delta :structural-context]
-      :writes [:capabilities :strengths :weaknesses
-               :representative-uses :avoid-when :summary]
-      ;; Use the existing ORC/dscloj retry primitive — the executor's
-      ;; :llm handler already retries on transient errors AND nil
-      ;; outputs (executor.clj `outputs-have-nil?`). Lifting the budget
-      ;; from the default 1 retry to 3 covers the LLM-flakiness we see
-      ;; on first-consolidation runs without reinventing retry.
-      :options {:max-retries 3
-                :retry-delay-ms [500 1500 3000]})))
+    (cond->
+      (orc/llm "reflect"
+        :instruction reflection-instruction
+        :reads [:target-type :target-id :current-description
+                :recent-events :aggregate-metrics
+                :recent-vs-historical-delta :structural-context]
+        :writes [:capabilities :strengths :weaknesses
+                 :representative-uses :avoid-when :summary]
+        ;; Use the existing ORC/dscloj retry primitive — the executor's
+        ;; :llm handler already retries on transient errors AND nil
+        ;; outputs (executor.clj `outputs-have-nil?`). Lifting the budget
+        ;; from the default 1 retry to 3 covers the LLM-flakiness we see
+        ;; on first-consolidation runs without reinventing retry.
+        :options {:max-retries 3
+                  :retry-delay-ms [500 1500 3000]})
+      model (assoc :model model))))
 
 ;; =============================================================================
 ;; Input gathering
@@ -268,14 +271,29 @@
   (if (= :tree-class target-type)
     (gather-recent-tree-class-events ctx target-id)
     (let [event-type (source-event-type-for-target target-type)]
-      (->> (es/read (:event-store ctx)
-                    {:types #{event-type}
-                     :tenant-id (:tenant-id ctx)})
-           (into [])
-           (filter #(event-matches-target? target-type target-id %))
-           (map clean-event-for-llm)
-           (take-last recent-window-size)
-           vec))))
+      (let [source-events (->> (es/read (:event-store ctx)
+                                        {:types #{event-type}
+                                         :tenant-id (:tenant-id ctx)})
+                               (into [])
+                               (filter #(event-matches-target? target-type target-id %)))
+            judge-scores (->> (es/read (:event-store ctx)
+                                       {:types #{:judge/score-emitted}
+                                        :tenant-id (:tenant-id ctx)})
+                              (into [])
+                              (group-by (juxt :sheet-id :tick-id)))]
+        (->> source-events
+             (map (fn [event]
+                    (let [scores (get judge-scores
+                                      [(:sheet-id event) (:tick-id event)])]
+                      (cond-> (clean-event-for-llm event)
+                        (seq scores)
+                        (assoc :judge-scores
+                               (mapv #(select-keys % [:judge-name :judge-config
+                                                     :score :feedback :dimensions
+                                                     :emitted-at])
+                                     scores))))))
+             (take-last recent-window-size)
+             vec)))))
 
 (defn- success-rate
   "Fraction of events with :status :success. nil for empty input."
@@ -413,7 +431,7 @@
           (json/parse-string v true)
           (catch Exception _ v))))))
 
-(defn- record-description-command [target-type target-id body]
+(defn- record-description-command [target-type target-id body model-provenance]
   (let [cmd-name (case target-type
                    :node-type        :ontology/record-node-type-description
                    :node-instance    :ontology/record-node-instance-description
@@ -423,7 +441,8 @@
      :command/id (random-uuid)
      :command/timestamp (time/now)
      :target-id target-id
-     :body body}))
+     :body body
+     :model-provenance model-provenance}))
 
 (defn- next-version [current-description]
   (if current-description
@@ -762,7 +781,13 @@
         aggregate-metrics (gather-aggregate-metrics context target-type target-id)
         recent-vs-historical-delta (compute-delta aggregate-metrics recent-events)
         structural-context (gather-structural-context context target-type target-id)
-        sheet-id (orc/build-workflow! context reflection-workflow)
+        ;; A caller running a provenance-sensitive workflow may pin the
+        ;; consolidator independently of the ambient provider default.  This
+        ;; is deliberately explicit: silently falling back would make a
+        ;; description impossible to attribute after the fact.
+        model (or (:ontology-consolidator-model context)
+                  (:model context))
+        sheet-id (orc/build-workflow! context (reflection-workflow model))
         exec-result (orc/execute context sheet-id
                                   {:target-type target-type
                                    :target-id target-id
@@ -771,6 +796,16 @@
                                    :aggregate-metrics aggregate-metrics
                                    :recent-vs-historical-delta recent-vs-historical-delta
                                    :structural-context structural-context})
+        model-completion (some #(when (and (= (:trace-id exec-result) (:tick-id %))
+                                           (:model %))
+                                  %)
+                               (into [] (es/read (:event-store context)
+                                                {:tenant-id (:tenant-id context)
+                                                 :types #{:sheet/node-execution-completed}})))
+        model-provenance (when model-completion
+                           {:trace-id (:trace-id exec-result)
+                            :model (:model model-completion)
+                            :usage (:usage model-completion)})
         outputs (:outputs exec-result)
         ;; Assemble the description-body from the six separate :writes
         ;; produced by the LLM. dscloj returns simple-vector fields
@@ -842,7 +877,8 @@
                           :prior-confidence (:prior-confidence audit-entry)
                           :prior-evidence-count (:prior-evidence-count audit-entry)
                           :reason (:reason audit-entry)
-                          :rejected-body body}))))
+                          :rejected-body body
+                          :model-provenance model-provenance}))))
             (u/log ::anti-recency-rejection
                    :target-type target-type
                    :target-id target-id
@@ -871,7 +907,8 @@
                      :target-id target-id
                      :clamp-entry-count (count (:audit validation))))
             (command-processor/process-command
-              (assoc context :command (record-description-command target-type target-id final-body)))
+              (assoc context :command (record-description-command target-type target-id final-body
+                                                                  model-provenance)))
             ;; R05d: after the description-updated event lands, grow the
             ;; behavior:composes-into graph for any newly-observed (behavior
             ;; → shell) pairs. Sticky / idempotent — re-running on the same

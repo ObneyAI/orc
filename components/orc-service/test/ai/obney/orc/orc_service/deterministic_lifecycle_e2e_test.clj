@@ -3,8 +3,10 @@
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.dsl :as dsl]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.todo-processor-v2.interface :as tp]))
 
 (defn lifecycle-v1 [{:keys [inputs]}]
   {:output (str (:input inputs) "-v1")})
@@ -19,6 +21,37 @@
   (if (= "fail" (:input inputs))
     (throw (ex-info "deliberate batch item failure" {:input (:input inputs)}))
     {:output (str (:input inputs) "-ok")}))
+
+(def version-race-gate (atom nil))
+(def version-race-starts (atom []))
+
+(def restart-resume-state (atom nil))
+
+(defn lifecycle-stop-after-effect [{:keys [inputs]}]
+  (let [{:keys [leaf-processor effect-count]} @restart-resume-state]
+    (swap! effect-count inc)
+    (tp/stop leaf-processor)
+    {:middle (str (:input inputs) "-effect")}))
+
+(defn lifecycle-finish-after-resume [{:keys [inputs]}]
+  (when-let [count-atom (:finish-count @restart-resume-state)]
+    (swap! count-atom inc))
+  {:output (str (:middle inputs) "-finished")})
+
+(defn lifecycle-control-effect [{:keys [inputs]}]
+  {:middle (str (:input inputs) "-effect")})
+
+(defn- blocked-version-result [version inputs]
+  (swap! version-race-starts conj version)
+  (when-let [gate @version-race-gate]
+    @gate)
+  {:output (str (:input inputs) "-" version)})
+
+(defn lifecycle-blocked-v1 [{:keys [inputs]}]
+  (blocked-version-result "v1" inputs))
+
+(defn lifecycle-blocked-v2 [{:keys [inputs]}]
+  (blocked-version-result "v2" inputs))
 
 (defn- fq [function-name]
   (str "ai.obney.orc.orc-service.deterministic-lifecycle-e2e-test/"
@@ -322,3 +355,183 @@
         (is (= 1 (:version-number event)))
         (is (= 3 (:successful-count event)))
         (is (= 0 (:failed-count event)))))))
+
+(deftest det-e2e-108-restart-and-resume-in-flight-execution
+  (testing "durable leaf frontier resumes without repeating a completed external effect"
+    (h/with-async-test-context [ctx]
+      (let [effect-count (atom 0)
+            finish-count (atom 0)
+            leaf-processor (get-in ctx [:processors :sheet/execute-leaf-node])
+            definition (sheet/workflow "det-e2e-108-restart-resume"
+                         (sheet/blackboard {:input :string
+                                            :middle :string
+                                            :output :string})
+                         (sheet/sequence "main"
+                           (sheet/code "external-effect" :fn (fq "lifecycle-stop-after-effect")
+                             :reads [:input] :writes [:middle])
+                           (sheet/code "unfinished-frontier" :fn (fq "lifecycle-finish-after-resume")
+                             :reads [:middle] :writes [:output])))
+            control-definition (sheet/workflow "det-e2e-108-uninterrupted-control"
+                                 (sheet/blackboard {:input :string
+                                                    :middle :string
+                                                    :output :string})
+                                 (sheet/sequence "main"
+                                   (sheet/code "external-effect" :fn (fq "lifecycle-control-effect")
+                                     :reads [:input] :writes [:middle])
+                                   (sheet/code "unfinished-frontier" :fn (fq "lifecycle-finish-after-resume")
+                                     :reads [:middle] :writes [:output])))
+            sheet-id (sheet/build-workflow! ctx definition)
+            control-id (sheet/build-workflow! ctx control-definition)]
+        (reset! restart-resume-state {:leaf-processor leaf-processor
+                                      :effect-count effect-count
+                                      :finish-count finish-count})
+        (let [execution-f (future (sheet/execute ctx sheet-id {:input "x"}
+                                                 :timeout-ms 15000))
+              nodes-by-name (into {} (map (juxt :name identity)
+                                          (sheet/get-nodes-for-sheet ctx sheet-id)))
+              first-id (get-in nodes-by-name ["external-effect" :id])
+              second-id (get-in nodes-by-name ["unfinished-frontier" :id])]
+          (is (h/settle-until!
+               #(let [events (all-events ctx)]
+                  (and (some (fn [event]
+                               (and (= :sheet/node-execution-completed (:event/type event))
+                                    (= first-id (:node-id event))))
+                             events)
+                       (some (fn [event]
+                               (and (= :sheet/node-execution-started (:event/type event))
+                                    (= second-id (:node-id event))))
+                             events)))
+               :timeout-ms 5000)
+              "crash boundary must contain one completed and one unfinished leaf")
+          (let [before (all-events ctx)
+                first-completions (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                                                (= first-id (:node-id %)))
+                                          before)
+                second-completions (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                                                 (= second-id (:node-id %)))
+                                           before)
+                original-first-id (:event/id (first first-completions))
+                {:keys [handler-fn topics]} (get @tp/processor-registry*
+                                                 :sheet/execute-leaf-node)
+                restarted (tp/start {:event-pubsub (:event-pubsub ctx)
+                                     :topics topics
+                                     :handler-fn handler-fn
+                                     :context (dissoc ctx :processors)})]
+            (try
+              (is (= 1 @effect-count))
+              (is (= 1 (count first-completions)))
+              (is (empty? second-completions))
+              (is (= 1 (count (filter :resumed? (sheet/resume-in-progress! ctx)))))
+              (is (empty? (sheet/resume-in-progress! ctx))
+                  "a repeated recovery scan cannot enqueue the frontier twice")
+              (let [result (deref execution-f 10000 ::timeout)
+                    after (all-events ctx)
+                    control (sheet/execute ctx control-id {:input "x"} :timeout-ms 10000)
+                    terminal-events (filter #(and (= :sheet/tree-tick-completed (:event/type %))
+                                                  (= (:trace-id result) (:tick-id %)))
+                                            after)]
+                (is (not= ::timeout result))
+                (is (= :success (:status result)))
+                (is (= (:outputs control) (:outputs result)))
+                (is (= {:input "x"
+                        :middle "x-effect"
+                        :output "x-effect-finished"}
+                       (:outputs result)))
+                (is (= 1 @effect-count) "completed external effect is never repeated")
+                (is (= 2 @finish-count)
+                    "recovered and uninterrupted-control leaves each execute once")
+                (is (= original-first-id
+                       (:event/id (first (filter #(and (= :sheet/node-execution-completed
+                                                           (:event/type %))
+                                                        (= first-id (:node-id %)))
+                                                  after))))
+                    "the durable completed execution retains its identity")
+                (is (= 1 (count (filter #(and (= :sheet/node-execution-completed
+                                                   (:event/type %))
+                                                (= second-id (:node-id %)))
+                                          after))))
+                (is (= 1 (count terminal-events))))
+              (finally
+                (tp/stop restarted)
+                (reset! restart-resume-state nil)))))))))
+
+(deftest det-e2e-109-publish-while-executions-are-in-flight
+  (testing "in-flight executions retain one coherent definition snapshot across publication"
+    (h/with-async-test-context [ctx]
+      (let [name "det-e2e-109-in-flight-publication"
+            gate (promise)]
+        (reset! version-race-gate gate)
+        (reset! version-race-starts [])
+        (let [sheet-id (sheet/build-workflow! ctx (workflow name "lifecycle-blocked-v1"))
+              _ (h/run-and-apply! ctx (h/make-publish-version-command sheet-id :description "v1"))
+              _ (sheet/build-workflow! ctx (workflow name "lifecycle-blocked-v2"))
+              pinned-v1-f (future (sheet/execute ctx sheet-id {:input "pinned-v1"}
+                                                  :use-version 1 :timeout-ms 15000))
+              draft-f (future (sheet/execute ctx sheet-id {:input "draft-before-publish"}
+                                              :force-draft true :timeout-ms 15000))]
+          (try
+            (is (h/settle-until! #(= 2 (count @version-race-starts)))
+                "both pre-publication executions must reach their blocked leaves")
+            (h/run-and-apply! ctx (h/make-publish-version-command sheet-id :description "v2"))
+            (h/run-and-apply! ctx (h/make-set-execution-mode-command sheet-id :published))
+            (let [pinned-v2-f (future (sheet/execute ctx sheet-id {:input "pinned-v2"}
+                                                     :use-version 2 :timeout-ms 15000))
+                  latest-f (future (sheet/execute ctx sheet-id {:input "latest"}
+                                                  :timeout-ms 15000))]
+              (is (h/settle-until! #(= 4 (count @version-race-starts)))
+                  "both post-publication executions must reach their blocked leaves")
+              (deliver gate true)
+              (let [pinned-v1 (deref pinned-v1-f 15000 ::timeout)
+                    draft (deref draft-f 15000 ::timeout)
+                    pinned-v2 (deref pinned-v2-f 15000 ::timeout)
+                    latest (deref latest-f 15000 ::timeout)
+                    results [pinned-v1 draft pinned-v2 latest]
+                    traces (mapv #(trace-for ctx %) results)
+                    events (all-events ctx)
+                    starts-by-tick (into {}
+                                         (comp
+                                          (filter #(= :sheet/tree-tick-started
+                                                      (:event/type %)))
+                                          (map (juxt :tick-id identity)))
+                                         events)
+                    snapshot-fns (mapv (fn [result]
+                                         (->> (get-in starts-by-tick
+                                                      [(:trace-id result)
+                                                       :execution-snapshot
+                                                       :nodes-by-id])
+                                              vals
+                                              (keep :fn)
+                                              set))
+                                       results)
+                    replayed-traces (reduce rm/traces* {} events)]
+                (is (not-any? #{::timeout} results))
+                (is (= [:success :success :success :success] (mapv :status results)))
+                (is (= ["pinned-v1-v1" "draft-before-publish-v2"
+                        "pinned-v2-v2" "latest-v2"]
+                       (mapv #(get-in % [:outputs :output]) results)))
+                (is (= [1 nil 2 2] (mapv :executed-version results)))
+                (is (= [1 nil 2 2] (mapv :version-number traces)))
+                (is (= [#{(fq "lifecycle-blocked-v1")}
+                        #{(fq "lifecycle-blocked-v2")}
+                        #{(fq "lifecycle-blocked-v2")}
+                        #{(fq "lifecycle-blocked-v2")}]
+                       snapshot-fns)
+                    "each durable execution snapshot contains one version's configuration only")
+                (is (= ["v1" "v2" "v2" "v2"]
+                       (sort @version-race-starts)))
+                (is (= 4 (count (set (map :trace-id results)))))
+                (is (= [1 nil 2 2]
+                       (mapv #(get-in replayed-traces [(:trace-id %) :version-number])
+                             results))
+                    "event replay preserves all four version assignments")
+                (doseq [[result expected-version] (map vector results [1 nil 2 2])]
+                  (is (= [expected-version expected-version expected-version]
+                         (repeatedly 3
+                                     #(get-in (h/run-query
+                                               ctx
+                                               (h/make-get-trace-query (:trace-id result)))
+                                              [:query/result :trace :version-number])))
+                      "repeated queries cannot reclassify an older execution"))))
+            (finally
+              (deliver gate true)
+              (reset! version-race-gate nil))))))))

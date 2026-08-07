@@ -29,3 +29,6 @@ development/resources/
 # Local-only follow-up working notes. Survive compaction (filesystem-tracked)
 # but never committed — they're scratch planning that becomes stale fast.
 docs/issues/c2d-followups/
+
+# Resumable local state for the Allium convergence loop.
+.allium-loop/

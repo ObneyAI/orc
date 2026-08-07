@@ -217,6 +217,27 @@ Commands -> Events -> Read Models -> Queries
 6. Repeat until budget exhausted
 ```
 
+### Durable operations added in this release
+
+The normal consumer interfaces remain compatible, with additive operational
+controls for long-running and adaptive workloads:
+
+- `orc/resume-in-progress!` reconstructs abandoned leaf frontiers from the
+  durable event stream after processors restart. Completed work keeps its
+  original identity and is not re-enqueued; repeated recovery is idempotent.
+- `gepa/resume!` advances one missing durable optimization transition, while
+  `gepa/apply-winner!` applies a completed winner to an explicitly named source
+  version and publishes a new immutable workflow version.
+- `colbert/activate-index!` switches a stable alias to a fully readable index
+  atomically; `colbert/search-active` resolves and searches one snapshot.
+- `orc/start-telemetry-exporter!` provides bounded, non-blocking export of
+  durable events. Queue overflow, retries, failures, acknowledgements, and
+  drops are visible through `orc/telemetry-exporter-stats`.
+
+Model-backed evaluation, optimization, and ontology artifacts retain resolved
+model and usage provenance. All public ontology reads—including aggregate
+statistics—honor `:tenant-id` from the caller context.
+
 ## Node Types
 
 | Node | Type | Description |

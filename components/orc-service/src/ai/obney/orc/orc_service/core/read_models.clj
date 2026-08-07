@@ -566,10 +566,16 @@
 
 (defmethod ticks* :sheet/tree-tick-completed
   [state event]
-  (-> state
-      (assoc-in [(:tick-id event) :status] :completed)
-      (assoc-in [(:tick-id event) :root-status] (:root-status event))
-      (assoc-in [(:tick-id event) :completed-at] (str (:event/timestamp event)))))
+  (let [tick-id (:tick-id event)]
+    ;; Cancellation is terminal and wins even when asynchronous projection
+    ;; workers observe completion after cancellation. Event-store replay is
+    ;; ordered, while live pubsub delivery can race; making the reducer
+    ;; monotonic keeps both paths equivalent without hiding either event.
+    (cond-> (-> state
+                (assoc-in [tick-id :root-status] (:root-status event))
+                (assoc-in [tick-id :completed-at] (str (:event/timestamp event))))
+      (not= :cancelled (get-in state [tick-id :status]))
+      (assoc-in [tick-id :status] :completed))))
 
 (defmethod ticks* :sheet/tick-cancelled
   [state event]

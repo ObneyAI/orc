@@ -8,7 +8,8 @@
 -- selection, per-example Pareto diversity, cross-run inheritance, and terminal
 -- completion/failure.
 -- Excludes: Grain processor mechanics, Clojure/Python representation details,
--- model-provider calls, ORC execution internals, and ontology/RLM tree design.
+-- model-provider transport mechanics, ORC execution internals, and
+-- ontology/RLM tree design. Durable model-call identity and usage are included.
 
 ------------------------------------------------------------
 -- External Entities
@@ -27,6 +28,15 @@ external entity OrcWorkflow {
 value DatasetExample {
     inputs: Any
     expected: Any?
+}
+
+value ModelProvenance {
+    call_identifier: String
+    provider: String?
+    model: String
+    prompt_tokens: Integer?
+    completion_tokens: Integer?
+    total_tokens: Integer?
 }
 
 value OptimizationConfiguration {
@@ -121,6 +131,26 @@ contract ParetoPopulationSelection {
         -- at least as strong as the better parent under the merge criterion.
 }
 
+contract DurableOptimizationLifecycle {
+    resume: (optimization: OptimizationRun) -> Any
+    apply_winner: (optimization: OptimizationRun, source_version: Integer) -> Any
+
+    @invariant DurableModelEvidence
+        -- Every completed proposer and task-model call records its resolved
+        -- model, stable call identity, usage, and associated optimization
+        -- evidence before dependent frontier work proceeds.
+
+    @invariant ResumeFromRecordedBoundary
+        -- Recovery continues from the latest durable proposal or evaluation
+        -- boundary, preserves the run and candidate identities, respects the
+        -- remaining metric budget, and is safe to request repeatedly.
+
+    @invariant ImmutableWinnerPublication
+        -- Applying a completed winner requires the exact source workflow
+        -- version, leaves that version unchanged, and publishes a distinct new
+        -- version containing the winning named instructions.
+}
+
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
@@ -155,6 +185,16 @@ entity OptimizationRun {
 
     candidates: InstructionCandidate with optimization = this
     frontier_entries: ParetoEntry with optimization = this
+    model_calls: ModelCallEvidence with optimization = this
+}
+
+entity ModelCallEvidence {
+    optimization: OptimizationRun
+    call_identifier: String
+    role: String
+    model_provenance: ModelProvenance
+    trace_identifier: String?
+    completed_at: Timestamp
 }
 
 entity InstructionCandidate {
@@ -218,6 +258,21 @@ rule StartOptimization {
         completed_at: null,
         failure_reason: null,
         inherited_from: inherited_from
+    )
+}
+
+rule RecordCompletedModelCall {
+    when: OptimizationModelCallCompleted(optimization, call_identifier, role, model_provenance, trace_identifier)
+    requires: optimization.status = running
+    requires: not exists ModelCallEvidence{optimization: optimization, call_identifier: call_identifier}
+
+    ensures: ModelCallEvidence.created(
+        optimization: optimization,
+        call_identifier: call_identifier,
+        role: role,
+        model_provenance: model_provenance,
+        trace_identifier: trace_identifier,
+        completed_at: now
     )
 }
 
@@ -370,6 +425,26 @@ rule FailOptimization {
     ensures: optimization.failure_reason = reason
 }
 
+rule ResumeOptimization {
+    when: ResumeOptimization(consumer, optimization)
+    requires: optimization.status = running
+
+    ensures: OptimizationFrontierReconstructed(optimization: optimization)
+}
+
+rule ApplyOptimizationWinner {
+    when: ApplyOptimizationWinner(consumer, optimization, source_version)
+    requires: optimization.status = completed
+    let winner = best_aggregate_candidate(optimization.candidates)
+
+    ensures: WinnerPublishedAsNewWorkflowVersion(
+        optimization: optimization,
+        candidate: winner,
+        workflow: optimization.workflow,
+        source_version: source_version
+    )
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
@@ -407,17 +482,21 @@ surface PromptOptimization {
 
     provides:
         StartOptimization(consumer, workflow, trainset, validation_set, configuration, inherited_from)
+        ResumeOptimization(consumer, optimization)
+        ApplyOptimizationWinner(consumer, optimization, source_version)
 
     exposes:
         OptimizationRun
         InstructionCandidate
         ParetoEntry
         MergeAttempt
+        ModelCallEvidence
 
     contracts:
         demands CandidateMetric
         fulfils ReflectiveInstructionProposer
         fulfils ParetoPopulationSelection
+        fulfils DurableOptimizationLifecycle
 
     @guarantee StaticInstructionsOnly
         -- GEPA changes named static LLM-node instructions; it does not alter
@@ -427,4 +506,3 @@ surface PromptOptimization {
         -- Completed Pareto candidates and their evaluation evidence remain
         -- queryable as seed material for later runs on the same workflow.
 }
-

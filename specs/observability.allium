@@ -3,8 +3,9 @@
 --
 -- Scope: optional forwarding of ORC trace, span, and generation events to an
 -- external observability service.
--- Includes: client configuration, batching, disabled behavior, and reporting
--- whether the remote service accepted a batch.
+-- Includes: client configuration, batching, disabled behavior, managed
+-- background export, bounded buffering, acknowledgement, retries, explicit
+-- drops, status snapshots, failure isolation, and bounded shutdown.
 -- Excludes: HTTP, JSON, Basic authentication, environment lookup, host defaults,
 -- and Langfuse-specific endpoint construction.
 
@@ -13,6 +14,12 @@
 ------------------------------------------------------------
 
 external entity OrcRuntime {}
+
+config {
+    queue_capacity: Integer = 256
+    maximum_export_attempts: Integer = 3
+    shutdown_timeout: Duration = 2.seconds
+}
 
 ------------------------------------------------------------
 -- Value Types
@@ -40,6 +47,20 @@ value IngestionResult {
     response_body: String?
 }
 
+value ExporterStatistics {
+    offered: Integer
+    accepted: Integer
+    retried: Integer
+    dropped: Integer
+    failures: Integer
+    occupancy: Integer
+    capacity: Integer
+    accepted_identifiers: List<String>
+    dropped_identifiers: List<String>
+    running: Boolean
+    stopped: Boolean?
+}
+
 ------------------------------------------------------------
 -- Contracts
 ------------------------------------------------------------
@@ -61,6 +82,35 @@ contract TraceExporter {
         -- the result makes the failure explicit for their own policy decision.
 }
 
+contract ManagedTraceExporter {
+    start: (runtime: OrcRuntime, event_kinds: Set<String>) -> Any
+    statistics: (exporter: Any) -> ExporterStatistics
+    stop: (exporter: Any) -> ExporterStatistics
+
+    @invariant NonBlockingPublication
+        -- Runtime publication never waits for remote export. Events enter a
+        -- bounded queue; a full queue causes an explicit recorded drop.
+
+    @invariant AcknowledgementIntegrity
+        -- An event is accepted only when the destination acknowledges that
+        -- event's durable identity. Missing acknowledgements and exceptions
+        -- are retried up to the configured attempt limit, then recorded as a
+        -- drop rather than silently treated as success.
+
+    @invariant OrderedSingleEventProgress
+        -- One worker advances through queued events in source order and does
+        -- not advance past an unacknowledged event until it is retried or
+        -- explicitly dropped.
+
+    @invariant FailureIsolation
+        -- Export exceptions and destination rejection remain observable in
+        -- statistics but cannot fail or backpressure workflow execution.
+
+    @invariant BoundedStop
+        -- Stop rejects new work, drains queued work within the configured
+        -- shutdown timeout, then reports whether the worker actually stopped.
+}
+
 ------------------------------------------------------------
 -- Surfaces
 ------------------------------------------------------------
@@ -70,6 +120,7 @@ surface RuntimeObservabilityIntegration {
 
     contracts:
         fulfils TraceExporter
+        fulfils ManagedTraceExporter
 
     @guarantee OptionalIntegration
         -- ORC behavior remains available when export configuration is absent.

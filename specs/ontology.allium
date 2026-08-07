@@ -14,6 +14,15 @@ value ConceptDefinition {
     scope: ConceptScope
 }
 
+value ModelProvenance {
+    trace_identifier: String
+    provider: String?
+    model: String?
+    resolved_models: List<String>?
+    usage: Any?
+    call_evidence: Any?
+}
+
 value Principle {
     trait: String
     context_guard: String
@@ -89,6 +98,10 @@ contract OntologyExtraction {
 
     @invariant SourceAwareExtraction
         -- CSV, JSON, SQL, RDF, and text retain provenance and use their extractor.
+
+    @invariant LearnedArtifactModelProvenance
+        -- Model-derived descriptions and source extractions retain the resolved
+        -- model, trace identity, and usage that produced them.
 }
 
 contract ScopedConceptLookup {
@@ -168,6 +181,7 @@ entity DescriptionVersion {
     body: DescriptionBody
     recorded_at: Timestamp
     evidence_event_count: Integer
+    model_provenance: ModelProvenance?
 }
 
 entity ConsolidationPolicy {
@@ -216,6 +230,7 @@ entity SourceExtraction {
     extracted_concept_count: Integer
     extracted_relationship_count: Integer
     extracted_schema: Any
+    model_provenance: ModelProvenance?
 }
 
 entity CanonicalMapping {
@@ -323,7 +338,7 @@ rule RequestThresholdConsolidation {
 }
 
 rule ConsolidateDescription {
-    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count)
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count, model_provenance)
     let existing = current_description(granularity, target_identifier)
     requires: anti_recency_accepts(existing, candidate_body, evidence_count) = true
 
@@ -338,19 +353,21 @@ rule ConsolidateDescription {
         description: description_for(granularity, target_identifier),
         body: candidate_body,
         recorded_at: now,
-        evidence_event_count: evidence_count
+        evidence_event_count: evidence_count,
+        model_provenance: model_provenance
     )
 }
 
 rule RejectRecencyBiasedDescription {
-    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count)
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count, model_provenance)
     let existing = current_description(granularity, target_identifier)
     requires: anti_recency_accepts(existing, candidate_body, evidence_count) = false
 
     ensures: AntiRecencyRejectionRecorded(
         granularity: granularity,
         target_identifier: target_identifier,
-        candidate_body: candidate_body
+        candidate_body: candidate_body,
+        model_provenance: model_provenance
     )
 }
 
@@ -452,7 +469,7 @@ rule SkipDuplicateSource {
 }
 
 rule RecordSourceExtraction {
-    when: SourceExtractionCompleted(build, source, concepts, relationships, schema)
+    when: SourceExtractionCompleted(build, source, concepts, relationships, schema, model_provenance)
     requires: build.status = running
 
     ensures: SourceExtraction.created(
@@ -460,7 +477,8 @@ rule RecordSourceExtraction {
         source: source,
         extracted_concept_count: concepts.count,
         extracted_relationship_count: relationships.count,
-        extracted_schema: schema
+        extracted_schema: schema,
+        model_provenance: model_provenance
     )
     ensures: ExtractedGraphContributionRecorded(
         build: build,
@@ -576,6 +594,11 @@ surface SemanticMemory {
     @guarantee ScopedMemory
         -- Concept identity and traversal remain ontology scoped. Compatibility
         -- URI lookup never guesses when multiple ontologies contain the URI.
+
+    @guarantee TenantBoundary
+        -- Every command, query, statistic, source, learned artifact, build, and
+        -- canonical mapping is evaluated within the caller's tenant. Equal
+        -- identifiers in a shared store never grant cross-tenant visibility.
 
     @guarantee AuditableEvolution
         -- Graph changes, description versions, sources, resolution decisions,

@@ -9,6 +9,7 @@
    - FindRelatedConcepts
    - ValidateTaxonomy"
   (:require [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.ontology.sheets.model-pinning :as model-pinning]
             [clojure.string :as str]))
 
 ;; =============================================================================
@@ -322,7 +323,7 @@ Few-shot learning enables learning from very few examples.")
        ;; === Phase 2: Extraction outputs ===
        ;; Python: ExtractConcepts signature
        ;; entity_type enables Type-Based Blocking for O(N²) -> O((N/k)²) deduplication
-       :raw-concepts [:vector {:description "5-15 key concepts extracted from text with labels, definitions, and entity types"}
+       :raw-concepts [:vector {:description "Only explicitly named domain concepts extracted from text with labels, definitions, and entity types"}
                       [:map
                        [:label :string]
                        [:alt_labels :string]
@@ -416,7 +417,7 @@ Few-shot learning enables learning from very few examples.")
       ;; =======================================================================
       (sheet/llm "extract-concepts"
         :model "google/gemini-2.5-flash"
-        :instruction "Extract 5-15 key concepts from the text for taxonomy building. Focus on domain-specific terminology. Include alternative labels (synonyms, abbreviations) when relevant. Avoid extracting concepts already in existing_concepts. Use domain-appropriate entity types."
+        :instruction "Extract only explicitly named domain entities and concepts from the text. Do not invent supporting concepts merely because they appear in a definition; short inputs may yield only 1-4 concepts. Preserve stated canonical names and alternative names exactly. Include alternative labels (synonyms, abbreviations) when explicitly stated. Avoid extracting concepts already in existing_concepts. Use domain-appropriate entity types."
         :reads [:source-text :domain :existing-concepts]
         :writes [:extraction-reasoning :raw-concepts]
         :retry {:max-attempts 2 :backoff-ms [200 1000]})
@@ -495,7 +496,7 @@ Few-shot learning enables learning from very few examples.")
         ;; Branch 1: Quality is good, skip refinement
         (sheet/sequence "skip-refinement"
           (sheet/condition "quality-ok"
-            :check {:key "quality" :op :equals :value "good"}))
+            :check {:key :quality :op :equals :value "good"}))
 
         ;; Branch 2: Apply auto-fixes
         (sheet/code "apply-auto-fixes"
@@ -530,8 +531,10 @@ Few-shot learning enables learning from very few examples.")
 
 (defn build-taxonomy-pipeline!
   "Build the taxonomy pipeline workflow. Returns sheet-id."
-  [context]
-  (sheet/build-workflow! context taxonomy-pipeline))
+  ([context] (build-taxonomy-pipeline! context nil))
+  ([context model]
+   (sheet/build-workflow! context
+                          (model-pinning/pin-model taxonomy-pipeline model))))
 
 (defn run-taxonomy-pipeline
   "Run the taxonomy pipeline with given inputs.
@@ -561,6 +564,7 @@ Few-shot learning enables learning from very few examples.")
                   :output-format "turtle"})]
     (if (= :success (:status result))
       {:status :success
+       :trace-id (:trace-id result)
        :concepts (get-in result [:outputs :concepts])
        :relationships (get-in result [:outputs :relationships])
        :top-concepts (get-in result [:outputs :top-concepts])
@@ -570,6 +574,7 @@ Few-shot learning enables learning from very few examples.")
                     :suggestions (get-in result [:outputs :suggestions])}
        :skos-output (get-in result [:outputs :skos-output])}
       {:status :failed
+       :trace-id (:trace-id result)
        :error (:error result)})))
 
 (defn run-demo

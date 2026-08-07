@@ -71,6 +71,7 @@
     [:val-overlap-floor {:default 5} :int]
     [:skip-perfect-score {:default true} :boolean]
     [:perfect-score {:optional true} [:maybe :double]]
+    [:pause-after-proposal? {:optional true :default false} :boolean]
     [:frontier-type {:default :instance} [:enum :instance :objective :hybrid :cartesian]]]
 
    ;; Python-compatible state structure
@@ -102,7 +103,8 @@
               [:crossover-rate :double]
               [:val-overlap-floor {:optional true} :int]
               [:skip-perfect-score {:optional true} :boolean]
-              [:perfect-score {:optional true} [:maybe :double]]]]
+              [:perfect-score {:optional true} [:maybe :double]]
+              [:pause-after-proposal? {:optional true} :boolean]]]
     [:trainset-size :int]
     [:valset-size :int]
     [:started-at :any]]
@@ -188,6 +190,65 @@
     [:mutation-reason :string]
     [:proposed-at :any]]
 
+   :gepa/proposer-call-completed
+   [:map
+    [:optimization-id :uuid]
+    [:parent-candidate-id :uuid]
+    [:component :string]
+    [:call-id :uuid]
+    [:provider :keyword]
+    [:model :string]
+    [:usage [:map
+             [:prompt-tokens :int]
+             [:completion-tokens :int]
+             [:total-tokens :int]]]
+    [:prompt :string]
+    [:response :string]
+    [:prompt-sha256 :string]
+    [:response-sha256 :string]
+    [:completed-at :any]]
+
+   :gepa/optimization-resumed
+   [:map
+    [:optimization-id :uuid]
+    [:resumed-at :any]]
+
+   :gepa/task-call-completed
+   [:map
+    [:optimization-id :uuid]
+    [:call-id :uuid]
+    [:role :keyword]
+    [:example-index :int]
+    [:trace-id :uuid]
+    [:output :map]
+    [:score :double]
+    [:feedback {:optional true} [:maybe :string]]
+    [:model {:optional true} [:maybe :string]]
+    [:usage {:optional true} [:maybe :map]]
+    [:completed-at :any]]
+
+   :gepa/proposal-ready
+   [:map
+    [:optimization-id :uuid]
+    [:proposal-id :uuid]
+    [:parent-id :uuid]
+    [:proposed-instructions [:map-of :string :string]]
+    [:component-updated :string]
+    [:subsample-indices [:vector :int]]
+    [:iteration :int]
+    [:ready-at :any]]
+
+   :gepa/winner-applied
+   [:map
+    [:optimization-id :uuid]
+    [:candidate-id :uuid]
+    [:sheet-id :uuid]
+    [:source-version :int]
+    [:target-version :int]
+    [:source-fingerprint :string]
+    [:target-fingerprint :string]
+    [:applied-at :any]]
+
    ;; NEW: Subsample evaluation events (Python GEPA parity - subsample-first optimization)
    ;; These track the evaluation of PROPOSED instructions before creating a candidate
    :gepa/subsample-evaluation-started
@@ -207,6 +268,7 @@
     [:proposed-instructions [:map-of :string :string]]
     [:component-updated :string]
     [:subsample-indices [:vector :int]]
+    [:iteration {:optional true} :int]
     [:parent-scores [:vector :double]]    ;; Parent's scores on same subsample
     [:proposed-scores [:vector :double]]  ;; New instructions' scores
     [:parent-sum :double]
@@ -282,7 +344,8 @@
               [:crossover-rate {:optional true :default 0.3} :double]
               [:val-overlap-floor {:optional true :default 5} :int]
               [:skip-perfect-score {:optional true :default true} :boolean]
-              [:perfect-score {:optional true} [:maybe :double]]]]
+              [:perfect-score {:optional true} [:maybe :double]]
+              [:pause-after-proposal? {:optional true :default false} :boolean]]]
     [:inherit-from-previous {:optional true :default true} :boolean]]  ;; Auto-inherit toggle
 
    :gepa/create-candidate
@@ -320,6 +383,7 @@
     [:proposed-instructions [:map-of :string :string]]
     [:component-updated :string]
     [:subsample-indices [:vector :int]]
+    [:iteration :int]
     [:parent-scores [:vector :double]]
     [:proposed-scores [:vector :double]]
     [:accepted? :boolean]
@@ -342,6 +406,60 @@
     [:optimization-id :uuid]
     [:candidate-id :uuid]
     [:scores [:vector :double]]]
+
+   :gepa/record-proposer-call
+   [:map
+    [:optimization-id :uuid]
+    [:parent-candidate-id :uuid]
+    [:component :string]
+    [:call-id :uuid]
+    [:provider :keyword]
+    [:model :string]
+    [:usage [:map
+             [:prompt-tokens :int]
+             [:completion-tokens :int]
+             [:total-tokens :int]]]
+    [:prompt :string]
+    [:response :string]
+    [:prompt-sha256 :string]
+    [:response-sha256 :string]]
+
+   :gepa/mark-optimization-resumed
+   [:map
+    [:optimization-id :uuid]]
+
+   :gepa/record-task-call
+   [:map
+    [:optimization-id :uuid]
+    [:call-id :uuid]
+    [:role :keyword]
+    [:example-index :int]
+    [:trace-id :uuid]
+    [:output :map]
+    [:score :double]
+    [:feedback {:optional true} [:maybe :string]]
+    [:model {:optional true} [:maybe :string]]
+    [:usage {:optional true} [:maybe :map]]]
+
+   :gepa/record-proposal-ready
+   [:map
+    [:optimization-id :uuid]
+    [:proposal-id :uuid]
+    [:parent-id :uuid]
+    [:proposed-instructions [:map-of :string :string]]
+    [:component-updated :string]
+    [:subsample-indices [:vector :int]]
+    [:iteration :int]]
+
+   :gepa/record-winner-application
+   [:map
+    [:optimization-id :uuid]
+    [:candidate-id :uuid]
+    [:sheet-id :uuid]
+    [:source-version :int]
+    [:target-version :int]
+    [:source-fingerprint :string]
+    [:target-fingerprint :string]]
 
    :gepa/propose-mutation
    [:map

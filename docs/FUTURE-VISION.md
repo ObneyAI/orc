@@ -29,6 +29,9 @@ This document captures the comprehensive vision for evolving ORC (behavior tree 
 | **Rolling average monitoring** — automatic metric tracking | ~~NOT built~~ | **Shipped** — `get-node-rolling-metrics`, `get-tree-rolling-metrics` in `orc-service`; auto-threshold alerts and training triggers remain forward-looking |
 | **Tree self-description** — trees describe what they can solve | ~~NOT built~~ | **Shipped** — see [LIVING-DESCRIPTIONS.md](LIVING-DESCRIPTIONS.md), `components/ontology/` |
 | **Tree library/ontology** — searchable library of proven trees | ~~NOT built~~ | **Shipped** — see [ONTOLOGY.md](ONTOLOGY.md), `components/ontology/` (tree profiles, semantic search, RRF + ColBERT hybrid retrieval) |
+| **Restart-safe execution and telemetry isolation** | NOT in the original roadmap | **Shipped** — durable frontier recovery plus bounded, failure-isolated telemetry export; see [ORC-SERVICE-GUIDE.md](ORC-SERVICE-GUIDE.md) |
+| **Operational GEPA publication** | NOT in the original roadmap | **Shipped** — interrupted-run resume and explicit version-pinned winner application; see [GEPA-GUIDE.md](GEPA-GUIDE.md) |
+| **Stable ColBERT deployment aliases** | NOT in the original roadmap | **Shipped** — atomic index activation and alias-based search; see [COLBERT-INTEGRATION.md](COLBERT-INTEGRATION.md) |
 | **Conversational debugging** — "talk to traces" | NOT built | **Still not shipped** |
 | **Personality layer** — customer-facing message filtering | NOT built | **Still not shipped** |
 
@@ -666,7 +669,9 @@ This phase builds on the basic failure taxonomy (4.1) to create a comprehensive 
 
 ## Quick Reference: What To Build Next
 
-When you're stuck, check which phase you're in and what's next:
+This sequence records the original dependency plan; it is not the current work
+queue. Items explicitly marked shipped above are already available. For current
+status, use [COMPONENT-MAP.md](COMPONENT-MAP.md) and the component guides.
 
 1. **Phase 1 (GEPA):** Reflection sheet → Instruction proposals → Pareto frontier → A/B testing
 2. **Phase 2 (Monitoring):** Rolling metrics → Thresholds → Alerts → Auto-triggers
@@ -677,11 +682,9 @@ When you're stuck, check which phase you're in and what's next:
 7. **Phase 5 (Debug):** Debug agent → Pattern classifier → Judge adequacy
 8. **Phase 6 (Experience):** Skills compiler → Personality layer
 
-**Start with Phase 1** - everything else builds on GEPA working.
-
-**Phase 4a (Ontology)** can begin after Phase 4.1 (basic failure taxonomy) is complete. It runs in parallel with the rest of Phase 4 and Phase 5, providing increasingly valuable context to tree builders as the ontology grows.
-
-**Phase 4b (ColBERT)** can begin after Phase 4a establishes tree profiles. It adds ColBERT as a third retrieval signal to the existing RRF hybrid search, enabling superior semantic matching for few-shot retrieval and domain-specific training.
+GEPA, the ontology, and pure-JVM ColBERT are shipped foundations. Remaining work
+should be selected from the genuinely unshipped portions of the roadmap—such as
+conversational debugging, automated monitoring actions, and the experience layer—
+rather than restarting those completed phases.
 
 **Dynamic Executor Generation (Complete):** This foundational infrastructure is already implemented in MCP Sheet Builder. All tree builders (Skills→Trees, Ontology-enhanced, GEPA) will reuse this pattern for generating and persisting code node executors.
-

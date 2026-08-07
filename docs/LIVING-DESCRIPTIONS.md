@@ -128,6 +128,10 @@ SEMANTIC RETRIEVAL
 The consolidator's reflection input was extended to include judge scores alongside raw execution events. Verified live on `legal-issue-detection` multi-cycle:
 
 - **Per-event evaluator runtime** (`components/evaluation/src/.../core/judge_runtime.clj`) subscribes to `:sheet/node-execution-completed` and fires attached judges (default + custom) in parallel via futures with a 60s per-judge timeout. The opt-in gate is `get-living-description-enabled?` (lines 559, 582, 723). When on, repl-researcher nodes get 5 default judges auto-attached: heuristic-structural + grounding + reasoning + completeness + instruction-following (`judge_runtime.clj:499-508`).
+- **Auditable model evidence** — LLM-authored description updates and rejections
+  persist model provenance with the event, including provider/model identity and
+  available usage metadata. Replaying events reconstructs the recorded decision;
+  it does not silently ask the current model to recreate history.
 - **Tier-1 judge scores** (ADR 0011): judge scores use the tier-1 discrete 1–5 band design. Each `:judge/score-emitted` `:score` is derived deterministically from a discrete band via `level->unit-score` in `scale.clj` — never self-reported as a float. The richer `:level`/`:reasoning` fields ride along; the no-run-through gate means a structured-output regression errors loudly rather than feeding the consolidator a silent 0. See [JUDGE-ARCHITECTURE.md](JUDGE-ARCHITECTURE.md) and [`EVALUATION-COMPONENT.md`](EVALUATION-COMPONENT.md#tier-1-judge-model-2026-06-decoupled-discrete-scale--reason-before-score--all-four-llm-judges).
 - **Score events** (`:judge/score-emitted`) land in the event store tagged with `[:sheet :tick :node]`.
 - **Consolidator joins them** via `gather-recent-tree-class-events`: per-observation `:judge-scores` from the recent window + `:judge-averages` per judge across the target's lifetime in `:aggregate-metrics`.

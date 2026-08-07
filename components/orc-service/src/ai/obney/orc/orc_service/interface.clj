@@ -15,6 +15,7 @@
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             ;; Live execution streaming
             [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [ai.obney.orc.orc-service.core.telemetry-exporter :as telemetry-exporter]
             [ai.obney.orc.orc-service.interface.stream-schemas :as stream-schemas]
             ;; DSL for workflow building
             [ai.obney.orc.orc-service.core.dsl :as dsl]
@@ -39,6 +40,11 @@
 (def block! block/block!)
 (def blocking-condition? block/blocking-condition?)
 (def block-payload block/block-payload)
+
+;; Failure-isolated durable-event export
+(def start-telemetry-exporter! telemetry-exporter/start!)
+(def telemetry-exporter-stats telemetry-exporter/stats)
+(def stop-telemetry-exporter! telemetry-exporter/stop!)
 
 ;; Sheet functions
 (def get-sheet rm/get-sheet)
@@ -99,6 +105,8 @@
 (def value-log-latest-values value-log/latest-values)
 (def value-log-input-seeds-by-iteration value-log/input-seeds-by-iteration)
 (def value-log-read-tick-events value-log/read-tick-events)
+(def value-log-resolve-reads value-log/resolve-reads)
+(def value-log-resolve-writes value-log/resolve-writes)
 
 ;; =============================================================================
 ;; Synchronous Execution
@@ -137,6 +145,11 @@
      (sheet/execute ctx sheet-id {\"student-id\" student-id} :timeout-ms 60000)
      (sheet/execute ctx sheet-id inputs :use-version 2)  ;; Execute specific version"
   runtime/execute)
+
+(def resume-in-progress!
+  "Resume abandoned leaf frontiers after processors restart against the same
+   durable event store. Repeated calls are idempotent."
+  runtime/resume-in-progress!)
 
 ;; =============================================================================
 ;; Live Streaming (ephemeral observation layer — see docs/STREAMING.md)

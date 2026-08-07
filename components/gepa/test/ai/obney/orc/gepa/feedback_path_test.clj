@@ -32,6 +32,35 @@
   {:score 0.0
    :feedback "completeness (0.00): the response is the literal word and answers nothing"})
 
+(deftest real-subsample-result-preserves-iteration-correlation
+  (testing "the real evaluation path cannot lose the proposal iteration"
+    (let [optimization-id (random-uuid)
+          parent-id (random-uuid)
+          recorded (atom nil)
+          event {:optimization-id optimization-id
+                 :parent-id parent-id
+                 :proposed-instructions {"responder" "improved"}
+                 :component-updated "responder"
+                 :subsample-indices [0]
+                 :iteration 7}]
+      (with-redefs [rm/get-optimization-summary
+                    (constantly {:sheet-id (random-uuid)
+                                 :config {:skip-perfect-score false}})
+                    rm/get-trainset (constantly [{"input" "ALPHA"}])
+                    rm/get-candidate
+                    (constantly {:instructions {"responder" "original"}})
+                    tp/evaluate-candidate-on-subsample
+                    (fn [_ _ instructions _ _ _ _]
+                      {:scores [(if (= "improved" (get instructions "responder"))
+                                  1.0 0.0)]
+                       :metric-calls 1})
+                    tp/run-command! (fn [_ command] (reset! recorded command))]
+        (tp/on-subsample-evaluation-started
+          {:event event :gepa/metric-fn (constantly 0.0)})
+        (is (= :gepa/record-subsample-result (:command/name @recorded)))
+        (is (= 7 (:iteration @recorded))
+            "result correlation must survive the real evaluator branch")))))
+
 (deftest rich-feedback-threads-through-wired-loop
   (testing "candidate-evaluated carries :feedbacks and reflective dataset uses them"
     (tu/with-test-context [ctx]

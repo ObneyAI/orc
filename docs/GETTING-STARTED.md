@@ -270,6 +270,20 @@ The `:status` field is one of `:success`, `:failure`, or `:timeout`.
 `:outputs` is the full blackboard snapshot after the tree completes.
 `:duration-ms` is wall-clock time for the full execution.
 
+For a durable deployment, rebuild the Grain processors against the same event
+store and then recover any leaf work abandoned by the old process:
+
+```clojure
+(orc/resume-in-progress! ctx)
+;; => [{:tick-id ... :node-id ... :resumed? true ...} ...]
+```
+
+Recovery never re-enqueues a durably completed leaf, and recovery starts point
+back to the original start event. Calling it repeatedly is therefore safe. It
+recovers execution; it does not replay the ephemeral live stream. See
+[ORC-SERVICE-GUIDE.md](ORC-SERVICE-GUIDE.md#restart-recovery) and
+[STREAMING.md](STREAMING.md#ordering-loss-and-reconnection).
+
 ### Seeing the tree
 
 `print-tree` prints the tree structure without running it:

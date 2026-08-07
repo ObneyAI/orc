@@ -59,22 +59,22 @@
 
    Returns: [{:source1-uri :source2-uri :similarity-score 1.0 :match-type 'exact'}]"
   [concepts]
-  (let [;; Build normalized-label -> [concepts with that label]
-        by-label (group-by #(normalize-label (:label %)) concepts)]
-
-    ;; For each label group, find cross-source pairs
-    (->> (vals by-label)
-         (mapcat (fn [same-label-concepts]
-                   ;; Generate pairs from different sources
-                   (for [c1 same-label-concepts
-                         c2 same-label-concepts
-                         :when (and (concepts-from-different-sources? c1 c2)
-                                    ;; Avoid duplicate pairs (c1,c2) and (c2,c1)
-                                    (neg? (compare (:uri c1) (:uri c2))))]
-                     {:source1-uri (:uri c1)
-                      :source2-uri (:uri c2)
-                      :similarity-score 1.0
-                      :match-type "exact"})))
+  (let [normalized-labels
+        (fn [concept]
+          (->> (cons (:label concept) (:alt-labels concept))
+               (keep normalize-label)
+               (remove str/blank?)
+               set))]
+    (->> (for [c1 concepts
+               c2 concepts
+               :when (and (concepts-from-different-sources? c1 c2)
+                          (neg? (compare (:uri c1) (:uri c2)))
+                          (seq (set/intersection (normalized-labels c1)
+                                                 (normalized-labels c2))))]
+           {:source1-uri (:uri c1)
+            :source2-uri (:uri c2)
+            :similarity-score 1.0
+            :match-type "exact"})
          vec)))
 
 ;; =============================================================================
@@ -278,13 +278,18 @@
              :or {similarity-threshold 0.85
                   emit-owl-sameAs? true
                   existing-uris #{}}}]
-  (let [;; Step 1: Type-based blocking
+  (let [;; Exact label/alias equality is strong enough to cross a noisy model's
+        ;; entity-type boundary. Semantic comparisons remain type-blocked.
+        exact-matches (find-exact-matches-in-block concepts)
+        exact-pairs (set (map (fn [{:keys [source1-uri source2-uri]}]
+                                #{source1-uri source2-uri})
+                              exact-matches))
         by-type (group-by-entity-type concepts)
-
-        ;; Step 2: Resolve within each block
-        all-matches (->> (vals by-type)
-                         (mapcat #(resolve-within-block % similarity-threshold))
-                         vec)
+        semantic-matches (->> (vals by-type)
+                              (mapcat #(find-semantic-matches-in-block
+                                        % similarity-threshold exact-pairs))
+                              vec)
+        all-matches (into exact-matches semantic-matches)
 
         ;; Step 3: Canonical URI mapping (Union-Find)
         uri-groups (group-matched-uris all-matches)
@@ -320,15 +325,8 @@
      config - Same as resolve-within-batch
 
    Returns: Same as resolve-within-batch"
-  [new-concepts existing-labels existing-uris config]
-  ;; Build pseudo-concepts for existing labels to enable matching
-  (let [existing-concepts (map-indexed
-                            (fn [idx label]
-                              {:uri (str "existing:" idx)
-                               :label label
-                               :entity-type "unknown"
-                               :source-id "existing"})
-                            existing-labels)
+  [new-concepts existing-concepts existing-uris config]
+  (let [existing-concepts (mapv #(assoc % :source-id ::existing) existing-concepts)
         all-concepts (concat new-concepts existing-concepts)]
     (resolve-within-batch all-concepts
                           (assoc config :existing-uris existing-uris))))
@@ -364,12 +362,12 @@
   "Reduce function for canonical-uri-map read model.
    State: {original-uri -> canonical-uri}"
   [state event]
-  (case (:type event)
+  (case (or (:event/type event) (:type event))
     :evolutionary/entities-resolved
-    (merge state (:canonical-map (:body event)))
+    (merge state (:canonical-map (or (:body event) event)))
 
     :evolutionary/canonical-uri-assigned
-    (let [{:keys [original-uri canonical-uri]} (:body event)]
+    (let [{:keys [original-uri canonical-uri]} (or (:body event) event)]
       (assoc state original-uri canonical-uri))
 
     ;; Default

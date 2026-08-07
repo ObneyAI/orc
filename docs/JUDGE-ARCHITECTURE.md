@@ -322,6 +322,11 @@ clj -M:dev -e '
 | `:score` | `double [0,1]` | Weighted aggregate across all dimension judges |
 | `:feedback` | `string` | Human-readable summary with dimension-level breakdowns (weakest first in GEPA path) |
 | `:dimensions` | `vector` | Per-dimension `{:name :weight :score :feedback}` |
+| `:model-provenance` | `map`, optional | Provider, model identity, and available token/cost metadata for the real model call that produced the judgment |
+
+When an LLM judge runs, ORC carries `:model-provenance` into the durable score
+event. This lets an operator distinguish a quality change from a provider/model
+change after the fact. Deterministic judges may omit the field.
 
 ### Per-judge result shape (grounding example)
 

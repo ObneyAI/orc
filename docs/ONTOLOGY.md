@@ -200,6 +200,28 @@ Given CSV, JSON, SQL, or plain text, the builder uses ORC behavior trees to LLM-
 
 **`ontology-id` isolation**: each call returns a fresh `:ontology-id` UUID. All events for that graph are tagged with that UUID. Multiple graphs coexist in one event store — pass `:ontology-id` to scoped queries to isolate results. See [Known issues](#known-issues) below for the current BFS scoping limitation.
 
+**Tenant isolation is an outer boundary.** Every evolutionary public query reads
+with `:tenant-id` from `ctx`; equal ontology, source, or URI identifiers in a
+shared event store never widen a query into another tenant. This includes
+aggregate statistics:
+
+```clojure
+(evolutionary/get-statistics ctx ontology-id)
+;; => {:ontology-id ontology-id
+;;     :build-count 3
+;;     :concept-count 127
+;;     :latest-build {...}}
+```
+
+Keep `:tenant-id` on every production context. Omitting it requests the event
+store's unscoped/default behavior and should be reserved for explicitly
+single-tenant deployments and administrative tooling.
+
+Model-derived source extractions and Living Description versions retain model
+provenance (trace identity, resolved model or models, call evidence, and usage
+when available), so replay and audit do not need to infer which model produced
+an artifact.
+
 ## Overview
 
 The ontology component enables:

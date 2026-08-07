@@ -127,11 +127,7 @@ To edit a seed:
    `{:target-id <id> :body {...}}`.
 2. Run the ontology test suite to verify round-trip + invariants:
    ```bash
-   clj -M:dev:test -e "(require '[clojure.test :as t]) \
-     (require '[ai.obney.orc.ontology.description-events-test]) \
-     (require '[ai.obney.orc.ontology.seeds-test]) \
-     (t/run-tests 'ai.obney.orc.ontology.description-events-test \
-                  'ai.obney.orc.ontology.seeds-test)"
+   clojure -M:poly test brick:ontology
    ```
 3. Live-verify by re-running a bench task that touches the seed.
 

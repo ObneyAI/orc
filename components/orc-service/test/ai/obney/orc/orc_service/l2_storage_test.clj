@@ -128,7 +128,7 @@
      :payload-bytes (* scale (count payload-unit))
      :l2-total (h/l2-write-bytes ctx)
      :l2-tick-ctx (h/l2-write-bytes ctx "tick-execution-contexts")
-     :entry-bytes (h/tick-context-l2-bytes ctx sheet-id tick-id 3)}))
+     :entry-bytes (h/tick-context-l2-bytes ctx sheet-id tick-id 4)}))
 
 ;; =============================================================================
 ;; Baseline report
@@ -162,7 +162,7 @@
     ;; values, whereas this cannot.
     (h/with-async-test-context [ctx {:count-cache? true}]
       (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
-            stored (h/tick-context-l2-entry ctx sheet-id tick-id 3)
+            stored (h/tick-context-l2-entry ctx sheet-id tick-id 4)
             bb (some-> stored :data (get tick-id) :blackboard)]
         (is (some? stored) "expected a stored tick-execution-contexts entry")
         (is (seq bb) "expected a stored blackboard")
@@ -177,7 +177,7 @@
     ;; It cannot be satisfied by relocating a value to a different key.
     (h/with-async-test-context [ctx {:count-cache? true}]
       (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
-            raw (h/l2-entry-raw ctx "tick-execution-contexts" 3
+            raw (h/l2-entry-raw ctx "tick-execution-contexts" 4
                                 {:tags #{[:tick tick-id]}} sheet-id)]
         (is (some? raw) "expected a stored entry")
         (is (not (h/bytes-contain? raw payload-unit))
@@ -190,7 +190,7 @@
     ;; the stored :profile, so every key that has a value needs one.
     (h/with-async-test-context [ctx {:count-cache? true}]
       (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
-            stored (h/tick-context-l2-entry ctx sheet-id tick-id 3)
+            stored (h/tick-context-l2-entry ctx sheet-id tick-id 4)
             bb (some-> stored :data (get tick-id) :blackboard)
             resolved (rm/get-tick-blackboard ctx tick-id)]
         (doseq [[k e] bb]

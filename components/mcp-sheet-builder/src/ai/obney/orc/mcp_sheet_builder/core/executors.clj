@@ -28,7 +28,10 @@
                       (some-> (get-in effective-context [:node :name])
                               (str/replace-first #"^call-" "")))
         mcp-session (:mcp-session effective-context)
-        raw-args (dissoc inputs :tool-name)
+        ;; Optional blackboard reads are represented as nil when absent. JSON
+        ;; Schema optional means the member is omitted, not sent as explicit
+        ;; null, so strip nils before invoking the MCP server.
+        raw-args (into {} (remove (comp nil? val)) (dissoc inputs :tool-name))
         tool-args (if (and (= 1 (count raw-args)) (map? (val (first raw-args))))
                     (val (first raw-args))
                     raw-args)
