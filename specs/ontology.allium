@@ -234,6 +234,23 @@ config {
     enforcement_confidence_floor: Decimal = 0.6
     validation_support_threshold: Integer = 5
     description_recurrence_threshold: Integer = 2
+
+    -- Harvest promotion. These three were REFERENCED BY NAME in
+    -- PromoteWellScoredClass but never declared here (weed-2), so the rules read
+    -- as though they were configured while the values lived only in code.
+    -- Declaring them makes the drift visible and checkable.
+    promotion_occurrence_threshold: Integer = 10
+    maximum_shape_ratio: Decimal = 0.5
+    -- The window `consistently_qualified` evaluates over. MEASURED consequence
+    -- of its absence (grill GR-5): with the scalar lifetime mean the code uses
+    -- instead, a class with 20 occurrences and FOUR catastrophic failures still
+    -- promotes, at exactly 0.800. A mean cannot express "has qualified
+    -- repeatedly" — only a window can, which is why no retuning of the
+    -- threshold could ever have fixed it.
+    consistency_window: Integer = 5
+    -- The floor EACH occurrence in the window must clear. Deliberately not a
+    -- mean over the window: that would reintroduce the same defect one level up.
+    consistency_floor: Decimal = 0.8
 }
 
 entity Ontology {
