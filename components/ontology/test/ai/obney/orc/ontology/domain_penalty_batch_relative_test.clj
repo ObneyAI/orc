@@ -25,10 +25,18 @@
 ;; Cycle 3: the new defaults + batch-relative-scores bounds
 ;; =============================================================================
 
-(deftest default-colbert-norm-is-batch-relative-with-32-ceiling
-  (testing "the shipped default: re-derived 32.0 ceiling + :batch-relative method"
-    (is (= {:max-score 32.0 :method :batch-relative}
-           (:colbert-norm dp/default-penalty-config)))))
+(deftest default-colbert-norm-is-batch-relative-with-a-derived-ceiling
+  ;; CC-17: the fixed ceiling IS colbert's maximum_query_tokens, which became
+  ;; configuration. Pinning 32.0 here would go stale the moment an operator
+  ;; retunes the limit (and is flatly wrong against the shipped 464 — every
+  ;; score would clamp to 1.0). :max-score nil means "the colbert backend's own
+  ;; derived ceiling"; the DEFAULT method is :batch-relative, which is
+  ;; dimensionless and ignores it entirely.
+  (testing "the shipped default: derived ceiling + :batch-relative method"
+    (is (= {:max-score nil :method :batch-relative}
+           (:colbert-norm dp/default-penalty-config)))
+    (is (nil? (:max-score (:colbert-norm dp/default-penalty-config)))
+        "no frozen MaxSim ceiling may be pinned in the ontology component")))
 
 (deftest batch-relative-scores-bounds
   (testing "empty scores => empty map (no fabricated scores)"

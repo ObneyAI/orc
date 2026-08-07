@@ -124,10 +124,15 @@
      :colbert-norm    — normalization opts ({:max-score :method}) for the
                         :colbert scorer, applied to both avoid + good so
                         margin/cap are scale-stable. DEFAULT (JVM-ColBERT
-                        Slice 3): {:max-score 32.0 :method :batch-relative}.
-                        32.0 is the re-derived theoretical MaxSim ceiling for
-                        the answerai checkpoint (query_maxlen unit vectors —
-                        P-0 findings); :batch-relative normalizes each guard by
+                        Slice 3, amended by CC-17): {:max-score nil :method
+                        :batch-relative}. :max-score nil means 'the colbert
+                        backend's own derived ceiling' — the MaxSim bound IS
+                        maximum_query_tokens, which CC-17 turned into
+                        configuration, so a literal 32.0 pinned here would go
+                        stale the moment an operator retunes the limit (and
+                        does go stale against the shipped 464: every real score
+                        would clamp to 1.0). :batch-relative normalizes each
+                        guard by
                         the MAX raw score within the candidate's own rerank
                         call (batch-relative-scores below) instead of the
                         fixed ceiling, because the checkpoint's ~30/32
@@ -148,9 +153,37 @@
    ;; Known limit (Slice-4 gate report §3): live-enriched force-fits
    ;; (+0.0026) are inseparable from clean by ANY margin value — restoring
    ;; live-corpus bite is guard-sharpening work (EL-5/C-3), not knob tuning.
+   ;; CC-17 re-derivation of :margin against the RELOCATED MaxSim ceiling
+   ;; (32 -> 464 query rows). The default :batch-relative normalization divides
+   ;; by the call's OWN max raw score, so it is DIMENSIONLESS: moving the
+   ;; ceiling cannot rescale the margin, and 0.010 is therefore not
+   ;; arithmetically invalidated. MEASURED on 20 real living-description
+   ;; candidates against a real consolidator signature
+   ;; (doc/build-timeline/evidence/cc17):
+   ;;     limit  32: contrast p50 -0.0082, p95 +0.00277, max +0.00392 -> fires 0/20
+   ;;     limit 464: contrast p50 -0.0130, p95 -0.00794, max -0.00686 -> fires 0/20
+   ;; So the knob's BEHAVIOUR is unchanged (inert on live-enriched candidates
+   ;; at both limits) — but the contrast distribution shifts ~0.005 MORE
+   ;; NEGATIVE, deepening the inertness the Slice-4 gate report §3 already
+   ;; recorded. Retuning it here would be fitting a knob to data that says the
+   ;; guards are not separable; the fix stays guard-sharpening (EL-5/C-3).
+   ;;
+   ;; THE OTHER HALF, stated plainly because it IS a regression: on the four
+   ;; SHORT synthetic probe sets (colbert batch_relative_evidence_test) the same
+   ;; move compresses the batch-relative contrast ~75x —
+   ;;     force-fit +0.0160 @32  ->  +0.000211 @464
+   ;;     cleanest   +0.0025 @32  ->  -0.001544 @464
+   ;; so on THAT family the force-fit falls from 1.6x ABOVE this margin to ~47x
+   ;; BELOW it and the penalty stops firing. The separability ORDER survives
+   ;; (the force-fit is still the only positive margin; a test now pins that).
+   ;; NOT retuned here because :margin is a gate-approved calibration (ADR 0016
+   ;; / Slice-4 gate) and re-fitting it to four short synthetic probes would be
+   ;; fitting to a regime the measured production corpus does not contain — its
+   ;; SHORTEST real query is 150 word-piece tokens. Retuning :margin AND
+   ;; :penalty-scale for the new scale is a gate decision, not a subagent's.
    :margin 0.010
    :penalty-cap 0.6
-   :colbert-norm {:max-score 32.0 :method :batch-relative}})
+   :colbert-norm {:max-score nil :method :batch-relative}})
 
 ;; =============================================================================
 ;; The pure penalty arithmetic (DETERMINISTIC — unit-tested hard). UNCHANGED.

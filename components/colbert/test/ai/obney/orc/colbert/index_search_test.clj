@@ -46,10 +46,12 @@
 (use-fixtures :each with-temp-index-root)
 
 (defn- stub-index
-  "A read-model row as get-index would return it for a just-created index."
-  [{:keys [index-id index-path]}]
+  "A read-model row as get-index would return it for a just-created index —
+   INCLUDING its IndexConfiguration, which governs its query encoding (CC-17)."
+  [{:keys [index-id index-path config]}]
   {:index-id index-id
    :index-path index-path
+   :config config
    :status :active})
 
 (defmacro with-stubbed-read-model
@@ -70,14 +72,23 @@
 ;; =============================================================================
 
 (deftest search-reproduces-python-golden-rankings-and-scores
+  ;; CC-17: the golden index is CREATED at the reference configuration — the
+  ;; maximum_query_tokens the fixtures were captured under, recorded in
+  ;; token_ids.json (PROVENANCE.md). The IndexConfiguration then governs every
+  ;; search of this index, so reference parity is a property of the index, not
+  ;; of a global constant.
   (let [golden (support/read-golden "python_scores.json")
+        reference-limit (get (support/read-golden "token_ids.json") "query_maxlen")
         doc-ids (vec (sort (keys (get golden "documents"))))
         docs (mapv #(get-in golden ["documents" %]) doc-ids)
         result (operations/create-index! {}
                  {:collection docs
                   :document-ids doc-ids
                   :index-name "golden-6"
-                  :split-documents? false})]
+                  :split-documents? false
+                  :maximum-query-tokens reference-limit})]
+    (is (= reference-limit (get-in result [:config :maximum-query-tokens]))
+        "the index records the configuration its searches will use")
     (is (= 6 (:num-passages result)) "6 unsplit docs -> 6 passages")
     (with-stubbed-read-model result
       (doseq [[qid qtext] (get golden "queries")]
@@ -234,8 +245,13 @@
     (is (= model-store/checkpoint (:model-name result))
         "the default model-name is the encoder checkpoint actually used")
     (is (= "contract-check" (:index-name result)))
+    ;; CC-17: IndexConfiguration gained maximum_query_tokens — the query-side
+    ;; counterpart of :max-document-length. Absent from create-index! opts it
+    ;; resolves to the configured default (encoder/resolve-maximum-query-tokens).
     (is (= {:split-documents? false
             :max-document-length 256
+            :maximum-query-tokens (encoder/resolve-maximum-query-tokens
+                                   (encoder/get-encoder (model-store/resolve-model-dir)) nil)
             :use-faiss? false}
            (:config result)))))
 
@@ -254,6 +270,8 @@
         "explicit nil model-name coalesces to the checkpoint default")
     (is (= {:split-documents? true
             :max-document-length 256
+            :maximum-query-tokens (encoder/resolve-maximum-query-tokens
+                                   (encoder/get-encoder (model-store/resolve-model-dir)) nil)
             :use-faiss? false}
            (:config result))
         "explicit nil split-documents?/max-document-length coalesce to defaults")

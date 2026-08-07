@@ -45,6 +45,7 @@
   (:require [ai.obney.orc.colbert.core.commands]
             [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.orc.colbert.core.encoder :as encoder]
+            [ai.obney.orc.colbert.core.model-store :as model-store]
             [ai.obney.orc.colbert.core.operations :as operations]
             [ai.obney.orc.colbert.core.queries]
             [ai.obney.orc.colbert.core.read-models :as read-models]
@@ -76,6 +77,11 @@
                              checkpoint actually used)
        :split-documents?   - Auto-split long docs (default: true)
        :max-document-length - Chunk size in tokens (default: 256)
+       :maximum-query-tokens - IndexConfiguration.maximum_query_tokens: the
+                             per-query row count searches of this index build,
+                             and its MaxSim ceiling (default: the configured
+                             limit). Recorded on :colbert/index-created and
+                             honoured by every later search of this index.
 
    Writes the versioned index artifact under the index root (default
    `.orc-colbert-indexes/` relative to cwd; override via
@@ -138,9 +144,45 @@
 
    Returns (snake_case keys):
      [{:content \"...\" :score 30.87 :rank 1 :document_id \"...\"
-       :document_metadata {...}}]"
+       :document_metadata {...}}]
+
+   The returned vector carries the query-truncation report as METADATA under
+   :query-truncation (see `query-truncation`) — the caller-visible signal on
+   this non-command path. Values are untouched."
   [ctx opts]
   (operations/search ctx opts))
+
+(defn maximum-query-tokens
+  "`IndexConfiguration.maximum_query_tokens` — the per-query row count the
+   encoder builds, and therefore the MaxSim ceiling. Resolution order:
+   explicit argument, then -Dcolbert.query.max-tokens, then the shipped
+   default, then the checkpoint's own query_maxlen."
+  ([] (maximum-query-tokens nil))
+  ([explicit]
+   (encoder/resolve-maximum-query-tokens
+    (encoder/get-encoder (model-store/resolve-model-dir)) explicit)))
+
+(defn query-truncation
+  "Is this query longer than the limit, and by how much?
+   (specs/colbert.allium `invariant OverlongQueriesTruncateVisibly`.)
+
+   A query over the limit is TRUNCATED, not rejected — the excess word-piece
+   tokens are discarded and retrieval proceeds against the prefix. A retrieval
+   key can never be matched against text the encoder never saw, so callers need
+   to be able to tell. Search and rerank stamp this same report on their audit
+   events (:colbert/search-performed / :colbert/rerank-performed) and return it
+   under :query-truncation.
+
+   Args:
+     ctx  - Context map
+     opts - {:query <string>
+             :maximum-query-tokens <int, optional — defaults to the configured
+                                    limit>}
+
+   Returns {:query-token-count :maximum-query-tokens :query-truncated?
+            :discarded-token-count}. Tokenizer-only — no ONNX inference."
+  [ctx opts]
+  (operations/query-truncation ctx opts))
 
 (defn rerank
   "Rerank documents in-memory (no index required).
@@ -156,9 +198,14 @@
        :query     - Query string (required)
        :documents - Vector of document strings to rerank (required)
        :k         - Number of results (default: all documents)
+       :maximum-query-tokens - Override the query row count / MaxSim ceiling
+                               for this call (default: the configured limit)
 
    Returns:
-     [{:content \"...\" :score 30.87 :rank 1}]"
+     [{:content \"...\" :score 30.87 :rank 1}]
+
+   The returned vector carries the query-truncation report as METADATA under
+   :query-truncation (see `query-truncation`). Values are untouched."
   [ctx opts]
   (operations/rerank ctx opts))
 
@@ -169,19 +216,25 @@
 (defn normalize-colbert-score
   "Normalize ColBERT score to 0-1 range.
 
-   The default ceiling 32.0 is the theoretical MaxSim bound for the
-   answerai-colbert-small-v1 checkpoint: query_maxlen (32) MASK-expanded query
-   rows, each unit-normed, so MaxSim <= 32.0. This normalizes raw scores for
-   RRF fusion with other retrieval signals (graph BFS, embeddings). NB: MASK
-   query expansion gives even unrelated pairs a high floor — score-CONTRAST
-   consumers should normalize relative to the scores in the same call
-   (see normalize-result-scores and the ontology domain-penalty's
-   :batch-relative method) rather than against the fixed ceiling.
+   The default ceiling is the theoretical MaxSim bound, which IS the configured
+   `IndexConfiguration.maximum_query_tokens`: that many MASK-expanded query
+   rows, each unit-normed, so MaxSim <= maximum_query_tokens. It was written as
+   a literal 32.0 while the limit was the checkpoint's own query_maxlen; CC-17
+   made the limit configuration, so the ceiling is DERIVED (see
+   `maximum-query-tokens` / operations/maxsim-ceiling).
+
+   This normalizes raw scores for RRF fusion with other retrieval signals
+   (graph BFS, embeddings). NB: MASK query expansion gives even unrelated pairs
+   a high floor — score-CONTRAST consumers should normalize relative to the
+   scores in the same call (see normalize-result-scores and the ontology
+   domain-penalty's :batch-relative method) rather than against the fixed
+   ceiling.
 
    Args:
-     score - Raw ColBERT score (typically ~[0, 32] for this checkpoint)
+     score - Raw ColBERT score (typically ~[0, maximum_query_tokens])
      opts - Options map:
-       :max-score - Maximum expected score for normalization (default: 32.0)
+       :max-score - Maximum expected score for normalization (default: the
+                    derived ceiling; an explicit nil also falls back to it)
        :method - Normalization method: :linear, :sigmoid (default: :linear)
 
    Returns:

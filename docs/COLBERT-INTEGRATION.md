@@ -89,7 +89,7 @@ This document describes the ColBERT signal in the ORC retrieval stack. ColBERT p
 
 ### Encoder checkpoint
 
-The encoder checkpoint is `answerdotai/answerai-colbert-small-v1` (Apache-2.0, 96-dim per-token embeddings), running as fp32 ONNX on **DJL OnnxRuntime** with **DJL HuggingFace tokenizers** (both pinned 0.31.1, matching the ontology component's DJL). Queries are MASK-expanded to `query_maxlen` 32; documents truncate at `doc_maxlen` 300. Every token row is unit-normalized inside the ONNX graph.
+The encoder checkpoint is `answerdotai/answerai-colbert-small-v1` (Apache-2.0, 96-dim per-token embeddings), running as fp32 ONNX on **DJL OnnxRuntime** with **DJL HuggingFace tokenizers** (both pinned 0.31.1, matching the ontology component's DJL). Queries are MASK-expanded to `IndexConfiguration.maximum_query_tokens` — **configuration** since CC-17, shipped default **464**, override with `-Dcolbert.query.max-tokens` or per index; the checkpoint's own `query_maxlen` 32 truncated 100% of this system's real queries (see `doc/build-timeline/evidence/cc17`). Documents truncate at `doc_maxlen` 300. Every token row is unit-normalized inside the ONNX graph.
 
 ### Exact MaxSim scoring
 
@@ -289,9 +289,19 @@ components/colbert/
 ;; === Score Normalization ===
 
 (defn normalize-colbert-score
-  "Normalize a raw MaxSim score to [0,1] against the checkpoint's
-   theoretical ceiling (query_maxlen 32 unit vectors => 32.0)."
+  "Normalize a raw MaxSim score to [0,1] against the theoretical ceiling,
+   which IS the configured maximum_query_tokens (that many unit vectors)."
   [score & {:keys [max-score method]}])
+
+(defn maximum-query-tokens
+  "The configured per-query row count / MaxSim ceiling."
+  ([] ...) ([explicit] ...))
+
+(defn query-truncation
+  "Was this query cut, and by how much?
+   {:query-token-count :maximum-query-tokens :query-truncated?
+    :discarded-token-count}"
+  [ctx {:keys [query maximum-query-tokens]}])
 
 (defn normalize-result-scores
   "Normalize a result batch relative to its own max score."
@@ -474,7 +484,7 @@ cosine did not. See
 
 ## Operational notes
 
-- **Score scale:** raw MaxSim scores for this checkpoint live in roughly [30, 32] with a theoretical ceiling of 32.0 (32 unit-normalized query rows). Rank fusion (RRF) is scale-free; score-*contrast* consumers should use batch-relative normalization (`normalize-result-scores`, or the domain penalty's `:batch-relative` method) rather than the fixed ceiling.
+- **Score scale:** the theoretical ceiling IS `maximum_query_tokens` unit-normalized query rows, so it moves with the configuration (464 by default since CC-17; raw scores then live in roughly [440, 460]). At the checkpoint's old `query_maxlen` 32 they lived in roughly [30, 32]. Rank fusion (RRF) is scale-free; score-*contrast* consumers should use batch-relative normalization (`normalize-result-scores`, or the domain penalty's `:batch-relative` method) rather than the fixed ceiling.
 - **Warm vs cold:** the first encoder use in a JVM pays a one-time model load (seconds); after that, small-corpus index builds and searches are milliseconds.
 - **Fine-tuning:** the JVM runtime is inference-only. If domain fine-tuning is ever wanted, the path is offline training in Python (e.g. PyLate) → ONNX export → served by this same JVM runtime. ORC ships no training surface.
 

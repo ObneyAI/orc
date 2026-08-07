@@ -75,43 +75,59 @@
    {:label "irrelevant-guards" :fires? false
     :task refactor-task :avoid irrelevant-avoid :good irrelevant-good}])
 
+(def reference-limit
+  "The maximum_query_tokens this Slice-3 evidence was captured at — the
+   checkpoint's own query_maxlen. CC-17 turned that into configuration and
+   moved the shipped default, so the historical comparison NAMES the
+   configuration it belongs to (the golden-fixture treatment). The
+   shipped-limit behaviour is asserted separately below."
+  32)
+
 (defn- probe-margins
   "ONE rerank call over avoid ++ good (the colbert-rerank-scores idiom), then
    the three normalization variants. Returns {:label :fires? :raw {...}
-   :margins {:linear-40 :linear-32 :batch-relative}}."
-  [{:keys [label fires? task avoid good]}]
+   :margins {:linear-loose :linear-ceiling :batch-relative}}.
+
+   CC-17: the two fixed-ceiling divisors are DERIVED from the limit under test,
+   not frozen at 40.0/32.0. The ceiling IS maximum_query_tokens; the 'loose'
+   variant keeps the historical 40/32 = 1.25x over-estimate so the comparison
+   means the same thing at any limit."
+  [limit {:keys [label fires? task avoid good]}]
   (let [docs (vec (distinct (concat avoid good)))
-        res (operations/rerank {} {:query task :documents docs})
+        res (operations/rerank {} {:query task :documents docs
+                                   :maximum-query-tokens limit})
         by-content (into {} (map (juxt :content :score)) res)
         a-raw (apply max (keep by-content avoid))
         g-raw (apply max (keep by-content good))
-        call-max (apply max (vals by-content))]
+        call-max (apply max (vals by-content))
+        ceiling (operations/maxsim-ceiling limit)
+        loose (* 1.25 ceiling)]
     {:label label
      :fires? fires?
      :raw {:avoid a-raw :good g-raw :call-max call-max}
-     :margins {:linear-40 (- (/ a-raw 40.0) (/ g-raw 40.0))
-               :linear-32 (- (min 1.0 (/ a-raw 32.0)) (min 1.0 (/ g-raw 32.0)))
+     :margins {:linear-loose (- (/ a-raw loose) (/ g-raw loose))
+               :linear-ceiling (- (min 1.0 (/ a-raw ceiling)) (min 1.0 (/ g-raw ceiling)))
                :batch-relative (- (/ a-raw call-max) (/ g-raw call-max))}}))
 
 (deftest batch-relative-evidence-on-the-real-encoder
-  (let [rows (mapv probe-margins probe-sets)]
+  (let [rows (mapv (partial probe-margins reference-limit) probe-sets)]
     ;; The evidence artifact — printed so every run carries the table.
     (println "\n=== SLICE 3 NORMALIZATION EVIDENCE (live answerai-colbert-small-v1) ===")
     (println (format "%-28s %10s %10s | %11s %11s %15s"
                      "probe set" "raw-avoid" "raw-good"
-                     "(a) /40 lin" "(b) /32 lin" "(c) batch-rel"))
+                     "(a) loose lin" "(b) ceil lin" "(c) batch-rel"))
     (doseq [{:keys [label raw margins]} rows]
       (println (format "%-28s %10.4f %10.4f | %+11.4f %+11.4f %+15.4f"
                        label (:avoid raw) (:good raw)
-                       (:linear-40 margins) (:linear-32 margins)
+                       (:linear-loose margins) (:linear-ceiling margins)
                        (:batch-relative margins))))
     (println)
     (testing "batch-relative widens |margin| beyond both fixed-ceiling variants on every set"
       (doseq [{:keys [label margins]} rows]
-        (is (> (Math/abs (:batch-relative margins)) (Math/abs (:linear-32 margins)))
-            (str label ": |batch-relative| > |/32 linear|"))
-        (is (> (Math/abs (:batch-relative margins)) (Math/abs (:linear-40 margins)))
-            (str label ": |batch-relative| > |/40 linear|"))))
+        (is (> (Math/abs (:batch-relative margins)) (Math/abs (:linear-ceiling margins)))
+            (str label ": |batch-relative| > |ceiling linear|"))
+        (is (> (Math/abs (:batch-relative margins)) (Math/abs (:linear-loose margins)))
+            (str label ": |batch-relative| > |loose linear|"))))
     (testing "no clear case inverts: margin signs agree across all three variants"
       (doseq [{:keys [label margins]} rows]
         (let [signs (map #(Math/signum (double %)) (vals margins))]
@@ -125,3 +141,46 @@
         (doseq [{:keys [label margins]} clean]
           (is (< (:batch-relative margins) 0.005)
               (str label ": must-not-fire margin stays below the force-fit band")))))))
+
+;; =============================================================================
+;; CC-17 — what the SHIPPED maximum_query_tokens does to this same evidence.
+;;
+;; MEASURED (do not assume). Raising the limit from the reference 32 to 464
+;; adds [MASK] query-expansion rows; these probe TASKS are short (~70-90
+;; word-piece tokens), so at 464 the pedestal is ~80% of the rows and every
+;; raw score converges toward the same value. The batch-relative margins
+;; therefore COMPRESS hard:
+;;
+;;   probe set                    batch-rel @32   batch-rel @464
+;;   clearly-good                    -0.0190         -0.002978
+;;   clearly-avoid (force-fit)       +0.0160         +0.000211
+;;   mixed (correct parent)          -0.0283         -0.001806
+;;   irrelevant-guards               +0.0025         -0.001544
+;;
+;; The SEPARABILITY ORDER survives — the force-fit is still the ONLY positive
+;; margin — but the MAGNITUDE falls ~75x, which puts the force-fit far below
+;; the shipped :margin 0.010 knob. That knob is NOT retuned here: it is a
+;; gate-approved calibration (ADR 0016 / Slice-4 gate), and re-fitting it to
+;; four short synthetic probes would be fitting to a regime the measured
+;; production corpus does not contain (its shortest real query is 150 tokens;
+;; on 20 REAL live-enriched candidates the contrast did not collapse, it
+;; shifted ~0.005 more negative — doc/build-timeline/evidence/cc17).
+;;
+;; What this test PINS is the property that must not silently rot: at the
+;; shipped limit the force-fit is still the only positive margin.
+;; =============================================================================
+
+(deftest separability-order-survives-the-shipped-limit
+  (let [shipped (long (operations/maxsim-ceiling))
+        rows (mapv (partial probe-margins shipped) probe-sets)
+        fire (first (filter :fires? rows))
+        clean (remove :fires? rows)]
+    (println (format "\n=== CC-17: same probes at the SHIPPED limit %d ===" shipped))
+    (doseq [{:keys [label margins]} rows]
+      (println (format "%-28s batch-relative %+15.6f" label (:batch-relative margins))))
+    (println "  [N] probe sets =" (count rows) "| fire =" 1 "| clean =" (count clean))
+    (is (pos? (get-in fire [:margins :batch-relative]))
+        "the force-fit margin stays POSITIVE at the shipped limit")
+    (doseq [{:keys [label margins]} clean]
+      (is (< (:batch-relative margins) (get-in fire [:margins :batch-relative]))
+          (str label ": separability ORDER survives — clean below the force-fit")))))
