@@ -42,19 +42,6 @@ value IndexConfiguration {
 -- Stated because the discard is otherwise invisible — a caller cannot tell a
 -- fully-matched query from a truncated one, and a retrieval key can never be
 -- matched against text the encoder did not see.
--- CORRECTED (CC-17 divergence 1, orchestrator): the first draft quantified over
--- a `Searches` collection that does not exist and left `configuration` unbound.
--- The real entities are SearchAudit and RerankAudit. Rerank is covered too
--- (divergence 2): it truncates by the same mechanism and the implementation
--- reports it, so the spec follows the code rather than excusing the gap.
-invariant OverlongQueriesTruncateVisibly {
-    for audit in SearchAudits:
-        audit.truncated = (audit.query_token_count > audit.index.configuration.maximum_query_tokens)
-
-    for audit in RerankAudits:
-        audit.truncated implies audit.discarded_token_count > 0
-}
-
 value SearchResult {
     content: String
     score: Decimal
@@ -182,9 +169,19 @@ entity SearchAudit {
     -- CC-17: what the encoder actually saw. Recorded because the discard is
     -- otherwise invisible, and 100% of real production queries were exceeding
     -- the limit while every audit record looked normal.
-    query_token_count: Integer
-    truncated: Boolean
-    discarded_token_count: Integer
+    -- OPTIONAL by necessity, not by preference: these fields accreted onto an
+    -- existing event, so audits recorded before CC-17 do not carry them. The
+    -- invariant below is guarded accordingly rather than asserting over history
+    -- that cannot satisfy it.
+    query_token_count: Integer?
+    truncated: Boolean?
+    discarded_token_count: Integer?
+    -- The limit the encoder ACTUALLY applied. Distinct from
+    -- index.configuration.maximum_query_tokens: an index created before CC-17
+    -- carries no configured limit, so the encoder falls back to the process
+    -- default. Comparing against the index's configuration would therefore
+    -- assert a relationship the code does not have.
+    maximum_query_tokens: Integer?
     performed_at: Timestamp
 }
 
@@ -194,10 +191,12 @@ entity RerankAudit {
     output_count: Integer
     top_score: Decimal?
     -- Rerank truncates by the same mechanism and needs the same visibility,
-    -- even though it has no index and therefore no IndexConfiguration.
-    query_token_count: Integer
-    truncated: Boolean
-    discarded_token_count: Integer
+    -- even though it has no index and therefore no IndexConfiguration. Optional
+    -- for the same event-accretion reason as SearchAudit.
+    query_token_count: Integer?
+    truncated: Boolean?
+    discarded_token_count: Integer?
+    maximum_query_tokens: Integer?
     performed_at: Timestamp
 }
 
@@ -210,6 +209,10 @@ rule CreateRetrievalIndex {
     requires: documents.count = document_identifiers.count
     requires: document_metadatas = null or document_metadatas.count = documents.count
     requires: configuration.maximum_passage_tokens > 0
+    -- CC-17 added this validation in code (positive, above the query specials,
+    -- and within the checkpoint's position-embedding limit) but the rule was
+    -- not tended in the same edit. Weed caught the omission.
+    requires: configuration.maximum_query_tokens > 0
 
     ensures: RetrievalIndex.created(
         name: name,
@@ -275,6 +278,10 @@ rule SearchActiveIndex {
         requested_count: count,
         result_count: results.count,
         top_score: if results.count > 0: results.first.score else: null,
+        query_token_count: query_token_count(query),
+        truncated: query_token_count(query) > applied_query_limit(index),
+        discarded_token_count: max(0, query_token_count(query) - applied_query_limit(index)),
+        maximum_query_tokens: applied_query_limit(index),
         performed_at: now
     )
     ensures: SearchResultsReturned(consumer: consumer, results: results)
@@ -298,6 +305,28 @@ rule RerankDocuments {
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
+
+-- CC-17. Split into two named invariants (weed finding b): the first draft put
+-- two sibling quantifiers in one body with no connective, which parses but has
+-- no defined meaning and rebinds the same name twice. Each arm now carries its
+-- own obligation id.
+--
+-- Guarded on presence (weed findings d/e): the fields accreted onto existing
+-- events, so audits predating CC-17 do not carry them, and an index predating
+-- CC-17 carries no configured limit. The comparison is therefore against the
+-- limit the encoder ACTUALLY applied, which is what the implementation records
+-- and what makes the assertion true rather than aspirational.
+invariant OverlongSearchQueriesTruncateVisibly {
+    for audit in SearchAudits:
+        audit.truncated != null implies
+            audit.truncated = (audit.query_token_count > audit.maximum_query_tokens)
+}
+
+invariant OverlongRerankQueriesTruncateVisibly {
+    for audit in RerankAudits:
+        audit.truncated != null implies
+            audit.truncated = (audit.query_token_count > audit.maximum_query_tokens)
+}
 
 invariant AlignedIndexSourceData {
     for index in RetrievalIndexes:
