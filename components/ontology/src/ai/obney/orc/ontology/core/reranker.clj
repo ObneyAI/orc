@@ -101,15 +101,29 @@ per input candidate.")
 ;; =============================================================================
 
 (def default-model
-  "RR-2 (ADR 0020 decision 5): the reranker's default :model when the
-   caller supplies none. Evidence-tested (not an arbitrary 'fast model'
-   pick) — validated via repro to produce correct, function-calling-valid
-   structured rankings on the real behavioral-subtree corpus. A flagship
-   model was proven unnecessary for ranking quality, and a different
-   fast-alternative model was proven insufficient to reduce latency on
-   its own (see ADR 0020 / doc/reranker-resilience-grill-input.md §2).
-   This default is about correctness/determinism/decoupling, not speed."
-  "qwen/qwen3.5-flash-02-23")
+  "RR-2 (ADR 0020 decision 5, AMENDED — see grill GR-2 Q2): the reranker's
+   default :model when the caller supplies none.
+
+   The original default was `qwen/qwen3.5-flash-02-23`, described as
+   validated-by-repro. CH-1 MEASURED that claim false on this path, N=10
+   per arm against the real corpus via direct `rerank!`:
+
+     shipped qwen ...... valid ranking  0/10 | silent marker fallback 10/10
+     gemini-3-flash .... valid ranking 10/10 | silent marker fallback  0/10
+
+   The model is not the root cause. `dscloj` emits `:tool_choice` while
+   litellm-clj's OpenRouter transform reads `:tool-choice`, so the forced
+   tool choice is dropped and function-calling silently degrades to the
+   marker parsing this node was configured to avoid (ADR 0025 fixes that
+   upstream). But qwen is a thinking model, and Alibaba returns HTTP 400
+   for a *forced* tool choice in thinking mode — confirmed by raw curl —
+   so it is unsuitable BOTH before and after the key fix. Gemini calls
+   the offered tool voluntarily today and can be forced tomorrow.
+
+   This is therefore the evidence-based default under the amended
+   understanding, not an interim patch. Re-open only if the post-ADR-0025
+   re-measurement surprises us."
+  "google/gemini-3-flash-preview")
 
 (def ^:private candidate-schema
   [:map
