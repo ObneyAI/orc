@@ -4,8 +4,11 @@
    Drives the REAL wedge (orc-service maybe-auto-classify-and-set-context) end
    to end against real grain + real ColBERT + the real reranker. This exercises
    BOTH halves of the convergence fix together:
-     Part 1 (capture): on a fresh-mint the wedge records a provisional
-       :tree-class description whose searchable content is the task signature.
+     Part 1 (capture): on a fresh-mint the wedge captures the task signature
+       against the class. CC-6: as a CLAIM OPERATION, not a whole body — the
+       searchable :summary is then ASSEMBLED from that claim (CC-3), so this
+       probe also proves the migration did not break convergence, which is the
+       one thing it could silently have broken.
      Part 2 (gate decouple): classify-task matches/bundles on the UNGATED
        candidates, so a described below-gate class is matchable-for-accrual.
 
@@ -29,7 +32,7 @@
    Run SOLO:
      clojure -M:dev -m convergence-capture-verify"
   (:require [runner]
-            [litellm.router :as litellm-router]
+            [model-registry :as mr]
             [ai.obney.orc.ontology.interface :as ont]
             [ai.obney.orc.ontology.core.task-classifier :as tc]
             [ai.obney.orc.ontology.core.read-models :as rm]
@@ -48,14 +51,16 @@
 ;; state in which classify-task fresh-mints and the capture must make the class
 ;; retrievable for the next turn.
 (defn bootstrap-padding-only! []
-  (let [api-key (or (System/getenv "OPENROUTER_API_KEY")
-                    (throw (ex-info "OPENROUTER_API_KEY not set" {})))
-        base {:provider :openrouter
-              :model (:model runner/config)
-              :config {:api-base "https://openrouter.ai/api/v1" :api-key api-key}}]
-    (litellm-router/register! :openrouter base)
-    (litellm-router/register! (keyword (str "openrouter/" (:model runner/config)))
-                              (assoc base :model (:model runner/config))))
+  ;; CH-1: this probe used to inline the runner's registration and therefore
+  ;; inherited its defect — it registered ONLY the runner's own model, while
+  ;; the classify → rerank path it exercises resolves the reranker's own RR-2
+  ;; default. Go through the runner's single registration seam instead, which
+  ;; declares every model and ASSERTS the precondition before any LLM call.
+  (runner/register-models!)
+  (println "MODEL REGISTRATIONS (CH-1 precondition passed):")
+  (doseq [[reg-name reg-model] (mr/registry-snapshot)]
+    (println (format "    %s -> %s" reg-name (pr-str reg-model))))
+  (println "  models this harness WILL use:" (pr-str (runner/required-models)))
   (let [ctx ((requiring-resolve 'runner/create-context))]
     (println "Emitting synthetic padding (80 entries for FAISS clustering floor)…")
     ((requiring-resolve 'runner/emit-synthetic-padding!) ctx 80)
@@ -126,7 +131,9 @@
 
 (defn tree-class-desc-count
   "Count :ontology/tree-description-updated events on the :tree-class axis for a
-   specific target-id — the reindex-thrash signal (read from the store)."
+   specific target-id. CC-6: this must now be ZERO for a runtime class — the
+   projection's assembly is the only writer of a tree-class body — so it is kept
+   as the WHOLE-BODY-WRITER DETECTOR rather than as the thrash signal."
   [ctx id]
   (->> (es/read (:event-store ctx)
                 {:tenant-id (:tenant-id ctx)
@@ -135,6 +142,13 @@
        (filter (fn [e] (and (= :tree-class (:target-type e))
                             (= id (:target-id e)))))
        count))
+
+(defn capture-claim-count
+  "CC-6: the capture is a CLAIM operation now, so this — not the description
+   event count — is the thrash signal. One claim on the fresh-mint, and a MATCH
+   must add none."
+  [ctx id]
+  (count (ont/get-claims ctx :tree-class id)))
 
 (defn- pick-fresh-minting-subject
   "Classify each OOD candidate once (no dispatch) and return the first whose
@@ -171,30 +185,56 @@
             (assert (some? (:summary desc)) "CAPTURE: a :tree-class description must be recorded on fresh-mint"))
           (println "  total(A) after call 1 =" (total ctx a) " (expect 1)")
           (assert (= 1 (total ctx a)) "counter ticked once on the fresh-mint assign")
-          (println "  tree-class desc-count(A) =" (tree-class-desc-count ctx a) " (expect 1)")
-          (assert (= 1 (tree-class-desc-count ctx a)) "exactly one capture on fresh-mint")
+          (println "  tree-class WHOLE-BODY writes(A) =" (tree-class-desc-count ctx a) " (expect 0 — CC-6)")
+          (assert (zero? (tree-class-desc-count ctx a))
+                  "CC-6: no code path writes a whole :tree-class body")
+          (println "  capture claims(A) =" (capture-claim-count ctx a) " (expect 1)")
+          (assert (= 1 (capture-claim-count ctx a)) "exactly one capture claim on fresh-mint")
 
           ;; --- settle the reindex so A is retrievable on the next turn ---
           (println "\nsettling reindex (force-rebuild + stabilize)…")
           (settle ctx)
+          ;; DIAGNOSTIC (rule out the harness before reading CALL 2): does the
+          ;; RETRIEVER return A at all? An empty rerank result is ambiguous
+          ;; between "the ranking LLM failed" and "there was nothing to rank".
+          (let [hits (ont/search-descriptions ctx {:query (sig-of subject)
+                                                   :granularity :tree-class
+                                                   :k 5})]
+            (println (format "  RETRIEVAL CHECK: %d tree-class hits; A present?=%s"
+                             (count hits)
+                             (boolean (some #(= (str a) (str (-> % :document-metadata :target-id))) hits))))
+            (println "    top hit content:" (pr-str (some-> (first hits) :content (subs 0 (min 120 (count (:content (first hits))))))))
+            (println "    reindex state:" (pr-str (ont/get-reindex-state ctx))))
 
           ;; --- CYCLE 1: same signature again → MUST MATCH A, total accrues ---
-          (let [descs-before (tree-class-desc-count ctx a)
+          (let [descs-before (capture-claim-count ctx a)
                 s2 (run-wedge ctx subject)
                 b  (:assigned-tree-id s2)]
-            (println (format "\nCALL 2  fresh-mint?=%s  id=%s  conf=%.3f  MATCHED-A?=%s"
+            (println (format "\nCALL 2  fresh-mint?=%s  id=%s  conf=%.3f  MATCHED-A?=%s  rerank-fallback?=%s"
                              (:was-fresh-mint? s2) (str b) (double (or (:confidence s2) 0.0))
-                             (= a b)))
+                             (= a b) (:rerank-fallback? s2)))
+            (println "  CALL 2 reasoning:" (pr-str (:reasoning s2)))
+            (println "  CALL 2 top-candidates:"
+                     (pr-str (mapv #(select-keys % [:target-id :fitness :rerank-source])
+                                   (:top-candidates s2))))
+            ;; RULE OUT THE HARNESS before reading the assertion: a reranker
+            ;; FALLBACK means the ranking LLM did not answer, so the turn proves
+            ;; nothing about retrieval either way. Say so loudly instead of
+            ;; letting it read as a convergence failure.
+            (when (:rerank-fallback? s2)
+              (println "  !! RERANKER FELL BACK on CALL 2 — this run cannot decide convergence"))
             (println (format "  (A total was 1 < retrieval-gate 3 — matching it PROVES the decouple)"))
             (assert (= a b) "CONVERGENCE: the 2nd identical-signature classify MUST match A (no scatter)")
             (assert (false? (:was-fresh-mint? s2)) "CONVERGENCE: the match is NOT a fresh-mint")
             (println "  total(A) after call 2 =" (total ctx a) " (expect 2 — ACCRUED)")
             (assert (= 2 (total ctx a)) "ACCRUAL: the occurrence total climbs on the match")
             ;; --- CYCLE 3: thrash-safe — the MATCH recorded NO new description ---
-            (let [descs-after (tree-class-desc-count ctx a)]
-              (println (format "  tree-class desc-count(A): before=%d after=%d (expect equal — THRASH-SAFE)"
+            (let [descs-after (capture-claim-count ctx a)]
+              (println (format "  capture claims(A): before=%d after=%d (expect equal — THRASH-SAFE)"
                                descs-before descs-after))
-              (assert (= descs-before descs-after) "THRASH-SAFE: a match records NO new :tree-class description")))
+              (assert (= descs-before descs-after) "THRASH-SAFE: a match captures NOTHING new")
+              (assert (zero? (tree-class-desc-count ctx a))
+                      "CC-6: still no whole-body :tree-class write after the match")))
 
           ;; --- CYCLE 2: a DISTINCT signature is NOT over-merged into A ---
           (let [s3 (run-wedge ctx distinct-node)
