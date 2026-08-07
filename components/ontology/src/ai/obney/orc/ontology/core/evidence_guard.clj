@@ -207,6 +207,58 @@ whose grounding cannot be established must not become a durable claim.")
                         :retry-delay-ms [500 1500 3000]
                         :use-function-calling? true}))))
 
+(def ^:private surrounding-quoting
+  "Whitespace and the quoting a model wraps a one-word answer in. Deliberately
+   TINY: every character added here is a new way for prose to be mistaken for a
+   verdict. Markdown emphasis and trailing punctuation are NOT in it — a field
+   that needs them stripped is no longer a one-word answer."
+  #"(?:^[\s\"'`]+)|(?:[\s\"'`]+$)")
+
+(defn grounding-established?
+  "Did the verifier's `:grounded-verdict` field ESTABLISH grounding?
+
+   True only when the field, after trimming whitespace and any surrounding
+   quoting, is exactly the word `true` (any case). Prose, a template echo, a
+   multi-word answer, an empty field, `nil` — all of it means grounding was NOT
+   established, which is the same answer as `false`.
+
+   WHY SO STRICT (CC-4b measured this; evidence in orc-sessions
+   `doc/build-timeline/evidence/cc4b/`). The predecessor asked only whether the
+   field contained the token `true` anywhere. On 8 of 30 real verifier calls the
+   forced tool call was dropped upstream and dscloj silently reissued in marker
+   mode, so the field came back carrying leaked `</think>` reasoning and/or an
+   echoed `{grounded-verdict}` template. In three of those the model had stated
+   `false` — once six times over — and an incidental `true`, quoted from the
+   instruction or from the very explanation under inspection, was enough to
+   return GROUNDED. A verdict is a one-word answer; anything longer is the
+   model thinking out loud, and thinking out loud is not a verdict.
+
+   This is the contract the guard's fail-CLOSED promise rests on, so it is
+   asymmetric ON PURPOSE: a field that fails to parse costs a deferred claim,
+   which is re-derivable; a field misread as `true` costs a fabricated one,
+   which is not.
+
+   ONE OF THE EIGHT IS NOT OURS, recorded here so it is not re-diagnosed. In
+   arm-2 call 04 the field was the literal `{grounded-verdict}` placeholder
+   while the model's final block was a correctly formed
+   `[[ ## grounded-verdict ## ]] true`. That verdict was lost UPSTREAM:
+   `dscloj.core/parse-output`'s `extract-field` (fork 41ef3e20,
+   `src/dscloj/core.clj`) selects with `re-find`, which returns the FIRST
+   marker occurrence. Replaying that captured 9,643-char response through the
+   same regex yields, in order, `{grounded-verdict}`, `{true/false}`, `true`,
+   `true` — the two real answers are the last two, and dscloj returns the
+   first. Our side never sees the raw text; it reads an already-parsed field,
+   so there is no occurrence for us to choose. Strict extraction cannot
+   recover a verdict dscloj discarded; it only guarantees the loss lands on
+   the safe side. Reported as an upstream finding alongside ADR 0025's
+   `tool_choice` key fix, which removes the marker fallback that produces
+   these fields in the first place."
+  [raw-verdict]
+  (= "true" (-> raw-verdict
+                str
+                (str/replace surrounding-quoting "")
+                (str/lower-case))))
+
 (defn default-explanation-verifier
   "The REAL layer-2 verifier: a one-node LLM workflow asking whether an
    explanation references real evidence from the input.
@@ -216,10 +268,12 @@ whose grounding cannot be established must not become a durable claim.")
    stack onto the load path, and so the deterministic layer is provably
    reachable without one.
 
-   Fails CLOSED: any failure to establish grounding returns false. An
-   evidence-starved claim that slips through is the failure this slice
-   exists to prevent; a claim deferred because a verifier was unavailable
-   is recorded as an exclusion and can be re-derived."
+   Fails CLOSED, and `grounding-established?` is what makes that true rather
+   than aspirational: an unreachable verifier, a failed workflow AND a verdict
+   field that is anything other than a one-word `true` all return false. An
+   evidence-starved claim that slips through is the failure this slice exists
+   to prevent; a claim deferred because grounding could not be established is
+   recorded as an exclusion and can be re-derived."
   [ctx {:keys [explanation model]}]
   (try
     (let [build! (requiring-resolve 'ai.obney.orc.orc-service.interface/build-workflow!)
@@ -227,8 +281,7 @@ whose grounding cannot be established must not become a durable claim.")
           sheet-id (build! ctx (verifier-workflow (or model verifier-model)))
           result (execute ctx sheet-id {:explanation (str explanation)})]
       (if (= :success (:status result))
-        (boolean (re-find #"(?i)\btrue\b"
-                          (str (get-in result [:outputs :grounded-verdict]))))
+        (grounding-established? (get-in result [:outputs :grounded-verdict]))
         (do (mu/log ::verifier-workflow-failed :status (:status result))
             false)))
     (catch Exception e
