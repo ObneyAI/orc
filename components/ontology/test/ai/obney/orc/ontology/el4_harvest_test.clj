@@ -17,7 +17,7 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
-            [ai.obney.orc.ontology.core.read-models]
+            [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.orc.ontology.core.todo-processors]
             [ai.obney.orc.ontology.core.consolidator :as consolidator]
             [ai.obney.orc.ontology.core.harvest :as harvest]
@@ -61,8 +61,20 @@
 ;; ---------------------------------------------------------------------------
 ;; Context helpers (mirror consolidation_trigger_test)
 ;; ---------------------------------------------------------------------------
-(defn- create-context []
-  (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
+(defn- create-context
+  "Default: every registered todo-processor running (the end-to-end shape).
+
+   CC-26: `{:processors? false}` starts the SAME event store + read-model
+   plumbing with NO todo-processors. The harvest processor is subscribed to
+   :ontology/task-classified, so in a processor-full context a class
+   auto-harvests the instant it crosses the gate MID-FIXTURE — which makes any
+   fixture whose LATER occurrences carry the signal under test untestable (the
+   mint fires before the fixture finishes). Read-models are projected on demand
+   by rmp/project, not by a todo-processor, so a processor-free context still
+   reads back the real projections; the test drives maybe-harvest! explicitly."
+  ([] (create-context {:processors? true}))
+  ([{:keys [processors?]}]
+   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
         cache-dir (str "/tmp/el4-test-" (random-uuid))
         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "test"}))
@@ -74,13 +86,15 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
-        processors (reduce-kv
-                     (fn [acc proc-name {:keys [handler-fn topics]}]
-                       (assoc acc proc-name
-                              (tp/start {:event-pubsub ps :topics topics
-                                         :handler-fn handler-fn :context base-ctx})))
-                     {} @tp/processor-registry*)]
-    (assoc base-ctx :processors processors)))
+        processors (if processors?
+                     (reduce-kv
+                       (fn [acc proc-name {:keys [handler-fn topics]}]
+                         (assoc acc proc-name
+                                (tp/start {:event-pubsub ps :topics topics
+                                           :handler-fn handler-fn :context base-ctx})))
+                       {} @tp/processor-registry*)
+                     {})]
+     (assoc base-ctx :processors processors))))
 
 (defn- stop-context [ctx]
   (doseq [[_ p] (:processors ctx)] (tp/stop p))
@@ -95,6 +109,13 @@
 
 (defmacro with-test-ctx [[sym] & body]
   `(let [~sym (create-context)]
+     (try ~@body (finally (stop-context ~sym)))))
+
+(defmacro with-gate-ctx
+  "CC-26: a processor-free context — the fixture, not the harvest processor,
+   decides when maybe-harvest! runs."
+  [[sym] & body]
+  `(let [~sym (create-context {:processors? false})]
      (try ~@body (finally (stop-context ~sym)))))
 
 ;; ---------------------------------------------------------------------------
@@ -331,8 +352,14 @@
 ;; ===========================================================================
 
 (def ^:private good-class
-  "Recurring + well-scored + coherent."
-  {:occurrences 12 :judge-average 0.85 :distinct-tree-shapes 3})
+  "Recurring + well-scored on BOTH axes + coherent. CC-26: the single
+   :judge-average scalar was replaced by the two marginals it had flattened —
+   :judge-averages (per DIMENSION, lifetime) and :occurrence-scores (per
+   OCCURRENCE, temporal order, most recent last)."
+  {:occurrences 12
+   :judge-averages {"quality" 0.85}
+   :occurrence-scores (vec (repeat 12 0.85))
+   :distinct-tree-shapes 3})
 
 (deftest slice2-gate-passes-the-good-class
   (testing "recurring + well-scored + coherent -> harvest-candidate? true"
@@ -344,10 +371,17 @@
                   (assoc good-class :occurrences 5)
                   harvest/default-harvest-config)))))
 
-(deftest slice2-gate-fails-below-judge-average
-  (testing "below the judge-average floor -> false (not well-scored)"
+(deftest slice2-gate-fails-below-consistency-floor
+  (testing "occurrences that all sit below the consistency floor -> false (not well-scored)"
     (is (false? (harvest/harvest-candidate?
-                  (assoc good-class :judge-average 0.6)
+                  (assoc good-class :occurrence-scores (vec (repeat 12 0.6)))
+                  harvest/default-harvest-config)))))
+
+(deftest slice2-gate-fails-below-dimension-floor
+  (testing "a judge dimension below the dimension floor -> false, even when every occurrence's
+             aggregate clears the consistency floor (the axes are independent)"
+    (is (false? (harvest/harvest-candidate?
+                  (assoc good-class :judge-averages {"quality" 1.0 "grounding" 0.6})
                   harvest/default-harvest-config)))))
 
 (deftest slice2-gate-fails-grab-bag
@@ -356,20 +390,36 @@
                   (assoc good-class :distinct-tree-shapes 11)
                   harvest/default-harvest-config)))))
 
-(deftest slice2-gate-fails-nil-judge-average
-  (testing "no judge signal at all -> false (cannot be well-scored)"
+(deftest slice2-gate-fails-nil-judge-signal
+  (testing "no judge signal at all -> false (cannot be well-scored) — on EITHER axis"
     (is (false? (harvest/harvest-candidate?
-                  (assoc good-class :judge-average nil)
+                  (assoc good-class :occurrence-scores nil)
+                  harvest/default-harvest-config)))
+    (is (false? (harvest/harvest-candidate?
+                  (assoc good-class :occurrence-scores [])
+                  harvest/default-harvest-config))
+        "an empty score history is not 'has qualified repeatedly'")
+    (is (false? (harvest/harvest-candidate?
+                  (assoc good-class :judge-averages nil)
+                  harvest/default-harvest-config))
+        "a class no judge ever scored has not been judged well")
+    (is (false? (harvest/harvest-candidate?
+                  (assoc good-class :judge-averages {})
                   harvest/default-harvest-config)))))
 
 (deftest slice2-knobs-are-tunable
   (testing "loosening the config flips a class that fails under defaults to pass"
-    (let [borderline {:occurrences 6 :judge-average 0.7 :distinct-tree-shapes 4}]
+    (let [borderline {:occurrences 6
+                      :judge-averages {"quality" 0.7}
+                      :occurrence-scores (vec (repeat 6 0.7))
+                      :distinct-tree-shapes 4}]
       (is (false? (harvest/harvest-candidate? borderline harvest/default-harvest-config))
           "fails under the HIGH default bar")
       (is (true? (harvest/harvest-candidate?
                    borderline
-                   {:min-occurrences 5 :min-judge-average 0.65 :max-shapes-ratio 0.8}))
+                   {:min-occurrences 5 :dimension-floor 0.65
+                    :consistency-window 5 :consistency-floor 0.65
+                    :max-shapes-ratio 0.8}))
           "passes under a deliberately looser config"))))
 
 ;; ===========================================================================
@@ -560,3 +610,362 @@
         (Thread/sleep 500)
         (is (= 1 (count (minted-harvest-events ctx class-id)))
             "the processor auto-harvested the good class end-to-end")))))
+
+;; ===========================================================================
+;; CC-26 — the harvest gate: consistency over TIME, floors across DIMENSIONS
+;; ===========================================================================
+;;
+;; The defect: harvest-candidate? gated on ONE scalar — a mean over per-judge
+;; lifetime means, each itself a mean over occurrences. A mean of means. It
+;; collapsed two axes the spec (rule PromoteWellScoredClass) keeps separate:
+;;
+;;   dimension_floor    — across JUDGES at one moment (quality.all(...))
+;;   consistency_floor  — across OCCURRENCES over time (consistently_qualified)
+;;
+;; These fixtures keep the axes separate ON PURPOSE: the consistency fixtures
+;; use ONE judge (so the dimension axis cannot be what rejects them) and the
+;; dimension fixture makes every occurrence's mean exactly clear the
+;; consistency floor (so the consistency axis cannot be what rejects it).
+;; Each test therefore isolates the clause it names.
+
+(def ^:private one-judge "quality")
+
+(defn- multi-judge-occurrence!
+  "One occurrence of `class-id` on the shared HOST sheet with its own turn
+   tick, scored by EVERY judge in `judge->score` at that same occurrence, plus
+   a production-shaped bookend carrying the [source-sheet-id source-tick-id]
+   linkage."
+  [ctx class-id host-sheet fingerprint judge->score behavioral-subtrees]
+  (let [tick-id (random-uuid)]
+    (cp/process-command
+      (assoc ctx :command
+             (cond-> {:command/name :ontology/assign-task-class
+                      :command/id (random-uuid)
+                      :command/timestamp (time/now)
+                      :source-sheet-id host-sheet
+                      :source-tick-id tick-id
+                      :source-node-id (random-uuid)
+                      :assigned-tree-id class-id
+                      :confidence 0.95
+                      :top-candidates []
+                      :reasoning "test"
+                      :was-fresh-mint? false}
+               behavioral-subtrees (assoc :behavioral-subtrees behavioral-subtrees))))
+    (doseq [[judge-name score] judge->score]
+      (judge-score! ctx host-sheet tick-id judge-name score))
+    (cp/process-command
+      (assoc ctx :command
+             {:command/name :sheet/record-rlm-tree-execution-completion
+              :command/id (random-uuid)
+              :command/timestamp (time/now)
+              :sheet-id (random-uuid)          ;; EPHEMERAL Phase-2 sheet
+              :tick-id (random-uuid)           ;; EPHEMERAL Phase-2 tick
+              :source-sheet-id host-sheet
+              :source-tick-id tick-id
+              :trajectory []
+              :total-usage {:total-tokens 0}
+              :tree-fingerprint fingerprint
+              :status :success
+              :duration-ms 100}))))
+
+(defn- seed-scored-class!
+  "Seed ONE tree-class from `per-occurrence` — a seq of {judge-name -> score}
+   maps, ONE PER OCCURRENCE, in temporal order (most recent LAST) — plus a
+   consolidated description and a resolvable abstract parent. Every occurrence
+   shares ONE production-faithful HOST sheet (SJ-1: distinct-sheet fixtures
+   hide the occurrence-join bugs) and one tree-fingerprint, so the coherence
+   clause never confounds the axis under test.
+
+   `{:anchor? false}` seeds the SAME class with no behavioral classification
+   at all, so nearest-abstract-behavior resolves to nil.
+
+   Returns {:class-id :parent-id}."
+  ([ctx per-occurrence] (seed-scored-class! ctx per-occurrence {:anchor? true}))
+  ([ctx per-occurrence {:keys [anchor?]}]
+   (let [class-id (random-uuid)
+         parent-id (random-uuid)
+         host-sheet (random-uuid)]
+     (seed-parent-behavior! ctx parent-id)
+     (record-tree-class-desc! ctx class-id good-body)
+     (doseq [[i judge->score] (map-indexed vector per-occurrence)]
+       (multi-judge-occurrence!
+         ctx class-id host-sheet "shape-A" judge->score
+         (when (and anchor? (zero? i))
+           [{:behavior-id parent-id :confidence 0.9 :reasoning "x"}])))
+     (Thread/sleep 250)
+     {:class-id class-id :parent-id parent-id})))
+
+(defn- single-judge-occurrences
+  "`scores` -> per-occurrence maps for the ONE judge the corpus actually has."
+  [scores]
+  (mapv (fn [s] {one-judge s}) scores))
+
+;; --- Cycle 1: the LIVE defect. Obligation rule-failure.PromoteWellScoredClass.4
+;;     (`requires: consistently_qualified(tree_class, consistency_window)`).
+
+(deftest cc26-recent-catastrophic-occurrences-veto-promotion
+  (testing "20 occurrences, 16 perfect + 4 DISASTROUS — lifetime mean exactly 0.800, which the
+             scalar gate promoted. Four catastrophic failures in twenty must NOT become durable,
+             reusable knowledge: the last consistency_window occurrences must EACH clear
+             consistency_floor, not average to it."
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id]} (seed-scored-class!
+                                 ctx (single-judge-occurrences
+                                       (concat (repeat 16 1.0) (repeat 4 0.0))))]
+        ;; MEASUREMENT GUARD — this fixture really is the 0.800 boundary case,
+        ;; and really is single-judge, so the DIMENSION axis cannot be what
+        ;; rejects it (0.8 >= dimension_floor 0.8).
+        (let [avgs (ontology/get-tree-class-judge-averages ctx class-id)]
+          (is (= {one-judge 0.8} avgs)
+              (str "fixture must sit exactly on the old scalar boundary, got " avgs)))
+        (is (= 20 (rm/get-consolidation-total ctx :tree-class class-id))
+            "fixture must really have 20 occurrences")
+
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 150)
+        (is (empty? (minted-harvest-events ctx class-id))
+            "a class whose recent occurrences include catastrophic failures must NOT be harvested")))))
+
+;; --- Cycle 3: the window is RECENT, not lifetime. Guards against
+;;     over-correcting cycle 1 into "any historical failure vetoes forever".
+;;     Obligation rule-success.PromoteWellScoredClass.
+
+(deftest cc26-old-failures-do-not-veto-forever
+  (testing "the SAME 20 occurrences and the SAME lifetime mean of 0.800 as the cycle-1 fixture, with
+             the four disastrous occurrences OLDEST instead of newest: the class has since qualified
+             in each of its last consistency_window occurrences, so it MUST promote. consistently_
+             qualified is a WINDOW property — a class that learned is not condemned by its history."
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id parent-id]} (seed-scored-class!
+                                           ctx (single-judge-occurrences
+                                                 (concat (repeat 4 0.0) (repeat 16 1.0))))]
+        ;; MEASUREMENT GUARD — identical lifetime mean to the cycle-1 fixture,
+        ;; so ORDER is provably the only difference between promote and veto.
+        (let [avgs (ontology/get-tree-class-judge-averages ctx class-id)]
+          (is (= {one-judge 0.8} avgs)
+              (str "same 0.800 lifetime mean as the vetoed fixture, got " avgs)))
+
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 150)
+        (let [minted (minted-harvest-events ctx class-id)]
+          (is (= 1 (count minted))
+              "recent-window qualification promotes despite older catastrophic occurrences")
+          (is (= parent-id (:parent-behavior (first minted)))
+              "and it is anchored under the resolved abstract parent"))))))
+
+;; --- Cycle 4: the LATENT dimensional case. Obligation
+;;     rule-failure.PromoteWellScoredClass.3
+;;     (`requires: quality.all(dimension => dimension.score >= dimension_floor(dimension))`).
+
+(def ^:private five-judges
+  "FIVE judge dimensions — one MORE than the corpus has, deliberately: the
+   defect is latent at judge-count 1 and fires the day a fifth is added
+   (measured: 3 judges -> 0.667 fails, 4 -> 0.750 fails, 5 -> exactly 0.800,
+   promotes)."
+  ["coding-outcome" "grounding" "completeness" "reasoning" "safety"])
+
+(deftest cc26-one-catastrophic-dimension-vetoes-promotion
+  (testing "12 occurrences, FIVE judges, four scoring 1.0 and one scoring ZERO at every occurrence.
+             The collapsed mean-of-means is exactly 0.800 and promoted. One catastrophic DIMENSION
+             must veto promotion and must not be compensable by strength elsewhere."
+    (with-gate-ctx [ctx]
+      (let [judge->score (into {} (map-indexed (fn [i j] [j (if (zero? i) 0.0 1.0)]) five-judges))
+            {:keys [class-id]} (seed-scored-class! ctx (repeat 12 judge->score))]
+        ;; MEASUREMENT GUARDS — this fixture isolates the DIMENSION axis:
+        ;;   (a) five real dimensions, one of them zero;
+        ;;   (b) the mean over dimensions is EXACTLY the old 0.800 boundary;
+        ;;   (c) every occurrence's aggregate is 0.8, so it CLEARS the
+        ;;       consistency floor — the consistency axis cannot be what
+        ;;       rejects this class.
+        (let [avgs (ontology/get-tree-class-judge-averages ctx class-id)]
+          (is (= 5 (count avgs)) (str "five judge dimensions projected, got " avgs))
+          (is (= #{0.0 1.0} (set (vals avgs))) (str "one dimension at zero, four perfect, got " avgs))
+          (is (= 0.8 (/ (reduce + 0.0 (vals avgs)) (double (count avgs))))
+              "the collapsed mean-of-means sits exactly on the old 0.800 boundary"))
+        (let [scores (harvest/occurrence-scores ctx class-id)]
+          (is (= 12 (count scores)) (str "twelve scored occurrences, got " (count scores)))
+          (is (every? #(>= % 0.8) scores)
+              (str "every occurrence CLEARS the consistency floor — so consistency cannot be the "
+                   "clause that rejects this class, got " scores)))
+
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 150)
+        (is (empty? (minted-harvest-events ctx class-id))
+            "a dimension scoring zero vetoes promotion, uncompensated by four perfect dimensions")))))
+
+;; --- Cycle 5: the dimensional change is a PROVABLE NO-OP at judge-count 1.
+;;     Obligation rule-success.PromoteWellScoredClass (the promoting case is
+;;     unchanged for the corpus as it stands today).
+
+(deftest cc26-dimension-floor-is-a-no-op-at-one-judge
+  (testing "with ONE judge dimension, `every? >= floor` and the old collapsed `mean >= floor` are
+             the SAME predicate — so replacing the mean with quality.all(...) cannot change any
+             decision on today's corpus. Swept, not asserted."
+    (is (= 1 harvest/known-judge-dimension-count)
+        "the load-bearing assumption this no-op proof is scoped to")
+    (let [floor (:dimension-floor harvest/default-harvest-config)
+          ;; dense sweep of the unit interval + both sides of the floor
+          values (concat (map #(/ % 100.0) (range 0 101))
+                         [floor 0.7999999999 0.8000000001 0.0 1.0])
+          judged (for [v values
+                       :let [avgs {one-judge v}
+                             ;; the OLD gate: mean over (vals judge-avgs)
+                             old-scalar (/ (reduce + 0.0 (vals avgs)) (double (count avgs)))
+                             old? (>= old-scalar floor)
+                             new? (harvest/every-dimension-qualified? avgs floor)]]
+                   {:v v :old old? :new new?})
+          disagreements (remove #(= (:old %) (:new %)) judged)]
+      (println "  [cc26 no-op sweep] N =" (count judged) "single-judge values;"
+               (count (filter :old judged)) "promote under the OLD mean;"
+               (count (filter :new judged)) "under the NEW per-dimension rule;"
+               (count disagreements) "disagreements")
+      ;; NON-VACUOUS BY CONSTRUCTION: the sweep must contain BOTH verdicts,
+      ;; otherwise "they always agree" would be trivially true.
+      (is (<= 100 (count judged)) "the sweep really covers the unit interval")
+      (is (seq (filter :old judged)) "the sweep contains promoting values")
+      (is (seq (remove :old judged)) "the sweep contains rejecting values")
+      (is (empty? disagreements)
+          (str "no-op claim FALSIFIED at judge-count 1: " (pr-str (vec disagreements))
+               " — if this fires, the extension from 'pin it with a failing-in-waiting test' to "
+               "'implement it' was unjustified and must be reported, not patched")))
+
+    ;; And the SAME two predicates genuinely DIVERGE off the assumption — the
+    ;; sweep above is an agreement about judge-count 1, not about the rules.
+    (let [floor (:dimension-floor harvest/default-harvest-config)
+          five {"coding-outcome" 0.0 "grounding" 1.0 "completeness" 1.0
+                "reasoning" 1.0 "safety" 1.0}]
+      (is (true? (>= (/ (reduce + 0.0 (vals five)) (double (count five))) floor))
+          "at FIVE judges the old collapsed mean is exactly 0.800 and PROMOTES a zero dimension")
+      (is (false? (harvest/every-dimension-qualified? five floor))
+          "the new per-dimension rule vetoes it — so the no-op is a fact about judge-count 1, "))))
+
+(deftest cc26-dimension-change-is-a-no-op-on-real-single-judge-streams
+  (testing "REGRESSION on REAL projections, not hand-built maps: for single-judge classes the OLD
+             collapsed rule (mean over (vals judge-averages) >= floor) and the NEW per-dimension rule
+             return the SAME verdict. The read-model's own float accumulation is included on purpose
+             — a knife-edge class whose twelve occurrences each score exactly 0.8 projects to
+             0.7999999999999999 and is REJECTED, which is what it did before CC-26 as well."
+    (let [floor (:dimension-floor harvest/default-harvest-config)
+          cases [1.0 0.9 0.85 0.8 0.75 0.6 0.0]
+          results
+          (vec (for [score cases]
+                 (with-gate-ctx [ctx]
+                   (let [{:keys [class-id]} (seed-scored-class!
+                                              ctx (single-judge-occurrences (repeat 12 score)))
+                         avgs (ontology/get-tree-class-judge-averages ctx class-id)
+                         old? (>= (/ (reduce + 0.0 (vals avgs)) (double (count avgs))) floor)
+                         new? (harvest/every-dimension-qualified? avgs floor)]
+                     (is (= harvest/known-judge-dimension-count (count avgs))
+                         (str "single-judge fixture, got " avgs))
+                     {:score score :projected (get avgs one-judge) :old old? :new new?}))))]
+      (println "  [cc26 real-stream no-op] N =" (count results) "single-judge classes:"
+               (pr-str results))
+      (is (= (count cases) (count results)) "every case really ran")
+      (is (seq (filter :old results)) "non-vacuous: some cases promote")
+      (is (seq (remove :old results)) "non-vacuous: some cases are rejected")
+      (is (empty? (remove #(= (:old %) (:new %)) results))
+          (str "no-op FALSIFIED on real projections: "
+               (pr-str (vec (remove #(= (:old %) (:new %)) results)))))
+      ;; And the knife-edge case is a PRE-EXISTING read-model float artifact,
+      ;; not something CC-26 introduced: both rules reject it identically.
+      (let [knife (first (filter #(= 0.8 (:score %)) results))]
+        (is (> 0.8 (:projected knife))
+            (str "twelve scores of exactly 0.8 project BELOW 0.8: " (pr-str knife)))
+        (is (= false (:old knife) (:new knife))
+            "old and new agree in rejecting it — CC-26 changed nothing here")))))
+
+(deftest cc26-ordinary-single-judge-class-still-promotes
+  (testing "REGRESSION end-to-end: an ordinary well-scored one-judge class still mints"
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id parent-id]} (seed-scored-class!
+                                           ctx (single-judge-occurrences (repeat 12 0.85)))]
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 150)
+        (let [minted (minted-harvest-events ctx class-id)]
+          (is (= 1 (count minted)) "unchanged promoting behaviour at judge-count 1")
+          (is (= parent-id (:parent-behavior (first minted)))))))))
+
+;; --- Obligation rule-failure.PromoteWellScoredClass.6
+;;     (`requires: parent != null`). Beyond the brief's five cycles: the
+;;     obligation audit found this clause of the rule under change had NO test
+;;     on either side of it, so it is closed here rather than tracked as a gap.
+
+(deftest cc26-unanchored-class-is-not-harvested
+  (testing "a class that clears every quality clause but has NO behavioral classification resolves
+             to a nil abstract parent, and harvest is SKIPPED rather than creating an orphan"
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id]} (seed-scored-class!
+                                 ctx (single-judge-occurrences (repeat 12 0.9))
+                                 {:anchor? false})]
+        ;; MEASUREMENT GUARDS — the class is otherwise a promoting class, and
+        ;; the ONLY thing missing is the anchor.
+        (is (true? (harvest/harvest-candidate?
+                     {:occurrences (rm/get-consolidation-total ctx :tree-class class-id)
+                      :judge-averages (ontology/get-tree-class-judge-averages ctx class-id)
+                      :occurrence-scores (harvest/occurrence-scores ctx class-id)
+                      :distinct-tree-shapes (harvest/distinct-tree-shapes ctx class-id)}
+                     harvest/default-harvest-config))
+            "the quality gate itself passes — only the anchor is missing")
+        (is (nil? (harvest/nearest-abstract-behavior ctx class-id))
+            "no behavioral classification -> no abstract parent")
+
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 150)
+        (is (empty? (minted-harvest-events ctx class-id))
+            "no orphan behavior is minted")))))
+
+;; --- Live QA through the REGISTERED PROCESSOR, not just maybe-harvest!.
+;;     The cycle-1 fixture cannot be built with processors running (the class
+;;     crosses the gate mid-fixture, while its occurrences are still perfect,
+;;     and mints before the catastrophic tail exists). A good-then-bad class
+;;     IS constructible, and drives the same veto through the real event path.
+
+(deftest cc26-processor-does-not-harvest-a-recently-failing-class
+  (testing "with EVERY registered processor running and no direct maybe-harvest! call: a class whose
+             recent occurrences are catastrophic is not minted, while a healthy class in the SAME
+             context is — so the negative result is the gate, not a dead processor"
+    (with-test-ctx [ctx]
+      (let [failing (seed-scored-class!
+                      ctx (single-judge-occurrences
+                            (concat (repeat 6 1.0) (repeat 14 0.0))))
+            healthy (seed-scored-class!
+                      ctx (single-judge-occurrences (repeat 12 0.9)))]
+        (Thread/sleep 600)
+        ;; POSITIVE CONTROL — the processor really is live in this context.
+        (is (= 1 (count (minted-harvest-events ctx (:class-id healthy))))
+            "the healthy class was auto-harvested end-to-end (control: processors are running)")
+        (is (= 20 (rm/get-consolidation-total ctx :tree-class (:class-id failing)))
+            "the failing class really accumulated 20 occurrences")
+        (is (empty? (minted-harvest-events ctx (:class-id failing)))
+            "no processor-driven mint for a class failing its recent window")))))
+
+;; --- The window is EVERY, not a MEAN. Obligation
+;;     rule-failure.PromoteWellScoredClass.4, discriminating against the
+;;     specific wrong implementation the spec names: "Deliberately not a mean
+;;     over the window: that would reintroduce the same defect one level up."
+;;     Found by mutation — a mean-over-the-window implementation survived every
+;;     other test in this namespace, because their windows also fail on average.
+
+(deftest cc26-window-is-per-occurrence-not-a-mean-over-the-window
+  (testing "20 occurrences, 19 perfect + ONE disastrous, the disastrous one MOST RECENT: lifetime
+             mean 0.950 (the old gate promoted it) AND the window's own mean is exactly 0.800 (a
+             mean-over-the-window gate would promote it too). The per-occurrence rule vetoes it."
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id]} (seed-scored-class!
+                                 ctx (single-judge-occurrences
+                                       (concat (repeat 19 1.0) [0.0])))
+            window (take-last (:consistency-window harvest/default-harvest-config)
+                              (harvest/occurrence-scores ctx class-id))]
+        ;; MEASUREMENT GUARDS — this fixture defeats BOTH wrong gates.
+        (is (= {one-judge 0.95} (ontology/get-tree-class-judge-averages ctx class-id))
+            "lifetime mean 0.950 — comfortably above the old scalar bar")
+        (is (= [1.0 1.0 1.0 1.0 0.0] window) (str "window shape, got " window))
+        (is (>= (/ (reduce + 0.0 window) (double (count window)))
+                (:consistency-floor harvest/default-harvest-config))
+            "the window's MEAN clears the consistency floor — so only a per-occurrence rule can
+             reject this class")
+
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 150)
+        (is (empty? (minted-harvest-events ctx class-id))
+            "one disastrous occurrence in the window vetoes promotion — it is not averaged away")))))
