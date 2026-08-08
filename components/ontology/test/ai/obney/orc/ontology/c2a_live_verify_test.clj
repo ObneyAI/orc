@@ -8,10 +8,10 @@
      C — Retrieval-quality probe (deferred until C-2b)
 
    These tests verify orchestration with a fake LLM (`with-redefs` on
-   dscloj/predict). The REAL-LLM live-verify gate runs the same code
+   llm/predict). The REAL-LLM live-verify gate runs the same code
    against gemini-3-flash-preview with `OPENROUTER_API_KEY` set."
   (:require [clojure.test :refer [deftest testing is]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.test-support.c2a-live-verify :as live-verify]))
 
 ;; =============================================================================
@@ -23,11 +23,11 @@
 ;; results for the three scenarios.
 
 (defn- with-faked-llm
-  "Run f with dscloj/predict stubbed to return a minimal well-formed
+  "Run f with llm/predict stubbed to return a minimal well-formed
    description body. The fake mirrors what the consolidator's structured
    output expects (six writes keys)."
   [f]
-  (with-redefs [dscloj/predict
+  (with-redefs [llm/predict
                 (fn [_provider module _inputs _options]
                   (let [output-fields (:outputs module)
                         declared (set (map :name output-fields))
@@ -90,15 +90,15 @@
 
 (defn- with-faked-tree-llm-success
   "Like with-faked-llm but tolerates the tree-executor's :llm leaves
-   calling dscloj/predict with any inputs and returning :status :success
-   from the executor. The executor wraps dscloj and judges success based
+   calling llm/predict with any inputs and returning :status :success
+   from the executor. The executor wraps llm and judges success based
    on whether outputs were produced — so we return any non-nil :outputs
    keyed by what the LLM was asked to write."
   [f]
-  (with-redefs [dscloj/predict
+  (with-redefs [llm/predict
                 (fn [_provider module _inputs _options]
                   ;; Return non-nil values for whatever :name keys the
-                  ;; module declared as outputs. dscloj uses them to fill
+                  ;; module declared as outputs. llm uses them to fill
                   ;; the blackboard.
                   (let [output-fields (or (:outputs module) [])
                         outputs (into {} (map (fn [{:keys [name spec]}]

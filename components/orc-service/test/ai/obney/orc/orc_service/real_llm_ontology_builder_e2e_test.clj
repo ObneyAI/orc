@@ -50,7 +50,7 @@
     (live/with-real-openrouter
       (h/with-async-test-context [ctx]
         (live/register-openrouter!)
-        (let [ctx (assoc ctx :dscloj-provider :openrouter)
+        (let [ctx (assoc ctx :llm-provider :openrouter)
               ontology-id (random-uuid)
               shared-text (str "A quasar routing policy sends urgent messages through a "
                                "priority channel. A normal channel handles routine messages.")
@@ -150,7 +150,7 @@
     (live/with-real-openrouter
       (h/with-async-test-context [ctx]
         (live/register-openrouter!)
-        (let [ctx (assoc ctx :dscloj-provider :openrouter)
+        (let [ctx (assoc ctx :llm-provider :openrouter)
               ontology-id (random-uuid)
               config (build-config ontology-id)
               baseline (evolutionary/build-from-sources

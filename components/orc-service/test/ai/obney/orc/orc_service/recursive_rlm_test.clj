@@ -6,7 +6,7 @@
    recurs after Phase 2 in recursive mode and preserves terminal behavior in
    non-recursive mode."
   (:require [clojure.test :refer [deftest testing is]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             ;; Loading interface.schemas registers the malli command schemas
             ;; (:sheet/create-sheet, :sheet/tick-tree, etc.) that the command
             ;; processor uses during Phase 2 execution. Without this, the tree
@@ -28,8 +28,8 @@
 ;; =============================================================================
 
 (defn- create-test-context-with-provider
-  "Create test context with a non-nil dscloj-provider so LLM nodes actually execute
-   (we replace dscloj/predict with mocks per-test via with-redefs)."
+  "Create test context with a non-nil llm-provider so LLM nodes actually execute
+   (we replace llm/predict with mocks per-test via with-redefs)."
   []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
@@ -39,7 +39,7 @@
         base-ctx {:event-store event-store
                   :cache cache
                   :tenant-id tenant-id
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :event-pubsub ps
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
@@ -701,7 +701,7 @@
         ;; First Phase 1 call returns an emit-tree! that produces a :summary.
         ;; Phase 2 sub-LLM call gets a stub :summary response.
         ;; Second Phase 1 call (after recur) calls (final! ...) to terminate.
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider module inputs _opts]
                         (cond
                           (phase1-module? module)
@@ -766,7 +766,7 @@
       (let [call-count (atom 0)]
         ;; Mock predict to ALWAYS return emit-tree! (never final!). Loop must
         ;; exhaust :max-iterations and return :failure with a clear message.
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider _module _inputs _opts]
                         (swap! call-count inc)
                         {:outputs {:code "(emit-tree!
@@ -797,7 +797,7 @@
   (testing "Successful recursive run carries :cumulative-thinking-ms and :cumulative-tree-ms separately"
     (with-test-ctx [ctx]
       (let [call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider _module _inputs _opts]
                         (let [n (swap! call-count inc)]
                           (if (= 1 n)
@@ -840,7 +840,7 @@
       (let [outer-call-count (atom 0)
             phase1-module? (fn [module]
                              (boolean (some #(= :code (:name %)) (:outputs module))))]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider module _inputs _opts]
                         (cond
                           (phase1-module? module)
@@ -916,7 +916,7 @@
       (let [outer-call-count (atom 0)
             phase1-module? (fn [module]
                              (boolean (some #(= :code (:name %)) (:outputs module))))]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider module _inputs _opts]
                         (cond
                           (phase1-module? module)

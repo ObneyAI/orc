@@ -2,7 +2,7 @@
   "Deterministic end-to-end coverage for ontology and self-learning flows."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -336,7 +336,7 @@
             captured (atom [])]
         (record-description! ctx :code prior)
         (is (h/settle-until! #(= prior (ontology/get-description ctx :node-type :code))))
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_ _ inputs _]
                         (swap! captured conj inputs)
                         {:outputs (select-keys reflected

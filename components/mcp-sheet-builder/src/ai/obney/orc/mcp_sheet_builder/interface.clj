@@ -183,7 +183,7 @@
    This is the main entry point for dynamically creating ORC workflows from MCP tools.
 
    Args:
-     ctx - Context with :event-store and optional :dscloj-provider
+     ctx - Context with :event-store and optional :llm-provider
      mcp-opts - MCP connection options {:type :static/:http :preset :langfuse}
 
    Options:

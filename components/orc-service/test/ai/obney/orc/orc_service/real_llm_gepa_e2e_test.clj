@@ -94,7 +94,7 @@
   (live/with-real-openrouter
     (live/register-openrouter!)
     (h/with-async-test-context [ctx]
-      (let [ctx (assoc ctx :dscloj-provider :openrouter)
+      (let [ctx (assoc ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
             configured-budget 20
             result (gepa/optimize!
@@ -169,7 +169,7 @@
   (live/with-real-openrouter
     (live/register-openrouter!)
     (h/with-async-test-context [ctx]
-      (let [ctx (assoc ctx :dscloj-provider :openrouter)
+      (let [ctx (assoc ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
             _ (h/run-and-apply! ctx
                                 (h/make-publish-version-command sheet-id
@@ -235,7 +235,7 @@
   (live/with-real-openrouter
     (live/register-openrouter!)
     (h/with-async-test-context [original-ctx]
-      (let [ctx (assoc original-ctx :dscloj-provider :openrouter)
+      (let [ctx (assoc original-ctx :llm-provider :openrouter)
             sheet-id (sheet/build-workflow! ctx (live-gepa-workflow))
             budget 20
             start (gepa/optimize!

@@ -73,7 +73,7 @@
               :event-pubsub (ig/ref ::event-pubsub)
               :command-registry (cp/global-command-registry)
               :query-registry (qp/global-query-registry)
-              :dscloj-provider (when-let [p (:dscloj-provider env)]
+              :llm-provider (when-let [p (:llm-provider env)]
                                  (keyword p))}})
 
 ;; =============================================================================

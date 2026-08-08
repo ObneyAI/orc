@@ -25,7 +25,7 @@
    an opaque STUB instrument; the engine threading is the system under test."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [clojure.core.async :as async]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
@@ -82,7 +82,7 @@
        [:final {:keys [:seen-marker]}]])")
 
 (defn- mock-predict-emitting-recorder
-  "dscloj/predict stub: always returns the recording emit-tree! code (Phase 2's
+  "llm/predict stub: always returns the recording emit-tree! code (Phase 2's
    :code leaf needs no sub-LLM, so Phase 1 is the only predict call)."
   [_provider _module _inputs _opts]
   {:outputs {:code emit-tree-recording-marker}
@@ -117,7 +117,7 @@
 (deftest cycle1-turn-tool-context-reaches-phase2-leaf
   (testing "a real turn's :tool-context (on the execute-stream context) reaches the emitted :code leaf, read back from the event store"
     (h/with-async-test-context [ctx]
-      (with-redefs [dscloj/predict mock-predict-emitting-recorder]
+      (with-redefs [llm/predict mock-predict-emitting-recorder]
         (let [marker       (str "CE5B-TURN-MARKER-" (random-uuid))
               tool-context {:marker marker :workspace "/ws"}
               {:keys [sheet-id]} (setup-repl-researcher-sheet! ctx)
@@ -163,7 +163,7 @@
 (deftest cycle2-tick-lines-up-repl-researcher-reads-root-tick
   (testing "the repl-researcher reads :tool-context from the SAME tick FIX A stored it to (proven via event store)"
     (h/with-async-test-context [ctx]
-      (with-redefs [dscloj/predict mock-predict-emitting-recorder]
+      (with-redefs [llm/predict mock-predict-emitting-recorder]
         (let [marker       (str "CE5B-TICK-MARKER-" (random-uuid))
               tool-context {:marker marker :workspace "/ws"}
               {:keys [sheet-id node-id]} (setup-repl-researcher-sheet! ctx)
@@ -214,7 +214,7 @@
 (deftest cj5b-repl-researcher-terminal-carries-tool-context-in-writes
   (testing "the repl-researcher :success completion event carries :tool-context in :writes (so a judge can recover the turn-id)"
     (h/with-async-test-context [ctx]
-      (with-redefs [dscloj/predict mock-predict-emitting-recorder]
+      (with-redefs [llm/predict mock-predict-emitting-recorder]
         (let [marker       (str "CE5B-COMPLETE-MARKER-" (random-uuid))
               tool-context {:marker marker :workspace "/ws"}
               {:keys [sheet-id node-id]} (setup-repl-researcher-sheet! ctx)
@@ -257,7 +257,7 @@
 (deftest cycle3-absent-tool-context-is-backward-compatible
   (testing "a turn without tool context stores none and fails its declared non-nil marker write"
     (h/with-async-test-context [ctx]
-      (with-redefs [dscloj/predict mock-predict-emitting-recorder]
+      (with-redefs [llm/predict mock-predict-emitting-recorder]
         (let [{:keys [sheet-id]} (setup-repl-researcher-sheet! ctx)
               ;; No :tool-context on the execute-stream context.
               stream       (sheet/execute-stream ctx sheet-id {:question "go"} :timeout-ms 30000)

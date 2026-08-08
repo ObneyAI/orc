@@ -184,7 +184,7 @@ per input candidate.")
       ;; Empirically with gemini-3-flash-preview: a single-:writes
       ;; string output asking for a free-form JSON payload triggers
       ;; the LLM to skip the [[ ## reranked-json ## ]] marker and emit
-      ;; bare JSON. dscloj's marker-parser then returns nil, the
+      ;; bare JSON. llm's marker-parser then returns nil, the
       ;; executor's outputs-have-nil retry path exhausts, and the
       ;; workflow succeeds with nil outputs. Function-calling tools
       ;; avoid that brittleness — the model is structurally compelled
@@ -319,7 +319,7 @@ per input candidate.")
    :timeout-fallback stamp).
 
    Args:
-     ctx        — context with :event-store / :dscloj-provider
+     ctx        — context with :event-store / :llm-provider
      opts       — {:query :intent :candidates :model}
        :query       — original NL query string
        :intent      — caller's goal/context string

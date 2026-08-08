@@ -18,7 +18,7 @@ Two ORC capability gaps also block the work:
 
 1. **Two surgical core extensions** unlock everything else:
    - `:code` case added to `rlm-dsl->orc-dsl` so model-emitted trees can include `[:code {:fn "ns/sym" :reads [...] :writes [...]}]`.
-   - `:available-code-nodes` field plumbed through `:rlm` map config to a new dscloj input field in the researcher's code-generation prompt, surfacing per-benchmark tool catalogs without polluting goal instructions.
+   - `:available-code-nodes` field plumbed through `:rlm` map config to a new llm input field in the researcher's code-generation prompt, surfacing per-benchmark tool catalogs without polluting goal instructions.
 
 2. **Four new Polylith components**, each with its own opt-in dependencies, so external consumers download only what their chosen benchmarks need:
    - `predict-rlm-pdf` — Apache PDFBox wrapper (render pages → data URIs; extract per-page text). Deep, pure, unit-testable.
@@ -73,7 +73,7 @@ Two ORC capability gaps also block the work:
 
 - **`:code` case in `rlm-dsl->orc-dsl`**: extends the existing DSL translator (which already handles `:sequence`, `:llm`, `:map-each`, `:chunk-document`, `:aggregate`, `:parallel`, `:final`). Accepts `[:code {:fn "ns/sym" :reads [...] :writes [...]}]` and translates to `(sheet/code :fn "ns/sym" :reads [...] :writes [...])`. The downstream Phase-2 tree executor already supports `:executor :code` with `:fn` symbol resolution via `ns-resolve`, so no executor changes required. ~10 LOC.
 
-- **`:available-code-nodes` plumbing**: a new optional field on the existing `:rlm` map config (which is already `[:or :boolean :map]` — no schema changes needed). Read in `execute-repl-researcher-rlm` via the same `(get rlm-config :available-code-nodes)` pattern already used for `:debug?`. Passed to `build-rlm-code-generation-module` and added to the dscloj module as a new `:inputs` field with description "Available code-node functions for use in emit-tree! :code nodes." The runner constructs the markdown catalog for each benchmark and supplies it via `:rlm {:debug? true :available-code-nodes "<markdown>"}` on the researcher node. ~15-20 LOC.
+- **`:available-code-nodes` plumbing**: a new optional field on the existing `:rlm` map config (which is already `[:or :boolean :map]` — no schema changes needed). Read in `execute-repl-researcher-rlm` via the same `(get rlm-config :available-code-nodes)` pattern already used for `:debug?`. Passed to `build-rlm-code-generation-module` and added to the llm module as a new `:inputs` field with description "Available code-node functions for use in emit-tree! :code nodes." The runner constructs the markdown catalog for each benchmark and supplies it via `:rlm {:debug? true :available-code-nodes "<markdown>"}` on the researcher node. ~15-20 LOC.
 
 ### New Polylith components (Pattern A naming: `predict-rlm-*`)
 
@@ -99,7 +99,7 @@ Two ORC capability gaps also block the work:
 
 New runner under `development/bench/predict-rlm-comparison/` mirroring `development/bench/runner.clj`:
 
-- **Document pre-loading**: for each task, load PDFs/images/text per task config. For images and rendered PDF pages, declare blackboard keys with Malli schema `[:vector {:field-type :image} :string]` (vector of data URIs) or `[:string {:field-type :image}]` (single data URI) — `executor.clj:330-357` `build-field` already extracts `:field-type :image` and dscloj passes them as OpenAI-format `{:type "image_url" :image_url {:url data-uri}}` content blocks.
+- **Document pre-loading**: for each task, load PDFs/images/text per task config. For images and rendered PDF pages, declare blackboard keys with Malli schema `[:vector {:field-type :image} :string]` (vector of data URIs) or `[:string {:field-type :image}]` (single data URI) — `executor.clj:330-357` `build-field` already extracts `:field-type :image` and llm passes them as OpenAI-format `{:type "image_url" :image_url {:url data-uri}}` content blocks.
 
 - **Capture additions to `save-result!`** (compared to existing `runner.clj` which strips these):
   - `:iterations` — Phase 1 researcher iterations (already returned by `execute-repl-researcher-rlm`, currently dropped).
@@ -112,7 +112,7 @@ New runner under `development/bench/predict-rlm-comparison/` mirroring `developm
 
 ### Vision-input mechanism
 
-For `invoice_processing` and `image_analysis`: the runner pre-renders PDFs (via `predict-rlm-pdf`) and/or pre-encodes images, then loads the resulting data URIs into the blackboard with `:field-type :image` schemas before kicking off the researcher. The model sees the blackboard keys as previews, designs whatever tree it wants, and references them in `:llm` nodes' `:reads`. dscloj handles the multimodal content block construction end-to-end.
+For `invoice_processing` and `image_analysis`: the runner pre-renders PDFs (via `predict-rlm-pdf`) and/or pre-encodes images, then loads the resulting data URIs into the blackboard with `:field-type :image` schemas before kicking off the researcher. The model sees the blackboard keys as previews, designs whatever tree it wants, and references them in `:llm` nodes' `:reads`. llm handles the multimodal content block construction end-to-end.
 
 For `document_redaction`: the runner pre-loads **both** `:document-pages` (image data URIs) AND `:document-page-texts` (vector of strings). Vision LLM identifies targets per page via map-each; aggregate produces vector-of-vectors indexed by page; `apply-redactions` code node combines per-page text + per-page targets deterministically.
 

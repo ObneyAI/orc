@@ -4,7 +4,7 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [clojure.test :refer [deftest is testing]]
-            [dscloj.core :as dscloj]))
+            [ai.obney.orc.llm.interface :as llm]))
 
 (def test-blackboard
   {:question {:key :question
@@ -44,7 +44,7 @@
         (is (= {:use-function-calling? true} (:options llm-node)))))))
 
 (deftest execute-ai-preserves-explicit-function-calling-option
-  (testing "node options override tick options and are passed to DSCloj"
+  (testing "node options override tick options and are passed to ORC LLM"
     (let [captured-options (atom nil)
           node {:type :leaf
                 :executor :ai
@@ -53,7 +53,7 @@
                 :reads [:question]
                 :writes [:answer]
                 :options {:use-function-calling? true}}]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs options]
                       (reset! captured-options options)
                       {:outputs {:answer "4"}
@@ -79,7 +79,7 @@
                 :instruction "Answer the question."
                 :reads [:question]
                 :writes [:answer]}]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs options]
                       (reset! captured-options options)
                       {:outputs {:answer "4"}})]
@@ -88,7 +88,7 @@
           (is (= false (:use-function-calling? @captured-options))))))))
 
 (deftest repl-researcher-preserves-node-options
-  (testing "repl-researcher node options are passed to its DSCloj call"
+  (testing "repl-researcher node options are passed to its ORC LLM call"
     (let [captured-options (atom nil)
           node {:type :repl-researcher
                 :name "research"
@@ -98,7 +98,7 @@
                 :writes [:answer]
                 :max-iterations 1
                 :options {:use-function-calling? true}}]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs options]
                       (reset! captured-options options)
                       {:outputs {:code "(println \"FINAL_ANSWER: 4\")"}})]

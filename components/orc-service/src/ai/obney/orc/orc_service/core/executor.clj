@@ -1,22 +1,22 @@
 (ns ai.obney.orc.orc-service.core.executor
-  "DSCloj-based executor for behavior tree leaf nodes.
+  "ORC LLM-based executor for behavior tree leaf nodes.
 
    This module bridges the gap between the behavior tree's leaf nodes
-   and DSCloj's AI execution capabilities.
+   and ORC LLM's AI execution capabilities.
 
    Supports multiple executor types:
-   - :ai - DSCloj AI execution with optional model selection
+   - :ai - ORC LLM AI execution with optional model selection
    - :code - Clojure function execution
    - :tool - Direct tool invocation (future)
    - :repl-researcher - Iterative LLM+SCI code execution
 
    Mapping:
-   - Node instruction → DSCloj module instructions
-   - Node reads + blackboard types → DSCloj module inputs
-   - Node writes + blackboard types → DSCloj module outputs
-   - Blackboard values → DSCloj input values
-   - DSCloj output values → Blackboard writes"
-  (:require [dscloj.core :as dscloj]
+   - Node instruction → ORC LLM module instructions
+   - Node reads + blackboard types → ORC LLM module inputs
+   - Node writes + blackboard types → ORC LLM module outputs
+   - Blackboard values → ORC LLM input values
+   - ORC LLM output values → Blackboard writes"
+  (:require [ai.obney.orc.llm.interface :as llm]
             [clojure.string :as str]
             [clojure.set]
             [clojure.walk :as walk]
@@ -438,7 +438,7 @@
 ;; =============================================================================
 
 (defn- normalize-usage
-  "Normalize DSCloj/litellm usage map to kebab-case.
+  "Normalize ORC LLM/litellm usage map to kebab-case.
    Handles both snake_case (raw API) and kebab-case (already normalized) inputs."
   [usage]
   (when usage
@@ -536,7 +536,7 @@
     :else (pr-str schema)))
 
 (defn- sanitize-field-name
-  "Sanitize field name for DSCloj - remove ? and other problematic chars"
+  "Sanitize field name for ORC LLM - remove ? and other problematic chars"
   [key-name]
   (-> key-name
       (clojure.string/replace "?" "")
@@ -635,7 +635,7 @@
 (defn- reassemble-flattened-outputs
   "Reassemble flattened outputs back into nested structure for blackboard.
 
-   Given DSCloj outputs:
+   Given ORC LLM outputs:
      {:score 0.85 :reasoning '...' :keyFactors [...]}
 
    And output-mapping:
@@ -671,7 +671,7 @@
       (catch Exception _ nil))))
 
 (defn- build-field
-  "Build a DSCloj field definition from a blackboard key and its entry.
+  "Build a ORC LLM field definition from a blackboard key and its entry.
    Now uses Malli schemas directly instead of legacy field types.
 
    If the Malli schema has a :description property (e.g., [:string {:description \"...\"}]),
@@ -679,7 +679,7 @@
    This aligns with Python DSPy's InputField(desc=\"...\") pattern.
 
    If the Malli schema has a :field-type property (e.g., [:vector {:field-type :image} :string]),
-   it will be set as :type on the DSCloj field definition, enabling multimodal support."
+   it will be set as :type on the ORC LLM field definition, enabling multimodal support."
   [key-name blackboard-entry]
   (let [schema (:schema blackboard-entry)
         field-type (schema-field-type schema)
@@ -714,13 +714,13 @@
 ;; =============================================================================
 
 (defn build-module
-  "Build a DSCloj module from a leaf node and blackboard metadata.
+  "Build a ORC LLM module from a leaf node and blackboard metadata.
 
    Args:
      node - The leaf node map with :instruction, :reads, :writes
      blackboard - Map of key -> {:key, :type, :value, :version}
 
-   Returns a DSCloj module map with :inputs, :outputs, :instructions
+   Returns a ORC LLM module map with :inputs, :outputs, :instructions
    and :output-mapping for converting flattened outputs back to nested structure.
 
    OUTPUT FLATTENING (Python DSPy Alignment):
@@ -792,7 +792,7 @@
      node - The leaf node with :reads
      blackboard - Map of key -> {:key, :schema, :value, :version}
 
-   Returns a map of keyword -> value for DSCloj (using sanitized names).
+   Returns a map of keyword -> value for ORC LLM (using sanitized names).
    Complex values are serialized as JSON for better LLM understanding.
    Values with :field-type in their schema properties (e.g., :image) are
    passed through raw — they should not be JSON-serialized."
@@ -1123,13 +1123,13 @@
     (merge-with + (or acc {}) (or usage {}))))
 
 (defn execute-ai
-  "Execute a leaf node using DSCloj AI.
+  "Execute a leaf node using ORC LLM AI.
 
    Args:
      node - The leaf node map
      blackboard - Map of key -> {:key, :type, :value, :version}
-     provider - DSCloj provider keyword (e.g., :openrouter, :anthropic)
-     options - Optional DSCloj options map (can include :model, :max-retries, :retry-delay-ms)
+     provider - ORC LLM provider keyword (e.g., :openrouter, :anthropic)
+     options - Optional ORC LLM options map (can include :model, :max-retries, :retry-delay-ms)
 
    Returns:
      {:status :success/:failure
@@ -1147,14 +1147,14 @@
   (let [start-time (System/currentTimeMillis)
         ;; Best-effort writes the model may omit (e.g. evidence arrays under
         ;; prompt load): capture them, then strip the marker from the options
-        ;; map so it never reaches DSCloj as a spurious request option.
+        ;; map so it never reaches ORC LLM as a spurious request option.
         optional-writes (set (:optional-writes options))
         options (dissoc options :optional-writes)
         module (build-module node blackboard)
         inputs (gather-inputs node blackboard)
         output-mapping (:output-mapping module)
-        ;; Remove the mapping from module before passing to DSCloj
-        dscloj-module (dissoc module :output-mapping)
+        ;; Remove the mapping from module before passing to ORC LLM
+        llm-module (dissoc module :output-mapping)
         ;; Request metadata for usage tracking via :with-metadata? true.
         ;; Disable validation since we serialize complex inputs to JSON strings.
         ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
@@ -1162,7 +1162,7 @@
         ;; for models where tool-backed structured output is more reliable.
         ;; The node's :model rides through as a per-request override —
         ;; litellm-clj's router honors :model in the request options.
-        dscloj-options (merge {:validate? false
+        llm-options (merge {:validate? false
                                :with-metadata? true
                                :use-function-calling? false}
                               options
@@ -1171,15 +1171,13 @@
         max-retries (get options :max-retries 1)
         retry-delay-ms (get options :retry-delay-ms 500)
 
-        ;; Token streaming (Stage 2). Active only when ALL of: a subscriber
-        ;; asked for deltas on this tick (`stream` config threaded from the
-        ;; todo processor), the loaded DSCloj has predict-stream-v2
-        ;; (capability detection — older pins fall back to blocking), and
-        ;; the node isn't using function-calling (no text stream to parse).
+        ;; Token streaming (Stage 2). Active when a subscriber asked for
+        ;; deltas on this tick and the node is not using function calling
+        ;; (whose structured tool response has no text stream to parse).
         predict-stream-v2 (when (and stream
                                      (or (:fields? stream) (:raw? stream))
-                                     (not (:use-function-calling? dscloj-options)))
-                            (some-> (resolve 'dscloj.core/predict-stream-v2) deref))
+                                     (not (:use-function-calling? llm-options)))
+                            llm/predict-stream-v2)
         emit-delta! (when predict-stream-v2
                       (let [base (cond-> (select-keys stream [:sheet-id :node-id])
                                    (:map-each stream) (assoc :map-each (:map-each stream)))]
@@ -1195,10 +1193,10 @@
         ;; are identical to the blocking path.
         try-once-streaming
         (fn [attempt]
-          (let [ch (predict-stream-v2 provider dscloj-module inputs dscloj-options)]
+          (let [ch (predict-stream-v2 provider llm-module inputs llm-options)]
             (loop [terminal nil]
               (if-let [ev (async/<!! ch)]
-                (case (:dscloj/event ev)
+                (case (:orc/event ev)
                   :delta (do (when (:raw? stream)
                                (emit-delta! attempt
                                             {:orc.stream/type :llm-raw-delta
@@ -1228,15 +1226,15 @@
         try-once (fn [attempt]
                    (if predict-stream-v2
                      (try-once-streaming attempt)
-                     (let [result (dscloj/predict provider dscloj-module inputs dscloj-options)
-                           ;; DSCloj returns outputs directly as a flat map, not wrapped in {:outputs ...}
+                     (let [result (llm/predict provider llm-module inputs llm-options)
+                           ;; ORC LLM returns outputs directly as a flat map, not wrapped in {:outputs ...}
                            raw-outputs (or (:outputs result) result)
                            ;; Reassemble flattened outputs back into nested structure
                            outputs (reassemble-flattened-outputs raw-outputs output-mapping)]
                        {:outputs outputs
                         :usage (normalize-usage (:usage result))
                         :model (or (:model result) (:model node))
-                        ;; Verbatim completion text from DSCloj (:with-metadata? true).
+                        ;; Verbatim completion text from ORC LLM (:with-metadata? true).
                         ;; Carried so a nil-parse failure can show WHAT the model
                         ;; actually returned instead of discarding it.
                         :raw-response (:raw-response result)})))
@@ -1291,7 +1289,7 @@
 
           ;; Nil outputs — the model answered but no value could be extracted
           ;; for one or more declared writes (e.g. missing [[ ## field ## ]]
-          ;; markers that DSCloj's single-string-field whole-text fallback
+          ;; markers that ORC LLM's single-string-field whole-text fallback
           ;; can't cover, such as structured/multi-write nodes). This is a
           ;; FAILURE, not a success: returning :success with nil writes
           ;; silently corrupts downstream state (a tree can finish "green"
@@ -1376,8 +1374,8 @@
    Args:
      node - The llm-condition node map with :instruction, :reads, :model
      blackboard - Map of key -> {:key, :schema, :value, :version}
-     provider - DSCloj provider keyword (e.g., :openrouter)
-     options - Optional DSCloj options map
+     provider - ORC LLM provider keyword (e.g., :openrouter)
+     options - Optional ORC LLM options map
 
    Returns:
      {:status :success/:failure
@@ -1412,10 +1410,10 @@
         ;; Request metadata for usage tracking
         ;; Disable validation since inputs may be JSON serialized
         ;; The node's :model rides through as a per-request override.
-        dscloj-options (cond-> (assoc options :validate? false)
+        llm-options (cond-> (assoc options :validate? false)
                          (:model node) (assoc :model (:model node)))]
     (try
-      (let [response (dscloj/predict provider module input-values dscloj-options)
+      (let [response (llm/predict provider module input-values llm-options)
             ;; Response now has {:outputs {...} :usage {...} :model "..."}
             bool-result (get-in response [:outputs :result])
             duration-ms (- (System/currentTimeMillis) start-time)]
@@ -1565,7 +1563,7 @@
                     history)))))
 
 (defn- build-code-generation-module
-  "Build DSCloj module for generating Clojure code."
+  "Build ORC LLM module for generating Clojure code."
   [node blackboard-metadata history mcp-tools browser-tools]
   (let [has-mcp? (seq mcp-tools)
         has-browser? (seq browser-tools)
@@ -1663,9 +1661,9 @@
    Args:
      node - The repl-researcher node map with :instruction, :reads, :writes, :mcp-tools
      blackboard - Map of key -> {:key, :schema, :value, :version}
-     provider - DSCloj provider keyword
+     provider - ORC LLM provider keyword
      context - Context map with :call-tool-fn (fn [tool-name args-map] -> result) for MCP tool calls
-     options - Optional DSCloj options map
+     options - Optional ORC LLM options map
 
    Returns:
      {:status :success/:failure
@@ -1738,14 +1736,14 @@
                         :context bb-metadata
                         :history (or (build-iteration-history history) "None")
                         :tools (str/join ", " all-tools)}
-                ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
+                ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
                 ;; The node's :model rides through as a per-request override.
-                dscloj-options (cond-> (assoc execution-options :validate? false :with-metadata? true)
+                llm-options (cond-> (assoc execution-options :validate? false :with-metadata? true)
                                  (:model node) (assoc :model (:model node)))
 
-                llm-result (dscloj/predict provider module inputs dscloj-options)
+                llm-result (llm/predict provider module inputs llm-options)
                 ;; Extract code from LLM result
-                ;; With :with-metadata? true, dscloj returns {:outputs {:code "..."} :usage {...}}
+                ;; With :with-metadata? true, llm returns {:outputs {:code "..."} :usage {...}}
                 ;; Code may be a string or a parsed Clojure form (if function calling mode parsed it)
                 code (let [raw (or (:code llm-result) (get-in llm-result [:outputs :code]))]
                        (cond
@@ -1935,7 +1933,7 @@
              "\n\n")))))
 
 (defn- build-rlm-code-generation-module
-  "Build DSCloj module for generating code in RLM mode.
+  "Build ORC LLM module for generating code in RLM mode.
 
    In RLM mode, the LLM generates code that can:
    - Call (llm \"name\" :instruction \"...\" :writes [:key]) to execute sub-LLM calls
@@ -1945,7 +1943,7 @@
    - Access 'inputs' map for metadata previews of available data
 
    U9: When (:rlm node) is a map containing :available-code-nodes (string), that
-   catalog is surfaced as an extra dscloj input field so the model can use
+   catalog is surfaced as an extra llm input field so the model can use
    the listed functions inside emit-tree! :code nodes.
 
    CE-6b (ADR 0018): when mcp-tools is non-empty, the module advertises the
@@ -2635,9 +2633,9 @@
                          (seq mcp-tools) (assoc :tools (str/join ", " mcp-tools)))
                 ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
                 ;; but preserve an explicit caller/node :use-function-calling? override.
-                ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
+                ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
                 ;; The node's :model rides through as a per-request override.
-                dscloj-options (merge {:validate? false
+                llm-options (merge {:validate? false
                                        :use-function-calling? false
                                        :with-metadata? true}
                                       options
@@ -2654,12 +2652,12 @@
                 _ (dbg "\n========== ITERATION" (inc (count history)) "==========")
                 _ (dbg "node :model =" (:model node))
                 _ (dbg "provider =" provider)
-                _ (dbg "dscloj-options =" dscloj-options)
+                _ (dbg "llm-options =" llm-options)
                 _ (dbg "module :outputs =" (:outputs module))
                 _ (dbg "module :instructions length =" (count (:instructions module)))
                 _ (dbg "inputs :task =" (:task inputs))
                 _ (dbg "inputs :inputs-info =" (:inputs-info inputs))
-                _ (dbg "calling dscloj/predict...")
+                _ (dbg "calling llm/predict...")
                 llm-result (try
                              (when-let [exceeded (and (:reserve-llm-call! context)
                                                       ((:reserve-llm-call! context)))]
@@ -2667,11 +2665,11 @@
                                        (str "LLM call budget exceeded: "
                                             (:current exceeded) "/" (:budget exceeded))
                                        exceeded)))
-                             (dscloj/predict provider module inputs dscloj-options)
+                             (llm/predict provider module inputs llm-options)
                              (catch Exception e
-                               (dbg "dscloj/predict EXCEPTION:" (.getMessage e))
+                               (dbg "llm/predict EXCEPTION:" (.getMessage e))
                                {:code nil :error (.getMessage e)}))
-                _ (dbg "dscloj/predict returned")
+                _ (dbg "llm/predict returned")
                 _ (dbg "llm-result keys:" (keys llm-result))
                 _ (when (and debug? (:usage llm-result))
                     (dbg "usage:" (:usage llm-result)))
@@ -3288,14 +3286,14 @@
   "Execute a leaf node based on its executor type.
 
    Executor types:
-   - :ai (default) - DSCloj AI execution
+   - :ai (default) - ORC LLM AI execution
    - :code - Clojure function execution
    - :tool - Direct tool invocation (not yet implemented)
 
    Args:
      node - The leaf node map
      blackboard - Map of key -> {:key, :type, :value, :version}
-     provider - DSCloj provider keyword (for :ai executor)
+     provider - ORC LLM provider keyword (for :ai executor)
      context - Additional context map (event-store, etc.)
 
    Returns:
@@ -3342,15 +3340,15 @@
 ;; =============================================================================
 
 (defn setup-providers!
-  "Set up DSCloj providers from environment variables.
+  "Set up ORC LLM providers from environment variables.
    Call this at application startup."
   []
-  (dscloj/quick-setup!))
+  (llm/quick-setup!))
 
 (defn list-available-providers
-  "List all registered DSCloj providers."
+  "List all registered ORC LLM providers."
   []
-  (dscloj/list-providers))
+  (llm/list-providers))
 
 (comment
   ;; Example usage:

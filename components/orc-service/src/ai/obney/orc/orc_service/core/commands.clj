@@ -443,7 +443,7 @@
 (defcommand :sheet set-node-executor
   {:authorized? authenticated?}
   "Set the executor configuration for a leaf node.
-   - :ai executor uses DSCloj with optional model selection
+   - :ai executor uses ORC LLM with optional model selection
    - :code executor runs a Clojure function
    - :tool executor directly invokes a tool"
   [{{:keys [sheet-id node-id executor model fn tools options tool-caller-fn]} :command

@@ -9,7 +9,7 @@
   (:require [ai.obney.orc.orc-service.core.executor :as executor]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [dscloj.core :as dscloj]))
+            [ai.obney.orc.llm.interface :as llm]))
 
 (def test-blackboard
   {:question {:key :question :schema :string :value "What is 2+2?" :version 1}
@@ -26,10 +26,10 @@
    :writes [:answer]})
 
 (deftest nil-outputs-fail-without-internal-retry
-  (testing "nil-parsed outputs return :failure after a SINGLE dscloj call"
+  (testing "nil-parsed outputs return :failure after a SINGLE llm call"
     (let [call-count (atom 0)
           raw "Free-form text the model wrote without any field markers."]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _options]
                       (swap! call-count inc)
                       {:outputs {:answer nil}
@@ -51,7 +51,7 @@
 (deftest partial-nil-outputs-name-only-nil-keys
   (testing "one nil write among populated ones fails and names only the nil key"
     (let [node (assoc base-node :writes [:answer :extra])]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _options]
                       {:outputs {:answer "4" :extra nil}
                        :usage {:prompt-tokens 10 :completion-tokens 5 :total-tokens 15}
@@ -66,7 +66,7 @@
 (deftest exception-retry-path-unchanged
   (testing "transient exceptions still retry internally and can succeed"
     (let [call-count (atom 0)]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _options]
                       (if (= 1 (swap! call-count inc))
                         (throw (ex-info "rate limited" {}))
@@ -82,7 +82,7 @@
 
 (deftest successful-parse-unchanged
   (testing "populated outputs return :success as before"
-    (with-redefs [dscloj/predict
+    (with-redefs [llm/predict
                   (fn [_provider _module _inputs _options]
                     {:outputs {:answer "4"}
                      :usage {:prompt-tokens 10 :completion-tokens 2 :total-tokens 12}
@@ -97,7 +97,7 @@
   (testing "a node with :retry config reruns the leaf until parse succeeds"
     (let [call-count (atom 0)
           node (assoc base-node :retry {:max-attempts 3 :backoff-ms [1 1]})]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _options]
                       (if (< (swap! call-count inc) 3)
                         {:outputs {:answer nil}

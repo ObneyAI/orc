@@ -11,6 +11,7 @@
         ;;   orc-service → the engine
         ;;   langfuse    → orc-service's tracing layer
         ;; NO evaluation, NO gepa, NO ontology, NO colbert, NO DJL, NO Python.
+        orc/llm         {:local/root "../../components/llm"}
         orc/orc-service {:local/root "../../components/orc-service"}
         orc/file-store  {:local/root "../../components/file-store"}
         orc/langfuse    {:local/root "../../components/langfuse"}}

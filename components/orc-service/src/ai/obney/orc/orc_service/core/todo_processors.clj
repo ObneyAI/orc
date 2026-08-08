@@ -1061,7 +1061,7 @@
 ;; =============================================================================
 
 ;; Default provider - set to nil to use mock, or :openrouter etc for real execution
-(def ^:dynamic *default-dscloj-provider* :openrouter)
+(def ^:dynamic *default-llm-provider* :openrouter)
 
 (defn- extract-execution-context
   "Extract map-each execution context from inputs.
@@ -1153,13 +1153,13 @@
 (defn execute-leaf-node
   "Execute a leaf node when node-execution-started is emitted.
    Supports multiple executor types:
-   - :ai - DSCloj AI execution (default)
+   - :ai - ORC LLM AI execution (default)
    - :code - Clojure function execution
    - :tool - Direct tool invocation
 
    Runs execution in a future to avoid blocking the pubsub thread.
    Uses cp/process-command to emit completion events."
-  [{:keys [event event-store dscloj-provider] :as context}]
+  [{:keys [event event-store llm-provider] :as context}]
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
         node-id (:node-id event)
@@ -1207,7 +1207,7 @@
                                         :tick-options (:options tick-ctx))
                            tool-context (assoc :tool-context tool-context))
             ;; Use provider from context, fall back to default, or use mock if nil
-            provider (or dscloj-provider *default-dscloj-provider*)
+            provider (or llm-provider *default-llm-provider*)
             executor-type (or (:executor node) :ai)
             ;; Extract execution context for correlation
             exec-context (extract-execution-context event-inputs)
@@ -1215,7 +1215,7 @@
             is-llm-call? (and (#{:ai :repl-researcher} executor-type) provider)
             ;; Stage 2 token streaming: only built when a live subscriber
             ;; opted into deltas for this tick. execute-ai falls back to
-            ;; blocking predict when nil (or when DSCloj lacks
+            ;; blocking predict when nil (or when ORC LLM lacks
             ;; predict-stream-v2).
             stream-cfg (when is-llm-call?
                          (when-let [cfg (streaming/delta-config tick-id)]
@@ -1408,7 +1408,7 @@
 (defn execute-repl-researcher-node
   "Execute a repl-researcher node when node-execution-started is emitted.
    Runs in a future like leaf/llm-condition nodes to avoid blocking pubsub."
-  [{:keys [event event-store dscloj-provider] :as context}]
+  [{:keys [event event-store llm-provider] :as context}]
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
         node-id (:node-id event)
@@ -1445,7 +1445,7 @@
                                    bb))
                                raw-blackboard
                                event-inputs)
-            provider (or dscloj-provider *default-dscloj-provider*)
+            provider (or llm-provider *default-llm-provider*)
             exec-context (extract-execution-context event-inputs)
             ;; Honest-grounding capture: the values this node actually read
             ;; from the (fully-resolved) blackboard, restricted to its declared
@@ -1517,7 +1517,7 @@
                                      correlation-id (assoc :orc/correlation-id correlation-id))
                   result (if provider
                            (executor/execute-repl-researcher node blackboard provider enriched-context)
-                           {:status :failure :error "No DSCloj provider configured"})
+                           {:status :failure :error "No ORC LLM provider configured"})
                   {:keys [status outputs error duration-ms generated-tree-raw iteration-reasonings usage iterations block-payload]} result
                   ;; Track usage for this tick (RLM mode aggregates all LLM calls)
                   _ (when usage (add-usage! tick-id usage))
@@ -1861,7 +1861,7 @@
       ;; execute-llm-condition assembles its prompt from (:reads node) only.
       (let [blackboard (resolve-blackboard-values context sheet-id tick-id
                                                   (or (:reads node) []))
-            provider (:dscloj-provider context)]
+            provider (:llm-provider context)]
         (future
           (try
             (let [result (if provider
@@ -1869,7 +1869,7 @@
                                                           :context {:event-store event-store})
                            ;; No provider - fail with error
                            {:status :failure
-                            :error "No dscloj-provider configured for LLM condition"})
+                            :error "No llm-provider configured for LLM condition"})
                   {:keys [status result error duration-ms]} result
                   ;; LLM condition: true = success, false = failure
                   final-status (if (= :success status)

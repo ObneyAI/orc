@@ -322,7 +322,7 @@
         cache-dir (str "/tmp/el5-test-" (random-uuid))
         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "test"}))]
     {:event-store event-store :cache cache :tenant-id (random-uuid)
-     :event-pubsub ps :dscloj-provider :openrouter
+     :event-pubsub ps :llm-provider :openrouter
      :command-registry (cp/global-command-registry)
      :query-registry (qp/global-query-registry)
      ::cache-dir cache-dir}))

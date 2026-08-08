@@ -195,7 +195,7 @@ The `:parallel` node compiles into a concurrent execution branch where independe
 
 ### 6. `:output-schemas` end-to-end is load-bearing
 
-Every benchmark's `:llm` nodes declare Malli `:output-schemas` for their writes. dscloj parses LLM responses as JSON; downstream `:code` nodes receive properly-typed Clojure maps. Without it:
+Every benchmark's `:llm` nodes declare Malli `:output-schemas` for their writes. llm parses LLM responses as JSON; downstream `:code` nodes receive properly-typed Clojure maps. Without it:
 - invoice_processing couldn't pass invoice maps to `build-invoice-workbook`
 - document_analysis couldn't aggregate per-page extractions
 - contract_comparison couldn't compare structured doc surveys

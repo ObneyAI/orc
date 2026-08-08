@@ -19,7 +19,7 @@
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [litellm.router :as litellm-router]))
 
 ;; =============================================================================
@@ -43,7 +43,7 @@
                   :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   ::cache-dir cache-dir}
         processors (reduce-kv
                     (fn [acc proc-name {:keys [handler-fn topics]}]
@@ -165,7 +165,7 @@
     (with-rlm-test-context [ctx]
       ;; Track call count to return different responses
       (let [call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -199,7 +199,7 @@
 (deftest rlm-mode-final-validation-test
   (testing "final! validates against declared :writes keys"
     (with-rlm-test-context [ctx]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       ;; Typo in key name - should fail validation
                       {:outputs {:code "(final! {:anwser \"42\"})"}
@@ -228,7 +228,7 @@
       ;; Create a large document (over 500 chars to trigger preview)
       (let [large-doc (apply str (repeat 1000 "x"))
             call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -273,7 +273,7 @@
     (with-rlm-test-context [ctx]
       (let [large-doc (apply str (repeat 1000 "x"))
             captured-inputs-info (atom nil)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         ;; Capture the inputs-info that was sent to the LLM
                         (reset! captured-inputs-info (:inputs-info inputs))
@@ -312,7 +312,7 @@
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)
             call-order (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -362,7 +362,7 @@
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)
             processed-items (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -407,7 +407,7 @@
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)
             attempt-order (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -449,7 +449,7 @@
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)
             branches-called (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -502,7 +502,7 @@
   (testing "code primitive executes pure computation and stores result"
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -536,7 +536,7 @@
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)
             calls-seen (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -586,7 +586,7 @@
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)
             test-code "(let [chunks [1 2 3] stored (store! :chunks chunks)] (final! {:answer (pr-str stored)}))"]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (swap! call-count inc)
                         {:outputs {:code test-code}
@@ -606,7 +606,7 @@
   (testing "get-var retrieves a value that was stored with store!"
     (with-rlm-test-context [ctx]
       (let [test-code "(do (store! :my-data [10 20 30]) (final! {:answer (pr-str (get-var :my-data))}))"]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         {:outputs {:code test-code}
                          :usage {:prompt_tokens 50 :completion_tokens 30 :total_tokens 80}})]
@@ -624,7 +624,7 @@
   (testing "get-var returns nil when key doesn't exist"
     (with-rlm-test-context [ctx]
       (let [test-code "(final! {:answer (pr-str (get-var :nonexistent))})"]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         {:outputs {:code test-code}
                          :usage {:prompt_tokens 50 :completion_tokens 30 :total_tokens 80}})]
@@ -642,7 +642,7 @@
   (testing "Variables stored in one iteration are available in the next"
     (with-rlm-test-context [ctx]
       (let [iteration (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! iteration inc)]
                           (case n
@@ -675,7 +675,7 @@
   (testing "list-vars returns map of all sandbox-vars with previews"
     (with-rlm-test-context [ctx]
       (let [test-code "(do (store! :nums [1 2 3 4 5]) (store! :text \"hello\") (final! {:answer (pr-str (list-vars))}))"]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         {:outputs {:code test-code}
                          :usage {:prompt_tokens 50 :completion_tokens 30 :total_tokens 80}})]
@@ -758,7 +758,7 @@
   (testing "T2-Hardening-C: RLM Phase-1 instructions include the literal '## Common pitfalls' header"
     (with-rlm-test-context [ctx]
       (let [captured-module (atom nil)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider module _inputs _opts]
                         (reset! captured-module module)
                         {:outputs {:code "(final! {:answer \"done\"})"}
@@ -778,7 +778,7 @@
   (testing "T2-Hardening-C: pitfalls section covers the specific footguns observed across the bench suite"
     (with-rlm-test-context [ctx]
       (let [captured-module (atom nil)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider module _inputs _opts]
                         (reset! captured-module module)
                         {:outputs {:code "(final! {:answer \"done\"})"}
@@ -819,7 +819,7 @@
   (testing "T2-Hardening-C: appending pitfalls does NOT regress existing instruction sections"
     (with-rlm-test-context [ctx]
       (let [captured-module (atom nil)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider module _inputs _opts]
                         (reset! captured-module module)
                         {:outputs {:code "(final! {:answer \"done\"})"}
@@ -854,7 +854,7 @@
   (testing "RLM prompt includes Available Variables section with blackboard keys"
     (with-rlm-test-context [ctx]
       (let [captured-module (atom nil)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         ;; Capture the module to inspect instructions
                         (reset! captured-module module)
@@ -882,7 +882,7 @@
     (with-rlm-test-context [ctx]
       (let [iteration (atom 0)
             captured-modules (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! iteration inc)]
                           ;; Capture module for each iteration
@@ -920,7 +920,7 @@
     (with-rlm-test-context [ctx]
       (let [captured-inputs (atom [])
             iteration (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (swap! captured-inputs conj inputs)
                         (let [n (swap! iteration inc)]
@@ -959,7 +959,7 @@
     (with-rlm-test-context [ctx]
       (let [captured-inputs (atom [])
             iteration (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (swap! captured-inputs conj inputs)
                         (let [n (swap! iteration inc)]
@@ -998,7 +998,7 @@
                            (apply str (repeat 100 "(store! :x 1) "))
                            "(final! {:answer \"done\"}))")
             short-code "(final! {:answer \"truncated\"})"]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (swap! captured-inputs conj inputs)
                         (let [n (swap! iteration inc)]
@@ -1035,7 +1035,7 @@
     (with-rlm-test-context [ctx]
       (let [captured-inputs (atom [])
             iteration (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (swap! captured-inputs conj inputs)
                         (let [n (swap! iteration inc)]
@@ -1087,7 +1087,7 @@
     (with-rlm-test-context [ctx]
       (let [captured-inputs (atom [])
             iteration (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (swap! captured-inputs conj inputs)
                         (let [n (swap! iteration inc)]
@@ -1149,7 +1149,7 @@
     (with-rlm-test-context [ctx]
       (let [captured-sub-llm-inputs (atom nil)
             iteration (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! iteration inc)]
                           (case n
@@ -1214,7 +1214,7 @@
 (deftest rlm-sub-llm-only-sees-reads-keys-test
   (testing "Sub-LLM only receives :reads keys, not all sandbox-vars"
     (let [captured-inputs (atom nil)]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [provider module inputs opts]
                       (reset! captured-inputs inputs)
                       {:outputs {:summary "done"}
@@ -1238,7 +1238,7 @@
 
 (deftest rlm-sub-llm-returns-only-writes-test
   (testing "execute-llm-primitive returns only :writes keys, filtering extras"
-    (with-redefs [dscloj/predict
+    (with-redefs [llm/predict
                   (fn [provider module inputs opts]
                     ;; LLM returns extra keys beyond declared :writes
                     {:outputs {:declared-output "expected"
@@ -1258,7 +1258,7 @@
   (testing "an inline Phase-1 llm primitive cannot bypass the root call budget"
     (let [provider-called? (atom false)
           reservations (atom 0)]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [& _]
                       (reset! provider-called? true)
                       {:outputs {:answer "should-not-run"}})]
@@ -1283,7 +1283,7 @@
 
 (deftest rlm-llm-fn-merges-only-writes-to-parent-test
   (testing "llm function in sandbox only merges :writes to parent sandbox-vars"
-    (with-redefs [dscloj/predict
+    (with-redefs [llm/predict
                   (fn [provider module inputs opts]
                     {:outputs {:out "value" :extra "sneaky"}
                      :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]
@@ -1306,7 +1306,7 @@
 (deftest rlm-sequential-llm-calls-chain-correctly-test
   (testing "Sequential LLM calls pass outputs to subsequent reads"
     (let [captured-inputs (atom [])]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [provider module inputs opts]
                       (swap! captured-inputs conj inputs)
                       ;; Return different outputs based on which call
@@ -1340,7 +1340,7 @@
   (testing "map-each with :as syntax processes items with injection"
     (let [call-count (atom 0)
           captured-inputs (atom [])]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [provider module inputs opts]
                       (swap! call-count inc)
                       (swap! captured-inputs conj inputs)
@@ -1375,7 +1375,7 @@
             See architecture note above rlm-sub-llm-inputs-are-full-values-test
             and canonical doc at rlm_sandbox.clj:125-127."
     (let [captured-inputs (atom [])]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [provider module inputs opts]
                       (swap! captured-inputs conj inputs)
                       {:outputs {:summary "done"}
@@ -1405,7 +1405,7 @@
 (deftest rlm-map-each-collects-results-test
   (testing "map-each collects sub-LLM results into a vector"
     (let [call-count (atom 0)]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [provider module inputs opts]
                       (swap! call-count inc)
                       {:outputs {:result (str "result-" @call-count)}
@@ -1460,7 +1460,7 @@
   (testing "RLM prompt includes documentation for all primitives"
     (with-rlm-test-context [ctx]
       (let [captured-instructions (atom nil)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (reset! captured-instructions (:instructions module))
                         {:outputs {:code "(final! {:answer \"test\"})"}
@@ -1495,7 +1495,7 @@
   (testing "RLM prompt explains variable space vs token space"
     (with-rlm-test-context [ctx]
       (let [captured-instructions (atom nil)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (reset! captured-instructions (:instructions module))
                         {:outputs {:code "(final! {:answer \"test\"})"}
@@ -1518,7 +1518,7 @@
   (testing "RLM prompt explains :reads usage correctly"
     (with-rlm-test-context [ctx]
       (let [captured-instructions (atom nil)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (reset! captured-instructions (:instructions module))
                         {:outputs {:code "(final! {:answer \"test\"})"}
@@ -1545,7 +1545,7 @@
   (testing "emit-tree! triggers Phase 2 execution and returns success with outputs"
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond
@@ -1651,7 +1651,7 @@
   (testing "When emit-tree! is called, :rlm/tree-generated event is emitted"
     (with-rlm-test-context [ctx]
       (let [call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [n (swap! call-count inc)]
                           (cond

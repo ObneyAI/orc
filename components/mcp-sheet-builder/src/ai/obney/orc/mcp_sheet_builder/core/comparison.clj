@@ -109,7 +109,7 @@
   "Run same task with both Phase 1 and Phase 2 approaches.
 
    Args:
-     ctx - Execution context with event-store and dscloj-provider
+     ctx - Execution context with event-store and llm-provider
      phase1-sheet-id - UUID of Phase 1 (simple llm+code) workflow
      phase2-sheet-id - UUID of Phase 2 (repl-researcher) workflow
      inputs - Map of blackboard key -> input value

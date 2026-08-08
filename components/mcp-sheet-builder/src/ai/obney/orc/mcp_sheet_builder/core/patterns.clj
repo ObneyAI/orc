@@ -10,7 +10,7 @@
    6. Iterative Refinement - Progressive improvement
    7. Research Compilation - Multi-source gathering
    8. Adversarial - Balanced analysis with opposing views"
-  (:require [dscloj.core :as dsp]
+  (:require [ai.obney.orc.llm.interface :as llm]
             [clojure.string :as str]))
 
 ;; ============================================================================
@@ -190,7 +190,7 @@
 ;; ============================================================================
 
 (def pattern-selection-module
-  "DSCloj module for semantic pattern selection.
+  "ORC LLM module for semantic pattern selection.
    Uses LLM to choose the best agent pattern based on user intent,
    tool capabilities, and detected relationships."
   {:inputs [{:name :user-intent
@@ -285,7 +285,7 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
      tools - Vector of analyzed MCP tools
      relationships - Vector of detected relationships
      opts - Options map:
-       :provider - DSCloj provider (default :openrouter)
+       :provider - ORC LLM provider (default :openrouter)
        :model - Model to use (default \"google/gemini-2.5-flash\")
 
    Returns:
@@ -293,7 +293,7 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
       :reasoning string  ;; Why this pattern was chosen
       :confidence :high/:medium/:low
       :alternative :keyword  ;; Second choice pattern
-      :raw-result ...}  ;; Full DSCloj result"
+      :raw-result ...}  ;; Full ORC LLM result"
   ([intent tools relationships]
    (select-pattern-for-intent intent tools relationships {}))
   ([intent tools relationships {:keys [provider model]
@@ -310,17 +310,17 @@ Be specific in your reasoning about WHY this pattern fits the user's goal."})
          rels-str (format-relationships-for-selection relationships)
          patterns-str (format-patterns-for-selection)
 
-         ;; Prepare DSCloj inputs
+         ;; Prepare ORC LLM inputs
          inputs {:user-intent intent-str
                  :tool-capabilities tools-str
                  :relationship-summary rels-str
                  :available-patterns patterns-str}
 
-         ;; Options for DSCloj
+         ;; Options for ORC LLM
          options {:with-metadata? true :validate? false :model model}
 
-         ;; Call DSCloj
-         result (dsp/predict provider pattern-selection-module inputs options)
+         ;; Call ORC LLM
+         result (llm/predict provider pattern-selection-module inputs options)
          outputs (:outputs result)
 
          ;; Parse pattern keyword

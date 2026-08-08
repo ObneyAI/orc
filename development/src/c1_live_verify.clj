@@ -62,7 +62,7 @@
                   :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :event-pubsub ps
                   ::cache-dir cache-dir}
         processors (reduce-kv

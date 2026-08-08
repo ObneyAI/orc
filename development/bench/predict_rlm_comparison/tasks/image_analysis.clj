@@ -9,7 +9,7 @@
 
    Our addition: the runner pre-encodes the image and loads it into the
    blackboard under :image with schema [:string {:field-type :image}] so
-   dscloj routes it as an OpenAI-style image_url content block on the
+   llm routes it as an OpenAI-style image_url content block on the
    sub-LLM call (no model-side base64-encoding required).
 
    This file is also a complete worked example of how to compose an ORC

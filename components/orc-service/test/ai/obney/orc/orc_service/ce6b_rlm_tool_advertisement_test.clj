@@ -16,7 +16,7 @@
    prompt)."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.core.executor :as executor]))
 
 (def ^:private build-fn #'executor/build-rlm-code-generation-module)
@@ -101,16 +101,16 @@
           "the scoped replacement keeps emit-tree for large data but routes effects to the bound tools"))))
 
 ;; =============================================================================
-;; Cycle 4 — call-site threading: the RUNTIME inputs map handed to dscloj
+;; Cycle 4 — call-site threading: the RUNTIME inputs map handed to llm
 ;; carries the :tools value (a declared input with no value would advertise
 ;; an empty field). Mirrors CE-2's G2 capture through the REAL
-;; execute-repl-researcher-rlm; dscloj/predict is redef'd to capture and
+;; execute-repl-researcher-rlm; llm/predict is redef'd to capture and
 ;; abort — no live LLM.
 ;; =============================================================================
 
 (defn- capture-rlm-call
   "Drive the REAL execute-repl-researcher-rlm one iteration with
-   dscloj/predict redef'd to CAPTURE the (module, inputs) handed to the
+   llm/predict redef'd to CAPTURE the (module, inputs) handed to the
    model, then abort. Returns {:module ... :inputs ...} (or nil)."
   [node-extra]
   (let [captured (atom nil)
@@ -122,7 +122,7 @@
                      :max-iterations 1
                      :rlm {:recursive? true}}
                     node-extra)]
-    (with-redefs [dscloj/predict (fn [_provider module inputs _opts]
+    (with-redefs [llm/predict (fn [_provider module inputs _opts]
                                    (reset! captured {:module module :inputs inputs})
                                    (throw (ex-info "capture-abort" {})))]
       (try (executor/execute-repl-researcher-rlm node {} :probe-provider {})
@@ -132,16 +132,16 @@
 (deftest runtime-inputs-carry-the-tools-value
   (testing "with :mcp-tools on the node, the runtime inputs map carries the joined tool list"
     (let [{:keys [module inputs]} (capture-rlm-call {:mcp-tools coding-tools})]
-      (is (some? inputs) "dscloj/predict should have been called (inputs captured)")
+      (is (some? inputs) "llm/predict should have been called (inputs captured)")
       (is (contains? inputs :tools)
           "runtime inputs map should CONTAIN :tools (RED before the call-site threading)")
       (is (= (str/join ", " coding-tools) (:tools inputs))
           "the :tools input value is the joined bound-tool list from the node config")
       (is (contains? (set (map :name (:inputs module))) :tools)
-          "the module handed to dscloj declares the :tools input field")))
+          "the module handed to llm declares the :tools input field")))
   (testing "without :mcp-tools, the runtime inputs map omits :tools (backward-compatible)"
     (let [{:keys [module inputs]} (capture-rlm-call {})]
-      (is (some? inputs) "dscloj/predict should have been called (inputs captured)")
+      (is (some? inputs) "llm/predict should have been called (inputs captured)")
       (is (not (contains? inputs :tools)) "no :tools value is injected")
       (is (not (contains? (set (map :name (:inputs module))) :tools))
           "no :tools field is declared"))))

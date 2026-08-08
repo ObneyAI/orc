@@ -45,14 +45,14 @@
    {"user-message" "What is the difference between a process and a thread, briefly?"}])
 
 (defn -main [& _]
-  ;; Register DSCloj providers from env (OPENROUTER_API_KEY). The judges call
-  ;: dscloj/predict directly, so the provider must be configured in-process.
+  ;; Register ORC LLM providers from env (OPENROUTER_API_KEY). The judges call
+  ;: llm/predict directly, so the provider must be configured in-process.
   (orc-executor/setup-providers!)
   (tu/with-test-context [ctx]
     (let [cp (control-plane/start {:event-store (:event-store ctx)
                                    :cache (:cache ctx)
                                    :context ctx})
-          ctx (assoc ctx :dscloj-provider :openrouter)
+          ctx (assoc ctx :llm-provider :openrouter)
           sheet-id (sheet/build-workflow! ctx (make-qa-workflow))]
       (try
         (println "=== WIRED JUDGE-METRIC GEPA (bad -> good) ===")

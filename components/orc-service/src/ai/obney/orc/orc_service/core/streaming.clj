@@ -511,7 +511,7 @@
                         marker; raw values are in the event store)
      :llm-deltas?     - opt into live LLM output (:llm-fields progressive
                         field snapshots) from :ai leaves (default false;
-                        requires a DSCloj with predict-stream-v2, otherwise
+                        requires a ORC LLM with predict-stream-v2, otherwise
                         leaves run blocking as always)
      :raw-deltas?     - additionally receive :llm-raw-delta raw text chunks
                         (debug-grade; default false)

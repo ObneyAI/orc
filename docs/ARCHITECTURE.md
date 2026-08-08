@@ -426,7 +426,7 @@ shape policy: the configured mode applies to every value. See
 
 ## LLM layer
 
-orc's LLM layer is built on **DSCloj** — the Clojure implementation of [DSPy](https://github.com/stanfordnlp/dspy)-style structured prompting that orc uses as its LLM base. When a leaf node dispatches to the AI executor, that layer turns the node's declared shape into a structured call and parses the response back into typed blackboard values:
+ORC's LLM component uses **SIO** for provider-agnostic structured I/O and `litellm-clj` for transport. When a leaf node dispatches to the AI executor, that layer turns the node's declared shape into a structured call and parses the response back into typed blackboard values:
 
 1. **Build a typed module from the node.** The node's blackboard schema (Malli) plus its `:instruction` are compiled into a typed module — `:reads` become typed input fields (with human-readable descriptions derived from the schema), `:writes` become typed output fields, and `:instruction` becomes the module instruction.
 2. **Call the configured provider.** The module and the gathered input values are sent to the provider configured for the deployment (e.g. OpenRouter), along with call options such as temperature.

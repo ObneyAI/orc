@@ -145,11 +145,11 @@ Added to this, redact any dates found in the document, in any format.")
    :model "openai/gpt-5.4"
    :sub-model "openai/gpt-5.1-chat"
    ;; NOTE: NOT setting :available-code-nodes here. When present, the framework
-   ;; adds a separate dscloj module input field for the catalog, which changes
-   ;; the request shape enough that gpt-5.4 returns :code nil from dscloj's
+   ;; adds a separate llm module input field for the catalog, which changes
+   ;; the request shape enough that gpt-5.4 returns :code nil from llm's
    ;; text-mode parser (reproducible: with any non-empty :available-code-nodes,
    ;; including a 1-line catalog, gpt-5.4 produces 1K+ completion tokens but
-   ;; dscloj extracts nil). Until that framework parsing issue is fixed,
+   ;; llm extracts nil). Until that framework parsing issue is fixed,
    ;; affordances are embedded directly into the task instruction string below.
    :instruction (str instruction
                      "\n\n## Available pre-built code-node functions\n\n"

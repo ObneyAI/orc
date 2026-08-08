@@ -139,7 +139,7 @@
     [:model {:optional true} :string]              ;; OpenRouter model ID (e.g., "google/gemini-2.5-flash")
     [:fn {:optional true} :string]                 ;; Fully-qualified fn symbol for :code executor
     [:tools {:optional true} [:vector :keyword]]   ;; Tools available to AI for :ai executor
-    [:options {:optional true} :map]               ;; Per-node executor/DSCloj options
+    [:options {:optional true} :map]               ;; Per-node executor/ORC LLM options
     [:retry {:optional true} [:map
                               [:max-attempts :int]
                               [:backoff-ms [:vector :int]]]]
@@ -436,7 +436,7 @@
     [:model {:optional true} :string]                   ;; OpenRouter model ID
     [:max-iterations {:optional true} :int]             ;; Default 10
     [:rlm {:optional true} [:or :boolean :map]]         ;; Enable RLM mode (true or {:debug? true})
-    [:options {:optional true} :map]                    ;; Per-node executor/DSCloj options
+    [:options {:optional true} :map]                    ;; Per-node executor/ORC LLM options
     [:timeout-ms {:optional true} :int]]                ;; D-003: total Phase-1+Phase-2 budget
 
    :sheet/set-delegate-config

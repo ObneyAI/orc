@@ -122,7 +122,7 @@
    4. Supports execution mode (draft/published)
 
    Args:
-     context - Map with :event-store and optional :dscloj-provider
+     context - Map with :event-store and optional :llm-provider
      sheet-id - UUID of the sheet to execute
      inputs - Map of blackboard key -> value for initial inputs
 

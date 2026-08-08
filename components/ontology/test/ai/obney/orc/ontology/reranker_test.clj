@@ -13,7 +13,7 @@
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors]
             [ai.obney.orc.ontology.core.reranker :as reranker]
-            [dscloj.core]
+            [ai.obney.orc.llm.interface]
             [ai.obney.orc.colbert.interface :as colbert]
             [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -39,7 +39,7 @@
                   :cache cache
                   :tenant-id tenant-id
                   :event-pubsub ps
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
@@ -102,7 +102,7 @@
 ;; =============================================================================
 
 (defn- with-faked-rerank-llm
-  "Run body with dscloj/predict stubbed to return a deterministic
+  "Run body with llm/predict stubbed to return a deterministic
    reranked-results vector. The workflow's :writes is :reranked-json
    (a JSON string) — the fake produces that shape; the production
    rerank! fn parses + canonicalizes it back to Clojure."
@@ -113,7 +113,7 @@
                             :fitness_score (:fitness-score r)})
                          reranked-results)
         payload (clojure.data.json/write-str json-keyed)]
-    (with-redefs [dscloj.core/predict
+    (with-redefs [ai.obney.orc.llm.interface/predict
                   (fn [_provider _module _inputs _options]
                     {:outputs {:reranked-json payload}
                      :usage {:total-tokens 100}
@@ -402,8 +402,8 @@
            (:model (:root-node (reranker/reranker-workflow "some-other-model")))))))
 
 (defn- with-captured-rerank-request
-  "Like with-faked-rerank-llm, but also captures the dscloj request
-   :options passed to dscloj.core/predict (4th arg) into `captured-atom`
+  "Like with-faked-rerank-llm, but also captures the llm request
+   :options passed to ai.obney.orc.llm.interface/predict (4th arg) into `captured-atom`
    so callers can assert on the RESOLVED :model that actually rides the
    request — not just the workflow-def's static shape."
   [reranked-results captured-atom f]
@@ -413,7 +413,7 @@
                             :fitness_score (:fitness-score r)})
                          reranked-results)
         payload (clojure.data.json/write-str json-keyed)]
-    (with-redefs [dscloj.core/predict
+    (with-redefs [ai.obney.orc.llm.interface/predict
                   (fn [_provider _module _inputs options]
                     (reset! captured-atom options)
                     {:outputs {:reranked-json payload}
@@ -422,7 +422,7 @@
       (f))))
 
 (deftest rerank-resolves-default-model-when-none-given
-  (testing "rerank! called with NO :model resolves the RR-2 default onto the dscloj request options (not the app's ambient litellm-router default)"
+  (testing "rerank! called with NO :model resolves the RR-2 default onto the llm request options (not the app's ambient litellm-router default)"
     (with-test-ctx [ctx]
       (let [candidates [{:content "A" :score 0.8 :document-id "a"
                          :document-metadata {:granularity :node-type :target-id "a"}}]

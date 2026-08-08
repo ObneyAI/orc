@@ -11,6 +11,7 @@
         ;;   orc-service       → the engine the generated trees run on
         ;;   langfuse          → orc-service's tracing layer
         ;; NO ontology, NO colbert, NO DJL, NO Python. Standalone capability.
+        orc/llm               {:local/root "../../components/llm"}
         orc/mcp-sheet-builder {:local/root "../../components/mcp-sheet-builder"}
         orc/orc-service       {:local/root "../../components/orc-service"}
         orc/file-store        {:local/root "../../components/file-store"}

@@ -8,15 +8,15 @@
    - Tool relevance scoring (which tools matter for this goal)
    - Pattern selection (which workflow pattern fits the intent)
    - Node instructions (goal-oriented, not generic)"
-  (:require [dscloj.core :as dsp]
+  (:require [ai.obney.orc.llm.interface :as llm]
             [clojure.string :as str]))
 
 ;; ============================================================================
-;; Intent Analysis Module (for DSCloj predict)
+;; Intent Analysis Module (for ORC LLM predict)
 ;; ============================================================================
 
 (def intent-analysis-module
-  "DSCloj module for intent analysis.
+  "ORC LLM module for intent analysis.
    Uses proper Malli schemas - vectors, enums, etc."
   {:inputs [{:name :user-description
              :spec :string
@@ -84,7 +84,7 @@
      user-description - What the user wants to do, in their own words
      tools - Vector of analyzed MCP tools
      opts - Options map:
-       :provider - DSCloj provider (default :openrouter)
+       :provider - ORC LLM provider (default :openrouter)
        :model - Model to use (default \"google/gemini-2.5-flash\")
 
    Returns:
@@ -104,8 +104,8 @@
                  :available-tools tools-str}
          ;; Options
          options {:with-metadata? true :validate? false :model model}
-         ;; Call DSCloj predict: (predict provider module inputs options)
-         result (dsp/predict provider intent-analysis-module inputs options)
+         ;; Call ORC LLM predict: (predict provider module inputs options)
+         result (llm/predict provider intent-analysis-module inputs options)
          outputs (:outputs result)]
      ;; With proper schemas, outputs are already correctly typed (vectors, strings, etc.)
      {:primary-goal (:primary-goal outputs)

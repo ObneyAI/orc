@@ -1,8 +1,8 @@
 {:env "dev"
 
- ;; DSCloj LLM Provider
+ ;; Default LLM provider
  ;; Options: :openrouter, :anthropic, :openai
- :dscloj-provider "openrouter"
+ :llm-provider "openrouter"
 
  ;; Langfuse Observability (optional)
  ;; Set keys here or via environment variables:

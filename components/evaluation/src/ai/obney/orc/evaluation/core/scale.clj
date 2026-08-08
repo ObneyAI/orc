@@ -112,7 +112,7 @@
    judge's instruction. This is band ANCHORING text, not an output format:
    per the structured-output rule we never put a JSON example or
    'return only JSON' in the prompt — the output shape is carried by the
-   typed blackboard / DSCloj output fields, not the prompt."
+   typed blackboard / ORC LLM output fields, not the prompt."
   [{:keys [bands] :as scale}]
   (->> (levels scale)
        (map (fn [lvl] (str "- " lvl ": " (get bands lvl))))

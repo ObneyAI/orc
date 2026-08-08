@@ -33,7 +33,7 @@
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
             [clojure.string :as string]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [com.brunobonacci.mulog :as u]))
 
 (defn- sha256
@@ -441,7 +441,7 @@
   "Create the reflection LLM function (prompt) -> response-string for the
    instruction proposer.
 
-   Calls the reflection model through dscloj/predict with
+   Calls the reflection model through llm/predict with
    :use-function-calling? true. This is REQUIRED for structured-output
    reflection models such as gemini-3-flash-preview (whose default
    function-calling is off); a raw chat-completion call returns malformed /
@@ -451,7 +451,7 @@
   ([context model-name]
    (make-llm-fn context model-name nil))
   ([context model-name completed!]
-  (let [provider (or (:dscloj-provider context) :openrouter)
+  (let [provider (or (:llm-provider context) :openrouter)
         module {:inputs [{:name :prompt :spec :string
                           :description "the full proposer prompt"}]
                 :outputs [{:name :response :spec :string
@@ -461,7 +461,7 @@
                                    "include the full new instruction inside a ``` block.")}]
     (fn [prompt]
       (u/log ::calling-llm :model model-name :prompt-length (count prompt))
-      (let [result (dscloj/predict provider module {:prompt prompt}
+      (let [result (llm/predict provider module {:prompt prompt}
                      {:model model-name
                       :use-function-calling? true
                       :validate? false

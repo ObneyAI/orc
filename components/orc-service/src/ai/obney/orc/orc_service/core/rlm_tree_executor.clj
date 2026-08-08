@@ -312,7 +312,7 @@
    leaf nodes that declared :output-schemas.
 
    When a write key's schema is structured (vector/map/etc.), the child
-   sheet's declare-key uses it. build-module then passes it to dscloj,
+   sheet's declare-key uses it. build-module then passes it to llm,
    which detects complex-spec? → asks the LLM for JSON → parses the
    response back into Clojure data. Without this, the LLM's structured
    output arrives at downstream :code nodes as raw JSON text.
@@ -636,7 +636,7 @@
           ;; U11: collect any :output-schemas declared on :llm nodes in the
           ;; tree. When the model declares the structure of an :llm write
           ;; (e.g. :targets [:vector [:map ...]]), we use that schema when
-          ;; declaring the blackboard key so dscloj's complex-spec? path
+          ;; declaring the blackboard key so llm's complex-spec? path
           ;; triggers JSON-parsing of the LLM response. Without this,
           ;; structured LLM outputs arrive at downstream :code nodes as
           ;; raw JSON text.

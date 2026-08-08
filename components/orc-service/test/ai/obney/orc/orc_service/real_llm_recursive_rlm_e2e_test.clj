@@ -31,12 +31,16 @@
   (str
    "Solve the question using recursive RLM mode and finish with final!. "
    "This is a recovery audit. On the first attempt you MUST call emit-tree! "
-   "with a tree containing two independently identifiable leaves: one leaf "
-   "must successfully write :preserved-value as the literal PRESERVED, and a "
-   "second code leaf must deliberately fail at execution time by using an "
-   "inline function that throws an ex-info exception. Merely reading a missing "
-   "key is insufficient because emitted-tree compilation declares referenced "
-   "keys. After the "
+   "with exactly this valid tree shape (preserve its explicit schemas and the "
+   "throwing inline function): "
+   "[:parallel "
+   "[:code {:reads [] :writes [:preserved-value] "
+   ":output-schemas {:preserved-value :string} "
+   ":fn (fn [_] {:preserved-value \"PRESERVED\"})}] "
+   "[:code {:reads [] :writes [:deliberate-failure] "
+   ":output-schemas {:deliberate-failure :string} "
+   ":fn (fn [_] (throw (ex-info \"DELIBERATE-RECOVERY-FAILURE\" {})))}]]. "
+   "Do not simplify, replace, or skip this first tree. After the "
    "tree result returns, you MUST inspect it with tree-failures and at least "
    "one of tree-detail, node-output, or tree-events. Then emit a focused second "
    "tree which produces :answer without rerunning the successful leaf. Return "
@@ -47,7 +51,7 @@
     (live/with-real-openrouter
       (live/register-openrouter!)
       (h/with-async-test-context
-        [ctx {:context {:dscloj-provider :openrouter :model live/openrouter-model}}]
+        [ctx {:context {:llm-provider :openrouter :model live/openrouter-model}}]
         (let [{:keys [sheet-id]} (live/build-recursive-rlm!
                                   ctx {:name "det-e2e-105-targeted-recovery"
                                        :instruction targeted-recovery-instruction
@@ -119,7 +123,7 @@
     (live/with-real-openrouter
       (live/register-openrouter!)
       (h/with-async-test-context
-        [ctx {:context {:dscloj-provider :openrouter :model live/openrouter-model}}]
+        [ctx {:context {:llm-provider :openrouter :model live/openrouter-model}}]
         (let [{:keys [sheet-id]} (live/build-recursive-rlm!
                                   ctx {:name "det-e2e-106-budget-exhaustion"
                                        :instruction budget-exhaustion-instruction

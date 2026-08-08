@@ -2,7 +2,7 @@
   "Isolate the 'second LLM call hangs' failure mode by exercising
    different layers of the stack in sequence:
 
-   1. Direct dscloj/predict calls back-to-back — proves whether the
+   1. Direct llm/predict calls back-to-back — proves whether the
       LLM client itself hangs after a burst.
    2. Bench tick-tree without any consolidator/wedge — proves whether
       the orc workflow infrastructure hangs.
@@ -28,7 +28,7 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [litellm.router :as litellm-router]
             [com.brunobonacci.mulog :as u]
             [ai.obney.orc.orc-service.test-helpers :as h]
@@ -49,7 +49,7 @@
                   :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   ::cache-dir cache-dir}
         processors (reduce-kv
                      (fn [acc proc-name {:keys [handler-fn topics]}]
@@ -77,22 +77,22 @@
       :reads [:question]
       :writes [:answer])))
 
-(defn- step-1-direct-dscloj-calls
-  "Call dscloj/predict directly — bypasses ORC workflows entirely.
+(defn- step-1-direct-llm-calls
+  "Call llm/predict directly — bypasses ORC workflows entirely.
    If the second call here hangs, the issue is in litellm/HTTP layer."
   [_ctx]
   (println "\n" (apply str (repeat 60 "=")) "\n")
-  (println " STEP 1 — direct dscloj/predict back-to-back")
+  (println " STEP 1 — direct llm/predict back-to-back")
   (println " (no ORC workflow, no event store — just the LLM client)")
   (println (apply str (repeat 60 "=")) "\n")
   (let [module {:inputs [{:name :q :spec :string :description "the question"}]
                 :outputs [{:name :a :spec :string :description "one-short-sentence answer"}]
                 :instructions "Answer the question in one short sentence."}
         predict-once (fn [label]
-                       (println (str "[" (ts) "] " label ": calling dscloj/predict..."))
+                       (println (str "[" (ts) "] " label ": calling llm/predict..."))
                        (let [start (System/currentTimeMillis)
                              result (try
-                                      (dscloj/predict :openrouter
+                                      (llm/predict :openrouter
                                                        module
                                                        {:q "Say 'hello' and nothing else."}
                                                        {:model "google/gemini-3-flash-preview"
@@ -346,14 +346,14 @@
     (runner-start!)
     (let [ctx (deref @(requiring-resolve 'runner/system-state))]
     (try
-      (let [step-1 (step-1-direct-dscloj-calls ctx)
+      (let [step-1 (step-1-direct-llm-calls ctx)
             step-2 (step-2-minimal-orc-llm-workflows ctx)
             step-5 (step-5-poll-events-during-hang ctx)
             step-4 [] step-3 []]
         (println "\n###################################")
         (println "# SUMMARY")
         (println "###################################")
-        (println "\nSTEP 1 — direct dscloj/predict durations:")
+        (println "\nSTEP 1 — direct llm/predict durations:")
         (doseq [r step-1]
           (println (str "  " (:label r) ": " (:duration-ms r) "ms"
                         (when (:error (:result r))

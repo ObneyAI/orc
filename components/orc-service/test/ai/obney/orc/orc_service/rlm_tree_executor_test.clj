@@ -5,10 +5,10 @@
    and returns results via promise. This enables two-phase RLM execution
    where Phase 1 generates the tree and Phase 2 executes it.
 
-   NOTE: Tests use dscloj-provider nil to use the mock executor,
+   NOTE: Tests use llm-provider nil to use the mock executor,
    which proves the execution flow without requiring LLM API keys."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
@@ -32,12 +32,12 @@
         cache-dir (str "/tmp/tree-executor-test-" (random-uuid))
         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "test"}))
         tenant-id (random-uuid)
-        ;; Use dscloj-provider nil to use mock executor (no LLM API required)
+        ;; Use llm-provider nil to use mock executor (no LLM API required)
         ;; IMPORTANT: Include event-pubsub in base-ctx so processors can publish returned events
         base-ctx {:event-store event-store
                   :cache cache
                   :tenant-id tenant-id
-                  :dscloj-provider nil
+                  :llm-provider nil
                   :event-pubsub ps  ;; Must be in context for processors to publish result events
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
@@ -65,7 +65,7 @@
         (.delete f)))))
 
 (defmacro with-test-context [[ctx-sym] & body]
-  `(binding [tp-core/*default-dscloj-provider* nil]
+  `(binding [tp-core/*default-llm-provider* nil]
      (let [~ctx-sym (create-test-context)]
        (try
          ~@body
@@ -147,8 +147,8 @@
 (deftest emit-tree-triggers-phase2-execution
   (testing "RLM node with emit-tree! returns :success with outputs (not :tree-generated)"
     (with-test-context [ctx]
-      ;; Mock dscloj/predict to return code that calls emit-tree!
-      (with-redefs [dscloj/predict
+      ;; Mock llm/predict to return code that calls emit-tree!
+      (with-redefs [llm/predict
                     (fn [provider module inputs opts]
                       {:outputs {:code "(emit-tree!
                                           [:sequence
@@ -184,18 +184,18 @@
 ;; =============================================================================
 
 (defn- create-test-context-with-provider
-  "Create test context with a non-nil dscloj-provider so LLM nodes actually execute."
+  "Create test context with a non-nil llm-provider so LLM nodes actually execute."
   []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
         cache-dir (str "/tmp/tree-executor-test-" (random-uuid))
         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "test"}))
         tenant-id (random-uuid)
-        ;; Use a provider keyword so the executor actually calls dscloj/predict
+        ;; Use a provider keyword so the executor actually calls llm/predict
         base-ctx {:event-store event-store
                   :cache cache
                   :tenant-id tenant-id
-                  :dscloj-provider :openrouter  ;; Non-nil provider triggers real execution
+                  :llm-provider :openrouter  ;; Non-nil provider triggers real execution
                   :event-pubsub ps
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
@@ -223,7 +223,7 @@
     (with-provider-context [ctx]
       ;; Track sub-LLM calls to verify they actually happen
       (let [sub-llm-calls (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         ;; Record the call for verification
                         (swap! sub-llm-calls conj {:provider provider
@@ -263,7 +263,7 @@
     (with-provider-context [ctx]
       ;; Track sub-LLM calls
       (let [sub-llm-calls (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (let [chunk-text (get-in inputs [:chunk :value])]
                           ;; Record the call
@@ -310,7 +310,7 @@
             not just a single aggregate. This is the universal token-tracking
             piece (extends :sheet/node-execution-completed event with :usage)."
     (with-provider-context [ctx]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       ;; Each sub-LLM call returns a deterministic usage map.
                       ;; If 3 chunks → 3 calls → total should sum to 3 × 75 = 225 tokens.
@@ -365,7 +365,7 @@
             generic node-execution-completed) that future judge/fingerprint
             work will consume."
     (with-provider-context [ctx]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       {:outputs {:chunk-summary "ok"}
                        :usage {:prompt_tokens 40 :completion_tokens 20 :total_tokens 60}})]
@@ -424,7 +424,7 @@
             line-count). This is the per-node signal future judges/pattern
             matchers will correlate to outcomes."
     (with-provider-context [ctx]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       {:outputs {:chunk-summary "ok"}
                        :usage {:prompt_tokens 30 :completion_tokens 15 :total_tokens 45}})]
@@ -472,7 +472,7 @@
             :trajectory (full per-event log), :total-usage, and a placeholder
             :task-fingerprint (nil for now)."
     (with-provider-context [ctx]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       {:outputs {:chunk-summary "ok"}
                        :usage {:prompt_tokens 25 :completion_tokens 10 :total_tokens 35}})]
@@ -533,7 +533,7 @@
       (let [in-flight (atom 0)
             peak (atom 0)
             call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider _module inputs _opts]
                         (swap! call-count inc)
                         (let [now-in-flight (swap! in-flight inc)]
@@ -609,7 +609,7 @@
 (deftest tree-with-failing-llm-node-propagates-error
   (testing "When LLM node fails in Phase 2, error propagates back correctly"
     (with-provider-context [ctx]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [provider module inputs opts]
                       ;; Simulate LLM failure
                       (throw (ex-info "Rate limit exceeded" {:status 429})))]
@@ -666,7 +666,7 @@
   (testing "Usage from sub-LLM calls is included in final result"
     (with-provider-context [ctx]
       ;; Track sub-LLM calls with mock usage
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [provider module inputs opts]
                       ;; Return mock output with usage
                       {:outputs {:summary "Test summary"}
@@ -697,7 +697,7 @@
   (testing "Usage from multiple sub-LLM calls is aggregated"
     (with-provider-context [ctx]
       (let [call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [provider module inputs opts]
                         (swap! call-count inc)
                         ;; Each call returns 100 tokens
@@ -744,7 +744,7 @@
         ;; returns valid emit-tree! code. Any subsequent call would indicate
         ;; Phase 2 sub-LLM was invoked — which should NOT happen here because
         ;; budget is already exhausted.
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider _module _inputs _opts]
                         (let [n (swap! call-count inc)]
                           (if (= 1 n)
@@ -786,7 +786,7 @@
     (with-provider-context [ctx]
       ;; Phase 1: fast — return valid emit-tree! code immediately.
       ;; Phase 2: each sub-LLM call sleeps long enough to exceed the small budget.
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (let [call-count (atom 0)]
                       (fn [_provider _module _inputs _opts]
                         (let [n (swap! call-count inc)]
@@ -839,7 +839,7 @@
 (deftest happy-path-response-includes-elapsed-ms-fields
   (testing "Normal Phase 1 + Phase 2 success carries :phase1-elapsed-ms + :phase2-elapsed-ms"
     (with-provider-context [ctx]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (let [call-count (atom 0)]
                       (fn [_provider _module _inputs _opts]
                         (let [n (swap! call-count inc)]
@@ -1028,7 +1028,7 @@
             running children to completion. Without U13, this fails with
             'Unknown tree node type: sheet/parallel'."
     (with-provider-context [ctx]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (let [c (atom 0)]
                       (fn [_provider _module _inputs _opts]
                         (let [n (swap! c inc)]

@@ -5,7 +5,7 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [dscloj.core :as dscloj]))
+            [ai.obney.orc.llm.interface :as llm]))
 
 (def ^:private structured-schema
   [:map
@@ -84,10 +84,19 @@
       :options {:use-function-calling? true
                 :retry-delay-ms 1})))
 
+(defn- provider-boundary-workflow [name]
+  (sheet/workflow name
+    (sheet/blackboard {:answer :string})
+    (sheet/llm "answer"
+      :instruction "Return an answer."
+      :writes [:answer]
+      :options {:use-function-calling? true
+                :retry-delay-ms 1})))
+
 (defn- execute-provider-values [ctx workflow-name provider-values]
   (let [remaining (atom provider-values)
         calls (atom 0)]
-    [(with-redefs [dscloj/predict
+    [(with-redefs [llm/predict
                    (fn [_provider _module _inputs _options]
                      (swap! calls inc)
                      (let [provider-value (first @remaining)]
@@ -97,7 +106,7 @@
                         :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}
                         :model "deterministic-provider"}))]
        (let [sheet-id (sheet/build-workflow! ctx (provider-number-workflow workflow-name))]
-         (sheet/execute (assoc ctx :dscloj-provider :deterministic-provider)
+         (sheet/execute (assoc ctx :llm-provider :deterministic-provider)
                         sheet-id {})))
      @calls]))
 
@@ -116,7 +125,7 @@
             :writes [:decision]
             :options {:use-function-calling? true
                       :retry-delay-ms 1}))]
-    [(with-redefs [dscloj/predict
+    [(with-redefs [llm/predict
                    (fn [_provider module _inputs _options]
                      (swap! modules conj module)
                      {:outputs {:outcome provider-value}
@@ -124,7 +133,7 @@
                       :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}
                       :model "deterministic-provider"})]
        (let [sheet-id (sheet/build-workflow! ctx workflow)]
-         (sheet/execute (assoc ctx :dscloj-provider :deterministic-provider)
+         (sheet/execute (assoc ctx :llm-provider :deterministic-provider)
                         sheet-id {})))
      @modules]))
 
@@ -380,3 +389,35 @@
         (is (= 1 (count rejected-events)))
         (is (= 4 (get-in result [:usage :total-tokens]))
             "exhausted retry still accounts for both attempts")))))
+
+(deftest det-e2e-129-orc-owned-llm-provider-boundary
+  (let [providers (atom [])
+        predict (fn [provider _spec _inputs _options]
+                  (swap! providers conj provider)
+                  {:outputs {:answer "structured answer"}
+                   :raw-response "[[ ## answer ## ]]\nstructured answer"
+                   :usage {:prompt-tokens 3 :completion-tokens 2 :total-tokens 5}
+                   :model "adapter-model"})]
+    (testing "the canonical key selects its provider and preserves public evidence"
+      (h/with-async-test-context [ctx {:context {:llm-provider :selected-provider}}]
+        (with-redefs [llm/predict predict]
+          (let [sheet-id (sheet/build-workflow!
+                          ctx (provider-boundary-workflow "det-e2e-129-canonical"))
+                result (sheet/execute ctx sheet-id {})
+                trace (trace-for ctx result)
+                leaf (some #(when (= :leaf (:node-type %)) %) (:node-traces trace))]
+            (is (= :selected-provider (first @providers)))
+            (is (= :success (:status result)))
+            (is (= "structured answer" (get-in result [:outputs :answer])))
+            (is (= 5 (get-in result [:usage :total-tokens])))
+            (is (= :success (:status leaf)))))))
+
+    (testing "the removed key cannot select the value supplied under it"
+      (h/with-async-test-context [ctx {:context {:dscloj-provider :removed-provider}}]
+        (with-redefs [llm/predict predict]
+          (let [sheet-id (sheet/build-workflow!
+                          ctx (provider-boundary-workflow "det-e2e-129-removed-key"))
+                result (sheet/execute ctx sheet-id {})]
+            (is (= :success (:status result)))
+            (is (= [:selected-provider :openrouter] @providers))
+            (is (not-any? #{:removed-provider} @providers))))))))

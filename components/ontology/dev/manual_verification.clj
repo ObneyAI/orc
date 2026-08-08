@@ -81,7 +81,7 @@
                   :tenant-id #uuid "00000000-0000-0000-0000-000000000000"
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   ::cache-dir dir}
         processors (reduce-kv
                     (fn [acc proc-name {:keys [handler-fn topics]}]

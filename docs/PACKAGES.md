@@ -52,7 +52,7 @@ The Layer-0 engine. Behavior-tree DSL (`workflow`, `sequence`, `parallel`,
 synchronous + streaming execution, idempotent recovery of abandoned leaf
 frontiers, bounded failure-isolated telemetry export, event-sourced sheets,
 versioning, and the generic file-store contract. Its runtime dependencies include the LLM-call
-layer (DSCloj), structured logging (mulog), a safe Clojure interpreter (sci),
+layer (ORC's SIO-backed `llm` component), structured logging (mulog), a safe Clojure interpreter (sci),
 and Nippy value encoding. No model loading.
 
 Canonical values remain inline by default. The engine includes the generic

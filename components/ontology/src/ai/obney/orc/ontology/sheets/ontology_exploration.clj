@@ -639,15 +639,15 @@ Few-shot learning enables learning from very few examples.")
 ;;        :domain sample-domain})))
 
 (defn ensure-context-has-provider
-  "Ensure the context has a dscloj-provider set for real LLM execution."
+  "Ensure the context has a llm-provider set for real LLM execution."
   [context]
-  (if (:dscloj-provider context)
+  (if (:llm-provider context)
     context
     (do
-      (println "Warning: Context missing :dscloj-provider, setting to :openrouter")
-      (assoc context :dscloj-provider :openrouter))))
+      (println "Warning: Context missing :llm-provider, setting to :openrouter")
+      (assoc context :llm-provider :openrouter))))
 
-;; NOTE: run-full-test requires dscloj which is not in ORC deps
+;; NOTE: run-full-test requires llm which is not in ORC deps
 ;; Use the comment block below for manual testing instead
 #_(defn run-full-test
     "Run the complete taxonomy pipeline test with proper context setup."
@@ -658,13 +658,13 @@ Few-shot learning enables learning from very few examples.")
     (println "=" (apply str (repeat 69 "=")))
 
     ;; Setup providers
-    (println "\nSetting up DSCloj providers...")
-    (dscloj/quick-setup!)
-    (println "Available providers:" (dscloj/list-providers))
+    (println "\nSetting up ORC LLM providers...")
+    (llm/quick-setup!)
+    (println "Available providers:" (llm/list-providers))
 
     ;; Check context
     (let [context (ensure-context-has-provider rs/context)]
-      (println "\nContext provider:" (:dscloj-provider context))
+      (println "\nContext provider:" (:llm-provider context))
 
       ;; Build workflow
       (println "\nBuilding taxonomy pipeline...")
@@ -704,10 +704,10 @@ Few-shot learning enables learning from very few examples.")
 
   ;; Step 2: Setup providers and check
   (do
-    (require '[dscloj.core :as dscloj])
-    (dscloj/quick-setup!)
-    (println "Providers:" (dscloj/list-providers))
-    (println "Context provider:" (:dscloj-provider rs/context)))
+    (require '[ai.obney.orc.llm.interface :as llm])
+    (llm/quick-setup!)
+    (println "Providers:" (llm/list-providers))
+    (println "Context provider:" (:llm-provider rs/context)))
 
   ;; Step 3: Build the workflow
   (build-taxonomy-pipeline! rs/context)

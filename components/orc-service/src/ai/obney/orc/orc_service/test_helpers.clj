@@ -291,7 +291,7 @@
                          :event-pubsub ps
                          :command-registry (cp/global-command-registry)
                          :query-registry (qp/global-query-registry)
-                         :dscloj-provider :openrouter
+                         :llm-provider :openrouter
                          ::cache-dir dir}
                         context)
         ;; Start a todo processor for each registered processor

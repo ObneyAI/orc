@@ -30,7 +30,7 @@
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.orc.orc-service.core.executor :as executor]
             [litellm.router]
-            [dscloj.core]
+            [ai.obney.orc.llm.interface]
             [clojure.pprint :as pp]
             [clojure.java.io :as io]))
 
@@ -45,7 +45,7 @@
                   :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :event-pubsub ps
                   ::cache-dir cache-dir}
         processors (reduce-kv
@@ -143,11 +143,11 @@
             _ (println "Mode :recursive?:" (get-in node [:rlm :recursive?]))
 
             t0 (System/currentTimeMillis)
-            ;; Intercept dscloj/predict to log raw LLM output for debugging.
+            ;; Intercept llm/predict to log raw LLM output for debugging.
             ;; Capture the FUNCTION VALUE before with-redefs (not a var ref —
             ;; that would recurse infinitely once the redef takes effect).
             real-completion-fn @#'litellm.router/completion
-            real-predict-fn @#'dscloj.core/predict
+            real-predict-fn @#'ai.obney.orc.llm.interface/predict
             call-num (atom 0)
             result (with-redefs [;; Capture raw LLM response text at the router level
                                  litellm.router/completion
@@ -165,7 +165,7 @@
                                                 (subs s 0 (min 2000 (count s)))))
                                      (println "Usage:" (:usage r))
                                      r))
-                                 dscloj.core/predict
+                                 ai.obney.orc.llm.interface/predict
                                  (fn [provider module inputs opts]
                                    (let [n (swap! call-num inc)
                                          is-phase1? (some #(= :code (:name %)) (:outputs module))

@@ -15,14 +15,14 @@
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.mcp-sheet-builder.interface :as mcp]
-            [dscloj.core :as dscloj]))
+            [ai.obney.orc.llm.interface :as llm]))
 
 ;; =============================================================================
 ;; Async Context with MCP Support
 ;; =============================================================================
 
 (defn- create-mcp-async-context
-  "Create an async test context with :call-tool-fn and :dscloj-provider
+  "Create an async test context with :call-tool-fn and :llm-provider
    injected into the base context BEFORE todo processors start."
   [call-tool-fn]
   (let [ps (pubsub/start {:type :core-async
@@ -39,7 +39,7 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   :call-tool-fn call-tool-fn
-                  :dscloj-provider :test}
+                  :llm-provider :test}
         processors (reduce-kv
                     (fn [acc proc-name {:keys [handler-fn topics]}]
                       (assoc acc proc-name
@@ -135,7 +135,7 @@
           call-tool-fn (partial mcp/call-tool mcp-conn)
           call-count (atom 0)]
       (with-mcp-async-context [ctx call-tool-fn]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider _module _inputs _opts]
                         (let [n (swap! call-count inc)]
                           (if (= n 1)
@@ -155,7 +155,7 @@
 (deftest repl-researcher-async-no-tools-test
   (testing "repl-researcher works without MCP tools (pure computation)"
     (with-mcp-async-context [ctx nil]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       {:outputs {:code "FINAL_ANSWER: 42"}
                        :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]

@@ -13,6 +13,7 @@
         ;; NO ontology, NO colbert, NO DJL, NO Python. GEPA optimizes static
         ;; :llm instructions; it has zero dependency on the ontology/self-
         ;; improving loop. (The evaluation gate stays lazily resolved.)
+        orc/llm         {:local/root "../../components/llm"}
         orc/gepa        {:local/root "../../components/gepa"}
         orc/evaluation  {:local/root "../../components/evaluation"}
         orc/orc-service {:local/root "../../components/orc-service"}

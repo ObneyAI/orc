@@ -209,7 +209,7 @@ IDs and timestamps when an append commits.
    - sequence: run children in order, fail on first failure
    - fallback: run children in order, succeed on first success
    - parallel: run children concurrently
-   - llm: call LLM via DSCloj
+   - llm: call an LLM through ORC's SIO-backed provider boundary
    - code: evaluate Clojure via SCI
    - repl-researcher: iterative code generation + MCP tool calling
 5. Result delivered via completion promise
@@ -377,7 +377,7 @@ ORC is a library — consumers provide:
   or Postgres), LMDB projection cache, and—when deploying multiple
   instances—the control plane; add the event tailer when shared-store events
   must reach each node's local live-update pub/sub
-- **LLM provider**: DSCloj configuration (`:dscloj-provider` in context)
+- **LLM provider**: provider configuration selected by `:llm-provider` in context
 - **Optional**: Langfuse client for tracing, MCP servers for tool calling
 
 ## Documentation

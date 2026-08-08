@@ -264,14 +264,14 @@
 (deftest cycle3-rlm-phase2-block-propagates-to-execute-result-no-further-leaves
   (testing "a Phase-2 :code leaf block ⇒ outer execute result is :blocked + opaque payload; the child tick blocked; no subsequent tree leaf ran"
     (h/with-async-test-context [ctx]
-      (with-redefs [dscloj.core/predict
+      (with-redefs [ai.obney.orc.llm.interface/predict
                     (fn [_provider _module _inputs _opts]
                       {:outputs {:code blocking-emit-tree-code}
                        :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]
         (let [{:keys [sheet-id]} (setup-blocking-repl-researcher-sheet! ctx)
               root-tick-id (random-uuid)
               t0 (System/currentTimeMillis)
-              result (sheet/execute (assoc ctx :dscloj-provider :openrouter)
+              result (sheet/execute (assoc ctx :llm-provider :openrouter)
                                     sheet-id {:question "go"}
                                     :timeout-ms 30000
                                     :tick-id root-tick-id)

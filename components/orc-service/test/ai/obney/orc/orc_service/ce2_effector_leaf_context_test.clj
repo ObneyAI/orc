@@ -16,7 +16,7 @@
    BACK (never a node return value). :tool-context / the gated tool are STUB
    INSTRUMENTS; the engine threading is the system under test."
   (:require [clojure.test :refer [deftest testing is]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
@@ -47,7 +47,7 @@
         base-ctx (merge {:event-store event-store
                          :cache cache
                          :tenant-id tenant-id
-                         :dscloj-provider nil
+                         :llm-provider nil
                          :event-pubsub ps
                          :command-registry (cp/global-command-registry)
                          :query-registry (qp/global-query-registry)
@@ -76,7 +76,7 @@
         (.delete f)))))
 
 (defmacro ^:private with-test-context [[ctx-sym extra] & body]
-  `(binding [tp-core/*default-dscloj-provider* nil]
+  `(binding [tp-core/*default-llm-provider* nil]
      (let [~ctx-sym (create-test-context ~extra)]
        (try ~@body
             (finally (stop-test-context ~ctx-sym))))))
@@ -240,7 +240,7 @@
   "STUB-CATALOG-XYZZY: fs/write {:path :content} -> {:status}")
 
 (defn- capture-rlm-inputs
-  "Drive the REAL execute-repl-researcher-rlm one iteration with dscloj/predict
+  "Drive the REAL execute-repl-researcher-rlm one iteration with llm/predict
    redef'd to CAPTURE the (module, inputs) handed to the model, then abort.
    No real LLM, no ColBERT. Returns the captured inputs map (or nil)."
   [rlm-config]
@@ -254,7 +254,7 @@
               :rlm rlm-config}
         blackboard {:task-input {:key :task-input :value "input-value" :version 0}}]
     (with-test-context [ctx {}]
-      (with-redefs [dscloj/predict (fn [_provider module inputs _opts]
+      (with-redefs [llm/predict (fn [_provider module inputs _opts]
                                      (reset! captured {:module module :inputs inputs})
                                      (throw (ex-info "capture-abort" {})))]
         (try (executor/execute-repl-researcher-rlm node blackboard :probe-provider ctx)
@@ -265,7 +265,7 @@
   (testing "when :rlm configures :available-code-nodes, the VALUE is in the runtime inputs map"
     (let [{:keys [module inputs]} (capture-rlm-inputs {:recursive? true
                                                        :available-code-nodes catalog-value})]
-      (is (some? inputs) "dscloj/predict should have been called (inputs captured)")
+      (is (some? inputs) "llm/predict should have been called (inputs captured)")
       (is (contains? inputs :available-code-nodes)
           "runtime inputs map should CONTAIN :available-code-nodes (RED before G2)")
       (is (= catalog-value (:available-code-nodes inputs))
@@ -277,7 +277,7 @@
 
   (testing "when :rlm does NOT configure :available-code-nodes, the inputs map omits it"
     (let [{:keys [inputs]} (capture-rlm-inputs {:recursive? true})]
-      (is (some? inputs) "dscloj/predict should have been called (inputs captured)")
+      (is (some? inputs) "llm/predict should have been called (inputs captured)")
       (is (not (contains? inputs :available-code-nodes))
           "runtime inputs map should NOT contain :available-code-nodes when unconfigured"))))
 

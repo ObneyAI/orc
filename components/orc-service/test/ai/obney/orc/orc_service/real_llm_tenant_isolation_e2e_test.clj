@@ -82,8 +82,8 @@
       (h/with-async-test-context [base]
         (let [tenant-a (random-uuid)
               tenant-b (random-uuid)
-              ctx-a (assoc base :tenant-id tenant-a :dscloj-provider :openrouter)
-              ctx-b (assoc base :tenant-id tenant-b :dscloj-provider :openrouter)
+              ctx-a (assoc base :tenant-id tenant-a :llm-provider :openrouter)
+              ctx-b (assoc base :tenant-id tenant-b :llm-provider :openrouter)
               sentinel-a "TENANT-A-PRIVATE-120"
               sentinel-b "TENANT-B-PRIVATE-120"
               sheet-a (sheet/build-workflow! ctx-a (colliding-workflow sentinel-a))

@@ -6,7 +6,7 @@
    in the ontology for learning."
   (:require [clojure.test :refer [deftest testing is]]
             [malli.core :as m]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
@@ -359,9 +359,9 @@
 
 (deftest executor-detects-emit-tree-and-includes-raw-tree
   (testing "execute-repl-researcher-rlm detects emit-tree! and includes raw tree in result"
-    (let [;; Mock dscloj/predict to return code with emit-tree!
+    (let [;; Mock llm/predict to return code with emit-tree!
           call-count (atom 0)]
-      (with-redefs [dscloj.core/predict
+      (with-redefs [ai.obney.orc.llm.interface/predict
                     (fn [provider module inputs opts]
                       (swap! call-count inc)
                       {:outputs {:code "(emit-tree!
@@ -405,8 +405,8 @@
 ;; =============================================================================
 ;;
 ;; When a Phase-1 sub-LLM call reads a blackboard key whose Malli schema
-;; carries :field-type :image, the dscloj module's corresponding input
-;; field must be marked :type :image so dscloj's build-message-content
+;; carries :field-type :image, the llm module's corresponding input
+;; field must be marked :type :image so llm's build-message-content
 ;; routes the value as a multimodal content block (image_url), not as
 ;; inline text. Without this, vision tasks ship base64 data URIs as
 ;; inline text — wrong content shape AND ~480K tokens per image vs ~1K
@@ -415,7 +415,7 @@
 (deftest llm-primitive-propagates-image-field-type-to-module
   (testing "blackboard schema [:string {:field-type :image}] -> module input :type :image"
     (let [captured (atom nil)]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider module inputs _opts]
                       (reset! captured {:module module :inputs inputs})
                       {:outputs {:answer "ok"}
@@ -440,7 +440,7 @@
                 image-input (first (filter #(= :image (:name %)) (:inputs module)))]
             (is (some? image-input) "module :inputs should include :image entry")
             (is (= :image (:type image-input))
-                "image-typed blackboard schema must propagate :type :image to the dscloj module input")))))))
+                "image-typed blackboard schema must propagate :type :image to the llm module input")))))))
 
 ;; =============================================================================
 ;; U8: Inline-fn sanitization for Fressian-safe event storage
@@ -490,7 +490,7 @@
 ;;
 ;; When the model emits a tree with an :llm node declaring :output-schemas,
 ;; those schemas propagate to the child sheet's blackboard key declarations.
-;; Downstream, build-module looks up the blackboard schema, and dscloj's
+;; Downstream, build-module looks up the blackboard schema, and llm's
 ;; existing complex-spec? path triggers JSON-parsing of the LLM response.
 ;; This closes the LLM-output → :code consumer gap that document_redaction
 ;; surfaced (the LLM produced JSON-text but downstream :code expected

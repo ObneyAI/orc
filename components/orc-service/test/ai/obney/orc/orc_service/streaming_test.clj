@@ -19,7 +19,7 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
-            [dscloj.core])) ;; for the Stage 2 stub (intern/with-redefs)
+            [ai.obney.orc.llm.interface :as llm]))
 
 ;; =============================================================================
 ;; Fixtures + helpers
@@ -395,20 +395,19 @@
   [& _args]
   (let [ch (async/chan 16)]
     (async/onto-chan! ch
-                      [{:dscloj/event :delta :text "stream"}
-                       {:dscloj/event :fields :fields {:answer "stream"}}
-                       {:dscloj/event :delta :text "ed answer"}
-                       {:dscloj/event :fields :fields {:answer "streamed answer"}}
-                       {:dscloj/event :final
+                      [{:orc/event :delta :text "stream"}
+                       {:orc/event :fields :fields {:answer "stream"}}
+                       {:orc/event :delta :text "ed answer"}
+                       {:orc/event :fields :fields {:answer "streamed answer"}}
+                       {:orc/event :final
                         :outputs {:answer "streamed answer"}
                         :usage stub-usage
                         :model "stub-model"}])
     ch))
 
 (defmacro with-stub-predict-stream-v2 [& body]
-  `(do (intern (the-ns 'dscloj.core) '~'predict-stream-v2 stub-stream-ch)
-       (try ~@body
-            (finally (ns-unmap (the-ns 'dscloj.core) '~'predict-stream-v2)))))
+  `(with-redefs [llm/predict-stream-v2 stub-stream-ch]
+     ~@body))
 
 (deftest llm-token-streaming-test
   (testing "an :ai leaf streams field snapshots and raw deltas when a subscriber opted in"
@@ -449,7 +448,7 @@
   (testing "without delta opt-in the stub is never consulted (blocking path preserved)"
     (h/with-async-test-context [ctx]
       (with-stub-predict-stream-v2
-        (with-redefs [dscloj.core/predict (fn [& _]
+        (with-redefs [ai.obney.orc.llm.interface/predict (fn [& _]
                                             {:outputs {:answer "blocking answer"}
                                              :usage stub-usage
                                              :model "stub-model"})]
@@ -486,7 +485,7 @@
                   (drain! events-ch)))
             ;; blocking run, same payload via redefined predict
             blocking-tick (random-uuid)
-            _ (with-redefs [dscloj.core/predict (fn [& _]
+            _ (with-redefs [ai.obney.orc.llm.interface/predict (fn [& _]
                                                   {:outputs {:answer "streamed answer"}
                                                    :usage stub-usage
                                                    :model "stub-model"})]

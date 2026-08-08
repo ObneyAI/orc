@@ -373,7 +373,7 @@
     ;; out. A document that is never read and never written therefore gets
     ;; stored on the way in, on the way out, and twice more inside the
     ;; trace's input/output snapshots.
-    (binding [tp-core/*default-dscloj-provider* nil]
+    (binding [tp-core/*default-llm-provider* nil]
       (h/with-async-test-context [ctx]
         (let [tree (rlm-dsl/rlm-dsl->orc-dsl [:sequence [:final {:keys [:summary]}]])
               big (apply str (repeat 20 payload-unit))

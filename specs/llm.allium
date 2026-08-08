@@ -1,0 +1,66 @@
+-- allium: 3
+-- llm.allium
+
+-- Scope: ORC's provider-facing structured prediction boundary.
+-- Includes: blocking predictions, typed streaming, provider registration,
+-- structured result and provenance preservation, and terminal failures.
+-- Excludes: provider-specific transport mechanics, prompt-rendering algorithms,
+-- workflow retries/deadlines/budgets, and durable execution projections.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity LlmConsumer {}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract StructuredPrediction {
+    predict: (provider: Any, specification: Any, inputs: Any, options: Any) -> Any
+    predict_stream: (provider: Any, specification: Any, inputs: Any, options: Any) -> Any
+    register_provider: (name: String, configuration: Any) -> Any
+    setup_environment_providers: () -> Any
+    list_provider_types: () -> Any
+
+    @invariant DeclaredStructuredValues
+        -- Inputs and outputs are interpreted using the caller's declared
+        -- structured contract, including nested values, unions, literals,
+        -- canonical enum spellings, optional values, and images.
+
+    @invariant PredictionMetadata
+        -- A metadata-bearing blocking result preserves parsed outputs, token
+        -- usage, resolved model identity, and the verbatim provider response.
+
+    @invariant OneInvocationPerPrediction
+        -- One prediction attempt performs at most one provider invocation;
+        -- retry policy and call-budget accounting remain with the caller.
+
+    @invariant ExplicitStreamingTerminal
+        -- A stream emits ordered raw deltas and progressive fields, then
+        -- exactly one success or error terminal event before closing.
+
+    @invariant InvalidResultsFail
+        -- Provider errors and requested validation failures remain failures;
+        -- unvalidated data is never relabelled as a successful result.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface OrcLlmBoundary {
+    facing consumer: LlmConsumer
+
+    contracts:
+        fulfils StructuredPrediction
+
+    @guarantee OrcOwnedEventVocabulary
+        -- Streaming events use ORC's event discriminator and expose no
+        -- dependency-specific event vocabulary.
+
+    @guarantee ProviderAgnosticContract
+        -- Callers select a configured provider without depending on the
+        -- structured-I/O or transport implementation chosen behind this boundary.
+}

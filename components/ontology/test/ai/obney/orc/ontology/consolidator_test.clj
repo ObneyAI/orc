@@ -7,12 +7,12 @@
    structured-output LLM reflection call, and emits the matching
    :*-description-updated event with the validated body.
 
-   Tests fake the LLM call via `with-redefs` on dscloj/predict so no
+   Tests fake the LLM call via `with-redefs` on llm/predict so no
    real network calls happen during dev iteration. The HITL live-verify
    uses a real LLM."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
@@ -46,7 +46,7 @@
                   :cache cache
                   :tenant-id tenant-id
                   :event-pubsub ps
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
@@ -103,14 +103,14 @@
    })
 
 (defn- with-faked-llm
-  "Run body with dscloj/predict stubbed to return a synthetic well-formed
+  "Run body with llm/predict stubbed to return a synthetic well-formed
    description body. The fake returns one :outputs entry PER U11 :writes
    key — matching the consolidator's six-key structured-output contract
    (capabilities / strengths / weaknesses / representative-uses /
    avoid-when / summary). The :version + :consolidated-from-event-count
    values in `response` are ignored — the consolidator computes them."
   [response f]
-  (with-redefs [dscloj/predict (fn [_provider _module _inputs _options]
+  (with-redefs [llm/predict (fn [_provider _module _inputs _options]
                                   {:outputs (select-keys response
                                                           [:capabilities
                                                            :strengths
@@ -364,11 +364,11 @@
             :duration-ms 100})))
 
 (defn- with-input-capturing-llm
-  "Like with-faked-llm but ALSO captures the inputs passed to dscloj/predict
+  "Like with-faked-llm but ALSO captures the inputs passed to llm/predict
    into the supplied atom. The fake returns the well-formed description-body
    regardless."
   [captured-inputs response f]
-  (with-redefs [dscloj/predict
+  (with-redefs [llm/predict
                 (fn [_provider _module inputs _options]
                   (swap! captured-inputs conj inputs)
                   {:outputs (select-keys response
@@ -529,7 +529,7 @@
           "Prompt mentions the :recent-vs-historical-delta input"))))
 
 (deftest aggregate-metrics-passed-to-llm-when-source-events-exist
-  (testing "After source events for the target, the consolidator passes non-nil :aggregate-metrics to the LLM. The workflow's serialize-for-llm step JSON-encodes the map before it reaches dscloj — we verify the encoded payload contains the expected success/failure counts."
+  (testing "After source events for the target, the consolidator passes non-nil :aggregate-metrics to the LLM. The workflow's serialize-for-llm step JSON-encodes the map before it reaches llm — we verify the encoded payload contains the expected success/failure counts."
     (with-test-ctx [ctx]
       ;; Emit 6 source events (4 success + 2 failure) for :llm
       (dotimes [_ 4] (complete-node-event-with-status! ctx :llm :success))

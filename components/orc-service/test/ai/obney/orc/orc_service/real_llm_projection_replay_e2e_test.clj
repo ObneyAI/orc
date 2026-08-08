@@ -7,6 +7,7 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.evaluation.interface :as evaluation]
             [ai.obney.orc.gepa.interface :as gepa]
+            [ai.obney.orc.gepa.interface.schemas]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.orc-service.complex-e2e-support :as live]
             [ai.obney.orc.orc-service.interface :as sheet]
@@ -71,7 +72,7 @@
       (h/with-async-test-context [ctx]
         (command! ctx {:command/name :ontology/set-living-description-enabled
                        :enabled? true})
-        (let [ctx (assoc ctx :dscloj-provider :openrouter)
+        (let [ctx (assoc ctx :llm-provider :openrouter)
               sentinel "REPLAY-SENTINEL-119"
               sheet-id (sheet/build-workflow! ctx (workflow))
               node-id (some #(when (= "replay-leaf" (:name %)) (:id %))

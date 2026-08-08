@@ -17,7 +17,7 @@
        DECOUPLED from the criteria/instruction (see core/scale.clj), mapped
        deterministically to [0,1] for storage;
      - an ADVERSARIAL, SOURCE-GROUNDED, reason-BEFORE-score stance;
-     - structured output via the typed blackboard (DSCloj output fields with
+     - structured output via the typed blackboard (ORC LLM output fields with
        {:description ...}) — NO json-in-prompt, NO permissive output schema.
    The old soft-0.0-1.0 `GROUNDING_RUBRIC` below is retained only for the
    legacy retrospective code paths; the live grounding judge uses

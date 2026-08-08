@@ -16,7 +16,7 @@ are represented in a checked Allium specification.
 | `gepa` | Pareto-based prompt optimization | `gepa.allium` | Distilled and checked |
 | `grain-test-utils` | Test-only Grain helpers | — | Excluded: test infrastructure |
 | `langfuse` | Trace destination adapter | `observability.allium` | Distilled and checked with the managed exporter lifecycle exposed by `orc-service` |
-| `llm` | — | — | Excluded: empty placeholder directory; no production source or dependency manifest |
+| `llm` | Structured provider prediction and streaming | `llm.allium` | Distilled and checked |
 | `mcp-sheet-builder` | Workflow generation from MCP tools | `mcp-sheet-builder.allium` | Distilled and checked |
 | `ontology` | Ontology discovery, evolution, and retrieval | `ontology.allium` | Distilled and checked |
 | `orc-service` | Behavior-tree execution and RLM runtime | `orc-service.allium` | Distilled and checked |
@@ -33,10 +33,10 @@ added to this ledger rather than silently excluded.
 ## Source audit
 
 The final audit enumerated every Clojure namespace under each component's
-`src/` tree. The ten specifications cover 130 product namespaces across the 15
+`src/` tree. The eleven specifications cover 132 product namespaces across the 16
 non-empty product components. The one additional namespace belongs to
 `grain-test-utils`, whose public purpose is test-fixture construction and is
-explicitly excluded above. `llm` contains no source namespace.
+explicitly excluded above.
 
 | Specification | Source namespaces represented |
 |---|---:|
@@ -45,6 +45,7 @@ explicitly excluded above. `llm` contains no source namespace.
 | `evaluation.allium` | 11 |
 | `file-storage.allium` | 6 across contract, local, and S3 components |
 | `gepa.allium` | 13 |
+| `llm.allium` | 2 |
 | `mcp-sheet-builder.allium` | 18 |
 | `observability.allium` | 2 |
 | `ontology.allium` | 34 |
@@ -63,15 +64,15 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-07, both `allium check specs` and `allium analyse specs` reported 174
-structural diagnostics across the ten specifications: 146 informational and 28
+On 2026-08-08, both `allium check specs` and `allium analyse specs` reported 175
+structural diagnostics across the eleven specifications: 146 informational and 29
 warnings. `analyse` reported zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
 | `allium.rule.unreachableTrigger` | 38 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
 | `allium.field.unused` | 108 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
-| `allium.externalEntity.missingSourceHint` | 14 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
+| `allium.externalEntity.missingSourceHint` | 15 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 12 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 

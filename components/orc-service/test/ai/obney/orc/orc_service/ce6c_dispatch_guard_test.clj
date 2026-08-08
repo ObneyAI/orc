@@ -22,7 +22,7 @@
    value alone."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             ;; Loading interface.schemas registers the malli command schemas
@@ -53,7 +53,7 @@
         base-ctx {:event-store event-store
                   :cache cache
                   :tenant-id tenant-id
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :event-pubsub ps
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
@@ -128,7 +128,7 @@
       (let [outer-call-count (atom 0)
             phase2-call-count (atom 0)
             history-snapshots (atom [])]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider module inputs _opts]
                         (if (phase1-module? module)
                           (let [n (swap! outer-call-count inc)]
@@ -219,7 +219,7 @@
     (with-test-ctx [ctx]
       (let [outer-call-count (atom 0)
             phase2-call-count (atom 0)]
-        (with-redefs [dscloj/predict
+        (with-redefs [llm/predict
                       (fn [_provider module _inputs _opts]
                         (if (phase1-module? module)
                           (do (swap! outer-call-count inc)
@@ -316,7 +316,7 @@
 (deftest cycle4-execute-carries-tool-context-onto-root-tick
   (testing "through runtime/execute (non-stream entry), a context :tool-context lands on the root :sheet/tick-tree / tree-tick-started event and reaches the Phase-2 leaf"
     (h/with-async-test-context [ctx]
-      (with-redefs [dscloj/predict mock-predict-emitting-recorder]
+      (with-redefs [llm/predict mock-predict-emitting-recorder]
         (let [marker       (str "CE6C-EXECUTE-MARKER-" (random-uuid))
               tool-context {:marker marker :workspace "/ws"}
               {:keys [sheet-id]} (setup-repl-researcher-sheet! ctx)
@@ -349,7 +349,7 @@
 (deftest cycle4b-execute-without-tool-context-is-unchanged
   (testing "absent :tool-context -> the root command/event is unchanged (cond-> skips the clause)"
     (h/with-async-test-context [ctx]
-      (with-redefs [dscloj/predict mock-predict-emitting-recorder]
+      (with-redefs [llm/predict mock-predict-emitting-recorder]
         (let [{:keys [sheet-id]} (setup-repl-researcher-sheet! ctx)
               root-tick-id (random-uuid)
               result (sheet/execute ctx sheet-id {:question "go"}

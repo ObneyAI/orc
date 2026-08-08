@@ -109,7 +109,7 @@
                   :cache cache
                   :tenant-id tenant-id
                   :event-pubsub ps
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
@@ -1649,16 +1649,16 @@
 ;; :dimensions) from the LLM's response and emits a `:judge/score-
 ;; emitted` event of the same shape as deterministic judges.
 ;;
-;; Unit test uses with-redefs on dscloj/predict to return synthetic
+;; Unit test uses with-redefs on llm/predict to return synthetic
 ;; structured outputs. LIVE verify (RED-LIVE) hits real OpenRouter.
 
-(require '[dscloj.core :as dscloj])
+(require '[ai.obney.orc.llm.interface :as llm])
 
 (defn- with-faked-llm
-  "Run body with dscloj/predict stubbed to return synthetic structured
+  "Run body with llm/predict stubbed to return synthetic structured
    outputs. Mirrors the consolidator-test helper of the same name."
   [outputs f]
-  (with-redefs [dscloj/predict (fn [_provider _module _inputs _options]
+  (with-redefs [llm/predict (fn [_provider _module _inputs _options]
                                   {:outputs outputs
                                    :usage {:total-tokens 100}
                                    :model "fake-llm-judge"})]

@@ -29,7 +29,7 @@
         base-ctx {:event-store event-store :cache cache :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :event-pubsub ps
                   ::cache-dir cache-dir}
         processors (reduce-kv (fn [acc proc-name {:keys [handler-fn topics]}]

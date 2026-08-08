@@ -95,7 +95,7 @@
     (live/with-real-openrouter
       (live/register-openrouter!)
       (h/with-async-test-context
-        [ctx {:context {:dscloj-provider :openrouter
+        [ctx {:context {:llm-provider :openrouter
                         :model live/openrouter-model
                         :ontology-consolidator-model live/openrouter-model}}]
         (command! ctx {:command/name :ontology/record-node-type-description
@@ -208,7 +208,7 @@
     (live/with-real-openrouter
       (live/register-openrouter-model! live/openrouter-strong-model)
       (h/with-async-test-context
-        [ctx {:context {:dscloj-provider :openrouter
+        [ctx {:context {:llm-provider :openrouter
                         :model live/openrouter-strong-model}}]
         (let [signature (str mint-sentinel " independently verified claims")
               before (ontology/classify-behaviors

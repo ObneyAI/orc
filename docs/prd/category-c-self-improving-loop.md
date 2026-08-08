@@ -277,7 +277,7 @@ This is not optional. Per the project rule "mocks for dev iteration; live runs r
 ### Prior art
 
 - Pure-deep-module testing pattern: `recursive_rlm_drill_down_test.clj` (R-2 unit tests with fixture event vectors).
-- Integration test with `with-test-ctx`: `recursive_rlm_test.clj` (R-1 integration tests with mock `dscloj/predict`).
+- Integration test with `with-test-ctx`: `recursive_rlm_test.clj` (R-1 integration tests with mock `llm/predict`).
 - Live-verify script pattern: `development/src/recursive_rlm_drill_down_live_verify.clj` (R-2's adaptive task live-verify).
 - 3-way comparison structure: D-003's `d003_live_verify.clj` (`_tight` vs `_generous` variants) is the closest precedent — though only 2-way; C-1's 3-way structure is a deliberate addition.
 

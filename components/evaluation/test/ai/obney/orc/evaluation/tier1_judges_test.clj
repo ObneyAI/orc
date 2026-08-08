@@ -20,7 +20,8 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.orc.evaluation.core.rubrics :as rubrics]
-            [ai.obney.orc.evaluation.core.scale :as scale]))
+            [ai.obney.orc.evaluation.core.scale :as scale]
+            [ai.obney.orc.llm.interface :as llm]))
 
 (def sample-trace
   {:inputs {:context "FAQ: The gym is open Monday-Friday 6am-10pm."}
@@ -161,6 +162,34 @@
         (is (not (re-find #"(?i)return only json" instr)) (str k ": no 'return only json'"))
         (is (not (re-find #"\{\s*\"score\"" instr)) (str k ": no JSON object literal"))
         (is (not (re-find #"```json" instr)) (str k ": no json code-fence"))))))
+
+(deftest tier1-provider-schemas-use-bounded-integers-for-levels
+  (testing "Gemini-compatible schemas preserve the discrete 1-5 score domain without numeric enums"
+    (let [modules (atom [])
+          predict (fn [_provider module _inputs _options]
+                    (swap! modules conj module)
+                    {:outputs {:level "5"
+                               :reasoning "Evidence supports the highest band."
+                               :grounded-claims []
+                               :ungrounded-claims []
+                               :requirements-met []
+                               :requirements-missed []
+                               :reasoning-strengths []
+                               :reasoning-weaknesses []
+                               :aspects-covered []
+                               :aspects-missing []
+                               :feedback "Complete."}})]
+      (with-redefs [llm/predict predict]
+        (judges/grounding-judge {:inputs {:trace-data sample-trace}})
+        (judges/instruction-following-judge {:inputs {:trace-data sample-trace}})
+        (judges/reasoning-judge {:inputs {:trace-data sample-trace}})
+        (judges/completeness-judge {:inputs {:trace-data sample-trace}}))
+      (is (= 4 (count @modules)))
+      (doseq [module @modules]
+        (is (= [:and :int [:>= 1] [:<= 5]]
+               (:spec (some #(when (= :level (:name %)) %) (:outputs module)))))
+        (is (not-any? #(and (vector? %) (= :enum (first %)))
+                      (map :spec (:outputs module))))))))
 
 ;; =============================================================================
 ;; No-run-through gate (via each judge fn's real path, with redefs)

@@ -171,7 +171,7 @@
                  :include-failures true
                  :tree-id uuid  ;; for self-learning
                  :self-learning? true}
-     :options - Executor options passed through to DSCloj for this node"
+     :options - Executor options passed through to ORC LLM for this node"
   [name & {:keys [model instruction reads writes retry judges context options]}]
   (cond-> {:node-type :leaf
            :name name

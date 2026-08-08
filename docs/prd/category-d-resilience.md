@@ -189,7 +189,7 @@ A repeated principle from the user, saved as feedback memory: **mocks are accept
 
 ### Prior art for tests
 
-- `rlm_tree_executor_test.clj` (added during O02/O03) — same fixture pattern with mock DSCloj provider and in-memory event store. New D-008/D-003 integration tests fit cleanly here.
+- `rlm_tree_executor_test.clj` (added during O02/O03) — same fixture pattern with mock ORC LLM provider and in-memory event store. New D-008/D-003 integration tests fit cleanly here.
 - `map_each_node_test.clj` — existing integration tests for map-each happy path. New partial/failure tests extend this file.
 - O02/O03 verification approach — run live G07 with the new feature exercised, then spot-check the saved EDN. Same model applies.
 

@@ -5,18 +5,8 @@
 
      clj -M:dev -e \"(require 'streaming-live-verify) (streaming-live-verify/run!)\"
 
-   Token-delta verification additionally needs the NEW DSCloj
-   (predict-stream-v2) + litellm-clj (usage-in-stream) on the classpath —
-   override via:
-
-     clj -Sdeps '{:aliases {:local-llm {:override-deps
-       {io.github.ObneyAI/DSCloj {:local/root \"../DSCloj\"}
-        tech.unravel/litellm-clj {:local/root \"../litellm-clj\"}}}}}' \\
-       -M:dev:local-llm -e \"(require 'streaming-live-verify) (streaming-live-verify/run!)\"
-
-   With the stock (older) DSCloj the capability gate falls back to blocking
-   execution: the run still verifies lifecycle/RLM streaming, just without
-   :llm-fields events."
+   The ORC LLM component supplies predict-stream-v2 and pins a litellm-clj
+   revision that carries usage through streaming chunks."
   (:require [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [litellm.router :as litellm-router]
@@ -130,7 +120,7 @@
             b (run-rlm-scenario! ctx)]
         (println "\n=== VERDICT ===")
         (println "Scenario A status:" (:status a)
-                 "| token streaming:" (if (some #{:llm-fields} (:types a)) "LIVE" "fallback (old DSCloj)"))
+                 "| token streaming:" (if (some #{:llm-fields} (:types a)) "LIVE" "fallback (old ORC LLM)"))
         (println "Scenario B status:" (:status b)
                  "| RLM live events:" (boolean (some #{:rlm-iteration-started} (:types b)))
                  "| code events:" (boolean (some #{:rlm-code-generated} (:types b)))))

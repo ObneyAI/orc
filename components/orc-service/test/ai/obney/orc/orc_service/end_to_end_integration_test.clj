@@ -20,7 +20,7 @@
             [ai.obney.orc.gepa.interface :as gepa]
             [ai.obney.orc.gepa.interface.schemas]
             [ai.obney.grain.time.interface :as time]
-            [dscloj.core :as dscloj]))
+            [ai.obney.orc.llm.interface :as llm]))
 
 ;; =============================================================================
 ;; Integration Test Gate
@@ -31,7 +31,7 @@
 
 ;; Register OpenRouter provider from OPENROUTER_API_KEY env var
 (when run-integration-tests?
-  (dscloj/quick-setup!))
+  (llm/quick-setup!))
 
 ;; =============================================================================
 ;; Instrumentation

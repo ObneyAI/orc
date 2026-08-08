@@ -146,7 +146,7 @@
 (defn- reflection-workflow
   "Single-:llm-node ORC workflow for the consolidator's reflection call.
 
-   The blackboard schemas for each :writes key drive dscloj's structured-
+   The blackboard schemas for each :writes key drive llm's structured-
    output spec — that's how the LLM is told the per-field types. Each of
    the six top-level description-body fields is its own :writes slot with
    a precise schema; in particular :strengths/:weaknesses use the rich
@@ -181,7 +181,7 @@
                 :recent-vs-historical-delta :structural-context]
         :writes [:capabilities :strengths :weaknesses
                  :representative-uses :avoid-when :summary]
-        ;; Use the existing ORC/dscloj retry primitive — the executor's
+        ;; Use the existing ORC/llm retry primitive — the executor's
         ;; :llm handler already retries on transient errors AND nil
         ;; outputs (executor.clj `outputs-have-nil?`). Lifting the budget
         ;; from the default 1 retry to 3 covers the LLM-flakiness we see
@@ -441,7 +441,7 @@
 ;; =============================================================================
 
 (defn- parse-vector-of-maps
-  "dscloj returns simple-typed vector fields as native Clojure data, but
+  "llm returns simple-typed vector fields as native Clojure data, but
    vector-of-map fields (like :strengths / :weaknesses with their rich
    per-entry schema) sometimes arrive as EDN-or-JSON-encoded strings.
    Parse those back into native data. Pass already-parsed vectors through."
@@ -850,7 +850,7 @@
                             :usage (:usage model-completion)})
         outputs (:outputs exec-result)
         ;; Assemble the description-body from the six separate :writes
-        ;; produced by the LLM. dscloj returns simple-vector fields
+        ;; produced by the LLM. llm returns simple-vector fields
         ;; (:capabilities, :representative-uses, :avoid-when) as native
         ;; Clojure data, but complex vector-of-map fields (:strengths,
         ;; :weaknesses) sometimes arrive as EDN/JSON-encoded strings —

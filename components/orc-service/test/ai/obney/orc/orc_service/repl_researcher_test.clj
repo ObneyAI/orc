@@ -1,10 +1,10 @@
 (ns ai.obney.orc.orc-service.repl-researcher-test
   "Unit tests for the repl-researcher executor.
-   Mocks dscloj/predict to test the iteration loop without real LLM calls."
+   Mocks llm/predict to test the iteration loop without real LLM calls."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.core.executor :as executor]
             [clojure.string :as str]
-            [dscloj.core :as dscloj]))
+            [ai.obney.orc.llm.interface :as llm]))
 
 ;; =============================================================================
 ;; Test Fixtures
@@ -35,7 +35,7 @@
 
 (def test-context
   {:call-tool-fn mock-call-tool
-   :dscloj-provider :test})
+   :llm-provider :test})
 
 ;; =============================================================================
 ;; Tests
@@ -43,7 +43,7 @@
 
 (deftest immediate-final-answer-in-code-text-test
   (testing "LLM returns plain-text FINAL_ANSWER (not code) — caught in code-text check"
-    (with-redefs [dscloj/predict
+    (with-redefs [llm/predict
                   (fn [_provider _module _inputs _opts]
                     {:outputs {:code "FINAL_ANSWER: 42"}
                      :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]
@@ -55,7 +55,7 @@
 
 (deftest final-answer-via-execution-test
   (testing "code executes and produces FINAL_ANSWER in stdout"
-    (with-redefs [dscloj/predict
+    (with-redefs [llm/predict
                   (fn [_provider _module _inputs _opts]
                     ;; Build FINAL_ANSWER at runtime to avoid code-text detection
                     {:outputs {:code "(let [m (str \"FINAL\" \"_ANSWER: \")] (println (str m \"hello\")))"}
@@ -69,7 +69,7 @@
   (testing "first iteration calls tool, second produces FINAL_ANSWER"
     (let [call-count (atom 0)
           tool-calls (atom [])]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       (let [n (swap! call-count inc)]
                         (if (= n 1)
@@ -93,7 +93,7 @@
 (deftest max-iterations-test
   (testing "fails when max iterations reached without FINAL_ANSWER"
     (let [call-count (atom 0)]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       ;; Different output each time to avoid convergence detection
                       (let [n (swap! call-count inc)]
@@ -107,7 +107,7 @@
 
 (deftest blank-code-test
   (testing "fails when LLM returns blank code"
-    (with-redefs [dscloj/predict
+    (with-redefs [llm/predict
                   (fn [_provider _module _inputs _opts]
                     {:outputs {:code ""}
                      :usage {:prompt_tokens 10 :completion_tokens 0 :total_tokens 10}})]
@@ -119,7 +119,7 @@
 (deftest usage-tracking-test
   (testing "usage accumulates across iterations"
     (let [call-count (atom 0)]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       (let [n (swap! call-count inc)]
                         (if (< n 3)
@@ -136,7 +136,7 @@
 
 (deftest nil-call-tool-fn-no-crash-test
   (testing "works without call-tool-fn when code doesn't call tools"
-    (with-redefs [dscloj/predict
+    (with-redefs [llm/predict
                   (fn [_provider _module _inputs _opts]
                     {:outputs {:code "FINAL_ANSWER: 42"}
                      :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})]
@@ -150,7 +150,7 @@
   (testing "repl-researcher with namespaced MCP tools from multiple servers"
     (let [tool-calls (atom [])
           call-count (atom 0)]
-      (with-redefs [dscloj/predict
+      (with-redefs [llm/predict
                     (fn [_provider _module _inputs _opts]
                       (let [n (swap! call-count inc)]
                         (if (= n 1)
@@ -168,7 +168,7 @@
                                      "linear/list_issues" {"items" ["a" "b" "c"]}
                                      "github/list_pulls"  {"items" ["x" "y"]}
                                      {"error" "unknown"}))
-                   :dscloj-provider :test}
+                   :llm-provider :test}
               result (executor/execute-repl-researcher
                        node test-blackboard :test ctx)]
           (is (= :success (:status result)))

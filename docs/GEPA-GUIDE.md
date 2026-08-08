@@ -2,7 +2,7 @@
 
 **GEPA** (Genetic-Pareto Prompt Optimizer) automatically improves LLM instructions through reflective mutation and Pareto selection. This guide documents how GEPA integrates with the ORC workflow service.
 
-> **Provenance.** GEPA comes from the [DSPy](https://github.com/stanfordnlp/dspy) line of work on programmatic prompt optimization — a good reference if you want the research background. ORC ships a native-Clojure implementation (built on DSCloj, the Clojure structured-LLM library orc uses as its LLM base), so there's no Python in the loop.
+> **Provenance.** GEPA comes from the [DSPy](https://github.com/stanfordnlp/dspy) line of work on programmatic prompt optimization — a good reference if you want the research background. ORC ships a native-Clojure implementation through its SIO-backed LLM component, so there's no Python in the loop.
 
 ---
 

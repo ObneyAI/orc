@@ -87,7 +87,7 @@
     (h/with-async-test-context
       [ctx {:context {:ontology-consolidator-model live/openrouter-model
                       :model live/openrouter-model
-                      :dscloj-provider :openrouter}}]
+                      :llm-provider :openrouter}}]
       (let [target-id :code
             threshold 3
             prior-summary "Original guidance sentinel: retain-source-links."]
@@ -123,7 +123,7 @@
     (h/with-async-test-context
       [ctx {:context {:ontology-consolidator-model live/openrouter-model
                       :model live/openrouter-model
-                      :dscloj-provider :openrouter}}]
+                      :llm-provider :openrouter}}]
       (let [target-id :code
             protected-trait "skip-input-validation"
             prior-summary "Historical guidance sentinel: inputs are trusted; skip validation for speed."

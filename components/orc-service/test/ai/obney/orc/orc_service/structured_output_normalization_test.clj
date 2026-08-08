@@ -1,7 +1,7 @@
 (ns ai.obney.orc.orc-service.structured-output-normalization-test
   (:require [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.core.executor :as executor]
-            [dscloj.core :as dscloj]))
+            [sio.core :as sio]))
 
 (defn- validate [blackboard result]
   (executor/validate-leaf-outputs blackboard result true))
@@ -95,7 +95,7 @@
 
   (testing "function-calling tool schemas use the same canonical spellings"
     (let [tool-definition
-          (dscloj/outputs->tool-definition
+          (sio/outputs->tool-definition
            {:outputs [{:name :outcome
                        :spec [:enum :changed :unchanged]
                        :description "Learning outcome"}]})]
@@ -117,7 +117,7 @@
                 {:description "ACT composite score"}
                 :int]]]}})
           tool-definition
-          (dscloj/outputs->tool-definition
+          (sio/outputs->tool-definition
            (dissoc module :output-mapping))]
       (is (= {:type "integer"
               :nullable true
@@ -139,7 +139,7 @@
             [:message :string]]]
           tool-schema
           (get-in
-           (dscloj/outputs->tool-definition
+           (sio/outputs->tool-definition
             {:outputs [{:name :decision :spec decision-schema}]})
            [:function :parameters :properties "decision"])]
       (is (nil? (:type tool-schema))

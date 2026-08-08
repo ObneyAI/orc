@@ -244,7 +244,7 @@ Looking at each invoice's source PDF and comparing to extracted output:
 
 3. **`:parallel` works end-to-end.** This is the first benchmark where the model spontaneously chose `:parallel` to fan-out independent work. The run confirms `:parallel` is functional through the full Phase-1 → Phase-2 → output path.
 
-4. **`:output-schemas` end-to-end on every `:llm`.** Every per-invoice extraction declares the full Invoice schema including the nested `:line-items` shape. dscloj parses LLM responses as JSON; downstream `:code` nodes receive proper Clojure maps.
+4. **`:output-schemas` end-to-end on every `:llm`.** Every per-invoice extraction declares the full Invoice schema including the nested `:line-items` shape. llm parses LLM responses as JSON; downstream `:code` nodes receive proper Clojure maps.
 
 5. **Mix of pre-built and inline `:code` works as designed.** The model referenced `build-invoice-workbook` via qualified-symbol-string (path A — pre-built tool) for the deterministic xlsx step, AND wrote its own inline `(fn ...)` for invoice-combination and summary-string production (path B — inline fn). Both forms in the same tree, both serializable in stored events.
 

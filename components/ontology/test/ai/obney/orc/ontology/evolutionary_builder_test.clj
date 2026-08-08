@@ -74,7 +74,7 @@
   ;; To run manually with LLM:
   ;; 1. Start a REPL with :dev alias
   ;; 2. Configure LiteLLM router with OpenRouter
-  ;; 3. Create context with :dscloj-provider :openrouter
+  ;; 3. Create context with :llm-provider :openrouter
   ;; 4. Call build-from-sources and verify events
   (testing "documents expected Grain compliance behavior"
     (println "NOTE: grain-schema-compliance-integration requires manual verification")

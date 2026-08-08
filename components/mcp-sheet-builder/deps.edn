@@ -1,6 +1,7 @@
 {:paths ["src" "resources"]
  :deps {clj-http/clj-http {:mvn/version "3.12.3"}
         cheshire/cheshire {:mvn/version "5.13.0"}
+        orc/llm {:local/root "../llm"}
         org.babashka/sci {:mvn/version "0.8.43"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {}}}}

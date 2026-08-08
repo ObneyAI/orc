@@ -155,7 +155,7 @@
                       :instruction instruction
                       :reads [:input]
                       :writes [:answer])))
-        result (sheet/execute (assoc ctx :dscloj-provider :openrouter)
+        result (sheet/execute (assoc ctx :llm-provider :openrouter)
                               sheet-id {:input input})]
     (is (= :success (:status result)) (pr-str result))
     (assert-live-provenance! ctx (:trace-id result))

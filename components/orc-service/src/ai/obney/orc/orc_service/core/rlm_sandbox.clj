@@ -25,7 +25,7 @@
   (:require [sci.core :as sci]
             [clojure.string :as str]
             [clojure.set]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [malli.core :as m]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -153,8 +153,8 @@
    LLM to understand variable shapes - actual data processing uses full values.
 
    U5: For inputs whose blackboard schema carries :field-type :image (or any
-   other field-type), the dscloj module's input field is given :type so that
-   dscloj's build-message-content routes the value as a multimodal content
+   other field-type), the llm module's input field is given :type so that
+   llm's build-message-content routes the value as a multimodal content
    block rather than as inline text. This is the Phase-1 mirror of
    executor.clj's build-field behavior for Phase-2 leaf nodes."
   [name opts context]
@@ -170,7 +170,7 @@
                              acc)))
                        {}
                        (or reads []))
-        ;; Build DSCloj module — U5: propagate :field-type from the blackboard
+        ;; Build ORC LLM module — U5: propagate :field-type from the blackboard
         ;; schema for each read key so vision/audio/etc. inputs get routed
         ;; as proper multimodal content blocks, not as inline text.
         module {:inputs (mapv (fn [[k _v]]
@@ -187,9 +187,9 @@
                                   :description (str "Output: " (clojure.core/name k))})
                                writes)
                 :instructions instruction}
-        ;; The :model rides through dscloj into the litellm router as a
+        ;; The :model rides through llm into the litellm router as a
         ;; per-request override.
-        dscloj-options (cond-> {:validate? false :with-metadata? true}
+        llm-options (cond-> {:validate? false :with-metadata? true}
                          model (assoc :model model))]
 
     (u/trace ::rlm-llm-primitive
@@ -200,12 +200,12 @@
                   (str "LLM call budget exceeded: "
                        (:current exceeded) "/" (:budget exceeded))
                   exceeded)))
-        ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
-        (let [result (dscloj/predict provider module inputs dscloj-options)
+        ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
+        (let [result (llm/predict provider module inputs llm-options)
               outputs (or (:outputs result) result)
               usage (:usage result)
               ;; Aggregate usage into tracker if provided
-              ;; Handle both snake_case (raw API) and kebab-case (dscloj normalized) keys
+              ;; Handle both snake_case (raw API) and kebab-case (llm normalized) keys
               _ (when (and usage-tracker usage)
                   (swap! usage-tracker
                          (fn [u]
@@ -297,7 +297,7 @@
    - inputs - Map of input previews (metadata only)
 
    Options:
-   - :provider - DSCloj provider keyword (e.g., :openrouter)
+   - :provider - ORC LLM provider keyword (e.g., :openrouter)
    - :blackboard - Map of key -> {:key, :schema, :value, :version}
    - :declared-writes - Vector of declared write keys for validation
    - :parent-trace-id - UUID for event tracing

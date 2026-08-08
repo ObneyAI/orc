@@ -70,7 +70,7 @@
                   :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   ::cache-dir cache-dir}
         ;; Skip the async reindex processor — seed-corpus-and-build-index!
         ;; emits 125 description-updated events at startup which would

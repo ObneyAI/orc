@@ -327,7 +327,7 @@ A second repeated constraint: **trace bugs to root cause; no fallback logic.** S
 
 ### Prior art for the tests
 
-- `rlm_tree_executor_test.clj` — same fixture pattern with mock DSCloj provider, in-memory event store, real Grain processors. The D-003 integration tests follow this pattern; the new recursive tests fit cleanly alongside.
+- `rlm_tree_executor_test.clj` — same fixture pattern with mock ORC LLM provider, in-memory event store, real Grain processors. The D-003 integration tests follow this pattern; the new recursive tests fit cleanly alongside.
 - `map_each_node_test.clj` — pattern for integration tests with real `sheet/execute` and a `:code` executor for the failure-injection sentinel.
 - `d008_live_verify.clj` and `d003_live_verify.clj` — pattern for standalone live verify scripts that drive the new feature with a real LLM. The new `recursive_rlm_live_verify.clj` will follow the same pattern.
 

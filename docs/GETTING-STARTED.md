@@ -134,11 +134,11 @@ is only needed for multi-instance tenant assignment.
              :event-pubsub event-pubsub
              :cache cache
              ;; Your LLM provider keyword, registered below.
-             :dscloj-provider :openrouter}
+             :llm-provider :openrouter}
         poller (tp/start-tenant-poller
                 {:event-store event-store
                  :tenant-ids #{tenant-id}
-                 :context {:cache cache :dscloj-provider :openrouter}
+                 :context {:cache cache :llm-provider :openrouter}
                  :poll-interval-ms 250})]
     {:ctx ctx :event-store event-store :event-pubsub event-pubsub
      :cache cache :poller poller}))

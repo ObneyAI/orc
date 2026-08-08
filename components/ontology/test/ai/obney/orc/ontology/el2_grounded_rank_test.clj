@@ -46,7 +46,7 @@
      :cache cache
      :tenant-id tenant-id
      :event-pubsub ps
-     :dscloj-provider :openrouter
+     :llm-provider :openrouter
      :command-registry (cp/global-command-registry)
      :query-registry (qp/global-query-registry)
      ::cache-dir cache-dir}))

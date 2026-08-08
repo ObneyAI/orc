@@ -25,7 +25,7 @@
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.interface.schemas]
             [litellm.router]
-            [dscloj.core]
+            [ai.obney.orc.llm.interface]
             [clojure.string :as str]
             [clojure.pprint :as pp]
             [clojure.java.io :as io]))
@@ -41,7 +41,7 @@
                   :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :event-pubsub ps
                   ::cache-dir cache-dir}
         processors (reduce-kv

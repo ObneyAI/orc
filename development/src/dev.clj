@@ -63,7 +63,7 @@
   (orc/execute (ctx) sheet-id {:input "hello from orc"})
   ;; => {:status :success, :outputs {:input "hello from orc", :output "HELLO FROM ORC"}, ...}
 
-  ;; LLM node example (requires :dscloj-provider configured)
+  ;; LLM node example (requires :llm-provider configured)
   (def llm-workflow
     (orc/workflow "greeting"
       (orc/blackboard {:name :string :greeting :string})

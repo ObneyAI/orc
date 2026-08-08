@@ -4,7 +4,7 @@
    STRATEGY:
    Instead of relying on the LLM to reliably call emit-tree! during Phase 1
    (which depends on prompt details and model behavior), this script mocks
-   the very first dscloj/predict call to return a deterministic emit-tree!
+   the very first llm/predict call to return a deterministic emit-tree!
    tree containing a :map-each over chunks with REAL :ai LLM leaves.
    All subsequent predict calls (Phase 2 sub-LLM calls inside the tree)
    delegate to the actual provider, so cancellation is proven against real
@@ -36,7 +36,7 @@
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
             [ai.obney.orc.orc-service.core.executor :as executor]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [clojure.pprint :as pp]
             [clojure.java.io :as io]))
 
@@ -55,7 +55,7 @@
                   :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :event-pubsub ps
                   ::cache-dir cache-dir}
         processors (reduce-kv
@@ -156,7 +156,7 @@
   ([{:keys [tight-budget?]}]
    (let [ctx (create-context)
          timeout-ms (if tight-budget? 4000 60000)
-         real-predict dscloj/predict
+         real-predict llm/predict
          predict-call-count (atom 0)]
      (try
        (let [{:keys [sheet-id node-id]} (build-sheet! ctx timeout-ms)
@@ -170,7 +170,7 @@
              ;; Mock predict: 1st call (Phase 1) returns emit-tree! code instantly,
              ;; all subsequent calls (Phase 2 sub-LLMs) delegate to the real provider.
              t0 (System/currentTimeMillis)
-             result (with-redefs [dscloj/predict
+             result (with-redefs [llm/predict
                                   (fn [provider module inputs opts]
                                     (let [n (swap! predict-call-count inc)]
                                       (if (= 1 n)

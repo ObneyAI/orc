@@ -13,7 +13,7 @@
      Slice 3 — the harvest PROCESSOR: gate → mint-behavioral-subtree with
                :provenance :harvested, fire-once, waterfall parent."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
@@ -40,7 +40,7 @@
 ;; as consolidation_trigger_test — avoid real OpenRouter + retry-loop bleed).
 ;; ---------------------------------------------------------------------------
 (defn- stub-predict-fixture [f]
-  (with-redefs [dscloj/predict
+  (with-redefs [llm/predict
                 (fn [_provider _module _inputs _options]
                   {:outputs {:capabilities ["x"]
                              :strengths [{:trait "x" :good-when "x"

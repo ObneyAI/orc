@@ -6,7 +6,7 @@
    :*-description-updated emission. The LLM reflection step lands in
    C-2a-3b; the anti-recency safeguards in C-2a-3c."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [malli.core :as m]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
@@ -32,18 +32,18 @@
 ;; QP-2 / Gap-test-isolation-bug: this NS's tests dispatch many events
 ;; that fire the threshold processor → autonomous :ontology/consolidation-
 ;; requested events → the consolidator handler launches an async workflow
-;; that calls dscloj/predict. Without a stub here, predict hits real
+;; that calls llm/predict. Without a stub here, predict hits real
 ;; OpenRouter (or fails fast), and the consolidator's retry budget keeps
 ;; the async-thread alive for up to ~5s after the test's Thread/sleep
-;; returns. When the next deftest's with-redefs on dscloj/predict
+;; returns. When the next deftest's with-redefs on llm/predict
 ;; activates GLOBALLY (with-redefs modifies the var root, not thread-
 ;; local), the leftover async-threads HIT the new redef and append to the
 ;; new test's captured atom — corrupting LATER tests' assertions.
 ;;
-;; Fix: stub dscloj/predict for the lifetime of EVERY deftest in this NS
+;; Fix: stub llm/predict for the lifetime of EVERY deftest in this NS
 ;; so autonomous consolidations complete fast (no retry-loop bleed).
 (defn- stub-predict-fixture [f]
-  (with-redefs [dscloj/predict
+  (with-redefs [llm/predict
                 (fn [_provider _module _inputs _options]
                   {:outputs {:capabilities ["x"]
                              :strengths [{:trait "x" :good-when "x"

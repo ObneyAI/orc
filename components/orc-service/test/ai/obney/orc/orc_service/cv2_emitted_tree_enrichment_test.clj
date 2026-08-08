@@ -23,7 +23,7 @@
    projections; NO bare appends), assert by READING the description read-model
    BACK. NO second synthesis LLM."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
@@ -52,7 +52,7 @@
 ;; call). CV-2's enrichment itself uses NO LLM; this is only harness hygiene.
 ;; ---------------------------------------------------------------------------
 (defn- stub-predict-fixture [f]
-  (with-redefs [dscloj/predict
+  (with-redefs [llm/predict
                 (fn [_provider _module _inputs _options]
                   {:outputs {:capabilities [] :strengths [] :weaknesses []
                              :representative-uses [] :avoid-when []

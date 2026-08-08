@@ -23,6 +23,7 @@
                               orc/orc-dev           {:local/root "bases/orc-dev"}
 
                               ;; Components
+                              orc/llm               {:local/root "components/llm"}
                               orc/orc-service       {:local/root "components/orc-service"}
                               orc/gepa              {:local/root "components/gepa"}
                               orc/evaluation        {:local/root "components/evaluation"}
@@ -40,7 +41,8 @@
                               orc/predict-rlm-redaction-tools {:local/root "components/predict-rlm-redaction-tools"}
                               orc/predict-rlm-invoice-tools {:local/root "components/predict-rlm-invoice-tools"}}}
 
-           :test {:extra-paths ["components/orc-service/test"
+           :test {:extra-paths ["components/llm/test"
+                                "components/orc-service/test"
                                 "components/gepa/test"
                                 "components/colbert/test"
                                 "components/evaluation/test"

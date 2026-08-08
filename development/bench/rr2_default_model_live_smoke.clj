@@ -8,7 +8,7 @@
    runner/start!, which seeds the 45-entry baseline corpus + 80 synthetic
    padding entries and builds a real ColBERT index) + a REAL OpenRouter
    call to the RR-2 default model. Nothing about reranker/rerank! or
-   dscloj.core/predict is stubbed here — a stubbed LLM response would
+   ai.obney.orc.llm.interface/predict is stubbed here — a stubbed LLM response would
    falsely validate 'the default model produces a valid ranking', which
    is exactly the claim under test.
 
@@ -42,7 +42,7 @@
    favor of the deterministic tests in reranker_test.clj
    (`rerank-resolves-default-model-when-none-given` /
    `rerank-uses-explicit-model-override`), which already assert on the
-   REAL resolved request options via `with-redefs` on `dscloj.core/predict`
+   REAL resolved request options via `with-redefs` on `ai.obney.orc.llm.interface/predict`
    and are unaffected by whatever this one-shot-process quirk is. Try
    invoking `(rr2-default-model-live-smoke/run!)` from a live/connected
    REPL instead of a one-shot process if you want to pick this apart."

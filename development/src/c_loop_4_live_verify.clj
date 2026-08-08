@@ -11,9 +11,9 @@
         with :status :success + :nil-writes [:obligations :penalties].
         This simulates the post-iter-1 state of the risk-analysis broken-
         aggregator case from the C-Loop-4 spec.
-     2. Build the iter-2 dscloj module via build-rlm-code-generation-module
+     2. Build the iter-2 llm module via build-rlm-code-generation-module
         (the same fn the recursive RLM loop calls).
-     3. Call dscloj/predict with REAL OpenRouter (gemini-3-flash-preview)
+     3. Call llm/predict with REAL OpenRouter (gemini-3-flash-preview)
         and the synthetic sandbox state.
      4. Verify the model's :reasoning string acknowledges the nil-writes
         gap OR the model's :code chooses to recover (re-extract from
@@ -37,7 +37,7 @@
 
    No mocks. Uses OPENROUTER_API_KEY env var."
   (:require [ai.obney.orc.orc-service.interface.schemas]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [litellm.router :as litellm-router]
             [clojure.string :as str]
             [com.brunobonacci.mulog :as u]))
@@ -166,12 +166,12 @@
         ;; provider — it must be the bare OpenRouter model id (no
         ;; "openrouter/" prefix). The prefixed form was silently ignored
         ;; by the old router; the fixed router would send it verbatim.
-        dscloj-options {:model "google/gemini-3-flash-preview"
+        llm-options {:model "google/gemini-3-flash-preview"
                         :max-tokens 4096
                         :temperature 0.2}
 
         _ (println "\n--- Calling OpenRouter (gemini-3-flash-preview)…")
-        response (dscloj/predict provider module inputs dscloj-options)
+        response (llm/predict provider module inputs llm-options)
         _ (println "  → response received")
 
         signals (detect-recovery-signal-in-response response)

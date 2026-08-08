@@ -16,7 +16,7 @@
             [ai.obney.orc.evaluation.core.scale :as scale]
             [cheshire.core :as json]
             [clojure.string :as str]
-            [dscloj.core :as dscloj]))
+            [ai.obney.orc.llm.interface :as llm]))
 
 ;; =============================================================================
 ;; Configuration
@@ -118,14 +118,14 @@
 ;; =============================================================================
 
 (defn- build-judge-module
-  "Build a DSCloj module for a judge evaluation.
+  "Build a ORC LLM module for a judge evaluation.
 
    Args:
      prompt: The rendered rubric prompt
      output-fields: Vector of output field definitions
 
    Returns:
-     DSCloj module map"
+     ORC LLM module map"
   [prompt output-fields]
   {:inputs [{:name :evaluation_request
              :spec :string
@@ -136,7 +136,7 @@
 (defn- grounding-output-fields
   "PA-3 tier-1 grounding output fields, ordered to FORCE reason-before-score:
    the model fills :reasoning and the claim lists BEFORE it commits to a
-   :level band. Field order in the DSCloj tool schema is the generation
+   :level band. Field order in the ORC LLM tool schema is the generation
    order. There is NO soft :score field — the score is derived
    deterministically from the discrete :level via the Scale (1-5 → [0,1]),
    never self-reported by the model. Output shape is carried entirely by
@@ -157,7 +157,11 @@
                      "(fabrications, unsupported numbers/names/dates, or "
                      "inferences stated as fact). Empty if none.")}
    {:name :level
-    :spec [:enum 1 2 3 4 5]
+    ;; Gemini's function-declaration schema accepts string enums but rejects
+    ;; numeric enums. Keep the provider schema numeric and bounded; the
+    ;; no-run-through gate below coerces numeric strings and enforces the same
+    ;; discrete 1-5 domain before deriving a score.
+    :spec [:and :int [:>= 1] [:<= 5]]
     :description "The grounding band (1-5) chosen AFTER the reasoning, per the bands defined in the instruction."}
    {:name :feedback
     :spec :string
@@ -198,7 +202,7 @@
     :else (json/generate-string v {:pretty true})))
 
 (defn- build-grounding-module
-  "DSCloj module for the tier-1 grounding judge. Typed INPUT fields carry the
+  "ORC LLM module for the tier-1 grounding judge. Typed INPUT fields carry the
    trace data; typed OUTPUT fields carry the verdict. No json-in-prompt, no
    permissive output schema."
   [instruction]
@@ -217,7 +221,7 @@
 ;; -----------------------------------------------------------------------------
 ;; PA-4 tier-1 output fields (reason-before-score), per dimension.
 ;;
-;; Field order in the DSCloj tool schema IS the generation order, so :reasoning
+;; Field order in the ORC LLM tool schema IS the generation order, so :reasoning
 ;; and the dimension's evidence lists come BEFORE :level — the model reasons,
 ;; THEN commits to a band. There is NO soft :score field; the score is derived
 ;; deterministically from the discrete :level via the Scale. Output shape is
@@ -241,7 +245,7 @@
                       "satisfied, or prohibitions that were violated. Empty if "
                       "none.")}
    {:name :level
-    :spec [:enum 1 2 3 4 5]
+    :spec [:and :int [:>= 1] [:<= 5]]
     :description "The instruction-following band (1-5) chosen AFTER the reasoning, per the bands defined in the instruction."}
    {:name :feedback
     :spec :string
@@ -261,7 +265,7 @@
     :description (str "Logical gaps, unstated assumptions, non-sequiturs, or "
                       "overreaching conclusions. Empty if none.")}
    {:name :level
-    :spec [:enum 1 2 3 4 5]
+    :spec [:and :int [:>= 1] [:<= 5]]
     :description "The reasoning-quality band (1-5) chosen AFTER the reasoning, per the bands defined in the instruction."}
    {:name :feedback
     :spec :string
@@ -282,7 +286,7 @@
     :description (str "Required aspects that are missing or answered only as "
                       "thin stubs. Empty if none.")}
    {:name :level
-    :spec [:enum 1 2 3 4 5]
+    :spec [:and :int [:>= 1] [:<= 5]]
     :description "The completeness band (1-5) chosen AFTER the reasoning, per the bands defined in the instruction."}
    {:name :feedback
     :spec :string
@@ -317,7 +321,7 @@
        "lists, then choose `level`, then write `feedback`."))
 
 (defn- build-tier1-module
-  "DSCloj module for a tier-1 (instruction/reasoning/completeness) judge. Typed
+  "ORC LLM module for a tier-1 (instruction/reasoning/completeness) judge. Typed
    INPUT fields carry the trace data; typed OUTPUT fields carry the verdict. No
    json-in-prompt, no permissive output schema."
   [instruction output-fields]
@@ -338,7 +342,7 @@
 
    Args:
      prompt: The rendered rubric prompt
-     output-fields: Vector of DSCloj output field definitions
+     output-fields: Vector of ORC LLM output field definitions
      options: Optional map with :provider, :model
 
    Returns:
@@ -346,12 +350,12 @@
   [prompt output-fields & {:keys [provider model] :or {provider *judge-provider*
                                                         model *judge-model*}}]
   (let [module (build-judge-module prompt output-fields)
-        ;; DSCloj needs inputs as a keyword map
+        ;; ORC LLM needs inputs as a keyword map
         inputs {:evaluation_request "Please evaluate according to the rubric above."}
-        ;; Make the LLM call — :model rides through dscloj into the
+        ;; Make the LLM call — :model rides through llm into the
         ;; litellm router as a per-request override, so the judge model
         ;; actually applies instead of the provider registration's default.
-        result (dscloj/predict provider module inputs
+        result (llm/predict provider module inputs
                                {:with-metadata? true
                                 :validate? false
                                 :model model})]
@@ -380,7 +384,7 @@
         inputs {:source (coerce-source-string (:inputs trace-data))
                 :response (str response)
                 :producer_instruction (or (:instruction trace-data) "No instruction provided")}
-        result (dscloj/predict provider module inputs
+        result (llm/predict provider module inputs
                                {:with-metadata? true
                                 :validate? false
                                 :model model})]
@@ -413,7 +417,7 @@
         inputs {:instruction (or (:instruction trace-data) "No instruction provided")
                 :response (str response)
                 :inputs (coerce-source-string (:inputs trace-data))}
-        result (dscloj/predict provider module inputs
+        result (llm/predict provider module inputs
                                {:with-metadata? true
                                 :validate? false
                                 :model model})]

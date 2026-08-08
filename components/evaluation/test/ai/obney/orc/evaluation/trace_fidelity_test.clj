@@ -22,7 +22,7 @@
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [dscloj.core :as dscloj]))
+            [ai.obney.orc.llm.interface :as llm]))
 
 ;; =============================================================================
 ;; Deterministic executors — every value a distinct, recognizable length
@@ -463,7 +463,7 @@
 ;; =============================================================================
 
 (defn mock-ai-predict
-  "dscloj/predict stub so the :ai leaf resolves offline and deterministically."
+  "llm/predict stub so the :ai leaf resolves offline and deterministically."
   [_provider _module _inputs _opts]
   {:outputs {:answer "answered-from-the-document"}
    :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})
@@ -506,7 +506,7 @@
       ;; execution happens on a processor thread, so a dynamic `binding`
       ;; would not reach it; with-redefs alters the root and does.
       (let [{:keys [sheet-id ai-node]} (setup-ai-sheet! ctx)
-            [result _] (with-redefs [dscloj/predict mock-ai-predict]
+            [result _] (with-redefs [llm/predict mock-ai-predict]
                          (run! ctx sheet-id {}))]
         (is (= :success (:status result)) (str "run failed: " (:error result)))
         (let [rows (tx/get-llm-traces ctx {:sheet-id sheet-id})]
@@ -561,7 +561,7 @@
       ;; execution happens on a processor thread, so a dynamic `binding`
       ;; would not reach it; with-redefs alters the root and does.
       (let [{:keys [sheet-id ai-node]} (setup-ai-sheet! ctx)
-            [result _] (with-redefs [dscloj/predict mock-ai-predict]
+            [result _] (with-redefs [llm/predict mock-ai-predict]
                          (run! ctx sheet-id {}))]
         (is (= :success (:status result)) (str "run failed: " (:error result)))
         (let [rows (tx/get-llm-traces ctx {:sheet-id sheet-id})]

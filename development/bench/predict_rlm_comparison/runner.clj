@@ -88,7 +88,7 @@
                   :tenant-id tenant-id
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   ::cache-dir cache-dir}
         processors (reduce-kv
                     (fn [acc proc-name {:keys [handler-fn topics]}]
@@ -138,7 +138,7 @@
                                             :name (str "Task: " (:name task))))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)
         ;; Per-input schemas allow tasks to declare image-typed keys
-        ;; (e.g. [:string {:field-type :image}]) so dscloj routes them as
+        ;; (e.g. [:string {:field-type :image}]) so llm routes them as
         ;; multimodal content blocks to the LLM call.
         input-schemas (or (:input-schemas task) {})
         ;; Per-write schemas let tasks declare non-string output keys
@@ -330,7 +330,7 @@
                      :model (:model config)
                      :config {:api-base "https://openrouter.ai/api/v1"
                               :api-key api-key}}]
-    ;; Node :model values ride through dscloj into the litellm router as
+    ;; Node :model values ride through llm into the litellm router as
     ;; per-request overrides, so only the base provider registration is
     ;; needed (no synthetic per-model providers).
     (litellm-router/register! :openrouter base-config))

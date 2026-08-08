@@ -23,7 +23,7 @@
    - Each carries a valid 0.0-1.0 :score
    - Each carries non-empty :feedback (text from the LLM)
    - Total wall clock is bounded (~5-20s per LLM judge depending on model)
-   - Token usage is finite (we'll get it from OpenRouter via dscloj)
+   - Token usage is finite (we'll get it from OpenRouter via llm)
 
    Failures to surface honestly:
    - LLM timeout or rate-limit → investigation, not silent retry
@@ -70,7 +70,7 @@
                   :cache cache
                   :tenant-id tenant-id
                   :event-pubsub ps
-                  :dscloj-provider :openrouter
+                  :llm-provider :openrouter
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}

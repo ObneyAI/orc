@@ -1,0 +1,11 @@
+{:paths ["src"]
+ :deps {io.github.ObneyAI/sio
+        {:git/url "https://github.com/ObneyAI/sio.git"
+         :git/sha "0c7ce67ed652634d435beae212d7ad34c1e02eb9"}
+
+        tech.unravel/litellm-clj
+        {:git/url "https://github.com/ObneyAI/litellm-clj.git"
+         :git/sha "130ea352f7d45abe1896d2854b4df41becaa9309"}
+
+        org.clojure/core.async {:mvn/version "1.6.681"}}
+ :aliases {:test {:extra-paths ["test"]}}}

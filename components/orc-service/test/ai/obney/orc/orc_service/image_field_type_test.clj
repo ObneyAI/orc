@@ -81,7 +81,7 @@
       (is (= "do something" (:instruction result))))))
 
 ;; =============================================================================
-;; build-module — image type flows into DSCloj module
+;; build-module — image type flows into ORC LLM module
 ;; =============================================================================
 
 (deftest build-module-image-type-test
