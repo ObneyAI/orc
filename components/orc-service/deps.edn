@@ -1,6 +1,6 @@
 {:paths ["src" "resources"]
  :deps {io.github.ObneyAI/DSCloj {:git/url "https://github.com/ObneyAI/DSCloj.git"
-                                  :git/sha "08240c7d95568044a178305b2a698c5bb95b7cef"}
+                                  :git/sha "0c76d42e6e58bfdef043791bc92db4eee0d6a6bf"}
         com.brunobonacci/mulog {:mvn/version "0.9.0"}
         com.taoensso/nippy {:mvn/version "3.6.0"}
         org.babashka/sci {:mvn/version "0.8.43"}

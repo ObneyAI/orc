@@ -108,6 +108,14 @@ generated RLM trees, and MCP workflow conversion use the same constraint or
 produce equally actionable feedback. DET-E2E-126 and DET-E2E-127 verify atomic rejection, exact key/schema
 paths, the specificity nudge, and acceptance of explicit structured schemas.
 
+Workflow definition identity includes the effective recursively resolved
+blackboard schemas, rather than only their symbolic registry references. A
+successful build captures those schemas in its persisted authoring state, so a
+referenced schema change rebuilds the same sheet while unrelated registry
+changes remain a no-op. DET-E2E-128 tracks the complete public-boundary
+verification through a rebuilt workflow execution and its persisted blackboard
+projection.
+
 # Custom ontology lifecycle alignment (2026-08-07)
 
 The ontology domain now specifies an empty custom-ontology lifecycle, typed

@@ -5,6 +5,7 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.dsl :as dsl]
             [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.grain.schema-util.interface :as schema-util]
             [ai.obney.grain.event-store-v3.interface :as es]))
 
 (defn- count-events
@@ -95,3 +96,45 @@
             sheet (rm/get-sheet ctx sheet-id)]
         (is (pos? event-count) "first build should emit events")
         (is (some? (:content-hash sheet)) "content hash should be stored")))))
+
+(deftest referenced-blackboard-schema-changes-rebuild-effective-definition
+  (testing "direct and transitive registry dependencies are captured; unrelated changes are ignored"
+    (let [registry-before @schema-util/registry*
+          item-schema :orc.build-idempotency-test/item
+          items-schema :orc.build-idempotency-test/items
+          unrelated-schema :orc.build-idempotency-test/unrelated]
+      (try
+        (schema-util/register!
+         {item-schema [:map [:overview :string]]
+          items-schema [:vector item-schema]
+          unrelated-schema :string})
+        (h/with-test-context [ctx]
+          (let [wf (dsl/workflow "referenced-schema-idempotency-test"
+                     (dsl/blackboard {:items items-schema}))
+                sheet-id (dsl/build-workflow! ctx wf)
+                initial-events (count-events ctx)]
+            (is (= [:vector [:map [:overview :string]]]
+                   (:schema (get (rm/get-blackboard-by-key ctx sheet-id) :items)))
+                "the first build persists the effective schema snapshot")
+
+            (schema-util/register! {unrelated-schema :int})
+            (dsl/build-workflow! ctx wf)
+            (is (= initial-events (count-events ctx))
+                "an unrelated registry change is a zero-event no-op")
+
+            (schema-util/register!
+             {item-schema
+              [:map
+               [:overview
+                [:or :string [:map [:credential-line :string]]]]]})
+            (dsl/build-workflow! ctx wf)
+            (is (< initial-events (count-events ctx))
+                "a transitive registry dependency change rebuilds the sheet")
+            (is (= [:vector
+                    [:map
+                     [:overview
+                      [:or :string [:map [:credential-line :string]]]]]]
+                   (:schema (get (rm/get-blackboard-by-key ctx sheet-id) :items)))
+                "the rebuilt projection contains the new effective schema")))
+        (finally
+          (reset! schema-util/registry* registry-before))))))

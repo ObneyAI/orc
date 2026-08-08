@@ -103,6 +103,30 @@
              (get-in tool-definition
                      [:function :parameters :properties "outcome" :enum])))))
 
+  (testing "schema properties do not change nullable provider field types"
+    (let [module
+          (executor/build-module
+           {:name "analyze-profile"
+            :reads []
+            :writes [:academic-context]}
+           {:academic-context
+            {:schema
+             [:map
+              [:act_score
+               [:maybe
+                {:description "ACT composite score"}
+                :int]]]}})
+          tool-definition
+          (dscloj/outputs->tool-definition
+           (dissoc module :output-mapping))]
+      (is (= {:type "integer"
+              :nullable true
+              :description "ACT composite score (integer (optional))"}
+             (get-in tool-definition
+                     [:function :parameters :properties "act_score"])))
+      (is (= ["act_score"]
+             (get-in tool-definition [:function :parameters :required])))))
+
   (testing "function-calling keeps root unions of map variants structured"
     (let [decision-schema
           [:or

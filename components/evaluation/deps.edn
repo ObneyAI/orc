@@ -1,10 +1,10 @@
 {:paths ["src" "resources"]
  :deps {cheshire/cheshire {:mvn/version "5.13.0"}
         ;; DSCloj for LLM judge calls — pinned to the raw-response-on-main-pin
-        ;; fork branch tip (08240c7), matching orc-service so the dscloj
+        ;; fork branch tip (0c76d42), matching orc-service so the dscloj
         ;; version is consistent across the dep tree.
         io.github.ObneyAI/DSCloj {:git/url "https://github.com/ObneyAI/DSCloj.git"
-                                  :git/sha "08240c7d95568044a178305b2a698c5bb95b7cef"}
+                                  :git/sha "0c76d42e6e58bfdef043791bc92db4eee0d6a6bf"}
         ;; ORC service for evaluation workflow sheets
         orc/orc-service {:local/root "../orc-service"}}
  :aliases {:test {:extra-paths ["test"]

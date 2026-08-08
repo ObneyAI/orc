@@ -5,6 +5,7 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.grain.schema-util.interface :as schema-util]
             [ai.obney.grain.event-store-v3.interface :as es]))
 
 (defonce ^:private calls (atom []))
@@ -27,6 +28,9 @@
 
 (defn observe-value [{:keys [inputs]}]
   {:observed (:value inputs)})
+
+(defn echo-overview [{:keys [inputs]}]
+  {:result (:input inputs)})
 
 (defn- fq [function-name]
   (str "ai.obney.orc.orc-service.deterministic-blackboard-e2e-test/"
@@ -140,3 +144,43 @@
         (is (not (contains? (:outputs result) :rogue)))
         (is (not (contains? (sheet/get-blackboard-by-key ctx sheet-id) :rogue)))
         (is (not-any? #(= :rogue (:key %)) writes))))))
+
+(deftest det-e2e-128-referenced-schema-change-rebuilds-effective-workflow
+  (testing "execution uses the recursively resolved schema captured by the latest build"
+    (let [registry-before @schema-util/registry*
+          overview-schema :orc.deterministic-blackboard-e2e/overview
+          wrapper-schema :orc.deterministic-blackboard-e2e/wrapper]
+      (try
+        (schema-util/register!
+         {overview-schema :string
+          wrapper-schema [:map [:overview overview-schema]]})
+        (h/with-async-test-context [ctx]
+          (let [definition
+                (sheet/workflow "det-e2e-128-referenced-schema-rebuild"
+                  (sheet/blackboard {:input wrapper-schema
+                                     :result wrapper-schema})
+                  (sheet/sequence "main"
+                    (sheet/code "echo-overview" :fn (fq "echo-overview")
+                      :reads [:input] :writes [:result])))
+                sheet-id (sheet/build-workflow! ctx definition)
+                string-result (sheet/execute ctx sheet-id
+                                {:input {:overview "summary"}})]
+            (is (= :success (:status string-result)))
+
+            (schema-util/register!
+             {overview-schema
+              [:or :string [:map [:credential-line :string]]]})
+            (sheet/build-workflow! ctx definition)
+            (let [map-overview {:credential-line "Credential awarded"}
+                  map-result (sheet/execute ctx sheet-id
+                              {:input {:overview map-overview}})]
+              (is (= :success (:status map-result)))
+              (is (= {:overview map-overview}
+                     (get-in map-result [:outputs :result])))
+              (is (= [:map
+                      [:overview
+                       [:or :string [:map [:credential-line :string]]]]]
+                     (:schema (get (sheet/get-blackboard-by-key ctx sheet-id)
+                                   :result)))))))
+        (finally
+          (reset! schema-util/registry* registry-before))))))

@@ -56,6 +56,7 @@
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.anomalies.interface :as anomalies]
+            [malli.core :as m]
             [clojure.java.io :as io]
             [clojure.pprint :as pprint]
             [clojure.string])
@@ -117,6 +118,27 @@
 ;; =============================================================================
 ;; Content Hashing
 ;; =============================================================================
+
+(defn- effective-schema-form
+  "Resolve every registry reference reachable from a Malli schema and return
+   the resulting data form. The form is both hashed and persisted, making a
+   built workflow a snapshot of the schema registry state it depends on."
+  [schema]
+  (try
+    (-> schema m/schema m/deref-recursive m/form)
+    (catch Exception e
+      (throw (ex-info (str "Unable to resolve blackboard schema " (pr-str schema))
+                      {:schema schema}
+                      e)))))
+
+(defn- effective-workflow-definition
+  [workflow-def]
+  (update workflow-def :blackboard-schema
+          (fn [schema-map]
+            (into (empty schema-map)
+                  (map (fn [[key schema]]
+                         [key (effective-schema-form schema)]))
+                  schema-map))))
 
 (defn- workflow-content-hash
   "Compute a deterministic SHA-256 hash of a workflow definition."
@@ -703,8 +725,9 @@
 
    Returns the sheet-id (deterministic, based on workflow name)."
   [ctx workflow-def]
-  (validate-workflow-definition! workflow-def)
-  (let [{:keys [workflow-name]} workflow-def
+  (let [workflow-def (effective-workflow-definition workflow-def)
+        _ (validate-workflow-definition! workflow-def)
+        {:keys [workflow-name]} workflow-def
         ;; Deterministic sheet-id from workflow name
         sheet-id (sheet-id-for-name workflow-name)
         new-hash (workflow-content-hash workflow-def)]

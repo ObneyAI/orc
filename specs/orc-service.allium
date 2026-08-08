@@ -101,9 +101,11 @@ contract LeafExecutor {
 
     @invariant ProviderStructuredOutputsRemainStructured
         -- Function-calling tool definitions preserve structured Malli schemas,
-        -- including unions of map variants and their discriminators. Provider
-        -- objects and collections arrive at leaf validation as parsed values,
-        -- never as JSON encoded inside strings.
+        -- including schema-level properties, nullable wrappers, unions of map
+        -- variants and their discriminators. Adding descriptive or validation
+        -- properties to a schema does not change its provider-facing JSON type.
+        -- Provider objects and collections arrive at leaf validation as parsed
+        -- values, never as JSON encoded inside strings.
 }
 
 contract WorkflowDefinitionConstruction {
@@ -115,7 +117,11 @@ contract WorkflowDefinitionConstruction {
 
     @invariant DeterministicDefinitionIdentity
         -- Rebuilding an unchanged named definition preserves workflow identity
-        -- and produces no effective authoring changes.
+        -- and produces no effective authoring changes. Definition equality uses
+        -- the effective blackboard schemas after resolving referenced schemas
+        -- recursively: changing any referenced schema rebuilds the workflow,
+        -- while changing an unrelated schema does not. A build captures the
+        -- resolved schemas so later registry changes cannot alter that build.
 
     @invariant ActionableSchemaSpecificityFailure
         -- A definition containing an unconstrained blackboard type is rejected

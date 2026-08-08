@@ -87,6 +87,7 @@ that verifies the stated observable results.
 - [x] **DET-E2E-125 — Provider schema failure consumes the default retry.** A first schema-invalid structured response followed by a valid response succeeds after exactly two provider calls, while two invalid responses exhaust the default retry, persist only the final rejected output, and account for both attempts' usage.
 - [x] **DET-E2E-126 — Unconstrained blackboard schemas are rejected atomically.** Workflow construction rejects top-level and nested `:any` schemas before authoring state changes, identifies every offending blackboard key, and directs the consumer to use the most specific schema that expresses the value's intent.
 - [x] **DET-E2E-127 — Structurally unconstrained blackboard schemas are rejected.** Workflow construction and direct commands recursively reject `:some`, standalone or fieldless maps, and collections with missing or unconstrained item/value schemas; feedback identifies each key and exact schema path while fully specified structured schemas remain valid.
+- [x] **DET-E2E-128 — Referenced blackboard schemas participate in workflow identity.** Building a workflow captures its recursively resolved blackboard schemas; changing a direct or transitive registry dependency rebuilds the same sheet with the new schema, an unrelated registry change remains a zero-event no-op, and execution validates against the captured schema.
 
 ## P1 — Observability and streaming
 
