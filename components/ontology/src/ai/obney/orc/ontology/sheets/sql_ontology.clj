@@ -667,7 +667,21 @@
        :database-purpose [:string {:description "Purpose of this database"}]
 
        ;; === Per-Table Processing ===
-       :current-table [:map {:description "Table being processed"} :any]
+       :current-table [:map {:description "Table being processed"}
+                       [:table-name :string]
+                       [:row-count :int]
+                       [:columns [:vector [:map
+                                           [:name :string]
+                                           [:type :string]
+                                           [:nullable :boolean]
+                                           [:primary-key :boolean]
+                                           [:semantic-type :keyword]
+                                           [:xsd-type :string]]]]
+                       [:primary-keys [:vector :string]]
+                       [:foreign-keys [:vector [:map
+                                                [:from-column :string]
+                                                [:to-table :string]
+                                                [:to-column :string]]]]]
        :table-name :string
        :row-count :int
        :column-names [:vector {:description "Column names"} :string]
@@ -679,9 +693,17 @@
        :definition [:string {:description "Entity definition"}]
        :entity-type [:string {:description "Entity type category"}]
        :key-properties [:vector {:description "Key semantic properties"} :string]
-       :entity-results [:vector :any]
+       :entity-results [:vector [:map
+                                  [:class-name :string]
+                                  [:definition :string]
+                                  [:entity-type :string]
+                                  [:key-properties [:vector :string]]]]
        :table-entities-json [:string {:description "JSON output from batch table entity extraction"}]
-       :table-entities [:map-of :string :any]
+       :table-entities [:map-of :string [:map
+                                          [:class-name :string]
+                                          [:definition :string]
+                                          [:entity-type :string]
+                                          [:key-properties [:vector :string]]]]
 
        ;; === Relationship Discovery ===
        :relationship-reasoning [:string {:description "Reasoning about relationships"}]
@@ -703,7 +725,8 @@
                [:uri :string]
                [:type :string]
                [:label :string]
-               [:properties [:map-of :string :any]]]]
+               [:properties [:map-of :string
+                             [:or :nil :string :int :double :boolean :keyword :uuid :inst]]]]]
 
        ;; === Output ===
        :owl-output :string

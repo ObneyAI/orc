@@ -88,16 +88,42 @@
                    [:type [:enum :http :static :claude-mcp]]
                    [:preset {:optional true} :keyword]
                    [:url {:optional true} :string]]
-        :raw-tools [:vector :map]
-        :analyzed-tools [:vector :map]
-        :tool-relationships [:vector :map]
-        :applicable-patterns [:vector :map]
+        :raw-tools [:vector [:map [:name :string]]]
+        :analyzed-tools [:vector [:map
+                                  [:name :string]
+                                  [:category :keyword]
+                                  [:capabilities [:set :keyword]]
+                                  [:idempotent? :boolean]]]
+        :tool-relationships [:vector [:map
+                                      [:type :keyword]
+                                      [:from :string]
+                                      [:to :string]
+                                      [:confidence :double]
+                                      [:reason :string]]]
+        :applicable-patterns [:vector [:map
+                                       [:pattern :keyword]
+                                       [:confidence :double]]]
         :selected-pattern [:map
                            [:pattern :keyword]
                            [:confidence :double]]
         :generated-dsl-code :string
-        :generated-workflow :any
-        :generated-blackboard :map
+        :generated-workflow
+        [:schema
+         {:registry
+          {:mcp/workflow-form
+           [:or :symbol :string :keyword :int :double :boolean
+            [:map-of :keyword [:ref :mcp/workflow-form]]
+            [:sequential [:ref :mcp/workflow-form]]]}}
+         [:ref :mcp/workflow-form]]
+        :generated-blackboard
+        [:map-of :keyword
+         [:schema
+          {:registry
+           {:mcp/schema-form
+            [:or :keyword :string :int :double :boolean
+             [:map-of :keyword [:ref :mcp/schema-form]]
+             [:sequential [:ref :mcp/schema-form]]]}}
+          [:ref :mcp/schema-form]]]
         :validation-result [:map
                             [:valid? :boolean]
                             [:errors [:vector :string]]

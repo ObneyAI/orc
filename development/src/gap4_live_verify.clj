@@ -48,15 +48,28 @@
      :feedback (str "Host outputs are " (count s) " chars long (score = "
                     (format "%.3f" score) ")")}))
 
+(def ^:private judge-value-schema
+  [:schema {:registry {::value
+                       [:or :nil :string :int :double :boolean :keyword :uuid :inst
+                        [:vector [:ref ::value]]
+                        [:map-of :keyword [:ref ::value]]]}}
+   [:ref ::value]])
+
+(def ^:private judge-trace-schema
+  [:vector [:map
+            [:node-id {:optional true} :uuid]
+            [:status {:optional true} :keyword]
+            [:error {:optional true} :string]]])
+
 (defn- build-deterministic-custom-judge!
   [ctx]
   (orc/build-workflow! ctx
     (orc/workflow (str "gap4-live-detjudge-" (random-uuid))
       (orc/blackboard
-        {:host-inputs :any
-         :host-outputs :any
-         :host-instruction :any
-         :host-trace :any
+        {:host-inputs judge-value-schema
+         :host-outputs judge-value-schema
+         :host-instruction :string
+         :host-trace judge-trace-schema
          :score :double
          :feedback :string})
       (orc/code "eval"
@@ -71,10 +84,10 @@
   (orc/build-workflow! ctx
     (orc/workflow (str "gap4-live-llmjudge-" (random-uuid))
       (orc/blackboard
-        {:host-inputs :any
-         :host-outputs :any
-         :host-instruction :any
-         :host-trace :any
+        {:host-inputs judge-value-schema
+         :host-outputs judge-value-schema
+         :host-instruction :string
+         :host-trace judge-trace-schema
          :score :double
          :feedback :string})
       (orc/llm "grade-concreteness"

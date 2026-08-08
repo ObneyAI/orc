@@ -998,9 +998,9 @@
           blackboard (reduce-kv
                        (fn [bb key-name source]
                          (let [k (if (string? key-name) (keyword key-name) key-name)]
-                           (update bb k (fn [entry]
-                                          (assoc (or entry {:key k :schema :any :version 1})
-                                                 :source source)))))
+                           (if (contains? bb k)
+                             (assoc-in bb [k :source] source)
+                             bb)))
                        bb-entries
                        (or (:seed-sources event) {}))]
       (assoc state (:tick-id event)
@@ -1054,10 +1054,8 @@
   [state event]
   (let [tick-id (:tick-id event)
         k (:key event)]
-    (if (contains? state tick-id)
+    (if (get-in state [tick-id :blackboard k])
       (-> state
-          (update-in [tick-id :blackboard k]
-                     (fn [entry] (or entry {:key k :schema :any})))
           (update-in [tick-id :blackboard k :version] (fnil inc 0))
           (assoc-in [tick-id :blackboard k :source] (:source event)))
       state)))

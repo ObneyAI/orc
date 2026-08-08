@@ -141,8 +141,15 @@ sparingly. Favor prose over bullets; use bullets very sparingly.
    :instruction instruction
    :input-schemas {:document-page-texts [:vector :string]}
    :output-schemas {:report :string
-                    :key-dates [:vector [:map-of :any :any]]
-                    :key-entities [:vector [:map-of :any :any]]}
+                    :key-dates [:vector [:map
+                                         [:name :string]
+                                         [:date :string]
+                                         [:time {:optional true} :string]
+                                         [:timezone {:optional true} :string]]]
+                    :key-entities [:vector [:map
+                                            [:name :string]
+                                            [:role {:optional true} :string]
+                                            [:contact {:optional true} :string]]]}
    :input-loader load-inputs
    :writes [:report :key-dates :key-entities]
    :evaluation-criteria

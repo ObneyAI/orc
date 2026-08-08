@@ -45,13 +45,19 @@
                  "The real execution produced a non-empty answer."
                  "The real execution did not produce an answer.")}))
 
+(def ^:private host-io-schema
+  [:map [:answer {:optional true} :string]])
+
+(def ^:private host-trace-schema
+  [:map [:node-id {:optional true} :uuid]])
+
 (defn- attach-output-judge! [ctx sheet-id node-id]
   (let [eval-sheet-id
         (sheet/build-workflow!
          ctx
          (sheet/workflow "det-e2e-101-output-evaluator"
-           (sheet/blackboard {:host-inputs :any :host-outputs :any
-                              :host-instruction :any :host-trace :any
+           (sheet/blackboard {:host-inputs host-io-schema :host-outputs host-io-schema
+                              :host-instruction :string :host-trace host-trace-schema
                               :score :double :feedback :string})
            (sheet/code "evaluate-real-output"
              :fn "ai.obney.orc.orc-service.real-llm-adaptive-loop-e2e-test/evaluate-real-output"

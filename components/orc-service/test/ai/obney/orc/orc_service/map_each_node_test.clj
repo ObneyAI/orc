@@ -37,6 +37,19 @@
       (throw (ex-info "Intentional failure for id=2" {:item item}))
       {:current-item (assoc item :processed true)})))
 
+(def ^:private item-schema
+  [:map
+   [:id :int]
+   [:value {:optional true} :int]
+   [:name {:optional true} :string]
+   [:processed {:optional true} :boolean]])
+
+(def ^:private failure-marker-schema
+  [:map
+   [:__original {:optional true} :string]
+   [:__status [:= :failure]]
+   [:__error :string]])
+
 ;; =============================================================================
 ;; Map-Each Tests
 ;; =============================================================================
@@ -77,9 +90,9 @@
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
         ;; Declare blackboard
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :map]))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :map))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :map]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector item-schema]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
 
         ;; Create map-each node
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
@@ -113,9 +126,9 @@
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Map Each Empty"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :map]))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :map))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :map]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector item-schema]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
 
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
               map-id (-> map-result :command-result/events first :node-id)]
@@ -142,9 +155,9 @@
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Map Each Concurrency"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :map]))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :map))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :map]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector item-schema]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
 
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
               map-id (-> map-result :command-result/events first :node-id)]
@@ -173,10 +186,10 @@
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Map Each + Parallel"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :map]))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :map))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector item-schema]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :score :int))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :map]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
 
         ;; Create map-each
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
@@ -215,9 +228,9 @@
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Map Each Partial"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :map]))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :map))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :map]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector item-schema]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
 
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
               map-id (-> map-result :command-result/events first :node-id)]
@@ -281,14 +294,15 @@
 (defn- run-preserve-failures-sheet
   "Build [:map-each (fail-on-boom) :into :results] over `items`, optionally with
    :preserve-failures? and :max-concurrency, execute, and return the full result.
-   :results is declared as [:vector :any] so failure markers (maps) and plain
+   :results is declared as a string-or-map vector so failure markers and plain
    string successes can coexist on the blackboard."
   [ctx items & {:keys [preserve-failures? max-concurrency]}]
   (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Map Each Preserve"))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
-    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :any]))
-    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :any))
-    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :any]))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :string]))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :string))
+    (h/run-and-apply! ctx (h/make-declare-key-command
+                           sheet-id :results [:vector [:or :string failure-marker-schema]]))
     (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
           map-id (-> map-result :command-result/events first :node-id)]
       (h/run-and-apply! ctx (apply h/make-set-map-each-config-command sheet-id map-id
@@ -404,9 +418,9 @@
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Sequence Partial Continuation"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
 
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :map]))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :map))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :map]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector item-schema]))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
         (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :count :int))
 
         ;; Build: [:sequence [:map-each (fail-on-id-2) :into :results] [:leaf count-results]]

@@ -17,7 +17,7 @@
                                   :reads [:query]
                                   :writes [:search-result])))
                  :blackboard {:query :string
-                              :search-result :any}}
+                              :search-result :string}}
           result (v/validate-sheet sheet)]
       (is (:valid? result))
       (is (empty? (:errors result))))))
@@ -42,7 +42,7 @@
                                   :fn "search-fn"
                                   :reads [:query]
                                   :writes [:result])))
-                 :blackboard {:result :any}}  ;; Missing :query
+                 :blackboard {:result :string}}  ;; Missing :query
           result (v/validate-sheet sheet)]
       (is (not (:valid? result)))
       (is (seq (:errors result))))))
@@ -113,8 +113,8 @@
                                   :reads [:input]
                                   :writes [:out2])))
                  :blackboard {:input :string
-                              :out1 :any
-                              :out2 :any}}
+                              :out1 :string
+                              :out2 :string}}
           result (v/validate-sheet sheet)]
       (is (:valid? result)))))
 

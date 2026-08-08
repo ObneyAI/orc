@@ -30,8 +30,13 @@
                        {}
                        tools)
         output-schemas (reduce
-                        (fn [acc {:keys [name]}]
-                          (assoc acc (keyword (str name "-result")) :any))
+                        (fn [acc {:keys [name output-schema]}]
+                          (assoc acc (keyword (str name "-result"))
+                                 (or (schema-converter/convert-schema output-schema)
+                                     (throw (ex-info
+                                             (str "MCP tool " name " does not declare an output schema; "
+                                                  "provide the most specific schema possible for the value's intent")
+                                             {:tool name})))))
                         {}
                         tools)]
     (merge input-schemas output-schemas)))

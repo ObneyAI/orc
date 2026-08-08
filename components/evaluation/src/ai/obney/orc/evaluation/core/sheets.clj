@@ -30,10 +30,19 @@
 ;; Blackboard Schemas
 ;; =============================================================================
 
+(def ^:private trace-input-value-schema
+  [:schema
+   {:registry
+    {::trace-input
+     [:or :nil :string :int :double :boolean :keyword
+      [:vector [:ref ::trace-input]]
+      [:map-of [:or :keyword :string] [:ref ::trace-input]]]}}
+   [:ref ::trace-input]])
+
 (def TraceDataSchema
   "Schema for input trace data"
   [:map
-   [:inputs [:map-of :string :any]]
+   [:inputs [:map-of :string trace-input-value-schema]]
    [:response :string]
    [:instruction :string]])
 

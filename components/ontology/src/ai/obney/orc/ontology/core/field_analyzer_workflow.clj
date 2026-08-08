@@ -23,6 +23,19 @@
 ;; Workflow Definition
 ;; =============================================================================
 
+(def ^:private sampled-field-value-schema
+  [:or :string :int :double :boolean :keyword :uuid :inst
+   [:vector [:or :string :int :double :boolean :keyword :uuid]]])
+
+(def ^:private sample-record-schema
+  [:map-of :keyword sampled-field-value-schema])
+
+(def ^:private schema-form-schema
+  [:or :keyword
+   [:vector [:or :keyword :string
+             [:map-of :keyword [:or :string :boolean]]
+             [:vector :keyword]]]])
+
 (def field-analyzer-workflow
   "ORC workflow for LLM-driven field embedding analysis.
 
@@ -47,8 +60,8 @@
     ;; =========================================================================
     (sheet/blackboard
       {;; === Inputs ===
-       :schema :any  ;; Malli schema as data
-       :sample-data [:vector :map]  ;; Sample records to analyze
+       :schema schema-form-schema  ;; Malli schema as data
+       :sample-data [:vector sample-record-schema]  ;; Sample records to analyze
        :confidence-threshold [:double {:description "Minimum confidence to include a field (0.0-1.0)"}]
 
        ;; === Intermediate State ===
@@ -57,7 +70,8 @@
                                    [:field-type :string]
                                    [:nullable :boolean]
                                    [:description {:optional true} :string]
-                                   [:sample-values {:optional true} [:vector :any]]
+                                   [:sample-values {:optional true}
+                                    [:vector sampled-field-value-schema]]
                                    [:value-stats {:optional true} [:map
                                                                    [:sample-count {:optional true} :int]
                                                                    [:unique-count {:optional true} :int]

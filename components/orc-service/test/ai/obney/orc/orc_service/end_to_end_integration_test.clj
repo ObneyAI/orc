@@ -276,10 +276,16 @@
        :sentiment         :string
        :category          :string
        :sub-issues        [:vector [:map [:text :string]]]
-       :sub-issue-results [:vector :map]
+       :sub-issue-results [:vector [:map
+                                    [:text :string]
+                                    [:sub-issue-summary :string]]]
        :current-issue     [:map [:text :string]]
        :sub-issue-summary :string
-       :routing-decision  :map})
+       :routing-decision  [:map
+                           [:urgency [:enum "high" "normal"]]
+                           [:sentiment :string]
+                           [:category :string]
+                           [:routed-to [:enum "tier-1" "tier-2"]]]})
 
     (sheet/judges
       {:grounding-judge    {:type :grounding

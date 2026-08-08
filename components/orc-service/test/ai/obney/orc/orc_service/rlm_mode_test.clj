@@ -1528,7 +1528,8 @@
                                                 [:sequence
                                                   [:llm {:instruction \"Extract summary\"
                                                          :reads [:document]
-                                                         :writes [:summary]}]
+                                                         :writes [:summary]
+                                                         :output-schemas {:summary :string}}]
                                                   [:final {:keys [:summary]}]])"}
                              :usage {:prompt_tokens 100 :completion_tokens 80 :total_tokens 180}}
 
@@ -1630,8 +1631,11 @@
                             (= n 1)
                             {:outputs {:code "(emit-tree!
                                                 [:sequence
-                                                  [:llm {:instruction \"Test\" :reads [:doc] :writes [:out]}]
-                                                  [:final {:keys [:summary]}]])"}
+                                                  [:llm {:instruction \"Test\"
+                                                         :reads [:document]
+                                                         :writes [:out]
+                                                         :output-schemas {:out :string}}]
+                                                  [:final {:keys [:out]}]])"}
                              :usage {:prompt_tokens 100 :completion_tokens 80 :total_tokens 180}}
                             :else
                             {:outputs {:code "(final! {:summary \"done\"})"}

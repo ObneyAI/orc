@@ -263,7 +263,12 @@ Raw JSON only, starting with [ and ending with ]. Return ALL candidates.")
             (let [hard-wf (ai.obney.orc.orc-service.interface/workflow "ontology-description-reranker-hard"
                             (ai.obney.orc.orc-service.interface/blackboard
                               {:query :string :intent :string
-                               :candidates [:vector :map] :reranked-json :string})
+                               :candidates [:vector [:map
+                                                     [:uri :string]
+                                                     [:label :string]
+                                                     [:description :string]
+                                                     [:score :double]]]
+                               :reranked-json :string})
                             (ai.obney.orc.orc-service.interface/llm "rerank"
                               :instruction hard-avoid-when-instruction
                               :reads [:query :intent :candidates]

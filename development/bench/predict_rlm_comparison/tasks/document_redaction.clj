@@ -162,9 +162,20 @@ Added to this, redact any dates found in the document, in any format.")
             :targets-applied :targets-missing]
    :output-schemas {:redacted-text-per-page [:vector :string]
                     :total-redactions :int
-                    :page-summaries [:vector [:map-of :any :any]]
-                    :targets-applied [:vector [:map-of :any :any]]
-                    :targets-missing [:vector [:map-of :any :any]]}
+                    :page-summaries [:vector [:map
+                                              [:page :int]
+                                              [:redaction-count :int]
+                                              [:categories [:vector :string]]]]
+                    :targets-applied [:vector [:map
+                                               [:page :int]
+                                               [:text :string]
+                                               [:category :string]
+                                               [:reason :string]]]
+                    :targets-missing [:vector [:map
+                                               [:page :int]
+                                               [:text :string]
+                                               [:category :string]
+                                               [:reason :string]]]}
    :evaluation-criteria
    ["The :total-redactions should be in the same order of magnitude as predict-rlm's published 89."
     "The :targets list must include exact substrings of page text (substrings, not paraphrases)."

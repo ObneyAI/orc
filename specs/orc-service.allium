@@ -22,6 +22,12 @@ external entity WorkflowConsumer {}
 
 value DataSchema {
     definition: Any
+    is_specific: not contains_unconstrained_type(definition)
+
+    @invariant StructuralSpecificity
+        -- A schema is not specific when it contains :any or :some, uses a
+        -- standalone or fieldless map, or declares a collection without a
+        -- specific item/value schema. Specificity applies recursively.
 }
 
 value BlackboardValue {
@@ -84,6 +90,20 @@ contract LeafExecutor {
         -- violates its declared schema, as well as when the provider attempt
         -- fails by exception. Only the final exhausted schema failure becomes
         -- durable rejected-output evidence.
+
+    @invariant ProviderEnumSpellingsAreJsonCanonical
+        -- Every provider-facing schema representation, including textual
+        -- descriptions and function-calling tool definitions, renders
+        -- keyword-valued enum choices in their canonical JSON spelling without
+        -- an EDN leading colon. A provider's canonical JSON string is decoded
+        -- to the declared keyword; a colon-prefixed EDN spelling remains
+        -- invalid provider output.
+
+    @invariant ProviderStructuredOutputsRemainStructured
+        -- Function-calling tool definitions preserve structured Malli schemas,
+        -- including unions of map variants and their discriminators. Provider
+        -- objects and collections arrive at leaf validation as parsed values,
+        -- never as JSON encoded inside strings.
 }
 
 contract WorkflowDefinitionConstruction {
@@ -96,6 +116,12 @@ contract WorkflowDefinitionConstruction {
     @invariant DeterministicDefinitionIdentity
         -- Rebuilding an unchanged named definition preserves workflow identity
         -- and produces no effective authoring changes.
+
+    @invariant ActionableSchemaSpecificityFailure
+        -- A definition containing an unconstrained blackboard type is rejected
+        -- with feedback that identifies the offending key and schema path, and
+        -- directs the consumer to use the most specific schema that expresses
+        -- its intent.
 }
 
 contract ExecutionEventStream {
@@ -300,6 +326,7 @@ rule AddWorkflowNode {
 rule DeclareBlackboardKey {
     when: DeclareBlackboardKey(consumer, workflow, name, schema)
     requires: not exists BlackboardKey{workflow: workflow, name: name}
+    requires: schema.is_specific
 
     ensures: BlackboardKey.created(
         workflow: workflow,
@@ -309,6 +336,10 @@ rule DeclareBlackboardKey {
         version: 1
     )
     ensures: workflow.draft_dirty = true
+
+    @guidance
+        -- Unconstrained types are forbidden at every depth of a blackboard
+        -- schema, including inside maps, collections, alternatives and tuples.
 }
 
 rule PublishWorkflow {
@@ -329,6 +360,7 @@ rule PublishWorkflow {
 rule RevertDraftToVersion {
     when: RevertDraftToVersion(consumer, workflow, version)
     requires: version.workflow = workflow
+    requires: definition_has_specific_blackboard_schemas(version.definition)
 
     ensures: DraftStash.created(
         workflow: workflow,
@@ -342,6 +374,7 @@ rule RevertDraftToVersion {
 rule RestoreDraftStash {
     when: RestoreDraftStash(consumer, workflow, stash)
     requires: stash.workflow = workflow
+    requires: definition_has_specific_blackboard_schemas(stash.definition)
 
     ensures: ApplyVersionDefinition(workflow: workflow, definition: stash.definition)
     ensures: workflow.draft_dirty = true

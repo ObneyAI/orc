@@ -90,7 +90,8 @@
                  (h/run-and-apply! ctx (h/make-set-node-io-command sheet-id nid reads writes))
                  nid))]
     (doseq [[k s] [[:doc :string] [:consumed :string]
-                   [:items [:vector :int]] [:current-item :any] [:results [:vector :any]]]]
+                   [:items [:vector :int]] [:current-item [:or :int :string]]
+                   [:results [:vector :string]]]]
       (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k s)))
     (let [seq-r (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
           seq-id (-> seq-r :command-result/events first :node-id)
@@ -113,8 +114,11 @@
   [ctx]
   (let [sr (h/run-and-apply! ctx (h/make-create-sheet-command :name "Item Identity"))
         sheet-id (-> sr :command-result/events first :sheet-id)]
-    (doseq [[k s] [[:items [:vector :any]] [:current-item :any] [:results [:vector :any]]]]
-      (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k s)))
+    (let [item-schema [:map [:id :int] [:tag :string]
+                       [:seen {:optional true} :int]]]
+      (doseq [[k s] [[:items [:vector item-schema]] [:current-item item-schema]
+                     [:results [:vector item-schema]]]]
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k s))))
     (let [me-r (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
           me-id (-> me-r :command-result/events first :node-id)
           cr (h/run-and-apply! ctx (h/make-create-node-command
@@ -139,9 +143,13 @@
   [ctx]
   (let [sr (h/run-and-apply! ctx (h/make-create-sheet-command :name "Composite MapEach"))
         sheet-id (-> sr :command-result/events first :sheet-id)]
-    (doseq [[k s] [[:items [:vector :any]] [:current-item :any]
-                   [:noted :any] [:results [:vector :any]]]]
-      (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k s)))
+    (let [item-schema [:map [:id :int] [:tag :string]
+                       [:seen {:optional true} :int]]
+          noted-schema [:map [:from :int]
+                        [:saw-enriched {:optional true} :boolean]]]
+      (doseq [[k s] [[:items [:vector item-schema]] [:current-item item-schema]
+                     [:noted noted-schema] [:results [:vector item-schema]]]]
+        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k s))))
     (let [me-r (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
           me-id (-> me-r :command-result/events first :node-id)
           sq (h/run-and-apply! ctx (h/make-create-node-command

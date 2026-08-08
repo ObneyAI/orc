@@ -25,6 +25,11 @@
 
 (declare convert-schema)
 
+(defn- specificity-error
+  [message schema]
+  (throw (ex-info (str message "; provide the most specific schema possible for the value's intent")
+                  {:json-schema schema})))
+
 (defn- add-description
   "Add description metadata to a Malli schema if present."
   [malli-schema description]
@@ -46,7 +51,8 @@
   [{:strs [type description enum default]}]
   (let [base-schema (cond
                       enum [:enum (vec enum)]
-                      :else (get json-type->malli type :any))]
+                      :else (or (get json-type->malli type)
+                                (specificity-error "JSON Schema has no supported concrete type" {:type type})))]
     (add-description base-schema description)))
 
 (defn- convert-array
@@ -54,7 +60,7 @@
   [{:strs [items description] :as schema}]
   (let [item-schema (if items
                       (convert-schema items)
-                      :any)]
+                      (specificity-error "JSON array schema does not specify its items" schema))]
     (add-description [:vector item-schema] description)))
 
 (defn- convert-object
@@ -64,10 +70,12 @@
     ;; Map type (additionalProperties without specific properties)
     (let [value-schema (if (map? additionalProperties)
                          (convert-schema additionalProperties)
-                         :any)]
+                         (specificity-error "JSON object additionalProperties has no value schema" schema))]
       (add-description [:map-of :string value-schema] description))
     ;; Regular object with properties
-    (let [required-set (set (or required []))
+    (let [_ (when (empty? properties)
+              (specificity-error "JSON object schema does not specify properties" schema))
+          required-set (set (or required []))
           prop-schemas (for [[prop-name prop-schema] properties
                              :let [converted (convert-schema prop-schema)
                                    is-required (contains? required-set prop-name)]]
@@ -97,7 +105,7 @@
         (contains? json-schema "properties") (convert-object json-schema)
         (contains? json-schema "items") (convert-array json-schema)
         (contains? json-schema "enum") (convert-primitive json-schema)
-        :else :any))))
+        :else (specificity-error "JSON Schema is structurally unconstrained" json-schema)))))
 
 ;; ============================================================================
 ;; Public API
@@ -152,8 +160,11 @@
            output-key (keyword (str name "-result"))]
        (-> acc
            (merge input-keys)
-           ;; Add output key as :any since MCP doesn't define output schemas well
-           (assoc output-key :any))))
+           (assoc output-key
+                  (or (convert-schema outputSchema)
+                      (specificity-error
+                       (str "MCP tool " name " does not declare an output schema")
+                       outputSchema))))))
    {}
    tools))
 

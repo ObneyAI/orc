@@ -99,12 +99,16 @@
 
 (defn- build-sheet! [ctx]
   (executor/setup-providers!)
-  (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "D-008 Live Verify"))
+  (let [item-schema [:map
+                     [:id :int]
+                     [:sentinel? {:optional true} :boolean]
+                     [:text :string]]
+        sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "D-008 Live Verify"))
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
     ;; Declare blackboard keys
-    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :chunks [:vector :map]))
-    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :map))
-    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :map]))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :chunks [:vector item-schema]))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema]))
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :summary :string))
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :count :int))
 

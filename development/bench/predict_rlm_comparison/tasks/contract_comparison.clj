@@ -117,8 +117,16 @@
    :input-schemas {:contract-a-pages [:vector :string]
                    :contract-b-pages [:vector :string]}
    :output-schemas {:report :string
-                    :section-diffs [:vector [:map-of :any :any]]
-                    :key-differences [:vector [:map-of :any :any]]
+                    :section-diffs [:vector [:map
+                                             [:section-name :string]
+                                             [:document-a-text :string]
+                                             [:document-b-text :string]
+                                             [:difference-summary :string]
+                                             [:significance [:enum "major" "minor" "identical"]]]]
+                    :key-differences [:vector [:map
+                                               [:area :string]
+                                               [:description :string]
+                                               [:impact :string]]]
                     :summary :string}
    :input-loader load-inputs
    :writes [:report :section-diffs :key-differences :summary]

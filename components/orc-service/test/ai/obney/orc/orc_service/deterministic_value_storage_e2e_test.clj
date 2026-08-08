@@ -104,6 +104,30 @@
 (defn- execute-provider-number [ctx workflow-name provider-value]
   (first (execute-provider-values ctx workflow-name [provider-value])))
 
+(defn- execute-provider-keyword-enum [ctx workflow-name provider-value]
+  (let [modules (atom [])
+        workflow
+        (sheet/workflow workflow-name
+          (sheet/blackboard
+           {:decision [:map
+                       [:outcome [:enum :changed :unchanged]]]})
+          (sheet/llm "decide"
+            :instruction "Return the learning decision."
+            :writes [:decision]
+            :options {:use-function-calling? true
+                      :retry-delay-ms 1}))]
+    [(with-redefs [dscloj/predict
+                   (fn [_provider module _inputs _options]
+                     (swap! modules conj module)
+                     {:outputs {:outcome provider-value}
+                      :raw-response (str "provider response " provider-value)
+                      :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}
+                      :model "deterministic-provider"})]
+       (let [sheet-id (sheet/build-workflow! ctx workflow)]
+         (sheet/execute (assoc ctx :dscloj-provider :deterministic-provider)
+                        sheet-id {})))
+     @modules]))
+
 (defn- failed-leaf-detail [ctx result]
   (let [trace (trace-for ctx result)
         leaf (some #(when (= :leaf (:node-type %)) %) (:node-traces trace))]
@@ -266,6 +290,29 @@
           (is (seq @objects)))))))
 
 (deftest det-e2e-124-provider-output-normalization-and-rejection-evidence
+  (testing "keyword enums are presented and decoded using canonical JSON spellings"
+    (h/with-async-test-context [ctx]
+      (let [[result modules]
+            (execute-provider-keyword-enum
+             ctx "det-e2e-124-keyword-enum" "changed")
+            outcome-field (-> modules first :outputs first)]
+        (is (= "outcome - one of: changed, unchanged"
+               (:description outcome-field)))
+        (is (= :success (:status result)))
+        (is (= :changed (get-in result [:outputs :decision :outcome]))))))
+
+  (testing "colon-prefixed EDN spellings are rejected and durably inspectable"
+    (h/with-async-test-context [ctx]
+      (let [[result modules]
+            (execute-provider-keyword-enum
+             ctx "det-e2e-124-colon-keyword-enum" ":changed")
+            detail (failed-leaf-detail ctx result)]
+        (is (= 2 (count modules)) "schema failure consumes the configured retry")
+        (is (= :failure (:status result)))
+        (is (= {:decision {:outcome ":changed"}}
+               (:rejected-outputs detail)))
+        (is (nil? (get-in result [:outputs :decision]))))))
+
   (testing "schema-equivalent JSON numbers become canonical before blackboard validation"
     (h/with-async-test-context [ctx]
       (let [result (execute-provider-number ctx "det-e2e-124-number" (long 3))]

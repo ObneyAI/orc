@@ -69,12 +69,18 @@
   (str "ai.obney.orc.orc-service.deterministic-failure-e2e-test/"
        function-name))
 
+(def ^:private item-schema
+  [:map
+   [:id :int]
+   [:fail? {:optional true} :boolean]
+   [:processed? {:optional true} :boolean]])
+
 (defn- partial-workflow [name executor & {:keys [with-downstream? parallel]
                                           :or {parallel 3}}]
   (sheet/workflow name
-    (sheet/blackboard {:items [:vector :map]
-                       :item :map
-                       :results [:vector :map]
+    (sheet/blackboard {:items [:vector item-schema]
+                       :item item-schema
+                       :results [:vector item-schema]
                        :success-count :int})
     (apply sheet/sequence "main"
            (cond->
@@ -187,9 +193,9 @@
   (testing "parallel map-each with a composite leaf must not misattribute successful items"
     (h/with-async-test-context [ctx]
       (let [workflow (sheet/workflow "det-e2e-025-composite-map-leaf"
-                       (sheet/blackboard {:items [:vector :map]
-                                          :item :map
-                                          :results [:vector :map]})
+                       (sheet/blackboard {:items [:vector item-schema]
+                                          :item item-schema
+                                          :results [:vector item-schema]})
                        (sheet/map-each "process"
                          :from :items :as :item :into :results :parallel 3
                          (sheet/sequence "composite-leaf"

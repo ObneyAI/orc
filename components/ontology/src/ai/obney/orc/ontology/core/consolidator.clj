@@ -115,6 +115,36 @@
        "   :version 1\n"
        "   :consolidated-from-event-count 10}"))
 
+(def ^:private current-description-schema
+  [:map
+   [:summary {:optional true} :string]
+   [:capabilities {:optional true} [:vector :string]]
+   [:version {:optional true} :int]])
+
+(def ^:private recent-event-schema
+  [:map
+   [:event/type {:optional true} :keyword]
+   [:status {:optional true} :keyword]
+   [:confidence {:optional true} :double]])
+
+(def ^:private aggregate-metrics-schema
+  [:map
+   [:success-count {:optional true} :int]
+   [:failure-count {:optional true} :int]
+   [:total-count {:optional true} :int]
+   [:success-rate {:optional true} :double]])
+
+(def ^:private history-delta-schema
+  [:map
+   [:recent-success-rate :double]
+   [:historical-success-rate :double]
+   [:delta :double]])
+
+(def ^:private structural-context-schema
+  [:map
+   [:node-type {:optional true} :keyword]
+   [:tree-class-id {:optional true} [:or :uuid :string]]])
+
 (defn- reflection-workflow
   "Single-:llm-node ORC workflow for the consolidator's reflection call.
 
@@ -129,12 +159,12 @@
   (orc/workflow "ontology-consolidator-reflection"
     (orc/blackboard
       {:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]
-       :target-id :any
-       :current-description [:maybe :map]
-       :recent-events [:vector :map]
-       :aggregate-metrics [:maybe :map]
-       :recent-vs-historical-delta [:maybe :map]
-       :structural-context :any
+       :target-id [:or :uuid :string]
+       :current-description [:maybe current-description-schema]
+       :recent-events [:vector recent-event-schema]
+       :aggregate-metrics [:maybe aggregate-metrics-schema]
+       :recent-vs-historical-delta [:maybe history-delta-schema]
+       :structural-context [:maybe structural-context-schema]
        :capabilities [:vector :string]
        :strengths [:vector ontology-schemas/principle-entry]
        :weaknesses [:vector ontology-schemas/principle-entry]

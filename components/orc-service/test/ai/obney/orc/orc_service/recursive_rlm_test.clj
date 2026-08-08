@@ -704,7 +704,8 @@
                                                   [:sequence
                                                     [:llm {:instruction \"summarize\"
                                                            :reads [:document]
-                                                           :writes [:summary]}]
+                                                           :writes [:summary]
+                                                           :output-schemas {:summary :string}}]
                                                     [:final {:keys [:summary]}]])"}
                                :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
                               ;; Second outer iteration: must see :tree-results in
@@ -761,7 +762,8 @@
                                             [:sequence
                                               [:llm {:instruction \"x\"
                                                      :reads [:document]
-                                                     :writes [:summary]}]
+                                                     :writes [:summary]
+                                                     :output-schemas {:summary :string}}]
                                               [:final {:keys [:summary]}]])"}
                          :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}})]
           (let [node {:type :repl-researcher
@@ -792,7 +794,8 @@
                                                 [:sequence
                                                   [:llm {:instruction \"go\"
                                                          :reads [:document]
-                                                         :writes [:summary]}]
+                                                         :writes [:summary]
+                                                         :output-schemas {:summary :string}}]
                                                   [:final {:keys [:summary]}]])"}
                              :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
                             {:outputs {:code "(final! {:summary \"done\"})"}
@@ -837,7 +840,8 @@
                                                   [:sequence
                                                     [:llm {:instruction \"summarize\"
                                                            :reads [:document]
-                                                           :writes [:summary]}]
+                                                           :writes [:summary]
+                                                           :output-schemas {:summary :string}}]
                                                     [:final {:keys [:summary]}]])"}
                                :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
                               ;; Iter 2: call EACH drill-down primitive, fold into final!.
@@ -916,7 +920,8 @@
                                                     [:code {:fn (fn [_]
                                                                   (throw (ex-info \"intentional fault\" {})))
                                                             :reads []
-                                                            :writes [:produced]}]
+                                                            :writes [:produced]
+                                                            :output-schemas {:produced :string}}]
                                                     [:final {:keys [:produced]}]])"}
                                :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
                               ;; Iter 2: read :tree-results, project its

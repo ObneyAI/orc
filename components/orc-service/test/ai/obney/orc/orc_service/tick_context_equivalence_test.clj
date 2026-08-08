@@ -128,9 +128,9 @@
 (defn- map-each-sheet!
   [ctx nm max-concurrency composite?]
   (let [sheet-id (new-sheet! ctx nm {:items [:vector :int]
-                                     :current-item :any
+                                     :current-item [:or :int :string]
                                      :note :string
-                                     :results [:vector :any]})
+                                     :results [:vector :string]})
         me-id (add-node! ctx sheet-id :map-each)]
     (if composite?
       ;; Composite child: the map-each's direct child is a sequence, so the

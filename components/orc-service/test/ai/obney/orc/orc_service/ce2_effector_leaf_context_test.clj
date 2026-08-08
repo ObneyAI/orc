@@ -139,7 +139,8 @@
               tree     (rlm-dsl/rlm-dsl->orc-dsl
                          [:sequence
                           [:code {:fn (recording-leaf-fn leaf-record)
-                                  :reads [] :writes [:result-a]}]
+                                  :reads [] :writes [:result-a]
+                                  :output-schemas {:result-a :string}}]
                           [:final {:keys [:result-a]}]])
               result   (tree-executor/execute-tree tree exec-ctx
                          {:sandbox-vars {} :timeout-ms 20000})]
@@ -170,7 +171,8 @@
               tree     (rlm-dsl/rlm-dsl->orc-dsl
                          [:sequence
                           [:code {:fn (gated-tool-leaf-fn leaf-record)
-                                  :reads [] :writes [:result-a]}]
+                                  :reads [] :writes [:result-a]
+                                  :output-schemas {:result-a :string}}]
                           [:final {:keys [:result-a]}]])
               result   (tree-executor/execute-tree tree exec-ctx
                          {:sandbox-vars {} :timeout-ms 20000})]
@@ -197,7 +199,8 @@
     (let [inner-tree (rlm-dsl/rlm-dsl->orc-dsl
                        [:sequence
                         [:code {:fn (recording-leaf-fn inner-leaf-record)
-                                :reads [] :writes [:inner-result]}]
+                                :reads [] :writes [:inner-result]
+                                :output-schemas {:inner-result :string}}]
                         [:final {:keys [:inner-result]}]])
           ;; Pass the leaf's own execution-context down (the transitive seam).
           inner-ctx (:execution-context ctx)
@@ -214,7 +217,9 @@
               outer-tree (rlm-dsl/rlm-dsl->orc-dsl
                            [:sequence
                             [:code {:fn (nested-emitting-leaf-fn inner-leaf-record)
-                                    :reads [] :writes [:result-a]}]
+                                    :reads [] :writes [:result-a]
+                                    :output-schemas
+                                    {:result-a [:map [:inner-status :keyword]]}}]
                             [:final {:keys [:result-a]}]])
               result (tree-executor/execute-tree outer-tree exec-ctx
                        {:sandbox-vars {} :timeout-ms 30000})]

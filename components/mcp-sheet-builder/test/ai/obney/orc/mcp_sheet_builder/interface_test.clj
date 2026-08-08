@@ -14,19 +14,22 @@
     :inputSchema {"type" "object"
                   "properties" {"query" {"type" "string"
                                          "description" "Search query"}}
-                  "required" ["query"]}}
+                  "required" ["query"]}
+    :outputSchema {"type" "string"}}
    {:name "tavily_extract"
     :description "Extract content from URLs"
     :inputSchema {"type" "object"
                   "properties" {"urls" {"type" "array"
                                         "items" {"type" "string"}
                                         "description" "URLs to extract from"}}
-                  "required" ["urls"]}}
+                  "required" ["urls"]}
+    :outputSchema {"type" "string"}}
    {:name "tavily_qna"
     :description "Answer questions based on web search"
     :inputSchema {"type" "object"
                   "properties" {"query" {"type" "string"}}
-                  "required" ["query"]}}])
+                  "required" ["query"]}
+    :outputSchema {"type" "string"}}])
 
 ;; ============================================================================
 ;; Schema Conversion Integration Tests
@@ -63,7 +66,9 @@
             :category :data-access
             :input-schema {"type" "object"
                            "properties" {"query" {"type" "string"}}}
-            :malli-input [:map [:query :string]]}
+            :output-schema {"type" "string"}
+            :malli-input [:map [:query :string]]
+            :malli-output :string}
            {:name "tavily_extract"
             :description "Extract content from URLs"
             :capabilities #{:retrieval}
@@ -71,7 +76,9 @@
             :input-schema {"type" "object"
                            "properties" {"urls" {"type" "array"
                                                  "items" {"type" "string"}}}}
-            :malli-input [:map [:urls [:vector :string]]]}]
+            :output-schema {"type" "string"}
+            :malli-input [:map [:urls [:vector :string]]]
+            :malli-output :string}]
    :relationships [{:type :sequential :from "tavily_search" :to "tavily_extract"}]
    :patterns [{:pattern :research-compilation
                :confidence 0.9

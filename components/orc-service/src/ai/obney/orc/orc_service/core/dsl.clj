@@ -7,9 +7,10 @@
    (def my-workflow
      (workflow \"recommendations\"
        (blackboard
-         {:student-profile :map
-          :programs [:vector :map]
-          :recommendations [:vector :map]})
+         {:student-profile [:map [:student-id :string]]
+          :programs [:vector [:map [:program-id :string]]]
+          :recommendations [:vector [:map [:program-id :string]
+                                         [:score :double]]]})
 
        (sequence \"main\"
          (code \"fetch-programs\"
@@ -50,6 +51,7 @@
    - Reordering nodes preserves their IDs
    - Renaming a node = new identity"
   (:require [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -359,6 +361,15 @@
 ;; Blackboard Schema Builder
 ;; =============================================================================
 
+(defn- reject-unconstrained-schemas!
+  [schema-map]
+  (when-let [violations (seq (blackboard-schema/schema-map-violations schema-map))]
+    (throw
+     (ex-info
+      (blackboard-schema/feedback violations)
+      {:blackboard-keys (vec (distinct (map :key violations)))
+       :schema-violations (vec violations)}))))
+
 (defn blackboard
   "Define the blackboard schema.
 
@@ -366,10 +377,11 @@
    ```
    (blackboard
      {:input :string
-      :items [:vector :map]
+      :items [:vector [:map [:id :string]]]
       :result :int})
-   ```"
+  ```"
   [schema-map]
+  (reject-unconstrained-schemas! schema-map)
   {:blackboard-schema schema-map})
 
 ;; =============================================================================
@@ -645,7 +657,8 @@
   [{:keys [workflow-name blackboard-schema root-node]}]
   (when-not (and (string? workflow-name) (seq workflow-name))
     (throw (ex-info "Workflow requires a non-empty name" {:workflow-name workflow-name})))
-  (let [declared (set (keys (or blackboard-schema {})))
+  (let [_ (reject-unconstrained-schemas! blackboard-schema)
+        declared (set (keys (or blackboard-schema {})))
         nodes (if root-node (tree-seq #(seq (:children %)) :children root-node) [])
         names (keep :name nodes)
         duplicate-names (->> names frequencies (keep (fn [[n c]] (when (> c 1) n))) vec)]

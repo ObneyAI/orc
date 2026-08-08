@@ -125,8 +125,8 @@
   (let [sr (h/run-and-apply! ctx (h/make-create-sheet-command :name "MapEach"))
         sheet-id (-> sr :command-result/events first :sheet-id)]
     (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :int]))
-    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :any))
-    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :any]))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item [:or :int :string]))
+    (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :string]))
     (let [mr (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
           me-id (-> mr :command-result/events first :node-id)
           cr (h/run-and-apply! ctx (h/make-create-node-command

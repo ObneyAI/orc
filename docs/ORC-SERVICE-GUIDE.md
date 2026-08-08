@@ -385,7 +385,13 @@ See [RLM-GUIDE.md](RLM-GUIDE.md) for the complete recursive-mode reference, dril
 
 ### LLM Output Schemas
 
-**CRITICAL: Never use `:any` or `:map-of :keyword :any` for LLM outputs.**
+**Unconstrained blackboard schemas are forbidden, including nested positions.**
+
+Workflow construction fails before creating authoring state when any blackboard
+key contains `:any`, `:some`, a standalone or fieldless map, or a collection
+without a specific item/value schema. The error identifies the offending key
+and exact schema path, then directs the consumer to use the most specific schema
+possible for the value's intent.
 
 LLMs need explicit field structure to generate reliable outputs.
 
@@ -394,7 +400,7 @@ LLMs need explicit field structure to generate reliable outputs.
 ```clojure
 ;; DON'T DO THIS
 (sheet/blackboard
-  {:analysis [:map-of :keyword :any]})
+  {:analysis [:map]})
 ```
 
 #### Good Pattern (explicit fields + descriptions)
@@ -915,8 +921,8 @@ Two shapes:
 ;; Build the judge as a single-node workflow
 (def schema-judge-workflow
   (sheet/workflow "schema-compliance"
-    (sheet/blackboard {:host-inputs :any :host-outputs :any
-                       :host-instruction :any :host-trace :any
+    (sheet/blackboard {:host-inputs :map :host-outputs :map
+                       :host-instruction :string :host-trace :map
                        :score :double :feedback :string})
     (sheet/code "eval"
       :fn "myapp.judges/schema-compliance-judge"     ; FQ-name STRING — not a symbol
@@ -931,8 +937,8 @@ Two shapes:
 ```clojure
 (def hallucination-risk-judge
   (sheet/workflow "hallucination-risk"
-    (sheet/blackboard {:host-inputs :any :host-outputs :any
-                       :host-instruction :any :host-trace :any
+    (sheet/blackboard {:host-inputs :map :host-outputs :map
+                       :host-instruction :string :host-trace :map
                        :score :double :feedback :string})
     (sheet/llm "grade"
       :model "google/gemini-3-flash-preview"

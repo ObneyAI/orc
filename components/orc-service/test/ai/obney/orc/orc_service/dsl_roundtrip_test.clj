@@ -98,13 +98,13 @@
     (h/with-test-context [ctx]
       (let [original-def (dsl/workflow "comprehensive"
                            (dsl/blackboard {:input :string
-                                            :items [:vector :map]
+                                            :items [:vector [:map [:value :string]]]
                                             :flag :boolean
-                                            :result :any
+                                            :result :string
                                             :score :int
-                                            :item :map
-                                            :item-result :any
-                                            :results [:vector :any]})
+                                            :item [:map [:value :string]]
+                                            :item-result :string
+                                            :results [:vector :string]})
                            (dsl/sequence "main"
                              ;; LLM node
                              (dsl/llm "ai-step"
@@ -260,7 +260,7 @@
   (testing "export -> modify -> import preserves sheet identity"
     (h/with-test-context [ctx]
       (let [original-def (dsl/workflow "roundtrip-identity"
-                           (dsl/blackboard {:data :string :result :any})
+                           (dsl/blackboard {:data :string :result :string})
                            (dsl/sequence "main"
                              (dsl/llm "process"
                                :model "google/gemini-2.5-flash"
@@ -346,7 +346,7 @@
   (testing "generated DSL is parseable Clojure"
     (h/with-test-context [ctx]
       (let [original-def (dsl/workflow "valid-clojure"
-                           (dsl/blackboard {:data :any})
+                           (dsl/blackboard {:data :string})
                            (dsl/sequence "main"
                              (dsl/llm "process"
                                :model "google/gemini-2.5-flash"
@@ -419,7 +419,7 @@
   (testing "handles deeply nested workflow trees"
     (h/with-test-context [ctx]
       (let [original-def (dsl/workflow "deep-nesting"
-                           (dsl/blackboard {:data :any})
+                           (dsl/blackboard {:data :string})
                            (dsl/sequence "root"
                              (dsl/fallback "level-1"
                                (dsl/sequence "level-2"

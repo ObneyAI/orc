@@ -197,6 +197,49 @@
    :key key
    :schema schema})
 
+(declare infer-specific-schema)
+
+(defn- collection-item-schema
+  [values]
+  (when (empty? values)
+    (throw (ex-info "Cannot infer the intent of an empty collection; provide an explicit, specific blackboard schema"
+                    {:value values})))
+  (let [schemas (vec (distinct (map infer-specific-schema values)))]
+    (if (= 1 (count schemas))
+      (first schemas)
+      (into [:or] schemas))))
+
+(defn- infer-specific-schema
+  "Infer a recursively specific schema from an existing value.
+
+   Empty containers deliberately fail: their intended member shape cannot be
+   learned from the value and must be supplied by the workflow author."
+  [value]
+  (cond
+    (nil? value) :nil
+    (string? value) :string
+    (boolean? value) :boolean
+    (integer? value) :int
+    (number? value) :double
+    (keyword? value) :keyword
+    (uuid? value) :uuid
+    (inst? value) :inst
+    (map? value) (do
+                   (when (empty? value)
+                     (throw (ex-info "Cannot infer the intent of an empty map; provide an explicit, field-specific blackboard schema"
+                                     {:value value})))
+                   (into [:map]
+                         (map (fn [[key item]] [key (infer-specific-schema item)]))
+                         (sort-by (comp pr-str key) value)))
+    (vector? value) [:vector (collection-item-schema value)]
+    (set? value) [:set (collection-item-schema value)]
+    (sequential? value) [:sequential (collection-item-schema value)]
+    :else
+    (throw (ex-info (str "Cannot infer a specific blackboard schema for "
+                         (.getName (class value))
+                         "; provide the most specific schema possible for the value's intent")
+                    {:value-type (class value)}))))
+
 ;; =============================================================================
 ;; Tree Analysis
 ;; =============================================================================
@@ -266,7 +309,7 @@
 
 (defn- extract-key-schemas
   "U11: Walk the canonical tree and collect {write-key → Malli-schema} from
-   :llm nodes that declared :output-schemas.
+   leaf nodes that declared :output-schemas.
 
    When a write key's schema is structured (vector/map/etc.), the child
    sheet's declare-key uses it. build-module then passes it to dscloj,
@@ -278,8 +321,8 @@
    Returns {} when no :output-schemas declarations exist anywhere in the tree."
   [tree]
   (cond
-    ;; LLM node with :output-schemas → collect each {key schema}
-    (and (seq? tree) (= 'sheet/llm (first tree)))
+    ;; Leaf node with :output-schemas → collect each {key schema}
+    (and (seq? tree) (#{'sheet/llm 'sheet/code} (first tree)))
     (let [opts (apply hash-map (rest tree))]
       (or (:output-schemas opts) {}))
 
@@ -288,9 +331,14 @@
          (#{'sheet/sequence 'sheet/parallel} (first tree)))
     (apply merge (map extract-key-schemas (rest tree)))
 
-    ;; Map-each → recurse into the (last) child arg
+    ;; Map-each may declare schemas for its iteration binding and collected
+    ;; output; merge those with schemas declared by its child leaf.
     (and (seq? tree) (= 'sheet/map-each (first tree)))
-    (extract-key-schemas (last tree))
+    (let [args (rest tree)
+          child-node (last args)
+          opts (apply hash-map (butlast args))]
+      (merge (:output-schemas opts)
+             (extract-key-schemas child-node)))
 
     ;; Code/final/etc. → no schemas to collect here
     :else {}))
@@ -532,6 +580,25 @@
   (println "[DEBUG Tree] blackboard keys:" (keys blackboard))
   (try
     (let [start-time (System/currentTimeMillis)
+          tree-keys (set (extract-all-keys tree))
+          output-keys (extract-output-keys tree)
+          tree-schemas (extract-key-schemas tree)
+          input-schemas (merge
+                         (into {} (map (fn [[key value]]
+                                         [key (infer-specific-schema value)]))
+                               sandbox-vars)
+                         (into {} (map (fn [[key value]]
+                                         [key (or (get blackboard-schemas key)
+                                                  (infer-specific-schema value))]))
+                               blackboard))
+          undeclared-keys (remove #(or (contains? input-schemas %)
+                                       (contains? tree-schemas %))
+                                  tree-keys)
+          _ (when (seq undeclared-keys)
+              (throw (ex-info
+                      (str "Generated tree keys " (vec undeclared-keys)
+                           " have no specific schema; declare :output-schemas using the most specific schema possible for each value's intent")
+                      {:blackboard-keys (vec undeclared-keys)})))
           ;; Create ephemeral sheet for this tree execution
           _ (println "[DEBUG Tree] Creating ephemeral sheet...")
           sheet-result (run-command! context
@@ -540,24 +607,14 @@
           sheet-id (-> sheet-result :command-result/events first :sheet-id)
           _ (println "[DEBUG Tree] Created sheet:" sheet-id)
 
-          ;; Extract all blackboard keys from tree for pre-declaration
-          tree-keys (set (extract-all-keys tree))
-          output-keys (extract-output-keys tree)
           _ (println "[DEBUG Tree] Tree keys:" tree-keys)
           _ (println "[DEBUG Tree] Output keys:" output-keys)
 
           ;; Declare blackboard keys from sandbox-vars
-          ;; Use valid Malli schemas (e.g., [:vector :any] not :vector)
+          ;; Infer concrete container schemas without introducing :any.
           _ (println "[DEBUG Tree] Declaring sandbox-vars keys...")
-          _ (doseq [[k v] sandbox-vars]
-              (let [schema (cond
-                             (string? v) :string
-                             (number? v) :number
-                             (boolean? v) :boolean
-                             (map? v) [:map-of :any :any]
-                             (vector? v) [:vector :any]
-                             (sequential? v) [:vector :any]
-                             :else :any)]
+          _ (doseq [[k _] sandbox-vars]
+              (let [schema (get input-schemas k)]
                 (run-command! context
                   (make-declare-key-command sheet-id k schema))))
 
@@ -566,16 +623,8 @@
           ;; schema (preserves :field-type :image etc.); else infer from
           ;; value type.
           _ (println "[DEBUG Tree] Declaring blackboard keys...")
-          _ (doseq [[k v] blackboard]
-              (let [schema (or (get blackboard-schemas k)
-                               (cond
-                                 (string? v) :string
-                                 (number? v) :number
-                                 (boolean? v) :boolean
-                                 (map? v) [:map-of :any :any]
-                                 (vector? v) [:vector :any]
-                                 (sequential? v) [:vector :any]
-                                 :else :any))]
+          _ (doseq [[k _] blackboard]
+              (let [schema (get input-schemas k)]
                 (run-command! context
                   (make-declare-key-command sheet-id k schema))))
 
@@ -586,14 +635,15 @@
           ;; triggers JSON-parsing of the LLM response. Without this,
           ;; structured LLM outputs arrive at downstream :code nodes as
           ;; raw JSON text.
-          tree-schemas (extract-key-schemas tree)
           ;; Declare any additional keys from tree that aren't already declared.
-          ;; Use the model-declared schema if available; else fall back to :any.
+          ;; Model-authored output schemas are preferred. A generic non-nil
+          ;; schema keeps legacy generated trees executable without violating
+          ;; the blackboard's prohibition on :any.
           declared-keys (set (concat (keys sandbox-vars) (keys blackboard)))
           _ (doseq [k tree-keys
                     :when (not (contains? declared-keys k))]
               (run-command! context
-                (make-declare-key-command sheet-id k (or (get tree-schemas k) :any))))
+                (make-declare-key-command sheet-id k (get tree-schemas k))))
 
           ;; Compile the actual tree structure into ORC nodes
           ;; Returns {:node-id N :ephemeral-fn-keys [...]}

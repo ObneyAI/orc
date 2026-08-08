@@ -121,7 +121,9 @@ node:
   (orc/workflow "compliance-review"
     (orc/blackboard
       {:document [:string {:description "The contract or policy to review"}]
-       :findings [:vector :any {:description "Issues with severity + citation"}]
+       :findings [:vector {:description "Issues with severity + citation"}
+                  [:map [:severity :keyword]
+                        [:citation :string]]]
        :recommendations [:string {:description "Actionable next steps"}]})
     (orc/repl-researcher "researcher"
       :model "google/gemini-3-flash-preview"
@@ -209,7 +211,9 @@ slice of the parent's keys in and the child's outputs back out:
   (orc/workflow "risk-assessment"
     (orc/blackboard
       {:clause     [:string {:description "A single contract clause"}]
-       :risk-notes [:vector :any {:description "Risks with severity + rationale"}]})
+       :risk-notes [:vector {:description "Risks with severity + rationale"}
+                    [:map [:severity :keyword]
+                          [:rationale :string]]]})
     (orc/repl-researcher "risk-researcher"
       :model "google/gemini-3-flash-preview"
       :instruction "Assess the legal risk of the provided clause."
@@ -222,7 +226,8 @@ slice of the parent's keys in and the child's outputs back out:
   (orc/workflow "contract-review"
     (orc/blackboard
       {:clause     [:string]
-       :risk-notes [:vector :any]
+       :risk-notes [:vector [:map [:severity :keyword]
+                                   [:rationale :string]]]
        :summary    [:string]})
     (orc/sequence "review"
       ;; The delegate node runs risk-subworkflow as a sub-behavior.

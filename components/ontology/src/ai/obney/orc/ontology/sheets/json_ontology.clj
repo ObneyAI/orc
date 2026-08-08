@@ -271,20 +271,70 @@ Sample Data (first 2 records):
 ;; Pipeline Definition
 ;; =============================================================================
 
+(def ^:private json-value-schema
+  [:schema
+   {:registry
+    {::json-value
+     [:or :nil :string :int :double :boolean
+      [:vector [:ref ::json-value]]
+      [:map-of [:or :keyword :string] [:ref ::json-value]]]}}
+   [:ref ::json-value]])
+
+(def ^:private concept-schema
+  [:map
+   [:uri :string]
+   [:label :string]
+   [:definition :string]
+   [:entity-type :string]
+   [:confidence :double]
+   [:label-field {:optional true} :string]
+   [:source-fields {:optional true} [:vector :string]]])
+
+(def ^:private structure-field-schema
+  [:map
+   [:name :string]
+   [:type :keyword]
+   [:nullable? {:optional true} :boolean]
+   [:sample-values [:vector json-value-schema]]
+   [:distinct-count {:optional true} :int]])
+
+(def ^:private structure-schema
+  [:map
+   [:root-type :keyword]
+   [:element-type {:optional true} [:maybe :keyword]]
+   [:total-count :int]
+   [:fields [:vector structure-field-schema]]
+   [:has-nested-objects? {:optional true} :boolean]
+   [:has-arrays? {:optional true} :boolean]
+   [:sample-values {:optional true} [:vector json-value-schema]]])
+
+(def ^:private tbox-class-schema
+  [:map [:uri :string] [:label :string] [:definition :string] [:type :string]])
+
+(def ^:private tbox-property-schema
+  [:map [:uri :string] [:label :string] [:domain :string] [:range :string] [:type :string]])
+
 (def json-to-ontology-pipeline
   "Behavior tree pipeline for JSON-to-Ontology extraction."
   (sheet/workflow "json-to-ontology"
     (sheet/blackboard
       {;; === Inputs ===
-       :json-data :any
+       :json-data json-value-schema
        :json-path [:string {:optional true}]
        :content [:string {:optional true}]
        :base-uri [:string {:description "Ontology namespace URI"}]
        :domain [:string {:optional true :description "Optional domain hint"}]
-       :existing-concepts [:vector {:optional true} :any]
+       :existing-concepts [:vector {:optional true} concept-schema]
 
        ;; === Phase 1: Parse ===
-       :structure [:map {:description "JSON structure analysis"}]
+       :structure [:map {:description "JSON structure analysis"}
+                   [:root-type :keyword]
+                   [:element-type {:optional true} [:maybe :keyword]]
+                   [:total-count :int]
+                   [:fields [:vector structure-field-schema]]
+                   [:has-nested-objects? {:optional true} :boolean]
+                   [:has-arrays? {:optional true} :boolean]
+                   [:sample-values {:optional true} [:vector json-value-schema]]]
        :structure-summary [:string {:description "Human-readable structure summary for LLM"}]
 
        ;; === Phase 2: Domain Analysis ===
@@ -340,10 +390,15 @@ Sample Data (first 2 records):
 
        ;; === Phase 9-10: Output ===
        :tbox [:map {:description "Ontology schema"}
-              [:classes [:vector :any]]
-              [:object-properties [:vector :any]]
-              [:datatype-properties [:vector :any]]]
-       :abox [:vector {:description "Instances"} :any]
+              [:classes [:vector tbox-class-schema]]
+              [:object-properties [:vector tbox-property-schema]]
+              [:datatype-properties [:vector tbox-property-schema]]]
+       :abox [:vector {:description "Instances"}
+              [:map
+               [:uri :string]
+               [:type :string]
+               [:label :string]
+               [:properties [:map-of :string json-value-schema]]]]
        :owl-output [:string {:description "OWL Turtle serialization"}]})
 
     (sheet/sequence "json-main-pipeline"

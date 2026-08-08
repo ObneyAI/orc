@@ -15,7 +15,9 @@
    :input-schema {"type" "object"
                   "properties" {"query" {"type" "string"
                                          "description" "Search query"}}}
-   :malli-input [:map [:query :string]]})
+   :output-schema {"type" "string"}
+   :malli-input [:map [:query :string]]
+   :malli-output :string})
 
 (def extract-tool
   {:name "extract"
@@ -24,7 +26,9 @@
    :category :data-access
    :input-schema {"type" "object"
                   "properties" {"url" {"type" "string"}}}
-   :malli-input [:map [:url :string]]})
+   :output-schema {"type" "string"}
+   :malli-input [:map [:url :string]]
+   :malli-output :string})
 
 (def sample-analysis
   {:tools [search-tool extract-tool]

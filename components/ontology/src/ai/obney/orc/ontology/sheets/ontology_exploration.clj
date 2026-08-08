@@ -393,7 +393,27 @@ Few-shot learning enables learning from very few examples.")
        :suggestions [:vector {:description "Suggestions for improving taxonomy quality"} :string]
 
        ;; === Phase 8-9: Output ===
-       :taxonomy [:map-of :keyword :any]
+       :taxonomy [:map
+                  [:concepts [:vector [:map
+                                       [:label :string]
+                                       [:alt_labels :string]
+                                       [:definition :string]
+                                       [:entity_type :string]
+                                       [:confidence :double]]]]
+                  [:relationships [:vector [:map [:broader :string] [:narrower :string]]]]
+                  [:top-concepts [:vector :string]]
+                  [:related [:vector [:map
+                                      [:concept1 :string]
+                                      [:concept2 :string]
+                                      [:reason :string]]]]
+                  [:causal-relations [:vector [:map
+                                               [:cause :string]
+                                               [:effect :string]
+                                               [:relation_type :string]
+                                               [:confidence :double]
+                                               [:evidence :string]]]]
+                  [:domain :string]
+                  [:base-uri :string]]
        :skos-output :string})
 
     ;; =========================================================================

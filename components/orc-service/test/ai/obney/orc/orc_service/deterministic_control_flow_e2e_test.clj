@@ -315,7 +315,8 @@
         (let [check (cond-> {:key :candidate :op op}
                       (not (#{:exists :truthy} op)) (assoc :value expected))
               workflow (sheet/workflow (str "det-e2e-008-condition-op-" index)
-                         (sheet/blackboard {:candidate :any :route :keyword})
+                         (sheet/blackboard {:candidate [:or :int :string :boolean]
+                                            :route :keyword})
                          (sheet/sequence "main"
                            (sheet/condition (name op) :check check)
                            (sheet/code "selected" :fn (fq "guarded-action")

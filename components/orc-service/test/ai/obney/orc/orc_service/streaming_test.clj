@@ -159,9 +159,10 @@
     (h/with-async-test-context [ctx]
       (let [sheet-result (h/run-and-apply! ctx (h/make-create-sheet-command :name "Streaming MapEach"))
             sheet-id (-> sheet-result :command-result/events first :sheet-id)]
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector :map]))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item :map))
-        (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector :map]))
+        (let [item-schema [:map [:id :int] [:value :int]]]
+          (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :items [:vector item-schema]))
+          (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :current-item item-schema))
+          (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :results [:vector item-schema])))
         (let [map-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :map-each))
               map-id (-> map-result :command-result/events first :node-id)
               _ (h/run-and-apply! ctx (h/make-set-map-each-config-command sheet-id map-id

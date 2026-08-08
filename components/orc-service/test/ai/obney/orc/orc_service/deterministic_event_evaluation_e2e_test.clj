@@ -25,6 +25,21 @@
     [:llm {:reads [:item] :writes [:result]}]]
    [:final {:keys [:results]}]])
 
+(def ^:private host-io-schema
+  [:map
+   [:generated-tree-raw {:optional true} [:= excellent-tree]]
+   [:answer {:optional true} :string]])
+
+(def ^:private host-trace-schema
+  [:vector [:map [:node-id {:optional true} :uuid]]])
+
+(def ^:private dimension-schema
+  [:map
+   [:name :string]
+   [:weight {:optional true} :double]
+   [:score :double]
+   [:feedback :string]])
+
 (defn produce-tree [_]
   {:generated-tree-raw excellent-tree})
 
@@ -85,7 +100,7 @@
   (sheet/build-workflow!
    ctx
    (sheet/workflow name
-     (sheet/blackboard {:generated-tree-raw :any})
+     (sheet/blackboard {:generated-tree-raw [:= excellent-tree]})
      (sheet/judges judge-defs)
      (sheet/code "host" :fn (fq "produce-tree")
        :writes [:generated-tree-raw]
@@ -95,13 +110,13 @@
   (sheet/build-workflow!
    ctx
    (sheet/workflow name
-     (sheet/blackboard {:host-inputs :any
-                        :host-outputs :any
-                        :host-instruction :any
-                        :host-trace :any
+     (sheet/blackboard {:host-inputs host-io-schema
+                        :host-outputs host-io-schema
+                        :host-instruction :string
+                        :host-trace host-trace-schema
                         :score :double
                         :feedback :string
-                        :dimensions [:vector :map]})
+                        :dimensions [:vector dimension-schema]})
      (sheet/code "evaluate" :fn (fq function-name)
        :reads [:host-inputs :host-outputs :host-instruction :host-trace]
        :writes [:score :feedback :dimensions]))))

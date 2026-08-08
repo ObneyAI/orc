@@ -111,6 +111,21 @@ per input candidate.")
    This default is about correctness/determinism/decoupling, not speed."
   "qwen/qwen3.5-flash-02-23")
 
+(def ^:private candidate-schema
+  [:map
+   [:content :string]
+   [:score :double]
+   [:document-id :string]
+   [:document-metadata
+    [:map
+     [:granularity :keyword]
+     [:target-id [:or :string :uuid]]
+     [:confidence {:optional true} :double]
+     [:last-update {:optional true} :string]]]
+   [:avoid-when {:optional true} [:vector :string]]
+   [:strengths {:optional true} [:vector ontology-schemas/principle-entry]]
+   [:weaknesses {:optional true} [:vector ontology-schemas/principle-entry]]])
+
 (defn- reranker-workflow-name
   "The workflow's sheet-identity is deterministic from its NAME
    (orc-service `build-workflow!` derives a v5-UUID sheet-id from the
@@ -148,7 +163,7 @@ per input candidate.")
     (orc/blackboard
       {:query         :string
        :intent        :string
-       :candidates    [:vector :map]
+       :candidates    [:vector candidate-schema]
        :reranked-json :string})
 
     (orc/llm "rerank"

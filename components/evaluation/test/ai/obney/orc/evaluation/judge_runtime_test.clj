@@ -83,6 +83,18 @@
   [_ctx]
   (throw (ex-info "intentional-test-error" {:test :gap-4})))
 
+(def ^:private custom-host-io-schema
+  [:map [:answer {:optional true} :string]])
+
+(def ^:private custom-host-trace-schema
+  [:vector [:map [:node-id {:optional true} :uuid]]])
+
+(def ^:private custom-dimension-schema
+  [:map
+   [:name :string]
+   [:score :double]
+   [:feedback :string]])
+
 ;; =============================================================================
 ;; Test context helpers (mirror the pattern from consolidation_trigger_test)
 ;; =============================================================================
@@ -1524,10 +1536,10 @@
   [ctx workflow-name fn-symbol]
   (let [workflow (orc/workflow workflow-name
                    (orc/blackboard
-                     {:host-inputs :any
-                      :host-outputs :any
-                      :host-instruction :any
-                      :host-trace :any
+                     {:host-inputs custom-host-io-schema
+                      :host-outputs custom-host-io-schema
+                      :host-instruction :string
+                      :host-trace custom-host-trace-schema
                       :score :double
                       :feedback :string})
                    (orc/code "eval"
@@ -1660,13 +1672,13 @@
   [ctx workflow-name]
   (let [workflow (orc/workflow workflow-name
                    (orc/blackboard
-                     {:host-inputs :any
-                      :host-outputs :any
-                      :host-instruction :any
-                      :host-trace :any
+                     {:host-inputs custom-host-io-schema
+                      :host-outputs custom-host-io-schema
+                      :host-instruction :string
+                      :host-trace custom-host-trace-schema
                       :score :double
                       :feedback :string
-                      :dimensions [:vector :any]})
+                      :dimensions [:vector custom-dimension-schema]})
                    (orc/llm "grade"
                      :model "google/gemini-3-flash-preview"
                      :instruction (str "You are an evaluation judge. Given the host node's "
@@ -1794,10 +1806,10 @@
   [ctx workflow-name]
   (let [workflow (orc/workflow workflow-name
                    (orc/blackboard
-                     {:host-inputs :any
-                      :host-outputs :any
-                      :host-instruction :any
-                      :host-trace :any
+                     {:host-inputs custom-host-io-schema
+                      :host-outputs custom-host-io-schema
+                      :host-instruction :string
+                      :host-trace custom-host-trace-schema
                       :feedback :string})
                    (orc/code "eval"
                      :fn "ai.obney.orc.evaluation.judge-runtime-test/custom-judge-broken-no-score"
@@ -1881,10 +1893,10 @@
   (orc/build-workflow! ctx
                        (orc/workflow workflow-name
                          (orc/blackboard
-                           {:host-inputs :any
-                            :host-outputs :any
-                            :host-instruction :any
-                            :host-trace :any
+                           {:host-inputs custom-host-io-schema
+                            :host-outputs custom-host-io-schema
+                            :host-instruction :string
+                            :host-trace custom-host-trace-schema
                             :score :double
                             :feedback :string})
                          (orc/code "eval"

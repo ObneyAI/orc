@@ -93,6 +93,7 @@
         (list 'sheet/code
               :reads [from]
               :writes [output-key]
+              :output-schemas {output-key [:vector :string]}
               :fn chunk-fn))
 
       :aggregate
@@ -141,7 +142,7 @@
       ;;       — resolved at execution time via ns-resolve.
       ;; Code nodes let the model design transforms (counts, joins, simple
       ;; reductions) without spending sub-LLM tokens on deterministic work.
-      (let [{:keys [reads writes tool-caller-fn] :as opts} (first args)
+      (let [{:keys [reads writes tool-caller-fn output-schemas] :as opts} (first args)
             fn-ref (:fn opts)]
         (when-not (or (and (string? fn-ref) (seq fn-ref))
                       (fn? fn-ref))
@@ -154,7 +155,8 @@
                       :fn fn-ref
                       :reads reads
                       :writes writes)
-          tool-caller-fn (concat (list :tool-caller-fn tool-caller-fn))))
+          tool-caller-fn (concat (list :tool-caller-fn tool-caller-fn))
+          output-schemas (concat (list :output-schemas output-schemas))))
 
       ;; Default: unknown node type
       (throw (ex-info (str "Unknown node type: " node-type)

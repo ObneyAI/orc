@@ -154,7 +154,8 @@
                                           [:sequence
                                             [:llm {:instruction \"Extract summary\"
                                                    :reads [:document]
-                                                   :writes [:summary]}]
+                                                   :writes [:summary]
+                                                   :output-schemas {:summary :string}}]
                                             [:final {:keys [:summary]}]])"}
                        :usage {:prompt_tokens 100 :completion_tokens 50 :total_tokens 150}})]
         (let [node {:type :repl-researcher
@@ -236,7 +237,8 @@
                        [:sequence
                         [:llm {:instruction "Summarize the document"
                                :reads [:document]
-                               :writes [:summary]}]
+                               :writes [:summary]
+                               :output-schemas {:summary :string}}]
                         [:final {:keys [:summary]}]])
                 blackboard {:document "This is a test document about artificial intelligence."}
                 result (tree-executor/execute-tree tree ctx
@@ -275,10 +277,13 @@
           ;; 3. Collects results
           (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                        [:sequence
-                        [:map-each {:from :chunks :as :chunk :into :summaries}
+                        [:map-each {:from :chunks :as :chunk :into :summaries
+                                    :output-schemas {:chunk :string
+                                                     :summaries [:vector :string]}}
                          [:llm {:instruction "Summarize the chunk"
                                 :reads [:chunk]
-                                :writes [:chunk-summary]}]]
+                                :writes [:chunk-summary]
+                                :output-schemas {:chunk-summary :string}}]]
                         [:final {:keys [:summaries]}]])
                 ;; Provide 3 chunks to process
                 blackboard {:chunks ["chunk1 content" "chunk2 content" "chunk3 content"]}
@@ -315,10 +320,13 @@
                                :total_tokens 75}})]
         (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                      [:sequence
-                      [:map-each {:from :chunks :as :chunk :into :summaries}
+                      [:map-each {:from :chunks :as :chunk :into :summaries
+                                  :output-schemas {:chunk :string
+                                                   :summaries [:vector :string]}}
                        [:llm {:instruction "Summarize"
                               :reads [:chunk]
-                              :writes [:chunk-summary]}]]
+                              :writes [:chunk-summary]
+                              :output-schemas {:chunk-summary :string}}]]
                       [:final {:keys [:summaries]}]])
               blackboard {:chunks ["a" "b" "c"]}
               result (tree-executor/execute-tree tree ctx
@@ -363,10 +371,13 @@
                        :usage {:prompt_tokens 40 :completion_tokens 20 :total_tokens 60}})]
         (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                      [:sequence
-                      [:map-each {:from :chunks :as :chunk :into :summaries}
+                      [:map-each {:from :chunks :as :chunk :into :summaries
+                                  :output-schemas {:chunk :string
+                                                   :summaries [:vector :string]}}
                        [:llm {:instruction "Summarize"
                               :reads [:chunk]
-                              :writes [:chunk-summary]}]]
+                              :writes [:chunk-summary]
+                              :output-schemas {:chunk-summary :string}}]]
                       [:final {:keys [:summaries]}]])
               blackboard {:chunks ["x" "y" "z"]}
               result (tree-executor/execute-tree tree ctx
@@ -419,10 +430,13 @@
                        :usage {:prompt_tokens 30 :completion_tokens 15 :total_tokens 45}})]
         (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                      [:sequence
-                      [:map-each {:from :chunks :as :chunk :into :summaries}
+                      [:map-each {:from :chunks :as :chunk :into :summaries
+                                  :output-schemas {:chunk :string
+                                                   :summaries [:vector :string]}}
                        [:llm {:instruction "Summarize"
                               :reads [:chunk]
-                              :writes [:chunk-summary]}]]
+                              :writes [:chunk-summary]
+                              :output-schemas {:chunk-summary :string}}]]
                       [:final {:keys [:summaries]}]])
               ;; Use chunks of distinct lengths so we can verify :length tracking
               blackboard {:chunks ["aaa" "longer chunk content" (apply str (repeat 50 "x"))]}
@@ -464,10 +478,13 @@
                        :usage {:prompt_tokens 25 :completion_tokens 10 :total_tokens 35}})]
         (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                      [:sequence
-                      [:map-each {:from :chunks :as :chunk :into :summaries}
+                      [:map-each {:from :chunks :as :chunk :into :summaries
+                                  :output-schemas {:chunk :string
+                                                   :summaries [:vector :string]}}
                        [:llm {:instruction "Summarize"
                               :reads [:chunk]
-                              :writes [:chunk-summary]}]]
+                              :writes [:chunk-summary]
+                              :output-schemas {:chunk-summary :string}}]]
                       [:final {:keys [:summaries]}]])
               blackboard {:chunks ["c1" "c2"]}
               result (tree-executor/execute-tree tree ctx
@@ -534,10 +551,13 @@
                         [:map-each {:from :chunks
                                     :as :chunk
                                     :into :summaries
-                                    :max-concurrency 3}
+                                    :max-concurrency 3
+                                    :output-schemas {:chunk :string
+                                                     :summaries [:vector :string]}}
                          [:llm {:instruction "Summarize the chunk"
                                 :reads [:chunk]
-                                :writes [:chunk-summary]}]]
+                                :writes [:chunk-summary]
+                                :output-schemas {:chunk-summary :string}}]]
                         [:final {:keys [:summaries]}]])
                 ;; 6 items so we'd expect 2 batches of 3 if parallelism works
                 blackboard {:chunks ["c1" "c2" "c3" "c4" "c5" "c6"]}
@@ -597,7 +617,8 @@
                      [:sequence
                       [:llm {:instruction "Analyze document"
                              :reads [:document]
-                             :writes [:analysis]}]
+                             :writes [:analysis]
+                             :output-schemas {:analysis :string}}]
                       [:final {:keys [:analysis]}]])
               blackboard {:document "Test document"}
               result (tree-executor/execute-tree tree ctx
@@ -654,7 +675,8 @@
                      [:sequence
                       [:llm {:instruction "Summarize"
                              :reads [:document]
-                             :writes [:summary]}]
+                             :writes [:summary]
+                             :output-schemas {:summary :string}}]
                       [:final {:keys [:summary]}]])
               blackboard {:document "Test document content"}
               result (tree-executor/execute-tree tree ctx
@@ -683,10 +705,13 @@
                          :usage {:prompt_tokens 50 :completion_tokens 50 :total_tokens 100}})]
           (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                        [:sequence
-                        [:map-each {:from :chunks :as :chunk :into :summaries}
+                        [:map-each {:from :chunks :as :chunk :into :summaries
+                                    :output-schemas {:chunk :string
+                                                     :summaries [:vector :string]}}
                          [:llm {:instruction "Summarize chunk"
                                 :reads [:chunk]
-                                :writes [:chunk-summary]}]]
+                                :writes [:chunk-summary]
+                                :output-schemas {:chunk-summary :string}}]]
                         [:final {:keys [:summaries]}]])
                 ;; 3 chunks = 3 sub-LLM calls = 300 total tokens
                 blackboard {:chunks ["chunk1" "chunk2" "chunk3"]}
@@ -728,7 +753,8 @@
                                                    [:sequence
                                                      [:llm {:instruction \"x\"
                                                             :reads [:doc]
-                                                            :writes [:summary]}]
+                                                            :writes [:summary]
+                                                            :output-schemas {:summary :string}}]
                                                      [:final {:keys [:summary]}]])"}
                                  :usage {:prompt_tokens 100 :completion_tokens 50 :total_tokens 150}})
                             {:outputs {:summary "should not be reached"}
@@ -770,7 +796,8 @@
                                                [:sequence
                                                  [:llm {:instruction \"slow-summarize\"
                                                         :reads [:doc]
-                                                        :writes [:summary]}]
+                                                        :writes [:summary]
+                                                        :output-schemas {:summary :string}}]
                                                  [:final {:keys [:summary]}]])"}
                              :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
                             ;; Phase 2 sub-LLM — slow, sleeps past the budget
@@ -822,7 +849,8 @@
                                                [:sequence
                                                  [:llm {:instruction \"summarize\"
                                                         :reads [:doc]
-                                                        :writes [:summary]}]
+                                                        :writes [:summary]
+                                                        :output-schemas {:summary :string}}]
                                                  [:final {:keys [:summary]}]])"}
                              :usage {:prompt_tokens 50 :completion_tokens 25 :total_tokens 75}}
                             ;; Phase 2 sub-LLM
@@ -889,7 +917,8 @@
                     [:code {:fn (fn [{:keys [inputs]}]
                                   {:upper (clojure.string/upper-case (:text inputs))})
                             :reads [:text]
-                            :writes [:upper]}]
+                            :writes [:upper]
+                            :output-schemas {:upper :string}}]
                     [:final {:keys [:upper]}]])
             blackboard {:text "hello"}
             result (tree-executor/execute-tree tree ctx
@@ -930,7 +959,8 @@
                                   ;; Returns a scalar string, NOT a map
                                   (clojure.string/upper-case (:text inputs)))
                             :reads [:text]
-                            :writes [:upper]}]
+                            :writes [:upper]
+                            :output-schemas {:upper :string}}]
                     [:final {:keys [:upper]}]])
             blackboard {:text "hello"}
             result (tree-executor/execute-tree tree ctx
@@ -1007,8 +1037,10 @@
         (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                      [:sequence
                       [:parallel
-                       [:llm {:instruction "left" :reads [:input] :writes [:left-result]}]
-                       [:llm {:instruction "right" :reads [:input] :writes [:right-result]}]]
+                       [:llm {:instruction "left" :reads [:input] :writes [:left-result]
+                              :output-schemas {:left-result :string}}]
+                       [:llm {:instruction "right" :reads [:input] :writes [:right-result]
+                              :output-schemas {:right-result :string}}]]
                       [:final {:keys [:left-result :right-result]}]])
               blackboard {:input "hello"}
               result (tree-executor/execute-tree tree ctx
@@ -1121,7 +1153,10 @@
                                  :error/explain {:body {:strengths ["..."]} :path [:body :strengths 0]}}
                                 (original-process-command ctx*)))
             tree '(sheet/sequence
-                    (sheet/code :fn identity :reads [:input] :writes [:output]))
+                    (sheet/code :fn identity
+                                :reads [:input]
+                                :writes [:output]
+                                :output-schemas {:output :string}))
             ;; Use a SHORT timeout — if the fix is missing this test will hang
             ;; for the full timeout duration instead of failing quickly.
             ;; 3000ms gives plenty of headroom for any real cleanup work

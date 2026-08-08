@@ -476,6 +476,20 @@
 ;; Schema Description Generation
 ;; =============================================================================
 
+(defn- provider-enum-spelling
+  "Render an enum choice as the provider must spell it in JSON.
+
+   JSON has no keyword literal syntax. Malli's JSON transformer decodes
+   `\"changed\"` to :changed, while the EDN spelling `\":changed\"` is a
+   different string and correctly remains invalid. Preserve namespaces so
+   :decision/changed is presented as `decision/changed`."
+  [value]
+  (if (keyword? value)
+    (if-let [keyword-namespace (namespace value)]
+      (str keyword-namespace "/" (name value))
+      (name value))
+    (str value)))
+
 (defn malli-schema->description
   "Generate a human-readable description from a Malli schema for AI context.
    This helps the AI understand what structure to produce.
@@ -523,7 +537,8 @@
         (str "list of " (malli-schema->description (first args)))
 
         :enum
-        (str "one of: " (clojure.string/join ", " (map str args)))
+        (str "one of: "
+             (clojure.string/join ", " (map provider-enum-spelling args)))
 
         :maybe
         (str (malli-schema->description (first args)) " (optional)")
@@ -2081,7 +2096,7 @@
                       "  - :parallel - Execute children concurrently (independent work only)\n"
                       "  - :llm - Execute a sub-LLM call with {:instruction :reads :writes}\n"
                       "      Optional :output-schemas {<write-key> <Malli-schema>} declares the shape of each\n"
-                      "      :writes value. When you set this and the schema is structured (e.g. [:vector [:map-of :any :any]],\n"
+                      "      :writes value. When you set this and the schema is structured (e.g. [:vector [:map [:name :string]]],\n"
                       "      [:map [:foo :string] [:bar :int]]), the framework asks the LLM for valid JSON and parses\n"
                       "      the response back into Clojure data automatically. Without :output-schemas, the LLM's :writes\n"
                       "      values arrive as raw text strings — fine if your downstream consumer is another :llm prompt,\n"
@@ -2090,7 +2105,7 @@
                       "        [:llm {:instruction \"Identify PII targets on this page; return :targets as a vector of maps.\"\n"
                       "               :reads [:page-text]\n"
                       "               :writes [:targets]\n"
-                      "               :output-schemas {:targets [:vector [:map-of :any :any]]}}]\n"
+                      "               :output-schemas {:targets [:vector [:map [:name :string]]]}}]\n"
                       "  - :map-each - Process collection items with {:from :as :into :max-concurrency N} (N=1 default, use 3-5 for parallel independent items)\n"
                       "  - :chunk-document - Split document into chunks with {:from :size :into}\n"
                       "  - :aggregate - Combine results with {:from :writes}\n"
@@ -2944,7 +2959,16 @@
                        :budget budget}
                       (let [;; Execute Phase 2: spawn child tick with the generated tree
                             ;; Pass all sandbox-vars (except the tree itself) as inputs
-                            phase2-vars (dissoc @sandbox-vars :generated-tree :generated-tree-raw)
+                            ;; Phase-1 control metadata is for the researcher's
+                            ;; next reasoning iteration, not child workflow
+                            ;; blackboard state. Keeping it out of Phase 2 also
+                            ;; avoids inventing a deliberately broad schema for
+                            ;; heterogeneous execution summaries.
+                            phase2-vars (dissoc @sandbox-vars
+                                                :generated-tree
+                                                :generated-tree-raw
+                                                :iteration-reasonings
+                                                :tree-results)
                             _ (when debug?
                                 (println "\n[DEBUG RLM] Phase 2 sandbox vars:" (keys phase2-vars)))
                             phase2-result (try

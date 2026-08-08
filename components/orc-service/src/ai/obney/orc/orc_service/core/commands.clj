@@ -6,7 +6,8 @@
    - Return {:command-result/events [...]} on success
    - Return cognitect anomaly on failure
    - Last write wins (no optimistic concurrency)"
-  (:require [ai.obney.orc.orc-service.core.profile :as profile]
+  (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
+            [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.metadata :as metadata]
@@ -45,6 +46,12 @@
           (when-let [schema (get-in snapshot [:blackboard-entries key :schema])]
             (schema-error key schema value)))
         inputs))
+
+(defn- snapshot-schema-feedback
+  [snapshot]
+  (when-let [violations (seq (blackboard-schema/schema-map-violations
+                              (:blackboard-schema snapshot)))]
+    (blackboard-schema/feedback violations)))
 
 ;; =============================================================================
 ;; Sheet Commands
@@ -735,6 +742,12 @@
     (catch Exception _
       false)))
 
+(defn- schema-specificity-feedback
+  [key schema]
+  (when-let [violations (seq (map #(assoc % :key key)
+                                  (blackboard-schema/violations schema)))]
+    (blackboard-schema/feedback violations)))
+
 (defn- validate-against-schema
   "Validate a value against a Malli schema.
    Returns nil if valid, or an error map if invalid."
@@ -755,7 +768,8 @@
   [{{:keys [sheet-id key schema]} :command
     :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)
-        blackboard (rm/get-blackboard-by-key ctx sheet-id)]
+        blackboard (rm/get-blackboard-by-key ctx sheet-id)
+        specificity-feedback (schema-specificity-feedback key schema)]
     (cond
       (not sheet)
       {::anom/category ::anom/not-found
@@ -764,6 +778,11 @@
       (contains? blackboard key)
       {::anom/category ::anom/conflict
        ::anom/message (str "Key '" key "' already declared")}
+
+      specificity-feedback
+      {::anom/category ::anom/incorrect
+       ::anom/message (str "Blackboard key " (pr-str key) " is invalid: "
+                           specificity-feedback)}
 
       (not (valid-malli-schema? schema))
       {::anom/category ::anom/incorrect
@@ -784,11 +803,17 @@
   [{{:keys [sheet-id key schema]} :command
     :as ctx}]
   (let [blackboard (rm/get-blackboard-by-key ctx sheet-id)
-        entry (get blackboard key)]
+        entry (get blackboard key)
+        specificity-feedback (schema-specificity-feedback key schema)]
     (cond
       (not entry)
       {::anom/category ::anom/not-found
        ::anom/message (str "Key '" key "' not declared")}
+
+      specificity-feedback
+      {::anom/category ::anom/incorrect
+       ::anom/message (str "Blackboard key " (pr-str key) " is invalid: "
+                           specificity-feedback)}
 
       (not (valid-malli-schema? schema))
       {::anom/category ::anom/incorrect
@@ -1582,7 +1607,8 @@
   [{{:keys [sheet-id version-number]} :command
     :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)
-        version (rm/get-version ctx sheet-id version-number)]
+        version (rm/get-version ctx sheet-id version-number)
+        specificity-feedback (some-> version :snapshot snapshot-schema-feedback)]
     (cond
       (not sheet)
       {::anom/category ::anom/not-found
@@ -1591,6 +1617,10 @@
       (not version)
       {::anom/category ::anom/not-found
        ::anom/message (str "Version " version-number " not found")}
+
+      specificity-feedback
+      {::anom/category ::anom/incorrect
+       ::anom/message (str "Cannot restore version: " specificity-feedback)}
 
       :else
       (let [;; If draft is dirty, stash it first
@@ -1622,7 +1652,8 @@
   [{{:keys [sheet-id]} :command
     :as ctx}]
   (let [sheet (rm/get-sheet ctx sheet-id)
-        stash (rm/get-stash ctx sheet-id)]
+        stash (rm/get-stash ctx sheet-id)
+        specificity-feedback (some-> stash :snapshot snapshot-schema-feedback)]
     (cond
       (not sheet)
       {::anom/category ::anom/not-found
@@ -1631,6 +1662,10 @@
       (not stash)
       {::anom/category ::anom/not-found
        ::anom/message "No stash found"}
+
+      specificity-feedback
+      {::anom/category ::anom/incorrect
+       ::anom/message (str "Cannot restore stash: " specificity-feedback)}
 
       :else
       {:command-result/events

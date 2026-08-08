@@ -160,7 +160,19 @@
    :input-schemas {:acme-pages [:vector {:field-type :image} :string]
                    :globaltech-pages [:vector {:field-type :image} :string]
                    :output-path :string}
-   :output-schemas {:invoices [:vector [:map-of :any :any]]
+   :output-schemas {:invoices [:vector [:map
+                                        [:vendor-name :string]
+                                        [:invoice-number :string]
+                                        [:date :string]
+                                        [:due-date :string]
+                                        [:subtotal :double]
+                                        [:tax :double]
+                                        [:total :double]
+                                        [:line-items [:vector [:map
+                                                               [:description :string]
+                                                               [:quantity :double]
+                                                               [:unit-price :double]
+                                                               [:amount :double]]]]]]
                     :total-amount :double
                     :summary :string
                     :workbook-path :string}

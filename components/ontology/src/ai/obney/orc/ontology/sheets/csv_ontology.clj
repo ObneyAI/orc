@@ -678,6 +678,42 @@
 ;; CSV-to-Ontology Pipeline Workflow
 ;; =============================================================================
 
+(def ^:private csv-cell-schema
+  [:or :string :int :double :boolean])
+
+(def ^:private csv-row-schema
+  [:map-of :keyword csv-cell-schema])
+
+(def ^:private definition-info-schema
+  [:map
+   [:definition :string]
+   [:scope-note :string]
+   [:external-alignments [:vector :string]]])
+
+(def ^:private definition-result-schema
+  [:map
+   [:name :string]
+   [:source_columns [:vector :string]]
+   [:description :string]
+   [:definition :string]
+   [:scope-note :string]
+   [:external-alignments [:vector :string]]])
+
+(def ^:private hierarchy-result-schema
+  [:map
+   [:has-hierarchy :boolean]
+   [:hierarchy-type [:enum "ordering" "containment" "specialization" "none"]]
+   [:hierarchy-relationships [:vector [:map [:broader :string] [:narrower :string]]]]
+   [:top-level [:vector :string]]
+   [:reasoning :string]])
+
+(def ^:private property-mapping-schema
+  [:map
+   [:column :string]
+   [:suggested_name :string]
+   [:property_type :string]
+   [:description :string]])
+
 (def csv-to-ontology-pipeline
   "Complete CSV-to-ontology pipeline with 6-phase enrichment.
 
@@ -703,7 +739,7 @@
     (sheet/blackboard
       ;; === Inputs ===
       {:csv-path [:string {:description "Path to the CSV file to process"}]
-       :csv-data [:vector {:description "Parsed CSV data as vector of maps"} [:map-of :keyword :any]]
+       :csv-data [:vector {:description "Parsed CSV data as vector of maps"} csv-row-schema]
        :entity-column [:string {:description "Column to use as entity label/identifier"}]
        :entity-type [:string {:description "Class name for instances (e.g., 'Program', 'Student')"}]
        :base-uri [:string {:description "Ontology namespace URI (e.g., 'http://example.org/ontology#')"}]
@@ -779,8 +815,8 @@
        :definition [:string {:description "Formal 2-3 sentence definition for the entity class"}]
        :scope-note [:string {:description "Usage guidance and boundaries for this concept"}]
        :external-alignments [:vector {:description "Alignments to standard ontologies (e.g., 'schema:Course')"} :string]
-       :definition-results [:vector :any]
-       :entity-definitions [:map-of :string :any]
+       :definition-results [:vector definition-result-schema]
+       :entity-definitions [:map-of :string definition-info-schema]
 
        ;; === Phase 4: Hierarchy Enrichment ===
        :current-column :string
@@ -796,8 +832,8 @@
                                   [:narrower :string]]]
        :top-level [:vector {:description "Root values with no broader concept"} :string]
        :reasoning [:string {:description "Explanation of the hierarchy structure"}]
-       :hierarchy-results [:vector :any]
-       :hierarchies [:map-of :string :any]
+       :hierarchy-results [:vector hierarchy-result-schema]
+       :hierarchies [:map-of :string hierarchy-result-schema]
 
        ;; === Phase 5: Relationship Discovery ===
        :entities-info :string
@@ -814,8 +850,8 @@
 
        ;; === Phase 6: Quality Validation ===
        :terms-to-validate [:vector {:description "Terms to check for ambiguity"} :string]
-       :existing-definitions [:map-of :string :any]
-       :mappings-to-validate [:vector :any]
+       :existing-definitions [:map-of :string definition-info-schema]
+       :mappings-to-validate [:vector property-mapping-schema]
        :ambiguous-terms [:vector {:description "Terms with multiple meanings or unclear scope"}
                          [:map
                           [:term :string]
@@ -828,7 +864,7 @@
        :improved-name :string
        :corrected-type :string
        :issues [:vector {:description "Validation issues found"} :string]
-       :mapping-issues [:vector :any]
+       :mapping-issues [:vector [:map [:issue :string]]]
 
        ;; === Phase 7-9: TBox/ABox ===
        :tbox [:map {:description "Ontology schema (classes and properties)"}
@@ -840,7 +876,7 @@
                [:uri :string]
                [:type :string]
                [:label :string]
-               [:properties [:map-of :string :any]]]]
+               [:properties [:map-of :string csv-cell-schema]]]]
 
        ;; === Output ===
        :owl-output :string

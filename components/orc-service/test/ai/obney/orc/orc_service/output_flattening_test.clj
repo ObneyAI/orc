@@ -40,11 +40,11 @@
   (testing "rejects non-map schemas"
     (is (false? (map-schema? :string)))
     (is (false? (map-schema? [:vector :string])))
-    (is (false? (map-schema? [:map-of :keyword :any])))))
+    (is (false? (map-schema? [:map-of :keyword :string])))))
 
 (deftest map-of-schema?-test
   (testing "detects [:map-of ...] schemas"
-    (is (true? (map-of-schema? [:map-of :keyword :any])))
+    (is (true? (map-of-schema? [:map-of :keyword :string])))
     (is (true? (map-of-schema? [:map-of :string :int]))))
 
   (testing "rejects non-map-of schemas"
@@ -98,13 +98,13 @@
 
 (deftest flatten-output-schema-map-of-test
   (testing "[:map-of ...] schema is NOT flattened (no defined field names)"
-    (let [result (flatten-output-schema :personalization [:map-of :keyword :any])]
+    (let [result (flatten-output-schema :personalization [:map-of :keyword :string])]
       ;; Should return single field, not flattened
       (is (= 1 (count result)))
       (is (= :personalization (:name (first result))))
       (is (= :personalization (:original-key (first result))))
       (is (nil? (:nested-key (first result))))
-      (is (= [:map-of :keyword :any] (:spec (first result))))
+      (is (= [:map-of :keyword :string] (:spec (first result))))
       ;; Should have JSON guidance in description
       (is (str/includes? (:description (first result)) "JSON object")))))
 
@@ -241,17 +241,7 @@
       (is (str/includes? (.getMessage error) "schema-guard"))
       (is (= [:missing-input] (:missing-reads (ex-data error))))
       (is (= [:missing-output] (:missing-writes (ex-data error))))
-      (is (= [:present] (:blackboard-keys (ex-data error))))))
-
-  (testing "an explicit :any schema is declared and remains valid"
-    (let [node {:name "any-schema"
-                :reads [:input]
-                :writes [:output]}
-          blackboard {:input {:key :input :schema :any :value {:anything true}}
-                      :output {:key :output :schema :any :value nil}}
-          module (executor/build-module node blackboard)]
-      (is (= :any (get-in module [:inputs 0 :spec])))
-      (is (= :any (get-in module [:outputs 0 :spec]))))))
+      (is (= [:present] (:blackboard-keys (ex-data error)))))))
 
 ;; =============================================================================
 ;; Warning Test for [:map-of ...] schemas
@@ -268,7 +258,7 @@
                                :value "test"
                                :version 1}
                       :output {:key :output
-                                :schema [:map-of :keyword :any]
+                                :schema [:map-of :keyword :string]
                                 :value nil
                                 :version 0}}
           ;; Capture stdout to check for warning

@@ -134,6 +134,34 @@
 ;; Rule Extraction Workflow
 ;; =============================================================================
 
+(def ^:private condition-value-schema
+  [:or :string :int :double :boolean :keyword
+   [:vector [:or :string :int :double :boolean :keyword]]])
+
+(def ^:private conditions-schema
+  [:map-of :keyword condition-value-schema])
+
+(def ^:private scenario-schema
+  [:map
+   [:name {:optional true} :string]
+   [:difficulty {:optional true} [:or :string :keyword :int :double]]])
+
+(def ^:private action-schema
+  [:map
+   [:type {:optional true} [:or :string :keyword]]
+   [:target {:optional true} [:or :string :keyword]]
+   [:reason {:optional true} :string]])
+
+(def ^:private episode-schema
+  [:map
+   [:pattern-uri :string]
+   [:confidence :double]
+   [:domain-type :string]
+   [:expected-outcome {:optional true} [:or :string :keyword]]
+   [:scenario {:optional true} scenario-schema]
+   [:conditions conditions-schema]
+   [:action {:optional true} action-schema]])
+
 (def rule-extraction-workflow
   "ORC workflow that extracts condition-action rules from successful episodes.
 
@@ -160,27 +188,22 @@
 
        ;; Intermediate
        :episode-count :int
-       :episodes [:vector [:map
-                           [:pattern-uri :string]
-                           [:confidence :double]
-                           [:domain-type :string]
-                           [:expected-outcome {:optional true} :any]
-                           [:scenario {:optional true} :map]
-                           [:conditions :map]
-                           [:action {:optional true} :map]]]
+       :episodes [:vector episode-schema]
        :grouped-episodes [:vector [:map
                                    [:expected-outcome :string]
-                                   [:episodes [:vector :map]]
+                                   [:episodes [:vector episode-schema]]
                                    [:count :int]
-                                   [:conditions-summary :map]
-                                   [:action-types :map]]]
+                                   [:conditions-summary
+                                    [:map-of :keyword
+                                     [:map [:avg :double] [:min :double] [:max :double]]]]
+                                   [:action-types [:map-of [:or :keyword :string] :int]]]]
 
        ;; Output: extracted rules with natural language descriptions
        :extracted-rules [:vector [:map
                                   [:condition-description :string]
-                                  [:conditions [:map-of :keyword :any]]
+                                  [:conditions conditions-schema]
                                   [:action-description :string]
-                                  [:action [:map-of :keyword :any]]
+                                  [:action action-schema]
                                   [:confidence :double]
                                   [:success-rate :double]
                                   [:evidence-count :int]

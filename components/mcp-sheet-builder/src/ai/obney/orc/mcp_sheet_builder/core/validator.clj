@@ -5,7 +5,8 @@
    - Blackboard schema completeness
    - Reads/writes alignment with blackboard
    - Data flow reachability
-   - MCP tool references")
+   - MCP tool references"
+  (:require [ai.obney.orc.orc-service.interface :as sheet]))
 
 ;; ============================================================================
 ;; Validation Checks
@@ -53,6 +54,14 @@
        :errors [(str "Missing blackboard keys: " missing)]
        :warnings []})))
 
+(defn- check-blackboard-specificity
+  [blackboard]
+  (try
+    (sheet/blackboard blackboard)
+    {:valid? true :errors [] :warnings []}
+    (catch clojure.lang.ExceptionInfo error
+      {:valid? false :errors [(.getMessage error)] :warnings []})))
+
 (defn- check-data-flow
   "Check that writes precede reads (within sequences)."
   [_workflow]
@@ -87,7 +96,8 @@
    - :errors - Vector of error messages
    - :warnings - Vector of warning messages"
   [{:keys [workflow blackboard] :as sheet}]
-  (let [checks [(check-blackboard-coverage blackboard workflow)
+  (let [checks [(check-blackboard-specificity blackboard)
+                (check-blackboard-coverage blackboard workflow)
                 (check-data-flow workflow)
                 (check-tool-references sheet workflow)]
         all-errors (mapcat :errors checks)
@@ -112,7 +122,7 @@
   ;; Example validation
   (validate-sheet
    {:blackboard {:query :string
-                 :searchDocs-result :any}
+                 :searchDocs-result [:map [:content :string]]}
     :workflow '(sheet/workflow "test"
                  (sheet/blackboard {:query :string})
                  (sheet/sequence "main"

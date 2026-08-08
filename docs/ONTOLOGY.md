@@ -899,9 +899,19 @@ Define explicit schemas for ontology data on the blackboard:
 
    ;; === Combined Context ===
    :combined-ontology-context [:map
-                               [:failures-to-avoid [:vector :map]]
-                               [:patterns-to-use [:vector :map]]
-                               [:problem-context [:vector :map]]]})
+                               [:failures-to-avoid [:vector [:map
+                                                             [:uri :string]
+                                                             [:similarity :double]
+                                                             [:label :string]]]]
+                               [:patterns-to-use [:vector [:map
+                                                           [:pattern-uri :string]
+                                                           [:avg-confidence :double]
+                                                           [:tree-count :int]]]]
+                               [:problem-context [:vector [:map
+                                                           [:uri :string]
+                                                           [:label :string]
+                                                           [:score :double]
+                                                           [:depth :int]]]]]})
 ```
 
 ## Self-Learning Mode

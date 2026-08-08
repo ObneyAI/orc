@@ -106,11 +106,14 @@ The **blackboard** is shared state that nodes read from and write to. It's defin
    :items [:vector :string]                     ;; Vector of strings
    :scores [:vector [:map [:name :string]       ;; Vector of maps
                           [:score :double]]]
-   :config [:map-of :keyword :any]})            ;; Open map
+   :config [:map [:mode :keyword]]})             ;; Explicit map shape
 ```
 
 **Key rules:**
 - All node inputs/outputs must be declared in the blackboard
+- Unconstrained schemas are forbidden at every nesting depth: `:any`, `:some`,
+  standalone or fieldless maps, and collections without a specific item/value
+  schema. Use the most specific schema that expresses the value's intent.
 - Keys are keywords at runtime (matching schema definition)
 - Schema validation is optional but recommended
 
@@ -425,7 +428,8 @@ Execute another workflow (sheet) with isolated blackboard. Useful for composing 
     (sheet/blackboard
       {:raw-lead :string
          :processed-lead [:map [:original :string]
-                               [:enriched [:map-of :keyword :any]]]})
+                               [:enriched [:map [:company-info :string]
+                                                [:funding-stage :string]]]]})
     (sheet/sequence "main"
       ;; Pass raw-lead, get back enriched-data into processed-lead
       (sheet/delegate "enrich-step"
@@ -506,35 +510,35 @@ See `development/src/lead_qualification_demo.clj` for the full working implement
     ;; === BLACKBOARD SCHEMA ===
     (sheet/blackboard
       ;; Inputs
-      {:leads [:vector [:map-of :keyword :any]]
-       :products [:vector [:map-of :keyword :any]]
-       :sales-reps [:vector [:map-of :keyword :any]]
+      {:leads [:vector [:map-of :keyword :string]]
+       :products [:vector [:map-of :keyword :string]]
+       :sales-reps [:vector [:map-of :keyword :string]]
 
        ;; Qualification track outputs
-       :current-lead [:map-of :keyword :any]
-       :lead-analysis [:map-of :keyword :any]
-       :icp-match [:map-of :keyword :any]
+       :current-lead [:map-of :keyword :string]
+       :lead-analysis [:map-of :keyword :string]
+       :icp-match [:map-of :keyword :string]
        :budget-score :double
        :need-score :double
        :authority-score :double
        :timeline-score :double
-       :composite-score [:map-of :keyword :any]
-       :product-recommendations [:vector [:map-of :keyword :any]]
-       :assigned-rep [:map-of :keyword :any]
-       :qualified-leads [:vector [:map-of :keyword :any]]
+       :composite-score [:map-of :keyword :double]
+       :product-recommendations [:vector [:map-of :keyword :string]]
+       :assigned-rep [:map-of :keyword :string]
+       :qualified-leads [:vector [:map-of :keyword :string]]
 
        ;; Outreach track outputs
-       :comm-preferences [:map-of :keyword :any]
-       :filtered-leads [:vector [:map-of :keyword :any]]
-       :current-content [:map-of :keyword :any]
-       :personalized-content [:vector [:map-of :keyword :any]]
+       :comm-preferences [:map-of :keyword :string]
+       :filtered-leads [:vector [:map-of :keyword :string]]
+       :current-content [:map-of :keyword :string]
+       :personalized-content [:vector [:map-of :keyword :string]]
        :email-variant-a :string
        :email-variant-b :string
-       :campaign-assignment [:map-of :keyword :any]
-       :ready-for-outreach [:vector [:map-of :keyword :any]]
+       :campaign-assignment [:map-of :keyword :string]
+       :ready-for-outreach [:vector [:map-of :keyword :string]]
 
        ;; Final outputs
-       :final-results [:map-of :keyword :any]})
+       :final-results [:map-of :keyword :string]})
 
     ;; === MAIN SEQUENCE ===
     (sheet/sequence "main"
@@ -1510,18 +1514,18 @@ Saves a sheet directly to a .clj file.
 ```clojure
 (sheet/blackboard
   ;; Input data
-  {:input-leads [:vector [:map-of :keyword :any]]
-   :product-catalog [:vector [:map-of :keyword :any]]
+  {:input-leads [:vector [:map-of :keyword :string]]
+   :product-catalog [:vector [:map-of :keyword :string]]
 
    ;; Intermediate state
-   :current-lead [:map-of :keyword :any]
+   :current-lead [:map-of :keyword :string]
    :lead-scores [:map [:budget :double]
                       [:need :double]
                       [:authority :double]]
 
    ;; Output data
-   :qualified-leads [:vector [:map-of :keyword :any]]
-   :final-report [:map-of :keyword :any]})
+   :qualified-leads [:vector [:map-of :keyword :string]]
+   :final-report [:map-of :keyword :string]})
 ```
 
 ### LLM Prompt Engineering

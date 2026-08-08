@@ -84,16 +84,29 @@ gate while either command exits non-zero.
 
 The ORC service now schema-decodes provider-originated JSON values before its
 authoritative blackboard validation. Schema-equivalent JSON numeric forms are
-canonicalized without treating numeric strings as numbers. Invalid outputs do
-not become execution values; they are retained as trace-only rejected-value
-events under the configured inline or file-store placement policy and rehydrate
-through exact node trace detail. DET-E2E-124 verifies the successful and rejected
-paths through the public workflow boundary.
+canonicalized without treating numeric strings as numbers. Keyword-valued enum
+choices are presented to providers in canonical JSON spelling without EDN's
+leading colon, and canonical strings decode to their declared keywords;
+colon-prefixed strings remain invalid. Invalid outputs do not become execution
+values; they are retained as trace-only rejected-value events under the
+configured inline or file-store placement policy and rehydrate through exact
+node trace detail. DET-E2E-124 verifies the successful and rejected paths through
+the public workflow boundary.
 
 The provider's default internal retry also covers decoded structured outputs
 that fail their declared schemas. DET-E2E-125 verifies invalid-to-valid recovery
 and invalid-to-invalid exhaustion, including exact call count, final-only
 rejection evidence, and usage accumulated across both attempts.
+
+## Blackboard schema specificity (2026-08-07)
+
+The ORC service now rejects semantically unconstrained blackboard schemas at
+every nesting depth. This includes `:any`, `:some`, standalone or fieldless
+maps, and collections without specific item/value schemas. DSL construction,
+direct declaration and schema-update commands, version/stash restoration,
+generated RLM trees, and MCP workflow conversion use the same constraint or
+produce equally actionable feedback. DET-E2E-126 and DET-E2E-127 verify atomic rejection, exact key/schema
+paths, the specificity nudge, and acceptance of explicit structured schemas.
 
 # Custom ontology lifecycle alignment (2026-08-07)
 

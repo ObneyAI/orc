@@ -106,7 +106,7 @@
     (sheet/blackboard {:input :string
                        :output :string
                        :added :string
-                       :mutable :any})
+                       :mutable [:map [:value :string]]})
     (sheet/sequence "main"
       (sheet/code "transform" :fn (fq "lifecycle-v2")
         :reads [:input] :writes [:output]
@@ -174,6 +174,110 @@
         (is (empty? bb) "failed build leaves no blackboard projection")
         (is (= :failure (:status execution))
             "a partial build must not be executable as a successful workflow")))))
+
+(deftest det-e2e-126-unconstrained-blackboard-schemas-are-rejected-atomically
+  (testing "top-level and nested :any schemas fail with actionable feedback before authoring state changes"
+    (h/with-async-test-context [ctx]
+      (let [name "det-e2e-126-forbid-any-blackboard-schema"
+            thrown (try
+                     (sheet/build-workflow!
+                      ctx
+                      (sheet/workflow
+                       name
+                       (sheet/blackboard
+                        {:top-level :any
+                         :nested-map [:map [:value :any]]
+                         :nested-vector [:vector [:map [:value [:maybe :any]]]]
+                         :specific [:map [:value :string]]})))
+                     nil
+                     (catch Throwable t t))
+            deterministic-id (dsl/sheet-id-for-name name)]
+        (is (some? thrown) "every occurrence of :any must make the definition invalid")
+        (is (= #{:top-level :nested-map :nested-vector}
+               (set (:blackboard-keys (ex-data thrown))))
+            "feedback identifies every blackboard key containing :any")
+        (is (re-find #"(?i):any.*forbidden" (.getMessage thrown)))
+        (is (re-find #"(?i)most specific schema.*intent" (.getMessage thrown))
+            "feedback nudges the consumer toward the narrowest intentional schema")
+        (is (nil? (sheet/get-sheet ctx deterministic-id))
+            "rejection occurs before workflow authoring state is created")
+        (is (empty? (sheet/get-nodes-for-sheet ctx deterministic-id)))
+        (is (empty? (sheet/get-blackboard-by-key ctx deterministic-id)))
+        (let [created (h/run-command ctx (h/make-create-sheet-command :name "direct-any-rejection"))
+              sheet-id (-> created :command-result/events first :sheet-id)
+              rejected (h/run-command
+                        ctx
+                        (h/make-declare-key-command
+                         sheet-id :direct [:map [:nested :any]]))]
+          (is (h/is-anomaly? rejected) "direct command declarations cannot bypass the DSL")
+          (is (re-find #"(?i)direct.*:any.*forbidden.*most specific schema.*intent"
+                       (:cognitect.anomalies/message rejected)))
+          (is (empty? (sheet/get-blackboard-by-key ctx sheet-id))
+              "a rejected direct declaration emits no projected blackboard key"))))))
+
+(deftest det-e2e-127-structurally-unconstrained-blackboard-schemas-are-rejected
+  (testing "weak map and collection schemas fail recursively with precise feedback"
+    (let [thrown (try
+                   (sheet/blackboard
+                    {:some-value :some
+                     :bare-map :map
+                     :empty-map [:map]
+                     :bare-set :set
+                     :bare-map-of :map-of
+                     :empty-tuple [:tuple]
+                     :vector-item [:vector :some]
+                     :wrapped-any [:not [:? :any]]
+                     :named-branch [:orn [:weak :some] [:strong :string]]
+                     :nested-map [:map [:payload :map]]
+                     :map-values [:map-of :keyword :some]})
+                   nil
+                   (catch Throwable t t))
+          violations (:schema-violations (ex-data thrown))]
+      (is (some? thrown))
+      (is (= #{:some-value :bare-map :empty-map :bare-set :bare-map-of
+               :empty-tuple :vector-item
+               :wrapped-any :named-branch :nested-map :map-values}
+             (set (:blackboard-keys (ex-data thrown)))))
+      (is (= #{[:some-value []] [:bare-map []] [:empty-map []]
+               [:bare-set [:items]]
+               [:bare-map-of [:keys]] [:bare-map-of [:values]]
+               [:empty-tuple [:items]]
+               [:vector-item [:items]] [:nested-map [:payload]]
+               [:wrapped-any []] [:named-branch [:weak]]
+               [:map-values [:values]]}
+             (set (map (juxt :key :path) violations))))
+      (is (re-find #"(?i)unconstrained.*most specific schema.*intent"
+                   (.getMessage thrown))))
+    (is (= {:blackboard-schema
+            {:record [:map [:name :string]]
+             :records [:vector [:map [:name :string]]]
+             :lookup [:map-of :keyword [:map [:name :string]]]}}
+           (sheet/blackboard
+            {:record [:map [:name :string]]
+             :records [:vector [:map [:name :string]]]
+             :lookup [:map-of :keyword [:map [:name :string]]]}))))
+  (testing "direct declaration commands enforce the same recursive policy"
+    (h/with-async-test-context [ctx]
+      (let [created (h/run-command ctx (h/make-create-sheet-command :name "direct-weak-schema-rejection"))
+            sheet-id (-> created :command-result/events first :sheet-id)
+            _ (h/run-and-apply! ctx (h/make-declare-key-command sheet-id :existing :string))
+            rejected (h/run-command
+                      ctx
+                      (h/make-declare-key-command
+                       sheet-id :direct [:vector [:map [:payload :some]]]))
+            rejected-update
+            (h/run-command
+             ctx
+             (assoc (h/make-declare-key-command sheet-id :existing [:vector])
+                    :command/name :sheet/update-key-schema))]
+        (is (h/is-anomaly? rejected))
+        (is (re-find #"(?i)direct.*unconstrained.*payload.*most specific schema.*intent"
+                     (:cognitect.anomalies/message rejected)))
+        (is (h/is-anomaly? rejected-update))
+        (is (re-find #"(?i)existing.*items.*most specific schema.*intent"
+                     (:cognitect.anomalies/message rejected-update)))
+        (is (= :string (get-in (sheet/get-blackboard-by-key ctx sheet-id)
+                               [:existing :schema])))))))
 
 (deftest det-e2e-039-concurrent-identical-builds
   (testing "concurrent identical registrations converge on one coherent graph"
@@ -270,7 +374,8 @@
                   (:modified-nodes node-diff)))
         (is (= #{:added} (set (:added bb-diff))))
         (is (= #{:obsolete} (set (:removed bb-diff))))
-        (is (= [{:key :mutable :old-schema :string :new-schema :any}]
+        (is (= [{:key :mutable :old-schema :string
+                 :new-schema [:map [:value :string]]}]
                (:modified bb-diff)))))))
 
 (deftest det-e2e-044-export-import-round-trip

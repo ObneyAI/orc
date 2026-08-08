@@ -25,7 +25,15 @@
                              "required" ["message"]
                              "properties"
                              {"message" {"type" "string"}
-                              "limit" {"type" "integer"}}}}}})
+                              "limit" {"type" "integer"}}}}}
+   :outputSchema {"type" "object"
+                  "properties"
+                  {"echo" {"type" "string"}
+                   "length" {"type" "integer"}
+                   "accepted" {"type" "object"
+                                "properties"
+                                {"message" {"type" "string"}
+                                 "limit" {"type" "integer"}}}}}})
 
 (def portable-search-tool
   {:name "search"
@@ -34,12 +42,18 @@
                  "required" ["query"]
                  "properties" {"query" {"type" "string"}
                                "filters" {"type" "object"
-                                          "properties" {"kind" {"type" "string"}}}}}})
+                                          "properties" {"kind" {"type" "string"}}}}}
+   :outputSchema {"type" "object"
+                  "required" ["server" "query"]
+                  "properties" {"server" {"type" "string"}
+                                "query" {"type" "string"}}}})
 
 (def drifted-echo-tool
-  (assoc-in echo-tool
-            [:inputSchema "properties" "request" "properties" "message" "type"]
-            "integer"))
+  (-> echo-tool
+      (assoc-in [:inputSchema "properties" "request" "properties" "message" "type"]
+                "integer")
+      (assoc-in [:outputSchema "properties" "accepted" "properties" "message" "type"]
+                "integer")))
 
 (defn- portable-registry-connection [server-order calls]
   (let [connections
@@ -59,7 +73,8 @@
         tools (mapv (fn [{:keys [prefixed-name description schema]}]
                       {:name prefixed-name
                        :description description
-                       :inputSchema schema})
+                       :inputSchema schema
+                       :outputSchema (:outputSchema portable-search-tool)})
                     (mcp/list-all-tools registry))]
     (mcp/connect {:type :static
                   :tools tools
@@ -172,7 +187,9 @@
       (let [sheet-id (sheet/build-workflow!
                       ctx
                       {:workflow-name "det-e2e-096"
-                       :blackboard-schema {:request :map :tool-output :any}
+                       :blackboard-schema
+                       {:request [:map [:message {:optional true} :string]]
+                        :tool-output [:map [:ok {:optional true} :boolean]]}
                        :root-node {:node-type :leaf :name "invoke" :executor :code
                                    :fn (fq "invoke-throwing-tool")
                                    :reads [:request] :writes [:tool-output]

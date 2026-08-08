@@ -502,11 +502,11 @@
                    [:llm {:instruction "Extract targets"
                           :reads [:page_text]
                           :writes [:targets]
-                          :output-schemas {:targets [:vector [:map-of :any :any]]}}])
+                          :output-schemas {:targets [:vector [:map [:name :string]]]}}])
           opts (apply hash-map (rest result))]
       (is (= 'sheet/llm (first result)))
       (is (= [:targets] (:writes opts)))
-      (is (= {:targets [:vector [:map-of :any :any]]}
+      (is (= {:targets [:vector [:map [:name :string]]]}
              (:output-schemas opts))
           ":output-schemas must round-trip through the DSL translator"))))
 
@@ -516,12 +516,12 @@
                   (sheet/llm :instruction "Pass 1"
                              :reads [:page_text]
                              :writes [:targets]
-                             :output-schemas {:targets [:vector [:map-of :any :any]]})
+                             :output-schemas {:targets [:vector [:map [:name :string]]]})
                   (sheet/llm :instruction "Pass 2 with no schemas declared"
                              :reads [:targets]
                              :writes [:summary]))
           schemas (#'ai.obney.orc.orc-service.core.rlm-tree-executor/extract-key-schemas tree)]
-      (is (= [:vector [:map-of :any :any]] (get schemas :targets))
+      (is (= [:vector [:map [:name :string]]] (get schemas :targets))
           "schema for :targets collected from first :llm node")
       (is (nil? (get schemas :summary))
           "no schema collected when :output-schemas wasn't declared"))))
