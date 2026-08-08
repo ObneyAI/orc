@@ -1199,7 +1199,9 @@
   [{{:keys [sheet-id tick-id node-id status writes rejected-writes write-sources write-references? duration-ms error inputs usage model
             node-type completion-kind raw-response block-payload read-sources]} :command
     :as ctx}]
-  (let [;; Gap-7: when the dispatch site didn't explicitly set
+  (if (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+    {:command-result/events []}
+    (let [;; Gap-7: when the dispatch site didn't explicitly set
         ;; :completion-kind but the node is a recursive repl-researcher,
         ;; derive the kind from :status. :tree-generated marks an
         ;; intermediate Phase 1 emit-tree iteration; :success/:failure
@@ -1357,8 +1359,8 @@
                            (seq exec-context)
                            (assoc :exec-context exec-context)))}))
               rejected-writes)]
-    {:command-result/events
-     (into [] (concat bb-write-events rejected-write-events reference-events [completion-event]))}))
+      {:command-result/events
+       (into [] (concat bb-write-events rejected-write-events reference-events [completion-event]))})))
 
 (defcommand :sheet record-rlm-tree-node-completion
   {:authorized? authenticated?}
@@ -1424,18 +1426,20 @@
   "Mark a node execution as failed (internal command from todo processor)."
   [{{:keys [sheet-id tick-id node-id error duration-ms]} :command
     :as ctx}]
-  {:command-result/events
-   [(->event
-     {:type :sheet/node-execution-completed
-      :tags #{[:sheet sheet-id]
-              [:node node-id]
-              [:tick tick-id]}
-      :body (cond-> {:sheet-id sheet-id
-                     :tick-id tick-id
-                     :node-id node-id
-                     :status :failure}
-              error (assoc :error error)
-              duration-ms (assoc :duration-ms duration-ms))})]})
+  (if (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+    {:command-result/events []}
+    {:command-result/events
+     [(->event
+       {:type :sheet/node-execution-completed
+        :tags #{[:sheet sheet-id]
+                [:node node-id]
+                [:tick tick-id]}
+        :body (cond-> {:sheet-id sheet-id
+                       :tick-id tick-id
+                       :node-id node-id
+                       :status :failure}
+                error (assoc :error error)
+                duration-ms (assoc :duration-ms duration-ms))})]}))
 
 (defcommand :sheet cancel-tick
   {:authorized? authenticated?}

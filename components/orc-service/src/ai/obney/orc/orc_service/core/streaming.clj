@@ -638,7 +638,15 @@
                   duration-ms (- (System/currentTimeMillis) start-time)]
               (runtime/deregister-completion! tick-id)
               (if (= result ::timeout)
-                (do (close-subscription! (:sub-id subscription) :timeout)
+                (do (cp/process-command
+                     (assoc context :command
+                            {:command/id (random-uuid)
+                             :command/timestamp (time/now)
+                             :command/name :sheet/cancel-tick
+                             :sheet-id sheet-id
+                             :tick-id tick-id
+                             :reason "Execution timed out"}))
+                    (close-subscription! (:sub-id subscription) :timeout)
                     (deliver result-promise {:status :timeout
                                              :error "Execution timed out"
                                              :duration-ms duration-ms}))

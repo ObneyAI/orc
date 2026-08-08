@@ -33,6 +33,14 @@
   (Thread/sleep 300)
   {:slow-result "late"})
 
+(def cancellation-fence-state
+  (atom {:started (promise) :release (promise)}))
+
+(defn release-after-cancellation [_]
+  (deliver (:started @cancellation-fence-state) true)
+  @(:release @cancellation-fence-state)
+  {:late-result "must-not-land"})
+
 (def cancellation-state (atom {:started [] :completed []}))
 
 (defn cancellable-item [{:keys [inputs]}]
@@ -68,6 +76,42 @@
 (defn- fq [function-name]
   (str "ai.obney.orc.orc-service.deterministic-failure-e2e-test/"
        function-name))
+
+(deftest det-e2e-110-terminal-cancellation-fence
+  (testing "an in-flight leaf cannot publish after its tick is cancelled"
+    (h/with-async-test-context [ctx]
+      (reset! cancellation-fence-state
+              {:started (promise) :release (promise)})
+      (let [workflow (sheet/workflow "det-e2e-110-cancellation-fence"
+                       (sheet/blackboard {:late-result :string})
+                       (sheet/code "late" :fn (fq "release-after-cancellation")
+                         :reads [] :writes [:late-result]))
+            sheet-id (sheet/build-workflow! ctx workflow)
+            {:keys [tick-id result]} (sheet/execute-stream
+                                      ctx sheet-id {} :timeout-ms 5000)]
+        (is (true? (deref (:started @cancellation-fence-state) 2000 false)))
+        (is (= [tick-id] (:cancelled (sheet/cancel! ctx tick-id))))
+        (deliver (:release @cancellation-fence-state) true)
+        (is (not= ::timeout (deref result 2000 ::timeout)))
+        (is (h/settle-until!
+             #(some (fn [event]
+                      (= :sheet/tick-cancelled (:event/type event)))
+                    (h/read-tick-events ctx tick-id))
+             :timeout-ms 2000))
+        (Thread/sleep 100)
+        (let [events (h/read-tick-events ctx tick-id)
+              cancellation-index (first
+                                  (keep-indexed
+                                   (fn [idx event]
+                                     (when (= :sheet/tick-cancelled (:event/type event))
+                                       idx))
+                                   events))
+              after-cancellation (drop (inc cancellation-index) events)]
+          (is (not-any? #(contains? #{:sheet/execution-value-written
+                                      :sheet/node-execution-completed
+                                      :sheet/tree-tick-completed}
+                                    (:event/type %))
+                        after-cancellation)))))))
 
 (def ^:private item-schema
   [:map

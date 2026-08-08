@@ -54,6 +54,7 @@ that verifies the stated observable results.
 - [x] **DET-E2E-033 — Nil output failure.** A nil declared code output fails the node and prevents downstream execution.
 - [x] **DET-E2E-034 — Partial nil output.** Any nil declared write rejects the complete write and identifies the missing key.
 - [x] **DET-E2E-035 — Exception sanitization.** Verify stable serializable public errors without implementation leakage.
+- [x] **DET-E2E-110 — Terminal cancellation fence.** Release an in-flight leaf after cancellation and verify that it emits no value or node/tree completion after the cancellation event.
 
 ## P1 — Workflow lifecycle and versioning
 

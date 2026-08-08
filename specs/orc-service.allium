@@ -700,4 +700,14 @@ surface WorkflowExecutionAccess {
         -- inputs, accepted outputs, and schema-rejected outputs can be inspected
         -- without ambiguity when the same workflow node runs repeatedly or
         -- concurrently.
+
+    @guarantee SingleExecutionDeadline
+        -- The execution option timeout is the authoritative wall-clock budget
+        -- for the workflow and its in-flight leaf work. ORC does not impose an
+        -- independent provider-call deadline that can expire first.
+
+    @guarantee TerminalCancellationFence
+        -- Once an execution or any ancestor is cancelled or times out, work
+        -- already in flight cannot create execution values or node/tree
+        -- completions for that terminal execution.
 }
