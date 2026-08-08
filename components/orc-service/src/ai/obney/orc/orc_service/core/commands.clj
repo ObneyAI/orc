@@ -1231,9 +1231,17 @@
         ;; completion event. When the write events are NOT emitted, the
         ;; completion event is the only record the values have, so dropping
         ;; them here would lose them outright.
+        ;;
+        ;; CC-21b (O7): `:blocked` belongs in this set. Durability is the whole
+        ;; of the condition, and `tick-scoped?` is what supplies it — a blocked
+        ;; node's writes are as durable in the write log as a successful one's.
+        ;; WS-2a added `:blocked`; this gate never learned about it, and the
+        ;; cost was measured: 57 of 178 `:repl-researcher` observations are
+        ;; `:blocked`, and their inlined `:writes` were 1,331,342 B — 90.8% of
+        ;; everything left after the rest of the storage-amplification fix.
         tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
         externalize-writes? (and tick-scoped?
-                                 (#{:success :tree-generated} status)
+                                 (#{:success :tree-generated :blocked} status)
                                  (seq writes))
         forwarded-sources (into {}
                                 (for [[k source] (or write-sources {})]

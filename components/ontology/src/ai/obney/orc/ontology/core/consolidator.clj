@@ -37,6 +37,7 @@
             [cheshire.core :as json]
             [clojure.string :as str]
             [ai.obney.orc.orc-service.interface :as orc]
+            [ai.obney.orc.ontology.core.evidence-projection :as evidence-projection]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
@@ -411,7 +412,9 @@
   (cond-> (-> event
               (dissoc :event/id :event/tags :event/timestamp))
     (some? (:event/timestamp event))
-    (assoc :timestamp (str (:event/timestamp event)))))
+    (assoc :timestamp (str (:event/timestamp event)))
+    ;; CC-21b — then reduce the value payloads to shape. See evidence-projection.
+    true evidence-projection/project-observation))
 
 (defn- gather-recent-tree-class-events
   "C-Loop-1 + Gap-3: for :tree-class targets, gather task-classified
