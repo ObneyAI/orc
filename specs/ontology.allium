@@ -990,6 +990,37 @@ invariant ClaimsAreRetiredOnlyWhenUnsupported {
         claim.support >= 1
 }
 
+-- CC-21b verified a MISSING PRODUCER: DescriptionConsolidationCompleted appears
+-- four times as a `when:` trigger and ZERO times as an `ensures:`, and it is not
+-- declared as an external/surface stimulus either. By contrast
+-- DescriptionConsolidationRequested has two producers. So the arc
+-- Requested -> Completed models the request and not the reflection call that
+-- answers it — the LLM step itself is unmodelled.
+--
+-- That is why its FAILURE has nowhere to be recorded. Measured: on the target
+-- taking 23.4% of all consolidation requests, the provider rejected the prompt
+-- outright (1,571,414 tokens against a 1,048,576 limit), 0/3 successful after
+-- four retries each, leaving NO event at all. The read model counting
+-- recent_consolidations cannot distinguish "23.4% of requests died" from
+-- "everything is fine".
+--
+-- The sibling subsystem already has the shape of the answer: contract
+-- SemanticReranking carries @invariant FailureIsVisible ("Timeout or malformed
+-- output is surfaced and original candidates survive"). Consolidation has no
+-- equivalent.
+--
+-- NOT resolved here by inventing a producer rule: modelling the reflection step
+-- is spec DESIGN, not a tend, and it should be decided deliberately alongside
+-- the consolidation-side failure contract. Tracked as CC-28.
+--
+-- ⚠ TOOLING NOTE, verified: this Allium version does NOT parse `open question`.
+-- The construct is in the language reference and documented as surfacing a
+-- checker warning, but `allium model` has no `open_questions` key and the text
+-- does not appear in the parsed model — so writing one here would READ as
+-- tracked while nothing tracked it. That is the same class of defect this arc
+-- keeps finding, so the decision is tracked in the issue system instead and
+-- this comment is documentation for the reader, nothing more.
+
 -- Enforcement (retrieval ranking) acts on validated claims only; candidates are
 -- visible to the model but cannot suppress a behavior's retrieval.
 invariant OnlyValidatedClaimsEnforce {
