@@ -251,6 +251,20 @@ config {
     -- The floor EACH occurrence in the window must clear. Deliberately not a
     -- mean over the window: that would reintroduce the same defect one level up.
     consistency_floor: Decimal = 0.8
+    -- The floor EACH dimension (judge) must clear, per PromoteWellScoredClass's
+    -- `quality.all(...)`. Referenced by that rule but never declared until now —
+    -- the same omission as the three above.
+    --
+    -- DISTINCT AXIS from consistency_floor, and the distinction is the whole
+    -- point: dimension_floor is across JUDGES at one moment; consistency_floor
+    -- is across OCCURRENCES over time. The code collapsed both into one scalar
+    -- mean, which is why a class could pass while failing catastrophically on
+    -- one judge (needs >= 5 judges, latent) AND while failing catastrophically
+    -- on 4 of 20 occurrences (needs only 1 judge, LIVE — measured).
+    --
+    -- Uniform for now because the system has exactly one judge. Per-dimension
+    -- differentiation is a refinement, not a prerequisite.
+    dimension_floor: Decimal = 0.8
 }
 
 entity Ontology {
