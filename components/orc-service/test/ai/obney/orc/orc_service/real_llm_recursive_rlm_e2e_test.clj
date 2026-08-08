@@ -182,4 +182,6 @@
             (is (empty? starts-after) "no descendant starts after root termination")
             (is (empty? writes-after) "no family write arrives after shutdown")
             (is (= (count child-ids) (count descendant-terminals))
-                "every started descendant reaches exactly one terminal state")))))))
+                (str "every started descendant reaches exactly one terminal state: "
+                     (pr-str (mapv #(select-keys % [:event/type :tick-id :root-status :reason])
+                                   descendant-terminals))))))))))

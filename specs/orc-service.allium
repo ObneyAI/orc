@@ -706,6 +706,12 @@ surface WorkflowExecutionAccess {
         -- for the workflow and its in-flight leaf work. ORC does not impose an
         -- independent provider-call deadline that can expire first.
 
+    @guarantee SharedLlmCallBudget
+        -- An execution's LLM-call budget counts every provider invocation in
+        -- its trace family, including recursive researcher iterations, inline
+        -- researcher primitives and descendant generated-tree leaves. Once
+        -- exhausted, no branch can make a further provider call.
+
     @guarantee TerminalCancellationFence
         -- Once an execution or any ancestor is cancelled or times out, work
         -- already in flight cannot create execution values or node/tree

@@ -255,7 +255,11 @@
       (= :timeout status)
       (assoc :phase2-elapsed-ms (:phase2-elapsed-ms phase2-result)
              :budget-remaining-ms (:budget-remaining-ms phase2-result)
-             :nodes-completed-before-cancel (count leaf-completions)))))
+             :nodes-completed-before-cancel (count leaf-completions))
+
+      (:preflight-rejected? phase2-result)
+      (assoc :preflight-rejected? true
+             :error (:error phase2-result)))))
 
 (defn merge-tree-result-into-sandbox
   "Return new sandbox-vars after a Phase 2 tree execution.
@@ -270,7 +274,12 @@
      like benchmark EDN capture) can record WHAT the model actually designed."
   [sandbox-vars phase2-result writes summary]
   (let [writes-set (set writes)
-        outputs-to-merge (select-keys (:outputs phase2-result) writes-set)
+        ;; Missing/nil outputs from a later recovery tree are evidence of an
+        ;; incomplete write, not an instruction to erase a value preserved by
+        ;; an earlier successful leaf.
+        outputs-to-merge (into {}
+                               (filter (comp some? val))
+                               (select-keys (:outputs phase2-result) writes-set))
         prior-results (get sandbox-vars :tree-results [])]
     (-> sandbox-vars
         (dissoc :generated-tree)
@@ -316,13 +325,20 @@
   [summary]
   (let [{:keys [status elapsed-ms nodes-succeeded nodes-failed nodes-total
                 outputs-keys outputs-previews nil-writes failed-leaves
-                failure-indices failure-reasons surviving-vars]} summary
+                failure-indices failure-reasons surviving-vars
+                preflight-rejected? error]} summary
         preview-str (fn [k]
                       (let [p (get outputs-previews k)]
                         (if (string? p) p (pr-str p))))
         nil-set (set nil-writes)
         ok-keys (vec (remove nil-set outputs-keys))]
-    (str "Tree executed — status: " status
+    (if preflight-rejected?
+      (str "TREE REJECTED BEFORE EXECUTION — no child tick or leaf ran. "
+           error
+           " Re-emit the same intended tree with explicit, specific "
+           ":output-schemas for every write; do not treat this as an "
+           "executed failure and do not finalize or recover yet.")
+      (str "Tree executed — status: " status
          " | nodes: " nodes-succeeded "/" nodes-total " succeeded"
          (when (and nodes-failed (pos? nodes-failed))
            (str ", " nodes-failed " failed"))
@@ -350,7 +366,7 @@
          (when (seq surviving-vars)
            (str "\nSurviving intermediate vars (successful work inside this"
                 " tree, readable via get-var — do NOT recompute): "
-                (str/join ", " (map str surviving-vars)))))))
+           (str/join ", " (map str surviving-vars))))))))
 
 ;; =============================================================================
 ;; Levenshtein Distance and Variable Suggestions
@@ -2042,9 +2058,12 @@
                       "```clojure\n"
                       "(emit-tree! [:sequence\n"
                       "              [:chunk-document {:from :document :size 5000 :into :chunks}]\n"
-                      "              [:map-each {:from :chunks :as :chunk :into :results}\n"
-                      "                [:llm {:instruction \"Extract key info\" :reads [:chunk] :writes [:info]}]]\n"
-                      "              [:aggregate {:from :results :writes [:all-info]}]\n"
+                      "              [:map-each {:from :chunks :as :chunk :into :results\n"
+                      "                          :output-schemas {:results [:vector [:map [:info :string]]]}}\n"
+                      "                [:llm {:instruction \"Extract key info\" :reads [:chunk] :writes [:info]\n"
+                      "                       :output-schemas {:info :string}}]]\n"
+                      "              [:aggregate {:from :results :writes [:all-info]\n"
+                      "                           :output-schemas {:all-info [:map-of :keyword [:vector :string]]}}]\n"
                       "              [:final {:keys [:summary]}]])\n"
                       "```\n"
                       "- Emits a behavior tree S-expression for two-phase execution\n"
@@ -2053,12 +2072,11 @@
                       "  - :sequence - Execute children in order\n"
                       "  - :parallel - Execute children concurrently (independent work only)\n"
                       "  - :llm - Execute a sub-LLM call with {:instruction :reads :writes}\n"
-                      "      Optional :output-schemas {<write-key> <Malli-schema>} declares the shape of each\n"
-                      "      :writes value. When you set this and the schema is structured (e.g. [:vector [:map [:name :string]]],\n"
+                      "      REQUIRED: :output-schemas {<write-key> <Malli-schema>} must declare the shape of EVERY :writes key.\n"
+                      "      When the schema is structured (e.g. [:vector [:map [:name :string]]],\n"
                       "      [:map [:foo :string] [:bar :int]]), the framework asks the LLM for valid JSON and parses\n"
-                      "      the response back into Clojure data automatically. Without :output-schemas, the LLM's :writes\n"
-                      "      values arrive as raw text strings — fine if your downstream consumer is another :llm prompt,\n"
-                      "      but problematic if a :code node expects parsed Clojure data (vectors, maps, etc.).\n"
+                      "      the response back into Clojure data automatically. A generated tree with any undeclared write\n"
+                      "      schema is rejected before execution. Use the most specific schema matching the value's intent.\n"
                       "      Example:\n"
                       "        [:llm {:instruction \"Identify PII targets on this page; return :targets as a vector of maps.\"\n"
                       "               :reads [:page-text]\n"
@@ -2289,10 +2307,15 @@
                              "  [:sequence\n"
                              "   [:llm {:instruction \"Generate recommendations from findings + gaps\"\n"
                              "          :reads [:findings :missing_items]\n"
-                             "          :writes [:recommendation_data]}]\n"
+                             "          :writes [:recommendation_data]\n"
+                             "          :output-schemas {:recommendation_data :string}}]\n"
                              "   [:code {:fn shape-final-writes\n"
                              "           :reads [:findings :missing_items :recommendation_data]\n"
-                             "           :writes [:issues :ambiguities :missing :recommendations]}]\n"
+                             "           :writes [:issues :ambiguities :missing :recommendations]\n"
+                             "           :output-schemas {:issues [:vector :string]\n"
+                             "                            :ambiguities [:vector :string]\n"
+                             "                            :missing [:vector :string]\n"
+                             "                            :recommendations [:vector :string]}}]\n"
                              "   [:final {:keys [:issues :ambiguities :missing :recommendations]}]])\n"
                              "```\n\n"
                              "Re-emitting a tree is appropriate ONLY when the failure is fundamental "
@@ -2338,14 +2361,20 @@
                              ;; Sentinel phrase: 'verify before final' (pinned by unit test).
                              "### Verify before final\n"
                              "Finalization is the DEFAULT next step once the required outputs are "
-                             "populated. Before `(final! {...})`, glance at `:outputs-previews` on "
+                             "populated, unless the task explicitly requires a multi-stage process, "
+                             "failure/recovery audit, verification step, or a particular sequence of "
+                             "primitive calls. Those process requirements remain mandatory even when "
+                             "an output could be produced early. Before `(final! {...})`, audit every "
+                             "task-level MUST against your iteration history, then glance at "
+                             "`:outputs-previews` on "
                              "the most recent `:tree-results` entry to spot CLEARLY broken payloads — "
                              "e.g. an A-Z letter count block that reads `A: 0, B: 0, ...` for "
                              "non-empty transcription text, a required structured array that came "
-                             "back `[]`, or `nil` where structured data should be. Only emit another "
-                             "tree if a value is OBVIOUSLY broken in that sense; minor imperfections, "
-                             "stylistic differences, or completeness questions are fine — finalize "
-                             "and let the evaluation layer judge quality.\n\n")
+                             "back `[]`, or `nil` where structured data should be. When the task has no "
+                             "explicit process requirement, only emit another tree if a value is "
+                             "OBVIOUSLY broken in that sense; minor imperfections, stylistic "
+                             "differences, or completeness questions are fine — finalize and let the "
+                             "evaluation layer judge quality.\n\n")
                         "")
                       ;; T2-Hardening-C: forward guidance — recurring SCI/Clojure
                       ;; pitfalls observed across the bench suite that the model
@@ -2441,14 +2470,18 @@
                       "(emit-tree!\n"
                       "  [:sequence\n"
                       "   [:chunk-document {:from :document :size 8000 :into :chunks}]\n"
-                      "   [:map-each {:from :chunks :as :chunk :into :chunk_results}\n"
+                      "   [:map-each {:from :chunks :as :chunk :into :chunk_results\n"
+                      "               :output-schemas {:chunk_results [:vector [:map [:info :string]]]}}\n"
                       "    [:llm {:instruction \"Extract key information from this section\"\n"
                       "           :reads [:chunk]\n"
-                      "           :writes [:info]}]]\n"
-                      "   [:aggregate {:from :chunk_results :writes [:all_info]}]\n"
+                      "           :writes [:info]\n"
+                      "           :output-schemas {:info :string}}]]\n"
+                      "   [:aggregate {:from :chunk_results :writes [:all_info]\n"
+                      "                :output-schemas {:all_info [:map-of :keyword [:vector :string]]}}]\n"
                       "   [:llm {:instruction \"Synthesize the extracted information into a final summary\"\n"
                       "          :reads [:all_info]\n"
-                      "          :writes [:summary]}]\n"
+                      "          :writes [:summary]\n"
+                      "          :output-schemas {:summary :string}}]\n"
                       "   [:final {:keys [:summary]}]])\n"
                       "```\n"
                       "This is the PREFERRED approach because:\n"
@@ -2628,6 +2661,12 @@
                 _ (dbg "inputs :inputs-info =" (:inputs-info inputs))
                 _ (dbg "calling dscloj/predict...")
                 llm-result (try
+                             (when-let [exceeded (and (:reserve-llm-call! context)
+                                                      ((:reserve-llm-call! context)))]
+                               (throw (ex-info
+                                       (str "LLM call budget exceeded: "
+                                            (:current exceeded) "/" (:budget exceeded))
+                                       exceeded)))
                              (dscloj/predict provider module inputs dscloj-options)
                              (catch Exception e
                                (dbg "dscloj/predict EXCEPTION:" (.getMessage e))
@@ -2700,7 +2739,7 @@
             (cond
                 (str/blank? code)
                 {:status :failure
-                 :error "LLM did not generate code"
+                 :error (or (:error llm-result) "LLM did not generate code")
                  :iterations history
                  :duration-ms (- (System/currentTimeMillis) start-time)
                  :usage @total-usage}
@@ -2730,7 +2769,8 @@
                              :command-registry (:command-registry context)
                              :cache (:cache context)
                              :sheet-id (:sheet-id context)
-                             :tick-id (:tick-id context)})
+                             :tick-id (:tick-id context)
+                             :reserve-llm-call! (:reserve-llm-call! context)})
                     exec-result (rlm-sandbox/execute-rlm-code rlm-ctx code)
                     ;; Track new variables created in this iteration
                     vars-after (set (keys @sandbox-vars))
@@ -2930,6 +2970,22 @@
                             _ (when debug?
                                 (println "\n[DEBUG RLM] Phase 2 sandbox vars:" (keys phase2-vars)))
                             phase2-result (try
+                                            (when-let [required-keys
+                                                       (seq (:preflight-required-schema-keys
+                                                             @sandbox-vars))]
+                                              (let [declared (set (keys
+                                                                   (tree-executor/extract-key-schemas
+                                                                    generated-tree)))
+                                                    used (set (tree-executor/extract-all-keys
+                                                               generated-tree))
+                                                    corrected (clojure.set/intersection declared used)
+                                                    still-missing (vec (remove corrected required-keys))]
+                                                (when (seq still-missing)
+                                                  (throw (ex-info
+                                                          (str "The prior generated tree was rejected before execution. "
+                                                               "Re-emit its intended work with explicit schemas for "
+                                                               still-missing)
+                                                          {:blackboard-keys still-missing})))))
                                             (tree-executor/execute-tree
                                               generated-tree
                                               context
@@ -2963,7 +3019,16 @@
                                               (println "[DEBUG RLM] Phase 2 execution ERROR:" (.getMessage e))
                                               (.printStackTrace e)
                                               {:status :failure
+                                               :preflight-rejected? true
+                                               :missing-schema-keys (:blackboard-keys (ex-data e))
                                                :error (str "Phase 2 execution failed: " (.getMessage e))}))
+                            _ (if (:preflight-rejected? phase2-result)
+                                (swap! sandbox-vars update
+                                       :preflight-required-schema-keys
+                                       (fnil into #{})
+                                       (:missing-schema-keys phase2-result))
+                                (swap! sandbox-vars dissoc
+                                       :preflight-required-schema-keys))
                             ;; D-003: when Phase 2 times out, dispatch :sheet cancel-tick
                             ;; on the child tick so it stops executing in the background.
                             ;; The tree executor's timeout default carries :sheet-id +

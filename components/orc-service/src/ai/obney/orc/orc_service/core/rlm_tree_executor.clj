@@ -262,7 +262,7 @@
     ;; Otherwise: no keys
     :else []))
 
-(defn- extract-all-keys
+(defn extract-all-keys
   "Extract all blackboard keys (reads and writes) from the tree.
    Used to pre-declare all keys before creating nodes."
   [tree]
@@ -307,7 +307,7 @@
     ;; Otherwise: no keys
     :else []))
 
-(defn- extract-key-schemas
+(defn extract-key-schemas
   "U11: Walk the canonical tree and collect {write-key → Malli-schema} from
    leaf nodes that declared :output-schemas.
 
@@ -581,6 +581,11 @@
   (try
     (let [start-time (System/currentTimeMillis)
           tree-keys (set (extract-all-keys tree))
+          ;; Recursive Phase 1 accumulates inspection artifacts (for example
+          ;; an empty `tree-failures` result). Only values referenced by this
+          ;; emitted tree belong in its child blackboard; unrelated artifacts
+          ;; must not require an invented schema or leak across the boundary.
+          sandbox-vars (select-keys (or sandbox-vars {}) tree-keys)
           output-keys (extract-output-keys tree)
           tree-schemas (extract-key-schemas tree)
           input-schemas (merge

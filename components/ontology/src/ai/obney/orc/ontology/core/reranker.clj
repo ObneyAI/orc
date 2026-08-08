@@ -114,13 +114,18 @@ per input candidate.")
 (def ^:private candidate-schema
   [:map
    [:content :string]
-   [:score :double]
+   ;; ColBERT implementations may surface any JVM Number subtype. This is an
+   ;; input contract, not a demand that retrieval coerce every score to Double.
+   [:score number?]
    [:document-id :string]
-   [:document-metadata
+   ;; RR-3 deliberately sends capped child candidates with only
+   ;; content/score/document-id. Metadata is therefore optional at this
+   ;; provider boundary even though full parent candidates retain it.
+   [:document-metadata {:optional true}
     [:map
      [:granularity :keyword]
      [:target-id [:or :string :uuid]]
-     [:confidence {:optional true} :double]
+     [:confidence {:optional true} number?]
      [:last-update {:optional true} :string]]]
    [:avoid-when {:optional true} [:vector :string]]
    [:strengths {:optional true} [:vector ontology-schemas/principle-entry]]

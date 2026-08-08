@@ -50,10 +50,27 @@
 ;; Tracks LLM call counts per tick-id for budget enforcement.
 (defonce ^:private tick-llm-counts (atom {}))
 
+;; A budget can be exceeded concurrently by sibling leaves. Reserve each
+;; cancellation dispatch once so those leaves cannot append duplicate terminal
+;; events before the first cancellation has reached the ticks projection.
+(defonce ^:private budget-cancellation-claims (atom #{}))
+
+(defn- claim-budget-cancellation!
+  [tick-id]
+  (let [claimed? (atom false)]
+    (swap! budget-cancellation-claims
+           (fn [claims]
+             (if (contains? claims tick-id)
+               claims
+               (do (reset! claimed? true)
+                   (conj claims tick-id)))))
+    @claimed?))
+
 (defn clear-llm-count!
   "Clear LLM count for a tick (called on tick completion)."
   [tick-id]
-  (swap! tick-llm-counts dissoc tick-id))
+  (swap! tick-llm-counts dissoc tick-id)
+  (swap! budget-cancellation-claims disj tick-id))
 
 ;; =============================================================================
 ;; Tick-Scoped Usage Tracking
@@ -112,6 +129,40 @@
                      counts)
                  (assoc counts budget-tick-id (inc current))))))
     @outcome))
+
+(defn- reserve-llm-call-or-cancel!
+  "Reserve one call and durably cancel both the active and root ticks when the
+   shared root budget is exhausted. Returns the exceeded descriptor, or nil."
+  [context tick-ctx sheet-id tick-id]
+  (when-let [exceeded (reserve-llm-call! tick-ctx tick-id)]
+    (let [reason (str "LLM call budget exceeded: "
+                      (:current exceeded) "/" (:budget exceeded))]
+      ;; Every started tick owns its terminal event. Cancel the active child
+      ;; first, then the shared-budget root when they differ. Root-node
+      ;; completions racing either cancellation are fenced by
+      ;; complete-tree-tick and cannot append a second terminal event.
+      (when (claim-budget-cancellation! tick-id)
+        (cp/process-command
+         (assoc context :command
+                {:command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :command/name :sheet/cancel-tick
+                 :sheet-id sheet-id
+                 :tick-id tick-id
+                 :reason reason})))
+      (when (and (:root-sheet-id exceeded)
+                 (:root-tick-id exceeded)
+                 (not= tick-id (:root-tick-id exceeded))
+                 (claim-budget-cancellation! (:root-tick-id exceeded)))
+        (cp/process-command
+         (assoc context :command
+                {:command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :command/name :sheet/cancel-tick
+                 :sheet-id (:root-sheet-id exceeded)
+                 :tick-id (:root-tick-id exceeded)
+                 :reason reason})))
+      exceeded)))
 
 ;; =============================================================================
 ;; Tick-Scoped Resolution Helpers
@@ -1177,29 +1228,12 @@
                              (assoc :map-each {:parent (::map-each-parent exec-context)
                                                :index (::map-each-index exec-context)}))))]
         ;; Check budget before execution (only if budget set and this is an LLM call)
-        (if-let [exceeded (and is-llm-call? (reserve-llm-call! tick-ctx tick-id))]
-          ;; Budget exceeded - fail immediately
-          (let [reason (str "LLM call budget exceeded: "
-                            (:current exceeded) "/" (:budget exceeded))]
-            (cp/process-command
-              (assoc context :command
-                     {:command/id (random-uuid)
-                      :command/timestamp (time/now)
-                      :command/name :sheet/cancel-tick
-                      :sheet-id sheet-id
-                      :tick-id tick-id
-                      :reason reason}))
-            (when (and (:root-sheet-id exceeded)
-                       (:root-tick-id exceeded)
-                       (not= tick-id (:root-tick-id exceeded)))
-              (cp/process-command
-                (assoc context :command
-                       {:command/id (random-uuid)
-                        :command/timestamp (time/now)
-                        :command/name :sheet/cancel-tick
-                        :sheet-id (:root-sheet-id exceeded)
-                        :tick-id (:root-tick-id exceeded)
-                        :reason reason}))))
+        (if-let [_exceeded (and is-llm-call?
+                                (reserve-llm-call-or-cancel!
+                                 context tick-ctx sheet-id tick-id))]
+          ;; The shared helper has already durably cancelled the active tick
+          ;; and, when different, its shared-budget root.
+          nil
           ;; Run execution in a future to avoid blocking
           (do
             (when is-llm-call?
@@ -1421,20 +1455,7 @@
             ;; answers as hallucinations. We carry these into the completion
             ;; event; assemble-execution-trace prefers them over the (empty)
             ;; started inputs.
-            read-inputs (extract-read-inputs (:reads base-node) blackboard)
-            budget-exceeded (when provider
-                              (reserve-llm-call! tick-ctx tick-id))]
-        (if budget-exceeded
-          (cp/process-command
-            (assoc context :command
-                   {:command/id (random-uuid)
-                    :command/timestamp (time/now)
-                    :command/name :sheet/cancel-tick
-                    :sheet-id sheet-id
-                    :tick-id tick-id
-                    :reason (str "LLM call budget exceeded: "
-                                 (:current budget-exceeded) "/"
-                                 (:budget budget-exceeded))}))
+            read-inputs (extract-read-inputs (:reads base-node) blackboard)]
         (future
           (try
             ;; C-Loop-3: thread sheet-id / tick-id / cache through to
@@ -1480,6 +1501,14 @@
                                                   :sheet-id sheet-id
                                                   :tick-id tick-id
                                                   :tick-options (:options tick-ctx)
+                                                  ;; Recursive researchers make several
+                                                  ;; provider calls inside one durable
+                                                  ;; node execution. Charge each at its
+                                                  ;; actual call boundary against the
+                                                  ;; same root-tick budget.
+                                                  :reserve-llm-call!
+                                                  #(reserve-llm-call-or-cancel!
+                                                    context tick-ctx sheet-id tick-id)
                                                   ;; node-id rides along so RLM stream
                                                   ;; events (iteration/phase2) carry the
                                                   ;; hosting repl-researcher node.
@@ -1605,7 +1634,7 @@
                         :tick-id tick-id
                         :node-id node-id
                         :error (.getMessage e)}))))))
-        nil))))
+        nil)))
 
 ;; =============================================================================
 ;; Delegate Node Execution Processor
@@ -2862,23 +2891,17 @@
         ;; here instead of running to its own timeout.
         tick (rm/get-tick context tick-id)
         current-iteration (or (:iteration tick) 1)
-        cancelled? (or (= :cancelled (:status tick))
+        cancelled? (or (contains? @budget-cancellation-claims tick-id)
+                       (= :cancelled (:status tick))
                        (and (:parent-tick-id tick)
                             (rm/is-tick-or-ancestor-cancelled? context (:parent-tick-id tick))))]
     (when (= node-id root-node-id)
       (cond
-        ;; Tick was cancelled - don't re-tick
+        ;; Cancellation is already the tick's terminal decision. A root-node
+        ;; completion racing in afterwards must not append a second terminal
+        ;; tree-tick event.
         cancelled?
-        {:result/events
-         [(->event
-           {:type :sheet/tree-tick-completed
-            :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
-                    correlation-id (conj [:correlation correlation-id]))
-            :body (cond-> {:sheet-id sheet-id
-                           :tick-id tick-id
-                           :iteration current-iteration
-                           :root-status :failure}
-                    correlation-id (assoc :correlation-id correlation-id))})]}
+        {:result/events []}
 
         ;; Status is running and we haven't hit max iterations - re-tick
         (and (= status :running)
@@ -3206,6 +3229,7 @@
        :trace-id tick-id})
     ;; A cancelled tick never reaches deliver-execution-result, so its seed
     ;; memo would otherwise be retained for the life of the process.
+    (clear-llm-count! tick-id)
     (value-log/forget-tick! tick-id)
     (runtime/forget-ephemeral-context! tick-id))
   nil)

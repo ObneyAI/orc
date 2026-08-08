@@ -97,7 +97,7 @@
               :fn chunk-fn))
 
       :aggregate
-      (let [{:keys [from writes]} (first args)
+      (let [{:keys [from writes output-schemas]} (first args)
             ;; Aggregate flattens results from map-each into distinct collections
             ;; If a single write key is declared, wrap the merged result under that key
             ;; Otherwise, use the original keys from the map-each results
@@ -118,10 +118,11 @@
                                {(first writes) merged}
                                ;; Otherwise return merged as-is (keys match)
                                merged)))]
-        (list 'sheet/code
-              :reads [from]
-              :writes writes
-              :fn aggregate-fn))
+        (cond-> (list 'sheet/code
+                      :reads [from]
+                      :writes writes
+                      :fn aggregate-fn)
+          output-schemas (concat (list :output-schemas output-schemas))))
 
       :parallel
       (let [children (vec args)]

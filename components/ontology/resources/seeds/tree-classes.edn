@@ -1134,7 +1134,7 @@
      :good-when
      "the per-chunk work is purely arithmetic (count tokens, sum field values, average a metric) AND the reduce is associative (sum, max, min)",
      :recommended-pattern
-     "[:sequence [:chunk-document {:from :document :size 1000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :counts :max-concurrency 8} [:code {:reads [:chunk] :writes [:count] :fn (fn [{:keys [chunk]}] {:count (count (re-seq #\"\\w+\" chunk))})}]] [:code {:reads [:counts] :writes [:total] :fn (fn [{:keys [counts]}] {:total (reduce + 0 (map :count counts))})}] [:final {:keys [:total]}]]",
+     "[:sequence [:chunk-document {:from :document :size 1000 :into :chunks}] [:map-each {:from :chunks :as :chunk :into :counts :max-concurrency 8 :output-schemas {:counts [:vector [:map [:count :int]]]}} [:code {:reads [:chunk] :writes [:count] :output-schemas {:count :int} :fn (fn [{:keys [chunk]}] {:count (count (re-seq #\"\\w+\" chunk))})}]] [:code {:reads [:counts] :writes [:total] :output-schemas {:total :int} :fn (fn [{:keys [counts]}] {:total (reduce + 0 (map :count counts))})}] [:final {:keys [:total]}]]",
      :confidence 1.0,
      :evidence-count 1,
      :first-observed-at "2026-05-28T00:00:00Z",

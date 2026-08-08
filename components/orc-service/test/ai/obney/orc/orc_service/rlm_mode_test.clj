@@ -1254,6 +1254,33 @@
         (is (not (contains? result :sneaky-key))
             "Extra keys from LLM should be filtered out")))))
 
+(deftest rlm-sub-llm-reserves-root-budget-before-provider-call-test
+  (testing "an inline Phase-1 llm primitive cannot bypass the root call budget"
+    (let [provider-called? (atom false)
+          reservations (atom 0)]
+      (with-redefs [dscloj/predict
+                    (fn [& _]
+                      (reset! provider-called? true)
+                      {:outputs {:answer "should-not-run"}})]
+        (let [error (try
+                      (rlm-sandbox/execute-llm-primitive
+                       "budgeted"
+                       {:instruction "Work" :writes [:answer]}
+                       {:provider :openrouter
+                        :blackboard {}
+                        :sandbox-vars {}
+                        :reserve-llm-call!
+                        (fn []
+                          (swap! reservations inc)
+                          {:current 2 :budget 2})})
+                      nil
+                      (catch clojure.lang.ExceptionInfo e e))]
+          (is (some? error))
+          (is (re-find #"LLM call budget exceeded: 2/2" (.getMessage error))))
+        (is (= 1 @reservations) "the attempted call is charged exactly once")
+        (is (false? @provider-called?)
+            "budget exhaustion fences the provider invocation itself")))))
+
 (deftest rlm-llm-fn-merges-only-writes-to-parent-test
   (testing "llm function in sandbox only merges :writes to parent sandbox-vars"
     (with-redefs [dscloj/predict

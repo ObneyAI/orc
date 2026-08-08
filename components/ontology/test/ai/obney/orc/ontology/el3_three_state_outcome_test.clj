@@ -184,3 +184,18 @@
         ;; Detect-and-defer: NO fresh-mint marker under uncertainty.
         (is (not-any? #(true? (:was-fresh-mint? %)) (:behaviors r))
             "DEFEAT CONDITION: :uncertain must NOT emit a behavioral :was-fresh-mint? true marker")))))
+
+(deftest classify-behaviors-exact-token-identity-survives-reranker-fallback
+  (testing "an exact multi-token minted sentinel is deterministic evidence, not a guessed semantic match"
+    (let [target (random-uuid)
+          candidate (assoc (behavioral-fallback-candidate target)
+                           :content "NOVEL-EVIDENCE-LATTICE preserves independently verified claims across branches")]
+      (with-redefs [ontology/search-descriptions (fn [_ _] [candidate])]
+        (let [r (ontology/classify-behaviors
+                 {} {:task-signature "NOVEL-EVIDENCE-LATTICE independently verified claims"
+                     :threshold 0.6 :top-n 3})
+              match (first (:behaviors r))]
+          (is (= :matched (:outcome r)))
+          (is (= target (:behavior-id match)))
+          (is (= 1.0 (:confidence match)))
+          (is (= :exact-token-fallback (:rerank-source match))))))))

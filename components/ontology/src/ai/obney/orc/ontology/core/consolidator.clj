@@ -140,10 +140,8 @@
    [:historical-success-rate :double]
    [:delta :double]])
 
-(def ^:private structural-context-schema
-  [:map
-   [:node-type {:optional true} :keyword]
-   [:tree-class-id {:optional true} [:or :uuid :string]]])
+(def ^:private target-identity-schema
+  [:or :keyword [:tuple :uuid :uuid] :uuid :string])
 
 (defn- reflection-workflow
   "Single-:llm-node ORC workflow for the consolidator's reflection call.
@@ -159,12 +157,15 @@
   (orc/workflow "ontology-consolidator-reflection"
     (orc/blackboard
       {:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]
-       :target-id [:or :uuid :string]
+       ;; Target identity is intentionally polymorphic by granularity:
+       ;; node types are keywords, node instances are [sheet-id node-id]
+       ;; tuples, and tree targets are UUIDs or strings.
+       :target-id target-identity-schema
        :current-description [:maybe current-description-schema]
        :recent-events [:vector recent-event-schema]
        :aggregate-metrics [:maybe aggregate-metrics-schema]
        :recent-vs-historical-delta [:maybe history-delta-schema]
-       :structural-context [:maybe structural-context-schema]
+       :structural-context [:maybe target-identity-schema]
        :capabilities [:vector :string]
        :strengths [:vector ontology-schemas/principle-entry]
        :weaknesses [:vector ontology-schemas/principle-entry]

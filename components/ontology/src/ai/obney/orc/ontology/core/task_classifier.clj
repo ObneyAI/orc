@@ -26,6 +26,7 @@
    classifier (maps low judge scores to failure URIs); this namespace
    is the TASK classifier (maps task signatures to tree-class UUIDs)."
   (:require [clojure.string]
+            [clojure.set]
             [malli.core :as m]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [com.brunobonacci.mulog :as u]))
@@ -837,6 +838,25 @@
                      (vec (distinct (concat composers non-composers))))
                    candidates)
         top-1 (first filtered)
+        ;; A reranker outage normally means epistemic uncertainty. One narrow
+        ;; deterministic exception is safe: every meaningful query token is
+        ;; present in one candidate's canonical summary (minimum three tokens).
+        ;; This covers exact minted sentinels without pretending that a merely
+        ;; similar ColBERT result was confidently reranked.
+        query-tokens (->> (clojure.string/lower-case task-signature)
+                          (re-seq #"[a-z0-9][a-z0-9-]+")
+                          (filter #(>= (count %) 3))
+                          set)
+        exact-token-candidate
+        (when (>= (count query-tokens) 3)
+          (some (fn [candidate]
+                  (let [content-tokens (->> (or (:content candidate) "")
+                                            clojure.string/lower-case
+                                            (re-seq #"[a-z0-9][a-z0-9-]+")
+                                            set)]
+                    (when (clojure.set/subset? query-tokens content-tokens)
+                      candidate)))
+                filtered))
         rerank-fallback? (and (some? top-1)
                               (rerank-fallback?* top-1))
         above-threshold (filter #(let [s (or (:fitness-score %) 0.0)]
@@ -854,6 +874,17 @@
       ;; measures off (:was-fresh-mint? top)). Return the top candidates for
       ;; few-shot context WITHOUT any mint marker; keep :rerank-fallback? for
       ;; the caution.
+      (and rerank-fallback? exact-token-candidate)
+      {:behaviors
+       [{:behavior-id (coerce-to-uuid
+                       (-> exact-token-candidate :document-metadata :target-id))
+         :confidence 1.0
+         :was-fresh-mint? false
+         :reasoning "Exact query-token coverage in the canonical behavior summary"
+         :rerank-source :exact-token-fallback}]
+       :outcome :matched
+       :rerank-fallback? true}
+
       rerank-fallback?
       {:behaviors
        (mapv (fn [c]

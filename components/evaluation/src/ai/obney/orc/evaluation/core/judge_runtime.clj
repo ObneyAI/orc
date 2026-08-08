@@ -118,7 +118,8 @@
         direct-inputs (:inputs event)
         reached-inputs (when (empty? direct-inputs)
                          (find-started-inputs ctx sheet-id tick-id node-id))]
-    {:inputs (or (not-empty direct-inputs) reached-inputs {})
+    {:node-id node-id
+     :inputs (or (not-empty direct-inputs) reached-inputs {})
      ;; The completion event carries only :write-keys — values live in the
      ;; tick's :sheet/execution-value-written events. Resolve them by
      ;; (node-id, exec-context) so judges score against what THIS node
@@ -225,12 +226,25 @@
 
       :else
       (let [sub-ctx (assoc ctx ::judge-depth (inc depth))
+            host-trace-schema (:schema (get (orc/get-blackboard-by-key
+                                             ctx eval-sheet-id)
+                                            :host-trace))
+            trace-entry (cond-> {}
+                          (:node-id trace-data)
+                          (assoc :node-id (:node-id trace-data)))
+            ;; Custom evaluator workflows own their blackboard contract.
+            ;; Preserve compatibility with the established vector-of-events
+            ;; shape while also supporting a consumer that declares a single
+            ;; trace-summary map.
+            host-trace (if (= :vector (first host-trace-schema))
+                         [trace-entry]
+                         trace-entry)
             result (try
                      (orc/execute sub-ctx eval-sheet-id
                                   {:host-inputs (or (:inputs trace-data) {})
                                    :host-outputs (or (:outputs trace-data) {})
                                    :host-instruction (or (:instruction trace-data) "")
-                                   :host-trace []}
+                                   :host-trace host-trace}
                                   :timeout-ms timeout-ms)
                      (catch Throwable t
                        (u/log ::custom-judge-execution-threw

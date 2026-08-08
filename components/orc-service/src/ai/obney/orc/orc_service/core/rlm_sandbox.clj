@@ -159,7 +159,7 @@
    executor.clj's build-field behavior for Phase-2 leaf nodes."
   [name opts context]
   (let [{:keys [instruction writes model reads]} opts
-        {:keys [provider blackboard sandbox-vars usage-tracker]} context
+        {:keys [provider blackboard sandbox-vars usage-tracker reserve-llm-call!]} context
         ;; Build inputs from reads - pass FULL values (no truncation)
         ;; The generated code manages chunk sizes; we don't second-guess it
         inputs (reduce (fn [acc k]
@@ -195,6 +195,11 @@
     (u/trace ::rlm-llm-primitive
       {:name name :writes writes :model model}
       (try
+        (when-let [exceeded (and reserve-llm-call! (reserve-llm-call!))]
+          (throw (ex-info
+                  (str "LLM call budget exceeded: "
+                       (:current exceeded) "/" (:budget exceeded))
+                  exceeded)))
         ;; :with-metadata? true ensures dscloj returns {:outputs ... :usage ...} instead of just outputs
         (let [result (dscloj/predict provider module inputs dscloj-options)
               outputs (or (:outputs result) result)
@@ -307,7 +312,7 @@
   [{:keys [provider blackboard declared-writes parent-trace-id
            call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
            recursive? event-store tenant-id cache
-           sheet-id tick-id command-registry] :as context}]
+           sheet-id tick-id command-registry reserve-llm-call!] :as context}]
   (let [;; Atom to capture final! output
         final-output (atom nil)
 
@@ -323,7 +328,8 @@
         exec-context {:provider provider
                       :blackboard blackboard
                       :parent-trace-id parent-trace-id
-                      :usage-tracker usage-tracker}
+                      :usage-tracker usage-tracker
+                      :reserve-llm-call! reserve-llm-call!}
 
         ;; Build input previews for token space
         inputs-preview (build-inputs-preview blackboard)

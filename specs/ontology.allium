@@ -700,4 +700,10 @@ surface SemanticMemory {
     @guarantee ReadWriteOptInSeparation
         -- Description retrieval and description-writing consolidation are
         -- independently enabled.
+
+    @guarantee ExactIdentitySurvivesRerankerFailure
+        -- A failed semantic reranker normally leaves classification uncertain.
+        -- A behavioral candidate may still match when its canonical summary
+        -- contains every meaningful token of a multi-token query; this narrow
+        -- deterministic identity check does not authorize similarity guesses.
 }

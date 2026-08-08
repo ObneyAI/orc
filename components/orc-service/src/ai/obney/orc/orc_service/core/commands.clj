@@ -1446,14 +1446,16 @@
   "Cancel a running tick. Prevents further re-ticks."
   [{{:keys [sheet-id tick-id reason]} :command
     :as ctx}]
-  {:command-result/events
-   [(->event
-     {:type :sheet/tick-cancelled
-      :tags #{[:sheet sheet-id]
-              [:tick tick-id]}
-      :body {:sheet-id sheet-id
-             :tick-id tick-id
-             :reason reason}})]})
+  (if (contains? #{:completed :cancelled} (:status (rm/get-tick ctx tick-id)))
+    {:command-result/events []}
+    {:command-result/events
+     [(->event
+       {:type :sheet/tick-cancelled
+        :tags #{[:sheet sheet-id]
+                [:tick tick-id]}
+        :body {:sheet-id sheet-id
+               :tick-id tick-id
+               :reason reason}})]}))
 
 ;; =============================================================================
 ;; System Commands (called internally via cp/process-command, not via HTTP)
@@ -1472,15 +1474,18 @@
 (defcommand :sheet emit-tick-completed
   {:authorized? authenticated?}
   "System command: record that a tree tick execution has completed."
-  [{{:keys [sheet-id tick-id correlation-id root-status]} :command}]
-  {:command-result/events
-   [(->event {:type :sheet/tree-tick-completed
-              :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
-                      correlation-id (conj [:correlation correlation-id]))
-              :body (cond-> {:sheet-id sheet-id
-                             :tick-id tick-id
-                             :root-status root-status}
-                      correlation-id (assoc :correlation-id correlation-id))})]})
+  [{{:keys [sheet-id tick-id correlation-id root-status]} :command
+    :as ctx}]
+  (if (contains? #{:completed :cancelled} (:status (rm/get-tick ctx tick-id)))
+    {:command-result/events []}
+    {:command-result/events
+     [(->event {:type :sheet/tree-tick-completed
+                :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
+                        correlation-id (conj [:correlation correlation-id]))
+                :body (cond-> {:sheet-id sheet-id
+                               :tick-id tick-id
+                               :root-status root-status}
+                        correlation-id (assoc :correlation-id correlation-id))})]}))
 
 (defcommand :sheet store-execution-trace
   {:authorized? authenticated?}

@@ -650,6 +650,17 @@
       (is (= "kept" (:unrelated new-vars))
           "other unrelated keys are preserved"))))
 
+(deftest merge-does-not-erase-preserved-value-with-nil-recovery-output
+  (testing "a focused recovery tree cannot erase successful work from an earlier tree"
+    (let [new-vars (executor/merge-tree-result-into-sandbox
+                    {:preserved-value "PRESERVED"}
+                    {:status :success
+                     :outputs {:answer "RECOVERED" :preserved-value nil}}
+                    [:answer :preserved-value]
+                    {:status :success})]
+      (is (= "RECOVERED" (:answer new-vars)))
+      (is (= "PRESERVED" (:preserved-value new-vars))))))
+
 (deftest merge-appends-to-tree-results-history
   (testing "first merge: :tree-results nil → [summary1]; second merge appends summary2"
     (let [sandbox-vars-0 {}
