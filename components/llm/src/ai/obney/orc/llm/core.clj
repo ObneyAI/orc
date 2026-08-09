@@ -24,6 +24,7 @@
           :validate?
           :with-metadata?
           :use-function-calling?
+          :force-tool-choice?
           :on-chunk
           :debounce-ms))
 
@@ -51,19 +52,42 @@
                     "Given the following inputs:\n"
                     (input-section spec inputs false)
                     "\n\nCall the submit_response function with your answer.")]
-    (merge {:messages [{:role :user
-                        :content (sio/build-message-content spec prompt inputs)}]
-            :tools [(sio/outputs->tool-definition spec)]
-            ;; :tool-choice, NOT :tool_choice — litellm's provider layer reads the
-            ;; kebab-case key (`(:tool-choice request)`) and converts it to snake_case
-            ;; for the wire, exactly as it does for :max-tokens and :reasoning-effort.
-            ;; An underscore here is a different Clojure keyword, so it never matched
-            ;; and tool_choice never reached the provider — the forced submit_response
-            ;; call was advisory, leaving the model free to reply with prose (no tool
-            ;; call -> nil outputs -> failed node).
-            :tool-choice {:type "function"
-                          :function {:name "submit_response"}}}
+    (merge (cond-> {:messages [{:role :user
+                                :content (sio/build-message-content spec prompt inputs)}]
+                    :tools [(sio/outputs->tool-definition spec)]}
+             ;; OPT-IN, default OFF. See below — forcing this is not safe for every
+             ;; tool schema, and every workload built on ORC to date has run without it.
+             (:force-tool-choice? options)
+             (assoc :tool-choice {:type "function"
+                                  :function {:name "submit_response"}}))
            (request-options options))))
+
+;; --------------------------------------------------------------------------- ;;
+;; Why the forced tool call is opt-in
+;; --------------------------------------------------------------------------- ;;
+;; This request previously carried :tool_choice (underscore) while litellm's provider
+;; layer reads (:tool-choice request) (hyphen). Different Clojure keywords, so the key
+;; never matched and tool_choice never reached the wire: the forced submit_response
+;; call has been advisory for the entire life of the library.
+;;
+;; Correcting the key to :tool-choice makes the force real — and that BREAKS real
+;; workloads. Measured against the BRYC recommendation engine on
+;; google/gemini-3-flash-preview via OpenRouter, identical student and code, the only
+;; difference being this key:
+;;
+;;   forced      -> :failure, "LLM output unparseable for keys [:preference-weights]
+;;                   — no raw response text was returned by the provider" (8/8 students,
+;;                   32/40 node executions)
+;;   not forced  -> :success, preference-weights returned correctly
+;;
+;; The trigger is a `[:map-of ...]` output schema, which renders as
+;; `additionalProperties` in the tool schema. Consumers use :map-of deliberately —
+;; ORC's own executor does NOT flatten it, unlike [:map ...] — so "just use an explicit
+;; map" changes their output contract rather than being a free swap.
+;;
+;; Default OFF therefore preserves the only behaviour any consumer has ever run on.
+;; Callers whose tool schemas are free of additionalProperties can opt in per node with
+;; {:force-tool-choice? true}.
 
 (defn- validate-outputs [fields outputs]
   ;; SIO's public collection validator intentionally validates only values that

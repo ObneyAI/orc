@@ -72,12 +72,10 @@
                   router/completion
                   (fn [_ request]
                     (swap! calls inc)
-                    ;; :tool-choice, not :tool_choice — this assertion previously
-                    ;; pinned the underscore key, which is precisely why the dropped
-                    ;; tool_choice went unnoticed: the request map we build was
-                    ;; internally consistent with the test, and the mismatch only
-                    ;; bit one layer further in, at litellm's provider transform.
-                    (is (= "submit_response" (get-in request [:tool-choice :function :name])))
+                    ;; Forcing is OPT-IN and this call does not opt in, so no
+                    ;; tool-choice should be sent at all.
+                    (is (nil? (:tool-choice request)))
+                    (is (nil? (:tool_choice request)))
                     {:choices [{:message {:tool-calls
                                           [{:function {:name "submit_response"
                                                        :arguments "{\"answer\":\"Paris\"}"}}]}}]})]
@@ -150,25 +148,34 @@
 ;; against litellm's real transform, which is where the wire request is built.
 ;; ===========================================================================
 
-(deftest forced-tool-choice-survives-the-openrouter-transform
-  (let [captured (atom nil)]
-    (with-redefs [router/supports-function-calling? (constantly true)
-                  router/completion (fn [_provider request]
-                                      (reset! captured request)
-                                      {:choices [{:message {:tool_calls [{:function {:name "submit_response"
-                                                                                     :arguments "{\"answer\":\"Paris\"}"}}]}}]})]
-      (llm/predict :openrouter qa {:question "Capital?"} {:validate? false}))
+(deftest forced-tool-choice-is-opt-in-and-reaches-the-wire-when-requested
+  (letfn [(capture [options]
+            (let [captured (atom nil)]
+              (with-redefs [router/supports-function-calling? (constantly true)
+                            router/completion (fn [_provider request]
+                                                (reset! captured request)
+                                                {:choices [{:message {:tool_calls [{:function {:name "submit_response"
+                                                                                               :arguments "{\"answer\":\"Paris\"}"}}]}}]})]
+                (llm/predict :openrouter qa {:question "Capital?"} (merge {:validate? false} options)))
+              @captured))]
 
-    (testing "we ask litellm to force the tool call using the key it actually reads"
-      (is (some? (:tool-choice @captured))
-          "litellm's OpenRouter provider reads (:tool-choice request); an underscore
-           :tool_choice is a different keyword and is silently dropped"))
+    (testing "DEFAULT: no forced tool choice — the only behaviour consumers have run on"
+      (let [req (capture {})]
+        (is (nil? (:tool-choice req)))
+        (is (nil? (:tool_choice (openrouter/transform-request-impl :openrouter req {})))
+            "forcing by default breaks :map-of tool schemas on gemini via OpenRouter
+             — see the note in llm/core.clj")))
 
-    (testing "and it survives into the transformed provider request"
-      (let [wire (openrouter/transform-request-impl :openrouter @captured {})]
+    (testing "OPT-IN: {:force-tool-choice? true} reaches the wire under the key litellm reads"
+      (let [req (capture {:force-tool-choice? true})]
+        (is (= {:type "function" :function {:name "submit_response"}} (:tool-choice req))
+            "must be :tool-choice — litellm reads the kebab key; an underscore is
+             silently dropped")
         (is (= {:type "function" :function {:name "submit_response"}}
-               (:tool_choice wire))
-            "tool_choice must be present in the request litellm actually sends, or the
-             submit_response call is advisory rather than forced")
-        (is (seq (:tools wire))
-            "the tool definition itself must still be there")))))
+               (:tool_choice (openrouter/transform-request-impl :openrouter req {})))
+            "and it must survive the provider transform, which is where the wire
+             request is actually built")))
+
+    (testing "the opt-in flag itself is never forwarded to the provider"
+      (let [req (capture {:force-tool-choice? true})]
+        (is (nil? (:force-tool-choice? req)))))))
