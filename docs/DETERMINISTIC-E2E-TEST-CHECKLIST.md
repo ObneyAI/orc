@@ -55,6 +55,14 @@ that verifies the stated observable results.
 - [x] **DET-E2E-034 — Partial nil output.** Any nil declared write rejects the complete write and identifies the missing key.
 - [x] **DET-E2E-035 — Exception sanitization.** Verify stable serializable public errors without implementation leakage.
 - [x] **DET-E2E-110 — Terminal cancellation fence.** Release an in-flight leaf after cancellation and verify that it emits no value or node/tree completion after the cancellation event.
+- [x] **DET-E2E-131 — Composed AI retries respect execution budgets.** Verify
+  provider retries nested inside node retries count every provider invocation,
+  bound each provider request by the execution time remaining, and do not start
+  another request or retry backoff after the authoritative deadline expires.
+- [x] **DET-E2E-132 — Tick timeout preserves partial node history.** Time out a
+  deterministic provider-backed workflow after routing nodes complete and an AI
+  leaf starts. Verify the stored timeout trace retains completed nodes, marks the
+  unfinished leaf timed out, and exposes provider/node attempt and budget state.
 
 ## P1 — Workflow lifecycle and versioning
 

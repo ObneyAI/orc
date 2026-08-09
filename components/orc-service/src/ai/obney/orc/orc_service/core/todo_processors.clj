@@ -8,6 +8,7 @@
    - Update blackboard with node outputs"
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.executor :as executor]
+            [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
@@ -1227,21 +1228,17 @@
                                   (::map-each-parent exec-context))
                              (assoc :map-each {:parent (::map-each-parent exec-context)
                                                :index (::map-each-index exec-context)}))))]
-        ;; Check budget before execution (only if budget set and this is an LLM call)
-        (if-let [_exceeded (and is-llm-call?
-                                (reserve-llm-call-or-cancel!
-                                 context tick-ctx sheet-id tick-id))]
-          ;; The shared helper has already durably cancelled the active tick
-          ;; and, when different, its shared-budget root.
-          nil
-          ;; Run execution in a future to avoid blocking
-          (do
+        ;; AI leaves reserve at each actual provider-call boundary inside the
+        ;; executor, so internal provider retries and node retries consume the
+        ;; same shared budget. Researchers retain their own per-call hook.
+        ;; Run execution in a future to avoid blocking.
+        (do
             (when is-llm-call?
               (let [map-idx (::map-each-index exec-context)]
                 (u/log ::leaf-llm-event-received
                        :map-idx map-idx
                        :thread (.getName (Thread/currentThread)))))
-            (future
+            (execution-budget/register-work! tick-id node-id (future
             (try
               (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
                 ;; Cancellation guard: the tick was cancelled between event
@@ -1276,6 +1273,13 @@
                              provider
                              (executor/execute-leaf node blackboard provider
                                                     :context leaf-context
+                                                    :options {:execution-deadline-ms
+                                                              (get-in tick-ctx [:options :execution-deadline-ms])
+                                                              :reserve-llm-call!
+                                                              #(reserve-llm-call-or-cancel!
+                                                                context tick-ctx sheet-id tick-id)
+                                                              :tick-id tick-id
+                                                              :exec-context exec-context}
                                                     :stream stream-cfg)
                              ;; No provider - use mock
                              :else
@@ -3176,6 +3180,7 @@
         ;; Clean up budget and usage tracking for this tick
         (clear-llm-count! tick-id)
         (clear-tick-usage! tick-id)
+        (execution-budget/clear-tick! tick-id)
         ;; Safe here and not before: `outputs` above was already resolved.
         (value-log/forget-tick! tick-id)
         (runtime/deliver-completion! tick-id
@@ -3230,6 +3235,8 @@
     ;; A cancelled tick never reaches deliver-execution-result, so its seed
     ;; memo would otherwise be retained for the life of the process.
     (clear-llm-count! tick-id)
+    (execution-budget/cancel-active-work! tick-id)
+    (execution-budget/clear-tick! tick-id)
     (value-log/forget-tick! tick-id)
     (runtime/forget-ephemeral-context! tick-id))
   nil)

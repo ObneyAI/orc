@@ -28,6 +28,7 @@
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [ai.obney.orc.orc-service.core.observability :as obs]
+            [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.block :as block]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
@@ -1162,10 +1163,14 @@
         ;; for models where tool-backed structured output is more reliable.
         ;; The node's :model rides through as a per-request override —
         ;; litellm-clj's router honors :model in the request options.
+        internal-option-keys #{:execution-deadline-ms :reserve-llm-call!
+                               :tick-id :node-attempt :max-node-attempts
+                               :exec-context
+                               :max-retries :retry-delay-ms}
         llm-options (merge {:validate? false
                                :with-metadata? true
                                :use-function-calling? false}
-                              options
+                              (apply dissoc options internal-option-keys)
                               (when (:model node) {:model (:model node)}))
         ;; Retry config - defaults to 1 retry with 500ms delay
         max-retries (get options :max-retries 1)
@@ -1192,8 +1197,8 @@
         ;; the EXACT shape try-once returns so retry/budget/event emission
         ;; are identical to the blocking path.
         try-once-streaming
-        (fn [attempt]
-          (let [ch (predict-stream-v2 provider llm-module inputs llm-options)]
+        (fn [attempt attempt-options]
+          (let [ch (predict-stream-v2 provider llm-module inputs attempt-options)]
             (loop [terminal nil]
               (if-let [ev (async/<!! ch)]
                 (case (:orc/event ev)
@@ -1223,10 +1228,10 @@
                 (or terminal {:error "LLM stream ended without a final result"})))))
 
         ;; Single attempt function
-        try-once (fn [attempt]
+        try-once (fn [attempt attempt-options]
                    (if predict-stream-v2
-                     (try-once-streaming attempt)
-                     (let [result (llm/predict provider llm-module inputs llm-options)
+                     (try-once-streaming attempt attempt-options)
+                     (let [result (llm/predict provider llm-module inputs attempt-options)
                            ;; ORC LLM returns outputs directly as a flat map, not wrapped in {:outputs ...}
                            raw-outputs (or (:outputs result) result)
                            ;; Reassemble flattened outputs back into nested structure
@@ -1243,15 +1248,53 @@
         backoff-for (fn [attempt]
                       (if (sequential? retry-delay-ms)
                         (nth retry-delay-ms (min attempt (dec (count retry-delay-ms))))
-                        retry-delay-ms))]
+                        retry-delay-ms))
+        deadline-ms (:execution-deadline-ms options)
+        reserve-call! (:reserve-llm-call! options)
+        tick-id (:tick-id options)
+        node-attempt (or (:node-attempt options) 1)
+        max-node-attempts (or (:max-node-attempts options) 1)
+        prepare-attempt
+        (fn [attempt]
+          (let [remaining (execution-budget/remaining-ms deadline-ms)]
+            (cond
+              (and remaining (not (pos? remaining)))
+              {:timeout-error "Execution deadline exhausted before provider attempt"}
+
+              (and reserve-call! (reserve-call!))
+              {:timeout-error "LLM call budget exhausted before provider attempt"}
+
+              :else
+              (let [configured-timeout (:timeout-ms llm-options)
+                    bounded-timeout (cond
+                                      (and configured-timeout remaining)
+                                      (max 1 (min (long configured-timeout) remaining))
+                                      remaining (max 1 remaining)
+                                      :else configured-timeout)
+                    attempt-options (cond-> llm-options
+                                      bounded-timeout (assoc :timeout-ms bounded-timeout))
+                    state {:provider-attempt (inc attempt)
+                           :max-provider-attempts (inc max-retries)
+                           :node-attempt node-attempt
+                           :max-node-attempts max-node-attempts
+                           :execution-deadline-ms deadline-ms
+                           :execution-budget-remaining-ms remaining
+                           :provider-timeout-ms bounded-timeout
+                           :exec-context (or (:exec-context options) {})}]
+                (execution-budget/record-attempt! tick-id (:id node) state)
+                {:options attempt-options}))))]
 
     (loop [attempt 0
            accumulated-usage nil]
-      (let [{:keys [outputs usage model error raw-response]}
-            (try
-              (try-once attempt)
-              (catch Exception e
-                {:error (.getMessage e)}))
+      (let [{:keys [options timeout-error]} (prepare-attempt attempt)
+            {:keys [outputs usage model error raw-response]}
+            (if timeout-error
+              {:error timeout-error :budget-timeout? true}
+              (try
+                (try-once attempt options)
+                (catch Exception e
+                  {:error (.getMessage e)})))
+            budget-timeout? (boolean timeout-error)
             ;; Drop nil best-effort writes so an omitted evidence array is the
             ;; node's declared-optional absence, not a nil-gate failure.
             outputs (strip-nil-optional-writes outputs optional-writes)
@@ -1266,14 +1309,27 @@
             schema-error (when (= :failure (:status schema-result))
                            (:error schema-result))]
         (cond
+          budget-timeout?
+          {:status :timeout
+           :error error
+           :duration-ms (- (System/currentTimeMillis) start-time)
+           :usage total-usage}
+
           ;; Exception — retry with backoff (handles rate limits, transient errors)
           (and error (< attempt max-retries))
-          (do (obs/log-retry!
+          (let [backoff (backoff-for attempt)
+                remaining (execution-budget/remaining-ms deadline-ms)]
+            (if (and remaining (<= remaining backoff))
+              {:status :timeout
+               :error "Execution deadline exhausted before provider retry backoff"
+               :duration-ms (- (System/currentTimeMillis) start-time)
+               :usage total-usage}
+              (do (obs/log-retry!
                 {:node-id (:id node) :node-name (:name node)
                  :attempt (inc attempt) :max-attempts (inc max-retries)
                  :reason error :trace-id nil})
-              (Thread/sleep (backoff-for attempt))
-              (recur (inc attempt) total-usage))
+                  (Thread/sleep backoff)
+                  (recur (inc attempt) total-usage))))
 
           ;; Exception — retries exhausted
           error
@@ -1338,12 +1394,19 @@
           ;; default retry budget as transport/provider exceptions. Only the
           ;; final exhausted attempt escapes as rejected-write evidence.
           (and schema-error (< attempt max-retries))
-          (do (obs/log-retry!
+          (let [backoff (backoff-for attempt)
+                remaining (execution-budget/remaining-ms deadline-ms)]
+            (if (and remaining (<= remaining backoff))
+              {:status :timeout
+               :error "Execution deadline exhausted before provider retry backoff"
+               :duration-ms (- (System/currentTimeMillis) start-time)
+               :usage total-usage}
+              (do (obs/log-retry!
                 {:node-id (:id node) :node-name (:name node)
                  :attempt (inc attempt) :max-attempts (inc max-retries)
                  :reason schema-error :trace-id nil})
-              (Thread/sleep (backoff-for attempt))
-              (recur (inc attempt) total-usage))
+                  (Thread/sleep backoff)
+                  (recur (inc attempt) total-usage))))
 
           schema-error
           (let [result (assoc schema-result
@@ -3265,7 +3328,7 @@
    (let [max-attempts (or (:max-attempts retry-config) 1)]
      (loop [attempt 0]
        (let [result (execute-fn)]
-         (if (or (= :success (:status result))
+         (if (or (contains? #{:success :timeout :blocked} (:status result))
                  (>= (inc attempt) max-attempts))
            result
            (do
@@ -3305,18 +3368,32 @@
   (let [executor-type (or (:executor node) :ai)
         retry-config (:retry node)
         execution-options (merge options (:options node))
+        max-node-attempts (or (get-in retry-config [:max-attempts]) 1)
+        node-attempt (atom 0)
         execute-fn (fn []
+                     (let [current-node-attempt (swap! node-attempt inc)]
                      (case executor-type
-                       :ai (execute-ai node blackboard provider :options execution-options :stream stream)
+                       :ai (execute-ai node blackboard provider
+                                       :options (assoc execution-options
+                                                       :node-attempt current-node-attempt
+                                                       :max-node-attempts max-node-attempts)
+                                       :stream stream)
                        :code (execute-code node blackboard context)
                        :tool {:status :failure
                               :error "Tool executor not yet implemented"
                               :duration-ms 0}
                        ;; Default to AI
-                       (execute-ai node blackboard provider :options execution-options :stream stream)))]
-    (if retry-config
-      (execute-with-retry execute-fn retry-config node)
-      (execute-fn))))
+                       (execute-ai node blackboard provider
+                                   :options (assoc execution-options
+                                                   :node-attempt current-node-attempt
+                                                   :max-node-attempts max-node-attempts)
+                                   :stream stream))))]
+    (try
+      (if retry-config
+        (execute-with-retry execute-fn retry-config node)
+        (execute-fn))
+      (finally
+        (execution-budget/clear-node! (:tick-id execution-options) (:id node))))))
 
 ;; =============================================================================
 ;; Mock Executor (for testing without AI)

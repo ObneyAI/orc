@@ -230,6 +230,13 @@
     [:started-at :any]
     [:completed-at {:optional true} :any]
     [:duration-ms {:optional true} :int]
+    [:provider-attempt {:optional true} :int]
+    [:max-provider-attempts {:optional true} :int]
+    [:node-attempt {:optional true} :int]
+    [:max-node-attempts {:optional true} :int]
+    [:provider-timeout-ms {:optional true} [:maybe :int]]
+    [:execution-deadline-ms {:optional true} [:maybe :int]]
+    [:execution-budget-remaining-ms {:optional true} [:maybe :int]]
     ;; Shape, not values — the values are durable in this tick's
     ;; :sheet/execution-value-written events. Fetch them with the
     ;; :sheet/node-trace-detail query, which rehydrates on demand.

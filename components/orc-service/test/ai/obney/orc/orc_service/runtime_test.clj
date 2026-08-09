@@ -5,6 +5,7 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas :as schemas]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.grain.event-store-v3.interface :as es]))
 
 ;; =============================================================================
@@ -18,6 +19,9 @@
 
 (defn constant-output-fn [_]
   {:output "ok"})
+
+(defn route-fn [_]
+  {:route "slow-ai"})
 
 (defn transform-fn
   "Transforms input by uppercasing."
@@ -117,7 +121,81 @@
           ;; Execute with very short timeout
           (let [result (sheet/execute ctx sheet-id {} :timeout-ms 100)]
             (is (= :timeout (:status result)))
-            (is (some? (:error result)))))))))
+            (is (some? (:error result)))
+            (let [trace (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
+                                [:query/result :trace])
+                  traces (:node-traces trace)
+                  active (some #(when (= leaf-id (:node-id %)) %) traces)]
+              (is (= :timeout (:status trace)))
+              (is (seq traces) "timeout trace preserves durable node starts")
+              (is (= :timeout (:status active)))
+              (is (= "Execution timed out" (:error active)))
+              (is (pos-int? (:node-attempt active)))
+              (is (pos-int? (:max-node-attempts active)))
+              (is (number? (:execution-budget-remaining-ms active))))))))))
+
+(deftest ai-timeout-preserves-active-attempt-and-bounds-provider-request
+  (testing "timeout trace identifies the in-flight AI attempt and its bounded request timeout"
+    (h/with-async-test-context [base-ctx]
+      (let [ctx (assoc base-ctx :llm-provider :openrouter)
+            seen-options (promise)
+            wf (sheet/workflow "AI timeout evidence"
+                 (sheet/blackboard {:route :string :answer :string})
+                 (sheet/sequence "root"
+                   (sheet/code "route"
+                     :fn "ai.obney.orc.orc-service.runtime-test/route-fn"
+                     :reads [] :writes [:route])
+                   (sheet/llm "slow-ai"
+                     :instruction "Answer slowly."
+                     :reads [:route]
+                     :writes [:answer]
+                     :retry {:max-attempts 3 :backoff-ms [10 20]}
+                     :options {:max-retries 1 :timeout-ms 120000})))
+            sheet-id (sheet/build-workflow! ctx wf)]
+        (with-redefs [llm/predict
+                      (fn [_ _ _ options]
+                        (deliver seen-options options)
+                        (Thread/sleep 2000)
+                        {:outputs {:answer "late"}})]
+          (let [result (sheet/execute ctx sheet-id {} :timeout-ms 150)
+                trace (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
+                              [:query/result :trace])
+                active (some #(when (= "slow-ai" (:node-name %)) %) (:node-traces trace))
+                route (some #(when (= "route" (:node-name %)) %) (:node-traces trace))
+                provider-options (deref seen-options 1000 nil)]
+            (is (= :timeout (:status result)))
+            (is (= :timeout (:status trace)))
+            (is (= :timeout (:status active)))
+            (is (= :success (:status route)) "completed routing history is preserved")
+            (is (= 1 (:provider-attempt active)))
+            (is (= 2 (:max-provider-attempts active)))
+            (is (= 1 (:node-attempt active)))
+            (is (= 3 (:max-node-attempts active)))
+            (is (<= 1 (:timeout-ms provider-options) 150))
+            (is (number? (:execution-budget-remaining-ms active)))))))))
+
+(deftest ai-provider-and-node-retries-share-root-call-budget
+  (testing "a public workflow cannot multiply provider calls past the root budget"
+    (h/with-async-test-context [base-ctx]
+      (let [ctx (assoc base-ctx :llm-provider :openrouter)
+            calls (atom 0)
+            wf (sheet/workflow "AI shared retry budget"
+                 (sheet/blackboard {:answer :string})
+                 (sheet/llm "retrying-ai"
+                   :instruction "Answer."
+                   :reads [] :writes [:answer]
+                   :retry {:max-attempts 3 :backoff-ms [1 1]}
+                   :options {:max-retries 1 :retry-delay-ms 1}))
+            sheet-id (sheet/build-workflow! ctx wf)]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (swap! calls inc)
+                        (throw (ex-info "recoverable provider failure" {})))]
+          (let [result (sheet/execute ctx sheet-id {}
+                                      :timeout-ms 2000
+                                      :llm-call-budget 3)]
+            (is (true? (:cancelled? result)))
+            (is (= 3 @calls))))))))
 
 (deftest execute-multi-output-test
   (testing "captures multiple outputs from a node"

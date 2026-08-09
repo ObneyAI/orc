@@ -6,10 +6,78 @@
    - `build-execution-snapshot` - Load sheet, resolve version, build snapshot
    - Completion registry for sync callers waiting on async execution"
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]))
+
+(defn- timeout-node-path [nodes-by-id node-id]
+  (loop [current node-id path () seen #{}]
+    (if (or (nil? current) (contains? seen current))
+      (vec path)
+      (let [node (get nodes-by-id current)]
+        (recur (:parent-id node) (conj path (:name node)) (conj seen current))))))
+
+(defn- partial-timeout-node-traces
+  "Reconstruct partial node history from durable lifecycle events. Active
+   attempts enrich the durable timeout trace; lifecycle identity and completed
+   outcomes always come from the event log."
+  [context tick-id completed-at]
+  (let [tick-ctx (rm/get-tick-execution-context context tick-id)
+        nodes-by-id (:nodes-by-id tick-ctx)
+        events (into [] (es/read (:event-store context)
+                                {:tenant-id (:tenant-id context)
+                                 :tags #{[:tick tick-id]}}))
+        started (filter #(= :sheet/node-execution-started (:event/type %)) events)
+        completed (filter #(= :sheet/node-execution-completed (:event/type %)) events)
+        execution-context (fn [event]
+                            (select-keys (or (:inputs event) {})
+                                         [:ai.obney.orc.orc-service.core.todo-processors/map-each-index
+                                          :ai.obney.orc.orc-service.core.todo-processors/map-each-parent]))
+        execution-key (fn [event] [(:node-id event) (execution-context event)])
+        started-by (into {} (map (juxt execution-key identity) started))
+        completed-by (into {} (map (juxt execution-key identity) completed))
+        attempts (execution-budget/attempts-for-tick tick-id)]
+    (vec
+     (keep
+      (fn [start]
+        (when-let [node (get nodes-by-id (:node-id start))]
+          (let [completion (get completed-by (execution-key start))
+                active-attempt (get attempts [(:node-id start) (execution-context start)])
+                parent-start (when-let [parent-id (:parent-id node)]
+                               (or (get started-by [parent-id (execution-context start)])
+                                   (get started-by [parent-id {}])))
+                timed-out? (nil? completion)]
+            (cond-> {:node-id (:node-id start)
+                     :trace-instance-id (:event/id start)
+                     :node-name (:name node)
+                     :node-type (:type node)
+                     :path (timeout-node-path nodes-by-id (:node-id start))
+                     :status (if timed-out? :timeout (:status completion))
+                     :started-at (str (:event/timestamp start))
+                     :completed-at (str (or (:event/timestamp completion) completed-at))}
+              (:executor node) (assoc :executor (:executor node))
+              (:parent-id node) (assoc :parent-id (:parent-id node))
+              parent-start (assoc :parent-trace-instance-id (:event/id parent-start))
+              (:duration-ms completion) (assoc :duration-ms (:duration-ms completion))
+              (seq (:read-keys completion))
+              (assoc :read-keys (:read-keys completion)
+                     :input-profile (:input-profile completion))
+              (seq (:write-keys completion))
+              (assoc :write-keys (:write-keys completion)
+                     :output-profile (:write-profile completion))
+              (seq (:rejected-write-keys completion))
+              (assoc :rejected-write-keys (:rejected-write-keys completion)
+                     :rejected-output-profile (:rejected-write-profile completion))
+              (:error completion) (assoc :error (:error completion))
+              timed-out? (assoc :error "Execution timed out")
+              active-attempt (merge active-attempt)
+              (and timed-out? (nil? active-attempt))
+              (assoc :node-attempt 1
+                     :max-node-attempts (or (get-in node [:retry :max-attempts]) 1)
+                     :execution-budget-remaining-ms 0)))))
+      started))))
 
 ;; =============================================================================
 ;; C-2c-2 — auto-classification envelope helper
@@ -195,6 +263,43 @@
 (defn forget-ephemeral-context! [tick-id]
   (swap! ephemeral-context-registry dissoc tick-id))
 
+(defn timeout-execution!
+  "Make a caller deadline terminal, interrupt active work, and synchronously
+   persist the partial event-derived trace before returning."
+  [context sheet-id tick-id inputs duration-ms]
+  (let [now (str (time/now))
+        node-traces (partial-timeout-node-traces context tick-id now)]
+    (cp/process-command
+     (assoc context :command
+            {:command/id (random-uuid)
+             :command/timestamp (time/now)
+             :command/name :sheet/cancel-tick
+             :sheet-id sheet-id :tick-id tick-id
+             :reason "Execution timed out"}))
+    (execution-budget/cancel-active-work! tick-id)
+    (loop [attempt 0]
+      (let [stored (cp/process-command
+                    (assoc context :command
+                           {:command/id (random-uuid)
+                            :command/timestamp (time/now)
+                            :command/name :sheet/store-execution-trace
+                            :trace-id tick-id :sheet-id sheet-id
+                            :root-trace-id tick-id :child-trace-ids []
+                            :started-at now :completed-at now
+                            :duration-ms duration-ms :status :timeout
+                            :input-snapshot (profile/profile-values (or inputs {}))
+                            :output-snapshot {}
+                            :node-traces node-traces
+                            :error "Execution timed out"}))]
+        (when (and (:cognitect.anomalies/category stored) (< attempt 4))
+          (recur (inc attempt)))))
+    (execution-budget/clear-tick! tick-id)
+    (forget-ephemeral-context! tick-id)
+    {:status :timeout
+     :trace-id tick-id
+     :error "Execution timed out"
+     :duration-ms duration-ms}))
+
 (defn register-completion!
   "Register a promise for a tick-id. Returns the promise."
   [tick-id]
@@ -322,6 +427,7 @@
                                      :tick-id tick-id
                                      :inputs (or inputs {})
                                      :options (cond-> {:timeout-ms timeout-ms
+                                                        :execution-deadline-ms (+ start-time timeout-ms)
                                                         :store-trace? store-trace?}
                                                  trace? (assoc :trace? true)
                                                  langfuse-client (assoc :langfuse-client langfuse-client)
@@ -355,37 +461,7 @@
             duration-ms (- (System/currentTimeMillis) start-time)]
         (swap! completion-registry dissoc tick-id)
         (if (= result ::timeout)
-          (let [now (str (time/now))]
-            ;; A caller timeout is a terminal execution decision, not merely a
-            ;; stopped wait. Cancel the durable tick first so processors cannot
-            ;; schedule more work, then store a minimal queryable trace before
-            ;; returning the identity to the caller.
-            (cp/process-command
-             (assoc context :command
-                    {:command/id (random-uuid)
-                     :command/timestamp (time/now)
-                     :command/name :sheet/cancel-tick
-                     :sheet-id sheet-id :tick-id tick-id}))
-            (loop [attempt 0]
-              (let [stored (cp/process-command
-                            (assoc context :command
-                                   {:command/id (random-uuid)
-                                    :command/timestamp (time/now)
-                                    :command/name :sheet/store-execution-trace
-                                    :trace-id tick-id :sheet-id sheet-id
-                                    :root-trace-id tick-id :child-trace-ids []
-                                    :started-at now :completed-at now
-                                    :duration-ms duration-ms :status :timeout
-                                    :input-snapshot (profile/profile-values (or inputs {}))
-                                    :output-snapshot {}
-                                    :node-traces [] :error "Execution timed out"}))]
-                (when (and (:cognitect.anomalies/category stored) (< attempt 4))
-                  (recur (inc attempt)))))
-            (forget-ephemeral-context! tick-id)
-            {:status :timeout
-             :trace-id tick-id
-             :error "Execution timed out"
-             :duration-ms duration-ms})
+          (timeout-execution! context sheet-id tick-id inputs duration-ms)
           (cond-> (assoc (if return-references?
                            result
                            (dissoc result :output-sources))

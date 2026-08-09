@@ -109,6 +109,17 @@ canonical HTTP transformation plus explicit rejection of unsupported or
 ambiguous controls. DET-E2E-130 remains open until the complete persisted-node
 through HTTP-body contract is exercised in one integration-shaped test.
 
+## Composed AI retry deadlines and timeout evidence (2026-08-09)
+
+AI executor retries and node retries now share the root execution deadline and
+LLM-call budget at each actual provider invocation. Provider request timeouts are
+bounded by the execution time remaining, retry backoff is not started when it
+cannot fit, and registered in-flight leaf work is interrupted on terminal caller
+timeout. DET-E2E-131 verifies the provider-call cap through the public workflow
+boundary. DET-E2E-132 verifies that a timeout trace preserves completed routing
+nodes and identifies the unfinished AI node with provider attempt, node attempt,
+configured limits, provider timeout, and remaining-budget evidence.
+
 ## Blackboard schema specificity (2026-08-07)
 
 The ORC service now rejects semantically unconstrained blackboard schemas at

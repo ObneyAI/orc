@@ -91,6 +91,12 @@ contract LeafExecutor {
         -- fails by exception. Only the final exhausted schema failure becomes
         -- durable rejected-output evidence.
 
+    @invariant ProviderAttemptsShareExecutionBudgets
+        -- Provider retries and node retries may compose, but every actual
+        -- provider invocation consumes the shared LLM-call budget and the
+        -- execution's remaining wall-clock budget. ORC does not begin an
+        -- invocation or retry backoff after that remaining budget is exhausted.
+
     @invariant ProviderEnumSpellingsAreJsonCanonical
         -- Every provider-facing schema representation, including textual
         -- descriptions and function-calling tool definitions, renders
@@ -703,14 +709,21 @@ surface WorkflowExecutionAccess {
 
     @guarantee SingleExecutionDeadline
         -- The execution option timeout is the authoritative wall-clock budget
-        -- for the workflow and its in-flight leaf work. ORC does not impose an
-        -- independent provider-call deadline that can expire first.
+        -- for the workflow and its in-flight leaf work. Each provider request
+        -- is bounded by the lesser of its configured request timeout and the
+        -- execution time remaining when the request begins.
 
     @guarantee SharedLlmCallBudget
         -- An execution's LLM-call budget counts every provider invocation in
         -- its trace family, including recursive researcher iterations, inline
         -- researcher primitives and descendant generated-tree leaves. Once
         -- exhausted, no branch can make a further provider call.
+
+    @guarantee PartialTimeoutEvidence
+        -- A workflow timeout preserves every durable node start and completion
+        -- in its queryable trace. A node that started but did not complete is
+        -- identified as the active timed-out node together with its provider
+        -- attempt, node attempt, configured limits, and execution budget state.
 
     @guarantee TerminalCancellationFence
         -- Once an execution or any ancestor is cancelled or times out, work

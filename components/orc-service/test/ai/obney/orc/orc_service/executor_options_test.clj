@@ -87,6 +87,77 @@
           (is (= :success (:status result)))
           (is (= false (:use-function-calling? @captured-options))))))))
 
+(deftest execute-ai-composes-provider-attempts-with-execution-budgets
+  (testing "every provider attempt is reserved and bounded by remaining execution time"
+    (let [captured-options (atom [])
+          reservations (atom 0)
+          deadline-ms (+ (System/currentTimeMillis) 1000)
+          node {:id (random-uuid)
+                :type :leaf
+                :executor :ai
+                :instruction "Answer the question."
+                :reads [:question]
+                :writes [:answer]}]
+      (with-redefs [llm/predict
+                    (fn [_provider _module _inputs options]
+                      (swap! captured-options conj options)
+                      (if (= 1 (count @captured-options))
+                        (throw (ex-info "recoverable provider failure" {}))
+                        {:outputs {:answer "4"}}))]
+        (let [result (executor/execute-leaf
+                      node test-blackboard :openrouter
+                      :options {:max-retries 1
+                                :retry-delay-ms 1
+                                :timeout-ms 120000
+                                :execution-deadline-ms deadline-ms
+                                :reserve-llm-call! #(do (swap! reservations inc) nil)
+                                :tick-id (random-uuid)})]
+          (is (= :success (:status result)))
+          (is (= 2 @reservations))
+          (is (= 2 (count @captured-options)))
+          (is (every? #(<= 1 (:timeout-ms %) 1000) @captured-options))
+          (is (every? #(not (contains? % :execution-deadline-ms)) @captured-options))
+          (is (every? #(not (contains? % :reserve-llm-call!)) @captured-options)))))))
+
+(deftest execute-ai-does-not-start-after-execution-deadline
+  (testing "an exhausted deadline prevents the first provider invocation"
+    (let [calls (atom 0)
+          node {:id (random-uuid)
+                :type :leaf :executor :ai
+                :instruction "Answer." :reads [:question] :writes [:answer]}]
+      (with-redefs [llm/predict (fn [& _] (swap! calls inc) {:outputs {:answer "4"}})]
+        (let [result (executor/execute-leaf
+                      node test-blackboard :openrouter
+                      :options {:execution-deadline-ms (dec (System/currentTimeMillis))})]
+          (is (= :timeout (:status result)))
+          (is (zero? @calls)))))))
+
+(deftest nested-ai-and-node-retries-share-the-provider-call-budget
+  (testing "the shared call budget caps actual invocations across both retry layers"
+    (let [calls (atom 0)
+          reserved (atom 0)
+          reserve! (fn []
+                     (if (< @reserved 3)
+                       (do (swap! reserved inc) nil)
+                       {:current @reserved :budget 3}))
+          node {:id (random-uuid)
+                :type :leaf :executor :ai
+                :instruction "Answer."
+                :reads [:question] :writes [:answer]
+                :retry {:max-attempts 3 :backoff-ms [1 1]}}]
+      (with-redefs [llm/predict
+                    (fn [& _]
+                      (swap! calls inc)
+                      (throw (ex-info "provider failure" {})))]
+        (let [result (executor/execute-leaf
+                      node test-blackboard :openrouter
+                      :options {:max-retries 1
+                                :retry-delay-ms 1
+                                :reserve-llm-call! reserve!})]
+          (is (= :timeout (:status result)))
+          (is (= 3 @calls))
+          (is (= 3 @reserved)))))))
+
 (deftest repl-researcher-preserves-node-options
   (testing "repl-researcher node options are passed to its ORC LLM call"
     (let [captured-options (atom nil)

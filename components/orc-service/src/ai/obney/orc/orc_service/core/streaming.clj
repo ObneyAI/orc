@@ -603,6 +603,7 @@
                                         :tick-id tick-id
                                         :inputs (or inputs {})
                                         :options (cond-> {:timeout-ms timeout-ms
+                                                          :execution-deadline-ms (+ start-time timeout-ms)
                                                           :store-trace? store-trace?}
                                                    trace? (assoc :trace? true)
                                                    langfuse-client (assoc :langfuse-client langfuse-client)
@@ -638,18 +639,11 @@
                   duration-ms (- (System/currentTimeMillis) start-time)]
               (runtime/deregister-completion! tick-id)
               (if (= result ::timeout)
-                (do (cp/process-command
-                     (assoc context :command
-                            {:command/id (random-uuid)
-                             :command/timestamp (time/now)
-                             :command/name :sheet/cancel-tick
-                             :sheet-id sheet-id
-                             :tick-id tick-id
-                             :reason "Execution timed out"}))
+                (do
                     (close-subscription! (:sub-id subscription) :timeout)
-                    (deliver result-promise {:status :timeout
-                                             :error "Execution timed out"
-                                             :duration-ms duration-ms}))
+                    (deliver result-promise
+                             (runtime/timeout-execution!
+                              context sheet-id tick-id inputs duration-ms)))
                 ;; terminal tick event closes the stream; just deliver
                 (deliver result-promise (assoc result :duration-ms duration-ms))))))
         {:tick-id tick-id
@@ -661,7 +655,7 @@
   "Cancel a running tick (and any known child ticks spawned under it).
 
    Best-effort semantics: the engine stops progressing (no new nodes start;
-   the re-tick loop halts) but in-flight LLM HTTP calls run to completion.
+   the re-tick loop halts) and interrupts registered in-flight leaf work.
    Blocking callers unblock with {:status :failure :cancelled? true}; live
    streams receive :tick-cancelled then :stream-closed {:reason :cancelled}.
 
