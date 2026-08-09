@@ -2,6 +2,7 @@
   (:require [clojure.core.async :as async]
             [clojure.test :refer [deftest is testing]]
             [litellm.router :as router]
+            [litellm.providers.openrouter :as openrouter]
             [ai.obney.orc.llm.interface :as llm]))
 
 (def qa
@@ -71,7 +72,12 @@
                   router/completion
                   (fn [_ request]
                     (swap! calls inc)
-                    (is (= "submit_response" (get-in request [:tool_choice :function :name])))
+                    ;; :tool-choice, not :tool_choice — this assertion previously
+                    ;; pinned the underscore key, which is precisely why the dropped
+                    ;; tool_choice went unnoticed: the request map we build was
+                    ;; internally consistent with the test, and the mismatch only
+                    ;; bit one layer further in, at litellm's provider transform.
+                    (is (= "submit_response" (get-in request [:tool-choice :function :name])))
                     {:choices [{:message {:tool-calls
                                           [{:function {:name "submit_response"
                                                        :arguments "{\"answer\":\"Paris\"}"}}]}}]})]
@@ -127,3 +133,42 @@
                                                   {:validate? true}))]
         (is (= :error (:orc/event (last events))))
         (is (not-any? #(= :final (:orc/event %)) events))))))
+
+;; ===========================================================================
+;; The forced tool call must survive the PROVIDER transform, not merely appear
+;; in the map we hand to litellm.
+;;
+;; `function-request` emitted :tool_choice (underscore) while litellm's
+;; OpenRouter provider reads (:tool-choice request) (hyphen). Those are
+;; different Clojure keywords, so the key never matched and tool_choice never
+;; reached the wire — the forced submit_response call was not actually forced,
+;; leaving the model free to answer with prose. When it does, there is no tool
+;; call, `parse-tool-call-response` yields nil, and the node fails.
+;;
+;; A test that stubs router/completion cannot catch this: it asserts what we
+;; SEND to litellm, and the key is dropped one layer further in. This asserts
+;; against litellm's real transform, which is where the wire request is built.
+;; ===========================================================================
+
+(deftest forced-tool-choice-survives-the-openrouter-transform
+  (let [captured (atom nil)]
+    (with-redefs [router/supports-function-calling? (constantly true)
+                  router/completion (fn [_provider request]
+                                      (reset! captured request)
+                                      {:choices [{:message {:tool_calls [{:function {:name "submit_response"
+                                                                                     :arguments "{\"answer\":\"Paris\"}"}}]}}]})]
+      (llm/predict :openrouter qa {:question "Capital?"} {:validate? false}))
+
+    (testing "we ask litellm to force the tool call using the key it actually reads"
+      (is (some? (:tool-choice @captured))
+          "litellm's OpenRouter provider reads (:tool-choice request); an underscore
+           :tool_choice is a different keyword and is silently dropped"))
+
+    (testing "and it survives into the transformed provider request"
+      (let [wire (openrouter/transform-request-impl :openrouter @captured {})]
+        (is (= {:type "function" :function {:name "submit_response"}}
+               (:tool_choice wire))
+            "tool_choice must be present in the request litellm actually sends, or the
+             submit_response call is advisory rather than forced")
+        (is (seq (:tools wire))
+            "the tool definition itself must still be there")))))

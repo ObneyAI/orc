@@ -119,8 +119,10 @@
           tool-definition
           (sio/outputs->tool-definition
            (dissoc module :output-mapping))]
-      (is (= {:type "integer"
-              :nullable true
+      ;; Malli renders :maybe as a JSON Schema null union rather than the
+      ;; non-standard `:nullable true` the hand-rolled converter emitted. Same
+      ;; meaning, standards-compliant spelling.
+      (is (= {:oneOf [{:type "integer"} {:type "null"}]
               :description "ACT composite score (integer (optional))"}
              (get-in tool-definition
                      [:function :parameters :properties "act_score"])))
@@ -144,12 +146,15 @@
            [:function :parameters :properties "decision"])]
       (is (nil? (:type tool-schema))
           "a structured union is not advertised as a JSON string")
+      ;; Malli renders [:or ...] as `anyOf`, not `oneOf`. This is the more correct
+      ;; spelling: `oneOf` demands EXACTLY one branch match, so overlapping branches
+      ;; (integer vs number, most obviously) would be rejected by a strict validator.
       (is (= ["object" "object"]
-             (mapv :type (:oneOf tool-schema))))
+             (mapv :type (:anyOf tool-schema))))
       (is (= {:const "invoke"}
-             (get-in tool-schema [:oneOf 0 :properties "action"])))
+             (get-in tool-schema [:anyOf 0 :properties "action"])))
       (is (= {:const "respond"}
-             (get-in tool-schema [:oneOf 1 :properties "action"])))
+             (get-in tool-schema [:anyOf 1 :properties "action"])))
       (let [result
             (validate
              {:decision {:schema decision-schema}}
