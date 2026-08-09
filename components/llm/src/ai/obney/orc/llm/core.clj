@@ -54,7 +54,14 @@
     (merge {:messages [{:role :user
                         :content (sio/build-message-content spec prompt inputs)}]
             :tools [(sio/outputs->tool-definition spec)]
-            :tool_choice {:type "function"
+            ;; :tool-choice, NOT :tool_choice — litellm's provider layer reads the
+            ;; kebab-case key (`(:tool-choice request)`) and converts it to snake_case
+            ;; for the wire, exactly as it does for :max-tokens and :reasoning-effort.
+            ;; An underscore here is a different Clojure keyword, so it never matched
+            ;; and tool_choice never reached the provider — the forced submit_response
+            ;; call was advisory, leaving the model free to reply with prose (no tool
+            ;; call -> nil outputs -> failed node).
+            :tool-choice {:type "function"
                           :function {:name "submit_response"}}}
            (request-options options))))
 
