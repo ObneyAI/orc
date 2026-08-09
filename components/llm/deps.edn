@@ -1,7 +1,7 @@
 {:paths ["src"]
  :deps {io.github.ObneyAI/sio
         {:git/url "https://github.com/ObneyAI/sio.git"
-         :git/sha "0c7ce67ed652634d435beae212d7ad34c1e02eb9"}
+         :git/sha "2a4a79ee153a1abc9c89f43a7fbb5d6fb7615a68"}
 
         tech.unravel/litellm-clj
         {:git/url "https://github.com/ObneyAI/litellm-clj.git"
