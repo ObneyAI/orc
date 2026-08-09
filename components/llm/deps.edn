@@ -5,7 +5,7 @@
 
         tech.unravel/litellm-clj
         {:git/url "https://github.com/ObneyAI/litellm-clj.git"
-         :git/sha "130ea352f7d45abe1896d2854b4df41becaa9309"}
+         :git/sha "0570e9459b8751d4a0c3dc1cd48595804426a84d"}
 
         org.clojure/core.async {:mvn/version "1.6.681"}}
  :aliases {:test {:extra-paths ["test"]}}}

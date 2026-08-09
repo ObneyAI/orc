@@ -99,6 +99,16 @@ that fail their declared schemas. DET-E2E-125 verifies invalid-to-valid recovery
 and invalid-to-invalid exhaustion, including exact call count, final-only
 rejection evidence, and usage accumulated across both attempts.
 
+## Provider request control preservation (2026-08-09)
+
+The LLM boundary now specifies that accepted provider request controls must
+reach the selected provider with equivalent meaning or fail explicitly. ORC's
+focused boundary test verifies that `:reasoning-effort` and `:max-tokens` reach
+litellm.router, and the pinned litellm-clj OpenRouter provider verifies their
+canonical HTTP transformation plus explicit rejection of unsupported or
+ambiguous controls. DET-E2E-130 remains open until the complete persisted-node
+through HTTP-body contract is exercised in one integration-shaped test.
+
 ## Blackboard schema specificity (2026-08-07)
 
 The ORC service now rejects semantically unconstrained blackboard schemas at

@@ -90,6 +90,11 @@ that verifies the stated observable results.
 - [x] **DET-E2E-127 — Structurally unconstrained blackboard schemas are rejected.** Workflow construction and direct commands recursively reject `:some`, standalone or fieldless maps, and collections with missing or unconstrained item/value schemas; feedback identifies each key and exact schema path while fully specified structured schemas remain valid.
 - [x] **DET-E2E-128 — Referenced blackboard schemas participate in workflow identity.** Building a workflow captures its recursively resolved blackboard schemas; changing a direct or transitive registry dependency rebuilds the same sheet with the new schema, an unrelated registry change remains a zero-event no-op, and execution validates against the captured schema.
 - [x] **DET-E2E-129 — ORC-owned LLM provider boundary.** A model-backed leaf executes through `:llm-provider`, preserves structured outputs and model-call evidence through the public result and trace projection, and the removed `:dscloj-provider` key cannot select the provider value supplied under that key.
+- [ ] **DET-E2E-130 — Provider request controls survive the LLM boundary.** An
+  OpenRouter-backed node configured with `:reasoning-effort :none` and
+  `:max-tokens 512` preserves both controls through the persisted node, ORC LLM
+  request, litellm router, and final OpenRouter HTTP request body; unsupported
+  accepted controls fail explicitly instead of disappearing.
 
 ## P1 — Observability and streaming
 

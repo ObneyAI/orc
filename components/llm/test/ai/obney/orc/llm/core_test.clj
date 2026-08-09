@@ -51,6 +51,20 @@
         (is (= 1 (count @calls)))
         (is (= 0 (get-in @calls [0 1 :temperature])))))))
 
+(deftest blocking-prediction-preserves-provider-request-controls
+  (let [captured-request (atom nil)]
+    (with-redefs [router/supports-function-calling? (constantly false)
+                  router/completion (fn [_provider request]
+                                      (reset! captured-request request)
+                                      {:choices [{:message {:content "[[ ## answer ## ]]\nParis"}}]})]
+      (is (= {:answer "Paris"}
+             (llm/predict :openrouter qa {:question "Capital?"}
+                          {:validate? false
+                           :reasoning-effort :none
+                           :max-tokens 512})))
+      (is (= :none (:reasoning-effort @captured-request)))
+      (is (= 512 (:max-tokens @captured-request))))))
+
 (deftest function-calling-performs-one-provider-invocation
   (let [calls (atom 0)]
     (with-redefs [router/supports-function-calling? (constantly true)

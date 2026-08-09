@@ -63,4 +63,9 @@ surface OrcLlmBoundary {
     @guarantee ProviderAgnosticContract
         -- Callers select a configured provider without depending on the
         -- structured-I/O or transport implementation chosen behind this boundary.
+
+    @guarantee ExplicitProviderOptionHandling
+        -- Provider request controls accepted at this boundary reach the selected
+        -- provider with equivalent meaning, or the prediction fails explicitly;
+        -- accepted controls are never silently discarded.
 }
