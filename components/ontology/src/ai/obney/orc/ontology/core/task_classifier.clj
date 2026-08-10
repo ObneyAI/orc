@@ -523,6 +523,47 @@
 ;; Public API
 ;; =============================================================================
 
+(defn confidence-gate-report
+  "CC-20 (ADR 0027 decision 2): what the classify confidence gate DID on one
+   classification — pure over the classify result + the threshold it judged
+   against.
+
+   The CC-20 derivation deliberately did NOT migrate this gate's form:
+   its property is 'is the BEST match good enough to assign', judged on the
+   top-1, and every candidate-set-relative form is degenerate there —
+   rank(top-1) is identically 1 and min-max/TMM(top-1) is identically 1.0
+   (the CC-20 issue's documented caution verbatim), while z(top-1) measures
+   separation-from-the-pack, a different property. The thresholded quantity is
+   the reranker's rubric-anchored fitness, not a corpus-scale similarity
+   score. What CC-19 DID measure (N=156 real classifications) is that the
+   gate is near-inert in [0.4, 0.9] (rejects 2-4 of 156; median 0.98) with
+   its real signal in the low tail (the two fresh-mints sat at 0.35 and 0.0)
+   — and nothing could report that. This report is the fix ADR 0027 names:
+   a gate must be able to say whether it is doing anything."
+  [{:keys [outcome confidence top-candidates was-fresh-mint? rerank-fallback?]} threshold]
+  (let [top-score (double (or confidence 0.0))]
+    (cond-> {:outcome outcome
+             :threshold (double threshold)
+             :top-score top-score
+             :margin-to-threshold (- top-score (double threshold))
+             :candidate-count (count top-candidates)
+             :rerank-fallback? (boolean rerank-fallback?)}
+      (some? was-fresh-mint?) (assoc :was-fresh-mint? (boolean was-fresh-mint?)))))
+
+(defn- log-confidence-gate!
+  "Emit the ADR-0027 confidence-gate report for one classification."
+  [result threshold]
+  (let [report (confidence-gate-report result threshold)]
+    (u/log ::classify-confidence-gate
+           :outcome (:outcome report)
+           :threshold (:threshold report)
+           :top-score (:top-score report)
+           :margin-to-threshold (:margin-to-threshold report)
+           :candidate-count (:candidate-count report)
+           :rerank-fallback? (:rerank-fallback? report)
+           :report report)
+    result))
+
 (defn classify-task
   "Pure classification function: given a task signature + optional
    parent-context summary + threshold, returns a tree-class
@@ -616,7 +657,10 @@
         ;; fallback into a confident :novel by removing the fallback candidate.
         rerank-fallback? (or rerank-fallback?-raw
                              (rerank-fallback?* top-1))]
-    (cond
+    ;; CC-20 (ADR 0027): every classification reports what its confidence
+    ;; gate did — log-confidence-gate! wraps the result and returns it.
+    (log-confidence-gate!
+     (cond
       ;; EL-3 (ADR 0015): the reranker FELL BACK to raw ColBERT — we do NOT
       ;; KNOW the fit. De-conflate uncertainty from novelty: this is NOT a
       ;; confident no-match. Detect-and-defer — return :outcome :uncertain
@@ -713,7 +757,8 @@
             (-> walk-result
                 (assoc :top-candidates (vec surfaced-candidates))
                 (assoc :outcome :matched)
-                (assoc :rerank-fallback? rerank-fallback?))))))))
+                (assoc :rerank-fallback? rerank-fallback?))))))
+     threshold)))
 
 ;; =============================================================================
 ;; R05b — classify-behaviors: behavioral subtree retrieval API

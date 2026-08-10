@@ -81,163 +81,200 @@
             [com.brunobonacci.mulog :as mu]))
 
 ;; =============================================================================
-;; Knobs (ADR 0016) — all tunable, started CONSERVATIVE.
+;; Knobs — CC-20 (ADR 0027): the gate FORM is derived before any value.
 ;;
-;; The knobs are scorer-relative: cos_avoid / cos_good are always in [0,1]
-;; (cosine for :embedding; colbert/normalize-colbert-score for :colbert), so
-;; one (margin, scale, cap) set is scale-stable across backends.
-;;
-;; The DEFAULT set is RECALIBRATED for the NORMALIZED ColBERT scale against the
-;; REAL enriched candidate signals (NOT the hand-written separability probe
-;; strings). Calibration measured by development/bench/el5_domain_penalty_proto
-;; on the live refactor case (real grain + real ColBERT MaxSim, /40 linear norm):
-;;
-;;   child/rename-move-symbol (force-fit) cos_avoid 0.518 - cos_good 0.451 = +0.068  <- MUST fire
-;;   Validation                            0.345 - 0.382 = -0.038                     <- clean
-;;   Research                              0.335 - 0.380 = -0.045                     <- clean
-;;   Critique                              0.322 - 0.356 = -0.034                     <- clean
-;;   Code-building (correct parent)        0.269 - 0.357 = -0.088                     <- clean
-;;
-;; So the live separability band is (-0.034, +0.068): every clean case has a
-;; NEGATIVE contrast and only the rename force-fit is positive. (The contrast is
-;; tighter than the probe's +0.137 because the candidate's POSITIVE strings
-;; include the verbose :summary, which itself carries 'refactor'/'extract'
-;; tokens that lift cos_good — exactly the content-quality dependency ADR 0016
-;; flags; C-3 sharpening the guard widens this over runs.)
-;;
-;;   :margin 0.03  — sits inside the band: ABOVE every clean case (all <= -0.034,
-;;                   so case (3) web-search-on-own-domain + case (2) deepening
-;;                   stay penalty 0 — the zero-FP guard) and BELOW the rename
-;;                   force-fit +0.068 (so case (1) fires). Conservative: a clean
-;;                   case would have to flip from -0.034 to >+0.03 (a 0.064 swing)
-;;                   before a false positive — far beyond ColBERT noise here.
-;;   :penalty-scale 10.0 — turns rename's net contrast (0.068 - 0.03 = 0.038)
-;;                   into a ~0.38 penalty: enough to flip the LLM's shape-favored
-;;                   fitness below the correct candidate AND, at threshold 0.6,
-;;                   push a borderline force-fit under the gate. Clean cases stay
-;;                   at penalty 0 regardless of scale (their contrast is < margin).
-;;   :penalty-cap 0.6 — graded, never a hard zero (demoted, not annihilated).
-;;
-;; JVM-ColBERT Slice 3 amendment: the calibration above was measured on the
-;; colbertv2 bridge with /40 linear normalization. The pure-JVM answerai
-;; checkpoint's MASK-expansion floor compresses fixed-ceiling cosines
-;; (~0.70-0.73, margins ~0.01-0.03), so the DEFAULT :colbert-norm is now
-;; {:max-score 32.0 :method :batch-relative} (see default-penalty-config and
-;; batch-relative-scores). :batch-relative widens every witnessed margin
-;; beyond both /40 and /32 linear and preserves the clean/force-fit
-;; separability ORDER (clean cases <= +0.0025, force-fit +0.0160 on the probe
-;; sets), but the ABSOLUTE margins sit below the 0.03 :margin knob calibrated
-;; for colbertv2 — the knobs themselves are deliberately NOT retuned here;
-;; the el5 separability re-run (Slice 4) judges end behavior and owns any
-;; recalibration.
+;; The full history of the absolute calibration (ADR 0016's colbertv2 band
+;; derivation, the JVM-ColBERT Slice-3 batch-relative amendment, the Slice-4b
+;; 0.010 margin retune, and CC-17's before/after measurements) lives with
+;; `legacy-absolute-defaults` below and in doc/adr/0027 + the CC-20 issue.
+;; The short version, because it is the reason this section looks the way it
+;; does: every absolute value fitted to this scale was measured either INERT
+;; (margin 0.010: 0/154, then 0/559 firings on the shipped signal) or firing
+;; on per-query SCALE rather than signal (6/559, all six on the one
+;; longest-query task), and the same contrast moves 7x when the
+;; maximum_query_tokens ceiling moves (CC-17). The shipped gate is therefore
+;; population-relative (:z-score, see z-gate-penalty); the absolute arithmetic
+;; survives ONLY behind an explicit :margin in the config (gate-config).
 ;; =============================================================================
 
 (def default-penalty-config
-  "CONSERVATIVE defaults (ADR 0016 — recalibrated for the NORMALIZED ColBERT
-   scale, the default backend; see the four-case calibration in the proto):
+  "The shipped penalty configuration (CC-20, ADR 0027 — form derived before
+   value, both derived ONCE from the banked CC-16 cells:
+   doc/build-timeline/evidence/cc16/cc16-cells-{shipped,32}.edn — 559 real
+   cells x 2 positive-signal variants x 2 query-token limits, real JVM
+   ColBERT, real production bodies).
 
      :scorer          — :colbert (DEFAULT) | :embedding. Selects the backend.
-     :embedding-model — embedding model id when :scorer is :embedding (the model
-                        is swappable; nil => the embedding component default,
-                        all-MiniLM-L6-v2 today).
-     :penalty-scale   — multiplier on the (avoid - good - margin) contrast.
-     :margin          — embedding-noise floor: avoid must beat good by MORE than
-                        this before any penalty fires (the zero-false-positive
-                        guard for case (3) web-search-on-own-domain + case (2)
-                        deepening-on-own-task).
+     :embedding-model — embedding model id when :scorer is :embedding (nil =>
+                        the embedding component default).
      :penalty-cap     — caps the penalty so it stays GRADED, never a hard zero
-                        (the candidate is demoted, not annihilated — reversible).
-     :colbert-norm    — normalization opts ({:max-score :method}) for the
-                        :colbert scorer, applied to both avoid + good so
-                        margin/cap are scale-stable. DEFAULT (JVM-ColBERT
-                        Slice 3, amended by CC-17): {:max-score nil :method
-                        :batch-relative}. :max-score nil means 'the colbert
-                        backend's own derived ceiling' — the MaxSim bound IS
-                        maximum_query_tokens, which CC-17 turned into
-                        configuration, so a literal 32.0 pinned here would go
-                        stale the moment an operator retunes the limit (and
-                        does go stale against the shipped 464: every real score
-                        would clamp to 1.0). :batch-relative normalizes each
-                        guard by
-                        the MAX raw score within the candidate's own rerank
-                        call (batch-relative-scores below) instead of the
-                        fixed ceiling, because the checkpoint's ~30/32
-                        MASK-expansion floor compresses fixed-ceiling cosines
-                        into ~0.75-0.98 and collapses the contrastive margin
-                        (0.011 witnessed vs colbertv2's ~0.18). Explicit
+                        (demoted, not annihilated — reversible). Shared by
+                        both gate forms.
+     :gate            — the CC-20 gate: {:form :z-score ...} (see
+                        z-gate-penalty + gate-config). Derived values:
+                          :z-threshold 1.5 — inside the measured separability
+                            band at the shipped query limit: ABOVE every
+                            ground-truth own-domain cell (max witnessed z
+                            +1.236, rename-symbol x Rename-move-symbol) and
+                            BELOW the refactor force-fit (+1.729 at limit 464,
+                            +3.011 at limit 32 — the form survives the ceiling
+                            knob that moved the raw contrast 7x). Also the
+                            exact bound below which a population of n<=4
+                            PROVABLY cannot fire (sample z <= (n-1)/sqrt(n)).
+                          :z-scale 0.1 — the demotion contract: the witnessed
+                            force-fit excess (1.729-1.5) becomes p=0.0229,
+                            1.58x P-B's measured demotion bar (0.0145); the
+                            most extreme witnessed cell (z +4.24) stays at
+                            p=0.27, well under the cap.
+                          :min-population 5 — no population, no z: a
+                            single-candidate pass (the banked web-search
+                            canary probe) abstains STRUCTURALLY.
+                        HOW THE GATE BEHAVES AS N GROWS (the property that
+                        motivated CC-20): the population is the pass's own
+                        candidates, so corpus growth refines the mean/sd
+                        estimate instead of walking a fixed cutoff off the
+                        distribution (Lee 2210.13678 §5.1; Hawking & Robertson
+                        2003 §5.4), and per-query scale differences divide out
+                        (Rossi CIKM'24 — the old margin's 6/559 firings were
+                        all on the one longest-query task's scale).
+     :positive-signal — CC-16 / ADR 0026: which reading of the positive signal
+                        is APPLIED to the fitness (both are ALWAYS computed
+                        and stamped; the other is shadow). :good-when is the
+                        ADR-0026 reading — the use-case description ADR 0016's
+                        contrast actually names. STAGE 2 FLIPPED BY CC-20: the
+                        three ADR-0026 watch conditions are met on the banked
+                        cells under the z gate — firing rate SEEN (42/559 at
+                        the shipped limit); the web-search zero-FP case
+                        exactly 0 (the probe pass abstains structurally, the
+                        real Research cell sits at z +0.76); the force-fit
+                        DEMOTES (p=0.0229 > 0.0145). Under :content+good-when
+                        the force-fit contrast is NEGATIVE (-0.0018, rank 8/43
+                        — the summary cancels its own guard), so NO gate of
+                        any form can demote it: the flip is a precondition of
+                        the EL-5 acceptance contract, not a preference.
+     :colbert-norm    — unchanged (JVM-ColBERT Slice 3, amended by CC-17):
+                        {:max-score nil :method :batch-relative}; nil means
+                        'the colbert backend's own derived ceiling'. Explicit
                         :linear / :sigmoid configs keep their exact old
-                        behavior (norm-fn per score against :max-score)."
+                        behavior.
+
+   The pre-CC-20 absolute knobs (:margin 0.010, :penalty-scale 10.0) are
+   DELIBERATELY ABSENT — not dead config. See legacy-absolute-defaults +
+   gate-config: a config that names a :margin explicitly selects the frozen
+   absolute form with its historical semantics."
   {:scorer :colbert
    :embedding-model nil
-   :penalty-scale 10.0
-   ;; 0.010 — gate-evidenced retune for the answerai checkpoint's batch-relative
-   ;; scale (Slice 4b, user-approved at the Slice-4 gate). The colbertv2-era
-   ;; 0.03 (derivation in the band commentary above) was INERT here: every
-   ;; witnessed must-fire margin (+0.016 probe force-fits, +0.0026
-   ;; live-enriched) sat below it. 0.010 fires the probe force-fits with
-   ;; ~1.6x headroom and spares every witnessed clean case (max +0.0025).
-   ;; Known limit (Slice-4 gate report §3): live-enriched force-fits
-   ;; (+0.0026) are inseparable from clean by ANY margin value — restoring
-   ;; live-corpus bite is guard-sharpening work (EL-5/C-3), not knob tuning.
-   ;; CC-17 re-derivation of :margin against the RELOCATED MaxSim ceiling
-   ;; (32 -> 464 query rows). The default :batch-relative normalization divides
-   ;; by the call's OWN max raw score, so it is DIMENSIONLESS: moving the
-   ;; ceiling cannot rescale the margin, and 0.010 is therefore not
-   ;; arithmetically invalidated. MEASURED on 20 real living-description
-   ;; candidates against a real consolidator signature
-   ;; (doc/build-timeline/evidence/cc17):
-   ;;     limit  32: contrast p50 -0.0082, p95 +0.00277, max +0.00392 -> fires 0/20
-   ;;     limit 464: contrast p50 -0.0130, p95 -0.00794, max -0.00686 -> fires 0/20
-   ;; So the knob's BEHAVIOUR is unchanged (inert on live-enriched candidates
-   ;; at both limits) — but the contrast distribution shifts ~0.005 MORE
-   ;; NEGATIVE, deepening the inertness the Slice-4 gate report §3 already
-   ;; recorded. Retuning it here would be fitting a knob to data that says the
-   ;; guards are not separable; the fix stays guard-sharpening (EL-5/C-3).
-   ;;
-   ;; THE OTHER HALF, stated plainly because it IS a regression: on the four
-   ;; SHORT synthetic probe sets (colbert batch_relative_evidence_test) the same
-   ;; move compresses the batch-relative contrast ~75x —
-   ;;     force-fit +0.0160 @32  ->  +0.000211 @464
-   ;;     cleanest   +0.0025 @32  ->  -0.001544 @464
-   ;; so on THAT family the force-fit falls from 1.6x ABOVE this margin to ~47x
-   ;; BELOW it and the penalty stops firing. The separability ORDER survives
-   ;; (the force-fit is still the only positive margin; a test now pins that).
-   ;; NOT retuned here because :margin is a gate-approved calibration (ADR 0016
-   ;; / Slice-4 gate) and re-fitting it to four short synthetic probes would be
-   ;; fitting to a regime the measured production corpus does not contain — its
-   ;; SHORTEST real query is 150 word-piece tokens. Retuning :margin AND
-   ;; :penalty-scale for the new scale is a gate decision, not a subagent's.
-   :margin 0.010
    :penalty-cap 0.6
-   ;; CC-16 / ADR 0026 — which reading of the POSITIVE signal is APPLIED to the
-   ;; fitness. Both are always computed and stamped (ADR 0027: a gate must be
-   ;; able to report whether it is doing anything), so this knob is the STAGE-2
-   ;; flip and nothing else:
-   ;;   :content+good-when — pre-ADR-0026: the whole indexed description PLUS
-   ;;                        every :good-when. Measured INERT on production
-   ;;                        content (cos-good 1.000000 in 153/154 cells,
-   ;;                        0 firings) because the ~800-char summary restates
-   ;;                        the behavior's own avoid-conditions and wins the
-   ;;                        call's own normalizer.
-   ;;   :good-when         — ADR 0026: the use-case description alone, which is
-   ;;                        what ADR 0016's contrast actually names.
-   ;; STAGE 1 ships :content+good-when — the shipped behavior, byte for byte —
-   ;; so the shadow numbers can be read against the 0/154 baseline BEFORE the
-   ;; mechanism is woken. Flipping this default is Stage 2 and is gated on the
-   ;; three watch conditions in ADR 0026 (firing rate seen; the web-search
-   ;; zero-false-positive case still exactly 0; the refactor force-fit actually
-   ;; DEMOTING, i.e. penalty > 0.0145 — firing is not demoting).
-   :positive-signal :content+good-when
+   :gate {:form :z-score
+          :z-threshold 1.5
+          :z-scale 0.1
+          :min-population 5}
+   :positive-signal :good-when
    :colbert-norm {:max-score nil :method :batch-relative}})
 
 ;; =============================================================================
-;; The pure penalty arithmetic (DETERMINISTIC — unit-tested hard). UNCHANGED.
+;; The pure penalty arithmetic (DETERMINISTIC — unit-tested hard).
+;;
+;; CC-20 (ADR 0027): TWO gate forms now exist.
+;;   :z-score  (DEFAULT) — population-relative: a candidate fires when its
+;;             contrast is BOTH positive (avoid beats good at all — ADR 0016's
+;;             theory anchor) AND an outlier of the pass's own contrast
+;;             distribution (z above :z-threshold). Scale-free, so it survives
+;;             the two drifts that made every absolute value here go inert or
+;;             wrong: corpus growth (Lee 2210.13678 §5.1; Hawking & Robertson
+;;             2003 §5.4) and the maximum_query_tokens ceiling move (CC-17
+;;             measured the same contrast shifting 7x between limits 32/464).
+;;             Rossi et al. (CIKM'24): similarity scores are not comparable
+;;             across queries — and the old margin's 6/559 banked firings were
+;;             indeed ALL on one long-query task's scale, not its signal.
+;;   :absolute (EXPLICIT-CONFIG ONLY) — the pre-CC-20 margin arithmetic,
+;;             selected by any config that names a :margin. Retained because
+;;             it is a real contract (operator overrides; the calibrated-knob
+;;             unit tests; the banked-measurement reproductions, which must be
+;;             replayed under the arithmetic that produced them). It is NOT
+;;             reachable from the shipped default config.
 ;; =============================================================================
 
 (defn clamp
   "Clamp x to [lo, hi]."
   [x lo hi]
   (-> x (max lo) (min hi)))
+
+(def legacy-absolute-defaults
+  "The FROZEN pre-CC-20 absolute-gate calibration (Slice-4b margin retune +
+   ADR 0016 scale). These are NOT the shipped defaults any more — CC-20
+   (ADR 0027 decision 3) removed the absolute form from the default config
+   because every value fitted to this scale was measured either inert (0/154,
+   then 0/559 at margin 0.010 on the with-content signal) or firing on
+   per-query scale rather than signal (6/559, all on the one longest-query
+   task). They remain ONLY as the :or fallbacks of the explicit :absolute
+   form, so an operator config or test that names a :margin without restating
+   every knob keeps its exact historical meaning."
+  {:penalty-scale 10.0
+   :margin 0.010})
+
+(defn contrast-population
+  "CC-20: the population a z-gated pass judges against — {:n :mean :sd} over
+   the pass's contrasts. Sample sd (n-1); degenerate populations (n<=1,
+   all-equal) report :sd 0.0 rather than fabricating spread."
+  [contrasts]
+  (let [xs (mapv double contrasts)
+        n (count xs)]
+    (if (zero? n)
+      {:n 0 :mean 0.0 :sd 0.0}
+      (let [mean (/ (reduce + xs) (double n))
+            sd (if (< n 2)
+                 0.0
+                 (Math/sqrt (/ (reduce + (map (fn [x] (let [d (- x mean)] (* d d))) xs))
+                               (double (dec n)))))]
+        {:n n :mean mean :sd sd}))))
+
+(defn z-gate-penalty
+  "CC-20: the :z-score gate for ONE candidate's contrast against the pass's
+   population. Fires iff ALL of:
+     - the population is estimable: n >= :min-population AND sd > 0
+       (a single-candidate pass — e.g. the banked web-search canary probe —
+       abstains STRUCTURALLY: a z against no population is not a z);
+     - contrast > 0 — the ADR 0016 theory anchor: the penalty asserts 'the
+       task is more the avoid-condition than the use-case', and a non-positive
+       contrast means it is not, however extreme its z within the pass;
+     - z = (contrast - mean) / sd  >  :z-threshold.
+   Then penalty = clamp(z-scale * (z - z-threshold), 0, penalty-cap) —
+   graded by HOW FAR outside the pass's own distribution the cell sits,
+   capped so demotion never annihilates."
+  [contrast {:keys [n mean sd] :as _population}
+   {:keys [z-threshold z-scale min-population]
+    :or {z-threshold 1.5 z-scale 0.1 min-population 5}}
+   penalty-cap]
+  (let [c (double contrast)]
+    (if (or (< n (long min-population))
+            (not (pos? (double sd)))
+            (<= c 0.0))
+      0.0
+      (let [z (/ (- c (double mean)) (double sd))]
+        (clamp (* (double z-scale) (max 0.0 (- z (double z-threshold))))
+               0.0
+               (double penalty-cap))))))
+
+(defn gate-config
+  "CC-20: resolve which gate FORM a config selects, plus that form's knobs.
+
+   An explicit :margin ANYWHERE in the config selects the frozen :absolute
+   form — an operator's calibrated pre-CC-20 override (or a test pinning the
+   absolute arithmetic) keeps its exact historical meaning; missing absolute
+   knobs fall back to legacy-absolute-defaults. Otherwise the config's :gate
+   map, defaulted key-by-key from the shipped :z-score gate. The precedence
+   matters for the production merge site (interface apply-rerank merges
+   default-penalty-config UNDER the operator's :domain-penalty-config): the
+   merged map always carries the default :gate, so :margin-present is the only
+   honest signal that the operator asked for the absolute form."
+  [config]
+  (if (contains? config :margin)
+    {:form :absolute
+     :margin (double (:margin config))
+     :penalty-scale (double (get config :penalty-scale
+                                 (:penalty-scale legacy-absolute-defaults)))}
+    (merge (:gate default-penalty-config) (:gate config))))
 
 (defn domain-penalty
   "The CONTRASTIVE penalty for one candidate, given its two scores.
@@ -247,12 +284,19 @@
 
    Returns a penalty in [0, penalty-cap]. Fires (> 0) ONLY when
    cos-avoid - cos-good > margin: the task is more the avoid-condition than the
-   use-case, beyond scorer noise. good >= avoid (or within margin) => 0."
+   use-case, beyond scorer noise. good >= avoid (or within margin) => 0.
+
+   CC-20: this is the frozen :absolute-form PRIMITIVE — a pure per-cell fn of
+   two cosines, reachable only from an explicit-:margin config (gate-config).
+   The shipped default gate is population-relative (z-gate-penalty) and does
+   not route through here; missing absolute knobs fall back to the frozen
+   legacy-absolute-defaults, never to the shipped config (which no longer
+   carries them)."
   ([cos-avoid cos-good]
-   (domain-penalty cos-avoid cos-good default-penalty-config))
+   (domain-penalty cos-avoid cos-good legacy-absolute-defaults))
   ([cos-avoid cos-good {:keys [penalty-scale margin penalty-cap]
-                        :or {penalty-scale (:penalty-scale default-penalty-config)
-                             margin (:margin default-penalty-config)
+                        :or {penalty-scale (:penalty-scale legacy-absolute-defaults)
+                             margin (:margin legacy-absolute-defaults)
                              penalty-cap (:penalty-cap default-penalty-config)}}]
    (let [contrast (- (double cos-avoid) (double cos-good) (double margin))]
      (clamp (* (double penalty-scale) (max 0.0 contrast))
@@ -901,6 +945,71 @@
            (variant-record cosines :cos-avoid-sans-content :cos-good-sans-content
                            :domain-penalty-sans-content config))))
 
+(defn- z-contrast-records
+  "CC-20 :z-score stamping for a WHOLE PASS: every key-pair's penalties are
+   judged against that pair's contrast population across the pass. The applied
+   pair's population is all candidates (missing cosines read 0.0, exactly as
+   contrast-record always did); a shadow variant's population is the
+   candidates that reported that variant (absent stays absent — never
+   fabricated). When every candidate reports both variants — every production
+   backend does — the applied record's penalty is identical to its aliased
+   variant's, because they are the same contrasts against the same population."
+  [cosines-seq gate cap]
+  (let [applied-contrast (fn [cos] (- (double (or (:cos-avoid cos) 0.0))
+                                      (double (or (:cos-good cos) 0.0))))
+        applied-pop (contrast-population (map applied-contrast cosines-seq))
+        pair-pop (fn [a-key g-key]
+                   (contrast-population
+                    (keep (fn [cos]
+                            (when (and (some? (get cos a-key)) (some? (get cos g-key)))
+                              (- (double (get cos a-key)) (double (get cos g-key)))))
+                          cosines-seq)))
+        with-pop (pair-pop :cos-avoid-with-content :cos-good-with-content)
+        sans-pop (pair-pop :cos-avoid-sans-content :cos-good-sans-content)
+        vrec (fn [cos a-key g-key p-key pop]
+               (when (and (some? (get cos a-key)) (some? (get cos g-key)))
+                 (let [a (double (get cos a-key))
+                       g (double (get cos g-key))]
+                   {a-key a
+                    g-key g
+                    p-key (z-gate-penalty (- a g) pop gate cap)})))]
+    (mapv (fn [cos]
+            (merge {:cos-avoid (double (or (:cos-avoid cos) 0.0))
+                    :cos-good  (double (or (:cos-good cos) 0.0))
+                    :penalty (z-gate-penalty (applied-contrast cos) applied-pop gate cap)}
+                   (when-let [ps (:positive-signal cos)] {:positive-signal ps})
+                   (vrec cos :cos-avoid-with-content :cos-good-with-content
+                         :domain-penalty-with-content with-pop)
+                   (vrec cos :cos-avoid-sans-content :cos-good-sans-content
+                         :domain-penalty-sans-content sans-pop)))
+          cosines-seq)))
+
+(defn- contrast-records
+  "The contrast+penalty records for EVERY cosines map in one pass, gate-form
+   aware (CC-20): :absolute => the pre-CC-20 per-cell arithmetic, byte for
+   byte; :z-score (the default) => population-relative via z-contrast-records."
+  [cosines-seq config]
+  (let [g (gate-config config)]
+    (if (= :absolute (:form g))
+      (mapv #(contrast-record % config) cosines-seq)
+      (z-contrast-records cosines-seq g
+                          (double (get config :penalty-cap
+                                       (:penalty-cap default-penalty-config)))))))
+
+(defn- stamp-all
+  "Stamp every candidate with its contrast record + :domain-penalty and its
+   penalized :fitness-score (the fitness is penalized by the APPLIED variant
+   ONLY; the shadow is observability, never behaviour)."
+  [candidates cosines-seq config]
+  (mapv (fn [c record]
+          (let [penalty (:penalty record)]
+            (-> c
+                (merge (dissoc record :penalty))
+                (assoc :domain-penalty penalty)
+                (assoc :fitness-score (apply-penalty (:fitness-score c) penalty)))))
+        candidates
+        (contrast-records cosines-seq config)))
+
 (defn- scorer-cosines
   "Call the injected per-candidate scorer, FAILING OPEN to {0,0} on any throw."
   [candidate task scorer]
@@ -928,22 +1037,14 @@
    candidate scores {0,0} -> penalty 0 (the LLM ordering is left untouched, never
    a FABRICATED penalty). The penalty layer is BEST-EFFORT/additive — a scoring
    outage must degrade retrieval gracefully, exactly like the reranker's own
-   try/catch fallback, not crash it."
-  [candidate task scorer config]
-  (contrast-record (scorer-cosines candidate task scorer) config))
+   try/catch fallback, not crash it.
 
-(defn- assoc-penalty
-  "Stamp one candidate with {:cos-avoid :cos-good :domain-penalty} — plus both
-   CC-16 positive-signal variants when the scorer reported them — and its
-   penalized :fitness-score. The fitness is penalized by the APPLIED variant
-   ONLY; the shadow is observability, never behaviour."
-  [candidate cosines config]
-  (let [record  (contrast-record cosines config)
-        penalty (:penalty record)]
-    (-> candidate
-        (merge (dissoc record :penalty))
-        (assoc :domain-penalty penalty)
-        (assoc :fitness-score (apply-penalty (:fitness-score candidate) penalty)))))
+   CC-20: under the default :z-score gate a SINGLE candidate is a population
+   of one, so this fn's penalties are 0 by construction (no population, no z)
+   — the pass-level penalize-candidates is where the shipped gate bites. An
+   explicit-:margin config keeps the pre-CC-20 per-cell behavior exactly."
+  [candidate task scorer config]
+  (first (contrast-records [(scorer-cosines candidate task scorer)] config)))
 
 ;; =============================================================================
 ;; ADR 0027 — the gate must be able to REPORT whether it is doing anything.
@@ -1004,19 +1105,34 @@
    not report is ABSENT rather than zero, so 'the shadow was not computed' can
    never be read as 'the shadow never fired'."
   [stamped config]
-  {:candidate-count (count stamped)
-   :applied-positive-signal (applied-positive-signal config)
-   :margin (double (get config :margin (:margin default-penalty-config)))
-   :penalty-scale (double (get config :penalty-scale (:penalty-scale default-penalty-config)))
-   :penalty-cap (double (get config :penalty-cap (:penalty-cap default-penalty-config)))
-   :variants (into {}
-                   (remove (comp nil? val))
-                   {:content+good-when
-                    (variant-summary stamped :cos-avoid-with-content
-                                     :cos-good-with-content :domain-penalty-with-content)
-                    :good-when
-                    (variant-summary stamped :cos-avoid-sans-content
-                                     :cos-good-sans-content :domain-penalty-sans-content)})})
+  (let [g (gate-config config)
+        base {:candidate-count (count stamped)
+              :applied-positive-signal (applied-positive-signal config)
+              :gate-form (:form g)
+              :penalty-cap (double (get config :penalty-cap (:penalty-cap default-penalty-config)))
+              :variants (into {}
+                              (remove (comp nil? val))
+                              {:content+good-when
+                               (variant-summary stamped :cos-avoid-with-content
+                                                :cos-good-with-content :domain-penalty-with-content)
+                               :good-when
+                               (variant-summary stamped :cos-avoid-sans-content
+                                                :cos-good-sans-content :domain-penalty-sans-content)})}]
+    (if (= :absolute (:form g))
+      (assoc base
+             :margin (:margin g)
+             :penalty-scale (:penalty-scale g))
+      (assoc base
+             :z-threshold (double (:z-threshold g))
+             :z-scale (double (:z-scale g))
+             :min-population (long (:min-population g))
+             ;; The population the APPLIED gate judged against (CC-20: the
+             ;; pass must be able to report not just its firing rate but the
+             ;; distribution its z was computed on).
+             :population (contrast-population
+                          (map (fn [c] (- (double (or (:cos-avoid c) 0.0))
+                                          (double (or (:cos-good c) 0.0))))
+                               stamped))))))
 
 (defn- log-penalty-pass!
   "Emit the ADR-0027 pass report. The headline firing counts are FLAT so they
@@ -1026,7 +1142,7 @@
     (mu/log ::domain-penalty-pass
             :candidate-count (:candidate-count report)
             :applied-positive-signal (:applied-positive-signal report)
-            :margin (:margin report)
+            :gate-form (:gate-form report)
             :fired-with-content (get-in report [:variants :content+good-when :fired])
             :fired-sans-content (get-in report [:variants :good-when :fired])
             :report report)))
@@ -1074,14 +1190,15 @@
              (mu/log ::batch-scorer-failed :error (.getMessage t)
                      :candidate-count (count candidates))
              (mapv (constantly {:cos-avoid 0.0 :cos-good 0.0}) candidates)))
-         stamped (mapv (fn [c cosines] (assoc-penalty c cosines config))
-                       candidates per-candidate-cosines)]
+         stamped (stamp-all candidates per-candidate-cosines config)]
      (log-penalty-pass! stamped config)
      (vec (sort-by (fn [c] (or (:fitness-score c) -1.0)) > stamped))))
   ([_ctx candidates task config scorer]
    ;; PER-CANDIDATE injected-scorer seam (backward-compatible determinism path):
    ;; scorer-cosines already fails open per-candidate around the scorer call.
-   (let [stamped (mapv (fn [c] (assoc-penalty c (scorer-cosines c task scorer) config))
-                       candidates)]
+   ;; CC-20: cosines are gathered FIRST so the :z-score gate judges each
+   ;; candidate against the whole pass's contrast population.
+   (let [cosines (mapv (fn [c] (scorer-cosines c task scorer)) candidates)
+         stamped (stamp-all candidates cosines config)]
      (log-penalty-pass! stamped config)
      (vec (sort-by (fn [c] (or (:fitness-score c) -1.0)) > stamped)))))

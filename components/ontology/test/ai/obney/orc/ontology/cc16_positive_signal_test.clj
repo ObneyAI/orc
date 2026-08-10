@@ -37,6 +37,23 @@
    force-fit stays rank #1 — firing without demoting."
   0.0145)
 
+(def ^:private pre-cc20-config
+  "CC-20: the EXACT configuration this fixture's measurements were taken
+   under — the pre-CC-20 shipped absolute gate (Slice-4b margin retune) with
+   the Stage-1 positive signal. The measurement-reproduction and
+   absolute-arithmetic assertions below MUST replay under the arithmetic that
+   produced the banked numbers; the shipped default is now the CC-20 :z-score
+   gate with :positive-signal :good-when (see cc20-gate-form-test for its
+   banked-cells contract), under which a single-candidate pass abstains
+   structurally — so scoring these one-candidate fixture cells under the NEW
+   default would assert nothing about the measurements."
+  {:scorer :colbert
+   :penalty-scale 10.0
+   :margin 0.010
+   :penalty-cap 0.6
+   :positive-signal :content+good-when
+   :colbert-norm {:max-score nil :method :batch-relative}})
+
 (defn- production-candidate
   "The enriched-candidate shape the penalty reads, built from the REAL body."
   []
@@ -66,7 +83,7 @@
   "Run the PRODUCTION hot path (penalize-candidates, 4-arity) for one fixture
    cell under `config`, returning the stamped candidate + the documents the
    single rerank call actually received."
-  ([cell] (score-cell cell dp/default-penalty-config))
+  ([cell] (score-cell cell pre-cc20-config))
   ([cell config]
    (let [seen (atom #{})
          rerank (golden-rerank cell seen)
@@ -183,12 +200,33 @@
 ;; STAGE 1 — zero behaviour change: both computed, both stamped, CURRENT applied.
 ;; =============================================================================
 
-(deftest stage-1-applies-the-current-signal-and-only-shadows-the-other
+;; CC-20 — STAGE 2 IS SHIPPED. This deftest used to pin Stage 1 (the default
+;; applying :content+good-when so the shadow could be read against the 0/154
+;; baseline before the mechanism was woken). The three ADR-0026 watch
+;; conditions are now met on the banked cells under the CC-20 z gate (firing
+;; rate seen; canary exactly 0; force-fit demoting), so the SHIPPED default
+;; applies :good-when — pinned here — while the pre-CC-20 config's Stage-1
+;; behavior stays pinned under its own explicit config (the knob mechanism,
+;; not the era, is the contract).
+(deftest the-shipped-default-applies-good-when-and-shadows-with-content
+  (doseq [cell (:cells fixture)]
+    (let [{:keys [stamped]} (score-cell cell dp/default-penalty-config)]
+      (testing (str (:qid cell) " — the APPLIED keys equal the sans-content variant")
+        (is (= :good-when (:positive-signal stamped))
+            "ADR 0026 Stage 2, flipped by CC-20")
+        (is (= (:cos-avoid-sans-content stamped) (:cos-avoid stamped)))
+        (is (= (:cos-good-sans-content stamped) (:cos-good stamped)))
+        (is (= (:domain-penalty-sans-content stamped) (:domain-penalty stamped)))
+        (is (= (dp/apply-penalty 0.95 (:domain-penalty-sans-content stamped))
+               (:fitness-score stamped))
+            "fitness is penalized by the APPLIED variant only")))))
+
+(deftest the-pre-cc20-config-still-applies-the-stage-1-signal
   (doseq [cell (:cells fixture)]
     (let [{:keys [stamped]} (score-cell cell)]
-      (testing (str (:qid cell) " — the APPLIED keys equal the with-content variant")
-        (is (= :content+good-when (:positive-signal stamped))
-            "Stage 1 applies the pre-ADR-0026 signal")
+      (testing (str (:qid cell) " — under the explicit pre-CC-20 config the "
+                    "APPLIED keys equal the with-content variant")
+        (is (= :content+good-when (:positive-signal stamped)))
         (is (= (:cos-avoid-with-content stamped) (:cos-avoid stamped)))
         (is (= (:cos-good-with-content stamped) (:cos-good stamped)))
         (is (= (:domain-penalty-with-content stamped) (:domain-penalty stamped)))
@@ -197,9 +235,13 @@
             "fitness is penalized by the APPLIED variant only")))))
 
 (deftest the-positive-signal-knob-selects-which-variant-is-applied
+  ;; CC-20: the knob mechanics are asserted under the explicit pre-CC-20
+  ;; absolute config — the 'flip wakes the penalty' property is a measured
+  ;; fact about THIS fixture under THAT arithmetic (a single-candidate pass
+  ;; under the new z default abstains structurally, asserting nothing).
   (let [cell (first (filter #(= "refactor/oov" (:qid %)) (:cells fixture)))
-        stage-1 (:stamped (score-cell cell))
-        stage-2 (:stamped (score-cell cell (assoc dp/default-penalty-config
+        stage-1 (:stamped (score-cell cell pre-cc20-config))
+        stage-2 (:stamped (score-cell cell (assoc pre-cc20-config
                                                   :positive-signal :good-when)))]
     (testing "flipping :positive-signal to :good-when applies the sans-content
               variant — and BOTH variants stay stamped either way (ADR 0027:
@@ -233,9 +275,13 @@
           rerank (golden-rerank cell seen)
           resolver (constantly {:rerank (fn [_ctx opts] (rerank opts))
                                 :normalize (fn [score & _] score)})
+          ;; CC-20: asserted under the explicit pre-CC-20 absolute config so
+          ;; the invariant stays NON-VACUOUS — under the new z default a
+          ;; single-candidate pass abstains regardless, which would prove
+          ;; nothing about the enforcing-set gate.
           stamped (binding [dp/*colbert-resolver* resolver]
                     (first (dp/penalize-candidates nil [cand] (:qid cell)
-                                                   dp/default-penalty-config)))]
+                                                   pre-cc20-config)))]
       (is (= [] (dp/avoid-strings cand))
           "present-and-empty means 'has claims, none has earned enforcement yet'")
       (is (= 0.0 (:cos-avoid-with-content stamped)))
@@ -273,15 +319,21 @@
 ;; =============================================================================
 
 (deftest penalty-pass-report-states-the-firing-rate-and-contrast-distribution
+  ;; CC-20: the report is asserted under the explicit pre-CC-20 config — the
+  ;; discrimination this deftest pins ('the shipped signal is inert where the
+  ;; ADR-0026 signal is not') is a measured fact about THIS fixture under the
+  ;; absolute arithmetic that measured it. The :z-score report's own shape
+  ;; (gate form + knobs + population) is pinned in cc20-gate-form-test.
   (let [cells (:cells fixture)
         stamped (mapv #(:stamped (score-cell %)) cells)
-        report (dp/penalty-pass-report stamped dp/default-penalty-config)]
-    (testing "the report states its N and the knobs it judged against"
+        report (dp/penalty-pass-report stamped pre-cc20-config)]
+    (testing "the report states its N, its gate form, and the knobs it judged against"
       (is (= (count cells) (:candidate-count report)))
       (is (= :content+good-when (:applied-positive-signal report)))
-      (is (= (:margin dp/default-penalty-config) (:margin report)))
-      (is (= (:penalty-scale dp/default-penalty-config) (:penalty-scale report)))
-      (is (= (:penalty-cap dp/default-penalty-config) (:penalty-cap report))))
+      (is (= :absolute (:gate-form report)))
+      (is (= (:margin pre-cc20-config) (:margin report)))
+      (is (= (:penalty-scale pre-cc20-config) (:penalty-scale report)))
+      (is (= (:penalty-cap pre-cc20-config) (:penalty-cap report))))
     (testing "BOTH variants report a firing count, a firing rate, and the
               contrast + penalty distributions CC-20 will derive the penalty's
               form and value from"

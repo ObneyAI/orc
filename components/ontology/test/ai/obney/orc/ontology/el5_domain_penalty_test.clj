@@ -205,12 +205,17 @@
                                     (fn [score & {:keys [max-score]
                                                   :or {max-score 40.0}}]
                                       (/ (double score) max-score)))
-          {:keys [cos-avoid cos-good]} (scorer cand "refactor extract a helper")]
+          {:keys [cos-avoid cos-good] :as res} (scorer cand "refactor extract a helper")]
       ;; Default config is :batch-relative (JVM-ColBERT Slice 3): each guard is
       ;; normalized by the call's MAX raw score (20.0 here), norm-fn unused.
       (is (approx? 1.0 cos-avoid) "avoid guard is the call max: 20/20 = 1.0")
-      ;; cos-good = MAX over (:content, :good-when) = MAX(12,10)/20 = 0.6
-      (is (approx? 0.6 cos-good) "cos-good = MAX over summary + good-when, call-relative")
+      ;; CC-20 — CHANGED APPLIED VARIANT, SAME CONTRACT. The default applies
+      ;; the ADR-0026 :good-when signal (Stage 2, flipped by CC-20), so the
+      ;; APPLIED cos-good = good-when 10/20 = 0.5; the pre-flip reading
+      ;; MAX(:content, :good-when) = 12/20 = 0.6 stays stamped as shadow.
+      (is (approx? 0.5 cos-good) "APPLIED cos-good = :good-when alone, call-relative")
+      (is (approx? 0.6 (:cos-good-with-content res))
+          "the pre-flip reading MAX(:content,:good-when)=12/20 stays stamped as shadow")
       (is (> cos-avoid cos-good) "the refactor force-fit shape: avoid beats good"))))
 
 ;; =============================================================================
@@ -250,9 +255,14 @@
             res (scorer {:avoid-when ["a"] :content "b"} "task")]
         (is (map? res))
         ;; default :batch-relative (Slice 3): call max is avoid "a" (20.0)
-        ;; => avoid 20/20 = 1.0 ; good "b" = 10/20 = 0.5
+        ;; => avoid 20/20 = 1.0. CC-20 — CHANGED APPLIED VARIANT, SAME
+        ;; CONTRACT: the default applies :good-when, and this candidate has NO
+        ;; :strengths, so the APPLIED cos-good is 0.0 (the conservative side,
+        ;; never fabricated); the pre-flip content reading "b" = 10/20 = 0.5
+        ;; stays stamped as shadow.
         (is (approx? 1.0 (:cos-avoid res)))
-        (is (approx? 0.5 (:cos-good res)))))))
+        (is (approx? 0.0 (:cos-good res)))
+        (is (approx? 0.5 (:cos-good-with-content res)))))))
 
 ;; =============================================================================
 ;; 6. score-candidate — CONTRASTIVE on real-shaped candidates with a fake scorer
