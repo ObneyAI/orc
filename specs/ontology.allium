@@ -235,6 +235,20 @@ config {
     validation_support_threshold: Integer = 5
     description_recurrence_threshold: Integer = 2
 
+    -- CC-20: the EL-5 domain-penalty gate is population-relative (z within the
+    -- rerank pass's own contrast population), not an absolute margin. Derived
+    -- on the banked cc16 cells (559 real cells x 2 variants x 2 query limits):
+    -- z_threshold sits inside the measured separability band (own-domain max
+    -- +1.24 < 1.5 < force-fit +1.73), z_scale makes the witnessed force-fit
+    -- penalty clear the demotion bar (0.1 x 0.229 = 0.0229 > 0.0145), and the
+    -- minimum population makes single-candidate passes abstain STRUCTURALLY.
+    -- The old absolute margin (0.010) is not a default anywhere; it survives
+    -- only as an explicit-override legacy form.
+    penalty_z_threshold: Decimal = 1.5
+    penalty_z_scale: Decimal = 0.1
+    penalty_minimum_population: Integer = 5
+    penalty_cap: Decimal = 0.6
+
     -- Harvest promotion. These three were REFERENCED BY NAME in
     -- PromoteWellScoredClass but never declared here (weed-2), so the rules read
     -- as though they were configured while the values lived only in code.
@@ -1142,3 +1156,11 @@ surface SemanticMemory {
         -- contains every meaningful token of a multi-token query; this narrow
         -- deterministic identity check does not authorize similarity guesses.
 }
+
+-- TRACKED GAP (CC-20 follow-up): the EL-5 penalty pass now carries
+-- load-bearing behavioral obligations that live only in code+tests — fires
+-- only when contrast is positive AND z exceeds penalty_z_threshold against
+-- the pass's OWN population; passes smaller than penalty_minimum_population
+-- abstain; the penalty is graded by z-excess and capped. The reranking pass
+-- is not yet modeled as spec vocabulary, so the rule cannot be written here
+-- without inventing entities; it lands when the rerank surface is specced.
