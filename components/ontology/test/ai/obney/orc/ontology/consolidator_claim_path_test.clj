@@ -22,7 +22,7 @@
    The reflection LLM is stubbed so the contract is deterministic; a live model
    is the orchestrator's QA."
   (:require [clojure.test :refer [deftest testing is]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
@@ -115,7 +115,7 @@
 (defmacro with-reflection
   "Stub the reflection LLM to return a fixed operation list."
   [ops & body]
-  `(with-redefs [dscloj/predict (fn [& _#]
+  `(with-redefs [llm/predict (fn [& _#]
                                   {:outputs {:operations ~ops}
                                    :usage {:total-tokens 1} :model "stub"})]
      ~@body))

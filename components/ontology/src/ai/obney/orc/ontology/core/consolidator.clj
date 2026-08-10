@@ -356,19 +356,24 @@
 (def ^:private claim-reflection-workflow
   "Single-:llm-node ORC workflow for the CLAIM reflection call.
 
-   `:operations` is typed as a vector of `claim-operation-proposal` so dscloj's
+   `:operations` is typed as a vector of `claim-operation-proposal` so the llm
    structured-output spec tells the model the per-field types. The schema is an
    OPEN malli map — which is exactly why `prepare-operations` has to reject
-   unknown keys itself: a drifted key VALIDATES here and would vanish silently."
+   unknown keys itself: a drifted key VALIDATES here and would vanish silently.
+
+   The input schemas mirror `reflection-workflow`'s: both workflows are fed by
+   the same gatherers (`gather-recent-events`, `gather-aggregate-metrics`,
+   `compute-delta`, `gather-structural-context`), and the DSL layer rejects
+   unconstrained schemas (`:any` / bare `:map`) outright."
   (orc/workflow "ontology-consolidator-claim-reflection"
     (orc/blackboard
       {:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]
-       :target-id :any
+       :target-id target-identity-schema
        :claim-set :string
-       :recent-events [:vector :map]
-       :aggregate-metrics [:maybe :map]
-       :recent-vs-historical-delta [:maybe :map]
-       :structural-context :any
+       :recent-events [:vector recent-event-schema]
+       :aggregate-metrics [:maybe aggregate-metrics-schema]
+       :recent-vs-historical-delta [:maybe history-delta-schema]
+       :structural-context [:maybe target-identity-schema]
        :operations [:vector claim-operation-proposal]})
 
     (orc/llm "propose-claim-operations"

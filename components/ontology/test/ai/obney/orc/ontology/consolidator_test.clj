@@ -128,7 +128,7 @@
    LLM for a body — they ask it for OPERATIONS over the target's claim set, so
    a tree-class test stubs this instead of `with-faked-llm`."
   [ops f]
-  (with-redefs [dscloj/predict (fn [& _]
+  (with-redefs [llm/predict (fn [& _]
                                  {:outputs {:operations ops}
                                   :usage {:total-tokens 100}
                                   :model "fake-model"})]
@@ -990,9 +990,9 @@
 
 (defn- with-input-capturing-claim-reflection
   "Like with-input-capturing-llm, for the CLAIM path: captures the inputs
-   dscloj/predict was handed and returns a fixed operation list."
+   llm/predict was handed and returns a fixed operation list."
   [captured-inputs ops f]
-  (with-redefs [dscloj/predict
+  (with-redefs [llm/predict
                 (fn [_provider _module inputs _options]
                   (swap! captured-inputs conj inputs)
                   {:outputs {:operations ops}

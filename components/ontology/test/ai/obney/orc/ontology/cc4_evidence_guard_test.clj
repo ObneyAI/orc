@@ -18,6 +18,7 @@
    had no concept of starvation at any point."
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.ontology.interface :as ontology]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
@@ -136,7 +137,7 @@
           starved (starved-occurrence! ctx)
           calls (atom 0)]
       ;; Any LLM path must be untouched for this shape — the cheap check owns it.
-      (with-redefs [dscloj.core/predict (fn [& _] (swap! calls inc) {:outputs {}})]
+      (with-redefs [llm/predict (fn [& _] (swap! calls inc) {:outputs {}})]
         (record! ctx target [(delta :add {:content "starved-derived claim"
                                           :episodes [starved]})]))
       (is (empty? (claims ctx target)) "excluded")

@@ -19,7 +19,7 @@
    Real grain: the real completion command, the real registered enrichment
    processor, assertions read the claim set and the assembled body back."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
-            [dscloj.core :as dscloj]
+            [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
@@ -41,7 +41,7 @@
 ;; Harness hygiene only: a threshold-fired autonomous consolidation must never
 ;; reach a real provider. CV-2's enrichment itself uses NO LLM.
 (defn- stub-predict-fixture [f]
-  (with-redefs [dscloj/predict
+  (with-redefs [llm/predict
                 (fn [_provider _module _inputs _options]
                   {:outputs {:operations []}
                    :usage {:total-tokens 1}

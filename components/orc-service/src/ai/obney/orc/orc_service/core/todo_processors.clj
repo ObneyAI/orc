@@ -1900,7 +1900,25 @@
                                 :node-id node-id
                                 :node-type :repl-researcher
                                 :status effective-status
-                                :writes (normalize-output-keys (or effective-outputs {}))}
+                                ;; WS-2a × CC-21b (O7): on a :blocked completion the
+                                ;; child tick's delivered :outputs is a blackboard
+                                ;; SNAPSHOT — tick delivery pads every declared-but-
+                                ;; unwritten key with nil ("reported as nil rather
+                                ;; than going missing"). Passing that padding on as
+                                ;; :writes would let O7's externalization fabricate
+                                ;; :sheet/execution-value-written events for keys
+                                ;; nothing ever wrote (ws2a: no leaf runs after a
+                                ;; block). nil means "not produced" engine-wide (the
+                                ;; child-input seeding, the nil-output retry, the
+                                ;; delegate output mapper all treat it so), so a
+                                ;; blocked completion's writes are the snapshot's
+                                ;; non-nil entries — the values genuinely written
+                                ;; before the block, which stay durable per O7.
+                                :writes (normalize-output-keys
+                                          (if (= :blocked effective-status)
+                                            (into {} (remove (comp nil? val))
+                                                  (or effective-outputs {}))
+                                            (or effective-outputs {})))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
                          ;; Carry the node's real read inputs (plus any map-each
