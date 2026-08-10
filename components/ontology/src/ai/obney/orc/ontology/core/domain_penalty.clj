@@ -152,11 +152,16 @@
                         — the summary cancels its own guard), so NO gate of
                         any form can demote it: the flip is a precondition of
                         the EL-5 acceptance contract, not a preference.
-     :colbert-norm    — unchanged (JVM-ColBERT Slice 3, amended by CC-17):
-                        {:max-score nil :method :batch-relative}; nil means
-                        'the colbert backend's own derived ceiling'. Explicit
-                        :linear / :sigmoid configs keep their exact old
-                        behavior.
+     :colbert-norm    — {:max-score nil :method :batch-relative} (JVM-ColBERT
+                        Slice 3, amended by CC-17 + CC-27): nil means 'the
+                        ceiling of the ENCODING THAT PRODUCED THE SCORE' —
+                        read per rerank call off the truncation report the
+                        encode stamped on the results (CC-25's
+                        results-maxsim-ceiling), NEVER the process default.
+                        The process default is only that seam's loud,
+                        no-identity fallback. Explicit numeric :max-score
+                        configs keep their exact old behavior; the default
+                        :batch-relative method never touches the ceiling.
 
    The pre-CC-20 absolute knobs (:margin 0.010, :penalty-scale 10.0) are
    DELIBERATELY ABSENT — not dead config. See legacy-absolute-defaults +
@@ -449,17 +454,25 @@
 
 (defn- resolve-colbert-fns
   "Lazily resolve the colbert interface fns the :colbert backend needs.
-   Returns {:rerank <var> :normalize <var>} when the colbert component is on
-   the classpath, nil otherwise. Resolving VARS (not fn values) preserves
-   with-redefs / re-def semantics — a var call derefs at invocation time,
-   exactly like the previous static `colbert/rerank` call."
+   Returns {:rerank <var> :normalize <var> :ceiling <var>} when the colbert
+   component is on the classpath, nil otherwise. Resolving VARS (not fn values)
+   preserves with-redefs / re-def semantics — a var call derefs at invocation
+   time, exactly like the previous static `colbert/rerank` call.
+
+   CC-27: `:ceiling` is CC-25's `results-maxsim-ceiling` — the ceiling of the
+   encoding that produced a result collection, read off its truncation-report
+   metadata. The :linear/:sigmoid scorer paths normalize against IT when
+   `:colbert-norm {:max-score nil}` is configured (the process default is only
+   its own loud, no-identity fallback)."
   []
   (let [rerank    (try (requiring-resolve 'ai.obney.orc.colbert.interface/rerank)
                        (catch Throwable _ nil))
         normalize (try (requiring-resolve 'ai.obney.orc.colbert.interface/normalize-colbert-score)
+                       (catch Throwable _ nil))
+        ceiling   (try (requiring-resolve 'ai.obney.orc.colbert.interface/results-maxsim-ceiling)
                        (catch Throwable _ nil))]
-    (when (and rerank normalize)
-      {:rerank rerank :normalize normalize})))
+    (when (and rerank normalize ceiling)
+      {:rerank rerank :normalize normalize :ceiling ceiling})))
 
 (def ^:dynamic *colbert-resolver*
   "The INJECTABLE resolver seam (defaults to the real requiring-resolve impl).
@@ -606,7 +619,15 @@
    No guards on a side => that side's score is 0.0 (the conservative side: a
    candidate with no :avoid-when can't be penalized). Deterministic given
    rerank-fn, so tests stub rerank-fn and assert split+max+normalize without
-   touching the bridge."
+   touching the bridge.
+
+   ⚠ CC-27: norm-fn arrives here already CLOSED over its ceiling — this
+   adapter cannot thread a per-encoding ceiling itself. Whoever constructs
+   norm-fn owns that obligation: a fixed-ceiling norm-fn built from
+   normalize-colbert-score must carry the PRODUCING call's ceiling
+   (results-maxsim-ceiling), not the process default. The production scorers
+   (colbert-scorer / batch-colbert-scorer) do this; only tests call this
+   adapter directly today."
   [rerank-fn norm-fn avoid good task]
   (let [avoid (vec (remove (fn [s] (or (nil? s) (str/blank? s))) avoid))
         good  (vec (remove (fn [s] (or (nil? s) (str/blank? s))) good))
@@ -699,17 +720,35 @@
    NB: one rerank call PER CANDIDATE (its own guard set), each scoring all of
    that candidate's guards against the task in a single bridge round-trip.
 
+   CC-27: on the explicit :linear/:sigmoid paths, a `:max-score nil` config
+   means the ceiling of the ENCODING THAT PRODUCED THE SCORES — resolved
+   per rerank call by `ceiling-fn` (the real backend wires CC-25's
+   `results-maxsim-ceiling`, which reads `maximum_query_tokens` off the
+   truncation report the encode call stamped on the result collection). It is
+   NOT the process default: an encoding above the default would clamp every
+   score to 1.0 (order destroyed — `invariant.BoundedNormalization`), below it
+   the scale silently compresses. The process default is reached only when no
+   encoding identity exists (no truncation report), and that fallback is LOUD
+   (mulogged on the colbert side), never silent.
+
    The 2-arity resolves the colbert fns via *colbert-resolver* at construction
    time; it IS an explicit colbert request, so it throws the precise
    colbert-unavailable ex-info when the component is absent (make-scorer /
-   make-batch-scorer own the default-config graceful degradation)."
+   make-batch-scorer own the default-config graceful degradation). The
+   injected arities: the 5-arity takes `ceiling-fn` (results -> ceiling or
+   nil); the 4-arity keeps its historical contract — no ceiling-fn, so a nil
+   :max-score flows to norm-fn as-is, exactly as before CC-27 (injected
+   norm-fn stubs own their ceiling semantics)."
   ([ctx config]
-   (let [{:keys [rerank normalize]} (or (*colbert-resolver*)
-                                        (throw (colbert-unavailable-ex)))]
+   (let [{:keys [rerank normalize ceiling]} (or (*colbert-resolver*)
+                                                (throw (colbert-unavailable-ex)))]
      (colbert-scorer ctx config
                      (fn [opts] (rerank ctx opts))
-                     normalize)))
-  ([_ctx {:keys [colbert-norm] :as config} rerank-fn norm-fn]
+                     normalize
+                     (or ceiling (fn [_results] nil)))))
+  ([ctx config rerank-fn norm-fn]
+   (colbert-scorer ctx config rerank-fn norm-fn (fn [_results] nil)))
+  ([_ctx {:keys [colbert-norm] :as config} rerank-fn norm-fn ceiling-fn]
    (let [{:keys [max-score method]
           :or {max-score (:max-score (:colbert-norm default-penalty-config))
                method (:method (:colbert-norm default-penalty-config))}} colbert-norm
@@ -730,29 +769,32 @@
              (let [res (rerank-fn {:query task :documents docs})
                    raw (into {} (map (juxt :content :score)) res)]
                ((candidate-relative-cosines-fn raw config) candidate)))))
-       ;; Explicit :linear / :sigmoid — the exact pre-Slice-3 behavior, with the
-       ;; same shadow bolted on: fixed-ceiling normalization is per-score, so the
-       ;; two variants differ only in which strings the good-side MAX ranges over.
-       (let [norm (fn [score] (norm-fn score :max-score max-score :method method))]
-         (fn [candidate task]
-           (let [avoid (vec (remove (fn [s] (or (nil? s) (str/blank? s)))
-                                    (avoid-strings candidate)))
-                 docs  (vec (remove (fn [s] (or (nil? s) (str/blank? s)))
-                                    (scored-strings candidate)))]
-             (if (empty? docs)
-               {:cos-avoid 0.0 :cos-good 0.0}
-               (let [res (rerank-fn {:query task :documents docs})
-                     by-content (into {} (map (juxt :content :score)) res)
-                     max-norm (fn [strings]
-                                (let [scores (keep by-content strings)]
-                                  (if (seq scores) (norm (apply max scores)) 0.0)))
-                     cos-avoid (max-norm avoid)]
-                 (dual-cosines
-                  (fn [variant]
-                    {:cos-avoid cos-avoid
-                     :cos-good (max-norm (remove (fn [s] (or (nil? s) (str/blank? s)))
-                                                 (positive-strings-for variant candidate)))})
-                  applied))))))))))
+       ;; Explicit :linear / :sigmoid — fixed-ceiling normalization is per-score,
+       ;; so the two variants differ only in which strings the good-side MAX
+       ;; ranges over. CC-27: the ceiling is resolved PER CALL, from the result
+       ;; collection the rerank actually produced — a nil :max-score means that
+       ;; encoding's OWN ceiling, never the process default.
+       (fn [candidate task]
+         (let [avoid (vec (remove (fn [s] (or (nil? s) (str/blank? s)))
+                                  (avoid-strings candidate)))
+               docs  (vec (remove (fn [s] (or (nil? s) (str/blank? s)))
+                                  (scored-strings candidate)))]
+           (if (empty? docs)
+             {:cos-avoid 0.0 :cos-good 0.0}
+             (let [res (rerank-fn {:query task :documents docs})
+                   ceiling (if (some? max-score) max-score (ceiling-fn res))
+                   norm (fn [score] (norm-fn score :max-score ceiling :method method))
+                   by-content (into {} (map (juxt :content :score)) res)
+                   max-norm (fn [strings]
+                              (let [scores (keep by-content strings)]
+                                (if (seq scores) (norm (apply max scores)) 0.0)))
+                   cos-avoid (max-norm avoid)]
+               (dual-cosines
+                (fn [variant]
+                  {:cos-avoid cos-avoid
+                   :cos-good (max-norm (remove (fn [s] (or (nil? s) (str/blank? s)))
+                                               (positive-strings-for variant candidate)))})
+                applied)))))))))
 
 (defn make-scorer
   "Select + construct the PER-CANDIDATE scorer from config (ADR 0016 amendment):
@@ -836,17 +878,27 @@
    the call, and all candidates share the same task query, so the shared map gives
    the IDENTICAL per-guard scores as the N-call colbert-scorer.
 
+   CC-27: same per-encoding ceiling obligation as colbert-scorer — on the
+   explicit :linear/:sigmoid paths a nil :max-score means the ceiling of the
+   encoding that produced THIS batch call's scores (`ceiling-fn`, wired to
+   CC-25's `results-maxsim-ceiling` by the real resolver), never the process
+   default. The 4-arity keeps its historical injected-stub contract (no
+   ceiling-fn => a nil :max-score flows to norm-fn as-is).
+
    The 2-arity resolves the colbert fns via *colbert-resolver* at construction
    time; it IS an explicit colbert request, so it throws the precise
    colbert-unavailable ex-info when the component is absent (make-scorer /
    make-batch-scorer own the default-config graceful degradation)."
   ([ctx config]
-   (let [{:keys [rerank normalize]} (or (*colbert-resolver*)
-                                        (throw (colbert-unavailable-ex)))]
+   (let [{:keys [rerank normalize ceiling]} (or (*colbert-resolver*)
+                                                (throw (colbert-unavailable-ex)))]
      (batch-colbert-scorer ctx config
                            (fn [opts] (rerank ctx opts))
-                           normalize)))
-  ([_ctx {:keys [colbert-norm] :as config} rerank-fn norm-fn]
+                           normalize
+                           (or ceiling (fn [_results] nil)))))
+  ([ctx config rerank-fn norm-fn]
+   (batch-colbert-scorer ctx config rerank-fn norm-fn (fn [_results] nil)))
+  ([_ctx {:keys [colbert-norm] :as config} rerank-fn norm-fn ceiling-fn]
    (let [{:keys [max-score method]
           :or {max-score (:max-score (:colbert-norm default-penalty-config))
                method (:method (:colbert-norm default-penalty-config))}} colbert-norm]
@@ -865,8 +917,11 @@
                (candidate-relative-cosines-fn
                 (into {} (map (juxt :content :score)) res)
                 config)
-               ;; Explicit :linear / :sigmoid — the exact pre-Slice-3 behavior.
-               (let [norm (fn [score] (norm-fn score :max-score max-score :method method))
+               ;; Explicit :linear / :sigmoid — CC-27: the ceiling is resolved
+               ;; from THIS call's result collection (a nil :max-score means
+               ;; the encoding's OWN ceiling, never the process default).
+               (let [ceiling (if (some? max-score) max-score (ceiling-fn res))
+                     norm (fn [score] (norm-fn score :max-score ceiling :method method))
                      score-map (into {} (map (juxt :content (comp norm :score))) res)]
                  (candidate-cosines-fn score-map config))))))))))
 

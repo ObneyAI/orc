@@ -75,10 +75,12 @@
   ^double [results]
   (if-let [limit (get-in (meta results) [:query-truncation :maximum-query-tokens])]
     (maxsim-ceiling limit)
-    (do (mu/log ::maxsim-ceiling-from-process-default
-                :reason :no-truncation-report-on-results
-                :result-count (count results))
-        (maxsim-ceiling))))
+    (let [fallback (maxsim-ceiling)]
+      (mu/log ::maxsim-ceiling-from-process-default
+              :reason :no-truncation-report-on-results
+              :result-count (count results)
+              :process-default-ceiling fallback)
+      fallback)))
 
 (defn normalize-colbert-score
   "Normalize ColBERT score to 0-1 range.
@@ -101,13 +103,29 @@
      score - Raw ColBERT score (typically ~[0, maximum_query_tokens])
      opts - Options map:
        :max-score - Maximum expected score for normalization (default:
-                    maxsim-ceiling; an explicit nil also falls back to it)
+                    maxsim-ceiling; an explicit nil also falls back to it —
+                    LOUDLY since CC-27: the fallback mulogs the score and the
+                    process-default ceiling it used, because callers holding
+                    an encoding identity are expected to pass that encoding's
+                    own ceiling via results-maxsim-ceiling)
        :method - Normalization method: :linear, :sigmoid (default: :linear)
 
    Returns:
      Normalized score in [0, 1] range"
   [score & {:keys [max-score method] :or {method :linear}}]
-  (let [max-score (double (or max-score (maxsim-ceiling)))]
+  (let [max-score (double (or max-score
+                              ;; CC-27: the process-default fallback is LOUD.
+                              ;; Every caller holding an encoding identity
+                              ;; passes the encoding's own ceiling (CC-25's
+                              ;; results-maxsim-ceiling), so landing here means
+                              ;; no identity existed for this bare score —
+                              ;; record both values in hand, never take the
+                              ;; default silently.
+                              (let [fallback (maxsim-ceiling)]
+                                (mu/log ::normalize-score-process-default-fallback
+                                        :score (double score)
+                                        :process-default-ceiling fallback)
+                                fallback)))]
     (case method
       :linear
       (min 1.0 (max 0.0 (/ (double score) max-score)))

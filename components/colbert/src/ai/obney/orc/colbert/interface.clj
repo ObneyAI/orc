@@ -233,6 +233,15 @@
    `normalize-results-to-ceiling`, which reads the limit off the encoding that
    actually ran.
 
+   CC-27 closed the last consumer that fell into this: the ontology
+   domain-penalty's explicit :linear/:sigmoid configs now thread the producing
+   call's ceiling (`results-maxsim-ceiling` via the resolver seam) instead of
+   flowing `:max-score nil` into the process default. The fallback itself is
+   now LOUD — with no :max-score (or an explicit nil) this fn mulogs
+   `normalize-score-process-default-fallback` with the score and the ceiling
+   it used, because after CC-25/CC-27 reaching the default means no encoding
+   identity existed for the score at all.
+
    This normalizes raw scores for RRF fusion with other retrieval signals
    (graph BFS, embeddings). NB: MASK query expansion gives even unrelated pairs
    a high floor — score-CONTRAST consumers should normalize relative to the
