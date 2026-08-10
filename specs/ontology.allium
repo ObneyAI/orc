@@ -577,6 +577,16 @@ rule RequestThresholdConsolidation {
 -- The claim-existence condition is enforced at the MERGE, not here: a delta
 -- naming a claim that has since retired is a normal outcome of concurrent
 -- learning, and the fold tolerates it as a no-op.
+--
+-- TRACKED GAP (CC-31): model provenance is not yet modeled on the delta path.
+-- Upstream threads model_provenance through the whole-body description events
+-- for replayability, and the retained description code path carries it — but
+-- ClaimDeltasRecorded does not, in spec or code. The obligation is deliberate
+-- and deferred, NOT forgotten: it lands as one slice (event field + command
+-- schema + consolidator threading + this rule's binding) so spec and code move
+-- together. Recording provenance per DELTA matters more than per body: claims
+-- accrue across many consolidations, and diagnosing model drift needs to know
+-- which model proposed each insight.
 rule RecordClaimDeltas {
     when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
     let description = current_description(granularity, target_identifier)
