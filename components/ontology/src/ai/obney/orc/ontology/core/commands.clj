@@ -1329,7 +1329,7 @@
   [{{:keys [source-sheet-id source-tick-id source-node-id
             assigned-tree-id confidence top-candidates reasoning
             was-fresh-mint? parent-tree-id rerank-failed?
-            behavioral-subtrees]} :command}]
+            behavioral-subtrees ranked-candidates assigned-via]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/task-classified
@@ -1351,7 +1351,48 @@
               ;; the wedge called classify-behaviors after classify-task.
               ;; Omit when absent so legacy events stay unchanged.
               (some? behavioral-subtrees)
-              (assoc :behavioral-subtrees behavioral-subtrees))})]})
+              (assoc :behavioral-subtrees behavioral-subtrees)
+              ;; CC-23 (DecidedRankingIsRecorded): forward the pre-gate
+              ;; ranking + assignment provenance when the caller supplied
+              ;; them. Omit-not-nil, so pre-CC-23 callers' events stay
+              ;; byte-shaped exactly as before.
+              (some? ranked-candidates)
+              (assoc :ranked-candidates ranked-candidates)
+              (some? assigned-via)
+              (assoc :assigned-via assigned-via))})]})
+
+;; =============================================================================
+;; CC-23 (contract TaskClassification) — deferral is a positive fact
+;; =============================================================================
+
+(defcommand :ontology record-task-classification-deferral
+  "CC-23, the spec's DeferralIsVisible: record a classification that
+   DEFERRED — the semantic reranker fell back, so fitness is unknown.
+   'Uncertain' and 'nothing happened' are different facts; counting
+   :ontology/task-classification-deferred events IS the deferral rate,
+   never an inference from missing :ontology/task-classified events.
+
+   ONE command per deferred classification, dispatched by the classify
+   CALL SITE (the C-2c-2 wedge) — the classify fn itself stays a pure
+   decision fn. A deferral structurally cannot ride
+   :ontology/assign-task-class (it REQUIRES an :assigned-tree-id), which
+   is why this is its own command + event.
+
+   The [:tick source-tick-id] tag mirrors :ontology/task-classified so a
+   tick's outcome — assigned OR deferred — is one tag-query away."
+  [{{:keys [source-sheet-id source-tick-id source-node-id
+            fallback-source ranked-candidates reasoning]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/task-classification-deferred
+      :tags #{[:tick source-tick-id]}
+      :body {:source-sheet-id source-sheet-id
+             :source-tick-id source-tick-id
+             :source-node-id source-node-id
+             :fallback-source fallback-source
+             :ranked-candidates ranked-candidates
+             :reasoning reasoning
+             :deferred-at (now-str)}})]})
 
 ;; =============================================================================
 ;; R05c — Mint a new behavioral-subtree concept

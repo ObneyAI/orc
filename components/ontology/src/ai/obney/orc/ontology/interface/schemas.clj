@@ -343,6 +343,44 @@
   [:vector reranked-result])
 
 ;; =============================================================================
+;; CC-23 (contract TaskClassification) — bounded pre-gate ranking snapshot
+;; =============================================================================
+
+(def ranked-candidate
+  "CC-23, the spec's DecidedRankingIsRecorded: ONE entry of the PRE-GATE
+   ranking snapshot a classification decision ran on, REDUCED to identity,
+   axis, scores, and rerank source.
+
+   PAYLOAD BOUND (load-bearing, enforced by {:closed true}): NO `:content`,
+   NO `:summary`, no description text of any kind — measured, candidate
+   content was 59.4% of the tree-class evidence payload (the CC-21 lesson).
+
+     :target-id     — candidate identity (UUID or the ColBERT JSON bridge's
+                      stringified form; seeds may carry seed-string ids)
+     :granularity   — the retrieval axis (:tree-class / :tree-fingerprint /
+                      :behavioral-subtree / ...)
+     :rerank-source — how this entry was ranked (:reranker on success;
+                      :colbert-fallback / :timeout-fallback when the
+                      reranker did not rank). Omitted in the degenerate
+                      case of an unstamped candidate (omit-not-nil).
+     :fitness-score — the reranker's absolute fitness. OMITTED (not nil)
+                      on the fallback path where the reranker never scored.
+     :score         — the raw ColBERT retrieval score, when present."
+  [:map {:closed true}
+   [:target-id     [:or :uuid :string]]
+   [:granularity   :keyword]
+   [:rerank-source {:optional true} :keyword]
+   [:fitness-score {:optional true} number?]
+   [:score         {:optional true} number?]])
+
+(def ranked-candidates
+  "The bounded pre-gate ranking snapshot: at most the retrieval top-k
+   entries (k = 5, `task-classifier/classify-retrieval-k` — the classifier's
+   retrieval :k). The {:max 5} bound plus the entry's closed map IS the
+   spec's payload bound: length <= k, no description content."
+  [:vector {:max 5} ranked-candidate])
+
+;; =============================================================================
 ;; Event Schemas
 ;; =============================================================================
 
@@ -591,7 +629,56 @@
     ;; reasoning, and rerank-source. Populated by R05b's classify-behaviors
     ;; via the wedge; absent on legacy events and on first-tick classify
     ;; calls that opt out of behavioral classification.
-    [:behavioral-subtrees {:optional true} [:vector :map]]]
+    [:behavioral-subtrees {:optional true} [:vector :map]]
+    ;; CC-23 (DecidedRankingIsRecorded): the PRE-GATE ranking the decision
+    ;; ran on — bounded to the retrieval top-k (5), each entry reduced to
+    ;; identity/axis/scores/rerank-source, NEVER description content (see
+    ;; `ranked-candidates` for the full bound). :top-candidates above stays
+    ;; the GATED surfaced view for its consumers, byte-identical to
+    ;; pre-CC-23; motivating audit CC-19: 150/156 events surfaced exactly
+    ;; ONE candidate, and the assigned id was absent from the event's own
+    ;; candidate list in 7/156. OPTIONAL: every pre-CC-23 event lacks it
+    ;; and must replay (omit-not-nil — new producers always attach it).
+    [:ranked-candidates {:optional true} ranked-candidates]
+    ;; CC-23: the assigned identity's provenance — WHICH branch produced
+    ;; :assigned-tree-id. CLOSED set (the CC-28 idiom): a new provenance
+    ;; must be added here deliberately. OPTIONAL for pre-CC-23 replay.
+    [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-23 — Task-classification deferral event (DeferralIsVisible)
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; A classification that DEFERS — the semantic reranker fell back, so
+   ;; fitness is unknown — leaves this durable event: 'uncertain' and
+   ;; 'nothing happened' are different facts, and the deferral rate is a
+   ;; measured number (count these events), never an inference from missing
+   ;; :ontology/task-classified events. Motivating audit (CC-19): the
+   ;; classifier ran on 178 ticks and left 156 events — the 22 silent ticks
+   ;; (12.4%) could only be INFERRED.
+   ;;
+   ;; ONE event per deferred classification, emitted by the classify call
+   ;; site (the C-2c-2 wedge) via :ontology/record-task-classification-deferral.
+   ;; The existing :ontology/assign-task-class REQUIRES an :assigned-tree-id,
+   ;; so a deferral structurally cannot ride it.
+   ;;
+   ;; :fallback-source is a CLOSED set (the CC-28 idiom): a new fallback
+   ;; flavour must be added HERE and to task-classifier/rerank-fallback-sources
+   ;; deliberately, never slipped in as a stringly value.
+   ;;
+   ;; :ranked-candidates carries the same bounded pre-gate snapshot the
+   ;; classified event records — length <= retrieval k (5), entries closed
+   ;; to identity/axis/scores/rerank-source, NEVER description content.
+
+   :ontology/task-classification-deferred
+   [:map
+    [:source-sheet-id   :uuid]
+    [:source-tick-id    :uuid]
+    [:source-node-id    :uuid]
+    [:fallback-source   [:enum :colbert-fallback :timeout-fallback]]
+    [:ranked-candidates ranked-candidates]
+    [:reasoning         :string]
+    [:deferred-at       :string]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Behavioral subtree minting (audit-trail event)
@@ -1189,7 +1276,32 @@
     ;; R05a: behavioral-subtree classification result forwarded by the
     ;; wedge (set by R05b's classify-behaviors call). The defcommand
     ;; carries this through to the emitted task-classified event body.
-    [:behavioral-subtrees {:optional true} [:vector :map]]]
+    [:behavioral-subtrees {:optional true} [:vector :map]]
+    ;; CC-23: pre-gate ranking + assignment provenance forwarded by the
+    ;; wedge from the classify-task result. Optional so pre-CC-23 callers
+    ;; (and replayed tooling) stay valid; new producers always attach them.
+    [:ranked-candidates {:optional true} ranked-candidates]
+    [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-23 — Record a task-classification deferral (DeferralIsVisible)
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Dispatched by the classify CALL SITE (the C-2c-2 wedge) when the
+   ;; classification :outcome is :uncertain — the reranker fell back and the
+   ;; wedge therefore SKIPS :ontology/assign-task-class (which structurally
+   ;; requires an :assigned-tree-id). ONE command per deferred classification.
+   ;; The handler stamps :deferred-at and emits
+   ;; :ontology/task-classification-deferred.
+
+   :ontology/record-task-classification-deferral
+   [:map
+    [:source-sheet-id   :uuid]
+    [:source-tick-id    :uuid]
+    [:source-node-id    :uuid]
+    [:fallback-source   [:enum :colbert-fallback :timeout-fallback]]
+    [:ranked-candidates ranked-candidates]
+    [:reasoning         :string]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Mint a new behavioral-subtree concept

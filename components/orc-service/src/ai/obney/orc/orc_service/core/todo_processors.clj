@@ -356,10 +356,47 @@
             uncertain? (or (= :uncertain (:outcome result))
                            (= :uncertain (:outcome behavioral-result)))]
         (if uncertain?
-          (println (format "[DEBUG RLM] node '%s' auto-classify DEFERRED (outcome :uncertain — struct=%s behav=%s) — NO assign-task-class dispatched"
-                           (or (:name node) (str (:id node)))
-                           (:outcome result)
-                           (:outcome behavioral-result)))
+          ;; CC-23 (contract TaskClassification, DeferralIsVisible): the
+          ;; deferral is a POSITIVE durable fact, not a silent skip. This
+          ;; call site is where the :uncertain result used to vanish (CC-19:
+          ;; 22 of 178 ticks — 12.4% — left no event and could only be
+          ;; INFERRED). ONE deferral event per deferred classification, via
+          ;; its own command — :ontology/assign-task-class REQUIRES an
+          ;; :assigned-tree-id, so a deferral structurally cannot ride it.
+          ;; The classify fns stay pure decision fns; the dispatch lives here.
+          (let [fallback-sources @(requiring-resolve
+                                    'ai.obney.orc.ontology.core.task-classifier/rerank-fallback-sources)
+                fallback-of (fn [entries]
+                              (some (comp fallback-sources :rerank-source) entries))
+                ;; Read the fallback source from the candidates' own
+                ;; :rerank-source — the structural snapshot when classify-task
+                ;; deferred, else the behavioral candidates when only
+                ;; classify-behaviors deferred. Both :uncertain branches
+                ;; guarantee at least one fallback-stamped entry; the terminal
+                ;; :colbert-fallback default is unreachable belt-and-suspenders
+                ;; (a deferral must never fail to record for want of a source).
+                fallback-source (or (when (= :uncertain (:outcome result))
+                                      (fallback-of (:ranked-candidates result)))
+                                    (when (= :uncertain (:outcome behavioral-result))
+                                      (fallback-of (:behaviors behavioral-result)))
+                                    :colbert-fallback)]
+            (cp/process-command
+              (assoc context :command
+                     {:command/name :ontology/record-task-classification-deferral
+                      :command/id (random-uuid)
+                      :command/timestamp (time/now)
+                      :source-sheet-id (:sheet-id context)
+                      :source-tick-id (:tick-id context)
+                      :source-node-id (:id node)
+                      :fallback-source fallback-source
+                      :ranked-candidates (vec (:ranked-candidates result))
+                      :reasoning (or (:reasoning result)
+                                     "Classification deferred: reranker fell back (uncertain).")}))
+            (println (format "[DEBUG RLM] node '%s' auto-classify DEFERRED (outcome :uncertain — struct=%s behav=%s, fallback=%s) — deferral event recorded, NO assign-task-class dispatched"
+                             (or (:name node) (str (:id node)))
+                             (:outcome result)
+                             (:outcome behavioral-result)
+                             fallback-source)))
           (do
             (cp/process-command
               (assoc context :command
@@ -387,7 +424,16 @@
                        ;; Omit when nil/empty so the legacy event shape is
                        ;; preserved on opt-out / failure paths.
                        (seq behaviors)
-                       (assoc :behavioral-subtrees behaviors))))
+                       (assoc :behavioral-subtrees behaviors)
+                       ;; CC-23 (DecidedRankingIsRecorded): forward the
+                       ;; pre-gate ranking the decision ran on + the assigned
+                       ;; identity's provenance. classify-task always produces
+                       ;; both on assigning outcomes; the cond-> guard keeps
+                       ;; stubbing/legacy callers valid (omit-not-nil).
+                       (some? (:ranked-candidates result))
+                       (assoc :ranked-candidates (:ranked-candidates result))
+                       (some? (:assigned-via result))
+                       (assoc :assigned-via (:assigned-via result)))))
             (println (format "[DEBUG RLM] node '%s' auto-classified → %s (confidence %.2f, was-fresh-mint? %s, behavioral-count %d)"
                              (or (:name node) (str (:id node)))
                              (:assigned-tree-id result)
