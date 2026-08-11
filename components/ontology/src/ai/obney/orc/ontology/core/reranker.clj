@@ -125,6 +125,23 @@ per input candidate.")
    re-measurement surprises us."
   "google/gemini-3-flash-preview")
 
+(def ^:private compact-principle-entry
+  "A strengths/weaknesses entry at the RERANKER's provider boundary: the
+   COMPACT principle shape EL-2's enrichment actually sends — an actionable
+   :trait plus optional guard/advice — with the body-side weight signal
+   (:confidence/:evidence-count) OPTIONAL rather than required. A floor,
+   not a dialect: a full `ontology-schemas/principle-entry` also validates."
+  [:map
+   [:trait :string]
+   [:good-when               {:optional true} :string]
+   [:avoid-when              {:optional true} :string]
+   [:recommended-pattern     {:optional true} :string]
+   [:recommended-alternative {:optional true} :string]
+   [:confidence              {:optional true} :double]
+   [:evidence-count          {:optional true} :int]
+   [:first-observed-at       {:optional true} :string]
+   [:last-reinforced-at      {:optional true} :string]])
+
 (def ^:private candidate-schema
   [:map
    [:content :string]
@@ -142,8 +159,20 @@ per input candidate.")
      [:confidence {:optional true} number?]
      [:last-update {:optional true} :string]]]
    [:avoid-when {:optional true} [:vector :string]]
-   [:strengths {:optional true} [:vector ontology-schemas/principle-entry]]
-   [:weaknesses {:optional true} [:vector ontology-schemas/principle-entry]]])
+   ;; CC-15 integration finding (live, 2026-08-11): EL-2's enrichment
+   ;; deliberately COMPACTS these entries to {:trait + guard + advice}
+   ;; ("keep the enrichment compact", interface.clj compact-strengths/
+   ;; compact-weaknesses) — it never sends :confidence/:evidence-count.
+   ;; Declaring the FULL ontology-schemas/principle-entry here (the sio-era
+   ;; schema-enforcement commit) made every enriched rerank fail blackboard
+   ;; validation: pure-ColBERT fallback, EL-3 defer, 100% of live
+   ;; classifications deferred (measured — CC-23's deferral events caught it
+   ;; on their first production traffic). The boundary must describe the
+   ;; payload the producers actually send: :trait is the floor, the guard/
+   ;; advice pair and the weight signal are optional, so BOTH real producers
+   ;; (EL-2 compact, and any future full-entry sender) validate.
+   [:strengths {:optional true} [:vector compact-principle-entry]]
+   [:weaknesses {:optional true} [:vector compact-principle-entry]]])
 
 (defn- reranker-workflow-name
   "The workflow's sheet-identity is deterministic from its NAME
