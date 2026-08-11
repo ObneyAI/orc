@@ -353,7 +353,7 @@
     "Emit an empty operation list only when the evidence genuinely bears on "
     "nothing in the set and contains no new insight."))
 
-(def ^:private claim-reflection-workflow
+(defn- claim-reflection-workflow
   "Single-:llm-node ORC workflow for the CLAIM reflection call.
 
    `:operations` is typed as a vector of `claim-operation-proposal` so the llm
@@ -364,7 +364,14 @@
    The input schemas mirror `reflection-workflow`'s: both workflows are fed by
    the same gatherers (`gather-recent-events`, `gather-aggregate-metrics`,
    `compute-delta`, `gather-structural-context`), and the DSL layer rejects
-   unconstrained schemas (`:any` / bare `:map`) outright."
+   unconstrained schemas (`:any` / bare `:map`) outright.
+
+   CC-31: parameterized by `model` exactly as `reflection-workflow` is — the
+   node's `:model` is what the engine stamps onto the completion event, and
+   that stamp is what makes the recorded deltas' provenance extractable. A
+   nil model leaves the node unpinned (ambient provider default), which is
+   the pre-CC-31 shape unchanged."
+  [model]
   (orc/workflow "ontology-consolidator-claim-reflection"
     (orc/blackboard
       {:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]
@@ -376,14 +383,16 @@
        :structural-context [:maybe target-identity-schema]
        :operations [:vector claim-operation-proposal]})
 
-    (orc/llm "propose-claim-operations"
-      :instruction claim-reflection-instruction
-      :reads [:target-type :target-id :claim-set
-              :recent-events :aggregate-metrics
-              :recent-vs-historical-delta :structural-context]
-      :writes [:operations]
-      :options {:max-retries 3
-                :retry-delay-ms [500 1500 3000]})))
+    (cond->
+      (orc/llm "propose-claim-operations"
+        :instruction claim-reflection-instruction
+        :reads [:target-type :target-id :claim-set
+                :recent-events :aggregate-metrics
+                :recent-vs-historical-delta :structural-context]
+        :writes [:operations]
+        :options {:max-retries 3
+                  :retry-delay-ms [500 1500 3000]})
+      model (assoc :model model))))
 
 ;; =============================================================================
 ;; Input gathering
@@ -1182,19 +1191,27 @@
 
    The version is re-read immediately before the dispatch because a backfill
    may have just advanced it, and because `record-claim-deltas` refuses a stale
-   batch rather than racing it."
-  [context target-type target-id deltas evidence-event-count]
+   batch rather than racing it.
+
+   CC-31: `model-provenance` is the completion that PROPOSED the deltas
+   (trace-id / model / usage), threaded exactly as the retained description
+   path threads it. Nil for writers with no model — the legacy-body backfill
+   converts authored prose, no LLM proposed it — and the command omits the
+   field rather than sending nil."
+  [context target-type target-id deltas evidence-event-count model-provenance]
   (command-processor/process-command
     (assoc context :command
-           {:command/name :ontology/record-claim-deltas
-            :command/id (random-uuid)
-            :command/timestamp (time/now)
-            :granularity target-type
-            :target-identifier target-id
-            :deltas deltas
-            :evidence-event-count evidence-event-count
-            :claim-set-version (ontology/get-claim-set-version
-                                 context target-type target-id)})))
+           (cond-> {:command/name :ontology/record-claim-deltas
+                    :command/id (random-uuid)
+                    :command/timestamp (time/now)
+                    :granularity target-type
+                    :target-identifier target-id
+                    :deltas deltas
+                    :evidence-event-count evidence-event-count
+                    :claim-set-version (ontology/get-claim-set-version
+                                         context target-type target-id)}
+             (some? model-provenance)
+             (assoc :model-provenance model-provenance)))))
 
 (defn- legacy-body->claim-deltas
   "Every insight a legacy whole-body description holds, expressed as `:add`
@@ -1260,7 +1277,7 @@
                  :target-type target-type
                  :target-id target-id
                  :claim-count (count deltas))
-          (record-claim-deltas! context target-type target-id deltas 0))))))
+          (record-claim-deltas! context target-type target-id deltas 0 nil))))))
 
 (defn- consolidate-claims!
   "CC-5: consolidate a target by proposing OPERATIONS over its claim set.
@@ -1277,7 +1294,14 @@
         recent-vs-historical-delta (compute-delta aggregate-metrics recent-events)
         structural-context (gather-structural-context context target-type target-id)
         episodes (evidence-window-episodes recent-events)
-        sheet-id (orc/build-workflow! context claim-reflection-workflow)
+        ;; CC-31: same explicit pin the body path honors — a caller running a
+        ;; provenance-sensitive workflow may pin the consolidator's model
+        ;; independently of the ambient provider default, and the node's
+        ;; :model is what the completion event (and therefore the recorded
+        ;; deltas' provenance) carries.
+        model (or (:ontology-consolidator-model context)
+                  (:model context))
+        sheet-id (orc/build-workflow! context (claim-reflection-workflow model))
         exec-result (orc/execute context sheet-id
                                  {:target-type target-type
                                   :target-id target-id
@@ -1286,6 +1310,20 @@
                                   :aggregate-metrics aggregate-metrics
                                   :recent-vs-historical-delta recent-vs-historical-delta
                                   :structural-context structural-context})
+        ;; CC-31: which completion proposed these operations — matched from
+        ;; the store exactly as the retained description path matches it
+        ;; (the completion event whose tick-id is this execution's trace-id
+        ;; and which carries a :model).
+        model-completion (some #(when (and (= (:trace-id exec-result) (:tick-id %))
+                                           (:model %))
+                                  %)
+                               (into [] (es/read (:event-store context)
+                                                {:tenant-id (:tenant-id context)
+                                                 :types #{:sheet/node-execution-completed}})))
+        model-provenance (when model-completion
+                           {:trace-id (:trace-id exec-result)
+                            :model (:model model-completion)
+                            :usage (:usage model-completion)})
         operations (get-in exec-result [:outputs :operations])]
     (cond
       (not= :success (:status exec-result))
@@ -1325,7 +1363,8 @@
                :evidence-episode-count (count episodes))
         (when (seq deltas)
           (record-claim-deltas! context target-type target-id
-                                deltas (count recent-events)))))))
+                                deltas (count recent-events)
+                                model-provenance))))))
 
 (defn- consolidate-body!
   "The LEGACY whole-body path — see `claim-path-target-type?` for exactly which

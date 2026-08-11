@@ -312,3 +312,63 @@
           (is (= "hallucinates successful verification when commands fail or are skipped"
                  (:content (first (claims ctx target))))
               "the rewording LANDED"))))))
+
+;; ---------------------------------------------------------------------------
+;; CC-31 — model provenance on the claim-delta path
+;;
+;; The retained description path threads :model-provenance (the completion's
+;; trace-id / model / usage) onto its events; the claim path did not (TRACKED
+;; GAP CC-31, specs/ontology.allium). Claims accrue across many
+;; consolidations — diagnosing model drift needs to know which model proposed
+;; each insight. Asserted on the EVENT read back from the store, never on a
+;; return value.
+;; ---------------------------------------------------------------------------
+(deftest recorded-claim-deltas-carry-the-proposing-completions-model-provenance
+  (with-test-ctx [ctx]
+    ;; Pinned exactly as a provenance-sensitive production caller pins it —
+    ;; the same :ontology-consolidator-model override the body path honors.
+    ;; The node's :model is what the engine stamps onto the completion event,
+    ;; and that stamp is what the recorded deltas' provenance is read from.
+    (let [ctx (assoc ctx :ontology-consolidator-model "stub-model")
+          target (random-uuid)]
+      (with-window! ctx target 6)
+      (with-reflection [{:operation :add :kind :weakness
+                         :content "claims success on an empty diff"}]
+        (consolidator/consolidate! ctx :tree-class target))
+      (let [evs (into [] (es/read (:event-store ctx)
+                                  {:types #{:ontology/claim-deltas-recorded}
+                                   :tenant-id (:tenant-id ctx)}))
+            prov (:model-provenance (first evs))]
+        (is (= 1 (count evs))
+            "the consolidation recorded exactly one delta batch")
+        (is (some? prov)
+            "the RECORDED event carries the provenance of the completion that
+             proposed the deltas — same shape the description events carry")
+        (is (= "stub-model" (:model prov))
+            "the model is the one the reflection call was pinned to")
+        (is (uuid? (:trace-id prov))
+            "the trace-id pins the exact execution that proposed them")
+        (is (map? (:usage prov)))))))
+
+(deftest deltas-recorded-without-a-model-still-record-and-fold
+  ;; The field is OPTIONAL, and that is load-bearing twice over: every
+  ;; pre-CC-31 event in the store lacks it and must replay, and direct
+  ;; writers (the CV-2 emitted-DSL enrichment, CC-9d authored claims, the
+  ;; legacy-body backfill) record deltas no LLM proposed, so there is no
+  ;; model to attribute. This event is byte-shaped like a pre-CC-31 one.
+  (with-test-ctx [ctx]
+    (let [target (random-uuid)
+          ep (episode)]
+      (record! ctx target [{:operation :add :kind :weakness
+                            :content "an authored insight" :episodes [ep]
+                            :from-legacy-corpus false}])
+      (let [evs (into [] (es/read (:event-store ctx)
+                                  {:types #{:ontology/claim-deltas-recorded}
+                                   :tenant-id (:tenant-id ctx)}))]
+        (is (= 1 (count evs)) "the provenance-less write was accepted")
+        (is (not (contains? (first evs) :model-provenance))
+            "a writer with no model produces an event with NO provenance
+             field — identical in shape to every event recorded before the
+             field existed")
+        (is (= 1 (count (claims ctx target)))
+            "and the projection folds it exactly as it folds old events")))))

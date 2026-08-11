@@ -623,6 +623,18 @@
     [:evidence-event-count :int]
     ;; The claim-set version the deltas were computed against.
     [:claim-set-version    :int]
+    ;; CC-31: which completion PROPOSED these deltas — same shape the
+    ;; *-description-updated events carry (trace-id / model / usage), because
+    ;; it answers the same replayability question one level deeper: claims
+    ;; accrue across many consolidations, and diagnosing model drift needs to
+    ;; know which model proposed each insight. OPTIONAL, load-bearing twice
+    ;; over: every pre-CC-31 event lacks it and must replay, and direct
+    ;; writers (CV-2 emitted-DSL enrichment, CC-9d authored claims, the CC-5
+    ;; legacy-body backfill) record deltas no LLM proposed.
+    [:model-provenance     {:optional true} [:maybe [:map
+                                                     [:trace-id :uuid]
+                                                     [:model :string]
+                                                     [:usage [:map-of :keyword :int]]]]]
     [:recorded-at          :string]]
 
    ;; -------------------------------------------------------------------------
@@ -1055,7 +1067,12 @@
     ;; recording deltas outside the consolidator has no evidence window to
     ;; report. CC-5/CC-6 wire the consolidator's real count through.
     [:evidence-event-count {:optional true} :int]
-    [:claim-set-version    :int]]
+    [:claim-set-version    :int]
+    ;; CC-31: optional for the same reason it is optional on the event — a
+    ;; direct caller recording deltas without an LLM legitimately has none.
+    ;; Same loose shape the description commands use; the EVENT schema types
+    ;; it precisely.
+    [:model-provenance     {:optional true} [:maybe :map]]]
 
    ;; Gap-6's two anti-recency AUDIT COMMAND schemas were removed by CC-5, with
    ;; the validator and the handlers that were their only callers. Nothing can

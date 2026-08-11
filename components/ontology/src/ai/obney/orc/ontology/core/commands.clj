@@ -1052,7 +1052,7 @@
    preconditions that protect the WRITE (`evidence_is_grounded`, the
    claim-set version) are enforced here, where they belong."
   [{{:keys [granularity target-identifier deltas
-            evidence-event-count claim-set-version]} :command
+            evidence-event-count claim-set-version model-provenance]} :command
     :as ctx}]
   (let [target-uuid (claim-target-uuid granularity target-identifier)
         current-version (recorded-claim-delta-count ctx target-uuid)]
@@ -1118,12 +1118,19 @@
            (into [(->event
                     {:type :ontology/claim-deltas-recorded
                      :tags #{[:claim-target target-uuid]}
-                     :body {:granularity granularity
-                            :target-identifier target-identifier
-                            :deltas kept
-                            :evidence-event-count (or evidence-event-count 0)
-                            :claim-set-version claim-set-version
-                            :recorded-at (now-str)}})]
+                     ;; CC-31: provenance is attached only when the caller HAS
+                     ;; a model to attribute — a provenance-less write stays
+                     ;; byte-shaped like every pre-CC-31 event, so replay
+                     ;; tolerance for old events and for direct writers is the
+                     ;; same tolerance.
+                     :body (cond-> {:granularity granularity
+                                    :target-identifier target-identifier
+                                    :deltas kept
+                                    :evidence-event-count (or evidence-event-count 0)
+                                    :claim-set-version claim-set-version
+                                    :recorded-at (now-str)}
+                             (some? model-provenance)
+                             (assoc :model-provenance model-provenance))})]
                  exclusion-events)
            :command-result/cas
            {:types #{:ontology/claim-deltas-recorded}
