@@ -269,6 +269,13 @@ contract ScopedConceptLookup {
 enum ConceptScope {
     failure | success | problem | node_type | custom | tree_class | behavioral_subtree
 }
+-- CC-15 weed: previously referenced by contract TaskClassification but never
+-- declared. matched/bundled/walked_down/minted mirror the classified event's
+-- assigned_via provenance; uncertain is the deferral outcome (its own event,
+-- never an assignment). Contract return types here are NOMINAL — the code
+-- returns richer maps carrying these outcomes, not bare enum values.
+enum ClassificationOutcome { matched | bundled | walked_down | minted | uncertain }
+
 enum SourceType { csv | json | sql | rdf | text }
 enum BuildMode { batch | incremental }
 enum BuildStatus { running | completed | failed }
@@ -326,7 +333,11 @@ config {
     confidence_support_scale: Integer = 3
     enforcement_confidence_floor: Decimal = 0.6
     validation_support_threshold: Integer = 5
-    description_recurrence_threshold: Integer = 2
+    -- CC-15 weed: the code's default is the GENERIC per-target-type
+    -- consolidation threshold (10, per-type overridable via
+    -- SetConsolidationThreshold); the previously-declared 2 was a default the
+    -- code never had. Aligned to the code's truth.
+    description_recurrence_threshold: Integer = 10
 
     -- CC-20: the EL-5 domain-penalty gate is population-relative (z within the
     -- rerank pass's own contrast population), not an absolute margin. Derived
@@ -675,7 +686,18 @@ rule RequestThresholdConsolidation {
     let policy = policy_for(target_type)
     requires: policy.enabled = true
     requires: delta >= policy.event_threshold
+    -- CC-15 weed (intentional gap): the hourly-budget precondition is
+    -- enforced at CONSOLIDATE time, not at emission — an over-budget
+    -- Requested event IS emitted and then skipped (no LLM call, no write,
+    -- a budget-exceeded log). The event stream is wider than this rule;
+    -- the effect is the same.
     requires: recent_consolidations(target_type) < policy.hourly_budget
+    -- CC-15 weed (OPEN QUESTION, HITL): policy.enabled is consumed today by
+    -- the JUDGE-ATTACHMENT gate (judge_runtime), not by this trigger or the
+    -- consolidator — the writing side fires regardless of the flag. Either
+    -- the trigger should check it, or this rule's precondition should be
+    -- re-scoped to the read/judge side that actually implements
+    -- ReadWriteOptInSeparation. Not silently resolved; parked for decision.
 
     ensures: DescriptionConsolidationRequested(
         target_type: target_type,
@@ -720,6 +742,9 @@ rule RecordClaimDeltas {
 -- A delta whose evidence cannot be trusted is refused individually and the
 -- refusal is recorded: a silent drop destroys the ability to measure how much
 -- of our evidence was starved.
+-- CC-15 weed: the shipped shape is ONE PromotionEvidenceExcluded event PER
+-- excluded delta (each carrying its reason and settled-by), strictly richer
+-- than this rule's single event carrying the list. No information is lost.
 rule ExcludeUngroundedDelta {
     when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
     let ungrounded = deltas.filter(delta => evidence_is_grounded(delta) = false)
@@ -741,6 +766,12 @@ rule RecordNothingWhenAllDeltasExcluded {
     requires: claim_set_version = current_claim_set_version(description_for(granularity, target_identifier))
     requires: grounded.count = 0
 
+    -- CC-15 weed: ClaimSetUnchanged is recorded AS the per-delta
+    -- PromotionEvidenceExcluded events plus the deliberately-unadvanced
+    -- version — not as its own event type. The two facts FailureIsVisible
+    -- distinguishes ("produced no trustworthy knowledge" vs "never
+    -- answered") remain distinguishable: exclusions-with-no-recorded-event
+    -- vs a description-consolidation-failed event.
     ensures: ClaimSetUnchanged(granularity: granularity, target_identifier: target_identifier)
 }
 
@@ -756,6 +787,10 @@ rule RefuseStaleClaimDeltas {
         target_identifier: target_identifier,
         reason: stale_claim_set
     )
+    -- CC-15 weed (intentional gap): a consolidation that goes stale BETWEEN
+    -- the handler's version read and the store append loses at the CAS with
+    -- a store conflict and emits no refusal fact — narrower than the rule,
+    -- never wrong. The handler-read arm always records.
 }
 
 rule ApplyAddClaim {
@@ -932,6 +967,11 @@ rule PromoteWellScoredClass {
     let parent = nearest_abstract_behavior(tree_class)
     requires: parent != null
 
+    -- CC-15 weed (TRACKED GAP): the shipped minted event carries identity/
+    -- provenance/parent only; the BODY rides the companion
+    -- tree-description-updated and supporting_evidence is reachable via the
+    -- class's claim set rather than attached to the event. The mint's
+    -- evidence is durable and joinable, not inline.
     ensures: BehavioralSubtreeMinted(
         tree_class: tree_class,
         body: synthesised_behavior_body(tree_class),
@@ -941,6 +981,10 @@ rule PromoteWellScoredClass {
 
 -- Abstained evaluations carry no score and are SKIPPED by promotion, never
 -- counted as zero. A judge that saw no evidence has not judged.
+-- CC-15 weed (intentional gap): the exclusion FACT is recorded on the
+-- consolidation/guard path (a durable judge-abstained exclusion event); the
+-- harvest scoring window honors skip-not-zero by omitting nil-score
+-- occurrences WITHOUT an event of its own.
 rule ExcludeAbstainedEvaluations {
     when: EvaluationAbstained(tree_class, occurrence)
 
