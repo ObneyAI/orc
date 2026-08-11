@@ -38,6 +38,7 @@
             [clojure.string :as str]
             [ai.obney.orc.orc-service.interface :as orc]
             [ai.obney.orc.ontology.core.evidence-projection :as evidence-projection]
+            [ai.obney.orc.ontology.core.read-models :as read-models]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
@@ -837,6 +838,140 @@
        (str/join "\n" (map #(str "- " %) (or (:representative-uses body) [])))))
 
 ;; =============================================================================
+;; CC-22b — contract ParentInferenceQuery (bounded, de-duplicated rendering
+;; at the SIGNATURE seam; the fold — assemble-body/descriptions* — is
+;; untouched and the stored body stays full).
+;;
+;; Motivating measurement (CC-22a, inspect-accepted): 43/86 real targets'
+;; fully-ASSEMBLED renders exceed the 461-token query budget TODAY (mean
+;; 1.64x inflation vs legacy prose) because `assemble-summary` already joins
+;; every capability + representative use into `:summary` and the builder
+;; above then appends the same two lists AGAIN; positional encoder truncation
+;; then discards the LAST-rendered section first — which is the guards.
+;; =============================================================================
+
+(def ^:private by-earned-support
+  "read-models' claim ranking (support desc, tie-break :claim-id) — reached
+   through its own var so this seam and the fold's rendering order cannot
+   drift apart. The order is the spec's `global support-rank` and the
+   tie-break keeps a rebuild from the log byte-identical."
+  @#'read-models/by-earned-support)
+
+(defn- claim-query-render
+  "One-pass render of a claim seq for the parent-inference query: the
+   assemble-summary section order (Capabilities, Representative uses,
+   Strengths, Known weaknesses, Avoid when), each claim's content exactly
+   ONCE (invariant.NoDuplicateClaimContent — the measured 1.64x inflation
+   was summary+sections double-rendering, not knowledge growth). Bounding
+   happens by claim RANK upstream, never by token position, so the guards
+   cannot be pushed last-and-truncated by the encoder."
+  [claims]
+  (let [contents (fn [kind]
+                   (into [] (comp (filter #(= kind (:kind %)))
+                                  (map :content)
+                                  (distinct))
+                         claims))
+        section (fn [label items]
+                  (when (seq items)
+                    (str label ": " (str/join "; " items) ".")))
+        parts (remove nil?
+                      [(section "Capabilities" (contents :capability))
+                       (section "Representative uses" (contents :representative-use))
+                       (section "Strengths" (contents :strength))
+                       (section "Known weaknesses" (contents :weakness))
+                       (section "Avoid when" (contents :guard))])]
+    (str "TREE SUMMARY:\n" (str/join " " parts))))
+
+(defn- query-fits-fn
+  "A predicate `(fits? query-string)` — true when the string fits the
+   CONFIGURED encoder query budget (`maximum_query_tokens` minus the query
+   special tokens), measured by the REAL tokenizer via the colbert
+   interface's `query-truncation` (tokenizer-only, the same resolution order
+   production searches use — never a hardcoded budget, never chars/4).
+
+   Resolved lazily: ontology ships without a ColBERT dependency. nil when
+   colbert is not on the classpath — there is then no ColBERT query budget
+   to enforce (classification runs on graph + DJL-embedding signals) and the
+   caller LOUDLY reports the unbounded render."
+  []
+  (when-let [qt (try (requiring-resolve 'ai.obney.orc.colbert.interface/query-truncation)
+                     (catch Throwable _ nil))]
+    (fn [q] (not (:query-truncated? (qt {} {:query q}))))))
+
+(defn bounded-inference-query
+  "CC-22b (contract ParentInferenceQuery): render a target's parent-inference
+   query at the signature seam.
+
+   LEGACY (empty claim set — every production target today): delegates to
+   `build-parent-inference-signature`, BYTE-IDENTICALLY. Behavior-neutral
+   until migration day.
+
+   CLAIM-BACKED: renders the largest global support-rank PREFIX of the claim
+   set (tie-break :claim-id; first-overflow stop) whose one-pass render fits
+   the configured budget. Exclusion is OBSERVABLE — the unrendered claim ids
+   are returned AND logged (`::inference-query-claims-excluded`), never
+   silently capped; every excluded claim stays durable in the claim set.
+
+   Returns {:query :rendered-claim-ids :excluded-claim-ids :claim-backed?}.
+
+   Public: the production callers are the consolidator's two hydration
+   inference calls; tests exercise this seam with the banked real fixtures."
+  ([body claims] (bounded-inference-query body claims nil))
+  ([body claims {:keys [target-id]}]
+   (if (empty? claims)
+     {:query (build-parent-inference-signature body)
+      :rendered-claim-ids []
+      :excluded-claim-ids []
+      :claim-backed? false}
+     (let [ranked (vec (by-earned-support claims))
+           fits? (query-fits-fn)
+           kept-n (if fits?
+                    (try
+                      (loop [n 1]
+                        (cond
+                          (> n (count ranked)) (count ranked)
+                          (fits? (claim-query-render (subvec ranked 0 n))) (recur (inc n))
+                          :else (dec n)))
+                      (catch Exception e
+                        (u/log ::inference-query-budget-unavailable
+                               :target-id target-id
+                               :reason :tokenizer-error
+                               :error (.getMessage e))
+                        (count ranked)))
+                    (do (u/log ::inference-query-budget-unavailable
+                               :target-id target-id
+                               :reason :colbert-not-on-classpath)
+                        (count ranked)))
+           kept (subvec ranked 0 kept-n)
+           excluded (subvec ranked kept-n)]
+       (when (seq excluded)
+         (u/log ::inference-query-claims-excluded
+                :target-id target-id
+                :rendered-claim-count (count kept)
+                :excluded-claim-count (count excluded)
+                :excluded-claim-ids (mapv :claim-id excluded)))
+       {:query (claim-query-render kept)
+        :rendered-claim-ids (mapv :claim-id kept)
+        :excluded-claim-ids (mapv :claim-id excluded)
+        :claim-backed? true}))))
+
+(defn- claims-for-inference
+  "The target's current claim set for query rendering, or [] with a LOUD log
+   when the descriptions read model is unreachable in this context (CC-27
+   posture: an unavoidable fallback must announce itself, never default
+   silently). Production contexts always carry the read-model cache, so the
+   fallback arm exists for degraded contexts only: the QUERY then degrades to
+   the legacy render instead of the whole hydration failing."
+  [context target-type target-id]
+  (try (ontology/get-claims context target-type target-id)
+       (catch Exception e
+         (u/log ::inference-claims-read-unavailable
+                :target-id target-id
+                :target-type target-type
+                :error (.getMessage e))
+         [])))
+
+;; =============================================================================
 ;; R05d — behavioral-subtree-ids hydration
 ;;
 ;; Parallel to maybe-hydrate-parent-tree-id but on the BEHAVIORAL axis.
@@ -886,7 +1021,13 @@
     (nil? current-description)
     (let [classify-behaviors (requiring-resolve
                                'ai.obney.orc.ontology.interface/classify-behaviors)
-          signature (build-parent-inference-signature body)
+          ;; CC-22b: claim-backed targets render the bounded de-duplicated
+          ;; query; targets with no claims (all of production today) render
+          ;; byte-identically to the legacy builder.
+          signature (:query (bounded-inference-query
+                              body
+                              (claims-for-inference context target-type target-id)
+                              {:target-id target-id}))
           result (try
                    (classify-behaviors context
                                        {:task-signature signature
@@ -985,7 +1126,13 @@
     (nil? current-description)
     (let [classify-task (requiring-resolve
                           'ai.obney.orc.ontology.interface/classify-task)
-          signature (build-parent-inference-signature body)
+          ;; CC-22b: claim-backed targets render the bounded de-duplicated
+          ;; query; targets with no claims (all of production today) render
+          ;; byte-identically to the legacy builder.
+          signature (:query (bounded-inference-query
+                              body
+                              (claims-for-inference context target-type target-id)
+                              {:target-id target-id}))
           result (try
                    (classify-task context
                                   {:task-signature signature
