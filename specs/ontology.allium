@@ -132,6 +132,30 @@ contract SemanticReranking {
         -- Timeout or malformed output is surfaced and original candidates survive.
 }
 
+-- CC-28: consolidation's failure-visibility contract. The reflection LLM call
+-- is an external boundary (which is WHY DescriptionConsolidationCompleted has
+-- no producer rule — see the CC-21b note below), so the obligation lives here,
+-- mirroring SemanticReranking's FailureIsVisible. The motivating incident is
+-- measured: a target taking 23.4% of all consolidation requests had its prompt
+-- rejected outright (1,571,414 tokens vs a 1,048,576 limit), 0/3 after four
+-- retries each, leaving NO event — indistinguishable from health.
+contract ClaimConsolidation {
+    consolidate: (target_type: String, target_identifier: String) -> Boolean
+
+    @invariant FailureIsVisible
+        -- A reflection call that fails — provider rejection, timeout,
+        -- exhausted retries, unparseable output — leaves a durable failure
+        -- record carrying the target, the reason class, and the attempt
+        -- count. "Produced no trustworthy knowledge" (ClaimSetUnchanged) and
+        -- "never answered" are different facts and must be recorded as such.
+
+    @invariant FailuresConsumeBudget
+        -- The hourly consolidation budget counts failed attempts alongside
+        -- successes; a target whose every attempt dies must not retry
+        -- unthrottled, and the budget read cannot report a dying target as
+        -- idle.
+}
+
 contract OntologyExtraction {
     extract: (source: SourceSpecification, context: Any) -> Any
 
@@ -1043,9 +1067,10 @@ invariant ClaimsAreRetiredOnlyWhenUnsupported {
 -- output is surfaced and original candidates survive"). Consolidation has no
 -- equivalent.
 --
--- NOT resolved here by inventing a producer rule: modelling the reflection step
--- is spec DESIGN, not a tend, and it should be decided deliberately alongside
--- the consolidation-side failure contract. Tracked as CC-28.
+-- NOT resolved by inventing a producer rule: the reflection call is an
+-- external boundary. CC-28 placed the failure obligation where the sibling
+-- subsystem holds it — contract ClaimConsolidation (FailureIsVisible +
+-- FailuresConsumeBudget). Completed/Failed remain boundary events by design.
 --
 -- ⚠ TOOLING NOTE, verified: this Allium version does NOT parse `open question`.
 -- The construct is in the language reference and documented as surfacing a
