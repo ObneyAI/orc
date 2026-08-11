@@ -2040,6 +2040,21 @@
                                      sandbox-vars-map var-creation-times
                                      (or (:mcp-tools node) [])))
   ([node inputs-preview history blackboard sandbox-vars-map var-creation-times mcp-tools]
+   (build-rlm-code-generation-module node inputs-preview history blackboard
+                                     sandbox-vars-map var-creation-times
+                                     mcp-tools {}))
+  ;; ONE output contract per request, matching the transport. The marker
+  ;; directive below was written for marker mode and used to ship UNCHANGED
+  ;; into function-calling requests (where the provider layer attaches the
+  ;; submit_response tool and appends "Call the submit_response function") —
+  ;; a self-contradictory request. Models weighting the prompt text answered
+  ;; in marker TEXT and, with no fallback (one predict = one provider call),
+  ;; lost their whole answer: "LLM did not generate code" when the code WAS
+  ;; generated (wire-captured, 2026-08-11). `:function-calling?` selects the
+  ;; matching contract; default false keeps every existing caller and prompt
+  ;; byte-identical.
+  ([node inputs-preview history blackboard sandbox-vars-map var-creation-times mcp-tools
+    {:keys [function-calling?]}]
   (let [rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
         available-code-nodes (get rlm-config :available-code-nodes)
         has-mcp? (boolean (seq mcp-tools))
@@ -2514,19 +2529,27 @@
                       "## Output Contract\n"
                       "You MUST call (final! {...}) with keys: " (pr-str (:writes node)) "\n\n"
                       "## CRITICAL OUTPUT FORMAT\n"
-                      "Your response MUST start with `[[ ## code ## ]]` on its own line, followed by RAW Clojure code (NO markdown code fences, NO ```clojure or ``` tags), and end with `[[ ## completed ## ]]`.\n\n"
-                      "Correct format:\n"
-                      "```\n"
-                      "[[ ## code ## ]]\n"
-                      "(emit-tree! [:sequence ...])\n"
-                      "[[ ## completed ## ]]\n"
-                      "```\n\n"
-                      "WRONG (do NOT use markdown fences around your code):\n"
-                      "```\n"
-                      "```clojure\n"
-                      "(emit-tree! [:sequence ...])\n"
-                      "```\n"
-                      "```\n\n"
+                      (if function-calling?
+                        ;; Function-calling contract: the transport carries the
+                        ;; structure; the fence prohibition is the only part of
+                        ;; the marker directive that is transport-independent.
+                        (str "Call the provided function with your answer. Put the RAW "
+                             "Clojure code in the `code` field (NO markdown code fences, "
+                             "NO ```clojure or ``` tags, NO marker/delimiter lines of any "
+                             "kind — just the code itself as the field's string value).\n\n")
+                        (str "Your response MUST start with `[[ ## code ## ]]` on its own line, followed by RAW Clojure code (NO markdown code fences, NO ```clojure or ``` tags), and end with `[[ ## completed ## ]]`.\n\n"
+                             "Correct format:\n"
+                             "```\n"
+                             "[[ ## code ## ]]\n"
+                             "(emit-tree! [:sequence ...])\n"
+                             "[[ ## completed ## ]]\n"
+                             "```\n\n"
+                             "WRONG (do NOT use markdown fences around your code):\n"
+                             "```\n"
+                             "```clojure\n"
+                             "(emit-tree! [:sequence ...])\n"
+                             "```\n"
+                             "```\n\n"))
                       "## Example: Simple Analysis (small data)\n"
                       "```clojure\n"
                       "(let [data (get-input :document)\n"
@@ -2693,9 +2716,17 @@
           ;; CE-6b (ADR 0018): pass the node's bound mcp-tools into the module
           ;; builder (mirrors the non-RLM researcher call) so the Phase-1
           ;; prompt ADVERTISES what the sandbox already binds.
-          (let [module (build-rlm-code-generation-module node inputs-preview history
+          (let [;; The instructions must match the transport the request will
+                ;; actually use: same default-false + caller/node override the
+                ;; llm-options merge below applies, computed here so the module
+                ;; and the transport cannot disagree about the output contract.
+                function-calling? (boolean (:use-function-calling?
+                                            (merge {:use-function-calling? false}
+                                                   options)))
+                module (build-rlm-code-generation-module node inputs-preview history
                                                           blackboard @sandbox-vars @var-creation-times
-                                                          mcp-tools)
+                                                          mcp-tools
+                                                          {:function-calling? function-calling?})
                 ;; G2 (ADR 0018): pass the :available-code-nodes VALUE into the
                 ;; runtime inputs so the module's declared field + catalog prompt
                 ;; note are non-empty and the model can reference catalog :code
