@@ -59,7 +59,7 @@
   ([mcp-opts]
    (build-from-mcp mcp-opts {}))
   ([mcp-opts opts]
-   (let [conn (mcp-client/connect mcp-opts)
+   (let [conn (mcp-client/connect-legacy mcp-opts)
          analysis (analyze-tools conn opts)
          pattern (or (:pattern opts)
                      (-> analysis :patterns first :pattern))
@@ -79,7 +79,7 @@
 
    Args:
      ctx - Context with :event-store and optional :llm-provider
-     mcp-opts - MCP connection options {:type :static/:http :preset :langfuse}
+     mcp-opts - MCP connection options or an explicit deterministic `:static` fixture
 
    Options:
      :pattern - Specific pattern to use (:sequential-pipeline, :research-compilation, :repl-researcher)
@@ -97,7 +97,7 @@
    (build-sheet-from-mcp! ctx mcp-opts {}))
   ([ctx mcp-opts opts]
    (let [;; Connect and analyze
-         mcp-conn (mcp-client/connect mcp-opts)
+         mcp-conn (mcp-client/connect-legacy mcp-opts)
          analysis (analyze-tools mcp-conn opts)
 
          ;; Select pattern
@@ -146,7 +146,7 @@
    (build-repl-researcher-sheet! ctx mcp-opts instruction {}))
   ([ctx mcp-opts instruction opts]
    (let [;; Connect and get tools
-         mcp-conn (mcp-client/connect mcp-opts)
+         mcp-conn (mcp-client/connect-legacy mcp-opts)
          tools (mcp-client/list-tools mcp-conn)
          tool-names (mapv :name tools)
 
@@ -200,7 +200,7 @@
    (build-sheet-with-executors! ctx mcp-opts {}))
   ([ctx mcp-opts opts]
    (let [;; Connect and analyze
-         mcp-conn (mcp-client/connect mcp-opts)
+         mcp-conn (mcp-client/connect-legacy mcp-opts)
          analysis (analyze-tools mcp-conn opts)
          tools (:tools analysis)
 
@@ -262,7 +262,7 @@
 
    Args:
      ctx - Context with :event-store (and optionally :command-dispatcher)
-     mcp-opts - MCP connection options {:preset :langfuse} or {:type :http ...}
+     mcp-opts - MCP connection options {:preset :langfuse} or {:type :streamable-http ...}
      export-dir - Directory to export files to
 
    Options:

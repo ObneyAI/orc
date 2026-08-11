@@ -60,7 +60,7 @@
         (into (array-map)
               (map (fn [server]
                      [server
-                      (mcp/connect
+                      (mcp/connect-static
                        {:type :static
                         :tools [portable-search-tool]
                         :call-tool-handler
@@ -76,7 +76,7 @@
                        :inputSchema schema
                        :outputSchema (:outputSchema portable-search-tool)})
                     (mcp/list-all-tools registry))]
-    (mcp/connect {:type :static
+    (mcp/connect-static {:type :static
                   :tools tools
                   :call-tool-handler route})))
 
@@ -123,7 +123,7 @@
   (testing "a fixed MCP schema generates a code-only workflow that invokes the typed fake tool"
     (h/with-async-test-context [ctx]
       (let [calls (atom [])
-            conn (mcp/connect {:type :static :tools [echo-tool]
+            conn (mcp/connect-static {:type :static :tools [echo-tool]
                                :call-tool-handler
                                (fn [tool-name args]
                                  (swap! calls conj [tool-name args])
@@ -146,7 +146,7 @@
 (deftest det-e2e-094-required-optional-schema-propagation
   (testing "nested required/optional fields survive generation and are enforced at runtime"
     (h/with-async-test-context [ctx]
-      (let [conn (mcp/connect {:type :static :tools [echo-tool]
+      (let [conn (mcp/connect-static {:type :static :tools [echo-tool]
                                :call-tool-handler (fn [_ args] args)})
             analysis (analyze-static conn)
             generated (mcp/generate-sheet-data analysis {:pattern :sequential-pipeline})
@@ -365,10 +365,10 @@
 (deftest det-e2e-114-mcp-schema-drift-after-publication
   (testing "a published captured schema fails explicitly after incompatible server drift"
     (h/with-async-test-context [ctx]
-      (let [old-conn (mcp/connect {:type :static
+      (let [old-conn (mcp/connect-static {:type :static
                                    :tools [echo-tool]
                                    :call-tool-handler (fn [_ args] {:accepted args})})
-            changed-conn (mcp/connect
+            changed-conn (mcp/connect-static
                           {:type :static
                            :tools [drifted-echo-tool]
                            :call-tool-handler

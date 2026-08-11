@@ -17,7 +17,7 @@ are represented in a checked Allium specification.
 | `grain-test-utils` | Test-only Grain helpers | — | Excluded: test infrastructure |
 | `langfuse` | Trace destination adapter | `observability.allium` | Distilled and checked with the managed exporter lifecycle exposed by `orc-service` |
 | `llm` | Structured provider prediction and streaming | `llm.allium` | Distilled and checked |
-| `mcp-sheet-builder` | Workflow generation from MCP tools | `mcp-sheet-builder.allium` | Distilled and checked |
+| `mcp-sheet-builder` | Workflow generation and portable MCP transport lifecycle | `mcp-sheet-builder.allium`, `mcp-client.allium` | Distilled, specified, and verified through DET-E2E-145 |
 | `ontology` | Ontology discovery, evolution, and retrieval | `ontology.allium` | Distilled and checked |
 | `orc-service` | Behavior-tree execution and RLM runtime | `orc-service.allium` | Distilled and checked |
 | `predict-rlm-image-tools` | Image benchmark deterministic transforms | `predict-rlm-tools.allium` | Distilled and checked |
@@ -33,7 +33,7 @@ added to this ledger rather than silently excluded.
 ## Source audit
 
 The final audit enumerated every Clojure namespace under each component's
-`src/` tree. The eleven specifications cover 132 product namespaces across the 16
+`src/` tree. The twelve specifications cover 132 product namespaces across the 16
 non-empty product components. The one additional namespace belongs to
 `grain-test-utils`, whose public purpose is test-fixture construction and is
 explicitly excluded above.
@@ -64,16 +64,16 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-08, both `allium check specs` and `allium analyse specs` reported 175
-structural diagnostics across the eleven specifications: 146 informational and 29
+On 2026-08-11, both `allium check specs` and `allium analyse specs` reported 180
+structural diagnostics across the twelve specifications: 148 informational and 32
 warnings. `analyse` reported zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 38 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.rule.unreachableTrigger` | 40 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
 | `allium.field.unused` | 108 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
-| `allium.externalEntity.missingSourceHint` | 15 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
-| `allium.definition.unused` | 12 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
+| `allium.definition.unused` | 14 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents
@@ -99,6 +99,19 @@ that fail their declared schemas. DET-E2E-125 verifies invalid-to-valid recovery
 and invalid-to-invalid exhaustion, including exact call count, final-only
 rejection evidence, and usage accumulated across both attempts.
 
+## Structured provider failure evidence (2026-08-11)
+
+Structured provider failures now carry an additive, sanitized evidence map
+captured before tool-call decoding. Stable failure kinds distinguish transport
+failure, a missing forced tool call, malformed tool arguments, schema-invalid
+decoded arguments, and an empty provider response. Evidence is allowlisted to
+provider/model identity, response ID, finish reason, tool-call presence/name,
+usage, and output-truncation status; arbitrary provider payloads and tool
+arguments are excluded. Existing successful output and status behavior is
+unchanged. DET-E2E-147 verifies valid, missing, malformed, schema-invalid,
+empty, and truncated responses through workflow execution, durable completion
+events, trace assembly, and node-detail projection.
+
 ## Provider request control preservation (2026-08-09)
 
 The LLM boundary now specifies that accepted provider request controls must
@@ -119,6 +132,17 @@ timeout. DET-E2E-131 verifies the provider-call cap through the public workflow
 boundary. DET-E2E-132 verifies that a timeout trace preserves completed routing
 nodes and identifies the unfinished AI node with provider attempt, node attempt,
 configured limits, provider timeout, and remaining-budget evidence.
+
+## Timeout trace chronology and canonical timestamps (2026-08-11)
+
+The workflow execution contract now requires terminal traces to preserve the
+durable execution start, record completion separately, derive duration from
+those instants, and expose one canonical UTC representation. Trace lists and
+time filters compare instants rather than timestamp spellings and apply limits
+after chronological ordering. DET-E2E-146 remains open until mixed UTC/offset
+events, timeout filtering and lookup, projection replay, partial-node timing,
+and the SQLite-backed boundary. The deterministic contract is verified by
+DET-E2E-146 together with the public runtime timeout assertions.
 
 ## Blackboard schema specificity (2026-08-07)
 

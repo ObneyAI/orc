@@ -17,7 +17,8 @@
             [ai.obney.orc.mcp-sheet-builder.core.executor-generator :as executor-gen]
             [ai.obney.orc.mcp-sheet-builder.core.executor-runtime :as executor-runtime]
             [ai.obney.orc.mcp-sheet-builder.core.builders :as builders]
-            [ai.obney.orc.mcp-sheet-builder.core.exporter :as exporter]))
+            [ai.obney.orc.mcp-sheet-builder.core.exporter :as exporter]
+            [ai.obney.orc.mcp-sheet-builder.interface.schemas :as schemas]))
 
 ;; ============================================================================
 ;; MCP Client API
@@ -26,14 +27,37 @@
 (defn connect
   "Connect to an MCP server.
 
-   Options:
-   - :type - Connection type (:http, :stdio, :nrepl)
-   - :url - Server URL (for HTTP type)
-   - Additional options vary by type
+   The accepted portable transports are exactly `:stdio` and
+   `:streamable-http`. Unsupported transports throw `ExceptionInfo` with
+   `:orc/error :mcp/unsupported-transport`."
+  ([opts]
+   (mcp-client/connect opts))
+  ([opts trace-context]
+   (mcp-client/connect opts trace-context)))
 
-   Returns an MCP connection map."
+(defn create-trace-context
+  "Create an MCP lifecycle trace context. An optional record function receives
+   sanitized activities for persistence through the consumer's trace store."
+  ([] (mcp-client/create-trace-context))
+  ([record!] (mcp-client/create-trace-context record!)))
+
+(defn trace-activities [trace-context]
+  (mcp-client/trace-activities trace-context))
+
+(defn supported-transports
+  "The exact transport discriminators accepted by `connect`."
+  []
+  mcp-client/supported-transports)
+
+(defn connection-schema
+  "The public portable MCP connection configuration schema."
+  []
+  schemas/mcp-connection)
+
+(defn connect-static
+  "Create a deterministic in-process tool fixture. Not a portable transport."
   [opts]
-  (mcp-client/connect opts))
+  (mcp-client/connect-static opts))
 
 (defn list-tools
   "List available tools from an MCP connection.
@@ -46,6 +70,11 @@
    Returns the tool result."
   [mcp-conn tool-name args]
   (mcp-client/call-tool mcp-conn tool-name args))
+
+(defn close
+  "Close an MCP connection. Repeated closure is harmless."
+  [mcp-conn]
+  (mcp-client/close mcp-conn))
 
 ;; ============================================================================
 ;; MCP Registry API (Multi-Server)
@@ -184,7 +213,7 @@
 
    Args:
      ctx - Context with :event-store and optional :llm-provider
-     mcp-opts - MCP connection options {:type :static/:http :preset :langfuse}
+     mcp-opts - MCP connection options or an explicit deterministic `:static` fixture
 
    Options:
      :pattern - Specific pattern to use (:sequential-pipeline, :research-compilation, :repl-researcher)
@@ -257,7 +286,7 @@
 
    Args:
      ctx - Context with :event-store
-     mcp-opts - MCP connection options {:preset :tavily} or {:type :http ...}
+     mcp-opts - MCP connection options {:preset :tavily} or {:type :streamable-http ...}
      export-path - File path to save the sheet
 
    Options:
@@ -440,7 +469,7 @@
 
    Args:
      ctx - Context with :event-store (and optionally :command-dispatcher)
-     mcp-opts - MCP connection options {:preset :langfuse} or {:type :http ...}
+     mcp-opts - MCP connection options {:preset :langfuse} or {:type :streamable-http ...}
      export-dir - Directory to export files to
 
    Options:

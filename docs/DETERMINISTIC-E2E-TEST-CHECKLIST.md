@@ -63,6 +63,15 @@ that verifies the stated observable results.
   deterministic provider-backed workflow after routing nodes complete and an AI
   leaf starts. Verify the stored timeout trace retains completed nodes, marks the
   unfinished leaf timed out, and exposes provider/node attempt and budget state.
+- [x] **DET-E2E-146 — Timeout trace chronology, canonical timestamps, and replay.**
+  Time out a deterministic workflow after durable node starts exist. Verify the
+  execution trace preserves its durable start, records cancellation separately,
+  and reports a duration consistent with those instants; unfinished node traces
+  use cancellation only as completion. Mix equivalent UTC and offset timestamp
+  spellings across success, failure, and timeout trace events, then verify
+  chronological ordering before limit, `:since`, `:status :timeout`, direct
+  trace-ID retrieval, projection replay, and the same contract through the
+  SQLite-backed event-store/projection boundary.
 
 ## P1 — Workflow lifecycle and versioning
 
@@ -103,6 +112,13 @@ that verifies the stated observable results.
   `:max-tokens 512` preserves both controls through the persisted node, ORC LLM
   request, litellm router, and final OpenRouter HTTP request body; unsupported
   accepted controls fail explicitly instead of disappearing.
+- [x] **DET-E2E-147 — Structured provider failure evidence.** Execute
+  provider-backed structured leaves through the public workflow boundary for a
+  valid forced tool call, missing forced tool call, malformed arguments,
+  schema-invalid arguments, empty response, and token-truncated response.
+  Verify stable failure kinds, sanitized durable response evidence, usage and
+  finish-reason retention without response text, projection read-back, and
+  unchanged successful structured output.
 
 ## P1 — Observability and streaming
 
@@ -148,6 +164,20 @@ that verifies the stated observable results.
 - [x] **DET-E2E-092 — Cross-observation baseline.** Three distinct historical ticks on one reusable sheet retain their score events and project the exact cross-observation mean.
 
 ## P2 — MCP builder and deterministic tools
+
+- [x] **DET-E2E-133 — Real MCP stdio lifecycle.** A directly launched fixture initializes, lists and invokes a tool, and exits after orderly close.
+- [x] **DET-E2E-134 — Literal stdio arguments.** Shell metacharacters remain one literal process argument and cause no shell side effect.
+- [x] **DET-E2E-135 — Stdio stream separation.** Sustained stderr cannot enter JSON-RPC framing or deadlock stdout processing.
+- [x] **DET-E2E-136 — Real Streamable HTTP lifecycle.** A fixture initializes, observes the initialized notification, lists and invokes a tool, and closes its session.
+- [x] **DET-E2E-137 — Exact portable transport dispatch.** `:stdio` and `:streamable-http` select their implementations and can never produce a static client.
+- [x] **DET-E2E-138 — Unsupported transport rejection.** An unknown discriminator yields a typed server-specific failure before discovery.
+- [x] **DET-E2E-139 — Initialization failure fence.** Failed initialization yields no callable connection.
+- [x] **DET-E2E-140 — Same-origin configured headers.** Configured headers reach every same-origin MCP lifecycle request.
+- [x] **DET-E2E-141 — Cross-origin redirect confidentiality.** Configured and sensitive headers are stripped unless the exact redirected origin is authorized.
+- [x] **DET-E2E-142 — MCP sibling failure isolation.** Failure of one independently connected server leaves a healthy sibling callable.
+- [x] **DET-E2E-143 — Sanitized MCP lifecycle tracing.** Every required phase is queryable with identity, correlation, timing and status while header and environment secrets are absent.
+- [x] **DET-E2E-144 — Unified MCP transport contract.** Public schemas, documentation, and runtime dispatch enumerate the identical portable transport set.
+- [x] **DET-E2E-145 — Existing MCP workflow compatibility.** Generated ORC tool nodes retain discovery and invocation behavior through the portable client boundary.
 
 - [x] **DET-E2E-093 — MCP schema → workflow → execution.** Generated nodes retain their tool binding and tick-scoped MCP session, invoking the typed tool with the expected arguments.
 - [x] **DET-E2E-094 — Required/optional schema propagation.** Nested required/optional shape reaches the generated blackboard and is enforced at runtime.

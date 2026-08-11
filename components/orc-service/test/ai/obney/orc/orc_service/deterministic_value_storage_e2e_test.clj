@@ -5,7 +5,8 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.orc.llm.interface :as llm]))
+            [ai.obney.orc.llm.interface :as llm]
+            [litellm.router :as router]))
 
 (def ^:private structured-schema
   [:map
@@ -91,6 +92,8 @@
       :instruction "Return an answer."
       :writes [:answer]
       :options {:use-function-calling? true
+                :force-tool-choice? true
+                :max-retries 0
                 :retry-delay-ms 1})))
 
 (defn- execute-provider-values [ctx workflow-name provider-values]
@@ -144,6 +147,77 @@
                               :trace-id (:trace-id result)
                               :trace-instance-id (:trace-instance-id leaf)})
             [:query/result])))
+
+(deftest det-e2e-147-structured-provider-failure-evidence
+  (testing "all structured outcomes remain distinct through execution and durable trace projection"
+    (h/with-async-test-context [ctx]
+      (let [execute-response
+            (fn [suffix response]
+              (with-redefs [router/completion (fn [& _] response)]
+                (let [sheet-id (sheet/build-workflow!
+                                ctx (provider-boundary-workflow
+                                     (str "det-e2e-147-" suffix)))
+                      result (sheet/execute (assoc ctx :llm-provider :deterministic-provider)
+                                            sheet-id {})]
+                  [result (failed-leaf-detail ctx result)])))
+            usage {:prompt_tokens 7 :completion_tokens 3 :total_tokens 10}
+            response (fn [id finish message]
+                       {:id id :model "deterministic-model" :usage usage
+                        :choices [{:finish-reason finish :message message}]})
+            [valid valid-detail]
+            (execute-response
+             "valid"
+             (response "resp-valid" "tool_calls"
+                       {:tool-calls [{:function {:name "submit_response"
+                                                 :arguments "{\"answer\":\"ok\"}"}}]}))
+            [missing missing-detail]
+            (execute-response "missing"
+                              (response "resp-missing" "stop" {:content nil}))
+            [malformed malformed-detail]
+            (execute-response
+             "malformed"
+             (response "resp-malformed" "tool_calls"
+                       {:tool-calls [{:function {:name "submit_response"
+                                                 :arguments "{not-json"}}]}))
+            [schema-invalid schema-detail]
+            (execute-response
+             "schema-invalid"
+             (response "resp-schema" "tool_calls"
+                       {:tool-calls [{:function {:name "submit_response"
+                                                 :arguments "{\"answer\":42}"}}]}))
+            [empty empty-detail]
+            (execute-response "empty" {:id "resp-empty" :model "deterministic-model"
+                                         :usage usage :choices []})
+            [truncated truncated-detail]
+            (execute-response "truncated"
+                              (response "resp-truncated" "length" {:content nil}))]
+        (is (= :success (:status valid)))
+        (is (= "ok" (get-in valid [:outputs :answer])))
+        (is (nil? (:failure-kind valid-detail)))
+
+        (is (= :failure (:status missing)))
+        (is (= :missing-forced-tool-call (:failure-kind missing-detail)))
+        (is (= "resp-missing" (get-in missing-detail [:provider-evidence :response-id])))
+
+        (is (= :failure (:status malformed)))
+        (is (= :tool-call-parsing-failed (:failure-kind malformed-detail)))
+        (is (= "submit_response"
+               (get-in malformed-detail [:provider-evidence :tool-call-name])))
+
+        (is (= :failure (:status schema-invalid)))
+        (is (= :schema-validation-failed (:failure-kind schema-detail)))
+        (is (= {:answer 42} (:rejected-outputs schema-detail)))
+
+        (is (= :failure (:status empty)))
+        (is (= :empty-provider-response (:failure-kind empty-detail)))
+
+        (is (= :failure (:status truncated)))
+        (is (= :missing-forced-tool-call (:failure-kind truncated-detail)))
+        (is (true? (get-in truncated-detail [:provider-evidence :output-truncated?])))
+        (is (= 10 (get-in truncated-detail [:provider-evidence :usage :total-tokens])))
+        (is (not (contains? (:provider-evidence truncated-detail) :tool-arguments)))
+        (is (not (contains? (:provider-evidence truncated-detail)
+                            :raw-provider-response)))))))
 
 (deftest det-e2e-053-structured-nested-values
   (testing "nested vectors, maps, map-of values, and absent optional fields survive code, map-each, and delegate"

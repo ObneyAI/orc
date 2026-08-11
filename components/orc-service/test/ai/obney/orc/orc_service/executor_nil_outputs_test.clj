@@ -112,3 +112,48 @@
           (is (= 3 @call-count) "node-level :retry drove the reruns")
           (is (= :success (:status result)))
           (is (= "4" (get-in result [:outputs :answer]))))))))
+
+(deftest structured-provider-failure-data-survives-executor-boundary
+  (with-redefs [llm/predict
+                (fn [& _]
+                  (throw (ex-info "Forced tool choice returned no tool call"
+                                  {:failure-kind :missing-forced-tool-call
+                                   :provider-evidence
+                                   {:provider "openrouter"
+                                    :model "fake/model"
+                                    :response-id "resp-1"
+                                    :finish-reason "length"
+                                    :tool-call-present? false
+                                    :usage {:prompt-tokens 10
+                                            :completion-tokens 5
+                                            :total-tokens 15}
+                                    :output-truncated? true}})))]
+    (let [result (executor/execute-leaf base-node test-blackboard :openrouter
+                                        :options {:max-retries 0})]
+      (is (= :failure (:status result)))
+      (is (= :missing-forced-tool-call (:failure-kind result)))
+      (is (= "resp-1" (get-in result [:provider-evidence :response-id])))
+      (is (= 15 (get-in result [:usage :total-tokens]))))))
+
+(deftest schema-invalid-arguments-have-distinct-failure-kind
+  (with-redefs [llm/predict
+                (fn [& _]
+                  {:outputs {:answer 4}
+                   :usage {:prompt-tokens 10 :completion-tokens 2 :total-tokens 12}
+                   :model "fake/model"
+                   :provider-evidence {:provider "openrouter"
+                                       :model "fake/model"
+                                       :response-id "resp-schema"
+                                       :finish-reason "tool_calls"
+                                       :tool-call-present? true
+                                       :tool-call-name "submit_response"
+                                       :usage {:prompt-tokens 10
+                                               :completion-tokens 2
+                                               :total-tokens 12}
+                                       :output-truncated? false}})]
+    (let [result (executor/execute-leaf base-node test-blackboard :openrouter
+                                        :options {:max-retries 0})]
+      (is (= :failure (:status result)))
+      (is (= :schema-validation-failed (:failure-kind result)))
+      (is (= "resp-schema" (get-in result [:provider-evidence :response-id])))
+      (is (= 4 (get-in result [:rejected-writes :answer]))))))

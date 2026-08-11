@@ -271,6 +271,11 @@ Execute an LLM call with structured input/output.
 - `:reads` - Blackboard keys to include as context
 - `:writes` - Blackboard keys to write results to
 - `:retry` - Optional retry configuration
+- `:options` - Optional provider/executor controls. Use
+  `{:use-function-calling? true}` to request tool-backed structured output and
+  add `:force-tool-choice? true` when the provider must call ORC's generated
+  `submit_response` tool. Forced choice is opt-in because provider/schema
+  compatibility varies.
 
 **Structured Output:**
 
@@ -287,6 +292,18 @@ Provide these fields:
 ```
 
 The response is automatically parsed and stored to the specified blackboard key.
+
+When structured output fails, the node remains `:failure` and its trace carries
+an optional machine-readable `:failure-kind`. Current structured failure kinds
+are `:transport-failure`, `:missing-forced-tool-call`,
+`:tool-call-parsing-failed`, `:schema-validation-failed`, and
+`:empty-provider-response`. The accompanying `:provider-evidence` is a sanitized
+allowlist containing available provider/model identity, response ID, finish
+reason, tool-call presence/name, usage, and `:output-truncated?`. It never
+contains tool arguments or an arbitrary raw provider envelope.
+
+Use `:sheet/node-trace-detail` with the failed node's `:trace-instance-id` to
+retrieve these fields. Existing successful outputs and metadata are unchanged.
 
 ### code
 
@@ -1138,6 +1155,8 @@ Each node execution is captured with full context:
  :write-keys [:lead-analysis]        ; keys this node wrote
  :output-profile {:lead-analysis {:type :string :length 2048
                                   :word-count 310 :line-count 24}}
+ :failure-kind nil                    ; populated on classified LLM failures
+ :provider-evidence nil               ; sanitized provider evidence when available
  :error nil}
 ```
 

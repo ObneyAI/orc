@@ -643,7 +643,18 @@ They return their data under `:query/result`:
  :trace-id trace-id
  :trace-instance-id trace-instance-id}
 ;; => {:query/result {:node-id ... :trace-instance-id ...
-;;                    :exec-context ... :inputs {...} :outputs {...}}}
+;;                    :exec-context ... :inputs {...} :outputs {...}
+;;                    :rejected-outputs {...}
+;;                    :failure-kind :schema-validation-failed
+;;                    :provider-evidence
+;;                    {:provider "openrouter"
+;;                     :model "provider/model"
+;;                     :response-id "..."
+;;                     :finish-reason "length"
+;;                     :tool-call-present? true
+;;                     :tool-call-name "submit_response"
+;;                     :usage {...}
+;;                     :output-truncated? true}}}
 ```
 
 `get-trace` returns shape and profiles, not raw values. Select the exact
@@ -652,6 +663,10 @@ rehydrate that instance's inputs and outputs from the canonical value log. This
 also works when canonical values use file-store references. The node's
 instruction is part of the workflow version/draft snapshot used by the trace;
 use its `:node-id` with that definition when explaining the prompt that ran.
+For failed structured LLM nodes, `:failure-kind` distinguishes transport,
+missing forced-tool-call, tool-argument parsing, schema validation, and empty
+response failures. `:provider-evidence` is intentionally allowlisted: it does
+not expose tool arguments, provider headers, or arbitrary provider payloads.
 
 See [Value Storage](VALUE-STORAGE.md) for inline and external value placement.
 

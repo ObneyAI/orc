@@ -49,6 +49,8 @@
         (is (= {:answer "Paris"} (:outputs result)))
         (is (= "test-model" (:model result)))
         (is (= raw (:raw-response result)))
+        (is (not (contains? result :provider-evidence))
+            "existing successful metadata shape remains unchanged")
         (is (= 1 (count @calls)))
         (is (= 0 (get-in @calls [0 1 :temperature])))))))
 
@@ -179,3 +181,69 @@
     (testing "the opt-in flag itself is never forwarded to the provider"
       (let [req (capture {:force-tool-choice? true})]
         (is (nil? (:force-tool-choice? req)))))))
+
+(deftest structured-provider-failures-preserve-sanitized-evidence
+  (let [response {:id "resp-123"
+                  :model "test-model"
+                  :usage {:prompt-tokens 8 :completion-tokens 3 :total-tokens 11}
+                  :choices [{:finish-reason "length"
+                             :message {:content nil}}]}]
+    (with-redefs [router/supports-function-calling? (constantly true)
+                  router/completion (fn [& _] response)]
+      (let [failure (try
+                      (llm/predict :openrouter qa {:question "Capital?"}
+                                   {:force-tool-choice? true :with-metadata? true})
+                      (catch clojure.lang.ExceptionInfo e e))
+            data (ex-data failure)]
+        (is (= :missing-forced-tool-call (:failure-kind data)))
+        (is (= {:provider "openrouter"
+                :model "test-model"
+                :response-id "resp-123"
+                :finish-reason "length"
+                :tool-call-present? false
+                :tool-call-name nil
+                :usage {:prompt-tokens 8 :completion-tokens 3 :total-tokens 11}
+                :output-truncated? true}
+               (:provider-evidence data)))
+        (is (not (contains? (:provider-evidence data) :choices)))))))
+
+(deftest malformed-tool-arguments-are-distinct-from-missing-tool-call
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion
+                (fn [& _]
+                  {:id "resp-malformed"
+                   :model "test-model"
+                   :choices [{:finish_reason "tool_calls"
+                              :message {:tool-calls
+                                        [{:function {:name "submit_response"
+                                                     :arguments "{not-json"}}]}}]})]
+    (let [failure (try
+                    (llm/predict :openrouter qa {:question "Capital?"}
+                                 {:force-tool-choice? true :with-metadata? true})
+                    (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :tool-call-parsing-failed (:failure-kind (ex-data failure))))
+      (is (= true (get-in (ex-data failure) [:provider-evidence :tool-call-present?])))
+      (is (= "submit_response"
+             (get-in (ex-data failure) [:provider-evidence :tool-call-name]))))))
+
+(deftest transport-failure-is-explicit-and-carries-no-provider-payload
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _] (throw (ex-info "upstream unavailable" {:secret "no"})))]
+    (let [failure (try
+                    (llm/predict :openrouter qa {:question "Capital?"}
+                                 {:force-tool-choice? true :with-metadata? true})
+                    (catch clojure.lang.ExceptionInfo e e))]
+      (is (= "upstream unavailable" (.getMessage failure)))
+      (is (= :transport-failure (:failure-kind (ex-data failure))))
+      (is (= {:provider "openrouter"} (:provider-evidence (ex-data failure)))))))
+
+(deftest empty-structured-response-is-distinct
+  (with-redefs [router/supports-function-calling? (constantly true)
+                router/completion (fn [& _] {:id "resp-empty" :choices []})]
+    (let [failure (try
+                    (llm/predict :openrouter qa {:question "Capital?"}
+                                 {:force-tool-choice? true :with-metadata? true})
+                    (catch clojure.lang.ExceptionInfo e e))]
+      (is (= :empty-provider-response (:failure-kind (ex-data failure))))
+      (is (= "resp-empty"
+             (get-in (ex-data failure) [:provider-evidence :response-id]))))))

@@ -226,6 +226,45 @@
         (is (= (:trace-id failed-trace) (:trace-id failed-result)))
         (is (= (:trace-id draft-trace) (:trace-id draft-result)))))))
 
+(deftest det-e2e-146-mixed-offset-traces-order-before-limit
+  (testing "mixed timestamp spellings normalize and compare by instant across filters and lookup"
+    (h/with-async-test-context [ctx]
+      (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-146-trace-time"))
+            success-id (random-uuid)
+            timeout-id (random-uuid)
+            failure-id (random-uuid)
+            store! (fn [trace-id status started-at completed-at]
+                     (h/run-and-apply!
+                      ctx {:command/id (random-uuid)
+                           :command/timestamp (java.time.OffsetDateTime/now)
+                           :command/name :sheet/store-execution-trace
+                           :trace-id trace-id :sheet-id sheet-id
+                           :root-trace-id trace-id :child-trace-ids []
+                           :started-at started-at :completed-at completed-at
+                           :duration-ms 1000 :status status
+                           :input-snapshot {} :output-snapshot {} :node-traces []}))]
+        (store! success-id :success
+                "2026-08-11T13:51:00Z" "2026-08-11T13:51:01Z")
+        (store! timeout-id :timeout
+                "2026-08-11T06:52:00-07:00" "2026-08-11T06:52:01-07:00")
+        (store! failure-id :failure
+                "2026-08-11T13:53:00Z" "2026-08-11T13:53:01Z")
+        (let [query (fn [& opts]
+                      (get-in (h/run-query ctx (apply h/make-get-traces-query sheet-id opts))
+                              [:query/result]))
+              recent (query :limit 2)
+              since (query :since "2026-08-11T06:51:30-07:00")
+              timeouts (query :status :timeout)
+              direct (get-in (h/run-query ctx (h/make-get-trace-query timeout-id))
+                             [:query/result :trace])]
+          (is (= [failure-id timeout-id] (mapv :trace-id (:traces recent))))
+          (is (= #{failure-id timeout-id} (set (map :trace-id (:traces since)))))
+          (is (= [timeout-id] (mapv :trace-id (:traces timeouts))))
+          (is (= timeout-id (:trace-id direct)))
+          (is (= "2026-08-11T13:52:00Z" (:started-at direct)))
+          (is (every? #(.endsWith ^String (:started-at %) "Z")
+                      (:traces (query)))))))))
+
 (deftest det-e2e-118-observability-outage-does-not-corrupt-execution
   (testing "blocking, failed, and unacknowledged exports remain bounded and isolated"
     (h/with-async-test-context [ctx]

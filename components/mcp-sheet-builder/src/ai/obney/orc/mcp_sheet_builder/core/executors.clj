@@ -146,7 +146,7 @@
    - :additional - Additional context keys"
   [{:keys [mcp-opts additional]}]
   (let [mcp-session (when mcp-opts
-                      (mcp-client/connect mcp-opts))]
+                      (mcp-client/connect-legacy mcp-opts))]
     (merge {:mcp-session mcp-session}
            additional)))
 

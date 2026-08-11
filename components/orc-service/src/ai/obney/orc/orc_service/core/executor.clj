@@ -1169,6 +1169,7 @@
                                :max-retries :retry-delay-ms}
         llm-options (merge {:validate? false
                                :with-metadata? true
+                               :with-provider-evidence? true
                                :use-function-calling? false}
                               (apply dissoc options internal-option-keys)
                               (when (:model node) {:model (:model node)}))
@@ -1239,6 +1240,9 @@
                        {:outputs outputs
                         :usage (normalize-usage (:usage result))
                         :model (or (:model result) (:model node))
+                        :provider-evidence
+                        (some-> (:provider-evidence result)
+                                (update :usage normalize-usage))
                         ;; Verbatim completion text from ORC LLM (:with-metadata? true).
                         ;; Carried so a nil-parse failure can show WHAT the model
                         ;; actually returned instead of discarding it.
@@ -1287,13 +1291,21 @@
     (loop [attempt 0
            accumulated-usage nil]
       (let [{:keys [options timeout-error]} (prepare-attempt attempt)
-            {:keys [outputs usage model error raw-response]}
+            {:keys [outputs usage model error raw-response failure-kind provider-evidence]}
             (if timeout-error
               {:error timeout-error :budget-timeout? true}
               (try
                 (try-once attempt options)
                 (catch Exception e
-                  {:error (.getMessage e)})))
+                  (let [{:keys [failure-kind provider-evidence]} (ex-data e)
+                        provider-evidence (some-> provider-evidence
+                                                  (update :usage normalize-usage))]
+                    (cond-> {:error (.getMessage e)}
+                      failure-kind (assoc :failure-kind failure-kind)
+                      provider-evidence
+                      (assoc :provider-evidence provider-evidence
+                             :usage (normalize-usage (:usage provider-evidence))
+                             :model (or (:model provider-evidence) (:model node))))))))
             budget-timeout? (boolean timeout-error)
             ;; Drop nil best-effort writes so an omitted evidence array is the
             ;; node's declared-optional absence, not a nil-gate failure.
@@ -1336,7 +1348,9 @@
           (let [result (cond-> {:status :failure :error error
                                 :duration-ms (- (System/currentTimeMillis) start-time)}
                          total-usage (assoc :usage total-usage)
-                         model (assoc :model model))]
+                         model (assoc :model model)
+                         failure-kind (assoc :failure-kind failure-kind)
+                         provider-evidence (assoc :provider-evidence provider-evidence))]
             (obs/log-ai-execution!
               {:node-id (:id node) :node-name (:name node) :model model
                :executor :ai :duration-ms (:duration-ms result)
@@ -1378,7 +1392,8 @@
                         :duration-ms (- (System/currentTimeMillis) start-time)
                         ;; Usage is preserved — these tokens were really spent
                         ;; and must not vanish from Phase-2 accounting.
-                        :usage total-usage :model model}]
+                        :usage total-usage :model model
+                        :provider-evidence provider-evidence}]
             (obs/log-unparseable-output!
               {:node-id (:id node) :node-name (:name node) :model model
                :nil-keys nil-keys :raw-length raw-len
@@ -1412,7 +1427,9 @@
           (let [result (assoc schema-result
                               :duration-ms (- (System/currentTimeMillis) start-time)
                               :usage total-usage
-                              :model model)]
+                              :model model
+                              :failure-kind :schema-validation-failed
+                              :provider-evidence provider-evidence)]
             (obs/log-ai-execution!
               {:node-id (:id node) :node-name (:name node) :model model
                :executor :ai :duration-ms (:duration-ms result)

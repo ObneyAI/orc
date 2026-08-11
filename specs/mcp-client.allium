@@ -1,0 +1,215 @@
+-- allium: 3
+-- mcp-client.allium
+--
+-- Scope: portable MCP client connections used by ORC consumers.
+-- Includes: exact transport selection, initialization, tool discovery and calls,
+-- lifecycle closure, per-server failure isolation, redirect confidentiality, and
+-- sanitized lifecycle tracing.
+-- Excludes: plugin discovery and variable resolution, executable/path containment,
+-- authoritative capability catalogs, and MCP server implementation.
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity McpConsumer {}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value ConnectionConfiguration {
+    server_identity: String
+    transport: Transport
+    destination: String
+}
+
+value ToolDefinition {
+    name: String
+    description: String?
+    input_schema: Any
+}
+
+value ToolCallResult { value: Any }
+
+value ConnectionFailure {
+    server_identity: String
+    transport: String
+    phase: LifecyclePhase
+    failure_type: FailureType
+    message: String
+}
+
+value TraceActivity {
+    server_identity: String
+    transport: String
+    phase: LifecyclePhase
+    status: ActivityStatus
+    correlation_identifier: String?
+    tool_name: String?
+    started_at: Timestamp
+    completed_at: Timestamp?
+    duration: Duration?
+    byte_count: Integer?
+    failure: ConnectionFailure?
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract PortableMcpClient {
+    connect: (configuration: ConnectionConfiguration) -> McpConnection
+    list_tools: (connection: McpConnection) -> List<ToolDefinition>
+    call_tool: (connection: McpConnection, tool_name: String, arguments: Any) -> ToolCallResult
+    close: (connection: McpConnection) -> Any
+
+    @invariant ExactTransport
+        -- A connection uses exactly its declared stdio or streamable-http
+        -- transport. Unknown transports fail before any usable connection exists.
+
+    @invariant InitializedBeforeUse
+        -- A connection becomes usable only after successful MCP initialization
+        -- and the initialized notification has been sent.
+
+    @invariant CorrelatedRequests
+        -- Concurrent JSON-RPC requests are matched to their own response by a
+        -- distinct request correlation identifier.
+
+    @invariant LiteralProcessLaunch
+        -- Stdio command and arguments retain their structural boundaries and are
+        -- never interpreted as shell syntax. Stderr is never protocol input.
+
+    @invariant RedirectConfidentiality
+        -- Configured headers are sent to the configured origin and are not sent
+        -- to another origin unless that exact origin was explicitly authorized.
+
+    @invariant TraceConfidentiality
+        -- Trace activities never contain configured header values, authorization
+        -- material, cookies, tokens, or configured environment values.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum Transport { stdio | streamable_http }
+enum ConnectionStatus { connecting | active | closed }
+enum LifecyclePhase {
+    connection_requested | transport_contacted | initialization_requested |
+    initialization_completed | initialization_failed | tools_listed |
+    tool_invocation_requested | tool_invocation_completed |
+    tool_invocation_failed | connection_closed | process_exited
+}
+enum ActivityStatus { requested | succeeded | failed }
+enum FailureType {
+    unsupported_transport | invalid_configuration | transport_failure |
+    initialization_failure | protocol_error | process_exited |
+    malformed_output | connection_closed
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity McpConnection {
+    consumer: McpConsumer
+    server_identity: String
+    transport: Transport
+    status: ConnectionStatus
+    configuration: ConnectionConfiguration
+    negotiated_protocol: String? when status = active | closed
+
+    transitions status {
+        connecting -> active
+        active -> closed
+        terminal: closed
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule RejectUnsupportedTransport {
+    when: ConnectPortableMcp(consumer, configuration)
+    requires: configuration.transport not in {stdio, streamable_http}
+    ensures: ConnectionRejected(configuration.server_identity, unsupported_transport)
+}
+
+rule InitializeConnection {
+    when: ConnectPortableMcp(consumer, configuration)
+    requires: configuration.transport in {stdio, streamable_http}
+    ensures: McpConnection.created(
+        consumer: consumer,
+        server_identity: configuration.server_identity,
+        transport: configuration.transport,
+        status: connecting,
+        configuration: configuration,
+        negotiated_protocol: null
+    )
+}
+
+rule ActivateInitializedConnection {
+    when: InitializationSucceeded(connection, negotiated_protocol)
+    requires: connection.status = connecting
+    ensures: connection.status = active
+    ensures: connection.negotiated_protocol = negotiated_protocol
+}
+
+rule RejectFailedInitialization {
+    when: InitializationFailed(connection, failure)
+    requires: connection.status = connecting
+    ensures: not exists connection
+    ensures: ConnectionRejected(connection.server_identity, failure.failure_type)
+}
+
+rule DiscoverTools {
+    when: ListMcpTools(consumer, connection)
+    requires: connection.status = active
+    ensures: ToolsDiscovered(connection, discover_tools(connection))
+}
+
+rule InvokeTool {
+    when: CallMcpTool(consumer, connection, tool_name, arguments)
+    requires: connection.status = active
+    ensures: ToolInvocationCompleted(connection, tool_name, invoke_tool(connection, tool_name, arguments))
+}
+
+rule CloseConnection {
+    when: CloseMcpConnection(consumer, connection)
+    requires: connection.status = active
+    ensures: connection.status = closed
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant OnlyInitializedConnectionsAreActive {
+    for connection in McpConnections:
+        connection.status = active implies connection.negotiated_protocol != null
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface PortableMcpConnection {
+    facing consumer: McpConsumer
+    provides:
+        ConnectPortableMcp(consumer, configuration)
+        ListMcpTools(consumer, connection) when connection.status = active
+        CallMcpTool(consumer, connection, tool_name, arguments) when connection.status = active
+        CloseMcpConnection(consumer, connection) when connection.status = active
+    contracts:
+        fulfils PortableMcpClient
+
+    @guarantee FailureIsolation
+        -- Failure of one connection does not close, replace, or make another
+        -- independently connected server unusable.
+
+    @guarantee CompleteSanitizedTrace
+        -- Every requested lifecycle phase produces queryable sanitized activity
+        -- associated with the affected server and connection.
+}

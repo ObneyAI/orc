@@ -24,7 +24,7 @@
   [{:keys [inputs context]}]
   (let [mcp-opts (get inputs :mcp-opts)
         mcp-conn (or (:mcp-session context)
-                     (mcp-client/connect mcp-opts))
+                     (mcp-client/connect-legacy mcp-opts))
         tools (mcp-client/list-tools mcp-conn)]
     {:raw-tools tools
      :mcp-session mcp-conn}))
@@ -85,7 +85,7 @@
   '(sheet/workflow "mcp-sheet-builder"
      (sheet/blackboard
        {:mcp-opts [:map
-                   [:type [:enum :http :static :claude-mcp]]
+                   [:type [:enum :streamable-http :stdio :static :claude-mcp]]
                    [:preset {:optional true} :keyword]
                    [:url {:optional true} :string]]
         :raw-tools [:vector [:map [:name :string]]]
@@ -191,7 +191,7 @@
    Useful for testing and exploration."
   [{:keys [mcp-opts problem]}]
   (let [;; Phase 1: Discover
-        mcp-conn (mcp-client/connect mcp-opts)
+        mcp-conn (mcp-client/connect-legacy mcp-opts)
         raw-tools (mcp-client/list-tools mcp-conn)
 
         ;; Phase 2: Analyze

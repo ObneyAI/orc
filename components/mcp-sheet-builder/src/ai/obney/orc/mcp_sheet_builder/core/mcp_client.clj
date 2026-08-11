@@ -1,14 +1,13 @@
 (ns ai.obney.orc.mcp-sheet-builder.core.mcp-client
-  "HTTP/SSE client for MCP servers.
-
-   Supports multiple connection types:
-   - :http - HTTP/SSE streamable MCP servers (Langfuse, Exa, Tavily)
-   - :claude-mcp - Uses Claude Code's MCP infrastructure directly
-   - :nrepl - Uses the nREPL MCP bridge"
+  "Portable MCP client for stdio and Streamable HTTP servers."
   (:require [clj-http.client :as http]
             [cheshire.core :as json]
+            [clojure.java.io :as io]
             [clojure.string :as str]
-            [com.brunobonacci.mulog :as u]))
+            [com.brunobonacci.mulog :as u])
+  (:import (java.net URI)
+           (java.time Duration Instant)
+           (java.util.concurrent TimeUnit)))
 
 ;; ============================================================================
 ;; Protocol
@@ -20,6 +19,62 @@
   (call-tool* [this tool-name args] "Call a tool with arguments.")
   (close* [this] "Close the connection."))
 
+(def supported-transports #{:stdio :streamable-http})
+
+(defn create-trace-context
+  "Create a sanitized MCP lifecycle trace context. `record!`, when supplied,
+   receives each activity and can persist it through a consumer's durable trace
+   boundary. Activities are always retained locally for inspection."
+  ([] (create-trace-context nil))
+  ([record!]
+   {:activities (atom []) :record! record!}))
+
+(defn trace-activities [trace-context]
+  (vec (or (some-> trace-context :activities deref) [])))
+
+(defn- now [] (Instant/now))
+
+(defn- emit!
+  [trace-context server-id transport phase status & [{:keys [request-id tool-name
+                                                              started-at byte-count failure]}]]
+  (when trace-context
+    (let [completed-at (now)
+          activity (cond-> {:server-id server-id
+                            :transport transport
+                            :phase phase
+                            :status status
+                            :started-at (or started-at completed-at)
+                            :completed-at completed-at}
+                     request-id (assoc :request-id request-id)
+                     tool-name (assoc :tool-name tool-name)
+                     true (assoc :duration-ms (.toMillis
+                                                (Duration/between (or started-at completed-at)
+                                                                  completed-at)))
+                     byte-count (assoc :byte-count byte-count)
+                     failure (assoc :failure (select-keys failure [:orc/error :mcp/phase :message])))]
+      (when-let [activities (:activities trace-context)]
+        (swap! activities conj activity))
+      (when-let [record! (:record! trace-context)]
+        (record! activity))
+      activity)))
+
+(defn- failure
+  ([type server-id transport phase message]
+   (failure type server-id transport phase message nil))
+  ([type server-id transport phase message cause]
+   (ex-info message
+            {:orc/error type
+             :mcp/server-id server-id
+             :mcp/transport transport
+             :mcp/phase phase
+             :message message}
+            cause)))
+
+(defn- ensure-active! [closed? server-id transport]
+  (when @closed?
+    (throw (failure :mcp/connection-closed server-id transport :request
+                    "MCP connection is closed"))))
+
 ;; ============================================================================
 ;; Streamable HTTP MCP Client (MCP 2025-03-26 spec)
 ;; ============================================================================
@@ -28,12 +83,15 @@
   "Parse an SSE (Server-Sent Events) response body.
    Returns the JSON-RPC result from the data lines."
   [body]
-  (let [lines (str/split-lines body)
-        data-lines (->> lines
-                        (filter #(str/starts-with? % "data: "))
-                        (map #(subs % 6)))]
-    (when (seq data-lines)
-      (json/parse-string (first data-lines) true))))
+  (let [messages (->> (str/split body #"\r?\n\r?\n")
+                      (keep (fn [event]
+                              (let [data (->> (str/split-lines event)
+                                              (filter #(str/starts-with? % "data:"))
+                                              (map #(str/trim (subs % 5)))
+                                              (str/join "\n"))]
+                                (when-not (str/blank? data)
+                                  (json/parse-string data true))))))]
+    (or (first (filter :id messages)) (first messages))))
 
 (defn- parse-response-body
   "Parse the response body, handling both JSON and SSE formats."
@@ -57,126 +115,332 @@
       :else
       body)))
 
-;; Forward declaration for session initialization
-(declare initialize-mcp-session!)
+(defn- response-header [response header-name]
+  (let [wanted (str/lower-case header-name)]
+    (some (fn [[k v]] (when (= wanted (str/lower-case (clojure.core/name k))) v))
+          (:headers response))))
 
-(defn- reinitialize-session!
-  "Reinitialize the MCP session when it expires (404 error)."
-  [url headers session-id-atom]
-  (u/log ::session-expired :url url)
-  (let [new-session-id (initialize-mcp-session! url headers)]
-    (reset! session-id-atom new-session-id)
-    new-session-id))
+(defn- origin [url]
+  (let [uri (URI. url)
+        scheme (str/lower-case (.getScheme uri))
+        port (let [p (.getPort uri)]
+               (if (neg? p) (if (= "https" scheme) 443 80) p))]
+    (str scheme "://" (str/lower-case (.getHost uri)) ":" port)))
 
-(defn- mcp-request-with-retry
-  "Make an MCP request with automatic session refresh on 404.
-   request-fn takes session-id and returns response."
-  [url headers session-id-atom request-fn]
-  (try
-    (request-fn @session-id-atom)
-    (catch Exception e
-      ;; clj-http with slingshot wraps status in ex-data
-      (let [data (ex-data e)
-            status (or (:status data)
-                       ;; Check if error message contains 404
-                       (when (and (instance? clojure.lang.ExceptionInfo e)
-                                  (re-find #"status 404" (str (.getMessage e))))
-                         404))]
-        (if (= 404 status)
-          ;; Session expired - reinitialize and retry
-          (do
-            (reinitialize-session! url headers session-id-atom)
-            (request-fn @session-id-atom))
-          (throw e))))))
+(defn- redirected-request
+  [method configured-url url configured-headers authorized-origins request]
+  (loop [current url redirects 0]
+    (let [same-or-authorized? (or (= (origin current) (origin configured-url))
+                                  (contains? authorized-origins (origin current)))
+          response (http/request (merge request
+                                        {:method method
+                                         :url current
+                                         :headers (merge (if same-or-authorized?
+                                                           (:headers request)
+                                                           (dissoc (:headers request)
+                                                                   "Mcp-Session-Id"
+                                                                   "Authorization"
+                                                                   "Cookie"))
+                                                         (when same-or-authorized? configured-headers))
+                                         :redirect-strategy :none
+                                         :throw-exceptions false
+                                         :as :text}))
+          status (:status response)]
+      (if (contains? #{301 302 303 307 308} status)
+        (let [location (response-header response "location")]
+          (when (or (nil? location) (>= redirects 5))
+            (throw (ex-info "Invalid or excessive HTTP redirect" {:status status})))
+          (recur (str (.resolve (URI. current) location)) (inc redirects)))
+        response))))
 
-(defrecord StreamableHTTPMCPClient [url session-id-atom headers]
+(defn- json-rpc-result! [parsed server-id transport phase]
+  (when-not (map? parsed)
+    (throw (failure :mcp/protocol-error server-id transport phase
+                    "MCP server returned malformed protocol output")))
+  (when-let [error (:error parsed)]
+    (throw (failure :mcp/protocol-error server-id transport phase
+                    (str "MCP JSON-RPC error " (:code error) ": " (:message error)))))
+  (if (contains? parsed :result)
+    (:result parsed)
+    (throw (failure :mcp/protocol-error server-id transport phase
+                    "MCP JSON-RPC response has no result"))))
+
+(defn- http-exchange!
+  [client method payload phase]
+  (let [{:keys [url headers authorized-origins session-id request-id server-id transport]} client
+        id (when (and payload (not (str/starts-with? (:method payload) "notifications/")))
+             (swap! request-id inc))
+        body (when payload (json/generate-string (cond-> payload id (assoc :id id))))
+        response (redirected-request method url url headers authorized-origins
+                                     {:headers (cond-> {"Content-Type" "application/json"
+                                                        "Accept" "application/json, text/event-stream"}
+                                                 @session-id (assoc "Mcp-Session-Id" @session-id))
+                                      :body body})]
+    (when-let [new-session (response-header response "mcp-session-id")]
+      (reset! session-id new-session))
+    (when-not (<= 200 (:status response) 299)
+      (throw (failure :mcp/transport-failure server-id transport phase
+                      (str "MCP HTTP request failed with status " (:status response)))))
+    {:id id :response response
+     :parsed (when-not (str/blank? (:body response)) (parse-response-body response))}))
+
+(defrecord StreamableHTTPMCPClient [url session-id headers authorized-origins request-id
+                                    server-id transport trace-context closed?]
   MCPClient
-  (list-tools* [_]
-    (u/trace ::list-tools {:url url}
-      (mcp-request-with-retry url headers session-id-atom
-        (fn [session-id]
-          (let [response (http/post url
-                                    {:headers (cond-> {"Content-Type" "application/json"
-                                                       "Accept" "application/json, text/event-stream"}
-                                                session-id (assoc "Mcp-Session-Id" session-id))
-                                     :body (json/generate-string {:jsonrpc "2.0"
-                                                                   :method "tools/list"
-                                                                   :id 1})
-                                     :as :auto
-                                     :throw-exceptions true})
-                parsed (parse-response-body response)]
-            (get-in parsed [:result :tools] []))))))
+  (list-tools* [this]
+    (ensure-active! closed? server-id transport)
+    (let [started (now)
+          {:keys [id parsed response]} (http-exchange! this :post
+                                                       {:jsonrpc "2.0" :method "tools/list"}
+                                                       :tools/list)
+          tools (:tools (json-rpc-result! parsed server-id transport :tools/list))]
+      (emit! trace-context server-id transport :tools-listed :succeeded
+             {:request-id id :started-at started :byte-count (count (:body response))})
+      (vec tools)))
 
-  (call-tool* [_ tool-name args]
-    (u/trace ::call-tool {:url url :tool tool-name}
-      (mcp-request-with-retry url headers session-id-atom
-        (fn [session-id]
-          (let [response (http/post url
-                                    {:headers (cond-> {"Content-Type" "application/json"
-                                                       "Accept" "application/json, text/event-stream"}
-                                                session-id (assoc "Mcp-Session-Id" session-id))
-                                     :body (json/generate-string {:jsonrpc "2.0"
-                                                                   :method "tools/call"
-                                                                   :params {:name tool-name
-                                                                            :arguments args}
-                                                                   :id 1})
-                                     :as :auto
-                                     :throw-exceptions true})
-                parsed (parse-response-body response)]
-            (get parsed :result))))))
+  (call-tool* [this tool-name args]
+    (ensure-active! closed? server-id transport)
+    (let [started (now)
+          correlation-id (str (random-uuid))]
+      (emit! trace-context server-id transport :tool-invocation-requested :requested
+             {:request-id correlation-id :tool-name tool-name :started-at started})
+      (try
+        (let [{:keys [id parsed response]} (http-exchange! this :post
+                                                           {:jsonrpc "2.0" :method "tools/call"
+                                                            :params {:name tool-name :arguments args}}
+                                                           :tools/call)
+              result (json-rpc-result! parsed server-id transport :tools/call)]
+          (emit! trace-context server-id transport :tool-invocation-completed :succeeded
+                 {:request-id correlation-id :tool-name tool-name :started-at started
+                  :byte-count (count (:body response))})
+          result)
+        (catch Exception e
+          (emit! trace-context server-id transport :tool-invocation-failed :failed
+                 {:request-id correlation-id :tool-name tool-name
+                  :started-at started :failure (ex-data e)})
+          (throw e)))))
 
   (close* [this]
-    ;; Send DELETE to close session if we have a session ID
-    (when-let [session-id @session-id-atom]
-      (try
-        (http/delete url {:headers {"Mcp-Session-Id" session-id}})
-        (catch Exception _)))
-    (reset! session-id-atom nil)))
+    (when (compare-and-set! closed? false true)
+      (when @session-id
+        (try (http-exchange! this :delete nil :close) (catch Exception _)))
+      (reset! session-id nil)
+      (emit! trace-context server-id transport :connection-closed :succeeded))))
 
-(defn- initialize-mcp-session!
-  "Initialize an MCP session with the server.
-   Returns the session ID if one is assigned."
-  [url headers]
-  (u/trace ::initialize-session {:url url}
+(defn- connect-http [{:keys [url headers authorized-redirect-origins server-id] :as opts}
+                     trace-context]
+  (when-not (and (string? url) (contains? #{"http" "https"} (.getScheme (URI. url))))
+    (throw (failure :mcp/invalid-configuration server-id :streamable-http :connect
+                    "Streamable HTTP requires an absolute HTTP(S) URL")))
+  (let [client (map->StreamableHTTPMCPClient
+                 {:url url :headers (or headers {})
+                  :authorized-origins (set (map origin authorized-redirect-origins))
+                  :session-id (atom nil) :request-id (atom 0)
+                  :server-id (or server-id url) :transport :streamable-http
+                  :trace-context trace-context :closed? (atom false)})
+        started (now)]
+    (emit! trace-context (:server-id client) :streamable-http :transport-contacted :requested
+           {:started-at started})
+    (emit! trace-context (:server-id client) :streamable-http :initialization-requested :requested
+           {:started-at started})
     (try
-      ;; Step 1: Send InitializeRequest
-      (let [init-response (http/post url
-                                     {:headers (merge {"Content-Type" "application/json"
-                                                       "Accept" "application/json, text/event-stream"}
-                                                      headers)
-                                      :body (json/generate-string
-                                              {:jsonrpc "2.0"
-                                               :method "initialize"
-                                               :params {:protocolVersion "2025-03-26"
-                                                        :capabilities {}
-                                                        :clientInfo {:name "orc-mcp-client"
-                                                                     :version "1.0.0"}}
-                                               :id 1})
-                                      :as :auto})
-            session-id (get-in init-response [:headers "mcp-session-id"])]
-
-        ;; Step 2: Send InitializedNotification
-        (http/post url
-                   {:headers (cond-> {"Content-Type" "application/json"
-                                      "Accept" "application/json, text/event-stream"}
-                               session-id (assoc "Mcp-Session-Id" session-id))
-                    :body (json/generate-string
-                            {:jsonrpc "2.0"
-                             :method "notifications/initialized"})})
-
-        session-id)
+      (let [{:keys [parsed]} (http-exchange! client :post
+                                             {:jsonrpc "2.0" :method "initialize"
+                                              :params {:protocolVersion "2025-03-26"
+                                                       :capabilities {}
+                                                       :clientInfo {:name "orc-mcp-client"
+                                                                    :version "1.0.0"}}}
+                                             :initialize)
+            result (json-rpc-result! parsed (:server-id client) :streamable-http :initialize)]
+        (when-not (string? (:protocolVersion result))
+          (throw (failure :mcp/initialization-failure (:server-id client)
+                          :streamable-http :initialize "MCP initialization did not negotiate a protocol")))
+        (http-exchange! client :post {:jsonrpc "2.0" :method "notifications/initialized"}
+                        :initialized)
+        (emit! trace-context (:server-id client) :streamable-http
+               :initialization-completed :succeeded {:started-at started})
+        client)
       (catch Exception e
-        (u/log ::initialize-failed :error (.getMessage e))
-        nil))))
+        (reset! (:closed? client) true)
+        (emit! trace-context (:server-id client) :streamable-http
+               :initialization-failed :failed {:started-at started :failure (ex-data e)})
+        (throw (if (:orc/error (ex-data e)) e
+                 (failure :mcp/initialization-failure (:server-id client)
+                          :streamable-http :initialize "MCP initialization failed" e)))))))
 
-(defn- connect-http
-  "Connect to an HTTP MCP server using Streamable HTTP transport."
-  [{:keys [url headers api-key]}]
-  (let [auth-headers (when api-key
-                       {"Authorization" (str "Bearer " api-key)})
-        all-headers (merge headers auth-headers)
-        session-id (initialize-mcp-session! url all-headers)]
-    (->StreamableHTTPMCPClient url (atom session-id) all-headers)))
+;; ============================================================================
+;; Stdio MCP Client
+;; ============================================================================
+
+(defn- fail-pending! [pending exception]
+  (let [requests (vals (swap! pending (constantly {})))]
+    (doseq [response requests]
+      (deliver response exception))))
+
+(defn- stdio-send!
+  [client method params notification?]
+  (ensure-active! (:closed? client) (:server-id client) :stdio)
+  (let [id (when-not notification? (swap! (:request-id client) inc))
+        response (when id (promise))
+        message (cond-> {:jsonrpc "2.0" :method method}
+                  params (assoc :params params)
+                  id (assoc :id id))]
+    (when id (swap! (:pending client) assoc id response))
+    (try
+      (locking (:write-lock client)
+        (.write (:writer client) (json/generate-string message))
+        (.newLine (:writer client))
+        (.flush (:writer client)))
+      (if notification?
+        nil
+        (let [value (deref response (:request-timeout-ms client) ::timeout)]
+          (swap! (:pending client) dissoc id)
+          (when (= ::timeout value)
+            (throw (failure :mcp/transport-failure (:server-id client) :stdio method
+                            "Timed out waiting for MCP stdio response")))
+          (when (instance? Throwable value) (throw value))
+          {:id id :parsed value}))
+      (catch Exception e
+        (when id (swap! (:pending client) dissoc id))
+        (throw e)))))
+
+(defrecord StdioMCPClient [process writer pending request-id write-lock request-timeout-ms
+                           shutdown-timeout-ms server-id transport trace-context closed?
+                           stdout-reader stderr-reader exit-watcher]
+  MCPClient
+  (list-tools* [this]
+    (let [started (now)
+          {:keys [id parsed]} (stdio-send! this "tools/list" nil false)
+          tools (:tools (json-rpc-result! parsed server-id transport :tools/list))]
+      (emit! trace-context server-id transport :tools-listed :succeeded
+             {:request-id id :started-at started})
+      (vec tools)))
+
+  (call-tool* [this tool-name args]
+    (let [started (now)
+          correlation-id (str (random-uuid))]
+      (emit! trace-context server-id transport :tool-invocation-requested :requested
+             {:request-id correlation-id :tool-name tool-name :started-at started})
+      (try
+        (let [{:keys [id parsed]} (stdio-send! this "tools/call"
+                                               {:name tool-name :arguments args} false)
+              result (json-rpc-result! parsed server-id transport :tools/call)]
+          (emit! trace-context server-id transport :tool-invocation-completed :succeeded
+                 {:request-id correlation-id :tool-name tool-name :started-at started})
+          result)
+        (catch Exception e
+          (emit! trace-context server-id transport :tool-invocation-failed :failed
+                 {:request-id correlation-id :tool-name tool-name
+                  :started-at started :failure (ex-data e)})
+          (throw e)))))
+
+  (close* [_]
+    (when (compare-and-set! closed? false true)
+      (try (.close writer) (catch Exception _))
+      (when-not (.waitFor process shutdown-timeout-ms TimeUnit/MILLISECONDS)
+        (.destroy process)
+        (when-not (.waitFor process shutdown-timeout-ms TimeUnit/MILLISECONDS)
+          (.destroyForcibly process)
+          (.waitFor process shutdown-timeout-ms TimeUnit/MILLISECONDS)))
+      (fail-pending! pending
+                     (failure :mcp/connection-closed server-id transport :close
+                              "MCP stdio connection closed"))
+      (emit! trace-context server-id transport :connection-closed :succeeded))))
+
+(defn- start-stdio-readers! [client]
+  (let [stdout-reader
+        (future
+          (try
+            (with-open [reader (io/reader (.getInputStream (:process client)))]
+              (doseq [line (line-seq reader)]
+                (try
+                  (let [message (json/parse-string line true)
+                        id (:id message)]
+                    (if-let [response (and id (get @(:pending client) id))]
+                      (do (swap! (:pending client) dissoc id)
+                          (deliver response message))
+                      (when id
+                        (throw (failure :mcp/protocol-error (:server-id client) :stdio
+                                        :response "MCP stdio response has an unknown request id")))))
+                  (catch Exception e
+                    (fail-pending! (:pending client)
+                                   (failure :mcp/malformed-output (:server-id client) :stdio
+                                            :response "Malformed MCP stdio protocol output" e))
+                    (.destroy (:process client))))))
+            (catch Exception e
+              (when-not @(:closed? client)
+                (fail-pending! (:pending client) e)))))
+        stderr-reader
+        (future
+          (try
+            (with-open [reader (io/reader (.getErrorStream (:process client)))]
+              (doseq [_ (line-seq reader)] nil))
+            (catch Exception _)))
+        exit-watcher
+        (future
+          (let [exit-code (.waitFor (:process client))]
+            (when-not @(:closed? client)
+              (fail-pending! (:pending client)
+                             (failure :mcp/process-exited (:server-id client) :stdio
+                                      :process-exited
+                                      (str "MCP stdio process exited with code " exit-code))))
+            (emit! (:trace-context client) (:server-id client) :stdio
+                   :process-exited (if (zero? exit-code) :succeeded :failed)
+                   {:failure (when-not (zero? exit-code)
+                               {:orc/error :mcp/process-exited
+                                :mcp/phase :process-exited
+                                :message (str "Process exited with code " exit-code)})})))]
+    (assoc client :stdout-reader stdout-reader :stderr-reader stderr-reader
+           :exit-watcher exit-watcher)))
+
+(defn- connect-stdio
+  [{:keys [command args env working-directory server-id request-timeout-ms
+           shutdown-timeout-ms]} trace-context]
+  (when-not (and (string? command) (not (str/blank? command)))
+    (throw (failure :mcp/invalid-configuration server-id :stdio :connect
+                    "Stdio transport requires a command")))
+  (let [started (now)]
+    (try
+      (let [builder (ProcessBuilder. ^java.util.List (vec (cons command (or args []))))
+            _ (when working-directory (.directory builder (io/file working-directory)))
+            environment (.environment builder)
+            _ (doseq [[name value] (or env {})] (.put environment name value))
+            process (.start builder)
+            client (->StdioMCPClient process
+                                     (io/writer (.getOutputStream process))
+                                     (atom {}) (atom 0) (Object.)
+                                     (or request-timeout-ms 10000)
+                                     (or shutdown-timeout-ms 1000)
+                                     (or server-id command) :stdio trace-context (atom false)
+                                     nil nil nil)
+            client (start-stdio-readers! client)]
+        (emit! trace-context (:server-id client) :stdio :transport-contacted :succeeded
+               {:started-at started})
+        (emit! trace-context (:server-id client) :stdio :initialization-requested :requested
+               {:started-at started})
+        (try
+          (let [{:keys [parsed]} (stdio-send! client "initialize"
+                                              {:protocolVersion "2025-03-26"
+                                               :capabilities {}
+                                               :clientInfo {:name "orc-mcp-client" :version "1.0.0"}}
+                                              false)
+                result (json-rpc-result! parsed (:server-id client) :stdio :initialize)]
+            (when-not (string? (:protocolVersion result))
+              (throw (failure :mcp/initialization-failure (:server-id client) :stdio
+                              :initialize "MCP initialization did not negotiate a protocol")))
+            (stdio-send! client "notifications/initialized" nil true)
+            (emit! trace-context (:server-id client) :stdio
+                   :initialization-completed :succeeded {:started-at started})
+            client)
+          (catch Exception e
+            (close* client)
+            (emit! trace-context (:server-id client) :stdio :initialization-failed :failed
+                   {:started-at started :failure (ex-data e)})
+            (throw e))))
+      (catch Exception e
+        (throw (if (:orc/error (ex-data e)) e
+                 (failure :mcp/initialization-failure (or server-id command) :stdio
+                          :initialize "MCP stdio initialization failed" e)))))))
 
 ;; ============================================================================
 ;; Claude MCP Bridge (Uses Claude Code's infrastructure)
@@ -221,7 +485,7 @@
   (close* [_]
     nil))
 
-(defn- connect-static
+(defn- connect-static*
   "Create a static MCP client with pre-defined tools.
    Useful for testing and POC without an actual MCP server.
    Optionally accepts :call-tool-handler (fn [tool-name args] -> result)
@@ -493,26 +757,42 @@
 ;; Public API
 ;; ============================================================================
 
+(defn connect-static
+  "Create an in-process deterministic tool connection. This is deliberately not
+   a portable MCP transport and is never selected by `connect`."
+  [opts]
+  (connect-static* opts))
+
 (defn connect
   "Connect to an MCP server.
 
-   Options:
-   - :type - Connection type (:http, :claude-mcp, :static)
-   - :url - Server URL (for :http type)
-   - :server-name - Server name (for :claude-mcp type)
-   - :name - Client name (for :static type)
-   - :tools - Pre-defined tools (for :static or :claude-mcp types)
-   - :preset - Use known server preset (:langfuse, :nrepl)"
+   The portable public transport discriminators are exactly `:stdio` and
+   `:streamable-http`. Unsupported values throw a typed exception before a
+   connection is created."
+  ([opts] (connect opts (create-trace-context)))
+  ([{:keys [type server-id] :as opts} trace-context]
+   (emit! trace-context (or server-id (:url opts) (:command opts) "unknown") type
+          :connection-requested :requested)
+   (case type
+     :stdio (connect-stdio opts trace-context)
+     :streamable-http (connect-http opts trace-context)
+     (let [exception (failure :mcp/unsupported-transport (or server-id "unknown") type
+                              :connect (str "Unsupported MCP transport: " type))]
+       (emit! trace-context (or server-id "unknown") type :initialization-failed :failed
+              {:failure (ex-data exception)})
+       (throw exception)))))
+
+(defn connect-legacy
+  "Compatibility helper for deterministic builder fixtures and legacy bridges.
+   Portable consumers must use `connect`."
   [{:keys [type preset] :as opts}]
-  (let [preset-opts (when preset
-                      (get known-mcp-servers preset))
-        merged-opts (merge preset-opts opts)]
+  (let [merged-opts (merge (when preset (get known-mcp-servers preset)) opts)]
     (case type
-      :http (connect-http merged-opts)
-      :claude-mcp (connect-claude-mcp merged-opts)
       :static (connect-static merged-opts)
-      ;; Default to static with preset tools
-      (connect-static (assoc merged-opts :type :static)))))
+      :claude-mcp (connect-claude-mcp merged-opts)
+      (if (and preset (nil? type))
+        (connect-static merged-opts)
+        (connect merged-opts)))))
 
 (defn list-tools
   "List available tools from an MCP connection."
@@ -626,8 +906,9 @@
   (def conn (connect {:preset :langfuse}))
   (list-tools conn)
 
-  ;; Example: Create an HTTP client
-  (def http-conn (connect {:type :http
+  ;; Example: Create a Streamable HTTP client
+  (def http-conn (connect {:type :streamable-http
+                           :server-id "langfuse"
                            :url "https://langfuse-mcp.example.com"
                            :api-key "..."}))
   (list-tools http-conn)

@@ -6,7 +6,8 @@
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas :as schemas]
             [ai.obney.orc.llm.interface :as llm]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es])
+  (:import [java.time Instant]))
 
 ;; =============================================================================
 ;; Test Functions for Code Executor
@@ -125,10 +126,21 @@
             (let [trace (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
                                 [:query/result :trace])
                   traces (:node-traces trace)
-                  active (some #(when (= leaf-id (:node-id %)) %) traces)]
+                  active (some #(when (= leaf-id (:node-id %)) %) traces)
+                  started (Instant/parse (:started-at trace))
+                  completed (Instant/parse (:completed-at trace))
+                  elapsed (- (.toEpochMilli completed) (.toEpochMilli started))]
               (is (= :timeout (:status trace)))
+              (is (.isBefore started completed)
+                  "timeout trace retains the durable start before cancellation")
+              (is (= elapsed (:duration-ms trace))
+                  "trace duration is derived from its recorded instants")
+              (is (.endsWith ^String (:started-at trace) "Z"))
+              (is (.endsWith ^String (:completed-at trace) "Z"))
               (is (seq traces) "timeout trace preserves durable node starts")
               (is (= :timeout (:status active)))
+              (is (.isBefore (Instant/parse (:started-at active))
+                             (Instant/parse (:completed-at active))))
               (is (= "Execution timed out" (:error active)))
               (is (pos-int? (:node-attempt active)))
               (is (pos-int? (:max-node-attempts active)))

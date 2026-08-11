@@ -7,6 +7,7 @@
    - defreadmodel registrations for L1/L2 caching
    - Helper functions for common queries (via rmp/project)"
   (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
+            [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             ;; Value SHAPE for the tick blackboard, which caches metadata only.
             ;; profile is deliberately dependency-free so both this namespace
             ;; and the command/processor side can describe a value.
@@ -867,13 +868,17 @@
                     :correlation-id (:correlation-id event)
                     :root-trace-id (:root-trace-id event)
                     :child-trace-ids (vec (or (:child-trace-ids event) []))
-                    :started-at (str (:started-at event))
-                    :completed-at (str (:completed-at event))
+                    :started-at (trace-time/canonical-string (:started-at event))
+                    :completed-at (trace-time/canonical-string (:completed-at event))
                     :duration-ms (:duration-ms event)
                     :status (:status event)
                     :input-snapshot (:input-snapshot event)
                     :output-snapshot (:output-snapshot event)
-                    :node-traces (:node-traces event)}
+                    :node-traces (mapv (fn [node-trace]
+                                         (-> node-trace
+                                             (update :started-at trace-time/canonical-string)
+                                             (update :completed-at trace-time/canonical-string)))
+                                       (:node-traces event))}
              (nil? (:correlation-id event)) (dissoc :correlation-id)
              (:parent-trace-id event) (assoc :parent-trace-id (:parent-trace-id event))
              (:version-number event) (assoc :version-number (:version-number event))
@@ -887,7 +892,7 @@
   (reduce traces* (or initial-state {}) events))
 
 (defreadmodel :sheet traces
-  {:events trace-events :version 4
+  {:events trace-events :version 5
    :partition-fn :sheet-id
    :entity-id-fn :trace-id}
   [state event] (traces* state event))

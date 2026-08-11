@@ -46,6 +46,25 @@
    [:failure-reasons [:map-of :int :string]]
    [:failure-input-profiles {:optional true} [:map-of :int :map]]])
 
+(def structured-failure-kind
+  [:enum :transport-failure :missing-forced-tool-call
+   :tool-call-parsing-failed :schema-validation-failed
+   :empty-provider-response])
+
+(def provider-failure-evidence
+  [:map
+   [:provider :string]
+   [:model {:optional true} [:maybe :string]]
+   [:response-id {:optional true} [:maybe :string]]
+   [:finish-reason {:optional true} [:maybe :string]]
+   [:tool-call-present? {:optional true} :boolean]
+   [:tool-call-name {:optional true} [:maybe :string]]
+   [:usage {:optional true} [:maybe [:map
+                                     [:prompt-tokens {:optional true} :int]
+                                     [:completion-tokens {:optional true} :int]
+                                     [:total-tokens {:optional true} :int]]]]
+   [:output-truncated? {:optional true} :boolean]])
+
 ;; Legacy field-type enum - kept for migration from old format
 (def field-type
   "Supported field types for blackboard values (legacy)"
@@ -259,6 +278,8 @@
     [:input-profile {:optional true} [:map-of :keyword :map]]
     [:output-profile {:optional true} [:map-of :keyword :map]]
     [:rejected-output-profile {:optional true} [:map-of :keyword :map]]
+    [:failure-kind {:optional true} structured-failure-kind]
+    [:provider-evidence {:optional true} provider-failure-evidence]
     [:error {:optional true} :string]]
 
    ::execution-trace
@@ -610,6 +631,8 @@
     ;; for declared writes). Persisted so (node-output <node-id>) can
     ;; retrieve the full text post-hoc.
     [:raw-response {:optional true} :string]
+    [:failure-kind {:optional true} structured-failure-kind]
+    [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Gap-7: carry through to the event body. See :completion-kind on
     ;; :sheet/node-execution-completed.
     [:completion-kind {:optional true} [:enum :tree-iteration :terminal]]
@@ -1148,6 +1171,8 @@
     ;; completions. Source for the (node-output <node-id>) drill-down
     ;; when a failed LLM leaf has no successful writes to show.
     [:raw-response {:optional true} :string]
+    [:failure-kind {:optional true} structured-failure-kind]
+    [:provider-evidence {:optional true} provider-failure-evidence]
     ;; Optional per-node token usage when the node was an LLM call.
     [:usage {:optional true}
      [:map
