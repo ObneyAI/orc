@@ -76,6 +76,30 @@
    :consistency-floor  0.8
    :max-shapes-ratio   0.5})
 
+(def floor-comparison-tolerance
+  "The spec's `config floor_comparison_tolerance` (CC-29): floor verdicts are
+   exact on the DISCRETE judge scale. Judge scores are band values (quantum
+   0.05), so any legitimate below-floor mean differs from the floor by at
+   least quantum/occurrence-count — orders of magnitude above binary-
+   representation error, which is what actually produced a rejection: a class
+   whose every score was exactly 0.8 projected its lifetime mean as
+   0.7999999999999999 (double accumulation) and was rejected by the >= 0.8
+   floor (measured, CC-26 real-stream check). A floor comparison therefore
+   tolerates representation error strictly smaller than the scale's quantum;
+   the tolerance can never change a verdict between two values the scale can
+   actually distinguish.
+
+   SAFE WINDOW: legitimate distinctions are >= quantum/count (~1e-5 and up at
+   realistic counts), representation error is ~1e-13, so 1e-9 keeps at least
+   three orders of magnitude of margin on EACH side. Applied at the floor-
+   COMPARISON seam only — `x >= floor` becomes `x >= (- floor tolerance)` in
+   the two floor predicates below — never exact/rational arithmetic in the
+   folds, which would change read-model state shapes (version bumps, cache
+   serialization) for a problem the comparison seam fixes completely. The
+   gate's integer thresholds (:min-occurrences) and the exactly-computed
+   shapes ratio need no tolerance: no comparable artifact is possible there."
+  1.0E-9)
+
 (def known-judge-dimension-count
   "LOAD-BEARING ASSUMPTION, recorded so the next change is a DECISION and not
    an accident.
@@ -117,16 +141,25 @@
    demonstrated repetition and does not qualify — the conservative bar IS the
    safety. Unscored occurrences carry no judge signal and simply do not
    participate in the window (an unscored occurrence is not a zero; cf. the
-   spec's ExcludeAbstainedEvaluations)."
+   spec's ExcludeAbstainedEvaluations).
+
+   CC-29: the floor comparison tolerates representation error — see
+   `floor-comparison-tolerance`. A window score is a COMPUTED per-occurrence
+   aggregate (mean over that occurrence's judge scores), so a set of band
+   values whose true mean sits exactly ON the floor can accumulate to a double
+   strictly below the floor literal (e.g. bands 0.6/0.9/0.9 -> 0.7999999999999999)
+   and must not be rejected for it. Genuine deficits are >= quantum/judge-count,
+   far outside the tolerance."
   [occurrence-scores consistency-window consistency-floor]
   (boolean
     (and (number? consistency-window)
          (pos? consistency-window)
          (number? consistency-floor)
          (sequential? occurrence-scores)
-         (let [window (take-last consistency-window occurrence-scores)]
+         (let [window (take-last consistency-window occurrence-scores)
+               effective-floor (- consistency-floor floor-comparison-tolerance)]
            (and (= (count window) consistency-window)
-                (every? #(and (number? %) (>= % consistency-floor)) window))))))
+                (every? #(and (number? %) (>= % effective-floor)) window))))))
 
 (defn every-dimension-qualified?
   "The spec's `quality.all(dimension => dimension.score >= dimension_floor)`:
@@ -141,14 +174,22 @@
 
    Note this is the OTHER axis from consistently-qualified? — per judge over
    the class's LIFETIME, versus per occurrence over the RECENT window. They
-   are not interchangeable and must not be collapsed back into one scalar."
+   are not interchangeable and must not be collapsed back into one scalar.
+
+   CC-29: the floor comparison tolerates representation error — see
+   `floor-comparison-tolerance`. This is the MEASURED artifact site: a class
+   whose every score was exactly 0.8 projected its lifetime mean as
+   0.7999999999999999 (double accumulation in the standing read-model) and was
+   rejected by the raw >= 0.8 floor. An at-floor mean qualifies; a genuinely
+   below-floor mean (>= quantum/occurrence-count short) is still rejected."
   [judge-averages dimension-floor]
   (boolean
     (and (number? dimension-floor)
          (map? judge-averages)
          (seq judge-averages)
-         (every? #(and (number? %) (>= % dimension-floor))
-                 (vals judge-averages)))))
+         (let [effective-floor (- dimension-floor floor-comparison-tolerance)]
+           (every? #(and (number? %) (>= % effective-floor))
+                   (vals judge-averages))))))
 
 (defn harvest-candidate?
   "Pure conservative gate. Returns true iff the class is RECURRING and

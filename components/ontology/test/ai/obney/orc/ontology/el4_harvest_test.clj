@@ -809,9 +809,17 @@
                          [floor 0.7999999999 0.8000000001 0.0 1.0])
           judged (for [v values
                        :let [avgs {one-judge v}
-                             ;; the OLD gate: mean over (vals judge-avgs)
+                             ;; the OLD gate: mean over (vals judge-avgs).
+                             ;; CC-29: BOTH comparators carry the floor-
+                             ;; comparison tolerance, so this sweep keeps
+                             ;; isolating the CC-26 STRUCTURAL change
+                             ;; (mean -> quality.all) — the tolerance is a
+                             ;; separate, orthogonal fix at the comparison
+                             ;; seam, and hand-picked sub-tolerance values
+                             ;; (0.7999999999) must not read as structural
+                             ;; disagreements.
                              old-scalar (/ (reduce + 0.0 (vals avgs)) (double (count avgs)))
-                             old? (>= old-scalar floor)
+                             old? (>= old-scalar (- floor harvest/floor-comparison-tolerance))
                              new? (harvest/every-dimension-qualified? avgs floor)]]
                    {:v v :old old? :new new?})
           disagreements (remove #(= (:old %) (:new %)) judged)]
@@ -841,11 +849,14 @@
 
 (deftest cc26-dimension-change-is-a-no-op-on-real-single-judge-streams
   (testing "REGRESSION on REAL projections, not hand-built maps: for single-judge classes the OLD
-             collapsed rule (mean over (vals judge-averages) >= floor) and the NEW per-dimension rule
-             return the SAME verdict. The read-model's own float accumulation is included on purpose
-             — a knife-edge class whose twelve occurrences each score exactly 0.8 projects to
-             0.7999999999999999 and is REJECTED, which is what it did before CC-26 as well."
+             collapsed rule (mean over (vals judge-averages), tolerant floor compare) and the NEW
+             per-dimension rule return the SAME verdict. The read-model's own float accumulation is
+             included on purpose — a knife-edge class whose twelve occurrences each score exactly
+             0.8 projects to 0.7999999999999999. Pre-CC-29 both rules REJECTED it (the measured
+             float artifact); with the CC-29 floor-comparison tolerance both rules PROMOTE it —
+             identically under either structure, so the structural no-op claim is unchanged."
     (let [floor (:dimension-floor harvest/default-harvest-config)
+          tolerant-floor (- floor harvest/floor-comparison-tolerance)
           cases [1.0 0.9 0.85 0.8 0.75 0.6 0.0]
           results
           (vec (for [score cases]
@@ -853,7 +864,11 @@
                    (let [{:keys [class-id]} (seed-scored-class!
                                               ctx (single-judge-occurrences (repeat 12 score)))
                          avgs (ontology/get-tree-class-judge-averages ctx class-id)
-                         old? (>= (/ (reduce + 0.0 (vals avgs)) (double (count avgs))) floor)
+                         ;; CC-29: the OLD comparator carries the same
+                         ;; tolerance as the fixed predicate — this test
+                         ;; isolates the CC-26 structural change, not the
+                         ;; orthogonal comparison-seam fix.
+                         old? (>= (/ (reduce + 0.0 (vals avgs)) (double (count avgs))) tolerant-floor)
                          new? (harvest/every-dimension-qualified? avgs floor)]
                      (is (= harvest/known-judge-dimension-count (count avgs))
                          (str "single-judge fixture, got " avgs))
@@ -866,13 +881,16 @@
       (is (empty? (remove #(= (:old %) (:new %)) results))
           (str "no-op FALSIFIED on real projections: "
                (pr-str (vec (remove #(= (:old %) (:new %)) results)))))
-      ;; And the knife-edge case is a PRE-EXISTING read-model float artifact,
-      ;; not something CC-26 introduced: both rules reject it identically.
+      ;; The knife-edge DRIFT is a PRE-EXISTING read-model float artifact —
+      ;; the projection still lands strictly below the floor literal. CC-29
+      ;; fixed its VERDICT at the comparison seam: both rules now promote the
+      ;; at-floor class, identically (cc29-class-exactly-on-the-floor-qualifies
+      ;; pins the fix itself; here it must not read as a structural divergence).
       (let [knife (first (filter #(= 0.8 (:score %)) results))]
         (is (> 0.8 (:projected knife))
-            (str "twelve scores of exactly 0.8 project BELOW 0.8: " (pr-str knife)))
-        (is (= false (:old knife) (:new knife))
-            "old and new agree in rejecting it — CC-26 changed nothing here")))))
+            (str "twelve scores of exactly 0.8 still project BELOW 0.8: " (pr-str knife)))
+        (is (= true (:old knife) (:new knife))
+            "old and new agree in promoting it — the tolerance, not the structure, decides")))))
 
 (deftest cc26-ordinary-single-judge-class-still-promotes
   (testing "REGRESSION end-to-end: an ordinary well-scored one-judge class still mints"
@@ -969,3 +987,168 @@
         (Thread/sleep 150)
         (is (empty? (minted-harvest-events ctx class-id))
             "one disastrous occurrence in the window vetoes promotion — it is not averaged away")))))
+
+;; ===========================================================================
+;; CC-29 — floor verdicts are exact on the DISCRETE judge scale
+;; ===========================================================================
+;;
+;; The artifact (measured, CC-26 real-stream check): a class whose EVERY judge
+;; score was exactly 0.8 projected its lifetime mean as 0.7999999999999999 —
+;; double accumulation, (/ (reduce + 0.0 (repeat 12 0.8)) 12.0) — and was
+;; REJECTED by the raw >= 0.8 floor. Judge scores are band values (quantum
+;; 0.05), so any legitimate below-floor mean differs from the floor by at
+;; least quantum/occurrence-count — orders of magnitude above binary-
+;; representation error. The fix (spec: config floor_comparison_tolerance) is
+;; a named tolerance at the floor-COMPARISON seam in harvest.clj only — not
+;; exact/rational arithmetic in the folds — and can never change a verdict
+;; between two values the scale can actually distinguish (pinned by the sweep
+;; below).
+
+(deftest cc29-class-exactly-on-the-floor-qualifies
+  (testing "the measured artifact: twelve occurrences each scored exactly 0.8 (the floor band) —
+             the lifetime mean the REAL read-model fold projects is 0.7999999999999999, strictly
+             below the 0.8 floor literal, and the class was rejected. A verdict on the discrete
+             scale must treat an at-floor class as qualified: representation error is not a
+             quality distinction."
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id parent-id]} (seed-scored-class!
+                                           ctx (single-judge-occurrences (repeat 12 0.8)))
+            avgs (ontology/get-tree-class-judge-averages ctx class-id)]
+        ;; MEASUREMENT GUARDS — the drift is REPRODUCED from real arithmetic
+        ;; (the standing read-model's own accumulation over real events), never
+        ;; a hand-typed drifted literal:
+        (is (= {one-judge 0.7999999999999999} avgs)
+            (str "twelve real 0.8 scores project to the drifted double, got " avgs))
+        (is (< (get avgs one-judge) 0.8)
+            "…which sits strictly BELOW the floor literal — the artifact is real")
+        (is (= (get avgs one-judge)
+               (/ (reduce + 0.0 (repeat 12 0.8)) (double 12)))
+            "and it is exactly what double accumulation of twelve 0.8s produces")
+        ;; Axis isolation: each single-judge occurrence score is the raw band
+        ;; value 0.8, bit-identical to the floor literal, so the consistency
+        ;; axis clears even under the raw comparison — the dimension floor was
+        ;; the ONLY rejector.
+        (is (= (vec (repeat 12 0.8)) (harvest/occurrence-scores ctx class-id))
+            "occurrence scores are the bit-identical band value")
+
+        (is (true? (harvest/every-dimension-qualified?
+                     avgs (:dimension-floor harvest/default-harvest-config)))
+            "an at-floor dimension mean qualifies — the floor comparison tolerates representation error")
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 150)
+        (let [minted (minted-harvest-events ctx class-id)]
+          (is (= 1 (count minted))
+              "the at-floor class is harvested end-to-end")
+          (is (= parent-id (:parent-behavior (first minted)))
+              "under its resolved abstract parent"))))))
+
+(deftest cc29-genuinely-below-floor-is-still-rejected
+  (testing "verdicts still distinguish real differences: 20 occurrences, ONE banded a single
+             quantum below the floor (0.75) and 19 exactly 0.8 — lifetime mean 0.7975, i.e.
+             quantum/count below the floor at a realistic count, the SMALLEST legitimate
+             below-floor distinction. It must still be rejected with the tolerance in place."
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id]} (seed-scored-class!
+                                 ctx (single-judge-occurrences
+                                       (cons 0.75 (repeat 19 0.8))))
+            avgs (ontology/get-tree-class-judge-averages ctx class-id)
+            m (get avgs one-judge)]
+        ;; MEASUREMENT GUARDS — the 0.75 occurrence is OLDEST, so the recent
+        ;; window is all-0.8 and the consistency axis cannot be what rejects:
+        ;; the dimension floor is isolated. The mean is quantum/20 short.
+        (is (= [0.8 0.8 0.8 0.8 0.8]
+               (vec (take-last 5 (harvest/occurrence-scores ctx class-id))))
+            "recent window clears — dimension axis isolated")
+        (is (< (Math/abs (- m 0.7975)) 1.0E-9)
+            (str "lifetime mean is quantum/count (0.0025) below the floor, got " m))
+
+        (is (false? (harvest/every-dimension-qualified?
+                      avgs (:dimension-floor harvest/default-harvest-config)))
+            "one band-quantum short at count 20 is a REAL distinction — still rejected")
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 150)
+        (is (empty? (minted-harvest-events ctx class-id))
+            "and no mint end-to-end")))))
+
+(deftest cc29-window-score-exactly-on-the-floor-qualifies
+  (testing "the consistency-axis symmetry: a per-occurrence aggregate COMPUTED from real judge
+             scores can drift exactly like the lifetime mean — three judges banding 0.6/0.9/0.9
+             have true mean exactly 0.8 but the real occurrence-scores computation produces
+             0.7999999999999999. An at-floor window score must clear the consistency floor."
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id]} (seed-scored-class!
+                                 ctx (repeat 12 {"grounding" 0.6 "quality" 0.9 "fit" 0.9}))
+            scores (harvest/occurrence-scores ctx class-id)]
+        ;; MEASUREMENT GUARDS — the drift comes from the REAL per-occurrence
+        ;; aggregation over real events (band values only; quantum 0.05):
+        (is (= 12 (count scores)) (str "twelve scored occurrences, got " (count scores)))
+        (is (every? #(= 0.7999999999999999 %) scores)
+            (str "every occurrence aggregate drifts to the measured double, got " (vec (distinct scores))))
+        (is (every? #(< % 0.8) scores)
+            "…strictly below the floor literal — the artifact is real on this axis too")
+
+        (is (true? (harvest/consistently-qualified?
+                     scores
+                     (:consistency-window harvest/default-harvest-config)
+                     (:consistency-floor harvest/default-harvest-config)))
+            "an at-floor window qualifies — the floor comparison tolerates representation error")
+        ;; Predicate-level ON PURPOSE: this fixture's genuinely-0.6 grounding
+        ;; DIMENSION must veto the class end-to-end regardless — the tolerance
+        ;; admits representation error, never a real quantum-sized deficit.
+        (is (false? (harvest/every-dimension-qualified?
+                      (ontology/get-tree-class-judge-averages ctx class-id)
+                      (:dimension-floor harvest/default-harvest-config)))
+            "the 0.6 dimension still vetoes — tolerance changes no scale-expressible verdict")))))
+
+(deftest cc29-genuinely-below-window-score-is-still-rejected
+  (testing "the window still distinguishes real differences: the same drifted at-floor occurrences
+             with the MOST RECENT occurrence banded a genuine quantum short (0.75) must be
+             rejected — and WITHOUT that occurrence the same drifted window qualifies, so the
+             verdict flip is the 0.75, not the tolerance."
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id]} (seed-scored-class!
+                                 ctx (conj (vec (repeat 11 {"grounding" 0.6 "quality" 0.9 "fit" 0.9}))
+                                           {"quality" 0.75}))
+            scores (harvest/occurrence-scores ctx class-id)
+            window (:consistency-window harvest/default-harvest-config)
+            floor (:consistency-floor harvest/default-harvest-config)]
+        (is (= 12 (count scores)) (str "twelve scored occurrences, got " (count scores)))
+        (is (= 0.75 (peek scores)) "most recent occurrence banded a genuine 0.75")
+        (is (every? #(= 0.7999999999999999 %) (pop scores))
+            "…the other eleven sit AT the floor via the real drifted computation")
+
+        (is (false? (harvest/consistently-qualified? scores window floor))
+            "one occurrence a full band-quantum short is a REAL distinction — still rejected")
+        (is (true? (harvest/consistently-qualified? (pop scores) window floor))
+            "without it the drifted at-floor window qualifies — the rejector is the 0.75")))))
+
+(deftest cc29-tolerance-never-flips-a-scale-distinguishable-verdict
+  (testing "the spec's safe-window argument, swept rather than asserted: for EVERY mean a band
+             multiset (quantum 0.05) can produce at counts 1..40, the floor verdict on the
+             double-ACCUMULATED mean equals the EXACT rational verdict. The tolerance admits
+             binary-representation error only — it can never change a verdict between two
+             values the scale can actually distinguish."
+    (let [floor (:dimension-floor harvest/default-harvest-config)
+          checks (vec (for [n (range 1 41)
+                            k (range 0 (inc (* 20 n)))   ;; total score in 20ths
+                            :let [q (quot k n) r (rem k n)
+                                  ;; a concrete band multiset summing to k/20
+                                  bands (concat (repeat r (/ (inc q) 20.0))
+                                                (repeat (- n r) (/ q 20.0)))
+                                  drifted (/ (reduce + 0.0 bands) (double n))
+                                  exact? (>= (/ k (* 20 n)) 4/5)
+                                  verdict? (harvest/every-dimension-qualified?
+                                             {one-judge drifted} floor)]]
+                        {:n n :k k :drifted drifted :exact exact? :verdict verdict?}))
+          disagreements (remove #(= (:exact %) (:verdict %)) checks)
+          drifting-at-floor (filter #(and (:exact %) (< (:drifted %) floor)) checks)]
+      (println "  [cc29 sweep] N =" (count checks) "band-multiset means;"
+               (count drifting-at-floor) "qualify exactly but accumulate BELOW the floor literal;"
+               (count disagreements) "verdict disagreements")
+      (is (<= 16000 (count checks)) "the sweep really covers the reachable means")
+      (is (seq drifting-at-floor)
+          "non-vacuous: the sweep CONTAINS at-floor means whose double accumulation drifts below the floor literal")
+      (is (seq (remove :exact checks)) "non-vacuous: the sweep contains genuinely-below-floor means")
+      (is (empty? disagreements)
+          (str "tolerance FALSIFIED — it flipped a verdict the scale can express: "
+               (pr-str (vec (take 5 disagreements))))))))
