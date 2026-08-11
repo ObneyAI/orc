@@ -372,6 +372,18 @@ config {
     -- Uniform for now because the system has exactly one judge. Per-dimension
     -- differentiation is a refinement, not a prerequisite.
     dimension_floor: Decimal = 0.8
+    -- CC-29: floor verdicts are exact on the DISCRETE judge scale. Judge
+    -- scores are band values (quantum 0.05), so any legitimate below-floor
+    -- mean differs from the floor by at least quantum/occurrence-count —
+    -- orders of magnitude above binary-representation error, which is what
+    -- actually produced a rejection: a class whose every score was exactly
+    -- 0.8 projected its lifetime mean as 0.7999999999999999 (double
+    -- accumulation) and was rejected by the >= 0.8 floor (measured, CC-26
+    -- real-stream check). A floor comparison therefore tolerates
+    -- representation error strictly smaller than the scale's quantum; the
+    -- tolerance can never change a verdict between two values the scale can
+    -- actually distinguish.
+    floor_comparison_tolerance: Decimal = 0.000000001
 }
 
 entity Ontology {
