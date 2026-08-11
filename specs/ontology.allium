@@ -205,11 +205,14 @@ contract TaskClassification {
     classify: (task_signature: String) -> ClassificationOutcome
 
     @invariant DeferralIsVisible
-        -- A classification that defers — the semantic reranker fell back, so
+        -- A classification that defers — the semantic reranker fell back on
+        -- EITHER axis (structural task classification or behavioral-subtree
+        -- classification; the wedge withholds assignment on both), so
         -- fitness is unknown — leaves a durable deferral event carrying the
         -- source occurrence, the fallback source, and the bounded ranking
-        -- snapshot. "Uncertain" and "nothing happened" are different facts;
-        -- the deferral rate is a measured number, never an inference from
+        -- snapshot; the recorded reasoning names the axis that deferred.
+        -- "Uncertain" and "nothing happened" are different facts; the
+        -- deferral rate is a measured number, never an inference from
         -- missing events.
 
     @invariant DecidedRankingIsRecorded
