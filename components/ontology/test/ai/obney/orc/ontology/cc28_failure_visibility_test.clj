@@ -166,3 +166,67 @@
       (is (nil? (ontology/get-description ctx :tree-class target))
           "and the failure wrote no description — 'never answered' stays a
            distinct fact from knowledge"))))
+
+;; ---------------------------------------------------------------------------
+;; CC-15 refit — upstream 5cce483d (preserve structured LLM failure evidence)
+;; gives terminals a CLOSED :failure-kind. The classifier consumes it FIRST
+;; (exact), keeping the regex heuristic only for legacy string-only shapes.
+;; A structured failure is an exception-path terminal, so its attempt count
+;; is the EXACT consumed budget — an upgrade from the old floor of 1 on the
+;; parse family.
+;; ---------------------------------------------------------------------------
+(deftest structured-failure-kinds-classify-exactly
+  (let [c consolidator/classify-reflection-failure
+        full (inc @#'consolidator/reflection-max-retries)]
+    (is (= {:reason :unparseable :attempts full}
+           (c {:status :failure :error "irrelevant text" :failure-kind :tool-call-parsing-failed}))
+        "parse failure: the provider ANSWERED; the kind, not the string, decides")
+    (is (= {:reason :unparseable :attempts full}
+           (c {:status :failure :error "x" :failure-kind :missing-forced-tool-call})))
+    (is (= {:reason :unparseable :attempts full}
+           (c {:status :failure :error "x" :failure-kind :schema-validation-failed})))
+    (is (= {:reason :provider-rejected :attempts full}
+           (c {:status :failure :error "x" :failure-kind :empty-provider-response})))
+    (is (= {:reason :provider-rejected :attempts full}
+           (c {:status :failure :failure-kind :transport-failure
+               :error "prompt is too long: 1571414 tokens > 1048576 maximum"}))
+        "transport failures keep the string check: a context-length rejection
+         travels as an HTTP error")
+    (is (= {:reason :retries-exhausted :attempts full}
+           (c {:status :failure :failure-kind :transport-failure :error "connection reset"})))
+    (is (= {:reason :retries-exhausted :attempts full}
+           (c {:status :failure :error "x" :failure-kind :some-future-kind}))
+        "an unknown kind maps to the honest superclass, never a minted class")
+    (is (= {:reason :retries-exhausted :attempts full}
+           (c {:status :failure :error "connection reset by peer"}))
+        "legacy string-only shapes classify exactly as before the refit")
+    (is (= {:reason :timeout :attempts 1}
+           (c {:status :timeout :failure-kind :transport-failure}))
+        "a deadline :status wins over any kind — the executor's own terminal")))
+
+(deftest execute-reflection-carries-structured-ex-data
+  ;; The seam under test is execute-reflection's CATCH: a structured
+  ;; failure's ex-data ({:failure-kind :provider-evidence}) must survive
+  ;; into the terminal shape the classifier reads. Tested at the seam
+  ;; directly because the full executor path can legitimately convert a
+  ;; retrying failure to :status :timeout when the execution deadline's
+  ;; remaining budget undercuts the next backoff (executor.clj
+  ;; deadline-before-backoff) — in which case :timeout IS the honest
+  ;; classification and this seam never decides.
+  (let [execute-reflection @#'consolidator/execute-reflection
+        terminal (with-redefs [ai.obney.orc.orc-service.interface/execute
+                               (fn [& _]
+                                 (throw (ex-info "Tool call arguments could not be decoded"
+                                                 {:failure-kind :tool-call-parsing-failed
+                                                  :provider-evidence {:tool-call-present? true
+                                                                      :finish-reason "stop"}})))]
+                   (execute-reflection {} (random-uuid) {}))]
+    (is (= :failure (:status terminal)))
+    (is (= :tool-call-parsing-failed (:failure-kind terminal))
+        "the structured kind survives the catch")
+    (is (= {:tool-call-present? true :finish-reason "stop"}
+           (:provider-evidence terminal))
+        "the provider evidence survives the catch")
+    (is (= {:reason :unparseable :attempts (inc @#'consolidator/reflection-max-retries)}
+           (consolidator/classify-reflection-failure terminal))
+        "and the classifier reads the kind, not the message string")))

@@ -201,22 +201,48 @@
        unknown shape maps to the honest superclass rather than minting a
        new one. Attempts: (inc reflection-max-retries), exact — the
        exception path only escapes after exhausting the budget."
-  [{:keys [status error]}]
-  (let [error-str (some-> error str)]
+  [{:keys [status error failure-kind]}]
+  (let [error-str (some-> error str)
+        full (inc reflection-max-retries)
+        context-rejection? (and error-str
+                                (re-find #"(?i)too long|too large|context.{0,8}length|maximum context|token limit|exceeds?.{0,24}(maximum|limit)|invalid_request"
+                                         error-str))]
     (cond
+      ;; The executor's own deadline terminal wins over any kind.
       (= :timeout status)
       {:reason :timeout :attempts 1}
 
+      ;; CC-15 refit: upstream 5cce483d threads a CLOSED structured
+      ;; :failure-kind from the llm component through the executor onto the
+      ;; terminal — consume it FIRST, exactly. A structured failure is an
+      ;; exception-path terminal, so its attempt count is the EXACT consumed
+      ;; budget (an upgrade over the old floor of 1 on the parse family,
+      ;; whose attempt index the string shapes never surfaced).
+      failure-kind
+      (case failure-kind
+        (:tool-call-parsing-failed
+         :missing-forced-tool-call
+         :schema-validation-failed) {:reason :unparseable :attempts full}
+        :empty-provider-response    {:reason :provider-rejected :attempts full}
+        ;; Transport failures carry the provider's HTTP error text — a
+        ;; context-length rejection travels this way, so the string check
+        ;; stays for exactly this branch.
+        :transport-failure          (if context-rejection?
+                                      {:reason :provider-rejected :attempts full}
+                                      {:reason :retries-exhausted :attempts full})
+        ;; An unknown future kind maps to the honest superclass, never a
+        ;; minted class — the CC-28 doctrine unchanged.
+        {:reason :retries-exhausted :attempts full})
+
+      ;; Legacy string-only shapes: the pre-5cce483d heuristics, unchanged.
       (and error-str (re-find #"LLM output unparseable" error-str))
       {:reason :unparseable :attempts 1}
 
-      (and error-str
-           (re-find #"(?i)too long|too large|context.{0,8}length|maximum context|token limit|exceeds?.{0,24}(maximum|limit)|invalid_request"
-                    error-str))
-      {:reason :provider-rejected :attempts (inc reflection-max-retries)}
+      context-rejection?
+      {:reason :provider-rejected :attempts full}
 
       :else
-      {:reason :retries-exhausted :attempts (inc reflection-max-retries)})))
+      {:reason :retries-exhausted :attempts full})))
 
 (defn- record-consolidation-failure!
   "Emit the durable death certificate for a terminally failed reflection —
@@ -253,7 +279,14 @@
   (try
     (orc/execute context sheet-id inputs)
     (catch Exception e
-      {:status :failure :error (.getMessage e)})))
+      ;; CC-15 refit: upstream 5cce483d's structured failures carry
+      ;; {:failure-kind :provider-evidence} in ex-data — preserve both so
+      ;; classify-reflection-failure reads the exact kind instead of the
+      ;; message string, and the death certificate keeps the evidence.
+      (let [{:keys [failure-kind provider-evidence]} (ex-data e)]
+        (cond-> {:status :failure :error (.getMessage e)}
+          failure-kind (assoc :failure-kind failure-kind)
+          provider-evidence (assoc :provider-evidence provider-evidence))))))
 
 (defn- reflection-workflow
   "Single-:llm-node ORC workflow for the consolidator's reflection call.
