@@ -57,6 +57,10 @@ value FusionResult {
 
 value NormalizationOptions {
     method: linear | sigmoid | batch_relative
+    -- Absent maximum_score means the ceiling of the ENCODING THAT PRODUCED the
+    -- scores (its maximum_query_tokens), never the process default. The process
+    -- default is a recorded (logged) last resort used only when no encoding
+    -- identity exists (CC-27).
     maximum_score: Decimal?
     minimum_score: Decimal?
 }
@@ -92,6 +96,11 @@ contract LateInteractionRetrieval {
     @invariant BoundedNormalization
         -- Normalized scores lie from zero through one while preserving relative
         -- order among retained results.
+        -- Satisfied per-encoding (CC-27): the normalizing ceiling is the
+        -- maximum_query_tokens of the encoding that produced the scores. A
+        -- process-default ceiling would clamp every score above it to one
+        -- (order destroyed) and silently compress below it; that default is a
+        -- LOUD last resort, fired only when no encoding identity exists.
 
     @invariant FusionIdentity
         -- Fusion results retain the source document identifier as their URI and
