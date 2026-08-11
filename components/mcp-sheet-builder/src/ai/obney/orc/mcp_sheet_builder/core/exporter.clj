@@ -40,7 +40,7 @@
 
    Args:
      ctx - Context with :event-store
-     mcp-opts - MCP connection options {:preset :tavily} or {:type :http ...}
+     mcp-opts - MCP connection options {:preset :tavily} or {:type :streamable-http ...}
      export-path - File path to save the sheet
 
    Options:

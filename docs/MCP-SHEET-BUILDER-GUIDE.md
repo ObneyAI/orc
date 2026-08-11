@@ -1,5 +1,20 @@
 # MCP Sheet Builder: Complete Architecture Guide
 
+## Portable MCP connections
+
+The public `connect` boundary accepts exactly `:stdio` and
+`:streamable-http`. It performs MCP initialization before returning and throws a
+typed `ExceptionInfo` for unsupported transports or unsuccessful initialization.
+There is no transport fallback. `connect-static` is a separately named,
+in-process deterministic fixture for workflow construction tests; it is not an
+MCP transport.
+
+Pass a context from `create-trace-context` as the second argument to `connect`.
+Lifecycle activities remain locally queryable through `trace-activities`; an
+optional recording function receives the same sanitized activities and may
+persist them through the consumer's durable ORC/Grain trace boundary. Header
+values and environment values are never included in these activities.
+
 ## Start Here: The Story
 
 You have access to MCP tool servers — Linear, GitHub, a database, an nREPL, whatever speaks the [Model Context Protocol](https://modelcontextprotocol.io). Normally, to put those tools to work inside a behavior tree, you'd **hand-wire the tree yourself**: decide which tool feeds which, lift each tool's schema onto the blackboard, choose the control nodes, and connect it all up by hand.
@@ -16,7 +31,7 @@ Four conceptual steps — connect, analyze, generate, execute:
 
 ;; 1. CONNECT to an MCP server (a built-in preset, or any HTTP MCP endpoint)
 (def conn (msb/connect {:preset :nrepl}))
-;; or: (msb/connect {:type :http :url "https://your-mcp-server.example/mcp"})
+;; or: (msb/connect {:type :streamable-http :server-id "docs" :url "https://your-mcp-server.example/mcp"})
 
 ;; 2. ANALYZE its tools — capabilities, relationships, candidate patterns
 (def analysis (msb/analyze-tools conn))
@@ -387,7 +402,7 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 +-------------------------------------------------------------+
 | 1. MCP CONNECTION                                            |
 | connect({:preset :nrepl})                                   |
-| connect({:type :http :url "https://mcp.example.com"})       |
+| connect({:type :streamable-http :server-id "docs" :url "https://mcp.example.com"}) |
 +------------------------+------------------------------------+
                          |
 +------------------------v------------------------------------+
@@ -443,7 +458,8 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 
 **2. HTTP/SSE** (for real MCP servers)
 ```clojure
-(msb/connect {:type :http
+(msb/connect {:type :streamable-http
+              :server-id "remote"
               :url "https://mcp-server.example.com"
               :api-key "sk-..."})
 ```
@@ -467,7 +483,8 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 ;; 1. Build sheet from MCP server (one-liner)
 (def result
   (msb/build-sheet-from-mcp! ctx
-    {:type :http
+    {:type :streamable-http
+     :server-id "remote"
      :url "https://your-mcp-server.com"
      :api-key "your-api-key"}
     {:pattern :research-compilation}))  ;; Optional: auto-selects if omitted
@@ -489,7 +506,7 @@ FINAL_ANSWER? -> return {:status :success :outputs {...}}
 ;; Build a repl-researcher sheet that iteratively calls tools
 (def researcher
   (msb/build-repl-researcher-sheet! ctx
-    {:type :http :url "https://your-docs-mcp-server.example/mcp"}
+    {:type :streamable-http :server-id "docs" :url "https://your-docs-mcp-server.example/mcp"}
     "Research everything about LLM tracing and provide a comprehensive guide"
     {:max-iterations 5}))
 
@@ -527,7 +544,8 @@ To add support for a new MCP server:
 1. **Option A: HTTP Connection (recommended for external servers)**
    ```clojure
    (msb/build-sheet-from-mcp! ctx
-     {:type :http
+     {:type :streamable-http
+      :server-id "remote"
       :url "https://new-server.com/mcp"
       :api-key "..."})
    ```
@@ -720,7 +738,7 @@ Export MCP-generated sheets as **standalone `.clj` files** that work with only `
 ;; Complete pipeline: MCP → analyze → build → export
 (def result
   (msb/build-and-export-portable! ctx
-    {:type :http :url "https://your-docs-mcp-server.example/mcp"}  ;; MCP connection options
+    {:type :streamable-http :server-id "docs" :url "https://your-docs-mcp-server.example/mcp"}  ;; MCP connection options
     "exports/"                    ;; Output directory
     {:pattern :research-compilation
      :name "docs-research"}))     ;; Optional: custom name
@@ -826,7 +844,7 @@ Generated code includes checksums for tamper detection:
 ;; Build sheet AND persist executors to event store
 (def result
   (msb/build-sheet-with-executors! ctx
-    {:type :http :url "https://your-docs-mcp-server.example/mcp"}
+    {:type :streamable-http :server-id "docs" :url "https://your-docs-mcp-server.example/mcp"}
     {:pattern :research-compilation}))
 
 ;; Returns:

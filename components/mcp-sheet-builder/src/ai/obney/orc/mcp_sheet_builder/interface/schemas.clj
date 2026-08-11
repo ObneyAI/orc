@@ -34,12 +34,21 @@
    [:outputSchema {:optional true} :map]])
 
 (def mcp-connection
-  "Schema for an MCP connection."
-  [:map
-   [:type [:enum :http :stdio :nrepl :claude-mcp]]
-   [:url {:optional true} :string]
-   [:session-id {:optional true} :string]
-   [:tools {:optional true} [:vector mcp-tool]]])
+  "Schema for a portable MCP connection configuration."
+  [:or
+   [:map
+    [:type [:= :stdio]]
+    [:server-id :string]
+    [:command :string]
+    [:args {:optional true} [:vector :string]]
+    [:env {:optional true} [:map-of :string :string]]
+    [:working-directory {:optional true} :string]]
+   [:map
+    [:type [:= :streamable-http]]
+    [:server-id :string]
+    [:url :string]
+    [:headers {:optional true} [:map-of :string :string]]
+    [:authorized-redirect-origins {:optional true} [:set :string]]]])
 
 ;; ============================================================================
 ;; Capability Tags

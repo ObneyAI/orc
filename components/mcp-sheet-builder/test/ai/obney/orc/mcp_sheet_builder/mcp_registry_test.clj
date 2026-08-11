@@ -10,7 +10,7 @@
 (defn- make-static-conn
   "Create a static MCP connection with the given tools and handler."
   [tools handler]
-  (mcp/connect {:type :static
+  (mcp/connect-static {:type :static
                 :tools tools
                 :call-tool-handler handler}))
 

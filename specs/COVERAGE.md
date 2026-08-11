@@ -17,7 +17,7 @@ are represented in a checked Allium specification.
 | `grain-test-utils` | Test-only Grain helpers | — | Excluded: test infrastructure |
 | `langfuse` | Trace destination adapter | `observability.allium` | Distilled and checked with the managed exporter lifecycle exposed by `orc-service` |
 | `llm` | Structured provider prediction and streaming | `llm.allium` | Distilled and checked |
-| `mcp-sheet-builder` | Workflow generation from MCP tools | `mcp-sheet-builder.allium` | Distilled and checked |
+| `mcp-sheet-builder` | Workflow generation and portable MCP transport lifecycle | `mcp-sheet-builder.allium`, `mcp-client.allium` | Distilled, specified, and verified through DET-E2E-145 |
 | `ontology` | Ontology discovery, evolution, and retrieval | `ontology.allium` | Distilled and checked |
 | `orc-service` | Behavior-tree execution and RLM runtime | `orc-service.allium` | Distilled and checked |
 | `predict-rlm-image-tools` | Image benchmark deterministic transforms | `predict-rlm-tools.allium` | Distilled and checked |
@@ -33,7 +33,7 @@ added to this ledger rather than silently excluded.
 ## Source audit
 
 The final audit enumerated every Clojure namespace under each component's
-`src/` tree. The eleven specifications cover 132 product namespaces across the 16
+`src/` tree. The twelve specifications cover 132 product namespaces across the 16
 non-empty product components. The one additional namespace belongs to
 `grain-test-utils`, whose public purpose is test-fixture construction and is
 explicitly excluded above.
@@ -64,16 +64,16 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-08, both `allium check specs` and `allium analyse specs` reported 175
-structural diagnostics across the eleven specifications: 146 informational and 29
+On 2026-08-10, both `allium check specs` and `allium analyse specs` reported 182
+structural diagnostics across the twelve specifications: 150 informational and 32
 warnings. `analyse` reported zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 38 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 108 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
-| `allium.externalEntity.missingSourceHint` | 15 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
-| `allium.definition.unused` | 12 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.rule.unreachableTrigger` | 40 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.field.unused` | 110 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
+| `allium.definition.unused` | 14 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents

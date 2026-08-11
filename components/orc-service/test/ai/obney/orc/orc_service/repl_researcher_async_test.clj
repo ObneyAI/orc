@@ -121,7 +121,7 @@
 (deftest repl-researcher-async-with-real-mcp-test
   (testing "full async pipeline with real MCP protocol"
     (let [tool-calls (atom [])
-          mcp-conn (mcp/connect
+          mcp-conn (mcp/connect-static
                      {:type :static
                       :tools [{:name "lookup"
                                :description "Look up a value"
