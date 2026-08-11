@@ -31,7 +31,19 @@ contract StructuredPrediction {
 
     @invariant PredictionMetadata
         -- A metadata-bearing blocking result preserves parsed outputs, token
-        -- usage, resolved model identity, and the verbatim provider response.
+        -- usage, resolved model identity, and available response text. When a
+        -- structured response cannot be decoded, the failure preserves a
+        -- sanitized provider-neutral evidence record captured before parsing:
+        -- provider and model identity, response identifier, finish reason,
+        -- token usage, truncation status, and whether a tool call and its name
+        -- were present. Arbitrary provider payloads and tool arguments are not
+        -- exposed as diagnostic metadata.
+
+    @invariant StructuredFailureClassification
+        -- A forced tool response with no tool call, malformed tool arguments,
+        -- schema-invalid decoded arguments, an empty provider response, and a
+        -- transport failure remain distinguishable by stable failure kinds.
+        -- Existing successful result shapes and values remain unchanged.
 
     @invariant OneInvocationPerPrediction
         -- One prediction attempt performs at most one provider invocation;

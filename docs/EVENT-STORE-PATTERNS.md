@@ -475,6 +475,14 @@ Note this event records **shape, not values** — see
 Fetch a node's actual inputs/outputs with the `:sheet/node-trace-detail` query,
 which rehydrates them from `:sheet/execution-value-written`.
 
+Failed structured LLM completion events may additionally carry
+`:failure-kind` and sanitized `:provider-evidence`. These fields are durable and
+also appear in the assembled node trace and `:sheet/node-trace-detail` result.
+The evidence schema is an allowlist—provider/model identity, response ID,
+finish reason, tool-call presence/name, usage, and truncation status—and must
+not be expanded to include tool arguments, credentials, headers, or an
+arbitrary provider response envelope.
+
 ---
 
 ## Read Models

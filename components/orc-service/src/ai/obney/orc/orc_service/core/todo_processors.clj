@@ -1285,7 +1285,8 @@
                              :else
                              (executor/execute-leaf-mock node blackboard))
                     result (executor/validate-leaf-outputs blackboard raw-result is-llm-call?)
-                  {:keys [status outputs rejected-writes error duration-ms usage raw-response block-payload]} result
+                  {:keys [status outputs rejected-writes error duration-ms usage raw-response
+                          failure-kind provider-evidence block-payload]} result
                   _ (when is-llm-call?
                       (u/log ::leaf-llm-subcall-completed
                              :node-id node-id
@@ -1323,6 +1324,10 @@
                          ;; <node-id>) can retrieve the full text for diagnosis.
                          (and (= :failure status) raw-response)
                          (assoc :raw-response raw-response)
+                         (and (= :failure status) failure-kind)
+                         (assoc :failure-kind failure-kind)
+                         (and (= :failure status) provider-evidence)
+                         (assoc :provider-evidence provider-evidence)
                          ;; The only place a leaf's reads are observed —
                          ;; node-execution-started does not inline them. Omitting
                          ;; this leaves the trace with no :read-keys and grounding
@@ -3406,6 +3411,10 @@
                               parent-started (assoc :parent-trace-instance-id (:event/id parent-started))
                               (some? node-duration) (assoc :duration-ms node-duration)
                               (:error completed) (assoc :error (:error completed))
+                              (:failure-kind completed)
+                              (assoc :failure-kind (:failure-kind completed))
+                              (:provider-evidence completed)
+                              (assoc :provider-evidence (:provider-evidence completed))
                               ;; Shape, not values — every value here is
                               ;; already durable in
                               ;; :sheet/execution-value-written. The

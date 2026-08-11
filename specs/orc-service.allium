@@ -57,6 +57,17 @@ value Usage {
     total_tokens: Integer?
 }
 
+value ProviderFailureEvidence {
+    provider: String
+    model: String?
+    response_identifier: String?
+    finish_reason: String?
+    tool_call_present: Boolean
+    tool_call_name: String?
+    usage: Usage?
+    output_truncated: Boolean
+}
+
 value StreamEnvelope {
     sequence_number: Integer
     occurred_at: Timestamp
@@ -112,6 +123,14 @@ contract LeafExecutor {
         -- properties to a schema does not change its provider-facing JSON type.
         -- Provider objects and collections arrive at leaf validation as parsed
         -- values, never as JSON encoded inside strings.
+
+    @invariant StructuredProviderFailuresRemainDiagnosable
+        -- Every failed structured provider execution records either sanitized
+        -- response evidence captured before decoding or an explicit transport
+        -- failure. Missing forced tool calls, malformed tool arguments, and
+        -- schema-invalid decoded arguments have distinct stable failure kinds.
+        -- Evidence retains available usage and finish reason even when no text
+        -- exists, and excludes arbitrary provider payloads and tool arguments.
 }
 
 contract WorkflowDefinitionConstruction {
@@ -183,6 +202,11 @@ enum ExecutionStatus {
 
 enum NodeExecutionStatus {
     running | success | failure | partial | timeout | blocked | skipped
+}
+
+enum StructuredFailureKind {
+    transport_failure | missing_forced_tool_call | tool_call_parsing_failed |
+    schema_validation_failed | empty_provider_response
 }
 
 ------------------------------------------------------------
@@ -277,6 +301,8 @@ entity NodeExecution {
     usage: Usage?
     iteration_index: Integer?
     rejected_outputs: Any?
+    structured_failure_kind: StructuredFailureKind?
+    provider_failure_evidence: ProviderFailureEvidence?
 
     transitions status {
         running -> success
@@ -473,6 +499,8 @@ rule NodeFails {
     ensures: node_execution.completed_at = now
     ensures: node_execution.error = error
     ensures: node_execution.rejected_outputs = rejected_outputs_for(node_execution)
+    ensures: node_execution.structured_failure_kind = structured_failure_kind_for(node_execution)
+    ensures: node_execution.provider_failure_evidence = provider_failure_evidence_for(node_execution)
 
     @guidance
         -- Provider-originated values are decoded through each declared data

@@ -99,6 +99,19 @@ that fail their declared schemas. DET-E2E-125 verifies invalid-to-valid recovery
 and invalid-to-invalid exhaustion, including exact call count, final-only
 rejection evidence, and usage accumulated across both attempts.
 
+## Structured provider failure evidence (2026-08-11)
+
+Structured provider failures now carry an additive, sanitized evidence map
+captured before tool-call decoding. Stable failure kinds distinguish transport
+failure, a missing forced tool call, malformed tool arguments, schema-invalid
+decoded arguments, and an empty provider response. Evidence is allowlisted to
+provider/model identity, response ID, finish reason, tool-call presence/name,
+usage, and output-truncation status; arbitrary provider payloads and tool
+arguments are excluded. Existing successful output and status behavior is
+unchanged. DET-E2E-147 verifies valid, missing, malformed, schema-invalid,
+empty, and truncated responses through workflow execution, durable completion
+events, trace assembly, and node-detail projection.
+
 ## Provider request control preservation (2026-08-09)
 
 The LLM boundary now specifies that accepted provider request controls must

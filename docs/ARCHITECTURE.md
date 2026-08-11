@@ -434,6 +434,15 @@ ORC's LLM component uses **SIO** for provider-agnostic structured I/O and `litel
 
 This keeps the LLM call shape-driven: the same Malli schemas that define the blackboard also define the request/response contract, so structured outputs round-trip into versioned blackboard entries without hand-written prompt plumbing.
 
+When step 2 succeeds but step 3 cannot produce a valid value, ORC captures a
+sanitized provider-neutral evidence record before decoding. Failed node traces
+retain a stable `:failure-kind` plus available provider/model identity, response
+ID, finish reason, tool-call presence/name, usage, and truncation status. Tool
+arguments and arbitrary provider response metadata are excluded. This makes a
+missing forced tool call distinguishable from malformed arguments and from a
+decoded value rejected by the blackboard schema, without changing the success
+contract.
+
 ---
 
 ## Evaluation Judges

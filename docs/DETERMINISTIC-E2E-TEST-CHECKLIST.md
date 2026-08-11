@@ -112,6 +112,13 @@ that verifies the stated observable results.
   `:max-tokens 512` preserves both controls through the persisted node, ORC LLM
   request, litellm router, and final OpenRouter HTTP request body; unsupported
   accepted controls fail explicitly instead of disappearing.
+- [x] **DET-E2E-147 — Structured provider failure evidence.** Execute
+  provider-backed structured leaves through the public workflow boundary for a
+  valid forced tool call, missing forced tool call, malformed arguments,
+  schema-invalid arguments, empty response, and token-truncated response.
+  Verify stable failure kinds, sanitized durable response evidence, usage and
+  finish-reason retention without response text, projection read-back, and
+  unchanged successful structured output.
 
 ## P1 — Observability and streaming
 

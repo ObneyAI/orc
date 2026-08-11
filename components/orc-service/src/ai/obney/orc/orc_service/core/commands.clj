@@ -1197,7 +1197,8 @@
 
    Optional :usage carries per-node token counts from LLM calls."
   [{{:keys [sheet-id tick-id node-id status writes rejected-writes write-sources write-references? duration-ms error inputs usage model
-            node-type completion-kind raw-response block-payload read-sources]} :command
+            node-type completion-kind raw-response failure-kind provider-evidence
+            block-payload read-sources]} :command
     :as ctx}]
   (if (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
     {:command-result/events []}
@@ -1288,6 +1289,8 @@
                                     ;; failures — retrievable post-hoc via the
                                     ;; (node-output <node-id>) drill-down.
                                     raw-response (assoc :raw-response raw-response)
+                                    failure-kind (assoc :failure-kind failure-kind)
+                                    provider-evidence (assoc :provider-evidence provider-evidence)
                                     ;; :inputs keeps ONLY the namespaced
                                     ;; execution-context keys. Those are not
                                     ;; observability — trace-execution-key and

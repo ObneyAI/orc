@@ -528,7 +528,9 @@
                                                               trace-id completed))))
           :rejected-outputs (when completed
                               (not-empty
-                               (value-log/rejected-writes-for tick-events completed)))}})
+                               (value-log/rejected-writes-for tick-events completed)))
+          :failure-kind (:failure-kind completed)
+          :provider-evidence (:provider-evidence completed)}})
       {::anom/category ::anom/not-found
        ::anom/message (str "Node trace not found: " trace-instance-id)})))
 

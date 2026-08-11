@@ -139,6 +139,25 @@ With `:with-metadata? true`, the result has this shape:
 Without `:with-metadata?`, `predict` returns the parsed output map directly.
 Provider errors and requested validation failures propagate to the caller.
 
+Structured failures are `ExceptionInfo` values whose `ex-data` may contain:
+
+```clojure
+{:failure-kind :missing-forced-tool-call
+ :provider-evidence
+ {:provider "openrouter"
+  :model "resolved/provider-model"
+  :response-id "..."
+  :finish-reason "length"
+  :tool-call-present? false
+  :tool-call-name nil
+  :usage {...}
+  :output-truncated? true}}
+```
+
+The evidence is sanitized and provider-neutral. Do not expect tool arguments or
+the complete provider response envelope. Successful metadata-bearing results
+retain the shape shown above; diagnostic evidence is attached to failures.
+
 ### No hidden function-calling fallback
 
 DSCloj could catch a function-calling exception and silently make a second,

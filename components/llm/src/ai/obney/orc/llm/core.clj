@@ -23,6 +23,7 @@
   (dissoc options
           :validate?
           :with-metadata?
+          :with-provider-evidence?
           :use-function-calling?
           :force-tool-choice?
           :on-chunk
@@ -98,6 +99,44 @@
     (sio/validate-field field (get outputs name)))
   outputs)
 
+(defn- provider-name [provider]
+  (if (keyword? provider) (name provider) (str provider)))
+
+(defn- diagnostic-string [value]
+  (cond
+    (nil? value) nil
+    (keyword? value) (name value)
+    :else (str value)))
+
+(defn- response-tool-calls [response]
+  (let [message (-> response :choices first :message)]
+    (or (:tool-calls message) (:tool_calls message))))
+
+(defn- provider-evidence
+  "Return the deliberately small, provider-neutral diagnostic allowlist.
+   Tool arguments and arbitrary response/provider metadata never enter it."
+  [provider response]
+  (let [choice (-> response :choices first)
+        tool-calls (response-tool-calls response)
+        finish-reason (or (:finish-reason choice) (:finish_reason choice))]
+    {:provider (provider-name provider)
+     :model (diagnostic-string (:model response))
+     :response-id (diagnostic-string (:id response))
+     :finish-reason (diagnostic-string finish-reason)
+     :tool-call-present? (boolean (seq tool-calls))
+     :tool-call-name (diagnostic-string
+                      (or (get-in tool-calls [0 :function :name])
+                          (get-in tool-calls [0 :name])))
+     :usage (:usage response)
+     :output-truncated? (contains? #{"length" :length "max_tokens" :max_tokens}
+                                   finish-reason)}))
+
+(defn- structured-failure [message failure-kind evidence & [cause]]
+  (ex-info message
+           {:failure-kind failure-kind
+            :provider-evidence evidence}
+           cause))
+
 (defn predict
   "Perform one structured provider invocation.
 
@@ -114,23 +153,69 @@
           (try
             (router/supports-function-calling? provider)
             (catch Exception _ false)))
-        response (router/completion
-                  provider
-                  (if function-calling?
-                    (function-request spec inputs options)
-                    (marker-request spec inputs options)))
+        response (try
+                   (router/completion
+                    provider
+                    (if function-calling?
+                      (function-request spec inputs options)
+                      (marker-request spec inputs options)))
+                   (catch Exception e
+                     (throw (structured-failure (.getMessage e)
+                                                :transport-failure
+                                                {:provider (provider-name provider)}
+                                                e))))
+        evidence (provider-evidence provider response)
+        ;; SIO consumes Clojure's kebab-case response vocabulary. Some provider
+        ;; adapters expose the wire spelling instead; normalize only this known
+        ;; structural key while retaining the original response for evidence.
+        parse-response (let [message (-> response :choices first :message)]
+                         (if (and (:tool_calls message)
+                                  (not (:tool-calls message)))
+                           (assoc-in response [:choices 0 :message :tool-calls]
+                                     (:tool_calls message))
+                           response))
         raw-response (-> response :choices first :message :content)
-        parsed (if function-calling?
-                 (sio/parse-tool-call-response response (:outputs spec))
+        parsed-result (cond
+                 (and function-calling? (empty? (:choices response)))
+                 (throw (structured-failure "Provider returned an empty structured response"
+                                            :empty-provider-response evidence))
+
+                 (and function-calling?
+                      (:force-tool-choice? options)
+                      (not (:tool-call-present? evidence)))
+                 (throw (structured-failure "Forced tool choice returned no tool call"
+                                            :missing-forced-tool-call evidence))
+
+                 function-calling?
+                 (try
+                   (sio/parse-tool-call-response parse-response (:outputs spec))
+                   (catch Exception e
+                     (throw (structured-failure (.getMessage e)
+                                                :tool-call-parsing-failed evidence e))))
+
+                 :else
                  (sio/parse-output raw-response spec))
+        parsed (if (and function-calling?
+                        (:tool-call-present? evidence)
+                        (seq (-> parse-response :choices first :message :tool-calls))
+                        (nil? parsed-result))
+                 (throw (structured-failure "Tool call arguments could not be decoded"
+                                            :tool-call-parsing-failed evidence))
+                 parsed-result)
         outputs (if validate?
-                  (validate-outputs (:outputs spec) parsed)
+                  (try
+                    (validate-outputs (:outputs spec) parsed)
+                    (catch Exception e
+                      (throw (structured-failure (.getMessage e)
+                                                 :schema-validation-failed evidence e))))
                   parsed)]
     (if (:with-metadata? options)
-      {:outputs outputs
-       :usage (:usage response)
-       :model (:model response)
-       :raw-response raw-response}
+      (cond-> {:outputs outputs
+               :usage (:usage response)
+               :model (:model response)
+               :raw-response raw-response}
+        (:with-provider-evidence? options)
+        (assoc :provider-evidence evidence))
       outputs)))
 
 (defn- accumulate-stream-usage [acc usage]
