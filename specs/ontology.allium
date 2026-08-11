@@ -156,6 +156,41 @@ contract ClaimConsolidation {
         -- idle.
 }
 
+-- CC-22: the parent-inference ColBERT query rendered from a description.
+-- Measured (CC-22a, evidence/cc22): rendering a fully-assembled claim-path
+-- body through the pre-CC-22 signature builder exceeds the encoder's query
+-- budget on 43/86 real targets TODAY (mean 1.64x inflation vs legacy prose),
+-- because the assembled summary already contains capabilities and
+-- representative-uses and the builder appended both lists AGAIN. Retirement
+-- cannot bound this (measured 2.7:1 adds:retirements, +6.5 tokens/cycle net
+-- drift) and positional encoder truncation discards the LAST-rendered
+-- section first — which is the guards. The bound is render-level and
+-- reversible: every claim stays durable in the claim set.
+contract ParentInferenceQuery {
+    render: (description: LivingDescription) -> String
+
+    @invariant BoundedInferenceQuery
+        -- A claim-backed target's rendered inference query fits the
+        -- configured encoder query budget (maximum_query_tokens minus the
+        -- query special tokens). The rendered claim subset is a global
+        -- support-rank prefix of the claim set (ties broken by claim id,
+        -- deterministic); exclusion is observable — the unrendered claim ids
+        -- are reported, never silently capped. Legacy (non-claim) bodies
+        -- render byte-identically to the pre-CC-22 builder.
+
+    @invariant NoDuplicateClaimContent
+        -- No claim's content appears twice in one rendered query. The
+        -- measured 1.64x inflation was summary+sections double-rendering,
+        -- not knowledge growth.
+
+    @invariant RenderingNeverWeakensEnforcement
+        -- Retrieval-suppression strings derive from the enforcing claim set
+        -- (get_enforcing_claims), never from the rendered body — so no
+        -- rendering bound can remove an enforcing guard. True in code before
+        -- CC-22; pinned here so a future change cannot re-couple enforcement
+        -- to the rendering.
+}
+
 contract OntologyExtraction {
     extract: (source: SourceSpecification, context: Any) -> Any
 
@@ -797,6 +832,10 @@ rule ValidateWellSupportedClaim {
 -- in the graph. The parent/scope/composes-into axes are carried forward from
 -- the previous body, so landing a claim on a tree-class cannot silently
 -- unparent it. Assembly is therefore not a pure function of the claims alone.
+-- NOTE (CC-22a, measured): retirement is NOT a bound. Real cycles run 2.7:1
+-- adds:retirements with +6.5 signature-tokens/cycle net drift — no obligation
+-- may assume the reflection will shrink a claim set over time. Anything that
+-- must stay bounded needs its own bound (see contract ParentInferenceQuery).
 rule AssembleDescriptionFromClaims {
     when: ClaimSetChanged(description)
 
