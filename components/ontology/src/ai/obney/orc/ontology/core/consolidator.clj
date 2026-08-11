@@ -1561,9 +1561,11 @@
 
    Budget gate: if the configured hourly consolidation budget for this
    target-type has been exhausted (per the rolling-hour count of
-   :*-description-updated events), the consolidation is skipped (no LLM
-   call, no event emitted). The hour window rolls naturally; subsequent
-   requests succeed once older entries fall out of the window.
+   consolidation attempts — successes AND, per CC-28's
+   FailuresConsumeBudget, terminal reflection failures), the consolidation
+   is skipped (no LLM call, no event emitted — a skip is not a failure).
+   The hour window rolls naturally; subsequent requests succeed once older
+   entries fall out of the window.
 
    Otherwise the target takes ONE of the two write paths — claim deltas or a
    whole body, never both, see `claim-path-target-type?` — and neither path

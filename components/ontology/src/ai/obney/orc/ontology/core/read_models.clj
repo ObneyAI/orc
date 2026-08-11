@@ -1516,9 +1516,12 @@
               (catch Exception _ nil)))))
 
 (defn get-recent-consolidation-count
-  "Return how many :*-description-updated events have fired for the
+  "Return how many consolidation attempts — successes (:*-description-updated,
+   :ontology/claim-deltas-recorded) AND terminal failures
+   (:ontology/description-consolidation-failed, CC-28) — have fired for the
    given target-type in the rolling last-hour window. Used by the
-   consolidator's budget gate."
+   consolidator's budget gate: FailuresConsumeBudget means a dying target
+   is throttled exactly as a busy healthy one is, never reported idle."
   [ctx target-type]
   (let [now (java.time.Instant/now)
         cutoff (.minusSeconds now 3600)

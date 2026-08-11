@@ -392,8 +392,11 @@
   (rm/get-consolidation-budget ctx target-type))
 
 (defn get-recent-consolidation-count
-  "C-2a-3c: return how many :*-description-updated events have fired for
-   the given target-type in the rolling last-hour window. Used by the
+  "C-2a-3c: return how many consolidation attempts have fired for the
+   given target-type in the rolling last-hour window — successes
+   (:*-description-updated, :ontology/claim-deltas-recorded) and, per
+   CC-28's FailuresConsumeBudget, terminal reflection failures
+   (:ontology/description-consolidation-failed). Used by the
    consolidator's budget gate."
   [ctx target-type]
   (rm/get-recent-consolidation-count ctx target-type))
