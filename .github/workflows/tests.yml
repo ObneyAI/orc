@@ -1,0 +1,57 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic-tests:
+    name: ORC test suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-clojure
+
+      - name: Run all brick tests
+        run: clojure -M:poly test :all-bricks
+
+  live-llm-tests:
+    name: Live LLM integration tests
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ORC_INTEGRATION_TESTS: 'true'
+      ORC_OPENROUTER_E2E_TESTS: 'true'
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-clojure
+
+      - name: Require OpenRouter credential
+        shell: bash
+        run: |
+          if [[ -z "$OPENROUTER_API_KEY" ]]; then
+            echo "OPENROUTER_API_KEY must be configured as a GitHub Actions secret." >&2
+            exit 1
+          fi
+
+      - name: Run ORC service tests with live LLM gates enabled
+        run: clojure -M:poly test project:orc brick:orc-service
