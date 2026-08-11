@@ -401,6 +401,46 @@
                  (into #{} (map :source-tick-id) classified))
               "the classified events carry exactly the assigned ticks' identities"))))))
 
+(deftest behavioral-only-deferral-is-also-visible
+  (testing "structural matched but BEHAVIORAL :uncertain → the wedge withholds assignment (EL-3), and that deferral is ALSO a durable event — its fallback source read from the behavioral candidates, its reasoning naming the behavioral axis"
+    (with-test-ctx [ctx]
+      (let [matched-structural {:assigned-tree-id (random-uuid)
+                                :confidence 0.9
+                                :top-candidates []
+                                :ranked-candidates [{:target-id (str (random-uuid))
+                                                     :granularity :tree-class
+                                                     :rerank-source :reranker
+                                                     :fitness-score 0.9
+                                                     :score 0.8}]
+                                :assigned-via :match
+                                :reasoning "structural fit"
+                                :outcome :matched
+                                :was-fresh-mint? false
+                                :parent-tree-id nil
+                                :rerank-fallback? false}
+            uncertain-behavioral {:behaviors [{:behavior-id (random-uuid)
+                                               :confidence 0.0
+                                               :was-fresh-mint? false
+                                               :reasoning ""
+                                               :rerank-source :timeout-fallback}]
+                                  :outcome :uncertain
+                                  :rerank-fallback? true}]
+        (with-redefs [ontology/classify-task (fn [_ _] matched-structural)
+                      ontology/classify-behaviors (fn [_ _] uncertain-behavioral)]
+          (tp/maybe-auto-classify-and-set-context (node) ctx))
+        (let [deferred (events-of ctx :ontology/task-classification-deferred)
+              event (first deferred)]
+          (is (= 0 (count (events-of ctx :ontology/task-classified)))
+              "sanity: assignment was withheld (EL-3 behavior unchanged)")
+          (is (= 1 (count deferred))
+              "the behavioral-only deferral is NOT a silent tick — it leaves an event")
+          (is (= :timeout-fallback (:fallback-source event))
+              "the fallback source is read from the BEHAVIORAL candidates when the structural axis did not defer")
+          (is (re-find #"(?i)behavioral" (:reasoning event))
+              "the reasoning names the axis that deferred, not the structural match")
+          (is (= (:ranked-candidates matched-structural) (:ranked-candidates event))
+              "the structural pre-gate snapshot still rides along (what the decision saw)"))))))
+
 (deftest deferral-records-timeout-fallback-distinctly
   (testing "reranker timed out (RR-1 marker) → the deferral's :fallback-source is :timeout-fallback"
     (with-test-ctx [ctx]

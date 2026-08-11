@@ -390,8 +390,14 @@
                       :source-node-id (:id node)
                       :fallback-source fallback-source
                       :ranked-candidates (vec (:ranked-candidates result))
-                      :reasoning (or (:reasoning result)
-                                     "Classification deferred: reranker fell back (uncertain).")}))
+                      ;; The recorded reason must name the axis that actually
+                      ;; deferred: when only the BEHAVIORAL classification was
+                      ;; :uncertain, the structural :reasoning describes a
+                      ;; successful match and would misattribute the deferral.
+                      :reasoning (if (= :uncertain (:outcome result))
+                                   (or (:reasoning result)
+                                       "Structural classification deferred: reranker fell back (uncertain).")
+                                   "Behavioral classification deferred: reranker fell back (uncertain); structural assignment withheld.")}))
             (println (format "[DEBUG RLM] node '%s' auto-classify DEFERRED (outcome :uncertain — struct=%s behav=%s, fallback=%s) — deferral event recorded, NO assign-task-class dispatched"
                              (or (:name node) (str (:id node)))
                              (:outcome result)
