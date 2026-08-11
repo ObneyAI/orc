@@ -4,6 +4,7 @@
    Fat Query Model: One query per screen, each returns all data needed.
    All queries return {:query/result ...} on success."
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.value-storage :as value-storage]
             [ai.obney.orc.orc-service.core.tree-layout :as layout]
@@ -292,6 +293,18 @@
 ;; Execution Traces
 ;; =============================================================================
 
+(defn- compare-traces-ascending [a b]
+  (let [by-time (trace-time/compare-timestamps (:started-at a) (:started-at b))]
+    (if (zero? by-time)
+      (compare (str (:trace-id a)) (str (:trace-id b)))
+      by-time)))
+
+(defn- compare-traces-descending [a b]
+  (let [by-time (trace-time/compare-timestamps (:started-at b) (:started-at a))]
+    (if (zero? by-time)
+      (compare (str (:trace-id a)) (str (:trace-id b)))
+      by-time)))
+
 (defquery :sheet get-trace
   {:authorized? authenticated?}
   "Get a single execution trace by ID.
@@ -322,7 +335,7 @@
     (let [root-trace-id (:root-trace-id trace)
           traces (->> (rm/get-all-traces ctx)
                       (filter #(= root-trace-id (:root-trace-id %)))
-                      (sort-by (juxt :started-at (comp str :trace-id)))
+                      (sort compare-traces-ascending)
                       (mapv trace-family-summary))]
       {:query/result {:root-trace-id root-trace-id
                       :traces traces}})
@@ -337,7 +350,7 @@
    structural root/delegate grouping used by get-trace-family."
   [{{:keys [correlation-id]} :query :as ctx}]
   (let [traces (->> (rm/get-traces-for-correlation ctx correlation-id)
-                    (sort-by (juxt :started-at (comp str :trace-id)))
+                    (sort compare-traces-ascending)
                     (mapv trace-family-summary))
         families (->> traces
                       (group-by :root-trace-id)
@@ -386,9 +399,10 @@
 
                        ;; Filter by time (since should be an Instant or compatible)
                        since
-                       (filter #(pos? (compare (:started-at %) since))))
+                       (filter #(pos? (trace-time/compare-timestamps
+                                      (:started-at %) since))))
             ;; Sort by started-at descending (most recent first)
-            sorted (sort-by :started-at #(compare %2 %1) filtered)
+            sorted (sort compare-traces-descending filtered)
             ;; Apply limit
             limited (take (or limit 100) sorted)]
         {:query/result
@@ -398,7 +412,7 @@
 (defn- instant->str
   "Convert an Instant or OffsetDateTime to ISO string for Transit serialization."
   [t]
-  (when t (str t)))
+  (trace-time/canonical-string t))
 
 (defn- serialize-node-trace
   "Serialize a node trace for Transit, converting timestamps."
@@ -443,7 +457,7 @@
         ;; Filter and transform to summaries
         filtered (cond->> all-traces
                    status (filter #(= status (:status %))))
-        sorted (sort-by :started-at #(compare %2 %1) filtered)
+        sorted (sort compare-traces-descending filtered)
         limited (take (or limit 100) sorted)
         summaries (mapv (fn [t]
                           (cond-> {:trace-id (:trace-id t)
@@ -726,7 +740,8 @@
                               (filter #(= version-number (:version-number %)))
 
                               since
-                              (filter #(pos? (compare (:started-at %) since))))
+                              (filter #(pos? (trace-time/compare-timestamps
+                                             (:started-at %) since))))
             ;; Flatten all node traces from filtered traces
             all-node-traces (mapcat :node-traces filtered-traces)
             ;; Group by node-id

@@ -63,6 +63,15 @@ that verifies the stated observable results.
   deterministic provider-backed workflow after routing nodes complete and an AI
   leaf starts. Verify the stored timeout trace retains completed nodes, marks the
   unfinished leaf timed out, and exposes provider/node attempt and budget state.
+- [x] **DET-E2E-146 — Timeout trace chronology, canonical timestamps, and replay.**
+  Time out a deterministic workflow after durable node starts exist. Verify the
+  execution trace preserves its durable start, records cancellation separately,
+  and reports a duration consistent with those instants; unfinished node traces
+  use cancellation only as completion. Mix equivalent UTC and offset timestamp
+  spellings across success, failure, and timeout trace events, then verify
+  chronological ordering before limit, `:since`, `:status :timeout`, direct
+  trace-ID retrieval, projection replay, and the same contract through the
+  SQLite-backed event-store/projection boundary.
 
 ## P1 — Workflow lifecycle and versioning
 

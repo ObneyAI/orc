@@ -8,6 +8,7 @@
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]))
@@ -23,7 +24,7 @@
   "Reconstruct partial node history from durable lifecycle events. Active
    attempts enrich the durable timeout trace; lifecycle identity and completed
    outcomes always come from the event log."
-  [context tick-id completed-at]
+  [context tick-id completed-at attempts]
   (let [tick-ctx (rm/get-tick-execution-context context tick-id)
         nodes-by-id (:nodes-by-id tick-ctx)
         events (into [] (es/read (:event-store context)
@@ -37,8 +38,7 @@
                                           :ai.obney.orc.orc-service.core.todo-processors/map-each-parent]))
         execution-key (fn [event] [(:node-id event) (execution-context event)])
         started-by (into {} (map (juxt execution-key identity) started))
-        completed-by (into {} (map (juxt execution-key identity) completed))
-        attempts (execution-budget/attempts-for-tick tick-id)]
+        completed-by (into {} (map (juxt execution-key identity) completed))]
     (vec
      (keep
       (fn [start]
@@ -267,16 +267,33 @@
   "Make a caller deadline terminal, interrupt active work, and synchronously
    persist the partial event-derived trace before returning."
   [context sheet-id tick-id inputs duration-ms]
-  (let [now (str (time/now))
-        node-traces (partial-timeout-node-traces context tick-id now)]
-    (cp/process-command
-     (assoc context :command
-            {:command/id (random-uuid)
-             :command/timestamp (time/now)
-             :command/name :sheet/cancel-tick
-             :sheet-id sheet-id :tick-id tick-id
-             :reason "Execution timed out"}))
-    (execution-budget/cancel-active-work! tick-id)
+  (let [active-attempts (execution-budget/attempts-for-tick tick-id)
+        cancel-command-time (time/now)
+        cancel-result (cp/process-command
+                       (assoc context :command
+                              {:command/id (random-uuid)
+                               :command/timestamp cancel-command-time
+                               :command/name :sheet/cancel-tick
+                               :sheet-id sheet-id :tick-id tick-id
+                               :reason "Execution timed out"}))
+        cancellation-events (into [] (es/read (:event-store context)
+                                              {:tenant-id (:tenant-id context)
+                                               :types #{:sheet/tick-cancelled}
+                                               :tags #{[:tick tick-id]}}))
+        completed-at (or (:event/timestamp (last cancellation-events))
+                         cancel-command-time)
+        tick-events (into [] (es/read (:event-store context)
+                                     {:tenant-id (:tenant-id context)
+                                      :types #{:sheet/tree-tick-started}
+                                      :tags #{[:tick tick-id]}}))
+        started-at (or (:event/timestamp (first tick-events)) completed-at)
+        started-at-str (trace-time/canonical-string started-at)
+        completed-at-str (trace-time/canonical-string completed-at)
+        trace-duration-ms (or (trace-time/elapsed-ms started-at completed-at)
+                              duration-ms)
+        node-traces (partial-timeout-node-traces context tick-id completed-at-str
+                                                 active-attempts)
+        _cancelled-work (execution-budget/cancel-active-work! tick-id)]
     (loop [attempt 0]
       (let [stored (cp/process-command
                     (assoc context :command
@@ -285,8 +302,9 @@
                             :command/name :sheet/store-execution-trace
                             :trace-id tick-id :sheet-id sheet-id
                             :root-trace-id tick-id :child-trace-ids []
-                            :started-at now :completed-at now
-                            :duration-ms duration-ms :status :timeout
+                            :started-at started-at-str
+                            :completed-at completed-at-str
+                            :duration-ms trace-duration-ms :status :timeout
                             :input-snapshot (profile/profile-values (or inputs {}))
                             :output-snapshot {}
                             :node-traces node-traces

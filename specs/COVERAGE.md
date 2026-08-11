@@ -64,14 +64,14 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-10, both `allium check specs` and `allium analyse specs` reported 182
-structural diagnostics across the twelve specifications: 150 informational and 32
+On 2026-08-11, both `allium check specs` and `allium analyse specs` reported 180
+structural diagnostics across the twelve specifications: 148 informational and 32
 warnings. `analyse` reported zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
 | `allium.rule.unreachableTrigger` | 40 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 110 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.field.unused` | 108 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 14 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
@@ -119,6 +119,17 @@ timeout. DET-E2E-131 verifies the provider-call cap through the public workflow
 boundary. DET-E2E-132 verifies that a timeout trace preserves completed routing
 nodes and identifies the unfinished AI node with provider attempt, node attempt,
 configured limits, provider timeout, and remaining-budget evidence.
+
+## Timeout trace chronology and canonical timestamps (2026-08-11)
+
+The workflow execution contract now requires terminal traces to preserve the
+durable execution start, record completion separately, derive duration from
+those instants, and expose one canonical UTC representation. Trace lists and
+time filters compare instants rather than timestamp spellings and apply limits
+after chronological ordering. DET-E2E-146 remains open until mixed UTC/offset
+events, timeout filtering and lookup, projection replay, partial-node timing,
+and the SQLite-backed boundary. The deterministic contract is verified by
+DET-E2E-146 together with the public runtime timeout assertions.
 
 ## Blackboard schema specificity (2026-08-07)
 

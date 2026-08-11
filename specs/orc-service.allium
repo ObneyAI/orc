@@ -242,6 +242,8 @@ entity WorkflowExecution {
     workflow: Workflow
     status: ExecutionStatus
     started_at: Timestamp
+    completed_at: Timestamp?
+    duration: Duration?
     version_number: Integer?
     parent: WorkflowExecution?
     correlation_identifier: String
@@ -403,6 +405,8 @@ rule StartWorkflowExecution {
             workflow: workflow,
             status: running,
             started_at: now,
+            completed_at: null,
+            duration: null,
             version_number: selected_version(workflow, options),
             parent: null,
             correlation_identifier: options.correlation_identifier ?? new_correlation_identifier(),
@@ -519,6 +523,8 @@ rule WorkflowSucceeds {
     requires: all_required_outputs_present(execution, outputs)
 
     ensures: execution.status = success
+    ensures: execution.completed_at = now
+    ensures: execution.duration = now - execution.started_at
 }
 
 rule WorkflowFails {
@@ -526,6 +532,8 @@ rule WorkflowFails {
     requires: execution.status = running
 
     ensures: execution.status = failure
+    ensures: execution.completed_at = now
+    ensures: execution.duration = now - execution.started_at
     ensures: execution.error = error
 }
 
@@ -534,6 +542,8 @@ rule WorkflowPartiallySucceeds {
     requires: execution.status = running
 
     ensures: execution.status = partial
+    ensures: execution.completed_at = now
+    ensures: execution.duration = now - execution.started_at
     ensures: PartialOutcomeRecorded(execution: execution, summary: summary)
 }
 
@@ -542,6 +552,8 @@ rule WorkflowTimesOut {
     requires: execution.status = running
 
     ensures: execution.status = timeout
+    ensures: execution.completed_at = now
+    ensures: execution.duration = now - execution.started_at
 }
 
 rule WorkflowBlocks {
@@ -549,6 +561,8 @@ rule WorkflowBlocks {
     requires: execution.status = running
 
     ensures: execution.status = blocked
+    ensures: execution.completed_at = now
+    ensures: execution.duration = now - execution.started_at
     ensures: BlockingPayloadReturned(execution: execution, payload: payload)
 }
 
@@ -557,6 +571,8 @@ rule CancelWorkflowExecution {
     requires: execution.status = running
 
     ensures: execution.status = cancelled
+    ensures: execution.completed_at = now
+    ensures: execution.duration = now - execution.started_at
     ensures:
         for child in execution.child_executions where status = running:
             CancelWorkflowExecution(consumer: consumer, execution: child)
@@ -579,6 +595,8 @@ rule DelegateToWorkflow {
         workflow: target_workflow,
         status: running,
         started_at: now,
+        completed_at: null,
+        duration: null,
         version_number: selected_version(target_workflow, options),
         parent: node_execution.execution,
         correlation_identifier: node_execution.execution.correlation_identifier,
@@ -724,6 +742,26 @@ surface WorkflowExecutionAccess {
         -- in its queryable trace. A node that started but did not complete is
         -- identified as the active timed-out node together with its provider
         -- attempt, node attempt, configured limits, and execution budget state.
+
+    @guarantee ActualExecutionTiming
+        -- Every terminal execution preserves the durable instant at which it
+        -- began, records the terminal instant separately, and reports a
+        -- duration equal to the elapsed time between those instants within the
+        -- precision of the public duration representation. Unfinished nodes
+        -- retain their durable start and use the workflow timeout instant only
+        -- as their completion.
+
+    @guarantee ChronologicalTraceQueries
+        -- Trace lists, status filters, time filters, families and performance
+        -- views compare timestamp values chronologically, independent of an
+        -- input timestamp's UTC offset spelling. Limits are applied only after
+        -- chronological ordering, with stable trace identity as a tie-breaker.
+
+    @guarantee CanonicalTraceTimestamps
+        -- Every trace status is exposed with one canonical UTC timestamp
+        -- representation, including records reconstructed by replay from
+        -- historically equivalent offset timestamp representations. A stored
+        -- timeout remains directly retrievable by its trace identity.
 
     @guarantee TerminalCancellationFence
         -- Once an execution or any ancestor is cancelled or times out, work
