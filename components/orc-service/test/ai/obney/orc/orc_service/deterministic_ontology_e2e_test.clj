@@ -125,10 +125,13 @@
                             behavioral-subtree-children)]
         (is (= expected (count first-results)))
         (is (h/settle-until!
-             #(every? (fn [id]
-                        (some? (ontology/get-concept-by-uri
-                                ctx (str "behavioral-subtree:" id))))
-                      child-ids)))
+             #(every? (fn [[child id]]
+                        (contains?
+                         (:broader
+                          (ontology/get-concept-by-uri
+                           ctx (str "behavioral-subtree:" id)))
+                         (str "behavioral-subtree:" (:parent-behavior child))))
+                      (map vector behavioral-subtree-children child-ids))))
         (doseq [[child id] (map vector behavioral-subtree-children child-ids)]
           (let [concept (ontology/get-concept-by-uri
                          ctx (str "behavioral-subtree:" id))]
@@ -218,6 +221,13 @@
             ontology-b (random-uuid)
             uri "concept:SharedName"
             parent-uri "concept:SharedParent"]
+        (doseq [[ontology-id name] [[ontology-a "Isolation A"]
+                                    [ontology-b "Isolation B"]]]
+          (let [created (ontology/create-ontology!
+                         ctx {:command/id ontology-id
+                              :name name
+                              :scope :custom})]
+            (is (= ontology-id (:ontology-id created)))))
         (command! ctx :ontology/create-concept
                   {:ontology-id ontology-a :uri uri :label "A"
                    :description "belongs to A" :scope :problem})
@@ -260,6 +270,12 @@
     (h/with-async-test-context [ctx]
       (let [string-id "det-e2e-085"
             canonical (java.util.UUID/nameUUIDFromBytes (.getBytes string-id "UTF-8"))]
+        (is (= canonical
+               (:ontology-id
+                (ontology/create-ontology!
+                 ctx {:command/id canonical
+                      :name "Canonical identity"
+                      :scope :custom}))))
         (command! ctx :ontology/create-concept
                   {:ontology-id canonical :uri "concept:Canonical"
                    :label "canonical" :description "one identity" :scope :problem})
@@ -272,6 +288,12 @@
   (testing "a seeded and extended graph exports stable valid Turtle relationships"
     (h/with-async-test-context [ctx]
       (let [ontology-id (random-uuid)]
+        (is (= ontology-id
+               (:ontology-id
+                (ontology/create-ontology!
+                 ctx {:command/id ontology-id
+                      :name "Export graph"
+                      :scope :custom}))))
         (command! ctx :ontology/create-concept
                   {:ontology-id ontology-id :uri "problem:Parent"
                    :label "Parent" :description "root" :scope :problem})
