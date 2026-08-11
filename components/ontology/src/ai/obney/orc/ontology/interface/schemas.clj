@@ -138,6 +138,30 @@
    between sections keeps its accumulated support."
   [:enum :capability :strength :weakness :guard :representative-use])
 
+(def consolidation-failure-reason
+  "CC-28 (contract ClaimConsolidation, FailureIsVisible) — the CLOSED
+   reason-class set for a reflection call that never answered. The class
+   is the contract; a message string may ride along on `:error` but is
+   never the thing a consumer matches on.
+
+     :provider-rejected — the provider refused the call outright (the
+       motivating incident: a 1,571,414-token prompt vs a 1,048,576 cap)
+     :timeout           — the execution deadline died before an answer
+     :retries-exhausted — every provider attempt errored until the retry
+       budget ran out
+     :unparseable       — the provider answered but no value could be
+       extracted for the declared writes"
+  [:enum :provider-rejected :timeout :retries-exhausted :unparseable])
+
+(def consolidation-target-identifier
+  "The FULL identity range `consolidate!` accepts, one shape per
+   granularity: a keyword for :node-type (:llm), a [sheet-id node-id]
+   tuple for :node-instance, a SHA string for :tree-fingerprint, a UUID
+   for :tree-class. Wider than the claim events' [:or :string :uuid]
+   because BOTH reflection paths — claim and legacy body — must be able
+   to record their deaths."
+  [:or :keyword node-instance-target :string :uuid])
+
 (def claim-status
   "`:candidate` — recorded and visible, but NOT enforcing. `:validated` —
    earned enough post-guard evidence to influence retrieval ranking.
@@ -684,6 +708,42 @@
     [:refused-at        :string]]
 
    ;; -------------------------------------------------------------------------
+   ;; CC-28 (contract ClaimConsolidation) — the reflection's death certificate
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; The spec's FailureIsVisible: a reflection call that fails — provider
+   ;; rejection, timeout, exhausted retries, unparseable output — leaves a
+   ;; durable failure record carrying the target, the reason class, and the
+   ;; attempt count. "Produced no trustworthy knowledge" (ClaimSetUnchanged)
+   ;; and "never answered" are different facts; this event is the second one.
+   ;;
+   ;; ONE event per terminal failure — the whole attempt-set, after the
+   ;; executor's internal retries, with :attempts carrying the count. Never
+   ;; one event per attempt: per-attempt emission would make a single dying
+   ;; consolidation look like N incidents and would multiply-count against
+   ;; the hourly budget (FailuresConsumeBudget folds this event).
+   ;;
+   ;; Motivating incident (measured): a target taking 23.4% of all
+   ;; consolidation requests had its prompt rejected outright (1,571,414
+   ;; tokens vs 1,048,576), 0/3 after four retries each, leaving NO event —
+   ;; indistinguishable from health.
+
+   :ontology/description-consolidation-failed
+   [:map
+    [:granularity        description-granularity]
+    [:target-identifier  consolidation-target-identifier]
+    ;; The CLOSED class is the contract; :error is the ride-along string.
+    [:reason             consolidation-failure-reason]
+    [:error              {:optional true} [:maybe :string]]
+    ;; Provider attempts consumed by this attempt-set. Exact for the
+    ;; exception-terminal classes (the executor's exception path only
+    ;; escapes after exhausting its retry budget); a floor of 1 for
+    ;; :timeout/:unparseable, whose attempt index the executor does not
+    ;; surface — see classify-reflection-failure.
+    [:attempts           :int]
+    [:failed-at          :string]]
+
+   ;; -------------------------------------------------------------------------
    ;; Gap-6 — Anti-recency runtime audit events
    ;; -------------------------------------------------------------------------
    ;;
@@ -1073,6 +1133,23 @@
     ;; Same loose shape the description commands use; the EVENT schema types
     ;; it precisely.
     [:model-provenance     {:optional true} [:maybe :map]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-28 — record a consolidation's terminal reflection failure
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Dispatched by the consolidator from BOTH reflection paths (claim and
+   ;; legacy body) when the reflection's exec-result is terminally
+   ;; non-successful. ONE command per attempt-set; :attempts carries the
+   ;; count. Emits :ontology/description-consolidation-failed.
+
+   :ontology/record-consolidation-failure
+   [:map
+    [:granularity       description-granularity]
+    [:target-identifier consolidation-target-identifier]
+    [:reason            consolidation-failure-reason]
+    [:error             {:optional true} [:maybe :string]]
+    [:attempts          :int]]
 
    ;; Gap-6's two anti-recency AUDIT COMMAND schemas were removed by CC-5, with
    ;; the validator and the handlers that were their only callers. Nothing can

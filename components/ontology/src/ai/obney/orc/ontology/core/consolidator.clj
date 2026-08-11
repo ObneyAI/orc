@@ -164,6 +164,96 @@
 (def ^:private target-identity-schema
   [:or :keyword [:tuple :uuid :uuid] :uuid :string])
 
+(def ^:private reflection-max-retries
+  "The executor-level retry budget BOTH reflection workflows configure
+   (see the :options on their :llm nodes). Named because CC-28's failure
+   accounting derives the terminal attempt count from it: the executor's
+   exception path only escapes after exhausting exactly this budget, so
+   a terminal exception-class failure consumed (inc reflection-max-retries)
+   provider attempts."
+  3)
+
+(defn classify-reflection-failure
+  "CC-28 (FailureIsVisible) — map a terminal non-:success exec-result from
+   a reflection workflow to {:reason <closed-class> :attempts <count>}.
+
+   PURE, and public for test access. The reason classes are the CLOSED set
+   `ontology-schemas/consolidation-failure-reason`; the matching here is a
+   heuristic over the executor's terminal shapes, but what it PRODUCES is
+   always one of the four contract classes:
+
+     :timeout           — the exec-result's own :status. The executor does
+       not surface which attempt the deadline died on, so :attempts is the
+       certain floor of 1.
+     :unparseable       — the executor's nil-extraction terminal, matched
+       on its verbatim error prefix (\"LLM output unparseable for keys\",
+       executor.clj). The provider ANSWERED — one terminal attempt's output
+       could not be extracted — so :attempts is the floor of 1.
+     :provider-rejected — the provider refused the call outright: token/
+       context-length caps, invalid-request shapes. The executor retries
+       these like any exception (it cannot tell permanent from transient),
+       so the full budget was consumed: (inc reflection-max-retries).
+     :retries-exhausted — every other exception-terminal failure: the
+       provider kept erroring until the retry budget ran out. Also the
+       fallback for any unrecognized error string — 'died for a reason we
+       could not classify' is still 'died', and the closed set means an
+       unknown shape maps to the honest superclass rather than minting a
+       new one. Attempts: (inc reflection-max-retries), exact — the
+       exception path only escapes after exhausting the budget."
+  [{:keys [status error]}]
+  (let [error-str (some-> error str)]
+    (cond
+      (= :timeout status)
+      {:reason :timeout :attempts 1}
+
+      (and error-str (re-find #"LLM output unparseable" error-str))
+      {:reason :unparseable :attempts 1}
+
+      (and error-str
+           (re-find #"(?i)too long|too large|context.{0,8}length|maximum context|token limit|exceeds?.{0,24}(maximum|limit)|invalid_request"
+                    error-str))
+      {:reason :provider-rejected :attempts (inc reflection-max-retries)}
+
+      :else
+      {:reason :retries-exhausted :attempts (inc reflection-max-retries)})))
+
+(defn- record-consolidation-failure!
+  "Emit the durable death certificate for a terminally failed reflection —
+   ONE :ontology/description-consolidation-failed event for the whole
+   attempt-set, dispatched through the command processor exactly as the
+   success paths dispatch their writes. Also keeps the pre-CC-28 log line
+   so operators' existing ::consolidate-execution-failed searches keep
+   working."
+  [context target-type target-id exec-result]
+  (let [{:keys [reason attempts]} (classify-reflection-failure exec-result)]
+    (u/log ::consolidate-execution-failed
+           :target-type target-type :target-id target-id
+           :status (:status exec-result) :error (:error exec-result)
+           :reason reason :attempts attempts)
+    (command-processor/process-command
+      (assoc context :command
+             (cond-> {:command/name :ontology/record-consolidation-failure
+                      :command/id (random-uuid)
+                      :command/timestamp (time/now)
+                      :granularity target-type
+                      :target-identifier target-id
+                      :reason reason
+                      :attempts attempts}
+               (some? (:error exec-result))
+               (assoc :error (str (:error exec-result))))))))
+
+(defn- execute-reflection
+  "Run the reflection workflow, converting a THROW from the execute call
+   itself into the same terminal shape the executor returns for its own
+   failures — so both reflection paths have exactly ONE failure seam and
+   a thrown reflection cannot slip past FailureIsVisible into the
+   processor's catch-all log line."
+  [context sheet-id inputs]
+  (try
+    (orc/execute context sheet-id inputs)
+    (catch Exception e
+      {:status :failure :error (.getMessage e)})))
+
 (defn- reflection-workflow
   "Single-:llm-node ORC workflow for the consolidator's reflection call.
 
@@ -207,7 +297,7 @@
         ;; outputs (executor.clj `outputs-have-nil?`). Lifting the budget
         ;; from the default 1 retry to 3 covers the LLM-flakiness we see
         ;; on first-consolidation runs without reinventing retry.
-        :options {:max-retries 3
+        :options {:max-retries reflection-max-retries
                   :retry-delay-ms [500 1500 3000]})
       model (assoc :model model))))
 
@@ -390,7 +480,7 @@
                 :recent-events :aggregate-metrics
                 :recent-vs-historical-delta :structural-context]
         :writes [:operations]
-        :options {:max-retries 3
+        :options {:max-retries reflection-max-retries
                   :retry-delay-ms [500 1500 3000]})
       model (assoc :model model))))
 
@@ -1302,14 +1392,14 @@
         model (or (:ontology-consolidator-model context)
                   (:model context))
         sheet-id (orc/build-workflow! context (claim-reflection-workflow model))
-        exec-result (orc/execute context sheet-id
-                                 {:target-type target-type
-                                  :target-id target-id
-                                  :claim-set (render-claim-set claims)
-                                  :recent-events recent-events
-                                  :aggregate-metrics aggregate-metrics
-                                  :recent-vs-historical-delta recent-vs-historical-delta
-                                  :structural-context structural-context})
+        exec-result (execute-reflection context sheet-id
+                                        {:target-type target-type
+                                         :target-id target-id
+                                         :claim-set (render-claim-set claims)
+                                         :recent-events recent-events
+                                         :aggregate-metrics aggregate-metrics
+                                         :recent-vs-historical-delta recent-vs-historical-delta
+                                         :structural-context structural-context})
         ;; CC-31: which completion proposed these operations — matched from
         ;; the store exactly as the retained description path matches it
         ;; (the completion event whose tick-id is this execution's trace-id
@@ -1326,10 +1416,11 @@
                             :usage (:usage model-completion)})
         operations (get-in exec-result [:outputs :operations])]
     (cond
+      ;; CC-28 (FailureIsVisible): a reflection that never answered leaves
+      ;; a durable failure record — ONE per attempt-set — instead of only
+      ;; a log line indistinguishable from health.
       (not= :success (:status exec-result))
-      (u/log ::consolidate-execution-failed
-             :target-type target-type :target-id target-id
-             :status (:status exec-result) :error (:error exec-result))
+      (record-consolidation-failure! context target-type target-id exec-result)
 
       (not (sequential? operations))
       (u/log ::claim-reflection-produced-no-operation-list
@@ -1389,14 +1480,14 @@
         model (or (:ontology-consolidator-model context)
                   (:model context))
         sheet-id (orc/build-workflow! context (reflection-workflow model))
-        exec-result (orc/execute context sheet-id
-                                  {:target-type target-type
-                                   :target-id target-id
-                                   :current-description current-description
-                                   :recent-events recent-events
-                                   :aggregate-metrics aggregate-metrics
-                                   :recent-vs-historical-delta recent-vs-historical-delta
-                                   :structural-context structural-context})
+        exec-result (execute-reflection context sheet-id
+                                        {:target-type target-type
+                                         :target-id target-id
+                                         :current-description current-description
+                                         :recent-events recent-events
+                                         :aggregate-metrics aggregate-metrics
+                                         :recent-vs-historical-delta recent-vs-historical-delta
+                                         :structural-context structural-context})
         model-completion (some #(when (and (= (:trace-id exec-result) (:tick-id %))
                                            (:model %))
                                   %)
@@ -1440,12 +1531,11 @@
                (maybe-hydrate-behavioral-subtree-ids context target-type target-id
                                                       current-description body))]
     (cond
+      ;; CC-28 (FailureIsVisible): same durable death certificate the claim
+      ;; path records — the LEGACY body path's targets die just as silently
+      ;; without it.
       (not= :success (:status exec-result))
-      (u/log ::consolidate-execution-failed
-             :target-type target-type
-             :target-id target-id
-             :status (:status exec-result)
-             :error (:error exec-result))
+      (record-consolidation-failure! context target-type target-id exec-result)
 
       (not (m/validate ontology-schemas/description-body body))
       (u/log ::consolidate-validation-failed

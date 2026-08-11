@@ -1139,6 +1139,45 @@
                             (= claim-set-version (count (into [] existing))))}})))))
 
 ;; =============================================================================
+;; CC-28 (contract ClaimConsolidation) — consolidation failure visibility
+;; =============================================================================
+
+(defn- description-target-uuid
+  "Tag value for a consolidation target, derived EXACTLY as the four
+   record-*-description commands derive theirs — same namespacing, same
+   stable-uuid — so a target's failure events land in the same
+   [:description-target …] tag stream as its successes."
+  [granularity target-identifier]
+  (case granularity
+    :node-instance (let [[sheet-id node-id] target-identifier]
+                     (stable-uuid-from (str "node-instance:" sheet-id ":" node-id)))
+    (stable-uuid-from (str (name granularity) ":" target-identifier))))
+
+(defcommand :ontology record-consolidation-failure
+  "CC-28, the spec's FailureIsVisible: record a reflection call that never
+   answered — provider rejection, timeout, exhausted retries, unparseable
+   output. Emits :ontology/description-consolidation-failed.
+
+   ONE command per terminal attempt-set; :attempts carries the count. The
+   consolidator dispatches it from BOTH reflection paths (claim and legacy
+   body). The recent-consolidations read-model folds the event so failures
+   consume the same hourly budget successes do (FailuresConsumeBudget)."
+  [{{:keys [granularity target-identifier reason error attempts]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/description-consolidation-failed
+      :tags #{[:description-target (description-target-uuid granularity target-identifier)]}
+      ;; :error is attached only when there IS one — omit-not-nil, the
+      ;; CC-31 idiom, so the event stays byte-shaped whether or not a
+      ;; message rode along.
+      :body (cond-> {:granularity granularity
+                     :target-identifier target-identifier
+                     :reason reason
+                     :attempts attempts
+                     :failed-at (now-str)}
+              (some? error) (assoc :error error))})]})
+
+;; =============================================================================
 ;; C-2a-3a — Consolidation trigger commands
 ;; =============================================================================
 ;;

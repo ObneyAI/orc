@@ -1475,6 +1475,18 @@
 (defmethod recent-consolidations* :ontology/claim-deltas-recorded [state event]
   (record-consolidation-timestamp state (assoc event :target-type (:granularity event))))
 
+;; CC-28, the spec's FailuresConsumeBudget: a failed attempt-set cost the
+;; same LLM attempts a success did and must count against the same hourly
+;; budget — a target whose every attempt dies must not retry unthrottled,
+;; and the budget read cannot report a dying target as idle. The event
+;; names its target-type `:granularity` (the claim-event idiom), so it is
+;; re-keyed exactly as :ontology/claim-deltas-recorded is. The fold is a
+;; named-key conj into the same per-target-type timestamp vector — safe on
+;; empty state, so a failure event replayed BEFORE any success (or on a
+;; store holding nothing else) folds identically.
+(defmethod recent-consolidations* :ontology/description-consolidation-failed [state event]
+  (record-consolidation-timestamp state (assoc event :target-type (:granularity event))))
+
 (defn recent-consolidations
   "Build the recent-consolidations state from a seq of events."
   [initial-state events]
@@ -1485,11 +1497,16 @@
   ;; The version bump is required, not cosmetic — a v1 cache generation was
   ;; built by code that did not fold this event type, so it would serve a
   ;; budget count that permanently under-reports claim-path consolidations.
+  ;; v3 (CC-28): failure events now count too, same reasoning — a v2 cache
+  ;; generation was built by code that could not see death, so it would
+  ;; serve a budget count that reports a dying target as idle and lets it
+  ;; retry unthrottled forever.
   {:events #{:ontology/node-type-description-updated
              :ontology/node-instance-description-updated
              :ontology/tree-description-updated
-             :ontology/claim-deltas-recorded}
-   :version 2}
+             :ontology/claim-deltas-recorded
+             :ontology/description-consolidation-failed}
+   :version 3}
   [state event] (recent-consolidations* state event))
 
 (defn- ts->instant [^String s]
