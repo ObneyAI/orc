@@ -296,3 +296,29 @@
           "the legacy fold still produces a description")
       (is (= 1 (count (ontology/get-claims ctx :tree-class claim-target)))
           "the claim fold works in the same read model"))))
+
+;; ---------------------------------------------------------------------------
+;; CC-15 weed D2 — the spec's `grounded.count > 0` precondition on
+;; RecordClaimDeltas: an EMPTY deltas batch must not record. Before the fix,
+;; `(and (seq deltas) (empty? kept))` let `deltas = []` slip to the recording
+;; arm — a vacuous :claim-deltas-recorded advancing the version and consuming
+;; budget for a consolidation that proposed nothing. Unreachable from the
+;; production consolidator (it guards `(seq deltas)`), but the command IS the
+;; rule's implementation and must hold on its own.
+;; ---------------------------------------------------------------------------
+(deftest an-empty-delta-batch-records-nothing
+  (with-test-ctx [ctx]
+    (let [target (random-uuid)]
+      (record-deltas! ctx target [(add-delta "a real first claim")] 0)
+      (let [version-before (count (into [] (es/read (:event-store ctx)
+                                                    {:tenant-id (:tenant-id ctx)
+                                                     :types #{:ontology/claim-deltas-recorded}})))]
+        (record-deltas! ctx target [] 1)
+        (is (= version-before
+               (count (into [] (es/read (:event-store ctx)
+                                        {:tenant-id (:tenant-id ctx)
+                                         :types #{:ontology/claim-deltas-recorded}}))))
+            "an empty batch appends NO :claim-deltas-recorded — a consolidation
+             that proposed nothing must not look like one that learned")
+        (is (= 1 (count (ontology/get-claims ctx :tree-class target)))
+            "and the claim set is untouched")))))

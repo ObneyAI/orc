@@ -1108,11 +1108,14 @@
                               :settled-by (:settled-by verdict)
                               :excluded-at (now-str)}}))
                   dropped)]
-        (if (and (seq deltas) (empty? kept))
-          ;; Nothing survived the guard: record WHY, and leave the claim
-          ;; set — and its version — untouched. Recording an empty batch
-          ;; would advance the version and make a consolidation that
-          ;; learned nothing look like one that did.
+        (if (empty? kept)
+          ;; Nothing survived the guard — OR nothing was proposed at all
+          ;; (CC-15 weed D2: the spec's `grounded.count > 0` precondition;
+          ;; an EMPTY deltas batch previously slipped this arm and recorded
+          ;; a vacuous :claim-deltas-recorded, advancing the version and
+          ;; consuming budget for a consolidation that proposed nothing).
+          ;; Record WHY (exclusions, when there were deltas to exclude) and
+          ;; leave the claim set — and its version — untouched.
           {:command-result/events exclusion-events}
           {:command-result/events
            (into [(->event
