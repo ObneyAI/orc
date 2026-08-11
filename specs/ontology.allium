@@ -191,6 +191,37 @@ contract ParentInferenceQuery {
         -- to the rendering.
 }
 
+-- CC-23: routing decisions must be auditable from events, and a deferral is
+-- a recorded fact, not an absence. Measured (CC-19, 156 real classifications):
+-- the event's candidate list is the GATED surfaced view while the decision
+-- runs on the ungated ranking — 150/156 events surfaced exactly ONE
+-- candidate, only 1/156 admitted a runner-up margin, and the assigned id was
+-- absent from the event's own list in 7/156; the reranker-fallback deferral
+-- emitted NO event at all, so the classifier ran on 178 ticks and left 156
+-- events — the 22 silent ticks (12.4%) could only be INFERRED. A system that
+-- cannot report when its ranker fell back cannot be trusted to report that
+-- it did not.
+contract TaskClassification {
+    classify: (task_signature: String) -> ClassificationOutcome
+
+    @invariant DeferralIsVisible
+        -- A classification that defers — the semantic reranker fell back, so
+        -- fitness is unknown — leaves a durable deferral event carrying the
+        -- source occurrence, the fallback source, and the bounded ranking
+        -- snapshot. "Uncertain" and "nothing happened" are different facts;
+        -- the deferral rate is a measured number, never an inference from
+        -- missing events.
+
+    @invariant DecidedRankingIsRecorded
+        -- The classified event records the PRE-GATE ranking the decision ran
+        -- on, bounded to the retrieval's top-k, each entry reduced to
+        -- identity, axis, scores, and rerank source — never description
+        -- content (measured: candidate content was 59.4% of the tree-class
+        -- evidence payload). The gated surfaced view rides alongside for its
+        -- consumers, and the assigned identity's provenance — match, bundle,
+        -- walk-down, or mint — is explicit on the event.
+}
+
 contract OntologyExtraction {
     extract: (source: SourceSpecification, context: Any) -> Any
 
