@@ -419,6 +419,12 @@ config {
     -- representation error strictly smaller than the scale's quantum; the
     -- tolerance can never change a verdict between two values the scale can
     -- actually distinguish.
+    -- ADR 0029 note (CC-24b inspect): at the now-shipped floor of 0.75 the
+    -- artifact is UNREACHABLE on the dimension axis — 0.75 is dyadic, so
+    -- lattice sums and quotients land on it exactly (measured: 0 drift at
+    -- 0.75, 7 at 0.8). The tolerance remains load-bearing on the CONSISTENCY
+    -- axis, where a per-occurrence mean across J judges need not be dyadic.
+    -- It is not dead code.
     floor_comparison_tolerance: Decimal = 0.000000001
 }
 
