@@ -78,8 +78,13 @@
 
 (def floor-comparison-tolerance
   "The spec's `config floor_comparison_tolerance` (CC-29): floor verdicts are
-   exact on the DISCRETE judge scale. Judge scores are band values (quantum
-   0.05), so any legitimate below-floor mean differs from the floor by at
+   exact on the DISCRETE judge scale. Judge scores are band values on a 1-5
+   scale mapped (n-1)/4 — the achievable set is {0, 0.25, 0.5, 0.75, 1.0},
+   quantum 0.25 at one judge (0.25/J when J judges are averaged). CORRECTED
+   2026-08-12: this said 0.05, which was never true of the shipped scale; the
+   tolerance argument only gets SAFER with the real, larger quantum. That the
+   FLOORS sit between bands is CC-24's crux, not this tolerance's concern. Any
+   legitimate below-floor mean differs from the floor by at
    least quantum/occurrence-count — orders of magnitude above binary-
    representation error, which is what actually produced a rejection: a class
    whose every score was exactly 0.8 projected its lifetime mean as
@@ -89,7 +94,9 @@
    the tolerance can never change a verdict between two values the scale can
    actually distinguish.
 
-   SAFE WINDOW: legitimate distinctions are >= quantum/count (~1e-5 and up at
+   SAFE WINDOW: legitimate distinctions are >= quantum/count (>= 0.25/40 =
+   6.25e-3 at forty occurrences, and larger below that; ~1e-5 even at absurd
+   counts —
    realistic counts), representation error is ~1e-13, so 1e-9 keeps at least
    three orders of magnitude of margin on EACH side. Applied at the floor-
    COMPARISON seam only — `x >= floor` becomes `x >= (- floor tolerance)` in

@@ -384,8 +384,14 @@ config {
     -- differentiation is a refinement, not a prerequisite.
     dimension_floor: Decimal = 0.8
     -- CC-29: floor verdicts are exact on the DISCRETE judge scale. Judge
-    -- scores are band values (quantum 0.05), so any legitimate below-floor
-    -- mean differs from the floor by at least quantum/occurrence-count —
+    -- scores are band values on a 1-5 scale mapped (n-1)/4, so the achievable
+    -- set is {0, 0.25, 0.5, 0.75, 1.0} — quantum 0.25 at one judge, 0.25/J
+    -- when J judges are averaged per occurrence. (CORRECTED 2026-08-12: this
+    -- comment first said 0.05, which was never true of the shipped scale; the
+    -- tolerance argument below only gets SAFER with the real, larger quantum.
+    -- That the floors themselves sit BETWEEN bands is CC-24's crux, not this
+    -- rule's concern.) Any legitimate below-floor mean therefore differs from
+    -- the floor by at least quantum/occurrence-count —
     -- orders of magnitude above binary-representation error, which is what
     -- actually produced a rejection: a class whose every score was exactly
     -- 0.8 projected its lifetime mean as 0.7999999999999999 (double
