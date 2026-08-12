@@ -199,10 +199,31 @@
        fallback for any unrecognized error string — 'died for a reason we
        could not classify' is still 'died', and the closed set means an
        unknown shape maps to the honest superclass rather than minting a
-       new one. Attempts: (inc reflection-max-retries), exact — the
-       exception path only escapes after exhausting the budget."
+       new one. Attempts: (inc reflection-max-retries) when the terminal
+       carries EVIDENCE the exception path ran (a message or a structured
+       kind); the certain floor of 1 when it carries none — see SIO-4.
+
+   SIO-4 (attempt-count honesty). The full budget is a claim about how
+   many provider attempts were consumed, and CC-28 stamped it on EVERY
+   unrecognized terminal — including terminals carrying no :error, no
+   :failure-kind and no deadline status, where nothing whatsoever says the
+   executor's retry loop ran. Measured over the durable store: 12 of 43
+   real failure records were exactly that shape, each stamped with 4
+   consumed attempts on zero evidence. Their terminal is IDENTIFIED, not
+   unknown: the harness JVM was stopped mid-consolidation, grain's
+   stop-tenant-poller called ExecutorService.shutdownNow, and the
+   interrupt made runtime/execute's blocking `deref` throw
+   java.lang.InterruptedException — whose .getMessage is nil — which
+   `execute-reflection`'s (catch Exception e) turns into
+   {:status :failure :error nil}. The executor never returned; zero
+   attempts are attributable to a retry budget. So an evidence-free
+   terminal reports the CERTAIN FLOOR of 1, the same doctrine :timeout and
+   the legacy :unparseable shape already use. The reason class is
+   unchanged — the set is CLOSED and this mints nothing; only the count
+   stops being a fiction, and FailureIsVisible still gets a count."
   [{:keys [status error failure-kind]}]
   (let [error-str (some-> error str)
+        no-evidence? (and (str/blank? error-str) (nil? failure-kind))
         full (inc reflection-max-retries)
         context-rejection? (and error-str
                                 (re-find #"(?i)too long|too large|context.{0,8}length|maximum context|token limit|exceeds?.{0,24}(maximum|limit)|invalid_request"
@@ -240,6 +261,11 @@
 
       context-rejection?
       {:reason :provider-rejected :attempts full}
+
+      ;; SIO-4: nothing here is evidence of a consumed retry budget — no
+      ;; message, no structured kind, no deadline status. Report the floor.
+      no-evidence?
+      {:reason :retries-exhausted :attempts 1}
 
       :else
       {:reason :retries-exhausted :attempts full})))
