@@ -18,15 +18,27 @@ jobs:
   deterministic-tests:
     name: ORC test suites
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - uses: ./.github/actions/setup-clojure
 
-      - name: Run all brick tests
-        run: clojure -M:poly test :all-bricks
+      # Polylith runs projects in isolated classloaders but keeps them in one
+      # JVM. DJL's tokenizer native library cannot be loaded by more than one
+      # classloader, and several project suites reach ColBERT lazily. Preserve
+      # the full project coverage while giving each project a fresh JVM.
+      - name: Run package project tests
+        run: |
+          clojure -M:poly test project:orc-service
+          clojure -M:poly test project:orc-evaluation
+          clojure -M:poly test project:orc-gepa
+          clojure -M:poly test project:orc-mcp-sheet-builder
+          clojure -M:poly test project:orc-ontology
+
+      - name: Run aggregate ORC project tests
+        run: clojure -M:poly test project:orc
 
   live-llm-tests:
     name: Live LLM integration tests
