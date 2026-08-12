@@ -368,7 +368,14 @@ config {
     consistency_window: Integer = 5
     -- The floor EACH occurrence in the window must clear. Deliberately not a
     -- mean over the window: that would reintroduce the same defect one level up.
-    consistency_floor: Decimal = 0.8
+    -- ADR 0029 (CC-24, MEASURED): floors sit ON the judge scale's band
+    -- lattice. scale.clj maps a discrete 1-5 by (n-1)/4, so achievable
+    -- per-occurrence scores at one judge are exactly {0, .25, .5, .75, 1.0}.
+    -- The old 0.8 sat BETWEEN band 4 (good work) and band 5, silently meaning
+    -- "perfect only" — every floor in {.6,.7,.75} behaves identically, as does
+    -- every floor in {.8,.9,1.0}. 0.75 = "band 4 or better", an explicit
+    -- policy rather than an accident of where a number fell.
+    consistency_floor: Decimal = 0.75
     -- The floor EACH dimension (judge) must clear, per PromoteWellScoredClass's
     -- `quality.all(...)`. Referenced by that rule but never declared until now —
     -- the same omission as the three above.
@@ -382,7 +389,19 @@ config {
     --
     -- Uniform for now because the system has exactly one judge. Per-dimension
     -- differentiation is a refinement, not a prerequisite.
-    dimension_floor: Decimal = 0.8
+    dimension_floor: Decimal = 0.75
+    -- ADR 0029 (CC-24, MEASURED): the dimension axis reads a TRAILING WINDOW
+    -- of the most recent scored occurrences, never a raw lifetime mean. The
+    -- raw mean fired 0/105 real positions at BOTH 0.80 and 0.75 — the dominant
+    -- class needed ~97 consecutive perfect occurrences because a lifetime mean
+    -- can never forget, including evidence produced by since-fixed ENGINE
+    -- defects. Trailing-10 fires 27/105 and abstains 78/105: it can both fire
+    -- and abstain on real data, which is ADR 0027's bar. Exponential decay was
+    -- measured (10/105) and rejected — the zero-block is the MOST RECENT, so
+    -- recency-weighting reads worse than the raw mean. Eligibility can
+    -- therefore be LOST as well as gained: enforcement is continuously earned,
+    -- the same principle as DemoteUnderSupportedClaim.
+    dimension_window: Integer = 10
     -- CC-29: floor verdicts are exact on the DISCRETE judge scale. Judge
     -- scores are band values on a 1-5 scale mapped (n-1)/4, so the achievable
     -- set is {0, 0.25, 0.5, 0.75, 1.0} — quantum 0.25 at one judge, 0.25/J
@@ -964,11 +983,23 @@ rule PromoteWellScoredClass {
     requires: not already_harvested(tree_class)
     -- Per-dimension floors: one catastrophic dimension vetoes promotion, and
     -- cannot be compensated for by strength elsewhere.
+    -- ADR 0029: `dimension.score` is the dimension's mean over its most recent
+    -- `dimension_window` scored occurrences — NOT a lifetime mean, which
+    -- measured 0/105 firings and could never forget evidence produced by
+    -- since-fixed engine defects.
     requires: quality.all(dimension => dimension.score >= dimension_floor(dimension))
     -- Consistency, not average: durable creation requires the class to have
     -- qualified repeatedly, so a single disastrous occurrence is not averaged away.
     requires: consistently_qualified(tree_class, consistency_window)
     -- Coherence: a tight cluster, not a grab-bag.
+    -- ADR 0029 (TRACKED GAP, measured): this axis passes VACUOUSLY for 100% of
+    -- occurrences in both real stores — 0/138 tree-execution events carry a
+    -- fingerprint or a source-tick-id, so there are no shapes to count, and a
+    -- class that solves by direct tool call emits no trees at all. HP-2b fixed
+    -- the emit site but NO post-fix bookend exists anywhere, so the signal is
+    -- unwitnessed end-to-end. The abstention stands (we do not gate on a signal
+    -- we have never seen work) but must be OBSERVABLE; requiring shape evidence
+    -- waits on one real post-HP-2b bookend with a non-nil fingerprint.
     requires: distinct_shape_ratio(tree_class) <= maximum_shape_ratio
     let parent = nearest_abstract_behavior(tree_class)
     requires: parent != null
