@@ -307,6 +307,22 @@
       ;; With threshold 0.8, score 0.5 is still a failure
       (is (= 1 (count (:failures result-strict)))))))
 
+(deftest test-classify-evaluation-canonical-evaluator-dimensions
+  (testing "Maps the evaluation component's canonical dimension names"
+    (let [evaluation {:score 0.4
+                      :dimensions [{:name "Source Grounding"
+                                    :score 0.2
+                                    :feedback "The response contains an unsupported claim"}
+                                   {:name "Reasoning Quality"
+                                    :score 0.3
+                                    :feedback "The routing conclusion is unexplained"}]}
+          failures (:failures (classifier/classify-evaluation evaluation))]
+      (is (= ["failure:Grounding" "failure:Reasoning"]
+             (mapv :base-uri failures)))
+      (is (= ["Source Grounding" "Reasoning Quality"]
+             (mapv :dimension failures)))
+      (is (every? #(str/starts-with? (:uri %) "failure:") failures)))))
+
 (deftest test-classify-evaluation-subtype-detection
   (testing "Detects hallucination subtype from feedback"
     (let [evaluation {:score 0.3

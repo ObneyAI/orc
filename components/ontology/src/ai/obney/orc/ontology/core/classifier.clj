@@ -19,8 +19,10 @@
 (def dimension->failure-uri
   "Maps evaluation dimension names to root failure concept URIs."
   {"Grounding" "failure:Grounding"
+   "Source Grounding" "failure:Grounding"
    "Instruction Following" "failure:InstructionFollowing"
    "Reasoning" "failure:Reasoning"
+   "Reasoning Quality" "failure:Reasoning"
    "Completeness" "failure:Completeness"})
 
 ;; =============================================================================
