@@ -917,23 +917,28 @@
                        (format-node-type-guidance node-type-guidance)
                        "\n---\n")
             result (update node :instruction (fn [inst] (str block inst)))
+            trace {:rendered-at (str (java.time.Instant/now))
+                   :prepend block
+                   :prepend-chars (count block)
+                   :original-instruction-chars (- (count (:instruction result))
+                                                  (count block))
+                   :classifier-payload
+                   (cond-> payload
+                     node-type-guidance
+                     (assoc :node-type-guidance node-type-guidance))}
             ;; Trace capture: write the rendered prepend + full classifier
             ;; payload to a sidecar file keyed by sheet-id so the bench
             ;; runner can pair it with the saved EDN. Best-effort; failures
             ;; are silent (we don't want trace IO to break the request).
             sheet-id (:sheet-id ctx)]
+        (when-let [trace-fn (:r-inject-trace-fn ctx)]
+          (try
+            (trace-fn sheet-id trace)
+            (catch Exception _ nil)))
         (when sheet-id
           (try
             (spit (str "/tmp/r-inject-trace-" sheet-id ".edn")
-                  (pr-str {:rendered-at (str (java.time.Instant/now))
-                           :prepend block
-                           :prepend-chars (count block)
-                           :original-instruction-chars (- (count (:instruction result))
-                                                          (count block))
-                           :classifier-payload
-                           (cond-> payload
-                             node-type-guidance
-                             (assoc :node-type-guidance node-type-guidance))}))
+                  (pr-str trace))
             (catch Exception _ nil)))
         (println (format "[DEBUG R-Inject] prepended %d chars (instruction now %d chars)"
                          (count block)
