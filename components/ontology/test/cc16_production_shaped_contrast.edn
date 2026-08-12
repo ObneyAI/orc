@@ -1,0 +1,98 @@
+{:provenance
+ "CC-16 / ADR 0026 golden fixture. DO NOT EDIT BY HAND — regenerate from the two named sources.\nBODY: the child/rename-move-symbol living-description body, VERBATIM from the P-E production dump (2,713 events, corpus-a89f9f58-9761-42c9-bc67-94acba7bd4f2.edn). Its :summary is 796 chars and ENDS by restating the avoid-conditions in prose ('Avoid when the task adds/changes behavior ... or is a data reshape') — the exact production shape P-B found, and the shape the in-suite 176-char stub never had.\nRAW SCORES: real JVM-native ColBERT MaxSim, VERBATIM from P-B's orc-sessions doc/build-timeline/evidence/pc/pc-phase2b-rootcause.edn, variant :A0 (= today's shipped summary-as-retrieval-key), rounded to 4dp at capture. One rerank call per (qid, candidate) over the candidate's own avoid+positive guards; MaxSim is per-document independent, so these raw scores are exactly what production would see for any subset of the same guard set.\n:measured-with-content is what the SHIPPED (pre-ADR-0026) positive signal produced at :margin 0.010 / :penalty-scale 10.0 / :penalty-cap 0.6.",
+ :body
+ {:summary
+  "Rename-move-symbol is a behavior-preserving, EXHAUSTIVE cross-file identity refactor — rename a function everywhere, move a symbol to another namespace — changing NOTHING else. The load-bearing traits are enumerating EVERY reference (definition, callers, tests, docs) before editing so the change is exhaustive (a missed reference is a compile/runtime break) and gating on a compile/test run to confirm exhaustiveness and behavior preservation. Prefer this child of Code-building whenever the task is a pure rename/move with behavior preserved: the parent's spec->emit instinct stops at the first file and leaves stale references, and sneaking a logic change in destroys the refactor's no-op safety. Avoid when the task adds/changes behavior (code-building) or is a data reshape (Transformation).",
+  :avoid-when
+  ["the task changes behavior or adds functionality — that is code-building, not a behavior-preserving rename/move"
+   "the change is a data reshape rather than an identity refactor of code symbols — that is the Transformation behavior"
+   "the task is to extract a helper, pull out a function, or otherwise refactor/restructure code — that is code-building/refactor, NOT a pure identity rename or move of an existing symbol"],
+  :strengths
+  [{:trait
+    "ENUMERATE every reference before editing — find all call sites (definition, callers, tests, docs) so the rename/move is exhaustive; a missed reference is a compile/runtime break",
+    :good-when
+    "the symbol is referenced from multiple files including tests"}
+   {:trait
+    "gate the change on a compile/test run after editing — a behavior-preserving rename/move is correct ONLY if everything still resolves and the existing tests stay green",
+    :good-when
+    "a build or test command exists to confirm exhaustiveness and behavior preservation"}],
+  :weaknesses
+  [{:trait
+    "editing only the definition and the obvious callers (a code-building instinct that stops at the first file) leaves stale references in tests/docs/secondary namespaces — the rename is half-applied and the build breaks",
+    :avoid-when
+    "the symbol is referenced beyond the file that defines it"}
+   {:trait
+    "sneaking a behavior change into a rename/move (renaming AND tweaking logic) destroys the refactor's safety — reviewers can no longer trust it as a no-op and regressions hide in the diff",
+    :avoid-when
+    "the task is strictly a rename/move with behavior preserved"}]},
+ :cells
+ [{:qid "refactor/oov",
+   :raw-scores
+   {"the task is to extract a helper, pull out a function, or otherwise refactor/restructure code — that is code-building/refactor, NOT a pure identity rename or move of an existing symbol"
+    28.8619,
+    "Rename-move-symbol is a behavior-preserving, EXHAUSTIVE cross-file identity refactor — rename a function everywhere, move a symbol to another namespace — changing NOTHING else. The load-bearing traits are enumerating EVERY reference (definition, callers, tests, docs) before editing so the change is exhaustive (a missed reference is a compile/runtime break) and gating on a compile/test run to confirm exhaustiveness and behavior preservation. Prefer this child of Code-building whenever the task is a pure rename/move with behavior preserved: the parent's spec->emit instinct stops at the first file and leaves stale references, and sneaking a logic change in destroys the refactor's no-op safety. Avoid when the task adds/changes behavior (code-building) or is a data reshape (Transformation)."
+    28.5684,
+    "the task changes behavior or adds functionality — that is code-building, not a behavior-preserving rename/move"
+    28.5601,
+    "the change is a data reshape rather than an identity refactor of code symbols — that is the Transformation behavior"
+    28.531,
+    "the task is strictly a rename/move with behavior preserved"
+    28.4886,
+    "a build or test command exists to confirm exhaustiveness and behavior preservation"
+    28.3891,
+    "the symbol is referenced beyond the file that defines it" 28.2843,
+    "the symbol is referenced from multiple files including tests"
+    28.2709},
+   :measured-with-content
+   {:cos-avoid 1.0,
+    :cos-good 0.9898313516690089,
+    :contrast 0.01016864833099107,
+    :penalty 0.0016864833099107003,
+    :winner-of-normalizer :AVOID}}
+  {:qid "refactor/verbatim",
+   :raw-scores
+   {"the task is to extract a helper, pull out a function, or otherwise refactor/restructure code — that is code-building/refactor, NOT a pure identity rename or move of an existing symbol"
+    29.2048,
+    "Rename-move-symbol is a behavior-preserving, EXHAUSTIVE cross-file identity refactor — rename a function everywhere, move a symbol to another namespace — changing NOTHING else. The load-bearing traits are enumerating EVERY reference (definition, callers, tests, docs) before editing so the change is exhaustive (a missed reference is a compile/runtime break) and gating on a compile/test run to confirm exhaustiveness and behavior preservation. Prefer this child of Code-building whenever the task is a pure rename/move with behavior preserved: the parent's spec->emit instinct stops at the first file and leaves stale references, and sneaking a logic change in destroys the refactor's no-op safety. Avoid when the task adds/changes behavior (code-building) or is a data reshape (Transformation)."
+    29.1285,
+    "a build or test command exists to confirm exhaustiveness and behavior preservation"
+    28.5004,
+    "the change is a data reshape rather than an identity refactor of code symbols — that is the Transformation behavior"
+    28.4841,
+    "the task changes behavior or adds functionality — that is code-building, not a behavior-preserving rename/move"
+    28.3132,
+    "the task is strictly a rename/move with behavior preserved"
+    28.1718,
+    "the symbol is referenced from multiple files including tests"
+    27.9503,
+    "the symbol is referenced beyond the file that defines it"
+    27.8581},
+   :measured-with-content
+   {:cos-avoid 1.0,
+    :cos-good 0.9973883057789249,
+    :contrast 0.0026116942210751004,
+    :penalty 0.0,
+    :winner-of-normalizer :AVOID}}
+  {:qid "add-function/oov",
+   :raw-scores
+   {"Rename-move-symbol is a behavior-preserving, EXHAUSTIVE cross-file identity refactor — rename a function everywhere, move a symbol to another namespace — changing NOTHING else. The load-bearing traits are enumerating EVERY reference (definition, callers, tests, docs) before editing so the change is exhaustive (a missed reference is a compile/runtime break) and gating on a compile/test run to confirm exhaustiveness and behavior preservation. Prefer this child of Code-building whenever the task is a pure rename/move with behavior preserved: the parent's spec->emit instinct stops at the first file and leaves stale references, and sneaking a logic change in destroys the refactor's no-op safety. Avoid when the task adds/changes behavior (code-building) or is a data reshape (Transformation)."
+    28.7726,
+    "the task is to extract a helper, pull out a function, or otherwise refactor/restructure code — that is code-building/refactor, NOT a pure identity rename or move of an existing symbol"
+    28.567,
+    "a build or test command exists to confirm exhaustiveness and behavior preservation"
+    28.3835,
+    "the change is a data reshape rather than an identity refactor of code symbols — that is the Transformation behavior"
+    28.2434,
+    "the task changes behavior or adds functionality — that is code-building, not a behavior-preserving rename/move"
+    28.238,
+    "the symbol is referenced beyond the file that defines it" 28.1188,
+    "the task is strictly a rename/move with behavior preserved"
+    28.1187,
+    "the symbol is referenced from multiple files including tests"
+    28.0325},
+   :measured-with-content
+   {:cos-avoid 0.9928558399844167,
+    :cos-good 1.0,
+    :contrast -0.007144160015583267,
+    :penalty 0.0,
+    :winner-of-normalizer :POSITIVE}}]}

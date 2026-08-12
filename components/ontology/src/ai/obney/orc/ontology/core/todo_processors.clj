@@ -248,77 +248,137 @@
 ;;
 ;; ADR 0015's literal "capture the emitted TREE": once the RLM emits its tree
 ;; (the Phase-2 :sheet/rlm-tree-execution-completed bookend now carries the
-;; emitted worked-DSL + the SOURCE sheet-id), enrich the assigned :tree-class
-;; description with that DSL as a :strengths[].:recommended-pattern — the
-;; content EL-4 harvest reads so a harvested specialist ships the REAL proven
-;; pattern, not just the CV-1 signature summary.
+;; emitted worked-DSL + the SOURCE sheet-id), record that DSL against the
+;; assigned :tree-class so it surfaces as a :strengths[].:recommended-pattern —
+;; the content EL-4 harvest reads, so a harvested specialist ships the REAL
+;; proven pattern rather than just the CV-1 signature.
 ;;
 ;; ADDITIVE over CV-1's floor: the floor already made the class retrievable at
 ;; classify time (robust to turn timeouts). This enrichment lands ONLY when an
 ;; emit completes — a turn that times out before emit carries no :generated-tree
-;; → no enrichment → the class is still retrievable via the CV-1 summary (never
-;; a regression). Re-orchestration, NOT rewrite: reuses the sheet->class join,
-;; get-description, and record-tree-class-description — NO second synthesis LLM.
+;; → no enrichment → the class is still retrievable via CV-1's floor (never a
+;; regression). Re-orchestration, NOT rewrite: reuses the sheet->class join and
+;; the claim-delta command — NO second synthesis LLM.
+;;
+;; CC-6 (ADR 0021): it writes ONE CLAIM OPERATION, never a body. Re-recording a
+;; whole body made this the second writer of a slot the claim path owns, and the
+;; two disagreed by construction — CC-3 re-derives `:current` from the claim set
+;; on every claim event, so a consolidation would erase this enrichment and this
+;; enrichment would then overwrite the consolidation's assembled body with a
+;; stale snapshot. The projection's assembly is now the only writer of a
+;; tree-class body.
 
 (def ^:private emitted-pattern-trait
-  "Stable :trait marker for the single :strengths entry that carries the
-   post-emit worked-DSL. Stable so a re-emit UPDATES that one entry rather
-   than appending a new strength on every turn (thrash-safe)."
-  "emitted worked-DSL (post-emit capture)")
+  "The `:content` of the ONE claim that carries the post-emit worked-DSL.
 
-(defn- upsert-emitted-pattern-strength
-  "Return `body` with its emitted-pattern strength added/updated to carry
-   `dsl-str` as :recommended-pattern. Preserves every other key (incl.
-   CV-1's :summary) and every OTHER strength. Idempotent by trait: at most
-   ONE emitted-pattern strength exists; a re-emit bumps :evidence-count +
-   :last-reinforced-at and keeps the original :first-observed-at."
-  [body dsl-str now]
-  (let [strengths (vec (:strengths body))
-        idx (first (keep-indexed
-                     (fn [i s] (when (= emitted-pattern-trait (:trait s)) i))
-                     strengths))
-        existing (when idx (nth strengths idx))
-        entry {:trait emitted-pattern-trait
-               :good-when (or (:summary body) "")
-               :recommended-pattern dsl-str
-               :confidence 1.0
-               :evidence-count (inc (or (:evidence-count existing) 0))
-               :first-observed-at (or (:first-observed-at existing) now)
-               :last-reinforced-at now}]
-    (assoc body :strengths
-           (if idx (assoc strengths idx entry) (conj strengths entry)))))
+   It is a stable literal because it is this writer's IDENTITY KEY: a re-emit
+   finds the claim it already wrote by matching `[:strength this-string]` and
+   reinforces or rewords it, instead of appending a rival on every turn. It is
+   phrased as a readable trait rather than as a marker token because CC-3's
+   `assemble-summary` renders claim content into `:summary`, which is what
+   ColBERT indexes — a sentinel string would be indexed noise."
+  "emits this worked tree for tasks of this class")
+
+(defn- emitted-pattern-claim
+  "The claim this writer owns for a target, or nil. Identity is
+   `[:strength emitted-pattern-trait]` — the same key on every turn, which is
+   what makes reinforcement possible at all."
+  [claims]
+  (first (filter #(and (= :strength (:kind %))
+                       (= emitted-pattern-trait (:content %)))
+                 claims)))
+
+(defn- emitted-pattern-delta
+  "The ONE claim operation this emit expresses.
+
+   THIS IS THE RATCHET REMOVAL, so it is worth naming what it replaces. The
+   forensic behind ADR 0021 counted 145 rejected consolidations, and 14 of them
+   were the anti-recency valve refusing a body because THIS writer's trait
+   string had not been reproduced verbatim by the reflection LLM. The system was
+   demanding that a model re-type a string the system itself had written.
+   Expressed as operations there is nothing to re-type: the claim keeps its
+   identity and its accumulated support, and the model is free to reword,
+   corroborate or contradict it like any other claim.
+
+     no claim yet          -> :add
+     same DSL as recorded  -> :support   (a repeat emit is CORROBORATION that
+                                          this is the class's worked pattern —
+                                          exactly what harvest wants to know)
+     different DSL         -> :edit      (reinforces AND rewords in place, so a
+                                          revision does not leave two rival
+                                          patterns for harvest to choose between)
+
+   `:evidence-basis :emitted-artifact` declares what this rests on: the engine
+   recorded the tree it emitted. That is a fact about what happened, not a
+   judgement about whether it was good — and it names NO occurrence, so CC-7
+   can never validate the claim and CC-9's gate can never let it enforce. It is
+   visible, and it earns authority only if the reflection later corroborates it
+   from occurrences a judge actually scored."
+  [existing dsl-str]
+  (let [base {:kind :strength
+              :content emitted-pattern-trait
+              :context-guard nil
+              :recommendation dsl-str
+              :episodes []
+              :from-legacy-corpus false
+              :evidence-basis :emitted-artifact}]
+    (cond
+      (nil? existing)
+      (assoc base :operation :add)
+
+      (= dsl-str (:recommendation existing))
+      (assoc base :operation :support :target-claim (:claim-id existing))
+
+      :else
+      (assoc base :operation :edit :target-claim (:claim-id existing)))))
 
 (defn enrich-tree-class-with-emitted-dsl!
   "CV-2: on a completion event carrying :generated-tree + :source-sheet-id,
-   resolve the tree-class for the source sheet, read its CURRENT description,
-   and re-record it with the emitted DSL as a :recommended-pattern strength.
+   resolve the tree-class for the source sheet and record ONE claim operation
+   carrying the emitted worked-DSL as the claim's `:recommendation` — which
+   CC-3's assembly surfaces as the `:strengths[].:recommended-pattern` EL-4
+   harvest reads. CC-6: no whole-body write; the projection's assembly is the
+   only writer of a tree-class body.
 
    No-ops (never crashes) when:
      - the event carries no emitted tree / source sheet (timeout / legacy),
      - the source sheet was never classified (no class to enrich),
-     - the class has no description yet (nothing to enrich additively),
-     - the emitted DSL is ALREADY the recorded pattern (thrash-safe: skip the
-       re-record so no redundant tree-description-updated / reindex fires)."
+     - THE TARGET STILL HOLDS ONLY A LEGACY BODY. That last one is not
+       defensive tidying. CC-3 re-derives `:current` from the claim set on
+       every claim event, so landing one mechanical claim on a class whose
+       knowledge is still a pre-claim body would replace a lifetime of
+       consolidations with a single sentence — the context collapse ADR 0021
+       exists to make unrepresentable, arriving through a side door rather
+       than through the model. Converting such a target is CC-5's backfill (at
+       the consolidation boundary) and CC-12's migration (in bulk); it is not
+       this writer's to do, and doing it here would put a third writer on the
+       slot the whole slice exists to reduce to one."
   [{:keys [event] :as context}]
   (let [{:keys [generated-tree source-sheet-id]} event]
     (when (and (some? generated-tree) (some? source-sheet-id))
       (when-let [class-id (rm/get-tree-class-for-sheet context source-sheet-id)]
-        (when-let [current (rm/get-description context :tree-class class-id)]
-          (let [dsl-str (pr-str generated-tree)
-                already? (some #(and (= emitted-pattern-trait (:trait %))
-                                     (= dsl-str (:recommended-pattern %)))
-                               (:strengths current))]
-            (when-not already?
-              (let [now (time/now)
-                    merged (upsert-emitted-pattern-strength current dsl-str (str now))]
-                (u/log ::enriching-tree-class-with-emitted-dsl
-                       :class-id class-id :source-sheet-id source-sheet-id)
-                (run-command! context
-                  {:command/name :ontology/record-tree-class-description
-                   :command/id (random-uuid)
-                   :command/timestamp now
-                   :target-id class-id
-                   :body merged})))))))))
+        (let [claims (rm/get-claims context :tree-class class-id)
+              legacy-only? (and (some? (rm/get-description context :tree-class class-id))
+                                (empty? claims))]
+          (if legacy-only?
+            (u/log ::enrichment-skipped-legacy-body
+                   :class-id class-id
+                   :note "target still holds a pre-claim body; CC-5/CC-12 convert it")
+            (let [delta (emitted-pattern-delta (emitted-pattern-claim claims)
+                                               (pr-str generated-tree))]
+              (u/log ::enriching-tree-class-with-emitted-dsl
+                     :class-id class-id :source-sheet-id source-sheet-id
+                     :operation (:operation delta))
+              (run-command! context
+                {:command/name :ontology/record-claim-deltas
+                 :command/id (random-uuid)
+                 :command/timestamp (time/now)
+                 :granularity :tree-class
+                 :target-identifier class-id
+                 :deltas [delta]
+                 :evidence-event-count 0
+                 :claim-set-version (rm/get-claim-set-version
+                                      context :tree-class class-id)}))))))))
 
 (defprocessor :ontology on-emit-enrich-tree-class
   {:topics #{:sheet/rlm-tree-execution-completed}}
@@ -611,10 +671,19 @@
 (defprocessor :ontology on-description-updated-maybe-reindex
   {:topics #{:ontology/node-type-description-updated
              :ontology/node-instance-description-updated
-             :ontology/tree-description-updated}}
-  "C-2b-1: after each description-updated event, check whether the
-   reindex-state has crossed the threshold OR timer trigger; if so,
-   rebuild the ColBERT ontology-descriptions index via create-index!."
+             :ontology/tree-description-updated
+             ;; CC-6: a claim-delta event re-derives `:current` (CC-3), so it
+             ;; changes what the index would contain just as a recorded body
+             ;; does. Without this topic the whole claim path — CV-1's
+             ;; classify-time capture, CV-2's worked pattern, and every
+             ;; consolidation since CC-5 — updates the corpus and never asks
+             ;; for it to be re-indexed. The coalescing latch below already
+             ;; makes the extra subscription cheap under a burst.
+             :ontology/claim-deltas-recorded}}
+  "C-2b-1: after each description-updated or claim-deltas-recorded event,
+   check whether the reindex-state has crossed the threshold OR timer
+   trigger; if so, rebuild the ColBERT ontology-descriptions index via
+   create-index!."
   [context]
   (maybe-rebuild! context))
 

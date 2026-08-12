@@ -391,8 +391,15 @@
 ;; =============================================================================
 
 (deftest reranker-default-model-is-the-evidence-tested-model
-  (testing "The RR-2 default model constant is the ADR-0020-validated model, not a flagship/arbitrary pick"
-    (is (= "qwen/qwen3.5-flash-02-23" reranker/default-model))))
+  (testing "The default is the model MEASURED to produce valid rankings on this path (ADR 0020 amendment, grill GR-2 Q2)"
+    ;; CH-1 measured N=10/arm on direct rerank!: the previous default
+    ;; (qwen/qwen3.5-flash-02-23) produced a valid ranking 0/10 and fell back to
+    ;; marker parsing 10/10; gemini-3-flash-preview produced one 10/10. The
+    ;; cause is not the model — dscloj emits :tool_choice while litellm reads
+    ;; :tool-choice, so forcing never engages (ADR 0025) — but qwen ALSO
+    ;; HTTP-400s on a *forced* tool choice in thinking mode, so it is unsuitable
+    ;; both before and after that fix.
+    (is (= "google/gemini-3-flash-preview" reranker/default-model))))
 
 (deftest reranker-workflow-pins-model-on-rerank-node
   (testing "reranker-workflow builds the 'rerank' node with :model set to whatever is passed — pure data, no ambient/router fallback"

@@ -20,6 +20,7 @@
             [ai.obney.orc.ontology.core.todo-processors]
             [ai.obney.orc.ontology.core.consolidator]
             [ai.obney.orc.evaluation.interface.schemas]
+            [ai.obney.orc.evaluation.core.commands]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.read-models]
@@ -120,6 +121,17 @@
                                                            :summary])
                                    :usage {:total-tokens 100}
                                    :model "fake-model"})]
+    (f)))
+
+(defn- with-faked-claim-reflection
+  "CC-5: the stub for the CLAIM path. `:tree-class` targets no longer ask the
+   LLM for a body — they ask it for OPERATIONS over the target's claim set, so
+   a tree-class test stubs this instead of `with-faked-llm`."
+  [ops f]
+  (with-redefs [llm/predict (fn [& _]
+                                 {:outputs {:operations ops}
+                                  :usage {:total-tokens 100}
+                                  :model "fake-model"})]
     (f)))
 
 ;; =============================================================================
@@ -589,13 +601,58 @@
             :reasoning "test"
             :was-fresh-mint? false})))
 
+(defn- grounded-task-class-evidence!
+  "CC-4/CC-5: one classified occurrence that a judge ACTUALLY JUDGED.
+
+   `assign-task-class-evidence!` above records an occurrence nobody evaluated.
+   That is fine for the input-gathering tests, but a claim derived from such an
+   occurrence is excluded by the evidence guard — correctly: an undeclared,
+   unjudged occurrence must not ground a durable claim. Any tree-class test
+   that expects a CLAIM to land has to observe the world the way production
+   does."
+  [ctx assigned-tree-id]
+  (let [sheet-id (random-uuid)
+        tick-id (random-uuid)]
+    (cp/process-command
+      (assoc ctx :command
+             {:command/name :ontology/assign-task-class
+              :command/id (random-uuid)
+              :command/timestamp (time/now)
+              :source-sheet-id sheet-id
+              :source-tick-id tick-id
+              :source-node-id (random-uuid)
+              :assigned-tree-id assigned-tree-id
+              :confidence 0.95
+              :top-candidates []
+              :reasoning "test"
+              :was-fresh-mint? false}))
+    (cp/process-command
+      (assoc ctx :command
+             {:command/name :evaluation/record-judge-score
+              :command/id (random-uuid)
+              :command/timestamp (time/now)
+              :sheet-id sheet-id :node-id (random-uuid) :tick-id tick-id
+              :judge-name "coding-outcome" :judge-config {} :score 0.8
+              :feedback (str "The turn applied the edit to src/util.clj and the "
+                             "verification command exited 0, so the assessment is "
+                             "grounded in the observed diff and command output.")
+              :dimensions []}))
+    [sheet-id tick-id]))
+
 (deftest consolidator-handles-tree-class-consolidation-request
-  (testing "After on-demand :tree-class consolidation-requested, an :ontology/tree-description-updated event with :target-type :tree-class lands and get-description :tree-class returns the LLM body"
+  ;; CC-5 rewrote this test's ASSERTIONS, not its intent. It used to require an
+  ;; :ontology/tree-description-updated event carrying the LLM's own prose. On
+  ;; the claim path a tree-class consolidation emits no whole-body event at all
+  ;; — the body is assembled from the claims — so the same end-to-end fact
+  ;; ("an on-demand tree-class consolidation reaches the store and moves the
+  ;; description") is now observed through the claim set and the assembled body.
+  (testing "After on-demand :tree-class consolidation-requested, the operations land as claims and get-description returns the ASSEMBLED body"
     (with-test-ctx [ctx]
-      (with-faked-llm fake-description-body
+      (with-faked-claim-reflection
+        [{:operation :add :kind :weakness :content "claims success on an empty diff"}]
         (fn []
           (let [tree-class-id (random-uuid)]
-            (assign-task-class-evidence! ctx tree-class-id)
+            (grounded-task-class-evidence! ctx tree-class-id)
             (Thread/sleep 100)
             (cp/process-command
               (assoc ctx :command
@@ -606,13 +663,22 @@
                       :target-id tree-class-id
                       :on-demand? true}))
             (Thread/sleep 600)
-            (let [body (ontology/get-description ctx :tree-class tree-class-id)]
+            (let [cs (ontology/get-claims ctx :tree-class tree-class-id)
+                  body (ontology/get-description ctx :tree-class tree-class-id)]
+              (is (= 1 (count cs))
+                  "the consolidation's operation became a claim")
               (is (some? body)
-                  "Consolidator should have emitted :ontology/tree-description-updated for :tree-class")
-              (is (= "Sample LLM-authored description body." (:summary body))
-                  "Body's :summary should carry the LLM's content")
+                  "and the target has an assembled body")
+              (is (= ["claims success on an empty diff"]
+                     (map :trait (:weaknesses body)))
+                  "assembled from the claim, in the claim's own words")
+              (is (empty? (into [] (es/read (:event-store ctx)
+                                            {:types #{:ontology/tree-description-updated}
+                                             :tenant-id (:tenant-id ctx)})))
+                  "and NO whole-body description event was written — one writer
+                   per :current slot is the point of the claim path")
               (is (pos? (:consolidated-from-event-count body))
-                  ":consolidated-from-event-count should reflect the recent-events window size, > 0"))))))))
+                  ":consolidated-from-event-count reflects the evidence window, > 0"))))))))
 
 ;; =============================================================================
 ;; RED #7 — Living Description loop ceiling check (two-run verify, mocked LLM)
@@ -704,21 +770,33 @@
                     :target-type :tree-class
                     :threshold 3}))
           (Thread/sleep 100)
-          (with-faked-llm updated-fake-body
+          ;; CC-5: the loop still closes, but the second run's body is ASSEMBLED
+          ;; from claims rather than authored by the LLM, so the assertions move
+          ;; from "the LLM's prose is in :summary" to "the newly learned insight
+          ;; is in the body AND the seed's knowledge was not destroyed to put it
+          ;; there". That second half is the two-writers-on-one-slot property:
+          ;; the seed body is CONVERTED to claims before the first delta lands.
+          (with-faked-claim-reflection
+            [{:operation :add :kind :weakness
+              :content "post-consolidation weakness — observed under load"}]
             (fn []
               (dotimes [_ 3]
-                (assign-task-class-evidence! ctx tree-class-id))
-              (Thread/sleep 1500)))
-          (let [run-2-body (ontology/get-description ctx :tree-class tree-class-id)]
+                (grounded-task-class-evidence! ctx tree-class-id))
+              (Thread/sleep 2500)))
+          (let [run-2-body (ontology/get-description ctx :tree-class tree-class-id)
+                weakness-traits (set (map :trait (:weaknesses run-2-body)))]
             (is (not= run-1-body run-2-body)
                 "Run-2 body differs from Run-1 body — the Living Description loop produced an update")
-            (is (= "Post-consolidation summary — refined from observation."
-                   (:summary run-2-body))
-                "Run-2 prepend body's :summary is the LLM-refined content")
+            (is (contains? weakness-traits "post-consolidation weakness — observed under load")
+                "Run-2 body carries the insight this consolidation learned")
+            (is (contains? weakness-traits "seed-bootstrap weakness")
+                "AND the seed's accumulated knowledge survived the switch to the
+                 claim path — a first delta that wiped the prior body would be
+                 exactly the context collapse ADR 0021 exists to prevent")
             (is (pos? (:consolidated-from-event-count run-2-body))
                 "Run-2 body's :consolidated-from-event-count reflects observed events (> 0)")
-            (is (= 2 (:version run-2-body))
-                "Consolidator increments version from 1 (seed) to 2 (first consolidation)")))))))
+            (is (> (:version run-2-body) 1)
+                "and the version keeps counting up from the seed rather than restarting")))))))
 
 ;; =============================================================================
 ;; RED #8 — gather-recent-events joins task-classified + execution events
@@ -730,6 +808,15 @@
 ;; here at confidence X" — it can't reason about which tree-shapes worked
 ;; under load, what the model designed, how the run completed.
 
+(defn- turn-tick-for-sheet
+  "Deterministic per-sheet turn tick so the paired assign-task-class /
+   complete-tree helpers correlate on the SAME occurrence without changing
+   call-site signatures. HP-2: production classifications and bookends share
+   the turn tick via :source-tick-id — an uncorrelated (random-uuid) per
+   helper call would never join."
+  [sheet-id]
+  (java.util.UUID/nameUUIDFromBytes (.getBytes (str "turn-tick:" sheet-id))))
+
 (defn- assign-task-class-to-sheet! [ctx sheet-id tree-class-id]
   (cp/process-command
     (assoc ctx :command
@@ -737,7 +824,7 @@
             :command/id (random-uuid)
             :command/timestamp (time/now)
             :source-sheet-id sheet-id
-            :source-tick-id (random-uuid)
+            :source-tick-id (turn-tick-for-sheet sheet-id)
             :source-node-id (random-uuid)
             :assigned-tree-id tree-class-id
             :confidence 0.95
@@ -745,14 +832,38 @@
             :reasoning "test"
             :was-fresh-mint? false})))
 
+(defn- ground-sheet-turn!
+  "CC-4/CC-5: attach a substantive judge score to the `[sheet-id turn-tick]`
+   occurrence, so a claim derived from this observation can be grounded."
+  [ctx sheet-id]
+  (cp/process-command
+    (assoc ctx :command
+           {:command/name :evaluation/record-judge-score
+            :command/id (random-uuid)
+            :command/timestamp (time/now)
+            :sheet-id sheet-id :node-id (random-uuid)
+            :tick-id (turn-tick-for-sheet sheet-id)
+            :judge-name "coding-outcome" :judge-config {} :score 0.8
+            :feedback (str "The turn applied the edit to src/util.clj and the "
+                           "verification command exited 0, so the assessment is "
+                           "grounded in the observed diff and command output.")
+            :dimensions []})))
+
 (defn- complete-tree-for-sheet! [ctx sheet-id fp status]
+  ;; HP-2 production shape: the bookend's own :sheet-id/:tick-id are the
+  ;; EPHEMERAL Phase-2 identifiers; the classified HOST sheet + turn tick
+  ;; ride in :source-sheet-id/:source-tick-id (the occurrence linkage).
+  ;; The earlier fixture put the host sheet in :sheet-id — a shape
+  ;; production never emits, which hid the disjoint-domain join bugs.
   (cp/process-command
     (assoc ctx :command
            {:command/name :sheet/record-rlm-tree-execution-completion
             :command/id (random-uuid)
             :command/timestamp (time/now)
-            :sheet-id sheet-id
-            :tick-id (random-uuid)
+            :sheet-id (random-uuid)          ;; EPHEMERAL Phase-2 sheet
+            :tick-id (random-uuid)           ;; EPHEMERAL Phase-2 tick
+            :source-sheet-id sheet-id
+            :source-tick-id (turn-tick-for-sheet sheet-id)
             :trajectory []
             :total-usage {:total-tokens 1000}
             :tree-fingerprint fp
@@ -877,38 +988,41 @@
 ;; cycle N to receive cycle N-1's body as :current-description in the
 ;; LLM input.
 
-(defn- cycle-body
-  "Build a fake LLM body keyed by cycle number so we can verify which
-   cycle produced which output."
-  [n]
-  {:capabilities [(str "cycle-" n "-capability")]
-   :strengths [{:trait (str "cycle-" n "-strength")
-                :good-when "after observing evidence"
-                :recommended-pattern "[:llm {:output-schemas {...}}]"
-                :confidence 1.0
-                :evidence-count n
-                :first-observed-at "2026-06-02T00:00:00Z"
-                :last-reinforced-at "2026-06-02T00:00:00Z"}]
-   :weaknesses []
-   :representative-uses [(str "cycle-" n "-use")]
-   :avoid-when []
-   :summary (str "Cycle-" n " consolidator-authored summary")
-   :version 999      ;; consolidator overwrites
-   :consolidated-from-event-count 999})
+(defn- with-input-capturing-claim-reflection
+  "Like with-input-capturing-llm, for the CLAIM path: captures the inputs
+   llm/predict was handed and returns a fixed operation list."
+  [captured-inputs ops f]
+  (with-redefs [llm/predict
+                (fn [_provider _module inputs _options]
+                  (swap! captured-inputs conj inputs)
+                  {:outputs {:operations ops}
+                   :usage {:total-tokens 100}
+                   :model "fake-model"})]
+    (f)))
 
 (deftest multi-cycle-consolidation-builds-on-prior-body
-  (testing "C-Loop-1 RED#10: consecutive consolidations evolve the body (version 1 → 2 → 3) and each cycle's LLM input carries the prior consolidated body as :current-description"
+  ;; CC-5 rewrote the ASSERTIONS. The property is unchanged and is the whole
+  ;; point of the loop: cycle N must see what cycle N-1 learned. What moved is
+  ;; the CARRIER. Cycle N-1's output used to arrive as `:current-description`,
+  ;; a body for the model to rewrite; it now arrives as `:claim-set`, a
+  ;; numbered pool for the model to operate ON. That is a stronger version of
+  ;; the same closure — the model can no longer respond by replacing it.
+  (testing "C-Loop-1 RED#10: consecutive consolidations accumulate, and each cycle's LLM input carries the claims the prior cycle produced"
     (with-test-ctx [ctx]
       (let [tree-class-id (random-uuid)
             captured (atom [])]
-        ;; --- Cycle 1: 2 observations → consolidate → returns cycle-1-body ---
+        ;; --- Cycle 1: 2 grounded observations → consolidate → one claim ---
         (let [s1 (random-uuid) s2 (random-uuid)]
           (assign-task-class-to-sheet! ctx s1 tree-class-id)
           (complete-tree-for-sheet! ctx s1 "fp-A" :success)
+          (ground-sheet-turn! ctx s1)
           (assign-task-class-to-sheet! ctx s2 tree-class-id)
           (complete-tree-for-sheet! ctx s2 "fp-A" :success)
+          (ground-sheet-turn! ctx s2)
           (Thread/sleep 100)
-          (with-input-capturing-llm captured (cycle-body 1)
+          (with-input-capturing-claim-reflection
+            captured
+            [{:operation :add :kind :strength :content "cycle-1-strength"}]
             (fn []
               (cp/process-command
                 (assoc ctx :command
@@ -922,17 +1036,21 @@
         (let [body-after-1 (ontology/get-description ctx :tree-class tree-class-id)]
           (is (= 1 (:version body-after-1))
               "Cycle 1 sets version to 1 (no prior consolidation)")
-          (is (= "Cycle-1 consolidator-authored summary" (:summary body-after-1))
-              "Body-after-1 carries cycle-1's :summary"))
+          (is (= ["cycle-1-strength"] (map :trait (:strengths body-after-1)))
+              "Body-after-1 is assembled from cycle-1's claim"))
 
-        ;; --- Cycle 2: 2 MORE observations → consolidate → returns cycle-2-body ---
+        ;; --- Cycle 2: 2 MORE observations → consolidate ---
         (let [s3 (random-uuid) s4 (random-uuid)]
           (assign-task-class-to-sheet! ctx s3 tree-class-id)
           (complete-tree-for-sheet! ctx s3 "fp-B" :failure)
+          (ground-sheet-turn! ctx s3)
           (assign-task-class-to-sheet! ctx s4 tree-class-id)
           (complete-tree-for-sheet! ctx s4 "fp-B" :failure)
+          (ground-sheet-turn! ctx s4)
           (Thread/sleep 100)
-          (with-input-capturing-llm captured (cycle-body 2)
+          (with-input-capturing-claim-reflection
+            captured
+            [{:operation :add :kind :weakness :content "cycle-2-weakness"}]
             (fn []
               (cp/process-command
                 (assoc ctx :command
@@ -945,20 +1063,25 @@
               (Thread/sleep 1500))))
         (let [body-after-2 (ontology/get-description ctx :tree-class tree-class-id)]
           (is (= 2 (:version body-after-2))
-              "Cycle 2 increments version to 2 — built on cycle-1's body")
-          (is (= "Cycle-2 consolidator-authored summary" (:summary body-after-2))
-              "Body-after-2 carries cycle-2's :summary"))
+              "Cycle 2 increments version to 2 — built on cycle-1's state")
+          (is (= ["cycle-1-strength"] (map :trait (:strengths body-after-2)))
+              "cycle 1's knowledge is STILL THERE after cycle 2 — a second
+               consolidation cannot erase the first, which is the property the
+               retired whole-body validator was trying and failing to defend")
+          (is (= ["cycle-2-weakness"] (map :trait (:weaknesses body-after-2)))
+              "and cycle 2's own insight accumulated alongside it"))
 
-        ;; --- Assert cycle 2's LLM saw cycle 1's body as :current-description ---
+        ;; --- Assert cycle 2's LLM saw cycle 1's CLAIM in its pool ---
         (is (= 2 (count @captured))
             "Two LLM calls happened (one per consolidation cycle)")
         (let [cycle-2-inputs (second @captured)
-              current-desc (get cycle-2-inputs :current-description)
-              current-desc-text (if (string? current-desc) current-desc (pr-str current-desc))]
-          (is (some? current-desc)
-              "Cycle 2's LLM input has :current-description (the loop is closed)")
-          (is (str/includes? current-desc-text "Cycle-1 consolidator-authored summary")
-              "Cycle 2's :current-description IS the body produced by cycle 1 — successive consolidations build on prior outputs"))))))
+              claim-set (get cycle-2-inputs :claim-set)
+              claim-set-text (if (string? claim-set) claim-set (pr-str claim-set))]
+          (is (some? claim-set)
+              "Cycle 2's LLM input has :claim-set (the loop is closed)")
+          (is (str/includes? claim-set-text "cycle-1-strength")
+              "Cycle 2's pool CONTAINS the claim cycle 1 produced — successive
+               consolidations operate on prior outputs rather than replacing them"))))))
 
 ;; =============================================================================
 ;; Gap-3 RED#1 — consolidator joins :judge/score-emitted events into input
@@ -1160,7 +1283,9 @@
         (assign-task-class-to-sheet! ctx sheet-2 tree-class-id)
         (complete-tree-for-sheet! ctx sheet-2 "fp-A" :success)
         (Thread/sleep 200)
-        (with-input-capturing-llm captured fake-description-body
+        (with-input-capturing-claim-reflection
+          captured
+          [{:operation :add :kind :strength :content "an insight with no judge behind it"}]
           (fn []
             (cp/process-command
               (assoc ctx :command
@@ -1187,390 +1312,67 @@
           (is (not (str/includes? agg-text "judge-averages"))
               (str ":aggregate-metrics must NOT contain :judge-averages when no judges fired. Got: "
                    (subs agg-text 0 (min 400 (count agg-text))))))
-        ;; The consolidator's emit-description-update path still runs.
+        ;; CC-5 CHANGED WHAT "DEGRADES GRACEFULLY" MEANS, and the new meaning is
+        ;; the stricter one. It used to mean "a description update lands anyway"
+        ;; — a body written from evidence no judge ever looked at. Under ADR
+        ;; 0023 that is precisely what must NOT happen: an unjudged occurrence
+        ;; is not a zero, and a claim resting on one could go on to SUPPRESS a
+        ;; behaviour. So the loop still runs end to end without breaking, and
+        ;; what it produces is a RECORDED exclusion rather than a silent
+        ;; nothing — the number CC-12's migration and CC-14's proposal both
+        ;; depend on.
         (Thread/sleep 500)
-        (let [updates-after (count (into [] (es/read (:event-store ctx)
-                                                      {:types #{:ontology/tree-description-updated}
-                                                       :tenant-id (:tenant-id ctx)})))]
-          (is (> updates-after updates-before)
-              "Consolidator still emits :ontology/tree-description-updated even with zero judge signal"))))))
+        (is (empty? (into [] (es/read (:event-store ctx)
+                                      {:types #{:ontology/tree-description-updated}
+                                       :tenant-id (:tenant-id ctx)})))
+            "no whole-body event: the claim path never writes one")
+        (is (= updates-before
+               (count (into [] (es/read (:event-store ctx)
+                                        {:types #{:ontology/tree-description-updated}
+                                         :tenant-id (:tenant-id ctx)}))))
+            "and the count did not move")
+        (is (empty? (ontology/get-claims ctx :tree-class tree-class-id))
+            "nothing was claimed on evidence no judge ever saw")
+        (let [excluded (ontology/get-excluded-evidence ctx :tree-class tree-class-id)]
+          (is (seq excluded)
+              "but the refusal is RECORDED rather than silent — the loop
+               degrades to a measurable no-op, not to a shrug")
+          (is (= #{:no-judge-evidence} (set (map :reason excluded)))
+              "and it names the ADR-0023 reason: not judged is not judged badly"))))))
 
 ;; =============================================================================
-;; Gap-6 RED#1 — anti-recency validator returns :ok when prior body is nil
-;; =============================================================================
-;;
-;; The validator is the runtime backstop for the doc-only anti-recency
-;; safeguards. First consolidation has no prior to protect — validator
-;; must pass through unchanged.
-
-(deftest gap6-validator-passes-through-when-prior-body-is-nil
-  (testing "Gap-6 RED#1: anti-recency-validate returns :ok with the new body unchanged when prior body is nil (first consolidation has no baseline to protect)"
-    (let [validate @#'ai.obney.orc.ontology.core.consolidator/anti-recency-validate
-          new-body {:capabilities ["x"]
-                    :strengths [{:trait "fresh"
-                                 :good-when "always"
-                                 :recommended-pattern "[:llm {}]"
-                                 :confidence 0.9
-                                 :evidence-count 3
-                                 :first-observed-at "2026-06-03T00:00:00Z"
-                                 :last-reinforced-at "2026-06-03T00:00:00Z"}]
-                    :weaknesses []
-                    :representative-uses ["x"]
-                    :avoid-when []
-                    :summary "first consolidation"
-                    :version 1
-                    :consolidated-from-event-count 1}
-          result (validate nil new-body {})]
-      (is (some? result)
-          "validator returns a non-nil result map for legitimate inputs")
-      (is (= :ok (:decision result))
-          (str ":decision should be :ok when prior body is nil. Got: " (pr-str result)))
-      (is (= new-body (:body result))
-          ":body should be the new body unchanged"))))
-
-;; =============================================================================
-;; Gap-6 RED#2 — validator REJECTS when a protected entry is missing
-;; =============================================================================
-
-(deftest gap6-validator-rejects-when-protected-strength-is-missing
-  (testing "Gap-6 RED#2: when prior body has a strength entry with confidence >= 0.7 AND evidence-count >= 5, and the new body OMITS that entry (matched by :trait), validator returns :reject and includes the missing-entry detail in :audit"
-    (let [validate @#'ai.obney.orc.ontology.core.consolidator/anti-recency-validate
-          prior {:capabilities ["x"]
-                 :strengths [{:trait "per-section :map-each surfaces issues consistently"
-                              :good-when "sections are independent"
-                              :recommended-pattern "[:map-each {:max-concurrency 3} ...]"
-                              :confidence 0.95
-                              :evidence-count 7
-                              :first-observed-at "2026-05-26T00:00:00Z"
-                              :last-reinforced-at "2026-06-02T00:00:00Z"}]
-                 :weaknesses []
-                 :representative-uses ["x"]
-                 :avoid-when []
-                 :summary "prior"
-                 :version 3
-                 :consolidated-from-event-count 4}
-          new-body {:capabilities ["x"]
-                    :strengths []  ;; protected trait erased
-                    :weaknesses []
-                    :representative-uses ["x"]
-                    :avoid-when []
-                    :summary "new"
-                    :version 4
-                    :consolidated-from-event-count 5}
-          result (validate prior new-body {})]
-      (is (= :reject (:decision result))
-          (str ":decision should be :reject when a protected entry is missing. Got: " (pr-str result)))
-      (is (vector? (:audit result))
-          ":audit is a vector for downstream event emission")
-      (is (seq (:audit result))
-          ":audit should carry at least one entry describing the missing protected trait")
-      (is (some #(and (= :rejection (:event-kind %))
-                      (str/includes? (str (:entry-trait %)) "per-section :map-each"))
-                (:audit result))
-          (str ":audit must name the missing trait. Got: "
-               (pr-str (:audit result)))))))
-
-;; =============================================================================
-;; Gap-6 RED#3 — validator CLAMPS on excessive confidence decrease
+;; The six Gap-6 anti-recency-validator tests USED TO LIVE HERE. CC-5 DELETED
+;; THEM, because CC-5 deleted the thing they tested.
 ;; =============================================================================
 ;;
-;; If the LLM dropped a protected entry's confidence by more than the
-;; configured maximum (default 0.2), the validator clamps the value to
-;; (prior-confidence - max-decrease) instead of accepting the LLM's
-;; number. The audit trail records the original LLM value alongside
-;; the clamped value.
-
-(deftest gap6-validator-clamps-excessive-confidence-decrease
-  (testing "Gap-6 RED#3: when a protected entry's confidence drops by more than max-decrease, validator clamps the new entry to (prior - max-decrease) and records both values in :audit"
-    (let [validate @#'ai.obney.orc.ontology.core.consolidator/anti-recency-validate
-          trait "per-section :map-each surfaces issues consistently"
-          prior {:capabilities ["x"]
-                 :strengths [{:trait trait
-                              :good-when "sections are independent"
-                              :recommended-pattern "[:map-each ...]"
-                              :confidence 0.95
-                              :evidence-count 7
-                              :first-observed-at "2026-05-26T00:00:00Z"
-                              :last-reinforced-at "2026-06-02T00:00:00Z"}]
-                 :weaknesses []
-                 :representative-uses ["x"]
-                 :avoid-when []
-                 :summary "prior"
-                 :version 3
-                 :consolidated-from-event-count 4}
-          ;; LLM dropped confidence from 0.95 to 0.3 — a swing of 0.65
-          ;; that exceeds the default 0.2 ceiling.
-          new-body {:capabilities ["x"]
-                    :strengths [{:trait trait
-                                 :good-when "sections are independent"
-                                 :recommended-pattern "[:map-each ...]"
-                                 :confidence 0.3
-                                 :evidence-count 8
-                                 :first-observed-at "2026-05-26T00:00:00Z"
-                                 :last-reinforced-at "2026-06-03T00:00:00Z"}]
-                    :weaknesses []
-                    :representative-uses ["x"]
-                    :avoid-when []
-                    :summary "new"
-                    :version 4
-                    :consolidated-from-event-count 5}
-          result (validate prior new-body {})]
-      (is (= :clamp (:decision result))
-          (str ":decision should be :clamp when confidence drop exceeds max. Got: " (pr-str result)))
-      (let [clamped-entry (first (:strengths (:body result)))]
-        (is (= trait (:trait clamped-entry))
-            "Clamped entry preserves its :trait")
-        (is (= 0.75 (:confidence clamped-entry))
-            (str "Clamped confidence = prior 0.95 - max-decrease 0.2 = 0.75. Got: "
-                 (:confidence clamped-entry))))
-      (is (some #(and (= :clamp (:event-kind %))
-                      (= trait (:entry-trait %))
-                      (= 0.95 (:prior-confidence %))
-                      (= 0.3 (:llm-confidence %))
-                      (= 0.75 (:clamped-confidence %)))
-                (:audit result))
-          (str ":audit must record prior + llm + clamped values for the entry. Got: "
-               (pr-str (:audit result)))))))
-
-;; =============================================================================
-;; Gap-6 RED#6 — validator does NOT false-positive on legitimate evolution
-;; =============================================================================
+;; They were:
+;;   gap6-validator-passes-through-when-prior-body-is-nil
+;;   gap6-validator-rejects-when-protected-strength-is-missing
+;;   gap6-validator-clamps-excessive-confidence-decrease
+;;   gap6-validator-allows-legitimate-evolution
+;;   gap6-consolidator-rejects-emission-when-validator-rejects
+;;   gap6-consolidator-emits-clamped-body-on-validator-clamp
 ;;
-;; The failure mode to fear is the validator rejecting GOOD
-;; consolidations. The legitimate case: a protected entry whose
-;; confidence dropped by within the configured max-decrease, OR a
-;; non-protected entry that churned freely. Both must pass through
-;; with :decision :ok.
-
-(deftest gap6-validator-allows-legitimate-evolution
-  (testing "Gap-6 RED#6: validator passes through unchanged (decision :ok, empty audit) when (a) a protected entry exists in new body with confidence drop within max-decrease AND (b) a non-protected (low evidence-count) entry is missing from new body"
-    (let [validate @#'ai.obney.orc.ontology.core.consolidator/anti-recency-validate
-          protected-trait "per-section :map-each surfaces issues consistently"
-          speculative-trait "preliminary observation that may not hold up"
-          prior {:capabilities ["x"]
-                 :strengths [{:trait protected-trait
-                              :good-when "sections are independent"
-                              :recommended-pattern "[:map-each ...]"
-                              :confidence 0.95
-                              :evidence-count 7
-                              :first-observed-at "2026-05-26T00:00:00Z"
-                              :last-reinforced-at "2026-06-02T00:00:00Z"}
-                             {:trait speculative-trait
-                              :good-when "unclear"
-                              :recommended-pattern "[:llm {}]"
-                              :confidence 0.4    ;; under protection threshold
-                              :evidence-count 1  ;; under protection threshold
-                              :first-observed-at "2026-06-02T00:00:00Z"
-                              :last-reinforced-at "2026-06-02T00:00:00Z"}]
-                 :weaknesses []
-                 :representative-uses ["x"]
-                 :avoid-when []
-                 :summary "prior"
-                 :version 3
-                 :consolidated-from-event-count 4}
-          ;; Healthy evolution: protected entry confidence drops 0.95 → 0.80
-          ;; (within the 0.2 max), speculative entry pruned entirely.
-          new-body {:capabilities ["x" "y"]
-                    :strengths [{:trait protected-trait
-                                 :good-when "sections are independent"
-                                 :recommended-pattern "[:map-each ...]"
-                                 :confidence 0.80
-                                 :evidence-count 8
-                                 :first-observed-at "2026-05-26T00:00:00Z"
-                                 :last-reinforced-at "2026-06-03T00:00:00Z"}]
-                    :weaknesses []
-                    :representative-uses ["x" "y"]
-                    :avoid-when []
-                    :summary "new"
-                    :version 4
-                    :consolidated-from-event-count 5}
-          result (validate prior new-body {})]
-      (is (= :ok (:decision result))
-          (str ":decision should be :ok for healthy evolution. Got: " (pr-str result)))
-      (is (empty? (:audit result))
-          (str ":audit should be empty when no rejection/clamp happened. Got: "
-               (pr-str (:audit result))))
-      (is (= new-body (:body result))
-          ":body should be passed through unchanged when no clamp/rejection happened")
-      (let [protected-entry (first (:strengths (:body result)))]
-        (is (= 0.80 (:confidence protected-entry))
-            "Protected entry's confidence is the LLM value (no clamp), not the prior")))))
-
-;; =============================================================================
-;; Gap-6 RED#4 — consolidator BLOCKS emission on validator rejection
-;; =============================================================================
+;; Four called the private `anti-recency-validate` directly; two drove
+;; `consolidate!` and asserted that a consolidation was SUPPRESSED and an
+;; `:ontology/anti-recency-rejection` audit event emitted in its place. All six
+;; asserted the behaviour ADR 0021 retires: a runtime valve that compared the
+;; new body against the prior one by matching `:trait` STRINGS, so any
+;; rephrasing of a protected insight read as an erasure and the whole
+;; consolidation was thrown away.
 ;;
-;; Integration test: prior body has a protected entry; faked LLM
-;; returns a body with that entry erased. The consolidator must
-;; (a) NOT dispatch the record-description command (no new
-;; :ontology/node-type-description-updated event), and (b) emit
-;; an :ontology/anti-recency-rejection audit event.
-
-(def fake-body-with-protected-entry
-  "Seed body shape with one protected strength (confidence 0.95,
-   evidence-count 7) — the validator must defend this entry."
-  {:capabilities ["x"]
-   :strengths [{:trait "stable structured output via :output-schemas"
-                :good-when "structured output desired"
-                :recommended-pattern "[:llm {:output-schemas {...}}]"
-                :confidence 0.95
-                :evidence-count 7
-                :first-observed-at "2026-05-26T00:00:00Z"
-                :last-reinforced-at "2026-06-02T00:00:00Z"}]
-   :weaknesses []
-   :representative-uses ["per-chunk extraction"]
-   :avoid-when ["deterministic work"]
-   :summary "Prior body with protected entry"
-   :version 3
-   :consolidated-from-event-count 99})
-
-(def fake-body-with-protected-entry-erased
-  "LLM-returned body that DROPS the protected entry entirely — the
-   validator should reject this."
-  {:capabilities ["x"]
-   :strengths []  ;; protected trait erased
-   :weaknesses []
-   :representative-uses ["per-chunk extraction"]
-   :avoid-when ["deterministic work"]
-   :summary "Body with strength erased — the catastrophic-regression case"
-   :version 99
-   :consolidated-from-event-count 99})
-
-(deftest gap6-consolidator-rejects-emission-when-validator-rejects
-  (testing "Gap-6 RED#4: when validator detects a missing protected entry, consolidator does NOT emit a new :*-description-updated event AND emits :ontology/anti-recency-rejection audit event"
-    (with-test-ctx [ctx]
-      ;; Seed prior body
-      (cp/process-command
-        (assoc ctx :command
-               {:command/name :ontology/record-node-type-description
-                :command/id (random-uuid)
-                :command/timestamp (time/now)
-                :target-id :map-each
-                :body fake-body-with-protected-entry}))
-      (Thread/sleep 200)
-      (let [updates-before (count (into [] (es/read (:event-store ctx)
-                                                     {:types #{:ontology/node-type-description-updated}
-                                                      :tenant-id (:tenant-id ctx)})))
-            rejections-before (count (into [] (es/read (:event-store ctx)
-                                                        {:types #{:ontology/anti-recency-rejection}
-                                                         :tenant-id (:tenant-id ctx)})))]
-        ;; Faked LLM returns the catastrophic regression — protected entry erased
-        (with-faked-llm fake-body-with-protected-entry-erased
-          (fn []
-            (cp/process-command
-              (assoc ctx :command
-                     {:command/name :ontology/request-consolidation
-                      :command/id (random-uuid)
-                      :command/timestamp (time/now)
-                      :target-type :node-type
-                      :target-id :map-each
-                      :on-demand? true}))
-            (Thread/sleep 800)))
-        (let [updates-after (count (into [] (es/read (:event-store ctx)
-                                                      {:types #{:ontology/node-type-description-updated}
-                                                       :tenant-id (:tenant-id ctx)})))
-              rejections-after (count (into [] (es/read (:event-store ctx)
-                                                         {:types #{:ontology/anti-recency-rejection}
-                                                          :tenant-id (:tenant-id ctx)})))]
-          (is (= updates-before updates-after)
-              (str "Consolidator MUST NOT emit a new description-updated event when validator rejects. "
-                   "Before: " updates-before ", After: " updates-after))
-          (is (= (inc rejections-before) rejections-after)
-              (str "Consolidator MUST emit exactly one :ontology/anti-recency-rejection event. "
-                   "Before: " rejections-before ", After: " rejections-after))
-          (let [rejection (last (into [] (es/read (:event-store ctx)
-                                                   {:types #{:ontology/anti-recency-rejection}
-                                                    :tenant-id (:tenant-id ctx)})))]
-            (is (= :node-type (:target-type rejection))
-                "Rejection event names the target-type")
-            (is (= :map-each (:target-id rejection))
-                "Rejection event names the target-id")
-            (is (str/includes? (str (:entry-trait rejection))
-                                "stable structured output")
-                (str "Rejection event names the missing trait. Got: "
-                     (pr-str (:entry-trait rejection))))
-            (is (= 0.95 (:prior-confidence rejection))
-                "Rejection event records the prior confidence")))
-        ;; Body in the read-model is still the prior — not corrupted
-        (let [body (ontology/get-description ctx :node-type :map-each)]
-          (is (= 3 (:version body))
-              "After rejection, the read-model still holds the prior body (version unchanged)")
-          (is (= "Prior body with protected entry" (:summary body))
-              "Prior body's summary is preserved verbatim"))))))
-
-;; =============================================================================
-;; Gap-6 RED#5 — consolidator EMITS with clamped body when validator clamps
-;; =============================================================================
+;; On the real corpus that valve rejected 145 of 145 consolidations and roughly
+;; nine in ten of those rejections were wrong — the insight was present,
+;; reworded. Keeping the tests green would have meant keeping the valve.
 ;;
-;; The LLM dropped a protected entry's confidence excessively but the
-;; entry is still PRESENT. The consolidator must (a) emit the
-;; description-updated event with the CLAMPED confidence (not the
-;; LLM's value), AND (b) emit a :ontology/anti-recency-clamp-applied
-;; audit event recording the prior/llm/clamped values.
-
-(def fake-body-with-protected-entry-confidence-tanked
-  "LLM-returned body that PRESERVES the protected trait but slashes
-   its confidence from 0.95 → 0.2 — far outside the 0.2 max-decrease
-   ceiling. The validator must clamp the new value to 0.75."
-  {:capabilities ["x"]
-   :strengths [{:trait "stable structured output via :output-schemas"
-                :good-when "structured output desired"
-                :recommended-pattern "[:llm {:output-schemas {...}}]"
-                :confidence 0.2  ;; catastrophic drop
-                :evidence-count 8
-                :first-observed-at "2026-05-26T00:00:00Z"
-                :last-reinforced-at "2026-06-03T00:00:00Z"}]
-   :weaknesses []
-   :representative-uses ["per-chunk extraction"]
-   :avoid-when ["deterministic work"]
-   :summary "Body with confidence catastrophically dropped"
-   :version 99
-   :consolidated-from-event-count 99})
-
-(deftest gap6-consolidator-emits-clamped-body-on-validator-clamp
-  (testing "Gap-6 RED#5: when validator clamps a protected entry's confidence, consolidator emits the description-updated event with the CLAMPED value AND emits :ontology/anti-recency-clamp-applied audit"
-    (with-test-ctx [ctx]
-      (cp/process-command
-        (assoc ctx :command
-               {:command/name :ontology/record-node-type-description
-                :command/id (random-uuid)
-                :command/timestamp (time/now)
-                :target-id :map-each
-                :body fake-body-with-protected-entry}))
-      (Thread/sleep 200)
-      (let [clamps-before (count (into [] (es/read (:event-store ctx)
-                                                    {:types #{:ontology/anti-recency-clamp-applied}
-                                                     :tenant-id (:tenant-id ctx)})))]
-        (with-faked-llm fake-body-with-protected-entry-confidence-tanked
-          (fn []
-            (cp/process-command
-              (assoc ctx :command
-                     {:command/name :ontology/request-consolidation
-                      :command/id (random-uuid)
-                      :command/timestamp (time/now)
-                      :target-type :node-type
-                      :target-id :map-each
-                      :on-demand? true}))
-            (Thread/sleep 800)))
-        (let [clamps-after (count (into [] (es/read (:event-store ctx)
-                                                     {:types #{:ontology/anti-recency-clamp-applied}
-                                                      :tenant-id (:tenant-id ctx)})))]
-          (is (= (inc clamps-before) clamps-after)
-              ":ontology/anti-recency-clamp-applied event must land for the clamped entry"))
-        (let [body (ontology/get-description ctx :node-type :map-each)
-              protected-entry (first (:strengths body))]
-          (is (= 4 (:version body))
-              "After clamp, the body IS emitted (version bumped) — not rejected")
-          (is (= "stable structured output via :output-schemas" (:trait protected-entry))
-              "Protected trait preserved in emitted body")
-          (is (= 0.75 (:confidence protected-entry))
-              (str "Emitted confidence is the CLAMPED value (prior 0.95 - max-decrease 0.2 = 0.75), "
-                   "NOT the LLM's 0.2. Got: " (:confidence protected-entry))))
-        (let [clamp-evt (last (into [] (es/read (:event-store ctx)
-                                                 {:types #{:ontology/anti-recency-clamp-applied}
-                                                  :tenant-id (:tenant-id ctx)})))]
-          (is (= :node-type (:target-type clamp-evt)))
-          (is (= :map-each (:target-id clamp-evt)))
-          (is (= 0.95 (:prior-confidence clamp-evt)))
-          (is (= 0.2 (:llm-confidence clamp-evt)))
-          (is (= 0.75 (:clamped-confidence clamp-evt))))))))
+;; The property they were reaching for — accumulated knowledge must not be
+;; erased by one consolidation — is not abandoned. It is now structural rather
+;; than defensive: a consolidation on the claim path cannot express "replace the
+;; body", only operations over individual claims, and CC-2's retirement plus
+;; CC-5's `initial_claim_support = 2` mean no single judgement can remove a
+;; claim at all. That is covered by `cc2_claim_operations_test`,
+;; `cc2_retirement_fact_test`, `cc5_consolidator_deltas_test` and
+;; `consolidator_claim_path_test`.
+;;
+;; The prompt-level anti-recency FRAMING survives on the legacy body path and is
+;; still asserted above by `reflection-prompt-includes-anti-recency-framing`.

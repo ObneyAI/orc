@@ -20,47 +20,123 @@
 ;; Score Normalization
 ;; =============================================================================
 
+(defn maxsim-ceiling
+  "The THEORETICAL MaxSim bound — which IS `maximum_query_tokens`, never a
+   constant of nature.
+
+   Every query token row is unit-normed inside the ONNX graph, so
+   MaxSim = sum over maximum_query_tokens rows of (max dot <= 1.0)
+          <= maximum_query_tokens.
+
+   It used to be written down as the literal 32.0 because that was the
+   checkpoint's own query_maxlen. CC-17 made the limit configuration and moved
+   the shipped default to 464, so the ceiling MOVED WITH IT; a frozen 32.0
+   here would clamp every real score to 1.0. Derived, not hard-coded.
+
+   ⚠ THE NO-ARG FORM IS THE PROCESS DEFAULT ONLY (CC-25). It answers 'what
+   limit would an unconfigured encoding use in THIS process', which is the
+   right question ONLY when no particular encoding is in hand. It is NOT the
+   ceiling of any given search or rerank: CC-17 made the limit per-index
+   configuration (`IndexConfiguration.maximum_query_tokens`, threaded into
+   `encoder/encode-query` by `search` / `search-batch`), so an index built
+   above the process default yields raw scores ABOVE this value — every one
+   of which `normalize-colbert-score` then clamps to 1.0, destroying relative
+   order and breaking `invariant.BoundedNormalization`. Below the default it
+   silently compresses the scale instead (an index at 96 against a default of
+   464 tops out at 0.207).
+
+   To normalize scores that an actual encoding produced, use
+   `results-maxsim-ceiling` / `normalize-results-to-ceiling`, which read the
+   limit off the truncation report `attach-truncation` stamped on the result
+   collection — the limit that encoding REALLY ran under."
+  (^double [] (maxsim-ceiling nil))
+  (^double [maximum-query-tokens]
+   (double (or maximum-query-tokens
+               (encoder/configured-maximum-query-tokens)
+               (get-in (encoder/get-encoder (model-store/resolve-model-dir))
+                       [:consts :query-maxlen])))))
+
+(defn results-maxsim-ceiling
+  "The MaxSim ceiling OF THE ENCODING THAT ACTUALLY PRODUCED `results` — i.e.
+   `maximum_query_tokens` as reported by that very encoding, not whatever this
+   process happens to default to (CC-25).
+
+   `search`, `search-batch` and `rerank` all run `attach-truncation`, which
+   stamps the truncation report (`:maximum-query-tokens` among its fields) on
+   the returned collection as metadata. That number IS the row count the
+   encoder built, and therefore the theoretical MaxSim bound for every score
+   in the collection — the two can never disagree because they come from the
+   same encode call.
+
+   Falls back to the process default when the collection carries no report
+   (a hand-built vector, or a collection whose metadata a transformation
+   dropped). That fallback is the exact condition this function exists to
+   avoid, so it is recorded rather than taken silently."
+  ^double [results]
+  (if-let [limit (get-in (meta results) [:query-truncation :maximum-query-tokens])]
+    (maxsim-ceiling limit)
+    (let [fallback (maxsim-ceiling)]
+      (mu/log ::maxsim-ceiling-from-process-default
+              :reason :no-truncation-report-on-results
+              :result-count (count results)
+              :process-default-ceiling fallback)
+      fallback)))
+
 (defn normalize-colbert-score
   "Normalize ColBERT score to 0-1 range.
 
-   The default ceiling 32.0 is the THEORETICAL MaxSim bound for the
-   answerai-colbert-small-v1 checkpoint (ADR 0002): queries are MASK-expanded
-   to query_maxlen = 32 rows and every token row is unit-normed inside the
-   ONNX graph, so MaxSim = sum over 32 query rows of (max dot <= 1.0) <= 32.0.
-   Verified empirically in the P-0 encoder spike (docs/issues/jvm-colbert/
-   p0-findings.md, 'Scores, bound, and range'): all observed scores in
-   [29.96, 31.30], bound 32 holds. The old 40.0 default belonged to the
-   colbertv2 Python-bridge era.
+   The default ceiling is `maxsim-ceiling` — the configured
+   `IndexConfiguration.maximum_query_tokens`, which is exactly the number of
+   unit-normed query rows the encoder builds (ADR 0002 + CC-17). It was the
+   literal 32.0 while the limit was the checkpoint's query_maxlen 32; the old
+   40.0 default belonged to the colbertv2 Python-bridge era.
 
-   NB (same P-0 findings): MASK query expansion gives even unrelated pairs a
-   ~30/32 floor, so a FIXED-ceiling linear normalization compresses everything
-   into ~0.94-0.98 — fine for RRF-style rank fusion, but NOT enough dynamic
-   range for score-contrast consumers. Those should normalize RELATIVE to the
-   scores in the same call (see normalize-result-scores, and the domain-penalty
-   :batch-relative method on the ontology side).
+   NB (P-0 findings, re-confirmed by the CC-17 cost measurement): MASK query
+   expansion gives even unrelated pairs a very high floor (~0.94 of ceiling at
+   32 rows, ~0.98 at 464), so a FIXED-ceiling linear normalization compresses
+   everything into a narrow band — fine for RRF-style rank fusion, but NOT
+   enough dynamic range for score-contrast consumers. Those should normalize
+   RELATIVE to the scores in the same call (see normalize-result-scores, and
+   the domain-penalty :batch-relative method on the ontology side).
 
    Args:
-     score - Raw ColBERT score (typically ~[0, 32] for this checkpoint)
+     score - Raw ColBERT score (typically ~[0, maximum_query_tokens])
      opts - Options map:
-       :max-score - Maximum expected score for normalization (default: 32.0,
-                    the theoretical query_maxlen * unit-vector bound)
+       :max-score - Maximum expected score for normalization (default:
+                    maxsim-ceiling; an explicit nil also falls back to it —
+                    LOUDLY since CC-27: the fallback mulogs the score and the
+                    process-default ceiling it used, because callers holding
+                    an encoding identity are expected to pass that encoding's
+                    own ceiling via results-maxsim-ceiling)
        :method - Normalization method: :linear, :sigmoid (default: :linear)
 
    Returns:
      Normalized score in [0, 1] range"
-  [score & {:keys [max-score method]
-            :or {max-score 32.0 method :linear}}]
-  (case method
-    :linear
-    (min 1.0 (max 0.0 (/ (double score) max-score)))
+  [score & {:keys [max-score method] :or {method :linear}}]
+  (let [max-score (double (or max-score
+                              ;; CC-27: the process-default fallback is LOUD.
+                              ;; Every caller holding an encoding identity
+                              ;; passes the encoding's own ceiling (CC-25's
+                              ;; results-maxsim-ceiling), so landing here means
+                              ;; no identity existed for this bare score —
+                              ;; record both values in hand, never take the
+                              ;; default silently.
+                              (let [fallback (maxsim-ceiling)]
+                                (mu/log ::normalize-score-process-default-fallback
+                                        :score (double score)
+                                        :process-default-ceiling fallback)
+                                fallback)))]
+    (case method
+      :linear
+      (min 1.0 (max 0.0 (/ (double score) max-score)))
 
-    :sigmoid
-    ;; Sigmoid normalization: centers around half max-score
-    (let [x (- (/ (double score) max-score) 0.5)]
-      (/ 1.0 (+ 1.0 (Math/exp (* -10.0 x)))))
+      :sigmoid
+      ;; Sigmoid normalization: centers around half max-score
+      (let [x (- (/ (double score) max-score) 0.5)]
+        (/ 1.0 (+ 1.0 (Math/exp (* -10.0 x)))))
 
-    ;; Default to linear
-    (min 1.0 (max 0.0 (/ (double score) max-score)))))
+      ;; Default to linear
+      (min 1.0 (max 0.0 (/ (double score) max-score))))))
 
 (defn normalize-result-scores
   "Normalize scores for a batch of ColBERT results.
@@ -87,6 +163,48 @@
                          :raw-score (:score r))))
            (filter #(>= (:score %) min-score-threshold))
            vec))))
+
+(defn normalize-results-to-ceiling
+  "FIXED-CEILING normalization of a search/rerank result collection against the
+   ceiling OF THE ENCODING THAT PRODUCED IT (CC-25) — the `normalize_results`
+   form to reach for when scores must stay comparable ACROSS calls, where
+   `normalize-result-scores`'s batch-relative rescaling would make every call's
+   top result 1.0.
+
+   The ceiling comes from `results-maxsim-ceiling`, i.e. the truncation report
+   the encode call stamped on the collection, so a per-index
+   `maximum_query_tokens` can never disagree with the number the scores are
+   divided by. `invariant.BoundedNormalization` therefore holds for ANY legal
+   index configuration: scores stay in [0,1] and no two of them collapse
+   together at the top of the scale.
+
+   The truncation metadata is carried through, exactly as `search-for-rrf`
+   carries it — a normalized collection is still an answer to a query that may
+   have been cut.
+
+   Args:
+     results - Vector of result maps with :score key
+     opts - Options map (NormalizationOptions):
+       :max-score - Explicit ceiling override; nil (default) means the
+                    collection's OWN encoding ceiling
+       :method    - :linear (default) or :sigmoid
+
+   Returns:
+     Results with :score normalized into [0,1] and the raw value kept on
+     :raw-score (the normalize-result-scores idiom)."
+  [results & {:keys [max-score method] :or {method :linear}}]
+  (if (empty? results)
+    []
+    (let [ceiling (double (or max-score (results-maxsim-ceiling results)))]
+      (with-meta
+        (mapv (fn [r]
+                (assoc r
+                       :score (normalize-colbert-score (:score r)
+                                                       :max-score ceiling
+                                                       :method method)
+                       :raw-score (:score r)))
+              results)
+        (meta results)))))
 
 ;; =============================================================================
 ;; Index Creation
@@ -131,12 +249,20 @@
        :split-documents?   - Auto-split long docs (default: true)
        :max-document-length - Chunk size in tokens (default: 256; must be
                              <= the encoder's doc-maxlen - 3)
+       :maximum-query-tokens - IndexConfiguration.maximum_query_tokens: the
+                             per-query row count searches of this index build,
+                             and therefore its MaxSim ceiling. Default: the
+                             configured default (encoder/
+                             resolve-maximum-query-tokens). Validated the same
+                             way max-document-length is — positive, and within
+                             the encoder's max_position_embeddings.
 
    Returns map with :index-id, :index-path, :num-passages, :duration-ms,
    :document-ids, :document-metadatas, :document-count, :model-name,
    :index-name, and :config."
   [ctx {:keys [collection document-ids document-metadatas index-name
-               model-name split-documents? max-document-length]
+               model-name split-documents? max-document-length
+               maximum-query-tokens]
         :or {model-name model-store/checkpoint
              split-documents? true
              max-document-length 256}
@@ -168,6 +294,12 @@
             :document-count (count collection))
 
     (let [enc (encoder/get-encoder (model-store/resolve-model-dir))
+          ;; Resolve + VALIDATE the query limit at index-creation time, so an
+          ;; unusable IndexConfiguration is rejected here rather than at every
+          ;; later search (mirrors corpus/validate-chunk-size!).
+          maximum-query-tokens (encoder/validate-maximum-query-tokens!
+                                enc (encoder/resolve-maximum-query-tokens
+                                     enc maximum-query-tokens))
           passages (corpus/split-collection enc
                      {:collection collection
                       :document-ids document-ids
@@ -207,7 +339,66 @@
        :index-name index-name
        :config {:split-documents? split-documents?
                 :max-document-length max-document-length
+                :maximum-query-tokens maximum-query-tokens
                 :use-faiss? false}})))
+
+;; =============================================================================
+;; Query truncation (specs/colbert.allium — OverlongQueriesTruncateVisibly)
+;; =============================================================================
+
+(defn truncation-report
+  "The caller-visible truncation fields of an encoded query."
+  [encoded]
+  {:query-token-count (:query-token-count encoded)
+   :maximum-query-tokens (:maximum-query-tokens encoded)
+   :query-truncated? (:truncated? encoded)
+   :discarded-token-count (:discarded-token-count encoded)})
+
+(defn attach-truncation
+  "Stamp the truncation report on a RESULT COLLECTION as Clojure metadata
+   (`:query-truncation`).
+
+   The result shape is a frozen contract (rerank-contract-test pins the exact
+   key set of every entry), and the ontology hot path calls
+   operations/search / rerank DIRECTLY rather than through the Grain command,
+   so the audit event is not on that path. Metadata makes the signal reachable
+   everywhere without changing a single value: `=`, count, seq, and every
+   downstream map/filter over the entries are untouched."
+  [encoded results]
+  (vary-meta results assoc :query-truncation (truncation-report encoded)))
+
+(defn query-truncation
+  "The truncation report for `query` under the applicable limit — the caller-
+   visible signal for `invariant.OverlongQueriesTruncateVisibly`.
+
+   Returns {:query-token-count :maximum-query-tokens :query-truncated?
+            :discarded-token-count}. Tokenizer-only (no ONNX inference), so it
+   is cheap enough for every search/rerank audit.
+
+   opts:
+     :maximum-query-tokens — the limit to measure against (defaults to the
+                             configured default)."
+  [_ctx {:keys [query maximum-query-tokens]}]
+  (let [enc (encoder/get-encoder (model-store/resolve-model-dir))
+        built (encoder/build-query-ids
+               enc query {:maximum-query-tokens maximum-query-tokens})]
+    (truncation-report built)))
+
+(defn index-maximum-query-tokens
+  "`IndexConfiguration.maximum_query_tokens` for an index read-model row, or
+   nil when the index predates the field (legacy artifacts fall back to the
+   configured default — never to a silent hard-coded 32)."
+  [index]
+  (get-in index [:config :maximum-query-tokens]))
+
+(defn search-query-truncation
+  "The truncation report a SEARCH of `index-id` would produce — measured
+   against THAT INDEX'S OWN configured maximum_query_tokens, so the audit and
+   the encoding can never disagree about the limit."
+  [ctx index-id query]
+  (let [index (read-models/get-index ctx index-id)]
+    (query-truncation ctx {:query query
+                           :maximum-query-tokens (index-maximum-query-tokens index)})))
 
 ;; =============================================================================
 ;; Search Operations
@@ -247,7 +438,10 @@
           artifact (index-store/load-index (:index-path index))
           enc (encoder/get-encoder (model-store/resolve-model-dir))
           skiplist (get-in enc [:consts :skiplist])
-          q-rows (:rows (encoder/encode-query enc query))
+          ;; The index's OWN IndexConfiguration governs its queries.
+          q-opts {:maximum-query-tokens (index-maximum-query-tokens index)}
+          encoded (encoder/encode-query enc query q-opts)
+          q-rows (:rows encoded)
           document-metadatas (:document-metadatas artifact)]
       (->> (:passages artifact)
            (map (fn [{:keys [document-id text token-ids rows]}]
@@ -268,7 +462,8 @@
                ;; {} when no metadata was indexed — exactly what the bridge
                ;; returned (Python r.get(\"document_metadata\", {}))
                :document_metadata (get document-metadatas document-id {})}))
-           vec))))
+           vec
+           (attach-truncation encoded)))))
 
 (defn rerank
   "Rerank documents in-memory (no index required) — pure-JVM ColBERT signal
@@ -289,11 +484,13 @@
 
    Returns:
      [{:content \"...\" :score 0.87 :rank 1}]  (1-indexed rank, descending score)"
-  [_ctx {:keys [query documents k]}]
+  [_ctx {:keys [query documents k maximum-query-tokens]}]
   (let [k (or k (count documents))
         enc (encoder/get-encoder (model-store/resolve-model-dir))
         skiplist (get-in enc [:consts :skiplist])
-        q-rows (:rows (encoder/encode-query enc query))]
+        encoded (encoder/encode-query
+                 enc query {:maximum-query-tokens maximum-query-tokens})
+        q-rows (:rows encoded)]
     (->> documents
          (mapv (fn [doc]
                  (let [{:keys [ids rows]} (encoder/encode-doc enc doc)]
@@ -302,7 +499,8 @@
          (sort-by :score >)
          (take k)
          (map-indexed (fn [i result] (assoc result :rank (inc i))))
-         vec)))
+         vec
+         (attach-truncation encoded))))
 
 ;; =============================================================================
 ;; Hybrid Search Integration
@@ -330,14 +528,18 @@
   (let [results (search ctx {:query query :index-id index-id :k k})
         normalized (if normalize?
                      (normalize-result-scores results)
-                     results)]
+                     results)
+        ;; Carry the truncation report through the RRF adapter — this is the
+        ;; ontology hot path's actual entry point, and the report is the only
+        ;; signal it gets that the query was cut (no Grain command here).
+        carry #(with-meta % (meta results))]
     ;; The bridge keywordizes the Python response as-is (:key-fn keyword), so the
     ;; per-result key is :document_id (underscore), NOT :document-id. Read either so
     ;; the RRF :uri actually resolves back to the concept URI we indexed under.
-    (mapv (fn [{:keys [score] :as r}]
-            {:uri (or (:document_id r) (:document-id r))
-             :score (* weight (double score))})
-          normalized)))
+    (carry (mapv (fn [{:keys [score] :as r}]
+                   {:uri (or (:document_id r) (:document-id r))
+                    :score (* weight (double score))})
+                 normalized))))
 
 (defn search-batch
   "Batch-search a ColBERT index for MANY queries with the artifact loaded ONCE
@@ -367,10 +569,12 @@
           artifact (index-store/load-index (:index-path index))
           enc (encoder/get-encoder (model-store/resolve-model-dir))
           skiplist (get-in enc [:consts :skiplist])
+          q-opts {:maximum-query-tokens (index-maximum-query-tokens index)}
           document-metadatas (:document-metadatas artifact)]
       (mapv
        (fn [query]
-         (let [q-rows (:rows (encoder/encode-query enc query))]
+         (let [encoded (encoder/encode-query enc query q-opts)
+               q-rows (:rows encoded)]
            ;; The same pipeline as `search` (kept in lockstep — the contract is
            ;; "each inner list = the corresponding search output"): score every
            ;; passage, aggregate to documents by MAX passage score, sort, take k.
@@ -390,7 +594,8 @@
                     :rank (inc i)
                     :document_id document-id
                     :document_metadata (get document-metadatas document-id {})}))
-                vec)))
+                vec
+                (attach-truncation encoded))))
        (vec queries)))))
 
 (defn search-for-rrf-batch
@@ -415,8 +620,11 @@
                (let [normalized (if normalize?
                                   (normalize-result-scores results)
                                   results)]
-                 ;; Same :document_id (underscore) ⇒ :uri mapping as search-for-rrf.
-                 (mapv (fn [{:keys [score] :as r}]
-                         {:uri (or (:document_id r) (:document-id r))
-                          :score (* weight (double score))})
-                       normalized))))))
+                 ;; Same :document_id (underscore) ⇒ :uri mapping as
+                 ;; search-for-rrf, and the same truncation-report carry.
+                 (with-meta
+                   (mapv (fn [{:keys [score] :as r}]
+                           {:uri (or (:document_id r) (:document-id r))
+                            :score (* weight (double score))})
+                         normalized)
+                   (meta results)))))))

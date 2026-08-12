@@ -1,22 +1,44 @@
 (ns ai.obney.orc.ontology.core.consolidator
-  "C-2a-3b — Living Description consolidator.
+  "Living Description consolidator.
 
-   Subscribes to :ontology/consolidation-requested events. For each
-   request, gathers the target's current description + recent events +
-   accumulated metrics + structural context, runs a single
-   structured-output LLM reflection call, and emits the matching
-   :*-description-updated event.
+   Subscribes to :ontology/consolidation-requested events. For each request,
+   gathers the target's recent events + accumulated metrics + structural
+   context and runs a single structured-output LLM reflection call.
 
-   Anti-recency-bias safeguards (confidence-decay/grow math + anomaly
-   handling + budget cap + 3-run regression scenario) are SCOPED OUT —
-   they land in C-2a-3c. For this slice, the LLM's :version and
-   :consolidated-from-event-count fields are overwritten by the
-   consolidator's computed values before emission."
+   TWO WRITE PATHS, AND THEY NEVER SHARE A TARGET (CC-5, ADR 0021).
+
+   1. THE CLAIM PATH — `:tree-class` targets. The reflection call is handed the
+      target's NUMBERED CLAIM SET plus the guarded evidence window, and it
+      returns OPERATIONS over that set (`:add` / `:support` / `:contradict` /
+      `:edit`), never a replacement body. The operations are validated,
+      collapsed per target claim, given their episodes IN CODE, and dispatched
+      as `:ontology/record-claim-deltas`. The body is then ASSEMBLED from the
+      claims by CC-3's fold. No whole-body description event is emitted for a
+      claim-path target, so the assembled body has exactly ONE writer.
+
+   2. THE LEGACY BODY PATH — `:node-type`, `:node-instance` and
+      `:tree-fingerprint`. These granularities cannot join the claim model yet
+      (see `claim-path-target-type?` for the two concrete blockers), so they
+      still emit `:*-description-updated`. They have no claim path at all, so
+      their `:current` slot also has exactly one writer.
+
+   THE ANTI-RECENCY RUNTIME VALIDATOR IS DELETED (ADR 0021). It rejected a
+   consolidation whenever a high-confidence prior entry was missing from the
+   new body, matched by `:trait` STRING — so any rephrasing of a protected
+   insight read as an erasure. On the real corpus it rejected 145 of 145
+   consolidations and roughly nine in ten of those rejections were wrong: the
+   insight was present, reworded. Protection-induced starvation is what the
+   delta contract makes structurally impossible, which is why the valve is
+   removed rather than tuned. The prompt-level anti-recency FRAMING stays on
+   the legacy body path, where whole-body rewriting is still how that path
+   works and gradual movement is still the right instruction."
   (:require [malli.core :as m]
             [malli.error :as me]
             [cheshire.core :as json]
             [clojure.string :as str]
             [ai.obney.orc.orc-service.interface :as orc]
+            [ai.obney.orc.ontology.core.evidence-projection :as evidence-projection]
+            [ai.obney.orc.ontology.core.read-models :as read-models]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas :as ontology-schemas]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
@@ -143,6 +165,129 @@
 (def ^:private target-identity-schema
   [:or :keyword [:tuple :uuid :uuid] :uuid :string])
 
+(def ^:private reflection-max-retries
+  "The executor-level retry budget BOTH reflection workflows configure
+   (see the :options on their :llm nodes). Named because CC-28's failure
+   accounting derives the terminal attempt count from it: the executor's
+   exception path only escapes after exhausting exactly this budget, so
+   a terminal exception-class failure consumed (inc reflection-max-retries)
+   provider attempts."
+  3)
+
+(defn classify-reflection-failure
+  "CC-28 (FailureIsVisible) — map a terminal non-:success exec-result from
+   a reflection workflow to {:reason <closed-class> :attempts <count>}.
+
+   PURE, and public for test access. The reason classes are the CLOSED set
+   `ontology-schemas/consolidation-failure-reason`; the matching here is a
+   heuristic over the executor's terminal shapes, but what it PRODUCES is
+   always one of the four contract classes:
+
+     :timeout           — the exec-result's own :status. The executor does
+       not surface which attempt the deadline died on, so :attempts is the
+       certain floor of 1.
+     :unparseable       — the executor's nil-extraction terminal, matched
+       on its verbatim error prefix (\"LLM output unparseable for keys\",
+       executor.clj). The provider ANSWERED — one terminal attempt's output
+       could not be extracted — so :attempts is the floor of 1.
+     :provider-rejected — the provider refused the call outright: token/
+       context-length caps, invalid-request shapes. The executor retries
+       these like any exception (it cannot tell permanent from transient),
+       so the full budget was consumed: (inc reflection-max-retries).
+     :retries-exhausted — every other exception-terminal failure: the
+       provider kept erroring until the retry budget ran out. Also the
+       fallback for any unrecognized error string — 'died for a reason we
+       could not classify' is still 'died', and the closed set means an
+       unknown shape maps to the honest superclass rather than minting a
+       new one. Attempts: (inc reflection-max-retries), exact — the
+       exception path only escapes after exhausting the budget."
+  [{:keys [status error failure-kind]}]
+  (let [error-str (some-> error str)
+        full (inc reflection-max-retries)
+        context-rejection? (and error-str
+                                (re-find #"(?i)too long|too large|context.{0,8}length|maximum context|token limit|exceeds?.{0,24}(maximum|limit)|invalid_request"
+                                         error-str))]
+    (cond
+      ;; The executor's own deadline terminal wins over any kind.
+      (= :timeout status)
+      {:reason :timeout :attempts 1}
+
+      ;; CC-15 refit: upstream 5cce483d threads a CLOSED structured
+      ;; :failure-kind from the llm component through the executor onto the
+      ;; terminal — consume it FIRST, exactly. A structured failure is an
+      ;; exception-path terminal, so its attempt count is the EXACT consumed
+      ;; budget (an upgrade over the old floor of 1 on the parse family,
+      ;; whose attempt index the string shapes never surfaced).
+      failure-kind
+      (case failure-kind
+        (:tool-call-parsing-failed
+         :missing-forced-tool-call
+         :schema-validation-failed) {:reason :unparseable :attempts full}
+        :empty-provider-response    {:reason :provider-rejected :attempts full}
+        ;; Transport failures carry the provider's HTTP error text — a
+        ;; context-length rejection travels this way, so the string check
+        ;; stays for exactly this branch.
+        :transport-failure          (if context-rejection?
+                                      {:reason :provider-rejected :attempts full}
+                                      {:reason :retries-exhausted :attempts full})
+        ;; An unknown future kind maps to the honest superclass, never a
+        ;; minted class — the CC-28 doctrine unchanged.
+        {:reason :retries-exhausted :attempts full})
+
+      ;; Legacy string-only shapes: the pre-5cce483d heuristics, unchanged.
+      (and error-str (re-find #"LLM output unparseable" error-str))
+      {:reason :unparseable :attempts 1}
+
+      context-rejection?
+      {:reason :provider-rejected :attempts full}
+
+      :else
+      {:reason :retries-exhausted :attempts full})))
+
+(defn- record-consolidation-failure!
+  "Emit the durable death certificate for a terminally failed reflection —
+   ONE :ontology/description-consolidation-failed event for the whole
+   attempt-set, dispatched through the command processor exactly as the
+   success paths dispatch their writes. Also keeps the pre-CC-28 log line
+   so operators' existing ::consolidate-execution-failed searches keep
+   working."
+  [context target-type target-id exec-result]
+  (let [{:keys [reason attempts]} (classify-reflection-failure exec-result)]
+    (u/log ::consolidate-execution-failed
+           :target-type target-type :target-id target-id
+           :status (:status exec-result) :error (:error exec-result)
+           :reason reason :attempts attempts)
+    (command-processor/process-command
+      (assoc context :command
+             (cond-> {:command/name :ontology/record-consolidation-failure
+                      :command/id (random-uuid)
+                      :command/timestamp (time/now)
+                      :granularity target-type
+                      :target-identifier target-id
+                      :reason reason
+                      :attempts attempts}
+               (some? (:error exec-result))
+               (assoc :error (str (:error exec-result))))))))
+
+(defn- execute-reflection
+  "Run the reflection workflow, converting a THROW from the execute call
+   itself into the same terminal shape the executor returns for its own
+   failures — so both reflection paths have exactly ONE failure seam and
+   a thrown reflection cannot slip past FailureIsVisible into the
+   processor's catch-all log line."
+  [context sheet-id inputs]
+  (try
+    (orc/execute context sheet-id inputs)
+    (catch Exception e
+      ;; CC-15 refit: upstream 5cce483d's structured failures carry
+      ;; {:failure-kind :provider-evidence} in ex-data — preserve both so
+      ;; classify-reflection-failure reads the exact kind instead of the
+      ;; message string, and the death certificate keeps the evidence.
+      (let [{:keys [failure-kind provider-evidence]} (ex-data e)]
+        (cond-> {:status :failure :error (.getMessage e)}
+          failure-kind (assoc :failure-kind failure-kind)
+          provider-evidence (assoc :provider-evidence provider-evidence))))))
+
 (defn- reflection-workflow
   "Single-:llm-node ORC workflow for the consolidator's reflection call.
 
@@ -186,7 +331,190 @@
         ;; outputs (executor.clj `outputs-have-nil?`). Lifting the budget
         ;; from the default 1 retry to 3 covers the LLM-flakiness we see
         ;; on first-consolidation runs without reinventing retry.
-        :options {:max-retries 3
+        :options {:max-retries reflection-max-retries
+                  :retry-delay-ms [500 1500 3000]})
+      model (assoc :model model))))
+
+;; =============================================================================
+;; CC-5 (ADR 0021) — the CLAIM reflection: numbered claim set in, operations out
+;; =============================================================================
+;;
+;; The prompt below is not a rewrite of the body prompt. Its four load-bearing
+;; elements were each MEASURED by the CC-5 prototype (P-A) against the real
+;; judges'-slot model at temperature 0 over 20 real consolidations reconstructed
+;; from the production rejection corpus:
+;;
+;;   1. A TWO-STEP PROCEDURE WITH STEP 1 MANDATORY. Walking the numbered claim
+;;      set in order and asking, per claim, whether the evidence bears on it —
+;;      and saying out loud that reinforcing a supported claim is not optional —
+;;      moved the share of pool claims that received any operation from 12.7% to
+;;      31.4%. The improvement was de-confounded against completion budget: the
+;;      old prompt re-run at the higher budget produced 16 operations where it
+;;      had produced 15, while this procedure produced 37 on the same rows.
+;;   2. ONE LINE PER CLAIM, QUOTED, IN THE DELTA'S OWN VOCABULARY. Three of the
+;;      four observed failure shapes were rendering artifacts, not reasoning
+;;      failures: indented `guard:` / `recommendation:` continuation lines bled
+;;      into `:content` (7 occurrences) and bracket kind labels bled in (3).
+;;      Flattening the pool to one quoted line per claim eliminated all of them.
+;;   3. THE PERMITTED KEY SET NAMED EXPLICITLY, and `:content` stated to be one
+;;      line of plain prose.
+;;   4. THE MODEL IS NEVER ASKED FOR `:episodes` OR `:from-legacy-corpus`. Those
+;;      are filled in code from the evidence window. Across 178 operations the
+;;      model copied claim ids out of pools of up to 25 with ZERO fabrications;
+;;      asking it to also invent occurrence uuid pairs is how that number stops
+;;      being zero.
+;;
+;; THE WHOLE CLAIM SET IS SHOWN. No pre-filter. The only pre-computable
+;; narrowing — claim/evidence lexical containment — destroyed 30 of the 35
+;; claims the model actually used and emptied the pool on up to 13 of 20 real
+;; consolidations, because claim language is abstract ("modifies source code
+;; files") while evidence is concrete event records. That is the ColBERT
+;; refutation one layer up. It also buys nothing: the pool listing is 24-43% of
+;; the prompt (7-8% on the large rows) and the evidence window dominates.
+;; Revisit above ~40 claims, and then narrow by recency or support, never by
+;; overlap.
+
+(def ^:private claim-operation-proposal
+  "What ONE reflection operation may look like ON THE WIRE.
+
+   Deliberately a SUPERSET-tolerant shape rather than `claim-delta` itself:
+   `:kind` is optional here because a `:support` / `:contradict` / `:edit`
+   operation names a claim that already HAS a kind, and demanding the model
+   restate it is one more field to get wrong. `prepare-operations` fills it from
+   the named claim before anything is dispatched.
+
+   `:episodes` and `:from-legacy-corpus` are absent BY DESIGN — see element 4
+   above."
+  [:map
+   [:operation      [:enum :add :support :contradict :edit]]
+   [:target-claim   {:optional true} [:maybe :string]]
+   [:kind           {:optional true} [:maybe [:enum :capability :strength :weakness
+                                              :guard :representative-use]]]
+   ;; OPTIONAL, and that is a LIVE-QA finding rather than a design preference.
+   ;; Asked to `:support` claim #1, the real model answers
+   ;; `{:operation "support" :target-claim "…#0"}` and nothing else — which is
+   ;; correct behaviour: a support restates nothing. Requiring `:content` here
+   ;; rejected every reinforcement the model produced, and the stubbed contract
+   ;; tests could not see it because their stubs always supply one.
+   ;; `prepare-operations` fills it from the named claim; `:add` and `:edit`
+   ;; still have to carry their own.
+   [:content        {:optional true} [:maybe :string]]
+   [:context-guard  {:optional true} [:maybe :string]]
+   [:recommendation {:optional true} [:maybe :string]]])
+
+(def ^:private claim-reflection-instruction
+  (str
+    "You are updating an accumulated set of CLAIMS about a behavior-tree "
+    "component from newly observed execution evidence.\n\n"
+
+    "You are NOT writing a description. You do not rewrite, summarise or "
+    "replace anything. You emit a list of OPERATIONS over the numbered claim "
+    "set you are given, and deterministic code applies them. A claim you say "
+    "nothing about survives unchanged.\n\n"
+
+    "INPUTS:\n"
+    "- :claim-set — the target's CURRENT claims, numbered, one per line. Each "
+    "line gives the claim's id, its kind, the support it has accumulated, and "
+    "its content in quotes. The id is the string you must copy verbatim into "
+    ":target-claim.\n"
+    "- :recent-events — the observation window this consolidation reasons over. "
+    "Each observation may carry :judge-scores (:judge-name, :score 0.0-1.0, "
+    ":feedback) from judges attached to the host node.\n"
+    "- :aggregate-metrics — accumulated metrics across this target's lifetime, "
+    "the STABLE BASELINE. May include :judge-averages, the mean score per judge "
+    "across the whole lifetime.\n"
+    "- :recent-vs-historical-delta — the computed gap between the recent window "
+    "and the historical baseline, or nil on a first consolidation.\n"
+    "- :target-type / :target-id / :structural-context — what the target IS.\n\n"
+
+    "FOLLOW THIS PROCEDURE IN ORDER.\n\n"
+
+    "STEP 1 — MANDATORY, AND YOU MUST DO IT BEFORE STEP 2. Walk the claim set "
+    "from claim 1 to the last claim, IN ORDER, and for EACH one ask: does this "
+    "evidence window bear on this claim?\n"
+    "  - The evidence CORROBORATES it -> emit :support naming its id.\n"
+    "  - The evidence corroborates it AND you can state it more precisely, or "
+    "it belongs to a different kind now -> emit :edit naming its id, with the "
+    "improved :content (and the new :kind if it moved).\n"
+    "  - The evidence CONTRADICTS it -> emit :contradict naming its id.\n"
+    "  - The evidence says nothing about it -> emit nothing for it.\n"
+    "REINFORCING A CLAIM THE EVIDENCE SUPPORTS IS NOT OPTIONAL. Support is how "
+    "a claim earns the right to act; a claim that keeps being true and keeps "
+    "being passed over in silence decays relative to the ones that are named. "
+    "Do not skip a claim because it is 'already obvious' or 'already known' — "
+    "if this window shows it again, say so.\n\n"
+
+    "STEP 2 — only now, look for insights in the evidence that NO existing "
+    "claim covers. Before proposing one, check it against EVERY claim in the "
+    "set, including claims of a different kind: an insight is frequently the "
+    "same knowledge as an existing claim wearing different words, and it is far "
+    "better to :edit an existing claim than to :add a near-duplicate. Only when "
+    "an insight matches nothing in the set, emit :add.\n\n"
+
+    "OPERATIONS — the permitted keys, and NOTHING ELSE:\n"
+    "  :operation      — one of :add, :support, :contradict, :edit\n"
+    "  :target-claim   — the claim id copied VERBATIM from the claim set. "
+    "Required for :support, :contradict and :edit. Omit it for :add.\n"
+    "  :kind           — one of :capability, :strength, :weakness, :guard, "
+    ":representative-use. Required for :add. Supply it on :edit only when the "
+    "claim's kind is changing.\n"
+    "  :content        — ONE LINE of plain prose stating the claim itself. Not "
+    "a label, not a heading, not a bracketed tag, not a multi-line block, and "
+    "never a continuation of another field. Required for :add and :edit.\n"
+    "  :context-guard  — optional, one line: when this claim does NOT apply.\n"
+    "  :recommendation — optional, one line: what to do about it.\n"
+    "Any other key is REJECTED and its operation is discarded.\n\n"
+
+    "Do NOT invent occurrence ids, episode references, event ids, timestamps, "
+    "confidences or evidence counts. Those are supplied by the system from the "
+    "evidence window. You have no way to know them and a guess is worse than "
+    "an omission.\n\n"
+
+    ":content must be a concrete observable pattern with actionable meaning. "
+    "Never produce status-shaped content — words like 'investigate', "
+    "'observed' or 'unclear' describe your process, not the component.\n\n"
+
+    "Emit an empty operation list only when the evidence genuinely bears on "
+    "nothing in the set and contains no new insight."))
+
+(defn- claim-reflection-workflow
+  "Single-:llm-node ORC workflow for the CLAIM reflection call.
+
+   `:operations` is typed as a vector of `claim-operation-proposal` so the llm
+   structured-output spec tells the model the per-field types. The schema is an
+   OPEN malli map — which is exactly why `prepare-operations` has to reject
+   unknown keys itself: a drifted key VALIDATES here and would vanish silently.
+
+   The input schemas mirror `reflection-workflow`'s: both workflows are fed by
+   the same gatherers (`gather-recent-events`, `gather-aggregate-metrics`,
+   `compute-delta`, `gather-structural-context`), and the DSL layer rejects
+   unconstrained schemas (`:any` / bare `:map`) outright.
+
+   CC-31: parameterized by `model` exactly as `reflection-workflow` is — the
+   node's `:model` is what the engine stamps onto the completion event, and
+   that stamp is what makes the recorded deltas' provenance extractable. A
+   nil model leaves the node unpinned (ambient provider default), which is
+   the pre-CC-31 shape unchanged."
+  [model]
+  (orc/workflow "ontology-consolidator-claim-reflection"
+    (orc/blackboard
+      {:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]
+       :target-id target-identity-schema
+       :claim-set :string
+       :recent-events [:vector recent-event-schema]
+       :aggregate-metrics [:maybe aggregate-metrics-schema]
+       :recent-vs-historical-delta [:maybe history-delta-schema]
+       :structural-context [:maybe target-identity-schema]
+       :operations [:vector claim-operation-proposal]})
+
+    (cond->
+      (orc/llm "propose-claim-operations"
+        :instruction claim-reflection-instruction
+        :reads [:target-type :target-id :claim-set
+                :recent-events :aggregate-metrics
+                :recent-vs-historical-delta :structural-context]
+        :writes [:operations]
+        :options {:max-retries reflection-max-retries
                   :retry-delay-ms [500 1500 3000]})
       model (assoc :model model))))
 
@@ -222,7 +550,9 @@
   (cond-> (-> event
               (dissoc :event/id :event/tags :event/timestamp))
     (some? (:event/timestamp event))
-    (assoc :timestamp (str (:event/timestamp event)))))
+    (assoc :timestamp (str (:event/timestamp event)))
+    ;; CC-21b — then reduce the value payloads to shape. See evidence-projection.
+    true evidence-projection/project-observation))
 
 (defn- gather-recent-tree-class-events
   "C-Loop-1 + Gap-3: for :tree-class targets, gather task-classified
@@ -253,9 +583,19 @@
                                           {:types #{:sheet/rlm-tree-execution-completed}
                                            :tenant-id (:tenant-id ctx)})
                                  (into []))
-        executions-by-sheet (into {}
-                                  (map (fn [e] [(:sheet-id e) e]))
-                                  all-tree-executions)
+        ;; HP-2: key executions by the bookend's [:source-sheet-id
+        ;; :source-tick-id] occurrence pair — the bookend's own :sheet-id is
+        ;; the EPHEMERAL Phase-2 sheet, a domain disjoint from the classified
+        ;; HOST :source-sheet-id, so the previous bare-:sheet-id keying made
+        ;; the exec lookup nil for EVERY observation (the reflection LLM never
+        ;; saw execution evidence for a tree-class). Bookends predating
+        ;; :source-tick-id don't participate.
+        executions-by-occurrence (into {}
+                                       (keep (fn [e]
+                                               (when (and (:source-sheet-id e)
+                                                          (:source-tick-id e))
+                                                 [[(:source-sheet-id e) (:source-tick-id e)] e])))
+                                       all-tree-executions)
         ;; Gap-3: pull all :judge/score-emitted events, group by
         ;; [sheet-id tick-id] so we can attach per-observation.
         all-judge-scores (->> (es/read (:event-store ctx)
@@ -266,7 +606,7 @@
         joined (mapv (fn [tc]
                        (let [sheet-id (:source-sheet-id tc)
                              tick-id (:source-tick-id tc)
-                             exec (get executions-by-sheet sheet-id)
+                             exec (get executions-by-occurrence [sheet-id tick-id])
                              judge-events (get judge-scores-by-sheet-tick [sheet-id tick-id])
                              cleaned-tc (clean-event-for-llm tc)]
                          (cond-> cleaned-tc
@@ -373,12 +713,24 @@
                                         :tenant-id (:tenant-id ctx)})
                               (into [])
                               (filter #(= target-id (:assigned-tree-id %))))
-        sheet-ids (into #{} (map :source-sheet-id) task-classifieds)
+        ;; HP-2: the class's occurrence identity is the [source-sheet-id
+        ;; source-tick-id] PAIR — the bare source-sheet-id is the STATIC
+        ;; workflow-definition sheet shared by every turn of a task-shape.
+        ;; The previous sheet-only set (a) matched ZERO bookends (their
+        ;; :sheet-id is the disjoint EPHEMERAL Phase-2 sheet — so
+        ;; success/failure/shapes were always 0) and (b) over-matched judge
+        ;; scores across every class sharing the host sheet (the pre-SJ-1
+        ;; misattribution, surviving here after SJ-1 fixed the read-model —
+        ;; which also silently broke read-model<->aggregate parity until now).
+        occurrence-pairs (into #{}
+                               (map (juxt :source-sheet-id :source-tick-id))
+                               task-classifieds)
         all-tree-executions (->> (es/read (:event-store ctx)
                                           {:types #{:sheet/rlm-tree-execution-completed}
                                            :tenant-id (:tenant-id ctx)})
                                  (into []))
-        relevant-execs (filter #(contains? sheet-ids (:sheet-id %))
+        relevant-execs (filter #(contains? occurrence-pairs
+                                           [(:source-sheet-id %) (:source-tick-id %)])
                                all-tree-executions)
         success-count (count (filter #(= :success (:status %)) relevant-execs))
         failure-count (count (filter #(= :failure (:status %)) relevant-execs))
@@ -387,15 +739,15 @@
                              distinct
                              count)
         ;; Gap-3: per-judge averages across observations for this
-        ;; tree-class. Pulls all :judge/score-emitted events tagged with
-        ;; sheets belonging to this class, groups by :judge-name, and
-        ;; reports the mean score so the LLM can compare a recent window
-        ;; against the stable baseline.
+        ;; tree-class. Judge events carry the HOST sheet-id + the TURN's
+        ;; tick-id, so the same occurrence-pair scoping applies (matches the
+        ;; SJ-1-fixed tree-class-judge-averages read-model — parity restored).
         relevant-judge-scores (->> (es/read (:event-store ctx)
                                             {:types #{:judge/score-emitted}
                                              :tenant-id (:tenant-id ctx)})
                                    (into [])
-                                   (filter #(contains? sheet-ids (:sheet-id %))))
+                                   (filter #(contains? occurrence-pairs
+                                                       [(:sheet-id %) (:tick-id %)])))
         judge-averages (when (seq relevant-judge-scores)
                          (into {}
                                (map (fn [[judge-name entries]]
@@ -481,125 +833,6 @@
     1))
 
 ;; =============================================================================
-;; Gap-6 — anti-recency runtime validator
-;; =============================================================================
-;;
-;; The reflection-instruction prompt asks the LLM to update confidences
-;; gradually + never erase strong principles on one bad burst. Gap-6
-;; backs that ask with runtime code. The validator runs post-LLM,
-;; pre-emission. For each strength/weakness entry in the PRIOR body
-;; that is "protected" (high confidence + high evidence-count), the
-;; validator:
-;;   - REJECTS the new body if the entry is missing entirely
-;;   - CLAMPS the new entry's confidence if it dropped > max-decrease
-;;
-;; All comparisons match by :trait field (the actionable handle).
-;; First consolidation (prior body nil) passes through untouched —
-;; nothing to protect yet.
-
-(def ^:private anti-recency-defaults
-  "Tunable thresholds with spec defaults. A future event-sourced config
-   slice will let operators override these via :ontology/set-anti-
-   recency-config; for Gap-6's tracer-bullet slices the defaults apply."
-  {:protected-confidence-threshold 0.7
-   :protected-evidence-count-threshold 5
-   :max-confidence-decrease-per-cycle 0.2})
-
-(defn- protected-entry?
-  "An entry from the prior body is PROTECTED when its confidence + evidence
-   passed the configured floors. Only protected entries trigger validator
-   reject/clamp behavior — low-evidence speculative entries are free to
-   churn."
-  [entry {:keys [protected-confidence-threshold
-                 protected-evidence-count-threshold]}]
-  (and (number? (:confidence entry))
-       (number? (:evidence-count entry))
-       (>= (:confidence entry) protected-confidence-threshold)
-       (>= (:evidence-count entry) protected-evidence-count-threshold)))
-
-(defn- find-by-trait
-  "Locate an entry in a vector of {:trait ...} maps. The :trait field is
-   the actionable handle the consolidator/LLM author against — we match
-   structurally on its string value, not on any positional/identity
-   relation."
-  [entries trait]
-  (first (filter #(= trait (:trait %)) entries)))
-
-(defn- clamp-entry-in-bucket
-  "Return the body with the entry whose :trait matches `trait` (in
-   bucket :strengths or :weaknesses) updated to carry `clamped-confidence`
-   instead of its current :confidence. Other fields untouched."
-  [body bucket trait clamped-confidence]
-  (update body bucket
-          (fn [entries]
-            (mapv (fn [e]
-                    (if (= trait (:trait e))
-                      (assoc e :confidence clamped-confidence)
-                      e))
-                  entries))))
-
-(defn- anti-recency-validate
-  "Validate that the new body doesn't regress protected entries from
-   the prior body. Returns {:decision <:ok | :reject | :clamp>
-   :body <body> :audit [<entry>...]}.
-
-   For every protected entry (high :confidence + high :evidence-count)
-   in the prior body:
-     - MISSING from new body → :reject the new body; do not emit.
-     - confidence decreased by more than max-confidence-decrease-per-cycle
-       → :clamp the new entry's confidence to prior - max-decrease, and
-         continue.
-   Otherwise pass through unchanged."
-  [prior-body new-body config]
-  (let [cfg (merge anti-recency-defaults config)
-        max-decrease (:max-confidence-decrease-per-cycle cfg)]
-    (if (nil? prior-body)
-      {:decision :ok :body new-body :audit []}
-      (let [audit (atom [])
-            body-atom (atom new-body)]
-        (doseq [bucket [:strengths :weaknesses]]
-          (doseq [prior-entry (get prior-body bucket)]
-            (when (protected-entry? prior-entry cfg)
-              (let [trait (:trait prior-entry)
-                    new-entry (find-by-trait (get @body-atom bucket) trait)]
-                (cond
-                  (nil? new-entry)
-                  (swap! audit conj
-                         {:event-kind :rejection
-                          :bucket bucket
-                          :entry-trait trait
-                          :prior-confidence (:confidence prior-entry)
-                          :prior-evidence-count (:evidence-count prior-entry)
-                          :reason :missing-protected-entry})
-
-                  (and (number? (:confidence new-entry))
-                       (> (- (:confidence prior-entry) (:confidence new-entry))
-                          max-decrease))
-                  (let [prior-conf (:confidence prior-entry)
-                        llm-conf (:confidence new-entry)
-                        clamped (- prior-conf max-decrease)]
-                    (swap! body-atom clamp-entry-in-bucket bucket trait clamped)
-                    (swap! audit conj
-                           {:event-kind :clamp
-                            :bucket bucket
-                            :entry-trait trait
-                            :prior-confidence prior-conf
-                            :llm-confidence llm-conf
-                            :clamped-confidence clamped
-                            :reason :confidence-decrease-exceeded-max})))))))
-        (let [audit-vec @audit
-              final-body @body-atom]
-          (cond
-            (some #(= :rejection (:event-kind %)) audit-vec)
-            {:decision :reject :body final-body :audit audit-vec}
-
-            (some #(= :clamp (:event-kind %)) audit-vec)
-            {:decision :clamp :body final-body :audit audit-vec}
-
-            :else
-            {:decision :ok :body final-body :audit audit-vec}))))))
-
-;; =============================================================================
 ;; C-2d-2 — parent-tree-id hydration
 ;;
 ;; When the consolidator emits a new tree-fingerprint description, the
@@ -636,6 +869,140 @@
        (str/join "\n" (map #(str "- " %) (or (:capabilities body) [])))
        "\n\nREPRESENTATIVE USES:\n"
        (str/join "\n" (map #(str "- " %) (or (:representative-uses body) [])))))
+
+;; =============================================================================
+;; CC-22b — contract ParentInferenceQuery (bounded, de-duplicated rendering
+;; at the SIGNATURE seam; the fold — assemble-body/descriptions* — is
+;; untouched and the stored body stays full).
+;;
+;; Motivating measurement (CC-22a, inspect-accepted): 43/86 real targets'
+;; fully-ASSEMBLED renders exceed the 461-token query budget TODAY (mean
+;; 1.64x inflation vs legacy prose) because `assemble-summary` already joins
+;; every capability + representative use into `:summary` and the builder
+;; above then appends the same two lists AGAIN; positional encoder truncation
+;; then discards the LAST-rendered section first — which is the guards.
+;; =============================================================================
+
+(def ^:private by-earned-support
+  "read-models' claim ranking (support desc, tie-break :claim-id) — reached
+   through its own var so this seam and the fold's rendering order cannot
+   drift apart. The order is the spec's `global support-rank` and the
+   tie-break keeps a rebuild from the log byte-identical."
+  @#'read-models/by-earned-support)
+
+(defn- claim-query-render
+  "One-pass render of a claim seq for the parent-inference query: the
+   assemble-summary section order (Capabilities, Representative uses,
+   Strengths, Known weaknesses, Avoid when), each claim's content exactly
+   ONCE (invariant.NoDuplicateClaimContent — the measured 1.64x inflation
+   was summary+sections double-rendering, not knowledge growth). Bounding
+   happens by claim RANK upstream, never by token position, so the guards
+   cannot be pushed last-and-truncated by the encoder."
+  [claims]
+  (let [contents (fn [kind]
+                   (into [] (comp (filter #(= kind (:kind %)))
+                                  (map :content)
+                                  (distinct))
+                         claims))
+        section (fn [label items]
+                  (when (seq items)
+                    (str label ": " (str/join "; " items) ".")))
+        parts (remove nil?
+                      [(section "Capabilities" (contents :capability))
+                       (section "Representative uses" (contents :representative-use))
+                       (section "Strengths" (contents :strength))
+                       (section "Known weaknesses" (contents :weakness))
+                       (section "Avoid when" (contents :guard))])]
+    (str "TREE SUMMARY:\n" (str/join " " parts))))
+
+(defn- query-fits-fn
+  "A predicate `(fits? query-string)` — true when the string fits the
+   CONFIGURED encoder query budget (`maximum_query_tokens` minus the query
+   special tokens), measured by the REAL tokenizer via the colbert
+   interface's `query-truncation` (tokenizer-only, the same resolution order
+   production searches use — never a hardcoded budget, never chars/4).
+
+   Resolved lazily: ontology ships without a ColBERT dependency. nil when
+   colbert is not on the classpath — there is then no ColBERT query budget
+   to enforce (classification runs on graph + DJL-embedding signals) and the
+   caller LOUDLY reports the unbounded render."
+  []
+  (when-let [qt (try (requiring-resolve 'ai.obney.orc.colbert.interface/query-truncation)
+                     (catch Throwable _ nil))]
+    (fn [q] (not (:query-truncated? (qt {} {:query q}))))))
+
+(defn bounded-inference-query
+  "CC-22b (contract ParentInferenceQuery): render a target's parent-inference
+   query at the signature seam.
+
+   LEGACY (empty claim set — every production target today): delegates to
+   `build-parent-inference-signature`, BYTE-IDENTICALLY. Behavior-neutral
+   until migration day.
+
+   CLAIM-BACKED: renders the largest global support-rank PREFIX of the claim
+   set (tie-break :claim-id; first-overflow stop) whose one-pass render fits
+   the configured budget. Exclusion is OBSERVABLE — the unrendered claim ids
+   are returned AND logged (`::inference-query-claims-excluded`), never
+   silently capped; every excluded claim stays durable in the claim set.
+
+   Returns {:query :rendered-claim-ids :excluded-claim-ids :claim-backed?}.
+
+   Public: the production callers are the consolidator's two hydration
+   inference calls; tests exercise this seam with the banked real fixtures."
+  ([body claims] (bounded-inference-query body claims nil))
+  ([body claims {:keys [target-id]}]
+   (if (empty? claims)
+     {:query (build-parent-inference-signature body)
+      :rendered-claim-ids []
+      :excluded-claim-ids []
+      :claim-backed? false}
+     (let [ranked (vec (by-earned-support claims))
+           fits? (query-fits-fn)
+           kept-n (if fits?
+                    (try
+                      (loop [n 1]
+                        (cond
+                          (> n (count ranked)) (count ranked)
+                          (fits? (claim-query-render (subvec ranked 0 n))) (recur (inc n))
+                          :else (dec n)))
+                      (catch Exception e
+                        (u/log ::inference-query-budget-unavailable
+                               :target-id target-id
+                               :reason :tokenizer-error
+                               :error (.getMessage e))
+                        (count ranked)))
+                    (do (u/log ::inference-query-budget-unavailable
+                               :target-id target-id
+                               :reason :colbert-not-on-classpath)
+                        (count ranked)))
+           kept (subvec ranked 0 kept-n)
+           excluded (subvec ranked kept-n)]
+       (when (seq excluded)
+         (u/log ::inference-query-claims-excluded
+                :target-id target-id
+                :rendered-claim-count (count kept)
+                :excluded-claim-count (count excluded)
+                :excluded-claim-ids (mapv :claim-id excluded)))
+       {:query (claim-query-render kept)
+        :rendered-claim-ids (mapv :claim-id kept)
+        :excluded-claim-ids (mapv :claim-id excluded)
+        :claim-backed? true}))))
+
+(defn- claims-for-inference
+  "The target's current claim set for query rendering, or [] with a LOUD log
+   when the descriptions read model is unreachable in this context (CC-27
+   posture: an unavoidable fallback must announce itself, never default
+   silently). Production contexts always carry the read-model cache, so the
+   fallback arm exists for degraded contexts only: the QUERY then degrades to
+   the legacy render instead of the whole hydration failing."
+  [context target-type target-id]
+  (try (ontology/get-claims context target-type target-id)
+       (catch Exception e
+         (u/log ::inference-claims-read-unavailable
+                :target-id target-id
+                :target-type target-type
+                :error (.getMessage e))
+         [])))
 
 ;; =============================================================================
 ;; R05d — behavioral-subtree-ids hydration
@@ -687,7 +1054,13 @@
     (nil? current-description)
     (let [classify-behaviors (requiring-resolve
                                'ai.obney.orc.ontology.interface/classify-behaviors)
-          signature (build-parent-inference-signature body)
+          ;; CC-22b: claim-backed targets render the bounded de-duplicated
+          ;; query; targets with no claims (all of production today) render
+          ;; byte-identically to the legacy builder.
+          signature (:query (bounded-inference-query
+                              body
+                              (claims-for-inference context target-type target-id)
+                              {:target-id target-id}))
           result (try
                    (classify-behaviors context
                                        {:task-signature signature
@@ -786,7 +1159,13 @@
     (nil? current-description)
     (let [classify-task (requiring-resolve
                           'ai.obney.orc.ontology.interface/classify-task)
-          signature (build-parent-inference-signature body)
+          ;; CC-22b: claim-backed targets render the bounded de-duplicated
+          ;; query; targets with no claims (all of production today) render
+          ;; byte-identically to the legacy builder.
+          signature (:query (bounded-inference-query
+                              body
+                              (claims-for-inference context target-type target-id)
+                              {:target-id target-id}))
           result (try
                    (classify-task context
                                   {:task-signature signature
@@ -814,9 +1193,460 @@
 
     :else body))
 
-(defn- consolidate!-inner
-  "The actual consolidation body — split out so the public consolidate!
-   can do a clean budget-gate check before kicking off the LLM workflow."
+;; =============================================================================
+;; CC-5 — the claim path
+;; =============================================================================
+
+(defn- claim-path-target-type?
+  "Which granularities consolidate as CLAIM DELTAS rather than as a whole body.
+
+   Today: `:tree-class` only, and the boundary is a consequence of two concrete
+   blockers rather than a preference.
+
+   `:node-type` and `:node-instance` CANNOT join the claim model at all. CC-1's
+   `:ontology/record-claim-deltas` types `:target-identifier` as
+   `[:or :string :uuid]` (so does the recorded event, and so does the spec's
+   ClaimDeltasRecorded). A node-type target is a KEYWORD (`:llm`) and a
+   node-instance target is a `[sheet-id node-id]` TUPLE. Neither is
+   representable, and stringifying them would key the claim set at a DIFFERENT
+   read-model node from the description they belong to — `[:node-type \":llm\"]`
+   is not `[:node-type :llm]` — which would fork one target's Living
+   Description into two. That is a schema change (CC-1's contract and the
+   spec's), not something this slice may make silently.
+
+   `:tree-fingerprint` is blocked by a different thing: its body is the ONLY
+   carrier for the C-2d-2 `:parent-tree-id` and R05d `:behavioral-subtree-ids`
+   graph metadata, which the reactive projector and the behavior:composes-into
+   edge growth both read off the emitted description event. CC-3's
+   `assemble-body` can only CARRY those keys FORWARD from a previous body, so a
+   brand-new tree-fingerprint consolidating through the claim path would never
+   be parented and would never grow its composes-into edges. A ClaimDelta has
+   no field for graph metadata, so giving it one is a spec change too.
+
+   Both are reported as findings rather than worked around. What matters for
+   the two-writers-on-one-slot defect is that the split is TOTAL: a target that
+   has a claim path never takes the body path, and a target that takes the body
+   path can never have claims. No `:current` slot has two writers."
+  [target-type]
+  (= :tree-class target-type))
+
+(def ^:private permitted-delta-keys
+  "The key set an operation may carry, DERIVED from `claim-delta` rather than
+   restated, so the two cannot drift apart.
+
+   This exists because the delta schema is an OPEN malli map. A drifted key —
+   P-A observed a `:guard` where `:context-guard` belonged, once in 178
+   operations — VALIDATES, rides through the command, lands on the event, and
+   its data is then never read by anything. Silent. Rejecting the operation
+   here is the only place that failure is visible at all."
+  (into #{} (map first) (m/children (m/schema ontology-schemas/claim-delta))))
+
+(def ^:private operation-precedence
+  "Which operation wins when a consolidation names the same claim twice.
+
+   `:edit` outranks everything because CC-2 makes an edit a SUPERSET of a
+   support — it reinforces AND rewords — so collapsing the `{:support, :edit}`
+   pair P-A observed in 4 of 20 rows loses nothing at all. `:contradict`
+   outranks a bare `:support` because withheld disagreement is the signal this
+   corpus is thinnest on, and with the seed at 2 a single contradiction can no
+   longer erase anything."
+  {:edit 3 :contradict 2 :support 1})
+
+(defn- collapse-operations
+  "ONE CONSOLIDATION IS ONE OCCURRENCE.
+
+   CC-2 applies deltas sequentially, so two operations naming the same claim
+   increment its support twice from a single evidence window. That inflation
+   feeds straight into CC-7's validation threshold and CC-9's enforcement
+   weighting — a claim would earn the right to suppress behaviours by being
+   mentioned twice in one paragraph. P-A measured this in 4 of 20 real rows.
+
+   Keeps at most one operation per `:target-claim` (highest precedence, ties
+   broken by the model's own last mention) and at most one `:add` per
+   (kind, content) pair, and preserves the model's ordering otherwise."
+  [ops]
+  (let [indexed (vec (map-indexed vector ops))
+        add-keep (:keep (reduce (fn [{:keys [seen keep]} [i op]]
+                                  (let [k [(:kind op) (:content op)]]
+                                    (if (contains? seen k)
+                                      {:seen seen :keep keep}
+                                      {:seen (conj seen k) :keep (conj keep i)})))
+                                {:seen #{} :keep #{}}
+                                (filter (fn [[_ op]] (= :add (:operation op))) indexed)))
+        other-keep (->> indexed
+                        (filter (fn [[_ op]] (not= :add (:operation op))))
+                        (group-by (fn [[_ op]] (:target-claim op)))
+                        (map (fn [[_ group]]
+                               (first (last (sort-by (fn [[i op]]
+                                                       [(get operation-precedence (:operation op) 0) i])
+                                                     group)))))
+                        (into #{}))
+        keep (into add-keep other-keep)]
+    (mapv second (filter (fn [[i _]] (contains? keep i)) indexed))))
+
+(defn- ->enum-keyword
+  "Coerce ONE enum-valued field from the wire.
+
+   The reflection arrives as structured JSON, so its enums come back as STRINGS
+   — the live model answers `{:operation \"support\"}` where the schema declares
+   `:support`. This is the wire boundary and it belongs here rather than in the
+   schema, because the schema is also what documents the value the rest of the
+   system passes around.
+
+   A LIVE-QA FINDING, and the reason a stub is never sufficient: every stubbed
+   test in this repo hands the consolidator keywords, so the whole contract
+   suite was green while the real model's every operation was being rejected as
+   malformed. Tolerates `\"support\"`, `\":support\"` and `:support` alike;
+   anything else is left untouched so the schema rejects it."
+  [v]
+  (cond
+    (keyword? v) v
+    (string? v)  (let [s (str/trim v)]
+                   (if (str/blank? s) nil (keyword (str/replace s #"^:" ""))))
+    :else v))
+
+(defn- coerce-proposal
+  "Normalise one proposed operation off the wire before it is validated."
+  [op]
+  (cond-> op
+    (contains? op :operation) (update :operation ->enum-keyword)
+    (contains? op :kind)      (update :kind ->enum-keyword)))
+
+(defn- prepare-operations
+  "Turn the reflection's proposed operations into dispatchable claim deltas.
+
+   Five things happen here, and none of them can be done by a prompt:
+
+   0. WIRE ENUMS ARE COERCED to keywords (see `->enum-keyword`).
+   1. UNKNOWN KEYS ARE REJECTED (see `permitted-delta-keys`).
+   2. Malformed operations are rejected against `claim-operation-proposal`
+      rather than reaching a command that would take them.
+   3. `:kind` AND `:content` are FILLED from the named claim for non-`:add`
+      operations. The model is not asked to restate the kind or the wording of a
+      claim it is only reinforcing — and observably does not — while
+      `claim-delta` requires both.
+   4. Operations are COLLAPSED per target claim (see `collapse-operations`).
+
+   Finally the episodes are attached IN CODE from the evidence window — the
+   model is never asked for occurrence ids, which is what keeps id fabrication
+   at zero. An operation that arrived carrying its own episodes (a mechanical
+   writer rather than the reflection LLM) keeps them.
+
+   Returns `{:deltas [...] :rejected [{:operation .. :reason ..} ...]}`."
+  [operations claims episodes]
+  (let [by-id (into {} (map (juxt :claim-id identity)) claims)
+        rejected (volatile! [])
+        reject! (fn [op reason] (vswap! rejected conj {:operation op :reason reason}) nil)
+        normalized
+        (into []
+              (keep (fn [raw]
+                      (let [op (when (map? raw) (coerce-proposal raw))]
+                        (cond
+                          (not (map? raw))
+                          (reject! raw :not-a-map)
+
+                          (seq (remove permitted-delta-keys (keys op)))
+                          (reject! op :unknown-keys)
+
+                          (not (m/validate claim-operation-proposal op))
+                          (reject! op :malformed-operation)
+
+                          :else
+                          (let [add? (= :add (:operation op))
+                                target (:target-claim op)
+                                claim (get by-id target)
+                                kind (or (:kind op) (:kind claim))
+                                content (or (not-empty (str/trim (str (:content op))))
+                                            (:content claim))]
+                            (cond
+                              (and add? (nil? (:kind op)))
+                              (reject! op :add-without-kind)
+
+                              (and add? (nil? content))
+                              (reject! op :add-without-content)
+
+                              (and (not add?) (str/blank? (str target)))
+                              (reject! op :missing-target-claim)
+
+                              ;; A non-add naming a claim that is not in the set
+                              ;; AND supplying no kind (or no wording) cannot be
+                              ;; expressed as a delta at all. (A non-add that
+                              ;; DOES carry both is dispatched: CC-2's fold
+                              ;; deliberately tolerates an unresolvable target as
+                              ;; a no-op, because a claim retiring under a
+                              ;; concurrent consolidation is normal learning, not
+                              ;; a malformed command.)
+                              (or (nil? kind) (nil? content))
+                              (reject! op :unresolvable-target-claim)
+
+                              :else
+                              (cond-> (assoc op :kind kind :content content)
+                                add? (dissoc :target-claim))))))))
+              operations)]
+    {:deltas (mapv (fn [op]
+                     (assoc op
+                            :episodes (vec (or (seq (:episodes op)) episodes))
+                            :from-legacy-corpus (boolean (:from-legacy-corpus op))
+                            ;; CC-6, and it is a GUARD not a default. A
+                            ;; reflection operation always rests on the turns
+                            ;; this consolidation reasoned over, so its basis is
+                            ;; fixed IN CODE and stamped over whatever the model
+                            ;; said — the same discipline element 4 above already
+                            ;; applies to `:episodes`. `permitted-delta-keys` is
+                            ;; derived from `claim-delta`, so declaring
+                            ;; `:evidence-basis` there made it a key the model is
+                            ;; now ALLOWED to emit; without this line a model that
+                            ;; emitted `:evidence-basis :legacy-corpus` on a
+                            ;; consolidation with an empty evidence window would
+                            ;; talk its way straight past CC-4's guard.
+                            :evidence-basis :judged-occurrences))
+                   (collapse-operations normalized))
+     :rejected @rejected}))
+
+(def ^:private max-episodes-per-delta
+  "How many of the evidence window's occurrences ride on one delta.
+
+   The window itself is capped at `recent-window-size` (500). Filing all 500 on
+   every claim on every consolidation would grow `:supporting-episodes`
+   without bound — CC-2's fold appends without de-duplicating, and it is not
+   this slice's to change — which is the same unbounded-growth defect CC-13
+   found in the injection sidecar, relocated into the claim set. The most
+   RECENT occurrences are kept: they are the ones a reader would re-examine and
+   the ones most likely to still resolve against judge evidence."
+  50)
+
+(defn- occurrence-pair
+  "The HP-2 `[sheet-id tick-id]` occurrence pair for one observation.
+
+   Prefers `:source-*`: a bookend's own `:sheet-id` is the EPHEMERAL Phase-2
+   sheet, a domain disjoint from the classified HOST sheet, and a static
+   task-shape's sheet-id is shared across every turn — the tick is what makes
+   the reference resolvable. That is the SJ-1 join lesson, and getting it wrong
+   here would hand CC-4's guard occurrences it can never ground."
+  [ev]
+  (let [s (or (:source-sheet-id ev) (:sheet-id ev))
+        t (or (:source-tick-id ev) (:tick-id ev))]
+    (when (and (uuid? s) (uuid? t)) [s t])))
+
+(defn- evidence-window-episodes
+  "The occurrences this consolidation reasoned over, oldest first, deduped and
+   capped. This is what CC-4's guard resolves against judge evidence."
+  [recent-events]
+  (->> recent-events
+       (keep occurrence-pair)
+       distinct
+       vec
+       (take-last max-episodes-per-delta)
+       vec))
+
+(defn- render-claim-set
+  "The numbered pool, ONE LINE PER CLAIM, quoted, in the delta's own
+   vocabulary. See the four load-bearing prompt elements above: this rendering
+   alone eliminated three of the four failure shapes P-A observed."
+  [claims]
+  (if (empty? claims)
+    "(this target has no claims yet — the set is empty)"
+    (->> claims
+         (map-indexed
+           (fn [i c]
+             (str (inc i) ". "
+                  "claim-id=" (pr-str (:claim-id c)) " "
+                  "kind=" (pr-str (:kind c)) " "
+                  "support=" (:support c) " "
+                  "content=" (pr-str (:content c)))))
+         (str/join "\n"))))
+
+(defn- record-claim-deltas!
+  "Dispatch one batch of deltas against the target's CURRENT claim-set version.
+
+   The version is re-read immediately before the dispatch because a backfill
+   may have just advanced it, and because `record-claim-deltas` refuses a stale
+   batch rather than racing it.
+
+   CC-31: `model-provenance` is the completion that PROPOSED the deltas
+   (trace-id / model / usage), threaded exactly as the retained description
+   path threads it. Nil for writers with no model — the legacy-body backfill
+   converts authored prose, no LLM proposed it — and the command omits the
+   field rather than sending nil."
+  [context target-type target-id deltas evidence-event-count model-provenance]
+  (command-processor/process-command
+    (assoc context :command
+           (cond-> {:command/name :ontology/record-claim-deltas
+                    :command/id (random-uuid)
+                    :command/timestamp (time/now)
+                    :granularity target-type
+                    :target-identifier target-id
+                    :deltas deltas
+                    :evidence-event-count evidence-event-count
+                    :claim-set-version (ontology/get-claim-set-version
+                                         context target-type target-id)}
+             (some? model-provenance)
+             (assoc :model-provenance model-provenance)))))
+
+(defn- legacy-body->claim-deltas
+  "Every insight a legacy whole-body description holds, expressed as `:add`
+   deltas — the body's sections mapped onto the claim kinds CC-3 assembles them
+   back out of."
+  [body]
+  (let [add (fn [kind content guard recommendation]
+              (when-not (str/blank? (str content))
+                {:operation :add
+                 :kind kind
+                 :content (str content)
+                 :context-guard guard
+                 :recommendation recommendation
+                 :episodes []
+                 :from-legacy-corpus true}))]
+    (vec (concat
+           (keep #(add :capability % nil nil) (:capabilities body))
+           (keep #(add :representative-use % nil nil) (:representative-uses body))
+           (keep #(add :guard % nil nil) (:avoid-when body))
+           (keep #(add :strength (:trait %) (:good-when %) (:recommended-pattern %))
+                 (:strengths body))
+           (keep #(add :weakness (:trait %) (:avoid-when %) (:recommended-alternative %))
+                 (:weaknesses body))))))
+
+(defn- maybe-backfill-legacy-body!
+  "THE TWO-WRITERS-ON-ONE-SLOT DECISION, and it is the one this slice had to
+   make: what happens to a target that has only a LEGACY body when the claim
+   path takes over.
+
+   Doing nothing was not an option. CC-3 recomputes `:current` from the claim
+   set on every claim event, so the first delta to land on a legacy-bodied
+   target would REPLACE a body assembled from a lifetime of consolidations with
+   one assembled from that consolidation's two or three claims. That is exactly
+   the context collapse ADR 0021 exists to make unrepresentable, arriving
+   through the migration rather than through the model.
+
+   Refusing to consolidate such targets until CC-12's migration lands was the
+   alternative, and it is worse: every live target has a legacy body, so the
+   loop this slice exists to close would be dead on arrival.
+
+   So the body is CONVERTED before the reflection runs. Each of its insights
+   becomes an `:add` carrying `:from-legacy-corpus true` and NO episodes — the
+   declared-provenance arm CC-4 built for precisely this: knowledge that
+   asserts a prior corpus rather than a judge event, so there is no judge
+   evidence to resolve and no starved score to catch. CC-7 then keeps these
+   claims honest: with no post-guard episodes they can be visible and
+   well-supported and still cannot validate, so a backfilled claim cannot
+   suppress a behaviour on the strength of evidence nobody can re-examine. It
+   can earn that right later, by being reinforced from real episodes.
+
+   Runs once per target by construction: after it, the target has claims.
+
+   CC-12 owns the BULK migration of the historical corpus. This is the
+   just-in-time case at the consolidation boundary, and CC-12 should either
+   reuse `legacy-body->claim-deltas` or supersede this."
+  [context target-type target-id]
+  (let [body (ontology/get-description context target-type target-id)
+        claims (ontology/get-claims context target-type target-id)]
+    (when (and body (empty? claims))
+      (let [deltas (legacy-body->claim-deltas body)]
+        (when (seq deltas)
+          (u/log ::legacy-body-converted-to-claims
+                 :target-type target-type
+                 :target-id target-id
+                 :claim-count (count deltas))
+          (record-claim-deltas! context target-type target-id deltas 0 nil))))))
+
+(defn- consolidate-claims!
+  "CC-5: consolidate a target by proposing OPERATIONS over its claim set.
+
+   No whole-body description event is emitted anywhere on this path. The body
+   is assembled from the claims by CC-3's fold, which makes the assembled body
+   single-writer and the interleaving defect unrepresentable rather than
+   detected."
+  [context target-type target-id]
+  (maybe-backfill-legacy-body! context target-type target-id)
+  (let [claims (ontology/get-claims context target-type target-id)
+        recent-events (gather-recent-events context target-type target-id)
+        aggregate-metrics (gather-aggregate-metrics context target-type target-id)
+        recent-vs-historical-delta (compute-delta aggregate-metrics recent-events)
+        structural-context (gather-structural-context context target-type target-id)
+        episodes (evidence-window-episodes recent-events)
+        ;; CC-31: same explicit pin the body path honors — a caller running a
+        ;; provenance-sensitive workflow may pin the consolidator's model
+        ;; independently of the ambient provider default, and the node's
+        ;; :model is what the completion event (and therefore the recorded
+        ;; deltas' provenance) carries.
+        model (or (:ontology-consolidator-model context)
+                  (:model context))
+        sheet-id (orc/build-workflow! context (claim-reflection-workflow model))
+        exec-result (execute-reflection context sheet-id
+                                        {:target-type target-type
+                                         :target-id target-id
+                                         :claim-set (render-claim-set claims)
+                                         :recent-events recent-events
+                                         :aggregate-metrics aggregate-metrics
+                                         :recent-vs-historical-delta recent-vs-historical-delta
+                                         :structural-context structural-context})
+        ;; CC-31: which completion proposed these operations — matched from
+        ;; the store exactly as the retained description path matches it
+        ;; (the completion event whose tick-id is this execution's trace-id
+        ;; and which carries a :model).
+        model-completion (some #(when (and (= (:trace-id exec-result) (:tick-id %))
+                                           (:model %))
+                                  %)
+                               (into [] (es/read (:event-store context)
+                                                {:tenant-id (:tenant-id context)
+                                                 :types #{:sheet/node-execution-completed}})))
+        model-provenance (when model-completion
+                           {:trace-id (:trace-id exec-result)
+                            :model (:model model-completion)
+                            :usage (:usage model-completion)})
+        operations (get-in exec-result [:outputs :operations])]
+    (cond
+      ;; CC-28 (FailureIsVisible): a reflection that never answered leaves
+      ;; a durable failure record — ONE per attempt-set — instead of only
+      ;; a log line indistinguishable from health.
+      (not= :success (:status exec-result))
+      (record-consolidation-failure! context target-type target-id exec-result)
+
+      (not (sequential? operations))
+      (u/log ::claim-reflection-produced-no-operation-list
+             :target-type target-type :target-id target-id
+             :outputs-keys (vec (keys (:outputs exec-result))))
+
+      :else
+      (let [{:keys [deltas rejected]} (prepare-operations operations claims episodes)
+            touched (into #{} (keep :target-claim) deltas)]
+        (when (seq rejected)
+          (u/log ::claim-operations-rejected
+                 :target-type target-type :target-id target-id
+                 :rejections (mapv :reason rejected)))
+        ;; The measurement P-B and CC-11 calibrate against. Silence is SAFE in a
+        ;; delta world (the claim persists; under whole-body rewrite silence
+        ;; meant deletion) but it is not neutral: if only a fraction of the
+        ;; claims the evidence supports are reinforced, every support count —
+        ;; and therefore every threshold and weighting curve calibrated against
+        ;; that distribution — is calibrated against a distorted one. Logged
+        ;; per consolidation so the rate is measurable in production instead of
+        ;; being inferred.
+        (u/log ::claim-consolidation-completed
+               :target-type target-type :target-id target-id
+               :pool-size (count claims)
+               :pool-claims-touched (count touched)
+               :pool-claims-silent (- (count claims) (count touched))
+               :operations-proposed (count operations)
+               :operations-rejected (count rejected)
+               :deltas-dispatched (count deltas)
+               :evidence-event-count (count recent-events)
+               :evidence-episode-count (count episodes))
+        (when (seq deltas)
+          (record-claim-deltas! context target-type target-id
+                                deltas (count recent-events)
+                                model-provenance))))))
+
+(defn- consolidate-body!
+  "The LEGACY whole-body path — see `claim-path-target-type?` for exactly which
+   granularities still take it and why.
+
+   The anti-recency runtime validator that used to sit between the reflection
+   and the emission is GONE. Nothing here rejects or clamps a consolidation.
+   The prompt still asks for gradual movement against the stable baseline,
+   because on this path a consolidation really does rewrite the whole body and
+   that instruction is still the right one — but the ask is no longer backed by
+   a string-matching valve that read every rephrasing as an erasure."
   [context target-type target-id]
   (let [current-description (ontology/get-description context target-type target-id)
         recent-events (gather-recent-events context target-type target-id)
@@ -830,14 +1660,14 @@
         model (or (:ontology-consolidator-model context)
                   (:model context))
         sheet-id (orc/build-workflow! context (reflection-workflow model))
-        exec-result (orc/execute context sheet-id
-                                  {:target-type target-type
-                                   :target-id target-id
-                                   :current-description current-description
-                                   :recent-events recent-events
-                                   :aggregate-metrics aggregate-metrics
-                                   :recent-vs-historical-delta recent-vs-historical-delta
-                                   :structural-context structural-context})
+        exec-result (execute-reflection context sheet-id
+                                        {:target-type target-type
+                                         :target-id target-id
+                                         :current-description current-description
+                                         :recent-events recent-events
+                                         :aggregate-metrics aggregate-metrics
+                                         :recent-vs-historical-delta recent-vs-historical-delta
+                                         :structural-context structural-context})
         model-completion (some #(when (and (= (:trace-id exec-result) (:tick-id %))
                                            (:model %))
                                   %)
@@ -881,12 +1711,11 @@
                (maybe-hydrate-behavioral-subtree-ids context target-type target-id
                                                       current-description body))]
     (cond
+      ;; CC-28 (FailureIsVisible): same durable death certificate the claim
+      ;; path records — the LEGACY body path's targets die just as silently
+      ;; without it.
       (not= :success (:status exec-result))
-      (u/log ::consolidate-execution-failed
-             :target-type target-type
-             :target-id target-id
-             :status (:status exec-result)
-             :error (:error exec-result))
+      (record-consolidation-failure! context target-type target-id exec-result)
 
       (not (m/validate ontology-schemas/description-body body))
       (u/log ::consolidate-validation-failed
@@ -895,86 +1724,33 @@
              :explain (me/humanize (m/explain ontology-schemas/description-body body)))
 
       :else
-      (let [;; Gap-6: post-LLM, pre-emission anti-recency validator.
-            ;; Compares this body against the prior body and rejects
-            ;; (or clamps) regressions of high-confidence + high-
-            ;; evidence-count entries. See `anti-recency-validate`.
-            validation (anti-recency-validate current-description body {})
-            decision (:decision validation)
-            final-body (:body validation)]
-        (cond
-          (= :reject decision)
-          (do
-            (doseq [audit-entry (:audit validation)]
-              (when (= :rejection (:event-kind audit-entry))
-                (command-processor/process-command
-                  (assoc context :command
-                         {:command/name :ontology/record-anti-recency-rejection
-                          :command/id (random-uuid)
-                          :command/timestamp (time/now)
-                          :target-type target-type
-                          :target-id target-id
-                          :bucket (:bucket audit-entry)
-                          :entry-trait (:entry-trait audit-entry)
-                          :prior-confidence (:prior-confidence audit-entry)
-                          :prior-evidence-count (:prior-evidence-count audit-entry)
-                          :reason (:reason audit-entry)
-                          :rejected-body body
-                          :model-provenance model-provenance}))))
-            (u/log ::anti-recency-rejection
-                   :target-type target-type
-                   :target-id target-id
-                   :audit-entry-count (count (:audit validation))))
-
-          :else
-          (do
-            (when (= :clamp decision)
-              (doseq [audit-entry (:audit validation)]
-                (when (= :clamp (:event-kind audit-entry))
-                  (command-processor/process-command
-                    (assoc context :command
-                           {:command/name :ontology/record-anti-recency-clamp
-                            :command/id (random-uuid)
-                            :command/timestamp (time/now)
-                            :target-type target-type
-                            :target-id target-id
-                            :bucket (:bucket audit-entry)
-                            :entry-trait (:entry-trait audit-entry)
-                            :prior-confidence (:prior-confidence audit-entry)
-                            :llm-confidence (:llm-confidence audit-entry)
-                            :clamped-confidence (:clamped-confidence audit-entry)
-                            :reason (:reason audit-entry)}))))
-              (u/log ::anti-recency-clamp
-                     :target-type target-type
-                     :target-id target-id
-                     :clamp-entry-count (count (:audit validation))))
-            (command-processor/process-command
-              (assoc context :command (record-description-command target-type target-id final-body
-                                                                  model-provenance)))
-            ;; R05d: after the description-updated event lands, grow the
-            ;; behavior:composes-into graph for any newly-observed (behavior
-            ;; → shell) pairs. Sticky / idempotent — re-running on the same
-            ;; pair is a no-op.
-            (when (= :tree-fingerprint target-type)
-              (dispatch-observed-composes-into-edges!
-                context target-id (:behavioral-subtree-ids final-body)))))))))
+      (do
+        (command-processor/process-command
+          (assoc context :command (record-description-command target-type target-id body
+                                                              model-provenance)))
+        ;; R05d: after the description-updated event lands, grow the
+        ;; behavior:composes-into graph for any newly-observed (behavior
+        ;; → shell) pairs. Sticky / idempotent — re-running on the same
+        ;; pair is a no-op.
+        (when (= :tree-fingerprint target-type)
+          (dispatch-observed-composes-into-edges!
+            context target-id (:behavioral-subtree-ids body)))))))
 
 (defn consolidate!
   "Run the consolidation for a single (target-type, target-id) target.
 
    Budget gate: if the configured hourly consolidation budget for this
    target-type has been exhausted (per the rolling-hour count of
-   :*-description-updated events), the consolidation is skipped (no LLM
-   call, no event emitted). The hour window rolls naturally; subsequent
-   requests succeed once older entries fall out of the window.
+   consolidation attempts — successes AND, per CC-28's
+   FailuresConsumeBudget, terminal reflection failures), the consolidation
+   is skipped (no LLM call, no event emitted — a skip is not a failure).
+   The hour window rolls naturally; subsequent requests succeed once older
+   entries fall out of the window.
 
-   Otherwise: reads inputs, executes the reflection workflow via ORC,
-   validates the structured output against the description-body schema,
-   overwrites :version + :consolidated-from-event-count with computed
-   values, and emits the matching :*-description-updated event via the
-   existing C-2a-1 record-*-description command.
-
-   Validation failure: logs and aborts cleanly (no event emitted)."
+   Otherwise the target takes ONE of the two write paths — claim deltas or a
+   whole body, never both, see `claim-path-target-type?` — and neither path
+   rejects a consolidation for its wording: the anti-recency validator is
+   deleted."
   [context target-type target-id]
   (u/log ::consolidate-start :target-type target-type :target-id target-id)
   (let [budget (ontology/get-consolidation-budget context target-type)
@@ -985,7 +1761,9 @@
              :target-id target-id
              :budget budget
              :recent-count recent-count)
-      (consolidate!-inner context target-type target-id))))
+      (if (claim-path-target-type? target-type)
+        (consolidate-claims! context target-type target-id)
+        (consolidate-body! context target-type target-id)))))
 
 ;; =============================================================================
 ;; Processor registration

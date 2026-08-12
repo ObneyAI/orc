@@ -101,15 +101,46 @@ per input candidate.")
 ;; =============================================================================
 
 (def default-model
-  "RR-2 (ADR 0020 decision 5): the reranker's default :model when the
-   caller supplies none. Evidence-tested (not an arbitrary 'fast model'
-   pick) — validated via repro to produce correct, function-calling-valid
-   structured rankings on the real behavioral-subtree corpus. A flagship
-   model was proven unnecessary for ranking quality, and a different
-   fast-alternative model was proven insufficient to reduce latency on
-   its own (see ADR 0020 / doc/reranker-resilience-grill-input.md §2).
-   This default is about correctness/determinism/decoupling, not speed."
-  "qwen/qwen3.5-flash-02-23")
+  "RR-2 (ADR 0020 decision 5, AMENDED — see grill GR-2 Q2): the reranker's
+   default :model when the caller supplies none.
+
+   The original default was `qwen/qwen3.5-flash-02-23`, described as
+   validated-by-repro. CH-1 MEASURED that claim false on this path, N=10
+   per arm against the real corpus via direct `rerank!`:
+
+     shipped qwen ...... valid ranking  0/10 | silent marker fallback 10/10
+     gemini-3-flash .... valid ranking 10/10 | silent marker fallback  0/10
+
+   The model is not the root cause. `dscloj` emits `:tool_choice` while
+   litellm-clj's OpenRouter transform reads `:tool-choice`, so the forced
+   tool choice is dropped and function-calling silently degrades to the
+   marker parsing this node was configured to avoid (ADR 0025 fixes that
+   upstream). But qwen is a thinking model, and Alibaba returns HTTP 400
+   for a *forced* tool choice in thinking mode — confirmed by raw curl —
+   so it is unsuitable BOTH before and after the key fix. Gemini calls
+   the offered tool voluntarily today and can be forced tomorrow.
+
+   This is therefore the evidence-based default under the amended
+   understanding, not an interim patch. Re-open only if the post-ADR-0025
+   re-measurement surprises us."
+  "google/gemini-3-flash-preview")
+
+(def ^:private compact-principle-entry
+  "A strengths/weaknesses entry at the RERANKER's provider boundary: the
+   COMPACT principle shape EL-2's enrichment actually sends — an actionable
+   :trait plus optional guard/advice — with the body-side weight signal
+   (:confidence/:evidence-count) OPTIONAL rather than required. A floor,
+   not a dialect: a full `ontology-schemas/principle-entry` also validates."
+  [:map
+   [:trait :string]
+   [:good-when               {:optional true} :string]
+   [:avoid-when              {:optional true} :string]
+   [:recommended-pattern     {:optional true} :string]
+   [:recommended-alternative {:optional true} :string]
+   [:confidence              {:optional true} :double]
+   [:evidence-count          {:optional true} :int]
+   [:first-observed-at       {:optional true} :string]
+   [:last-reinforced-at      {:optional true} :string]])
 
 (def ^:private candidate-schema
   [:map
@@ -128,8 +159,20 @@ per input candidate.")
      [:confidence {:optional true} number?]
      [:last-update {:optional true} :string]]]
    [:avoid-when {:optional true} [:vector :string]]
-   [:strengths {:optional true} [:vector ontology-schemas/principle-entry]]
-   [:weaknesses {:optional true} [:vector ontology-schemas/principle-entry]]])
+   ;; CC-15 integration finding (live, 2026-08-11): EL-2's enrichment
+   ;; deliberately COMPACTS these entries to {:trait + guard + advice}
+   ;; ("keep the enrichment compact", interface.clj compact-strengths/
+   ;; compact-weaknesses) — it never sends :confidence/:evidence-count.
+   ;; Declaring the FULL ontology-schemas/principle-entry here (the sio-era
+   ;; schema-enforcement commit) made every enriched rerank fail blackboard
+   ;; validation: pure-ColBERT fallback, EL-3 defer, 100% of live
+   ;; classifications deferred (measured — CC-23's deferral events caught it
+   ;; on their first production traffic). The boundary must describe the
+   ;; payload the producers actually send: :trait is the floor, the guard/
+   ;; advice pair and the weight signal are optional, so BOTH real producers
+   ;; (EL-2 compact, and any future full-entry sender) validate.
+   [:strengths {:optional true} [:vector compact-principle-entry]]
+   [:weaknesses {:optional true} [:vector compact-principle-entry]]])
 
 (defn- reranker-workflow-name
   "The workflow's sheet-identity is deterministic from its NAME

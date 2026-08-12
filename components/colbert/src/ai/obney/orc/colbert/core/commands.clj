@@ -31,7 +31,8 @@
    artifact is always rebuildable."
   [{:keys [event-store] :as ctx
     {:keys [collection document-ids document-metadatas index-name
-            model-name split-documents? max-document-length]
+            model-name split-documents? max-document-length
+            maximum-query-tokens]
      :as command} :command}]
   (try
     (let [result (operations/create-index! ctx
@@ -41,7 +42,8 @@
                     :index-name index-name
                     :model-name model-name
                     :split-documents? split-documents?
-                    :max-document-length max-document-length})]
+                    :max-document-length max-document-length
+                    :maximum-query-tokens maximum-query-tokens})]
 
       {:command-result/events
        [(->event {:type :colbert/index-created
@@ -141,21 +143,29 @@
     (try
       (let [results (operations/search ctx {:query query :index-id index-id :k k})
             latency-ms (- (System/currentTimeMillis) start-time)
-            top-score (when (seq results) (:score (first results)))]
+            top-score (when (seq results) (:score (first results)))
+            ;; OverlongQueriesTruncateVisibly. operations/search already
+            ;; encoded the query against THIS index's own
+            ;; IndexConfiguration.maximum_query_tokens and stamped the report
+            ;; on the result metadata — read it rather than re-tokenizing and
+            ;; re-projecting, so the audit can never disagree with the encoding.
+            truncation (:query-truncation (meta results))]
 
         {:command-result/events
          [(->event {:type :colbert/search-performed
                     :tags #{[:index index-id] [:search search-id]}
-                    :body {:search-id search-id
-                           :index-id index-id
-                           :query query
-                           :k k
-                           :result-count (count results)
-                           :latency-ms latency-ms
-                           :top-score top-score
-                           :performed-at (str (time/now))}})]
+                    :body (merge {:search-id search-id
+                                  :index-id index-id
+                                  :query query
+                                  :k k
+                                  :result-count (count results)
+                                  :latency-ms latency-ms
+                                  :top-score top-score
+                                  :performed-at (str (time/now))}
+                                 truncation)})]
          :command/result {:results results
-                          :search-id search-id}})
+                          :search-id search-id
+                          :query-truncation truncation}})
 
       (catch clojure.lang.ExceptionInfo e
         ;; Re-raise not-found / deleted as anomalies
@@ -174,26 +184,33 @@
 
    Delegates to operations/rerank (pure JVM), then emits
    a :colbert/rerank-performed audit event."
-  [{{:keys [query documents k]} :command :as ctx}]
+  [{{:keys [query documents k maximum-query-tokens]} :command :as ctx}]
   (let [rerank-id (random-uuid)
         start-time (System/currentTimeMillis)]
     (try
-      (let [results (operations/rerank ctx {:query query :documents documents :k k})
+      (let [results (operations/rerank ctx {:query query :documents documents :k k
+                                           :maximum-query-tokens maximum-query-tokens})
             latency-ms (- (System/currentTimeMillis) start-time)
-            top-score (when (seq results) (:score (first results)))]
+            top-score (when (seq results) (:score (first results)))
+            ;; OverlongQueriesTruncateVisibly: the audit event is where a
+            ;; discarded query tail becomes visible to a caller. Taken from the
+            ;; encoding that actually ran (result metadata), not recomputed.
+            truncation (:query-truncation (meta results))]
 
         {:command-result/events
          [(->event {:type :colbert/rerank-performed
                     :tags #{[:rerank rerank-id]}
-                    :body {:rerank-id rerank-id
-                           :query query
-                           :input-count (count documents)
-                           :output-count (count results)
-                           :latency-ms latency-ms
-                           :top-score top-score
-                           :performed-at (str (time/now))}})]
+                    :body (merge {:rerank-id rerank-id
+                                  :query query
+                                  :input-count (count documents)
+                                  :output-count (count results)
+                                  :latency-ms latency-ms
+                                  :top-score top-score
+                                  :performed-at (str (time/now))}
+                                 truncation)})]
          :command/result {:results results
-                          :rerank-id rerank-id}})
+                          :rerank-id rerank-id
+                          :query-truncation truncation}})
 
       (catch Exception e
         {::anom/category ::anom/fault

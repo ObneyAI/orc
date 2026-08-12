@@ -3,9 +3,7 @@
 
   Every model-backed role uses its explicitly pinned live model. No provider
   behavior is replaced or scripted."
-  (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.time.interface :as time]
@@ -17,6 +15,7 @@
             [ai.obney.orc.ontology.core.todo-processors]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.orc-service.complex-e2e-support :as live]
+            [ai.obney.orc.orc-service.core.read-models :as read-models]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]))
 
@@ -31,10 +30,9 @@
                  (= trace-id (:tick-id %)))
            (live/events ctx)))
 
-(defn- r-inject-trace [captured sheet-id]
-  (or (get @captured sheet-id)
-      (let [f (io/file (str "/tmp/r-inject-trace-" sheet-id ".edn"))]
-        (when (.isFile f) (edn/read-string (slurp f))))))
+(defn- injection-record [ctx sheet-id root-trace-id]
+  (some #(when (= root-trace-id (:root-trace-id %)) %)
+        (vals (read-models/get-injection-records ctx sheet-id))))
 
 (defn evaluate-real-output
   "Deterministic consumer evaluator for a nondeterministic real-model output."
@@ -93,15 +91,14 @@
 
 (deftest det-e2e-101-real-llm-closed-self-learning-loop
   (testing "evaluated evidence changes matching later guidance but not a control"
-    (let [r-inject-traces (atom {})]
+    (do
       (live/with-real-openrouter
       (live/register-openrouter!)
       (h/with-async-test-context
         [ctx {:context {:llm-provider :openrouter
                         :model live/openrouter-model
                         :ontology-consolidator-model live/openrouter-model
-                        :r-inject-trace-fn
-                        #(swap! r-inject-traces assoc %1 %2)}}]
+                        :injection-capture-rendered-block? true}}]
         (command! ctx {:command/name :ontology/record-node-type-description
                        :target-id :repl-researcher :body baseline-body})
         (command! ctx {:command/name :ontology/set-consolidation-threshold
@@ -168,7 +165,7 @@
                 second-result (sheet/execute ctx sheet-id
                                              {:question "Explain evidence retention again."}
                                              :timeout-ms 180000 :llm-call-budget 10)
-                injected (r-inject-trace r-inject-traces sheet-id)
+                injected (injection-record ctx sheet-id (:trace-id second-result))
                 control (live/build-recursive-rlm!
                          ctx {:name "det-e2e-101-control"
                               :instruction closed-loop-instruction
@@ -177,20 +174,21 @@
                 control-result (sheet/execute ctx (:sheet-id control)
                                               {:question "Unrelated control question."}
                                               :timeout-ms 180000 :llm-call-budget 10)
-                control-injected (r-inject-trace r-inject-traces (:sheet-id control))]
+                control-injected (injection-record ctx (:sheet-id control)
+                                                   (:trace-id control-result))]
             (is (= :success (:status second-result)) (pr-str second-result))
             (is (= :success (:status control-result)) (pr-str control-result))
             (live/assert-pinned-model! (:model-provenance successor-event))
             (is (some #(= first-trace (:tick-id %))
                       (trace-events ctx first-trace :judge/score-emitted))
                 "projected learning is backed by the first durable evaluation")
-            (is (str/includes? (:prepend injected) (:summary successor-body))
+            (is (str/includes? (:rendered-block injected) (:summary successor-body))
                 "the matching execution receives the exact current body")
-            (is (str/includes? (pr-str (:classifier-payload injected))
+            (is (str/includes? (pr-str (:candidates injected))
                                (str (:target-id successor-event)))
                 "the injected payload retains the guidance identity")
             (is (or (nil? control-injected)
-                    (and (not (str/includes? (:prepend control-injected)
+                    (and (not (str/includes? (:rendered-block control-injected)
                                              (:summary successor-body)))
                          (not (str/includes? (pr-str (:classifier-payload control-injected))
                                              (str (:target-id successor-event))))))
@@ -209,14 +207,13 @@
 
 (deftest det-e2e-102-real-llm-mint-index-retrieve-and-reuse
   (testing "a real RLM mint is indexed, classified and injected into a later run"
-    (let [r-inject-traces (atom {})]
+    (do
       (live/with-real-openrouter
       (live/register-openrouter-model! live/openrouter-strong-model)
       (h/with-async-test-context
         [ctx {:context {:llm-provider :openrouter
                         :model live/openrouter-strong-model
-                        :r-inject-trace-fn
-                        #(swap! r-inject-traces assoc %1 %2)}}]
+                        :injection-capture-rendered-block? true}}]
         (let [signature (str mint-sentinel " independently verified claims")
               before (ontology/classify-behaviors
                       ctx {:task-signature signature :threshold 0.75 :top-n 5
@@ -272,7 +269,8 @@
                   later-result (sheet/execute ctx (:sheet-id later)
                                               {:question signature}
                                               :timeout-ms 180000 :llm-call-budget 10)
-                  injected (r-inject-trace r-inject-traces (:sheet-id later))
+                  injected (injection-record ctx (:sheet-id later)
+                                             (:trace-id later-result))
                   description (ontology/get-description
                                ctx :tree-fingerprint behavior-id)]
               (is indexed? "the active index source corpus names the minted identity")
@@ -280,7 +278,7 @@
               (is (>= (:confidence match) 0.6))
               (is (= mint-sentinel (first (str/split (:summary description) #" "))))
               (is (= :success (:status later-result)) (pr-str later-result))
-              (is (str/includes? (:prepend injected) mint-sentinel))
-              (is (str/includes? (:prepend injected) (str behavior-id)))
+              (is (str/includes? (:rendered-block injected) mint-sentinel))
+              (is (str/includes? (:rendered-block injected) (str behavior-id)))
               (is (= trace-id (:minted-by-tick-id audit))
                   "description provenance resolves through its audit to the live trace")))))))))

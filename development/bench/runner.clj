@@ -25,7 +25,9 @@
             [ai.obney.orc.ontology.core.commands]
             [ai.obney.orc.ontology.core.read-models]
             [ai.obney.orc.ontology.core.todo-processors :as ont-tp]
-            [ai.obney.orc.ontology.core.reranker]
+            [ai.obney.orc.ontology.core.reranker :as reranker]
+            [ai.obney.orc.ontology.core.evidence-guard :as evidence-guard]
+            [model-registry :as mr]
             [ai.obney.orc.colbert.interface]
             [ai.obney.orc.colbert.interface.schemas]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -54,12 +56,81 @@
    :results-dir "development/bench/generalization-results"})
 
 ;; =============================================================================
+;; Model registration (CH-1)
+;; =============================================================================
+;; Two lists, deliberately kept SEPARATE:
+;;
+;;   declared-models — what this harness has DECIDED to talk to and registers.
+;;   required-models — what the harness WILL talk to, read from the ENGINE's
+;;                     own :model slots.
+;;
+;; They must agree, and `register-models!` refuses to start if they do not.
+;; Keeping them separate is what makes the check able to fail: if it were one
+;; list driving both registration and verification it could never disagree
+;; with itself. An engine-side default that moves (RR-2's reranker slot, the
+;; evidence guard's verifier) and is not followed here is a LOUD startup
+;; failure instead of an undeclared model quietly answering a live probe.
+
+(def declared-models
+  "Every OpenRouter model this harness has decided it talks to. Each gets its
+   OWN litellm registration; nothing rides the generic entry by accident.
+
+   - the runner's RLM model (`(:model config)`), used by repl-researcher nodes
+   - the reranker's RR-2 default (`reranker/default-model`) — the classify →
+     rerank path resolves this when the caller supplies no override, which is
+     every bench caller. CH-1: it was NEVER registered here, so no reader of
+     this file could tell which models the harness would use."
+  [(:model config)
+   reranker/default-model
+   evidence-guard/verifier-model])
+
+(defn required-models
+  "The models this harness WILL use, read from the engines' own defaults at
+   call time — not from `declared-models`. Re-reads the vars so an engine-side
+   default change is picked up rather than cached."
+  []
+  (distinct [(:model config)
+             reranker/default-model
+             evidence-guard/verifier-model]))
+
+(defn register-models!
+  "Register every declared model with litellm, then ASSERT that every model
+   the harness will actually use is explicitly registered.
+
+   Call before building any context. Throws (naming the offending model and
+   every registration that exists) rather than letting an undeclared model
+   ride the generic `:openrouter` entry — see `model-registry`.
+
+   `api-key` defaults to $OPENROUTER_API_KEY; tests pass a dummy, since the
+   precondition itself makes no network call."
+  ([] (register-models! (or (System/getenv "OPENROUTER_API_KEY")
+                            (throw (ex-info "OPENROUTER_API_KEY not set" {})))))
+  ([api-key]
+   (let [base {:provider :openrouter
+               :config {:api-base "https://openrouter.ai/api/v1"
+                        :api-key api-key}}]
+     ;; The generic entry stays: the llm component resolves the provider by the
+     ;; context's :llm-provider keyword (:openrouter) and passes the model as a
+     ;; per-request override, so :openrouter must exist. It is pinned to the
+     ;; runner's own model — the value it already had.
+     (litellm-router/register! :openrouter (assoc base :model (:model config)))
+     ;; …and every declared model additionally gets its own named entry, which
+     ;; is what makes "declared" checkable rather than assumed.
+     (doseq [m (distinct declared-models)]
+       (litellm-router/register! (keyword (str "openrouter/" m))
+                                 (assoc base :model m))))
+   (mr/assert-models-registered! "development/bench/runner" (required-models))))
+
+;; =============================================================================
 ;; System State
 ;; =============================================================================
 
 (defonce ^:private system-state (atom nil))
 
-(defn- create-context []
+(defn create-context
+  "PUBLIC (CH-1): the convergence probe already reached in here through
+   `requiring-resolve`, and the CH-1 startup-ordering test redefines it."
+  []
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
         cache-dir (str "/tmp/orc-bench-" (random-uuid))
@@ -71,6 +142,12 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   :llm-provider :openrouter
+                  ;; CC-13: the bench is exactly the consumer that wants the
+                  ;; VERBATIM rendered prepend on the injection record (the
+                  ;; reports quote it). Production renders leave this off and
+                  ;; store only the hash + size. Must be on base-ctx BEFORE the
+                  ;; processors start — each captures the context by value.
+                  :injection-capture-rendered-block? true
                   ::cache-dir cache-dir}
         ;; Skip the async reindex processor — seed-corpus-and-build-index!
         ;; emits 125 description-updated events at startup which would
@@ -320,16 +397,9 @@
   []
   (when @system-state
     (stop-context @system-state))
-  ;; Register OpenRouter
-  (let [api-key (or (System/getenv "OPENROUTER_API_KEY")
-                    (throw (ex-info "OPENROUTER_API_KEY not set" {})))
-        base-config {:provider :openrouter
-                     :model (:model config)
-                     :config {:api-base "https://openrouter.ai/api/v1"
-                              :api-key api-key}}]
-    (litellm-router/register! :openrouter base-config)
-    (litellm-router/register! (keyword (str "openrouter/" (:model config)))
-                              (assoc base-config :model (:model config))))
+  ;; CH-1: register every declared model AND assert the precondition BEFORE
+  ;; anything is built, so an undeclared model can never reach a live call.
+  (register-models!)
   (let [ctx (create-context)]
     (reset! system-state ctx)
     (seed-corpus-and-build-index! ctx))
@@ -396,16 +466,30 @@
           node-trace (or (:node-trace result) [])
           node-trace-usage-total (summarize-trace-tokens node-trace)
 
-          ;; Pick up the R-Inject trace sidecar (verbatim prepend + full
-          ;; classifier payload with top-candidates and scores) written by
-          ;; apply-r05-classifier-context when auto-classify fired. Pair
-          ;; it with the EDN so the report can quote the prepend the
-          ;; model literally saw alongside the tree it designed.
-          r-inject-trace (let [trace-file (str "/tmp/r-inject-trace-" sheet-id ".edn")]
-                           (when (.exists (io/file trace-file))
-                             (try
-                               (edn/read-string (slurp trace-file))
-                               (catch Exception _ nil))))
+          ;; CC-13: the R-Inject trace now comes from the EVENT STORE, not
+          ;; from a `/tmp/r-inject-trace-<sheet>.edn` sidecar. Same
+          ;; information, joinable to the turn and to its judge scores, and
+          ;; bounded — the sidecar was an unbounded per-sheet file nothing
+          ;; ever cleaned up.
+          ;;
+          ;; The runner sets :injection-capture-rendered-block? on its context
+          ;; (see start!), so :rendered-block carries the verbatim prepend the
+          ;; model saw — the field the reports quote. Production renders leave
+          ;; it off and store only the hash + size.
+          r-inject-trace (let [records (->> (es/read (:event-store ctx)
+                                                    {:types #{:intervention/injection-recorded}
+                                                     :tags #{[:sheet sheet-id]}
+                                                     :tenant-id (:tenant-id ctx)})
+                                            (into [])
+                                            (sort-by :recorded-at))]
+                           (when-let [r (last records)]
+                             {:rendered-at (:recorded-at r)
+                              :prepend (:rendered-block r)
+                              :prepend-chars (:rendered-chars r)
+                              :prompt-content-hash (:prompt-content-hash r)
+                              :arm (:arm r)
+                              :candidates (:candidates r)
+                              :injection-records records}))
 
           ;; Build result record
           record (cond-> {:task slug

@@ -24,8 +24,15 @@
    Encoding schemes (P-0 verified, token-for-token equal to the Python
    QueryTokenizer/DocTokenizer):
 
-     query: [CLS] [Q] tokens [SEP], MASK-padded to query_maxlen; attention 1 on
-            real tokens, 0 on MASK padding; ALL rows participate in scoring
+     query: [CLS] [Q] tokens [SEP], MASK-padded to maximum_query_tokens;
+            attention 1 on real tokens, 0 on MASK padding; ALL rows participate
+            in scoring. CC-17: the ROW COUNT is CONFIGURATION
+            (`IndexConfiguration.maximum_query_tokens`, see
+            default-maximum-query-tokens), not the checkpoint's query_maxlen —
+            the checkpoint's MS-MARCO-shaped 32 truncated 100% of this system's
+            real queries. A query over the limit is truncated VISIBLY
+            (build-query-ids reports it; search/rerank stamp it on their audit
+            events).
      doc:   [CLS] [D] tokens [SEP], no padding; CLS/marker/SEP rows DO score
 
    The ONNX graph is the complete encoder: inputs input_ids / attention_mask /
@@ -83,10 +90,11 @@
 (defn- load-consts
   "Read + cross-check every constant from the model directory's own artifacts.
    Returns {:cls :sep :mask :pad :q-marker :d-marker :query-maxlen :doc-maxlen
-            :mask-punctuation? :skiplist}."
+            :max-position-embeddings :mask-punctuation? :skiplist}."
   [model-dir plain-tokenizer]
   (let [artifact (read-json-artifact model-dir "artifact.metadata" :key-fn keyword)
         onnx-cfg (read-json-artifact model-dir "onnx_config.json" :key-fn keyword)
+        bert-cfg (read-json-artifact model-dir "config.json" :key-fn keyword)
         ;; tokenizer.json parsed with STRING keys: the vocab map's keys are
         ;; literal token strings ("[unused0]").
         vocab (get-in (read-json-artifact model-dir "tokenizer.json") ["model" "vocab"])
@@ -107,6 +115,11 @@
         d-marker (get vocab d-name)
         query-maxlen (:query_maxlen artifact)
         doc-maxlen (:doc_maxlen artifact)
+        ;; The HARD ceiling on any sequence length the graph can carry — the
+        ;; BERT position-embedding table. CC-17 made maximum_query_tokens
+        ;; configuration, so the physical bound has to be a read constant
+        ;; rather than folklore (CHECK-1 semantics).
+        max-positions (:max_position_embeddings bert-cfg)
         mask-punctuation? (boolean (:mask_punctuation artifact))
         skiplist-words (:skiplist_words onnx-cfg)]
     (cross-check! "encoding \"\" with special tokens must yield exactly [CLS SEP]"
@@ -128,12 +141,19 @@
                   {:artifact doc-maxlen :onnx-config (:document_length onnx-cfg)})
     (cross-check! "[PAD] must resolve to a single added token"
                   (some? pad) {:pad pad})
+    (cross-check! "max_position_embeddings must bound BOTH maxlens"
+                  (and (pos-int? max-positions)
+                       (>= max-positions query-maxlen)
+                       (>= max-positions doc-maxlen))
+                  {:max-position-embeddings max-positions
+                   :query-maxlen query-maxlen :doc-maxlen doc-maxlen})
     (cross-check! "mask_punctuation=true requires a non-empty skiplist_words"
                   (or (not mask-punctuation?) (seq skiplist-words))
                   {:mask-punctuation? mask-punctuation? :skiplist-words skiplist-words})
     {:cls cls :sep sep :mask mask :pad pad
      :q-marker q-marker :d-marker d-marker
      :query-maxlen query-maxlen :doc-maxlen doc-maxlen
+     :max-position-embeddings max-positions
      :mask-punctuation? mask-punctuation?
      ;; The skiplist mirrors ColBERT's {symbol: encode(symbol)} construction:
      ;; tokenize each of the checkpoint's skiplist_words.
@@ -219,16 +239,152 @@
 ;; ColBERT sequence building (P-0 verified schemes)
 ;; =============================================================================
 
+(def query-specials
+  "[CLS] [Q] [SEP] — the 3 rows every ColBERT query sequence spends on
+   structure, so the usable CONTENT budget is maximum_query_tokens - 3."
+  3)
+
+(def maximum-query-tokens-property
+  "System property overriding the default maximum_query_tokens
+   (`IndexConfiguration.maximum_query_tokens`). Mirrors the
+   colbert.index.root / colbert.model.path operator-override idiom."
+  "colbert.query.max-tokens")
+
+(def default-maximum-query-tokens
+  "The SHIPPED default for `IndexConfiguration.maximum_query_tokens` — the
+   per-query row count the encoder builds, and therefore the MaxSim ceiling.
+
+   CC-17, chosen from a REAL-CORPUS measurement, not from the checkpoint's
+   MS-MARCO-shaped default (evidence: doc/build-timeline/evidence/cc17). Over
+   the 2,713-event production dump (2026-07-30 -> 2026-08-03): 221 real
+   consolidator inference signatures plus the real classifier task signature,
+   tokenized with this very encoder —
+
+     min 150 | p50 439 | p75 439 | p90 439 | p95 439 | p99 448 | max 455
+     word-piece tokens, i.e. 153..458 ROWS once [CLS] [Q] [SEP] are counted.
+
+   At the checkpoint's own query_maxlen 32 that is 100% of production queries
+   truncated, discarding a MEDIAN of 410 word-piece tokens — the encoder saw
+   roughly the first 7% of every real query. 464 is the model card's own
+   sizing rule ('the nearest higher multiple of 16 to your query') applied to
+   OUR measured maximum requirement of 458, and it sits under the checkpoint's
+   512 max_position_embeddings hard ceiling.
+
+   MEASURED COSTS (same evidence file), not hand-waved:
+     - truncation 221/221 -> 0/221;
+     - one rerank over a 161-document guard pool: 1391ms -> 1648ms (+18%) —
+       document encoding dominates, so this is NOT the 14.5x the row count
+       might suggest;
+     - the [MASK] pedestal GROWS for SHORT queries: related-vs-unrelated
+       headroom as a fraction of ceiling falls 0.0218 -> 0.0078 (~2.8x less
+       dynamic range). No query in the measured production corpus is short —
+       the shortest is 150 tokens — but any future short-query surface pays
+       this. The checkpoint supports `dynamic_query_maxlen` /
+       `dynamic_querylen_multiples` precisely to avoid the trade; adopting it
+       would make the ceiling per-query and is deliberately OUT of scope here
+       (the spec models maximum_query_tokens as a fixed per-query row count).
+
+   nil means 'use the checkpoint's own query_maxlen'. Operators override per
+   deployment with -Dcolbert.query.max-tokens; an index records the value it
+   was built under in its IndexConfiguration."
+  464)
+
+(defn configured-maximum-query-tokens
+  "The configured limit WITHOUT touching the model directory: the
+   -Dcolbert.query.max-tokens override, else `default-maximum-query-tokens`,
+   else nil (meaning 'ask the checkpoint')."
+  []
+  (or (when-let [p (System/getProperty maximum-query-tokens-property)]
+        (Long/parseLong p))
+      default-maximum-query-tokens))
+
+(defn resolve-maximum-query-tokens
+  "The limit actually applied, in precedence order:
+     1. an explicit per-call/per-index :maximum-query-tokens
+     2. -Dcolbert.query.max-tokens
+     3. `default-maximum-query-tokens`
+     4. the checkpoint's own query_maxlen
+   Always returns a long."
+  ^long [encoder maximum-query-tokens]
+  (long (or maximum-query-tokens
+            (configured-maximum-query-tokens)
+            (get-in encoder [:consts :query-maxlen]))))
+
+(defn validate-maximum-query-tokens!
+  "Reject a limit that cannot produce a well-formed query sequence, at the
+   source rather than silently. Mirrors `configuration.maximum_passage_tokens
+   > 0` and corpus/validate-chunk-size!'s 'passages would be silently
+   truncated at encode time' guard."
+  [encoder ^long limit]
+  (when-not (pos? limit)
+    (throw (ex-info (str "maximum_query_tokens must be a positive number of rows, got " limit)
+                    {:error :colbert-invalid-maximum-query-tokens
+                     :maximum-query-tokens limit})))
+  (when (<= limit query-specials)
+    (throw (ex-info (str "maximum_query_tokens " limit " leaves no room for query content — "
+                         "[CLS] [Q] [SEP] alone need " query-specials " rows")
+                    {:error :colbert-invalid-maximum-query-tokens
+                     :maximum-query-tokens limit
+                     :query-specials query-specials})))
+  (let [positions (get-in encoder [:consts :max-position-embeddings])]
+    (when (and positions (> limit (long positions)))
+      (throw (ex-info (str "maximum_query_tokens " limit " exceeds the encoder's "
+                           "max_position_embeddings " positions
+                           " — the graph cannot carry a sequence that long")
+                      {:error :colbert-maximum-query-tokens-exceeds-model-positions
+                       :maximum-query-tokens limit
+                       :max-position-embeddings positions}))))
+  limit)
+
 (defn build-query-ids
-  "ColBERT query encoding: [CLS] [Q] tokens [SEP], MASK-padded to query_maxlen
-   (query expansion). Attention covers only the real tokens
-   (attend_to_mask_tokens=false); ALL rows participate in scoring."
-  [{{:keys [cls sep mask q-marker query-maxlen]} :consts :as encoder} text]
-  (let [toks (take (- query-maxlen 3) (encode-ids encoder text))
-        real (concat [cls q-marker] toks [sep])
-        n-real (count real)]
-    {:ids (vec (take query-maxlen (concat real (repeat mask))))
-     :attention (vec (take query-maxlen (concat (repeat n-real 1) (repeat 0))))}))
+  "ColBERT query encoding: [CLS] [Q] tokens [SEP], MASK-padded to the configured
+   maximum_query_tokens (query expansion). Attention covers only the real tokens
+   (attend_to_mask_tokens=false); ALL rows participate in scoring.
+
+   VISIBLE TRUNCATION (specs/colbert.allium invariant
+   OverlongQueriesTruncateVisibly). A query longer than the limit is TRUNCATED,
+   not rejected — the excess word-piece tokens are discarded and retrieval
+   proceeds against the prefix. That discard used to be invisible to every
+   caller; it is now reported on the returned map, and a caller that never
+   inspects it still gets a mulog record:
+
+     :query-token-count     the rows the query WOULD have needed — its
+                            word-piece tokens PLUS the 3 specials. Measured on
+                            the same scale as the limit, which the spec defines
+                            as 'the encoder's per-query ROW count'.
+     :maximum-query-tokens  the limit actually applied.
+     :truncated?            query-token-count > maximum-query-tokens.
+     :discarded-token-count how many word-piece tokens the encoder never saw.
+
+   A retrieval key can never be matched against text the encoder never saw, so
+   a truncated query is a materially different query — the caller has to be
+   able to tell.
+
+   opts:
+     :maximum-query-tokens — the limit for this call. Omitted =>
+                             `resolve-maximum-query-tokens`."
+  ([encoder text] (build-query-ids encoder text nil))
+  ([{{:keys [cls sep mask q-marker]} :consts :as encoder} text
+    {:keys [maximum-query-tokens]}]
+   (let [limit (validate-maximum-query-tokens!
+                encoder (resolve-maximum-query-tokens encoder maximum-query-tokens))
+         all-toks (encode-ids encoder text)
+         needed (+ (count all-toks) query-specials)
+         truncated? (> needed limit)
+         toks (take (- limit query-specials) all-toks)
+         real (concat [cls q-marker] toks [sep])
+         n-real (count real)]
+     (when truncated?
+       (mu/log ::query-truncated
+               :query-token-count needed
+               :maximum-query-tokens limit
+               :discarded-token-count (- needed limit)))
+     {:ids (vec (take limit (concat real (repeat mask))))
+      :attention (vec (take limit (concat (repeat n-real 1) (repeat 0))))
+      :query-token-count needed
+      :maximum-query-tokens limit
+      :truncated? truncated?
+      :discarded-token-count (if truncated? (- needed limit) 0)})))
 
 (defn build-doc-ids
   "ColBERT document encoding: [CLS] [D] tokens [SEP], no padding, attention all
@@ -277,11 +433,13 @@
         rows))))
 
 (defn encode-query
-  "Encode a query: {:ids :attention :rows} where :rows is a vector of
-   query_maxlen per-token float arrays (unit-normed, dim 96)."
-  [encoder text]
-  (let [built (build-query-ids encoder text)]
-    (assoc built :rows (run-inference encoder built))))
+  "Encode a query: {:ids :attention :rows} plus build-query-ids' truncation
+   report, where :rows is a vector of maximum_query_tokens per-token float
+   arrays (unit-normed, dim 96)."
+  ([encoder text] (encode-query encoder text nil))
+  ([encoder text opts]
+   (let [built (build-query-ids encoder text opts)]
+     (assoc built :rows (run-inference encoder built)))))
 
 (defn encode-doc
   "Encode a document: {:ids :attention :rows} where :rows is a vector of

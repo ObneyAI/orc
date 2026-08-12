@@ -247,6 +247,50 @@
   [candidate]
   (contains? rerank-fallback-sources (:rerank-source candidate)))
 
+;; =============================================================================
+;; CC-23 (contract TaskClassification) — bounded pre-gate ranking snapshot
+;; =============================================================================
+
+(def classify-retrieval-k
+  "The classifier's retrieval :k — AND the bound on the audited pre-gate
+   ranking snapshot (:ranked-candidates on :ontology/task-classified /
+   :ontology/task-classification-deferred; the schemas' {:max 5} mirrors
+   this number). One value so the retrieval and the audit bound cannot
+   drift apart."
+  5)
+
+(defn reduce-ranked-candidate
+  "CC-23, the spec's DecidedRankingIsRecorded: reduce ONE retrieval
+   candidate to its audit identity — candidate identity (target-id), the
+   granularity/axis, the reranker's :fitness-score, the raw ColBERT
+   retrieval :score when present, and the :rerank-source.
+
+   NEVER :content, NEVER :summary, no description text of any kind — the
+   CC-21 lesson and the spec's explicit payload bound (measured: candidate
+   content was 59.4% of the tree-class evidence payload). Optional fields
+   are OMITTED, not nil (the CC-31 idiom): a fallback candidate's nil
+   :fitness-score is an absent key, so `(contains? entry :fitness-score)`
+   distinguishes 'never scored' from 'scored 0.0'."
+  [c]
+  (let [granularity (-> c :document-metadata :granularity)]
+    (cond-> {:target-id (or (-> c :document-metadata :target-id)
+                            (:document-id c))
+             :granularity (if (keyword? granularity)
+                            granularity
+                            (keyword (str granularity)))}
+      (some? (:rerank-source c)) (assoc :rerank-source (:rerank-source c))
+      (some? (:fitness-score c)) (assoc :fitness-score (:fitness-score c))
+      (some? (:score c))         (assoc :score (:score c)))))
+
+(defn reduce-ranked-candidates
+  "The bounded pre-gate ranking snapshot for one classification decision:
+   the RAW (ungated) candidates, in decision order, capped at
+   `classify-retrieval-k`, each entry reduced by `reduce-ranked-candidate`."
+  [raw-candidates]
+  (into [] (comp (take classify-retrieval-k)
+                 (map reduce-ranked-candidate))
+        raw-candidates))
+
 (defn- get-tree-class-children
   "Return the children of `parent-target-id` as {:target-id :description}
    maps. Reads the concepts read-model for narrower URIs and pulls each
@@ -523,6 +567,47 @@
 ;; Public API
 ;; =============================================================================
 
+(defn confidence-gate-report
+  "CC-20 (ADR 0027 decision 2): what the classify confidence gate DID on one
+   classification — pure over the classify result + the threshold it judged
+   against.
+
+   The CC-20 derivation deliberately did NOT migrate this gate's form:
+   its property is 'is the BEST match good enough to assign', judged on the
+   top-1, and every candidate-set-relative form is degenerate there —
+   rank(top-1) is identically 1 and min-max/TMM(top-1) is identically 1.0
+   (the CC-20 issue's documented caution verbatim), while z(top-1) measures
+   separation-from-the-pack, a different property. The thresholded quantity is
+   the reranker's rubric-anchored fitness, not a corpus-scale similarity
+   score. What CC-19 DID measure (N=156 real classifications) is that the
+   gate is near-inert in [0.4, 0.9] (rejects 2-4 of 156; median 0.98) with
+   its real signal in the low tail (the two fresh-mints sat at 0.35 and 0.0)
+   — and nothing could report that. This report is the fix ADR 0027 names:
+   a gate must be able to say whether it is doing anything."
+  [{:keys [outcome confidence top-candidates was-fresh-mint? rerank-fallback?]} threshold]
+  (let [top-score (double (or confidence 0.0))]
+    (cond-> {:outcome outcome
+             :threshold (double threshold)
+             :top-score top-score
+             :margin-to-threshold (- top-score (double threshold))
+             :candidate-count (count top-candidates)
+             :rerank-fallback? (boolean rerank-fallback?)}
+      (some? was-fresh-mint?) (assoc :was-fresh-mint? (boolean was-fresh-mint?)))))
+
+(defn- log-confidence-gate!
+  "Emit the ADR-0027 confidence-gate report for one classification."
+  [result threshold]
+  (let [report (confidence-gate-report result threshold)]
+    (u/log ::classify-confidence-gate
+           :outcome (:outcome report)
+           :threshold (:threshold report)
+           :top-score (:top-score report)
+           :margin-to-threshold (:margin-to-threshold report)
+           :candidate-count (:candidate-count report)
+           :rerank-fallback? (:rerank-fallback? report)
+           :report report)
+    result))
+
 (defn classify-task
   "Pure classification function: given a task signature + optional
    parent-context summary + threshold, returns a tree-class
@@ -544,7 +629,14 @@
    Returns:
      {:assigned-tree-id <uuid>    ; matched target or fresh mint
       :confidence       <0.0-1.0> ; top-1 fitness-score (or 0.0 when empty)
-      :top-candidates   [{...}]   ; ALL candidates returned by retrieval
+      :top-candidates   [{...}]   ; the GATED surfaced view (EL-1b Part 2)
+      :ranked-candidates [{...}]  ; CC-23: the PRE-GATE ranking the decision
+                                  ; ran on, <= classify-retrieval-k entries,
+                                  ; each reduced to identity/axis/scores/
+                                  ; rerank-source (never description content)
+      :assigned-via     <kw>      ; CC-23: :match | :bundle | :walk-down |
+                                  ; :mint (absent on :outcome :uncertain —
+                                  ; nothing was assigned)
       :reasoning        <string>  ; top-1's reasoning, or fresh-mint note
       :was-fresh-mint?  <bool>}   ; false on match; true on mint
 
@@ -578,7 +670,7 @@
                          {:query signature
                           :granularity #{:tree-fingerprint :tree-class}
                           :rerank-with-intent classifier-intent
-                          :k 5
+                          :k classify-retrieval-k
                           :model model})
         ;; CV-1 (ADR 0017) — the retrieval gate governs SURFACING, not accrual.
         ;; EL-1b originally filtered a :tree-class whose consolidation total was
@@ -596,6 +688,13 @@
         ;; The fallback flag is read from the RAW top-1 so reranker-fallback
         ;; uncertainty is detected regardless of the gate.
         rerank-fallback?-raw (rerank-fallback?* (first raw-candidates))
+        ;; CC-23 (DecidedRankingIsRecorded): the PRE-GATE ranking the decision
+        ;; below runs on, reduced to identity/axis/scores/rerank-source and
+        ;; bounded to the retrieval k. Computed ONCE from the RAW candidates —
+        ;; before gating — because the gate governs SURFACING, and 150/156
+        ;; audited events surfaced exactly one candidate: the surfaced view
+        ;; cannot audit the decision.
+        ranked-candidates (reduce-ranked-candidates raw-candidates)
         candidates raw-candidates
         surfaced-candidates (gate-candidates ctx raw-candidates retrieval-gate)
         top-1 (first candidates)
@@ -616,7 +715,10 @@
         ;; fallback into a confident :novel by removing the fallback candidate.
         rerank-fallback? (or rerank-fallback?-raw
                              (rerank-fallback?* top-1))]
-    (cond
+    ;; CC-20 (ADR 0027): every classification reports what its confidence
+    ;; gate did — log-confidence-gate! wraps the result and returns it.
+    (log-confidence-gate!
+     (cond
       ;; EL-3 (ADR 0015): the reranker FELL BACK to raw ColBERT — we do NOT
       ;; KNOW the fit. De-conflate uncertainty from novelty: this is NOT a
       ;; confident no-match. Detect-and-defer — return :outcome :uncertain
@@ -630,6 +732,7 @@
       {:assigned-tree-id nil
        :confidence       top-score
        :top-candidates   (vec surfaced-candidates)
+       :ranked-candidates ranked-candidates
        :reasoning        (or (:reasoning top-1)
                              "Reranker fell back to raw ColBERT; classification deferred (uncertain).")
        :outcome          :uncertain
@@ -655,6 +758,8 @@
         {:assigned-tree-id bundle-id
          :confidence       top-score
          :top-candidates   (vec surfaced-candidates)
+         :ranked-candidates ranked-candidates
+         :assigned-via     :bundle
          :reasoning        (or (:reasoning top-1)
                                "Below the match threshold but a strong near-miss to an existing tree-class; bundling onto it (convergence) rather than scattering a fresh class.")
          :was-fresh-mint?  false
@@ -665,6 +770,8 @@
         {:assigned-tree-id (random-uuid)
          :confidence       top-score
          :top-candidates   (vec surfaced-candidates)
+         :ranked-candidates ranked-candidates
+         :assigned-via     :mint
          :reasoning        (or (:reasoning top-1)
                                (if (seq candidates)
                                  "Top candidate did not pass confidence threshold; minting fresh task class."
@@ -680,6 +787,8 @@
                            (-> top-1 :document-metadata :target-id))
        :confidence       top-score
        :top-candidates   (vec surfaced-candidates)
+       :ranked-candidates ranked-candidates
+       :assigned-via     :match
        :reasoning        (or (:reasoning top-1) "")
        :was-fresh-mint?  false
        :outcome          :matched
@@ -694,6 +803,8 @@
           {:assigned-tree-id top-1-id
            :confidence       top-score
            :top-candidates   (vec surfaced-candidates)
+           :ranked-candidates ranked-candidates
+           :assigned-via     :match
            :reasoning        (or (:reasoning top-1) "")
            :was-fresh-mint?  false
            :outcome          :matched
@@ -712,8 +823,21 @@
                                             model)]
             (-> walk-result
                 (assoc :top-candidates (vec surfaced-candidates))
+                (assoc :ranked-candidates ranked-candidates)
+                ;; CC-23: the provenance of the ASSIGNED identity, derived
+                ;; from what the walk actually did — a fresh leaf under the
+                ;; deepest matched ancestor is a :mint; returning top-1 at
+                ;; depth 0 (looked at children, never committed) is a plain
+                ;; :match; anything else descended to a deeper existing
+                ;; class → :walk-down.
+                (assoc :assigned-via
+                       (cond
+                         (:was-fresh-mint? walk-result) :mint
+                         (= (:assigned-tree-id walk-result) top-1-id) :match
+                         :else :walk-down))
                 (assoc :outcome :matched)
-                (assoc :rerank-fallback? rerank-fallback?))))))))
+                (assoc :rerank-fallback? rerank-fallback?))))))
+     threshold)))
 
 ;; =============================================================================
 ;; R05b — classify-behaviors: behavioral subtree retrieval API

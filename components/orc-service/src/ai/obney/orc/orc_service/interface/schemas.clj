@@ -222,6 +222,19 @@
     [:stashed-at :any]
     [:snapshot :map]]
 
+   ;; CC-13: one entry of the corpus content a render put in front of the
+   ;; model. `:version` is the version of the description body the content was
+   ;; read from — per-candidate, because corpus bodies move independently and
+   ;; "this turn saw candidate X at v4" is the granularity attribution needs.
+   ;; Ids are stringified: the classifier bridges target-ids through JSON, so
+   ;; a string is the only shape guaranteed present on both axes.
+   ::injected-candidate
+   [:map
+    [:axis [:enum :structural :behavioral]]
+    [:candidate-id :string]
+    [:version {:optional true} [:maybe :int]]
+    [:score {:optional true} [:maybe :double]]]
+
    ;; -------------------------------------------------------------------------
    ;; Execution Trace Schemas
    ;; -------------------------------------------------------------------------
@@ -702,7 +715,15 @@
     ;; (sheet->class join) and records generated-tree as the class's
     ;; :recommended-pattern. Both optional/backward-compatible.
     [:generated-tree {:optional true} [:maybe :any]]
-    [:source-sheet-id {:optional true} [:maybe :uuid]]]
+    [:source-sheet-id {:optional true} [:maybe :uuid]]
+    ;; HP-2: the hosting TURN's tick. :source-sheet-id alone cannot attribute
+    ;; an execution to a classification occurrence — the host sheet is a
+    ;; STATIC workflow definition shared by every turn of a task-shape, so a
+    ;; sheet-only join either matches nothing (vs the ephemeral :sheet-id) or
+    ;; over-matches across classes. [source-sheet-id source-tick-id] is the
+    ;; per-occurrence identity, pairing with :ontology/task-classified's
+    ;; [:source-sheet-id :source-tick-id]. Optional/backward-compatible.
+    [:source-tick-id {:optional true} [:maybe :uuid]]]
 
    ;; -------------------------------------------------------------------------
    ;; Versioning Commands
@@ -786,7 +807,35 @@
    [:map
     [:sheet-id :uuid]
     [:problem-types {:optional true} [:vector :string]]
-    [:description {:optional true} :string]]})
+    [:description {:optional true} :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-13 — Injection Record
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Dispatched in-process by the R-Inject render (todo-processors
+   ;; apply-r05-classifier-context). Body mirrors the event shape minus the
+   ;; auto-stamped :recorded-at.
+
+   :sheet/record-injection
+   [:map
+    [:intervention/type [:enum :pattern-injection]]
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:candidate-id {:optional true} [:maybe :string]]
+    [:candidates [:vector ::injected-candidate]]
+    [:task-class {:optional true} [:maybe :uuid]]
+    [:model {:optional true} [:maybe :string]]
+    [:rendered-chars :int]
+    [:prompt-content-hash {:optional true} [:maybe :string]]
+    [:root-trace-id {:optional true} [:maybe :uuid]]
+    [:correlation-id {:optional true} [:maybe :uuid]]
+    [:arm [:enum :treatment :holdout]]
+    [:baseline-policy-id :string]
+    [:selection-propensity :double]
+    [:rendered-block {:optional true} :string]
+    [:recorded-at {:optional true} :string]]})
 
 ;; =============================================================================
 ;; Event Schemas
@@ -1199,6 +1248,11 @@
     ;; Optional/backward-compatible — replayed older bookends carry neither.
     [:generated-tree {:optional true} [:maybe :any]]
     [:source-sheet-id {:optional true} [:maybe :uuid]]
+    ;; HP-2: the hosting TURN's tick — the per-occurrence half of the
+    ;; [source-sheet-id source-tick-id] execution<->classification linkage.
+    ;; Optional/backward-compatible — replayed older bookends lack it and
+    ;; simply don't participate in occurrence-scoped joins.
+    [:source-tick-id {:optional true} [:maybe :uuid]]
     [:timestamp [:fn inst?]]]
 
    :sheet/tree-tick-completed
@@ -1459,7 +1513,87 @@
     [:execution-id :uuid]
     [:iterations [:vector :any]]                 ;; Each: {:code :result :stdout :error :vars-created}
     [:iteration-count :int]
-    [:emitted-at :string]]})
+    [:emitted-at :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-13 — Injection Record (:intervention/* ledger, NARROW SUBSET)
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; One row per R-Inject RENDER OCCURRENCE: what corpus content was put in
+   ;; front of the model on this turn, at what version, and under which
+   ;; experimental arm. It replaces the unbounded /tmp sidecar the render used
+   ;; to write, and it is the measurement surface the deferred budget-governed
+   ;; render change needs — without it, a change to how much learned content is
+   ;; rendered can only be evaluated observationally.
+   ;;
+   ;; This is a DELIBERATE STRICT SUBSET of the full `:intervention/*` ledger
+   ;; documented in research-lessons-integration §6. Field names are taken
+   ;; verbatim from that schema wherever they overlap, so when the ledger is
+   ;; built this row WIDENS into it (add fields, add :intervention/type values)
+   ;; rather than being replaced. The deferred fields deliberately NOT
+   ;; populated yet — :judge-version, :retriever-version, :tree-definition-hash
+   ;; — have no versioned source in the engine today; a subset omits, it does
+   ;; not contradict.
+   :intervention/injection-recorded
+   [:map
+    ;; The ledger's type enum is (:pattern-injection | :instruction-override |
+    ;; :topology-candidate | :harvest-mint). R-Inject is the pattern-injection
+    ;; arm; widening adds the other three values, not a new field.
+    [:intervention/type [:enum :pattern-injection]]
+    ;; Occurrence identity. [sheet-id tick-id] is the pair judge scores are
+    ;; keyed by (the SJ-1 lesson: a bare sheet-id join misattributes across
+    ;; turns); node-id names WHICH render within the tick.
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    ;; --- verbatim from the deferred ledger schema ---------------------------
+    ;; The PRIMARY candidate under test — the top-ranked structural candidate
+    ;; actually rendered. nil when the structural axis rendered nothing.
+    [:candidate-id {:optional true} [:maybe :string]]
+    ;; The structural class the wedge assigned this task.
+    [:task-class {:optional true} [:maybe :uuid]]
+    ;; The model the rendered prompt was destined for.
+    [:model {:optional true} [:maybe :string]]
+    ;; SHA-256 of the rendered block: identifies WHICH injection this was
+    ;; without storing the block. Two turns that saw the same thing collapse
+    ;; to the same hash.
+    [:prompt-content-hash {:optional true} [:maybe :string]]
+    ;; --- narrow-record additions (additive when the ledger widens) ----------
+    ;; The ledger's :candidate-id is ONE archive row per candidate (the ADAS
+    ;; shape); a pattern injection renders a SET. :candidate-id keeps its
+    ;; meaning (the primary) and this carries the whole set with per-candidate
+    ;; versions — "at what version" is per-candidate, not per-turn.
+    [:candidates [:vector ::injected-candidate]]
+    ;; The treatment DOSE. This is precisely the quantity the deferred
+    ;; budget-governed render change moves, so it is the quantity an
+    ;; experiment regresses outcomes on.
+    [:rendered-chars :int]
+    ;; Correlated-tracing keys (35dfbf56), so the row joins to OUTCOMES exactly
+    ;; the way the deferred ledger specifies. :root-trace-id is the ROOT tick of
+    ;; this tick's lineage — an RLM Phase-2 tree and a delegate node run in
+    ;; CHILD ticks, and a record that knew only its own tick would strand that
+    ;; injection from the run it belongs to.
+    [:root-trace-id {:optional true} [:maybe :uuid]]
+    [:correlation-id {:optional true} [:maybe :uuid]]
+    ;; --- the holdout, and the ledger fields that describe it ----------------
+    ;; :arm is a narrow-record ADDITION. The deferred ledger assumes a row
+    ;; exists only where an intervention FIRED; the holdout is precisely the
+    ;; case where it did not, so the realized arm has to be explicit rather
+    ;; than inferred from an absent field.
+    [:arm [:enum :treatment :holdout]]
+    ;; Both VERBATIM from the deferred ledger schema. :baseline-policy-id names
+    ;; the control condition and is stamped on BOTH arms — a treated row that
+    ;; doesn't say what it was compared against is not analysable.
+    ;; :selection-propensity is P(treatment) for this turn: 1.0 when the
+    ;; holdout is off, which is the honest propensity for "everyone treated".
+    [:baseline-policy-id :string]
+    [:selection-propensity :double]
+    ;; Verbatim rendered block. Off by default (see
+    ;; todo-processors/*capture-rendered-block?*) so the standing engine pays
+    ;; no storage tax; a bench or experiment run turns it on. Absent on the
+    ;; holdout arm, where nothing was rendered.
+    [:rendered-block {:optional true} :string]
+    [:recorded-at :string]]})
 
 ;; =============================================================================
 ;; Query Schemas (Fat Query Model - one query per screen)

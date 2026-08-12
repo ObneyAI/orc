@@ -65,6 +65,23 @@ value DescriptionBody {
     behavioral_subtree_identifiers: List<String>
 }
 
+-- One proposed change to a claim set. A consolidation emits a list of these
+-- instead of a replacement body; the merge that applies them is deterministic.
+value ClaimDelta {
+    operation: ClaimOperation
+    target_claim: String?
+    kind: ClaimKind
+    content: String
+    context_guard: String?
+    recommendation: String?
+    episodes: List<String>
+    from_legacy_corpus: Boolean
+    -- Absent means judged_occurrences: every delta written before this field
+    -- existed keeps exactly its old meaning, so a new field cannot loosen an
+    -- old delta.
+    evidence_basis: EvidenceBasis?
+}
+
 value SearchResult {
     document_identifier: String
     content: String
@@ -115,6 +132,99 @@ contract SemanticReranking {
         -- Timeout or malformed output is surfaced and original candidates survive.
 }
 
+-- CC-28: consolidation's failure-visibility contract. The reflection LLM call
+-- is an external boundary (which is WHY DescriptionConsolidationCompleted has
+-- no producer rule — see the CC-21b note below), so the obligation lives here,
+-- mirroring SemanticReranking's FailureIsVisible. The motivating incident is
+-- measured: a target taking 23.4% of all consolidation requests had its prompt
+-- rejected outright (1,571,414 tokens vs a 1,048,576 limit), 0/3 after four
+-- retries each, leaving NO event — indistinguishable from health.
+contract ClaimConsolidation {
+    consolidate: (target_type: String, target_identifier: String) -> Boolean
+
+    @invariant FailureIsVisible
+        -- A reflection call that fails — provider rejection, timeout,
+        -- exhausted retries, unparseable output — leaves a durable failure
+        -- record carrying the target, the reason class, and the attempt
+        -- count. "Produced no trustworthy knowledge" (ClaimSetUnchanged) and
+        -- "never answered" are different facts and must be recorded as such.
+
+    @invariant FailuresConsumeBudget
+        -- The hourly consolidation budget counts failed attempts alongside
+        -- successes; a target whose every attempt dies must not retry
+        -- unthrottled, and the budget read cannot report a dying target as
+        -- idle.
+}
+
+-- CC-22: the parent-inference ColBERT query rendered from a description.
+-- Measured (CC-22a, evidence/cc22): rendering a fully-assembled claim-path
+-- body through the pre-CC-22 signature builder exceeds the encoder's query
+-- budget on 43/86 real targets TODAY (mean 1.64x inflation vs legacy prose),
+-- because the assembled summary already contains capabilities and
+-- representative-uses and the builder appended both lists AGAIN. Retirement
+-- cannot bound this (measured 2.7:1 adds:retirements, +6.5 tokens/cycle net
+-- drift) and positional encoder truncation discards the LAST-rendered
+-- section first — which is the guards. The bound is render-level and
+-- reversible: every claim stays durable in the claim set.
+contract ParentInferenceQuery {
+    render: (description: LivingDescription) -> String
+
+    @invariant BoundedInferenceQuery
+        -- A claim-backed target's rendered inference query fits the
+        -- configured encoder query budget (maximum_query_tokens minus the
+        -- query special tokens). The rendered claim subset is a global
+        -- support-rank prefix of the claim set (ties broken by claim id,
+        -- deterministic); exclusion is observable — the unrendered claim ids
+        -- are reported, never silently capped. Legacy (non-claim) bodies
+        -- render byte-identically to the pre-CC-22 builder.
+
+    @invariant NoDuplicateClaimContent
+        -- No claim's content appears twice in one rendered query. The
+        -- measured 1.64x inflation was summary+sections double-rendering,
+        -- not knowledge growth.
+
+    @invariant RenderingNeverWeakensEnforcement
+        -- Retrieval-suppression strings derive from the enforcing claim set
+        -- (get_enforcing_claims), never from the rendered body — so no
+        -- rendering bound can remove an enforcing guard. True in code before
+        -- CC-22; pinned here so a future change cannot re-couple enforcement
+        -- to the rendering.
+}
+
+-- CC-23: routing decisions must be auditable from events, and a deferral is
+-- a recorded fact, not an absence. Measured (CC-19, 156 real classifications):
+-- the event's candidate list is the GATED surfaced view while the decision
+-- runs on the ungated ranking — 150/156 events surfaced exactly ONE
+-- candidate, only 1/156 admitted a runner-up margin, and the assigned id was
+-- absent from the event's own list in 7/156; the reranker-fallback deferral
+-- emitted NO event at all, so the classifier ran on 178 ticks and left 156
+-- events — the 22 silent ticks (12.4%) could only be INFERRED. A system that
+-- cannot report when its ranker fell back cannot be trusted to report that
+-- it did not.
+contract TaskClassification {
+    classify: (task_signature: String) -> ClassificationOutcome
+
+    @invariant DeferralIsVisible
+        -- A classification that defers — the semantic reranker fell back on
+        -- EITHER axis (structural task classification or behavioral-subtree
+        -- classification; the wedge withholds assignment on both), so
+        -- fitness is unknown — leaves a durable deferral event carrying the
+        -- source occurrence, the fallback source, and the bounded ranking
+        -- snapshot; the recorded reasoning names the axis that deferred.
+        -- "Uncertain" and "nothing happened" are different facts; the
+        -- deferral rate is a measured number, never an inference from
+        -- missing events.
+
+    @invariant DecidedRankingIsRecorded
+        -- The classified event records the PRE-GATE ranking the decision ran
+        -- on, bounded to the retrieval's top-k, each entry reduced to
+        -- identity, axis, scores, and rerank source — never description
+        -- content (measured: candidate content was 59.4% of the tree-class
+        -- evidence payload). The gated surfaced view rides alongside for its
+        -- consumers, and the assigned identity's provenance — match, bundle,
+        -- walk-down, or mint — is explicit on the event.
+}
+
 contract OntologyExtraction {
     extract: (source: SourceSpecification, context: Any) -> Any
 
@@ -159,12 +269,132 @@ contract ScopedConceptLookup {
 enum ConceptScope {
     failure | success | problem | node_type | custom | tree_class | behavioral_subtree
 }
+-- CC-15 weed: previously referenced by contract TaskClassification but never
+-- declared. matched/bundled/walked_down/minted mirror the classified event's
+-- assigned_via provenance; uncertain is the deferral outcome (its own event,
+-- never an assignment). Contract return types here are NOMINAL — the code
+-- returns richer maps carrying these outcomes, not bare enum values.
+enum ClassificationOutcome { matched | bundled | walked_down | minted | uncertain }
+
 enum SourceType { csv | json | sql | rdf | text }
 enum BuildMode { batch | incremental }
 enum BuildStatus { running | completed | failed }
-enum DescriptionGranularity { node_type | node_instance | tree_fingerprint }
+enum DescriptionGranularity { node_type | node_instance | tree_fingerprint | tree_class | behavioral_subtree }
 enum ConceptOriginKind {
     human_authored | agent_authored | source_extracted | imported | system_static
+}
+
+-- A Claim is the atomic unit of a Living Description: one insight carrying the
+-- episodes it was derived from and support earned over time. Claim kinds mirror
+-- the assembled body's sections; a claim's kind is MUTABLE, so an insight that
+-- migrates between sections keeps its accumulated support.
+enum ClaimKind { capability | strength | weakness | guard | representative_use }
+
+-- candidate: recorded and visible, but not enforcing. validated: earned enough
+-- post-guard evidence to influence retrieval ranking.
+enum ClaimStatus { candidate | validated }
+
+-- The complete set of operations a consolidation may express over a claim set.
+-- Deletion is deliberately absent: a claim leaves only when its support decays
+-- to zero.
+enum ClaimOperation { add | support | contradict | edit }
+
+-- What a delta's knowledge RESTS ON. Most claims rest on judged occurrences.
+-- The others are deterministic writers whose evidence is real but is not a
+-- judgement: a classification signature, an emitted artifact, or a body
+-- converted from the pre-claim corpus. Declaring the basis is what lets those
+-- writers through the evidence guard without pretending to be something they
+-- are not — and a declaration is honoured ONLY when the delta names no
+-- occurrence, so it can never excuse evidence that exists and failed.
+-- authored: designer-written corpus knowledge. Authorship is a first-class
+-- basis rather than a fabricated support count, so provenance stays honest
+-- while curated guards keep the strength they were proven at.
+enum EvidenceBasis {
+    judged_occurrences | legacy_corpus | classification_signature
+    | emitted_artifact | authored
+}
+
+-- Why a proposed delta was refused before it could become a claim. The guard
+-- distinguishes "the judge had nothing to judge" from "this was judged badly" —
+-- conflating them is the incident that motivated the guard.
+enum EvidenceExclusionReason {
+    no_judge_evidence | starved_evidence | judge_abstained
+    | no_episodes | unverified_explanation
+}
+
+-- Calibrated values. They are stated here because two of them are coupled:
+-- validation_support_threshold is DERIVED as the least support whose
+-- confidence clears enforcement_confidence_floor under the curve
+-- c(s) = s / (s + confidence_support_scale). Keeping them as independent
+-- literals would make "validated implies confidence >= floor" true today and
+-- silently false after the first re-tuning.
+config {
+    initial_claim_support: Integer = 2
+    confidence_support_scale: Integer = 3
+    enforcement_confidence_floor: Decimal = 0.6
+    validation_support_threshold: Integer = 5
+    -- CC-15 weed: the code's default is the GENERIC per-target-type
+    -- consolidation threshold (10, per-type overridable via
+    -- SetConsolidationThreshold); the previously-declared 2 was a default the
+    -- code never had. Aligned to the code's truth.
+    description_recurrence_threshold: Integer = 10
+
+    -- CC-20: the EL-5 domain-penalty gate is population-relative (z within the
+    -- rerank pass's own contrast population), not an absolute margin. Derived
+    -- on the banked cc16 cells (559 real cells x 2 variants x 2 query limits):
+    -- z_threshold sits inside the measured separability band (own-domain max
+    -- +1.24 < 1.5 < force-fit +1.73), z_scale makes the witnessed force-fit
+    -- penalty clear the demotion bar (0.1 x 0.229 = 0.0229 > 0.0145), and the
+    -- minimum population makes single-candidate passes abstain STRUCTURALLY.
+    -- The old absolute margin (0.010) is not a default anywhere; it survives
+    -- only as an explicit-override legacy form.
+    penalty_z_threshold: Decimal = 1.5
+    penalty_z_scale: Decimal = 0.1
+    penalty_minimum_population: Integer = 5
+    penalty_cap: Decimal = 0.6
+
+    -- Harvest promotion. These three were REFERENCED BY NAME in
+    -- PromoteWellScoredClass but never declared here (weed-2), so the rules read
+    -- as though they were configured while the values lived only in code.
+    -- Declaring them makes the drift visible and checkable.
+    promotion_occurrence_threshold: Integer = 10
+    maximum_shape_ratio: Decimal = 0.5
+    -- The window `consistently_qualified` evaluates over. MEASURED consequence
+    -- of its absence (grill GR-5): with the scalar lifetime mean the code uses
+    -- instead, a class with 20 occurrences and FOUR catastrophic failures still
+    -- promotes, at exactly 0.800. A mean cannot express "has qualified
+    -- repeatedly" — only a window can, which is why no retuning of the
+    -- threshold could ever have fixed it.
+    consistency_window: Integer = 5
+    -- The floor EACH occurrence in the window must clear. Deliberately not a
+    -- mean over the window: that would reintroduce the same defect one level up.
+    consistency_floor: Decimal = 0.8
+    -- The floor EACH dimension (judge) must clear, per PromoteWellScoredClass's
+    -- `quality.all(...)`. Referenced by that rule but never declared until now —
+    -- the same omission as the three above.
+    --
+    -- DISTINCT AXIS from consistency_floor, and the distinction is the whole
+    -- point: dimension_floor is across JUDGES at one moment; consistency_floor
+    -- is across OCCURRENCES over time. The code collapsed both into one scalar
+    -- mean, which is why a class could pass while failing catastrophically on
+    -- one judge (needs >= 5 judges, latent) AND while failing catastrophically
+    -- on 4 of 20 occurrences (needs only 1 judge, LIVE — measured).
+    --
+    -- Uniform for now because the system has exactly one judge. Per-dimension
+    -- differentiation is a refinement, not a prerequisite.
+    dimension_floor: Decimal = 0.8
+    -- CC-29: floor verdicts are exact on the DISCRETE judge scale. Judge
+    -- scores are band values (quantum 0.05), so any legitimate below-floor
+    -- mean differs from the floor by at least quantum/occurrence-count —
+    -- orders of magnitude above binary-representation error, which is what
+    -- actually produced a rejection: a class whose every score was exactly
+    -- 0.8 projected its lifetime mean as 0.7999999999999999 (double
+    -- accumulation) and was rejected by the >= 0.8 floor (measured, CC-26
+    -- real-stream check). A floor comparison therefore tolerates
+    -- representation error strictly smaller than the scale's quantum; the
+    -- tolerance can never change a verdict between two values the scale can
+    -- actually distinguish.
+    floor_comparison_tolerance: Decimal = 0.000000001
 }
 
 entity Ontology {
@@ -215,11 +445,61 @@ entity TreeProfile {
 entity LivingDescription {
     granularity: DescriptionGranularity
     target_identifier: String
+    -- Assembled from this description's claims; no longer authored wholesale.
     current_body: DescriptionBody
+    -- The search key. NOT CURRENTLY PRODUCED — see ADR 0026. Retained as an
+    -- optional field because the idea is deferred, not refuted in general: the
+    -- measured payoff for description quality is at the LLM SELECTION layer,
+    -- not at embedding rank, and that has never been measured here. Anything
+    -- reading this must handle nil, which is the whole of its contract today.
+    retrieval_description: String?
+    -- The body's own revision counter, advanced per assembly.
     version: Integer
+    -- DISTINCT from version: the optimistic-concurrency value, advanced per
+    -- recorded claim-delta event (including one whose deltas all no-op). This
+    -- is what a consolidation reads, what it must present unchanged to write,
+    -- and what the append compares against.
+    claim_set_version: Integer
     updated_at: Timestamp
 
     versions: DescriptionVersion with description = this
+    claims: Claim with description = this
+}
+
+entity Claim {
+    description: LivingDescription
+    -- Deterministic identity derived from the recording event, so a rebuild
+    -- from the log reproduces it byte-identically. This is what a delta's
+    -- target_claim names and what every ordering tie-breaks on.
+    claim_id: String
+    kind: ClaimKind
+    content: String
+    context_guard: String?
+    recommendation: String?
+    -- Support is earned: seeded on creation, incremented by support/edit,
+    -- decremented by contradict. A claim is removed only at zero.
+    support: Integer
+    status: ClaimStatus
+    -- Occurrence identity, not event identity: the [source_sheet, source_tick]
+    -- pair that identifies one turn. This is what lets a claim be re-pooled if
+    -- the identity of its target ever changes.
+    supporting_episodes: List<String>
+    contradicting_episodes: List<String>
+    -- true for claims converted from pre-claim bodies or re-derived from the
+    -- historical rejection corpus. Legacy evidence counts toward support but
+    -- cannot by itself validate a claim.
+    legacy_provenance: Boolean
+    -- Set at CREATION only; an edit operation preserves it. This is what stops
+    -- a reworded authored guard from being laundered into weaker
+    -- earned-evidence accounting.
+    evidence_basis: EvidenceBasis?
+    created_at: Timestamp
+    updated_at: Timestamp
+
+    transitions status {
+        candidate -> validated
+        validated -> candidate
+    }
 }
 
 entity DescriptionVersion {
@@ -406,7 +686,18 @@ rule RequestThresholdConsolidation {
     let policy = policy_for(target_type)
     requires: policy.enabled = true
     requires: delta >= policy.event_threshold
+    -- CC-15 weed (intentional gap): the hourly-budget precondition is
+    -- enforced at CONSOLIDATE time, not at emission — an over-budget
+    -- Requested event IS emitted and then skipped (no LLM call, no write,
+    -- a budget-exceeded log). The event stream is wider than this rule;
+    -- the effect is the same.
     requires: recent_consolidations(target_type) < policy.hourly_budget
+    -- CC-15 weed (OPEN QUESTION, HITL): policy.enabled is consumed today by
+    -- the JUDGE-ATTACHMENT gate (judge_runtime), not by this trigger or the
+    -- consolidator — the writing side fires regardless of the flag. Either
+    -- the trigger should check it, or this rule's precondition should be
+    -- re-scoped to the read/judge side that actually implements
+    -- ReadWriteOptInSeparation. Not silently resolved; parked for decision.
 
     ensures: DescriptionConsolidationRequested(
         target_type: target_type,
@@ -414,38 +705,290 @@ rule RequestThresholdConsolidation {
     )
 }
 
-rule ConsolidateDescription {
-    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count, model_provenance)
-    let existing = current_description(granularity, target_identifier)
-    requires: anti_recency_accepts(existing, candidate_body, evidence_count) = true
+-- Consolidation no longer proposes a replacement body. It proposes DELTAS over
+-- the target's existing claims, and the merge is deterministic. Whole-body
+-- rewriting is unrepresentable, which is what makes both failure modes
+-- impossible: context collapse (an LLM compressing accumulated knowledge away)
+-- and protection-induced starvation (a safeguard rejecting rephrased insight).
+-- Evidence is judged PER DELTA, never per batch. One ungrounded delta must not
+-- reject a consolidation's valid work — that all-or-nothing shape is the
+-- protection-induced starvation this design exists to end, and it is why the
+-- excluded deltas are recorded rather than silently dropped.
+--
+-- The claim-existence condition is enforced at the MERGE, not here: a delta
+-- naming a claim that has since retired is a normal outcome of concurrent
+-- learning, and the fold tolerates it as a no-op.
+--
+-- Model provenance on the delta path: closed by CC-31 (was a TRACKED GAP).
+-- Optional by design — direct writers (emitted-DSL enrichment, authored
+-- claims, the legacy-body backfill) record deltas no LLM proposed, and every
+-- pre-CC-31 event lacks the field and must replay.
+rule RecordClaimDeltas {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version, model_provenance)
+    let description = current_description(granularity, target_identifier)
+    let grounded = deltas.filter(delta => evidence_is_grounded(delta))
+    requires: claim_set_version = current_claim_set_version(description)
+    requires: grounded.count > 0
 
-    ensures: LivingDescription.created_or_updated(
+    ensures: ClaimDeltasRecorded(
         granularity: granularity,
         target_identifier: target_identifier,
-        current_body: candidate_body,
-        version: next_version(existing),
-        updated_at: now
-    )
-    ensures: DescriptionVersion.created(
-        description: description_for(granularity, target_identifier),
-        body: candidate_body,
-        recorded_at: now,
+        deltas: grounded,
         evidence_event_count: evidence_count,
         model_provenance: model_provenance
     )
 }
 
-rule RejectRecencyBiasedDescription {
-    when: DescriptionConsolidationCompleted(granularity, target_identifier, candidate_body, evidence_count, model_provenance)
-    let existing = current_description(granularity, target_identifier)
-    requires: anti_recency_accepts(existing, candidate_body, evidence_count) = false
+-- A delta whose evidence cannot be trusted is refused individually and the
+-- refusal is recorded: a silent drop destroys the ability to measure how much
+-- of our evidence was starved.
+-- CC-15 weed: the shipped shape is ONE PromotionEvidenceExcluded event PER
+-- excluded delta (each carrying its reason and settled-by), strictly richer
+-- than this rule's single event carrying the list. No information is lost.
+rule ExcludeUngroundedDelta {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
+    let ungrounded = deltas.filter(delta => evidence_is_grounded(delta) = false)
+    requires: ungrounded.count > 0
 
-    ensures: AntiRecencyRejectionRecorded(
+    ensures: PromotionEvidenceExcluded(
         granularity: granularity,
         target_identifier: target_identifier,
-        candidate_body: candidate_body,
-        model_provenance: model_provenance
+        deltas: ungrounded
     )
+}
+
+-- When NOTHING survives the guard, no claim event is recorded and the
+-- claim-set version deliberately does not advance — a consolidation that
+-- produced no trustworthy knowledge must not look like one that did.
+rule RecordNothingWhenAllDeltasExcluded {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
+    let grounded = deltas.filter(delta => evidence_is_grounded(delta))
+    requires: claim_set_version = current_claim_set_version(description_for(granularity, target_identifier))
+    requires: grounded.count = 0
+
+    -- CC-15 weed: ClaimSetUnchanged is recorded AS the per-delta
+    -- PromotionEvidenceExcluded events plus the deliberately-unadvanced
+    -- version — not as its own event type. The two facts FailureIsVisible
+    -- distinguishes ("produced no trustworthy knowledge" vs "never
+    -- answered") remain distinguishable: exclusions-with-no-recorded-event
+    -- vs a description-consolidation-failed event.
+    ensures: ClaimSetUnchanged(granularity: granularity, target_identifier: target_identifier)
+}
+
+-- A consolidation that reasoned over a stale claim set is refused, not merged:
+-- concurrent consolidations must re-read rather than overwrite each other.
+rule RefuseStaleClaimDeltas {
+    when: DescriptionConsolidationCompleted(granularity, target_identifier, deltas, evidence_count, claim_set_version)
+    let description = current_description(granularity, target_identifier)
+    requires: claim_set_version != current_claim_set_version(description)
+
+    ensures: ClaimDeltasRefused(
+        granularity: granularity,
+        target_identifier: target_identifier,
+        reason: stale_claim_set
+    )
+    -- CC-15 weed (intentional gap): a consolidation that goes stale BETWEEN
+    -- the handler's version read and the store append loses at the CAS with
+    -- a store conflict and emits no refusal fact — narrower than the rule,
+    -- never wrong. The handler-read arm always records.
+}
+
+rule ApplyAddClaim {
+    when: ClaimDeltaApplied(description, delta)
+    requires: delta.operation = add
+
+    ensures: Claim.created(
+        description: description,
+        kind: delta.kind,
+        content: delta.content,
+        context_guard: delta.context_guard,
+        recommendation: delta.recommendation,
+        support: initial_claim_support,
+        status: candidate,
+        supporting_episodes: delta.episodes,
+        contradicting_episodes: [],
+        legacy_provenance: delta.from_legacy_corpus,
+        -- Carried from the delta at creation and never rewritten afterwards;
+        -- ValidateAuthoredClaimAtCreation then reads it to decide whether this
+        -- claim is born enforcing. Naming it here is what makes
+        -- Claim.evidence_basis's "set at CREATION only" true of the rules
+        -- rather than only of the field comment.
+        evidence_basis: delta.evidence_basis,
+        created_at: now,
+        updated_at: now
+    )
+}
+
+-- support/edit reinforce; edit may also change a claim's KIND, so an insight
+-- that migrates between body sections keeps the support it earned.
+rule ReinforceClaim {
+    when: ClaimDeltaApplied(description, delta)
+    let claim = claim_for(description, delta.target_claim)
+    requires: delta.operation = support or delta.operation = edit
+
+    ensures: claim.support = claim.support + 1
+    ensures: claim.supporting_episodes = claim.supporting_episodes + delta.episodes
+    ensures: claim.updated_at = now
+    -- An edit additionally rewords the claim and may migrate its kind, keeping
+    -- the support it earned. Guards and advice are refreshed only when the
+    -- delta supplies them: a silent edit must not erase what an earlier one
+    -- established.
+    ensures:
+        if delta.operation = edit:
+            claim.content = delta.content
+    ensures:
+        if delta.operation = edit:
+            claim.kind = delta.kind
+}
+
+rule ContradictClaim {
+    when: ClaimDeltaApplied(description, delta)
+    let claim = claim_for(description, delta.target_claim)
+    requires: delta.operation = contradict
+    requires: claim.support > 1
+
+    ensures: claim.support = claim.support - 1
+    ensures: claim.contradicting_episodes = claim.contradicting_episodes + delta.episodes
+    ensures: claim.updated_at = now
+}
+
+-- The ONLY removal path, and it removes the claim from the entity set rather
+-- than moving it to a terminal state — which is why Claim's transition graph
+-- has no `retired` member. A retirement record is kept so that "retired" stays
+-- distinguishable from "silently deleted".
+--
+-- Derived safety property, worth stating because nothing enforces it directly:
+-- retirement requires support <= 1 while validation requires support >= the
+-- threshold, so a VALIDATED claim can never be retired in one step. It must be
+-- demoted first.
+rule RetireExhaustedClaim {
+    when: ClaimDeltaApplied(description, delta)
+    let claim = claim_for(description, delta.target_claim)
+    requires: delta.operation = contradict
+    requires: claim.support <= 1
+
+    ensures: ClaimRetired(description: description, claim: claim, reason: support_exhausted)
+}
+
+-- A claim starts non-enforcing and earns the right to influence ranking with
+-- evidence gathered under the evidence guard. Legacy evidence counts toward
+-- support but cannot by itself validate.
+-- The reverse edge, which had no witnessing rule: enforcement is continuously
+-- earned, not granted once. A claim whose support decays below the threshold
+-- returns to candidate rather than keeping a privilege it no longer merits.
+-- Authored-basis claims are exempt: their support number was never a
+-- threshold count, and their enforcement authority comes from authorship, not
+-- accrual. They erode through the ordinary contradiction path instead — a
+-- claim is removed when its support decays to zero.
+rule DemoteUnderSupportedClaim {
+    when: ClaimSupportChanged(description, claim)
+    requires: claim.status = validated
+    requires: claim.evidence_basis != authored
+    requires: claim.support < validation_support_threshold
+
+    ensures: claim.status = candidate
+}
+
+-- A claim created with basis authored is BORN validated: curated guards
+-- enforce at full strength from day one (the alternative — seeding them as
+-- candidates — silently disarms the proven regression corpus at seeding).
+rule ValidateAuthoredClaimAtCreation {
+    when: ClaimRecorded(description, claim)
+    requires: claim.evidence_basis = authored
+
+    ensures: claim.status = validated
+}
+
+rule ValidateWellSupportedClaim {
+    when: ClaimSupportChanged(description, claim)
+    requires: claim.status = candidate
+    requires: claim.support >= validation_support_threshold
+    requires: post_guard_episode_count(claim) > 0
+
+    ensures: claim.status = validated
+}
+
+-- The body and the retrieval key are DERIVED from claims, never authored.
+-- NOTE: assembly replaces the description's KNOWLEDGE, not the target's place
+-- in the graph. The parent/scope/composes-into axes are carried forward from
+-- the previous body, so landing a claim on a tree-class cannot silently
+-- unparent it. Assembly is therefore not a pure function of the claims alone.
+-- NOTE (CC-22a, measured): retirement is NOT a bound. Real cycles run 2.7:1
+-- adds:retirements with +6.5 signature-tokens/cycle net drift — no obligation
+-- may assume the reflection will shrink a claim set over time. Anything that
+-- must stay bounded needs its own bound (see contract ParentInferenceQuery).
+rule AssembleDescriptionFromClaims {
+    when: ClaimSetChanged(description)
+
+    ensures: description.current_body = assemble_body(description.claims)
+    -- NOTE: assembly no longer synthesises a retrieval key. Measured null
+    -- (ADR 0026): a synthesised key does not improve retrieval rank on this
+    -- corpus, and while the key sat on the positive side of the domain
+    -- penalty's own rerank call, improving it actively suppressed the guard.
+    -- retrieval_description is therefore left unset rather than produced.
+    ensures: description.version = description.version + 1
+    ensures: description.updated_at = now
+    ensures: DescriptionVersion.created(
+        description: description,
+        body: assemble_body(description.claims),
+        recorded_at: now,
+        evidence_event_count: evidence_count_for(description)
+    )
+}
+
+-- HARVEST — the only automatic path that CREATES a durable behavior, and
+-- previously unmodelled in this spec despite being shipped. Describing a class
+-- is earned by RECURRENCE; promoting one is earned by CONSISTENT, per-dimension
+-- quality. Separating them is what lets a recurring-but-mediocre class accrue an
+-- honest account of what it is bad at.
+rule DescribeRecurringClass {
+    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    requires: occurrences >= description_recurrence_threshold
+
+    ensures: DescriptionConsolidationRequested(
+        target_type: tree_class_target,
+        target_identifier: tree_class
+    )
+}
+
+rule PromoteWellScoredClass {
+    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    let quality = dimension_scores(tree_class)
+    requires: occurrences >= promotion_occurrence_threshold
+    requires: not already_harvested(tree_class)
+    -- Per-dimension floors: one catastrophic dimension vetoes promotion, and
+    -- cannot be compensated for by strength elsewhere.
+    requires: quality.all(dimension => dimension.score >= dimension_floor(dimension))
+    -- Consistency, not average: durable creation requires the class to have
+    -- qualified repeatedly, so a single disastrous occurrence is not averaged away.
+    requires: consistently_qualified(tree_class, consistency_window)
+    -- Coherence: a tight cluster, not a grab-bag.
+    requires: distinct_shape_ratio(tree_class) <= maximum_shape_ratio
+    let parent = nearest_abstract_behavior(tree_class)
+    requires: parent != null
+
+    -- CC-15 weed (TRACKED GAP): the shipped minted event carries identity/
+    -- provenance/parent only; the BODY rides the companion
+    -- tree-description-updated and supporting_evidence is reachable via the
+    -- class's claim set rather than attached to the event. The mint's
+    -- evidence is durable and joinable, not inline.
+    ensures: BehavioralSubtreeMinted(
+        tree_class: tree_class,
+        body: synthesised_behavior_body(tree_class),
+        supporting_evidence: validated_claims(tree_class)
+    )
+}
+
+-- Abstained evaluations carry no score and are SKIPPED by promotion, never
+-- counted as zero. A judge that saw no evidence has not judged.
+-- CC-15 weed (intentional gap): the exclusion FACT is recorded on the
+-- consolidation/guard path (a durable judge-abstained exclusion event); the
+-- harvest scoring window honors skip-not-zero by omitting nil-score
+-- occurrences WITHOUT an event of its own.
+rule ExcludeAbstainedEvaluations {
+    when: EvaluationAbstained(tree_class, occurrence)
+
+    ensures: PromotionEvidenceExcluded(tree_class: tree_class, occurrence: occurrence)
 }
 
 rule MintNovelBehavior {
@@ -627,6 +1170,62 @@ invariant DescriptionConfidenceIsBounded {
         and description.current_body.weaknesses.all(principle => principle.confidence >= 0 and principle.confidence <= 1)
 }
 
+-- Claims leave only by decay. No consolidation, and no single judgement, can
+-- delete accumulated knowledge outright.
+invariant ClaimsAreRetiredOnlyWhenUnsupported {
+    for claim in Claims:
+        claim.support >= 1
+}
+
+-- CC-21b verified a MISSING PRODUCER: DescriptionConsolidationCompleted appears
+-- four times as a `when:` trigger and ZERO times as an `ensures:`, and it is not
+-- declared as an external/surface stimulus either. By contrast
+-- DescriptionConsolidationRequested has two producers. So the arc
+-- Requested -> Completed models the request and not the reflection call that
+-- answers it — the LLM step itself is unmodelled.
+--
+-- That is why its FAILURE has nowhere to be recorded. Measured: on the target
+-- taking 23.4% of all consolidation requests, the provider rejected the prompt
+-- outright (1,571,414 tokens against a 1,048,576 limit), 0/3 successful after
+-- four retries each, leaving NO event at all. The read model counting
+-- recent_consolidations cannot distinguish "23.4% of requests died" from
+-- "everything is fine".
+--
+-- The sibling subsystem already has the shape of the answer: contract
+-- SemanticReranking carries @invariant FailureIsVisible ("Timeout or malformed
+-- output is surfaced and original candidates survive"). Consolidation has no
+-- equivalent.
+--
+-- NOT resolved by inventing a producer rule: the reflection call is an
+-- external boundary. CC-28 placed the failure obligation where the sibling
+-- subsystem holds it — contract ClaimConsolidation (FailureIsVisible +
+-- FailuresConsumeBudget). Completed/Failed remain boundary events by design.
+--
+-- ⚠ TOOLING NOTE, verified: this Allium version does NOT parse `open question`.
+-- The construct is in the language reference and documented as surfacing a
+-- checker warning, but `allium model` has no `open_questions` key and the text
+-- does not appear in the parsed model — so writing one here would READ as
+-- tracked while nothing tracked it. That is the same class of defect this arc
+-- keeps finding, so the decision is tracked in the issue system instead and
+-- this comment is documentation for the reader, nothing more.
+
+-- Enforcement (retrieval ranking) acts on validated claims only; candidates are
+-- visible to the model but cannot suppress a behavior's retrieval.
+invariant OnlyValidatedClaimsEnforce {
+    for claim in Claims:
+        claim.status = validated implies
+            (post_guard_episode_count(claim) > 0 or claim.evidence_basis = authored)
+}
+
+-- Every claim can be re-pooled from its own provenance. This is what keeps a
+-- future re-partition of class identity (cluster splitting) possible: claims
+-- follow their evidence rather than being orphaned by it.
+invariant ClaimsCarryResolvableProvenance {
+    for claim in Claims:
+        claim.supporting_episodes.count > 0
+        or declared_basis(claim) != judged_occurrences
+}
+
 invariant ContentHashesDeduplicateSources {
     for a in RegisteredSources:
         for b in RegisteredSources:
@@ -707,3 +1306,11 @@ surface SemanticMemory {
         -- contains every meaningful token of a multi-token query; this narrow
         -- deterministic identity check does not authorize similarity guesses.
 }
+
+-- TRACKED GAP (CC-20 follow-up): the EL-5 penalty pass now carries
+-- load-bearing behavioral obligations that live only in code+tests — fires
+-- only when contrast is positive AND z exceeds penalty_z_threshold against
+-- the pass's OWN population; passes smaller than penalty_minimum_population
+-- abstain; the penalty is graded by z-excess and capped. The reranking pass
+-- is not yet modeled as spec vocabulary, so the rule cannot be written here
+-- without inventing entities; it lands when the rerank surface is specced.

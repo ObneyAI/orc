@@ -35,6 +35,10 @@
     [:model-name :string]
     [:split-documents? :boolean]
     [:max-document-length :int]
+    ;; CC-17 — IndexConfiguration.maximum_query_tokens: the query-side
+    ;; counterpart of max-document-length, and the index's MaxSim ceiling.
+    ;; Optional so indexes created before CC-17 still validate.
+    [:maximum-query-tokens {:optional true} :int]
     [:use-faiss? :boolean]]})
 
 ;; =============================================================================
@@ -71,6 +75,9 @@
     [:config [:map
               [:split-documents? :boolean]
               [:max-document-length :int]
+              ;; CC-17 — IndexConfiguration.maximum_query_tokens. Optional so
+              ;; pre-CC-17 :colbert/index-created events still validate.
+              [:maximum-query-tokens {:optional true} :int]
               [:use-faiss? :boolean]]]
     [:created-at :string]
     [:duration-ms {:optional true} :int]]
@@ -109,7 +116,13 @@
     [:result-count :int]
     [:latency-ms :int]
     [:top-score {:optional true} :double]
-    [:performed-at :string]]
+    [:performed-at :string]
+    ;; CC-17 / invariant OverlongQueriesTruncateVisibly — see
+    ;; :colbert/rerank-performed below.
+    [:query-token-count {:optional true} :int]
+    [:maximum-query-tokens {:optional true} :int]
+    [:query-truncated? {:optional true} :boolean]
+    [:discarded-token-count {:optional true} :int]]
 
    :colbert/rerank-performed
    [:map
@@ -119,7 +132,14 @@
     [:output-count :int]
     [:latency-ms :int]
     [:top-score {:optional true} :double]
-    [:performed-at :string]]})
+    [:performed-at :string]
+    ;; CC-17 / invariant OverlongQueriesTruncateVisibly: the rows the query
+    ;; WOULD have needed, the limit applied, and whether the tail was
+    ;; discarded. Optional so legacy audit events still project.
+    [:query-token-count {:optional true} :int]
+    [:maximum-query-tokens {:optional true} :int]
+    [:query-truncated? {:optional true} :boolean]
+    [:discarded-token-count {:optional true} :int]]})
 
 ;; =============================================================================
 ;; Command Schemas
@@ -134,7 +154,8 @@
     [:document-metadatas {:optional true} [:vector [:map-of :keyword :any]]]
     [:model-name {:optional true} :string]
     [:split-documents? {:optional true} :boolean]
-    [:max-document-length {:optional true} :int]]
+    [:max-document-length {:optional true} :int]
+    [:maximum-query-tokens {:optional true} :int]]
 
    :colbert/delete-index
    [:map
@@ -155,7 +176,8 @@
    [:map
     [:query :string]
     [:documents [:vector :string]]
-    [:k {:optional true} :int]]})
+    [:k {:optional true} :int]
+    [:maximum-query-tokens {:optional true} :int]]})
 
 ;; =============================================================================
 ;; Query Schemas

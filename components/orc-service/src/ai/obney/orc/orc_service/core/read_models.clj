@@ -1537,3 +1537,55 @@
   (let [all-metrics (rmp/project ctx :sheet/tree-fingerprint-rolling-metrics
                                  {:partition-key tree-fingerprint})]
     (get all-metrics tree-fingerprint)))
+
+;; =============================================================================
+;; CC-13 — Injection Records
+;; =============================================================================
+;;
+;; The read side of the narrow `:intervention/*` ledger row. One entry per
+;; R-Inject render occurrence, so a turn's injection can be joined to that
+;; turn's judge scores by the [sheet-id tick-id] pair those scores carry.
+
+(def injection-record-events
+  "Events that affect the injection-records read model."
+  #{:intervention/injection-recorded})
+
+(defn- injection-record-entity-id
+  "Scope the entity by the whole occurrence, not by node.
+
+   Node ids are local to their sheet and a node re-renders on every tick, so a
+   bare node-id would make one entity look like it was moving between sheet
+   partitions AND would let a later tick clobber an earlier tick's record —
+   the same failure the blackboard's [sheet-id key] scoping exists to prevent."
+  [event-or-entry]
+  [(:sheet-id event-or-entry) (:tick-id event-or-entry) (:node-id event-or-entry)])
+
+(defmulti injection-records*
+  "Apply event to the injection-records read model."
+  (fn [_state event] (:event/type event)))
+
+(defmethod injection-records* :default [state _event] state)
+
+(defmethod injection-records* :intervention/injection-recorded
+  [state event]
+  ;; Project the domain fields only — the grain envelope keys (:event/type,
+  ;; :event/id, …) are not part of the ledger row.
+  (assoc state (injection-record-entity-id event)
+         (into {} (remove (fn [[k _]] (= "event" (namespace k))) event))))
+
+(defreadmodel :sheet injection-records
+  {:events injection-record-events :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn injection-record-entity-id}
+  [state event] (injection-records* state event))
+
+(defn get-injection-records
+  "Every injection record for a sheet, as a map of
+   [sheet-id tick-id node-id] -> record."
+  [ctx sheet-id]
+  (rmp/project ctx :sheet/injection-records {:partition-key sheet-id}))
+
+(defn get-injection-record
+  "The injection record for one render occurrence, or nil."
+  [ctx sheet-id tick-id node-id]
+  (get (get-injection-records ctx sheet-id) [sheet-id tick-id node-id]))

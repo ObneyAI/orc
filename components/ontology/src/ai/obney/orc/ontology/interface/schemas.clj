@@ -118,6 +118,202 @@
   [:tuple :uuid :uuid])
 
 ;; =============================================================================
+;; CC-1 (ADR 0021) — Claim-based consolidation shapes
+;; =============================================================================
+;;
+;; Consolidation stops proposing replacement BODIES and starts proposing
+;; CLAIM DELTAS that deterministic code merges. Whole-body rewriting — and
+;; therefore both catastrophic collapse and rejection-by-wording — becomes
+;; unrepresentable.
+
+(def description-granularity
+  "The granularities a Living Description (and therefore its claim set)
+   can be keyed at. Mirrors the spec's DescriptionGranularity enum."
+  [:enum :node-type :node-instance :tree-fingerprint :tree-class
+   :behavioral-subtree])
+
+(def claim-kind
+  "The section of an assembled description body a claim belongs to. A
+   claim's kind is MUTABLE (CC-2's `edit` op), so an insight that migrates
+   between sections keeps its accumulated support."
+  [:enum :capability :strength :weakness :guard :representative-use])
+
+(def consolidation-failure-reason
+  "CC-28 (contract ClaimConsolidation, FailureIsVisible) — the CLOSED
+   reason-class set for a reflection call that never answered. The class
+   is the contract; a message string may ride along on `:error` but is
+   never the thing a consumer matches on.
+
+     :provider-rejected — the provider refused the call outright (the
+       motivating incident: a 1,571,414-token prompt vs a 1,048,576 cap)
+     :timeout           — the execution deadline died before an answer
+     :retries-exhausted — every provider attempt errored until the retry
+       budget ran out
+     :unparseable       — the provider answered but no value could be
+       extracted for the declared writes"
+  [:enum :provider-rejected :timeout :retries-exhausted :unparseable])
+
+(def consolidation-target-identifier
+  "The FULL identity range `consolidate!` accepts, one shape per
+   granularity: a keyword for :node-type (:llm), a [sheet-id node-id]
+   tuple for :node-instance, a SHA string for :tree-fingerprint, a UUID
+   for :tree-class. Wider than the claim events' [:or :string :uuid]
+   because BOTH reflection paths — claim and legacy body — must be able
+   to record their deaths."
+  [:or :keyword node-instance-target :string :uuid])
+
+(def claim-status
+  "`:candidate` — recorded and visible, but NOT enforcing. `:validated` —
+   earned enough post-guard evidence to influence retrieval ranking.
+   Every newly-added claim starts `:candidate`."
+  [:enum :candidate :validated])
+
+(def evidence-basis
+  "CC-6 — WHAT A DELTA SAYS ITS CONTENT RESTS ON.
+
+   CC-4's guard resolves `:episodes` against real judge evidence and refuses
+   what it cannot resolve. That is right for a consolidation, which reasons
+   over turns a judge already scored, and it is fatal for a DETERMINISTIC
+   writer that runs before any judge exists: CV-1's provisional capture fires
+   at classify time, so under a resolve-or-refuse guard it could never write at
+   all — a designed path blocked by construction, which the orchestrator
+   recorded as a forward conflict when CC-4 landed.
+
+   `:from-legacy-corpus` was the first member of this idea rather than a
+   special case of nothing. Naming the idea is what stops `legacy` from
+   quietly acquiring a second meaning — CC-7's `:legacy-provenance` reads it
+   as *converted from a pre-claim body*, and a CV-1 signature is not that.
+
+     :judged-occurrences        the delta rests on the turns it names, and the
+                                guard must RESOLVE them. Every LLM-authored
+                                consolidation delta. The default when nothing
+                                is declared.
+     :legacy-corpus             a prior whole-body description (CC-5's
+                                just-in-time backfill; CC-12's migration).
+     :classification-signature  the deterministic task signature the
+                                classifier itself keyed on (CV-1). Asserts an
+                                INPUT, not a quality judgement.
+     :emitted-artifact          a verbatim artifact the engine produced and
+                                recorded — CV-2's emitted worked-DSL. Asserts
+                                that the tree was emitted, not that it was good.
+     :authored                  designer-written corpus knowledge (CC-9d).
+                                Asserts AUTHORSHIP — a true, auditable statement
+                                about provenance.
+
+   WHAT A DECLARATION BUYS: admission past the guard, and — for `:authored`
+   alone — enforcement. The four MECHANICAL bases buy admission and nothing
+   else: such a delta names no occurrence, so it contributes no post-guard
+   episode, so CC-7 cannot validate the claim and CC-9's gate cannot let it
+   enforce, at any level of accumulated support. Mechanical knowledge is visible
+   and never authoritative; it earns enforcement the only way anything does, by
+   being reinforced from occurrences a judge actually scored.
+
+   CC-9d — WHY `:authored` IS THE EXCEPTION, and why it is not a hole. A
+   designer-written corpus guard has no occurrences by construction (nothing
+   judged it; nothing could have), so under the mechanical rule it would seed at
+   `initial_claim_support` = 2, below the validation threshold of 5, and the
+   curated regression corpus would be NON-ENFORCING from the day it was seeded.
+   The two obvious repairs were both rejected in grill GR-2 Q4: seeding at the
+   threshold buys only ~0.6 of full guard strength, and seeding above it
+   FABRICATES episode counts, which breaks `ClaimsCarryResolvableProvenance` at
+   the corpus root and poisons every later calibration. So authorship is carried
+   as what it actually is — a basis, not a number. Authorship grants enforcement
+   from creation and exemption from support-driven demotion; it does NOT grant
+   immortality, because contradiction still decrements support and the ordinary
+   retirement path still removes the claim when that support is exhausted. And
+   the reflection LLM cannot reach it: the consolidator STAMPS
+   `:judged-occurrences` on every model-proposed operation in code."
+  [:enum :judged-occurrences :legacy-corpus :classification-signature
+   :emitted-artifact :authored])
+
+(def claim-operation
+  "The complete set of operations a consolidation may express over a claim
+   set. Deletion is deliberately absent: a claim leaves only when its
+   support decays to zero (CC-2's retire path).
+
+   CC-1 implements `:add` only. The other three are declared here so a
+   consolidation that proposes them is still a schema-valid, recordable
+   event — the projection fold treats them as no-ops until CC-2 lands,
+   rather than throwing on an event that is already permanent."
+  [:enum :add :support :contradict :edit])
+
+(def episode-ref
+  "One episode — the HP-2 occurrence pair [source-sheet-id source-tick-id]
+   that identifies a single turn. Occurrence identity, NOT event identity:
+   a static task-shape's sheet-id is shared across every turn, so the tick
+   is what makes the reference resolvable (the SJ-1 join lesson)."
+  [:tuple :uuid :uuid])
+
+(def claim-delta
+  "One proposed change to a claim set. A consolidation emits a vector of
+   these instead of a replacement body; the merge that applies them is
+   deterministic.
+
+   `:target-claim` names the claim an op applies to and is absent (or nil)
+   for `:add`, which creates one.
+
+   CC-6: `:evidence-basis` is what the writer DECLARES its content rests on
+   (see `evidence-basis`). Optional, and derived when absent — a delta that
+   says nothing is read as `:legacy-corpus` when `:from-legacy-corpus` is set
+   and `:judged-occurrences` otherwise, so every delta written before CC-6
+   keeps exactly the meaning it had. `:from-legacy-corpus` therefore remains
+   the boolean spelling of one basis rather than a second, competing axis."
+  [:map
+   [:operation          claim-operation]
+   [:target-claim       {:optional true} [:maybe :string]]
+   [:kind               claim-kind]
+   [:content            :string]
+   [:context-guard      {:optional true} [:maybe :string]]
+   [:recommendation     {:optional true} [:maybe :string]]
+   [:episodes           [:vector episode-ref]]
+   [:from-legacy-corpus :boolean]
+   [:evidence-basis     {:optional true} [:maybe evidence-basis]]])
+
+(def claim
+  "One accumulated claim — the shape `get-claims` returns.
+
+   `:claim-id` is derived deterministically from the recording event's id
+   plus the delta's index, so a projection rebuild from the log reproduces
+   identical claim identities. `:support` is EARNED (seeded at
+   `initial_support`, raised by support/edit, lowered by contradict) and is
+   always positive: a claim that reaches exhausted support retires out of
+   the claim set rather than lingering at zero.
+
+   CC-9d: `:evidence-basis` is the spec's `Claim.evidence_basis` — SET AT
+   CREATION ONLY, from the creating delta's declaration, and `nil` when the
+   delta declared nothing. It is deliberately durable ON THE CLAIM rather than
+   only on the recording event, because two spec rules compare against it
+   (`ValidateAuthoredClaimAtCreation`, `DemoteUnderSupportedClaim`) and the
+   invariant `OnlyValidatedClaimsEnforce` reads it. An `:edit` operation
+   PRESERVES it: that is the anti-laundering rule, without which a reworded
+   authored guard could be reclassified into weaker earned-evidence accounting
+   by whoever wrote last."
+  [:map
+   [:claim-id               :string]
+   [:kind                   claim-kind]
+   [:content                :string]
+   [:context-guard          [:maybe :string]]
+   [:recommendation         [:maybe :string]]
+   [:support                :int]
+   [:status                 claim-status]
+   [:supporting-episodes    [:vector episode-ref]]
+   [:contradicting-episodes [:vector episode-ref]]
+   [:legacy-provenance      :boolean]
+   [:evidence-basis         {:optional true} [:maybe evidence-basis]]
+   [:created-at             :string]
+   [:updated-at             :string]])
+
+(def claim-retirement
+  "CC-2: the spec's `ClaimRetired` fact — the shape `get-retired-claims`
+   returns. Retirement at exhausted support is the ONLY path out of a
+   claim set (there is no delete operation), so `:reason` has exactly one
+   member and the fact log never shrinks."
+  [:map
+   [:claim      claim]
+   [:reason     [:enum :support-exhausted]]
+   [:retired-at :string]])
+
+;; =============================================================================
 ;; C-2b-2 — Reranker output shape
 ;; =============================================================================
 
@@ -145,6 +341,44 @@
   "Vector of reranked-result entries, descending by :fitness-score
    per the reranker's instruction."
   [:vector reranked-result])
+
+;; =============================================================================
+;; CC-23 (contract TaskClassification) — bounded pre-gate ranking snapshot
+;; =============================================================================
+
+(def ranked-candidate
+  "CC-23, the spec's DecidedRankingIsRecorded: ONE entry of the PRE-GATE
+   ranking snapshot a classification decision ran on, REDUCED to identity,
+   axis, scores, and rerank source.
+
+   PAYLOAD BOUND (load-bearing, enforced by {:closed true}): NO `:content`,
+   NO `:summary`, no description text of any kind — measured, candidate
+   content was 59.4% of the tree-class evidence payload (the CC-21 lesson).
+
+     :target-id     — candidate identity (UUID or the ColBERT JSON bridge's
+                      stringified form; seeds may carry seed-string ids)
+     :granularity   — the retrieval axis (:tree-class / :tree-fingerprint /
+                      :behavioral-subtree / ...)
+     :rerank-source — how this entry was ranked (:reranker on success;
+                      :colbert-fallback / :timeout-fallback when the
+                      reranker did not rank). Omitted in the degenerate
+                      case of an unstamped candidate (omit-not-nil).
+     :fitness-score — the reranker's absolute fitness. OMITTED (not nil)
+                      on the fallback path where the reranker never scored.
+     :score         — the raw ColBERT retrieval score, when present."
+  [:map {:closed true}
+   [:target-id     [:or :uuid :string]]
+   [:granularity   :keyword]
+   [:rerank-source {:optional true} :keyword]
+   [:fitness-score {:optional true} number?]
+   [:score         {:optional true} number?]])
+
+(def ranked-candidates
+  "The bounded pre-gate ranking snapshot: at most the retrieval top-k
+   entries (k = 5, `task-classifier/classify-retrieval-k` — the classifier's
+   retrieval :k). The {:max 5} bound plus the entry's closed map IS the
+   spec's payload bound: length <= k, no description content."
+  [:vector {:max 5} ranked-candidate])
 
 ;; =============================================================================
 ;; Event Schemas
@@ -395,7 +629,56 @@
     ;; reasoning, and rerank-source. Populated by R05b's classify-behaviors
     ;; via the wedge; absent on legacy events and on first-tick classify
     ;; calls that opt out of behavioral classification.
-    [:behavioral-subtrees {:optional true} [:vector :map]]]
+    [:behavioral-subtrees {:optional true} [:vector :map]]
+    ;; CC-23 (DecidedRankingIsRecorded): the PRE-GATE ranking the decision
+    ;; ran on — bounded to the retrieval top-k (5), each entry reduced to
+    ;; identity/axis/scores/rerank-source, NEVER description content (see
+    ;; `ranked-candidates` for the full bound). :top-candidates above stays
+    ;; the GATED surfaced view for its consumers, byte-identical to
+    ;; pre-CC-23; motivating audit CC-19: 150/156 events surfaced exactly
+    ;; ONE candidate, and the assigned id was absent from the event's own
+    ;; candidate list in 7/156. OPTIONAL: every pre-CC-23 event lacks it
+    ;; and must replay (omit-not-nil — new producers always attach it).
+    [:ranked-candidates {:optional true} ranked-candidates]
+    ;; CC-23: the assigned identity's provenance — WHICH branch produced
+    ;; :assigned-tree-id. CLOSED set (the CC-28 idiom): a new provenance
+    ;; must be added here deliberately. OPTIONAL for pre-CC-23 replay.
+    [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-23 — Task-classification deferral event (DeferralIsVisible)
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; A classification that DEFERS — the semantic reranker fell back, so
+   ;; fitness is unknown — leaves this durable event: 'uncertain' and
+   ;; 'nothing happened' are different facts, and the deferral rate is a
+   ;; measured number (count these events), never an inference from missing
+   ;; :ontology/task-classified events. Motivating audit (CC-19): the
+   ;; classifier ran on 178 ticks and left 156 events — the 22 silent ticks
+   ;; (12.4%) could only be INFERRED.
+   ;;
+   ;; ONE event per deferred classification, emitted by the classify call
+   ;; site (the C-2c-2 wedge) via :ontology/record-task-classification-deferral.
+   ;; The existing :ontology/assign-task-class REQUIRES an :assigned-tree-id,
+   ;; so a deferral structurally cannot ride it.
+   ;;
+   ;; :fallback-source is a CLOSED set (the CC-28 idiom): a new fallback
+   ;; flavour must be added HERE and to task-classifier/rerank-fallback-sources
+   ;; deliberately, never slipped in as a stringly value.
+   ;;
+   ;; :ranked-candidates carries the same bounded pre-gate snapshot the
+   ;; classified event records — length <= retrieval k (5), entries closed
+   ;; to identity/axis/scores/rerank-source, NEVER description content.
+
+   :ontology/task-classification-deferred
+   [:map
+    [:source-sheet-id   :uuid]
+    [:source-tick-id    :uuid]
+    [:source-node-id    :uuid]
+    [:fallback-source   [:enum :colbert-fallback :timeout-fallback]]
+    [:ranked-candidates ranked-candidates]
+    [:reasoning         :string]
+    [:deferred-at       :string]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Behavioral subtree minting (audit-trail event)
@@ -425,6 +708,127 @@
     ;; (present only when :provenance :harvested).
     [:harvested-from-tree-class {:optional true} [:or :uuid :string]]
     [:minted-at          :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-1 (ADR 0021) — Claim delta events
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; The spec's ClaimDeltasRecorded. Carries the granularity + target
+   ;; identifier of the Living Description the claims hang off, the deltas
+   ;; themselves, the evidence count the consolidation reasoned over, and
+   ;; the claim-set version it was computed AGAINST — the value the append
+   ;; CAS compares, so a consolidation that read a stale claim set cannot
+   ;; silently win.
+
+   :ontology/claim-deltas-recorded
+   [:map
+    [:granularity          description-granularity]
+    ;; Same target-identifier shapes the description events use: a UUID for
+    ;; :tree-class, a SHA string for :tree-fingerprint, etc.
+    [:target-identifier    [:or :string :uuid]]
+    [:deltas               [:vector claim-delta]]
+    ;; How many source events the consolidation reasoned over. Supplied by
+    ;; the consolidator (CC-5/CC-6); 0 when a caller records deltas
+    ;; directly, which is why it carries a default rather than being
+    ;; optional — the audit trail always has a number.
+    [:evidence-event-count :int]
+    ;; The claim-set version the deltas were computed against.
+    [:claim-set-version    :int]
+    ;; CC-31: which completion PROPOSED these deltas — same shape the
+    ;; *-description-updated events carry (trace-id / model / usage), because
+    ;; it answers the same replayability question one level deeper: claims
+    ;; accrue across many consolidations, and diagnosing model drift needs to
+    ;; know which model proposed each insight. OPTIONAL, load-bearing twice
+    ;; over: every pre-CC-31 event lacks it and must replay, and direct
+    ;; writers (CV-2 emitted-DSL enrichment, CC-9d authored claims, the CC-5
+    ;; legacy-body backfill) record deltas no LLM proposed.
+    [:model-provenance     {:optional true} [:maybe [:map
+                                                     [:trace-id :uuid]
+                                                     [:model :string]
+                                                     [:usage [:map-of :keyword :int]]]]]
+    [:recorded-at          :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-4 (ADRs 0023, 0021) — the evidence guard's rejection facts
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Two rejected-write facts, both emitted by `record-claim-deltas`.
+   ;;
+   ;; PromotionEvidenceExcluded is the spec's ExcludeAbstainedEvaluations
+   ;; made observable: one event per DELTA the guard refused, never one per
+   ;; batch, because a batch keeps its grounded deltas. Without it a drop
+   ;; would be silent, and a silent drop destroys the ability to measure
+   ;; how much historical evidence was starved.
+   ;;
+   ;; ClaimDeltasRefused is the spec's RefuseStaleClaimDeltas `ensures`.
+   ;; CC-1's CAS already made a stale consolidation lose; this makes the
+   ;; loss QUERYABLE, carrying BOTH versions so a collision can be
+   ;; diagnosed without reading the log.
+
+   :ontology/promotion-evidence-excluded
+   [:map
+    [:granularity       description-granularity]
+    [:target-identifier [:or :string :uuid]]
+    [:reason            [:enum :no-judge-evidence :starved-evidence
+                         :judge-abstained :no-episodes
+                         :unverified-explanation]]
+    ;; The occurrences whose evidence could not be trusted — the same
+    ;; [sheet-id tick-id] pairs the delta carried.
+    [:episodes          [:vector episode-ref]]
+    [:operation         claim-operation]
+    [:kind              claim-kind]
+    [:content           :string]
+    ;; Which layer settled it: the deterministic check, or the
+    ;; explanation verifier it hands the residue to.
+    [:settled-by        [:enum :deterministic :verifier]]
+    [:excluded-at       :string]]
+
+   :ontology/claim-deltas-refused
+   [:map
+    [:granularity       description-granularity]
+    [:target-identifier [:or :string :uuid]]
+    [:reason            [:enum :stale-claim-set]]
+    ;; BOTH versions: what the loser had read, and what had already won.
+    [:attempted-version :int]
+    [:current-version   :int]
+    [:delta-count       :int]
+    [:refused-at        :string]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-28 (contract ClaimConsolidation) — the reflection's death certificate
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; The spec's FailureIsVisible: a reflection call that fails — provider
+   ;; rejection, timeout, exhausted retries, unparseable output — leaves a
+   ;; durable failure record carrying the target, the reason class, and the
+   ;; attempt count. "Produced no trustworthy knowledge" (ClaimSetUnchanged)
+   ;; and "never answered" are different facts; this event is the second one.
+   ;;
+   ;; ONE event per terminal failure — the whole attempt-set, after the
+   ;; executor's internal retries, with :attempts carrying the count. Never
+   ;; one event per attempt: per-attempt emission would make a single dying
+   ;; consolidation look like N incidents and would multiply-count against
+   ;; the hourly budget (FailuresConsumeBudget folds this event).
+   ;;
+   ;; Motivating incident (measured): a target taking 23.4% of all
+   ;; consolidation requests had its prompt rejected outright (1,571,414
+   ;; tokens vs 1,048,576), 0/3 after four retries each, leaving NO event —
+   ;; indistinguishable from health.
+
+   :ontology/description-consolidation-failed
+   [:map
+    [:granularity        description-granularity]
+    [:target-identifier  consolidation-target-identifier]
+    ;; The CLOSED class is the contract; :error is the ride-along string.
+    [:reason             consolidation-failure-reason]
+    [:error              {:optional true} [:maybe :string]]
+    ;; Provider attempts consumed by this attempt-set. Exact for the
+    ;; exception-terminal classes (the executor's exception path only
+    ;; escapes after exhausting its retry budget); a floor of 1 for
+    ;; :timeout/:unparseable, whose attempt index the executor does not
+    ;; surface — see classify-reflection-failure.
+    [:attempts           :int]
+    [:failed-at          :string]]
 
    ;; -------------------------------------------------------------------------
    ;; Gap-6 — Anti-recency runtime audit events
@@ -794,36 +1198,52 @@
     [:body description-body]
     [:model-provenance {:optional true} [:maybe :map]]]
 
-   ;; Gap-6: audit-trail commands for the anti-recency validator.
-   ;; Dispatched by the consolidator processor when the validator
-   ;; intervenes; emit :ontology/anti-recency-rejection or
-   ;; :ontology/anti-recency-clamp-applied respectively. These exist
-   ;; instead of direct es/append calls so the consolidator follows
-   ;; the standard Grain pattern: events flow through command handlers,
-   ;; never bypassing them.
+   ;; -------------------------------------------------------------------------
+   ;; CC-1 (ADR 0021) — Claim delta command
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Records a consolidation's proposed claim deltas against the target's
+   ;; claim set. Appends under CAS on :claim-set-version.
 
-   :ontology/record-anti-recency-rejection
+   :ontology/record-claim-deltas
    [:map
-    [:target-type     [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
-    [:target-id       :any]
-    [:bucket          [:enum :strengths :weaknesses]]
-    [:entry-trait     :string]
-    [:prior-confidence number?]
-    [:prior-evidence-count :int]
-    [:reason          :keyword]
-    [:rejected-body   :map]
-    [:model-provenance {:optional true} [:maybe :map]]]
+    [:granularity          description-granularity]
+    [:target-identifier    [:or :string :uuid]]
+    [:deltas               [:vector claim-delta]]
+    ;; Optional on the COMMAND (defaults to 0 on the event) — a caller
+    ;; recording deltas outside the consolidator has no evidence window to
+    ;; report. CC-5/CC-6 wire the consolidator's real count through.
+    [:evidence-event-count {:optional true} :int]
+    [:claim-set-version    :int]
+    ;; CC-31: optional for the same reason it is optional on the event — a
+    ;; direct caller recording deltas without an LLM legitimately has none.
+    ;; Same loose shape the description commands use; the EVENT schema types
+    ;; it precisely.
+    [:model-provenance     {:optional true} [:maybe :map]]]
 
-   :ontology/record-anti-recency-clamp
+   ;; -------------------------------------------------------------------------
+   ;; CC-28 — record a consolidation's terminal reflection failure
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Dispatched by the consolidator from BOTH reflection paths (claim and
+   ;; legacy body) when the reflection's exec-result is terminally
+   ;; non-successful. ONE command per attempt-set; :attempts carries the
+   ;; count. Emits :ontology/description-consolidation-failed.
+
+   :ontology/record-consolidation-failure
    [:map
-    [:target-type     [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
-    [:target-id       :any]
-    [:bucket          [:enum :strengths :weaknesses]]
-    [:entry-trait     :string]
-    [:prior-confidence number?]
-    [:llm-confidence  number?]
-    [:clamped-confidence number?]
-    [:reason          :keyword]]
+    [:granularity       description-granularity]
+    [:target-identifier consolidation-target-identifier]
+    [:reason            consolidation-failure-reason]
+    [:error             {:optional true} [:maybe :string]]
+    [:attempts          :int]]
+
+   ;; Gap-6's two anti-recency AUDIT COMMAND schemas were removed by CC-5, with
+   ;; the validator and the handlers that were their only callers. Nothing can
+   ;; dispatch them, so a schema for them would describe a command that does not
+   ;; exist. Their EVENT schemas survive below, because events the valve already
+   ;; wrote are permanent and a log stops being replayable the moment the shape
+   ;; its events validate against is deleted.
 
    ;; -------------------------------------------------------------------------
    ;; C-2c-1 — Auto-classifier command
@@ -856,7 +1276,32 @@
     ;; R05a: behavioral-subtree classification result forwarded by the
     ;; wedge (set by R05b's classify-behaviors call). The defcommand
     ;; carries this through to the emitted task-classified event body.
-    [:behavioral-subtrees {:optional true} [:vector :map]]]
+    [:behavioral-subtrees {:optional true} [:vector :map]]
+    ;; CC-23: pre-gate ranking + assignment provenance forwarded by the
+    ;; wedge from the classify-task result. Optional so pre-CC-23 callers
+    ;; (and replayed tooling) stay valid; new producers always attach them.
+    [:ranked-candidates {:optional true} ranked-candidates]
+    [:assigned-via {:optional true} [:enum :match :bundle :walk-down :mint]]]
+
+   ;; -------------------------------------------------------------------------
+   ;; CC-23 — Record a task-classification deferral (DeferralIsVisible)
+   ;; -------------------------------------------------------------------------
+   ;;
+   ;; Dispatched by the classify CALL SITE (the C-2c-2 wedge) when the
+   ;; classification :outcome is :uncertain — the reranker fell back and the
+   ;; wedge therefore SKIPS :ontology/assign-task-class (which structurally
+   ;; requires an :assigned-tree-id). ONE command per deferred classification.
+   ;; The handler stamps :deferred-at and emits
+   ;; :ontology/task-classification-deferred.
+
+   :ontology/record-task-classification-deferral
+   [:map
+    [:source-sheet-id   :uuid]
+    [:source-tick-id    :uuid]
+    [:source-node-id    :uuid]
+    [:fallback-source   [:enum :colbert-fallback :timeout-fallback]]
+    [:ranked-candidates ranked-candidates]
+    [:reasoning         :string]]
 
    ;; -------------------------------------------------------------------------
    ;; R05c — Mint a new behavioral-subtree concept
@@ -1730,6 +2175,23 @@
                               [:pattern :string]
                               [:metrics [:map-of :keyword :double]]
                               [:evidence-count :int]]]]]]]
+
+   ;; CC-1 (ADR 0021) — the shape `get-claims` returns, one entry per claim.
+   ;; `:claim-id` is derived deterministically from the recording event's id
+   ;; plus the delta's index, so a projection rebuild from the log reproduces
+   ;; identical claim identities.
+
+   :ontology/claim claim
+
+   ;; CC-2 (ADR 0021) — the shape `get-retired-claims` returns. The spec's
+   ;; `ClaimRetired` fact, materialised in the projection rather than emitted
+   ;; as a second event: retirement is a CONSEQUENCE of folding a contradict
+   ;; delta over accumulated support, not a decision a command can take, so
+   ;; it is derived where the support is known. `:reason` is the spec's
+   ;; `support_exhausted` and is the only reason there is — there is no
+   ;; delete operation for another reason to come from.
+
+   :ontology/claim-retirement claim-retirement
 
    ;; Embedding Read Models (Phase 4)
 

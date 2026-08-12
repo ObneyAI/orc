@@ -62,14 +62,14 @@
                               [(:document-id c)
                                (dp/colbert-rerank-scores rf norm-fn
                                                          (dp/avoid-strings c)
-                                                         (dp/positive-strings c)
+                                                         (dp/legacy-positive-strings c)
                                                          task)]))
                        candidates)
         ;; Batch: gather distinct guards across ALL candidates, ONE call, shared map.
         b-calls (atom 0)
         brf (batch-rerank-fn b-calls)
         all-strings (distinct (mapcat (fn [c] (concat (dp/avoid-strings c)
-                                                      (dp/positive-strings c)))
+                                                      (dp/legacy-positive-strings c)))
                                       candidates))
         all-strings (remove (fn [s] (or (nil? s) (str/blank? s))) all-strings)
         res (brf {:query task :documents (vec all-strings)})
@@ -81,7 +81,7 @@
                          (map (fn [c]
                                 [(:document-id c)
                                  {:cos-avoid (max-from-map (dp/avoid-strings c))
-                                  :cos-good  (max-from-map (dp/positive-strings c))}]))
+                                  :cos-good  (max-from-map (dp/legacy-positive-strings c))}]))
                          candidates)]
     (println "=== EL-5.1 BATCH PROTO ===")
     (println "candidates:" (count candidates))

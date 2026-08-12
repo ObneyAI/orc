@@ -22,7 +22,10 @@
             ;; Resolving blackboard values from the canonical write log
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             ;; WS-2a: the orc block-signal primitive (opaque payload)
-            [ai.obney.orc.orc-service.core.block :as block]))
+            [ai.obney.orc.orc-service.core.block :as block]
+            ;; Shape, not values — the profile lifecycle events record instead
+            ;; of a blackboard value
+            [ai.obney.orc.orc-service.core.profile :as profile]))
 
 ;; =============================================================================
 ;; Read Models
@@ -45,6 +48,17 @@
 (def start-telemetry-exporter! telemetry-exporter/start!)
 (def telemetry-exporter-stats telemetry-exporter/stats)
 (def stop-telemetry-exporter! telemetry-exporter/stop!)
+
+;; =============================================================================
+;; Value shape profiling
+;;
+;; What stays useful about a value once the value itself lives in the write
+;; log. Exported so a CONSUMER of these events can reduce an OLD-shape payload
+;; to the same shape the emitter records today, rather than inventing a second
+;; vocabulary for it (CC-21b).
+;; =============================================================================
+(def profile-value profile/profile-value)
+(def profile-values profile/profile-values)
 
 ;; Sheet functions
 (def get-sheet rm/get-sheet)

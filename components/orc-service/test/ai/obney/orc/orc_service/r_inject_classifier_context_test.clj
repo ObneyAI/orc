@@ -37,28 +37,6 @@
     (is (str/includes? (:instruction result) (:summary body)))
     (is (str/includes? (:instruction result) "version 7"))))
 
-(deftest r-inject-reports-the-exact-rendered-trace-in-process
-  (let [sheet-id (random-uuid)
-        captured (atom nil)
-        payload {:structural {:assigned-tree-id (random-uuid)
-                              :confidence 0.9
-                              :top-candidates []}
-                 :behavioral {:behaviors []}}
-        node {:type :repl-researcher
-              :instruction "Original instruction."
-              :context {:r05-classifier payload}}
-        result (tp/apply-r05-classifier-context
-                node {:sheet-id sheet-id
-                      :r-inject-trace-fn
-                      #(reset! captured [%1 %2])})
-        [captured-sheet-id trace] @captured]
-    (is (= sheet-id captured-sheet-id))
-    (is (= payload (:classifier-payload trace)))
-    (is (= (:prepend trace)
-           (subs (:instruction result) 0 (:prepend-chars trace))))
-    (is (= "Original instruction."
-           (subs (:instruction result) (:prepend-chars trace))))))
-
 ;; =============================================================================
 ;; Test data builders — hand-built classifier payloads matching the live shapes
 ;; =============================================================================

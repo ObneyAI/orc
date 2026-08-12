@@ -103,7 +103,7 @@
                                (assert-valid-reranked-result! "override" override-results))]
 
           (println "\n========== RESULT ==========")
-          (println "  Default-model  (qwen/qwen3.5-flash-02-23) valid ranking? =" default-ok?)
+          (println (str "  Default-model  (" reranker/default-model ") valid ranking? =") default-ok?)
           (println "  Override-model (google/gemini-2.5-flash)  valid ranking? =" override-ok?)
           (println "============================\n")
           {:default-ok? default-ok? :override-ok? override-ok?

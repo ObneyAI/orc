@@ -205,12 +205,17 @@
                                     (fn [score & {:keys [max-score]
                                                   :or {max-score 40.0}}]
                                       (/ (double score) max-score)))
-          {:keys [cos-avoid cos-good]} (scorer cand "refactor extract a helper")]
+          {:keys [cos-avoid cos-good] :as res} (scorer cand "refactor extract a helper")]
       ;; Default config is :batch-relative (JVM-ColBERT Slice 3): each guard is
       ;; normalized by the call's MAX raw score (20.0 here), norm-fn unused.
       (is (approx? 1.0 cos-avoid) "avoid guard is the call max: 20/20 = 1.0")
-      ;; cos-good = MAX over (:content, :good-when) = MAX(12,10)/20 = 0.6
-      (is (approx? 0.6 cos-good) "cos-good = MAX over summary + good-when, call-relative")
+      ;; CC-20 — CHANGED APPLIED VARIANT, SAME CONTRACT. The default applies
+      ;; the ADR-0026 :good-when signal (Stage 2, flipped by CC-20), so the
+      ;; APPLIED cos-good = good-when 10/20 = 0.5; the pre-flip reading
+      ;; MAX(:content, :good-when) = 12/20 = 0.6 stays stamped as shadow.
+      (is (approx? 0.5 cos-good) "APPLIED cos-good = :good-when alone, call-relative")
+      (is (approx? 0.6 (:cos-good-with-content res))
+          "the pre-flip reading MAX(:content,:good-when)=12/20 stays stamped as shadow")
       (is (> cos-avoid cos-good) "the refactor force-fit shape: avoid beats good"))))
 
 ;; =============================================================================
@@ -250,9 +255,14 @@
             res (scorer {:avoid-when ["a"] :content "b"} "task")]
         (is (map? res))
         ;; default :batch-relative (Slice 3): call max is avoid "a" (20.0)
-        ;; => avoid 20/20 = 1.0 ; good "b" = 10/20 = 0.5
+        ;; => avoid 20/20 = 1.0. CC-20 — CHANGED APPLIED VARIANT, SAME
+        ;; CONTRACT: the default applies :good-when, and this candidate has NO
+        ;; :strengths, so the APPLIED cos-good is 0.0 (the conservative side,
+        ;; never fabricated); the pre-flip content reading "b" = 10/20 = 0.5
+        ;; stays stamped as shadow.
         (is (approx? 1.0 (:cos-avoid res)))
-        (is (approx? 0.5 (:cos-good res)))))))
+        (is (approx? 0.0 (:cos-good res)))
+        (is (approx? 0.5 (:cos-good-with-content res)))))))
 
 ;; =============================================================================
 ;; 6. score-candidate — CONTRASTIVE on real-shaped candidates with a fake scorer
@@ -460,14 +470,22 @@
         (is (= 1 @calls) "still exactly one call")
         ;; Distinct guards: A avoid + A content + A good ; B avoid + B content + B good ;
         ;; C avoid(=A) + C content + C good(=A). The two shared strings dedupe.
+        ;;
+        ;; CC-16 (ADR 0026 + 0027) — CHANGED ACCESSOR, SAME CONTRACT. This used
+        ;; `dp/positive-strings`, which by the ratified decision is now the
+        ;; `:good-when` signal ALONE. The property under test here is unchanged
+        ;; ("the one call receives exactly the distinct union of what must be
+        ;; scored"), but that union is now `dp/scored-strings` — avoid guards plus
+        ;; the union of BOTH positive-signal readings, which is what shadow mode
+        ;; requires and is byte-identical to the set this call sent before CC-16.
+        ;; Asserting the OLD accessor here would assert that the call no longer
+        ;; carries `:content` — which would silently disable the free shadow, not
+        ;; catch a regression.
         (let [docs @captured
-              expected (distinct
-                        (concat (mapcat dp/avoid-strings batch-candidates)
-                                (mapcat dp/positive-strings batch-candidates)))]
+              expected (distinct (mapcat dp/scored-strings batch-candidates))]
           (is (= (count (distinct docs)) (count docs)) "no duplicate documents in the call")
           (is (= (set docs) (set expected)) "exactly the distinct union of guards")
-          (is (< (count docs) (reduce + (map (fn [c] (+ (count (dp/avoid-strings c))
-                                                        (count (dp/positive-strings c))))
+          (is (< (count docs) (reduce + (map (fn [c] (count (dp/scored-strings c)))
                                              batch-candidates)))
               "the distinct set is SMALLER than the naive per-candidate sum (dedup works)"))))))
 
@@ -483,7 +501,20 @@
                                 [(:document-id c)
                                  (dp/colbert-rerank-scores n-rerank norm-40
                                                            (dp/avoid-strings c)
-                                                           (dp/positive-strings c)
+                                                           ;; CC-16 (ADR 0026) — CHANGED ACCESSOR, SAME
+                                                           ;; CONTRACT. `el51-cfg` applies the
+                                                           ;; pre-ADR-0026 positive signal, so the N-call
+                                                           ;; REFERENCE must read the same signal the
+                                                           ;; batch path applies, i.e.
+                                                           ;; `legacy-positive-strings`. Leaving
+                                                           ;; `positive-strings` here would compare two
+                                                           ;; DIFFERENT signals and call agreement
+                                                           ;; "results-neutral" — it happens to pass on
+                                                           ;; this fixture only because `:content` never
+                                                           ;; tops `:good-when` in it, which is exactly
+                                                           ;; the kind of accident this test exists to
+                                                           ;; rule out.
+                                                           (dp/legacy-positive-strings c)
                                                            batch-task)]))
                          batch-candidates)
           ;; Batch path via penalize-candidates (1 call) — read back :cos-avoid/:cos-good.
@@ -539,8 +570,13 @@
         (let [cfg (assoc el51-cfg :scorer :embedding)
               out (dp/penalize-candidates nil batch-candidates batch-task cfg)
               guard-embed-calls (remove #{batch-task} @embed-calls)
-              distinct-guards (distinct (concat (mapcat dp/avoid-strings batch-candidates)
-                                                (mapcat dp/positive-strings batch-candidates)))]
+              ;; CC-16 (ADR 0026 + 0027) — CHANGED ACCESSOR, SAME CONTRACT, for
+              ;; the same reason as the ColBERT batch above: what must be embedded
+              ;; ONCE is the union of both positive-signal readings, so the shadow
+              ;; is free on the :embedding backend too. The property ("each
+              ;; distinct guard embedded at most once, exactly the distinct union")
+              ;; is untouched.
+              distinct-guards (distinct (mapcat dp/scored-strings batch-candidates))]
           (is (= (count batch-candidates) (count out)) "all candidates survive the embedding batch")
           (is (= 1 (count (filter #{batch-task} @embed-calls)))
               "the task is embedded EXACTLY once for the whole batch")

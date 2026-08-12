@@ -1232,9 +1232,17 @@
         ;; completion event. When the write events are NOT emitted, the
         ;; completion event is the only record the values have, so dropping
         ;; them here would lose them outright.
+        ;;
+        ;; CC-21b (O7): `:blocked` belongs in this set. Durability is the whole
+        ;; of the condition, and `tick-scoped?` is what supplies it — a blocked
+        ;; node's writes are as durable in the write log as a successful one's.
+        ;; WS-2a added `:blocked`; this gate never learned about it, and the
+        ;; cost was measured: 57 of 178 `:repl-researcher` observations are
+        ;; `:blocked`, and their inlined `:writes` were 1,331,342 B — 90.8% of
+        ;; everything left after the rest of the storage-amplification fix.
         tick-scoped? (some? (rm/get-tick-execution-context ctx tick-id))
         externalize-writes? (and tick-scoped?
-                                 (#{:success :tree-generated} status)
+                                 (#{:success :tree-generated :blocked} status)
                                  (seq writes))
         forwarded-sources (into {}
                                 (for [[k source] (or write-sources {})]
@@ -1399,7 +1407,8 @@
    reads :tree-fingerprint from the event body directly (tag values must
    be UUIDs in event-store-v3, so we don't tag with the string fingerprint)."
   [{{:keys [sheet-id tick-id trajectory total-usage task-fingerprint
-            tree-fingerprint status duration-ms generated-tree source-sheet-id]} :command
+            tree-fingerprint status duration-ms generated-tree source-sheet-id
+            source-tick-id]} :command
     :as _ctx}]
   {:command-result/events
    [(->event
@@ -1422,7 +1431,11 @@
         ;; optional/backward-compatible — a turn that times out before emit
         ;; carries neither, so no enrichment fires (CV-1 floor still stands).
         (some? generated-tree)   (assoc-in [:body :generated-tree] generated-tree)
-        (some? source-sheet-id)  (assoc-in [:body :source-sheet-id] source-sheet-id)))]})
+        (some? source-sheet-id)  (assoc-in [:body :source-sheet-id] source-sheet-id)
+        ;; HP-2: the hosting TURN's tick — pairs with :source-sheet-id as the
+        ;; per-occurrence execution<->classification linkage (the shared/static
+        ;; host sheet alone cannot attribute an execution to an occurrence).
+        (some? source-tick-id)   (assoc-in [:body :source-tick-id] source-tick-id)))]})
 
 (defcommand :sheet fail-node-execution
   {:authorized? authenticated?}
@@ -1857,3 +1870,26 @@
              :tags #{[:sheet sheet-id]}
              :body {:sheet-id sheet-id
                     :metadata final-metadata}})]}))))
+
+;; =============================================================================
+;; CC-13 — Injection Record
+;; =============================================================================
+
+(defcommand :sheet record-injection
+  {:authorized? authenticated?}
+  "Record ONE R-Inject render occurrence as an `:intervention/injection-recorded`
+   event — what corpus content was put in front of the model on this turn.
+
+   Dispatched in-process by the render (todo-processors
+   apply-r05-classifier-context), the same way store-execution-trace is
+   dispatched from trace assembly.
+
+   Tagged [:sheet] [:tick] [:node] so the row is reachable by the same
+   occurrence pair the judge score events carry."
+  [{{:keys [sheet-id tick-id node-id recorded-at] :as command} :command}]
+  {:command-result/events
+   [(->event
+      {:type :intervention/injection-recorded
+       :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+       :body (assoc (dissoc command :command/name :command/id :command/timestamp)
+                    :recorded-at (or recorded-at (str (java.time.Instant/now))))})]})

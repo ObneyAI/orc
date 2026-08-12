@@ -34,13 +34,52 @@
       (is (= 32 (count skiplist)) "skiplist derived by tokenizing the checkpoint's 32 skiplist_words"))))
 
 (deftest query-tokenization-matches-python-golden
+  ;; The fixture was captured from the reference Python QueryTokenizer at the
+  ;; checkpoint's own query_maxlen (recorded IN the fixture, see
+  ;; resources/colbert_golden/PROVENANCE.md). CC-17 made that limit
+  ;; configuration, so the parity assertion now NAMES the configuration it was
+  ;; captured under instead of inheriting it — the equality itself is
+  ;; unchanged, token for token.
   (let [enc (test-encoder)
-        golden (support/read-golden "token_ids.json")]
+        golden (support/read-golden "token_ids.json")
+        reference-limit (get golden "query_maxlen")]
+    (is (= 32 reference-limit)
+        "the fixture records the query_maxlen it was captured at")
+    (doseq [[qid {:strs [text input_ids attention_mask]}] (get golden "queries")]
+      (testing (str qid ": " text)
+        (let [{:keys [ids attention]}
+              (encoder/build-query-ids enc text {:maximum-query-tokens reference-limit})]
+          (is (= input_ids ids) (str qid " input_ids"))
+          (is (= attention_mask attention) (str qid " attention_mask")))))))
+
+(deftest shipped-limit-strictly-extends-the-python-golden
+  ;; The guard that keeps the parity above from being side-stepped: at the
+  ;; SHIPPED maximum_query_tokens every golden query must still produce the
+  ;; reference sequence as an exact PREFIX — same real tokens, same attention
+  ;; over them, only additional [MASK] query-expansion rows after it. If the
+  ;; default ever changed the CONTENT of a query (rather than its padding),
+  ;; this fails.
+  (let [enc (test-encoder)
+        golden (support/read-golden "token_ids.json")
+        reference-limit (get golden "query_maxlen")
+        shipped (encoder/resolve-maximum-query-tokens enc nil)
+        mask (get-in enc [:consts :mask])]
+    (println "  [N] shipped maximum_query_tokens =" shipped
+             "| reference fixture query_maxlen =" reference-limit)
+    (is (>= shipped reference-limit)
+        "this guard assumes the shipped limit is at least the reference one")
     (doseq [[qid {:strs [text input_ids attention_mask]}] (get golden "queries")]
       (testing (str qid ": " text)
         (let [{:keys [ids attention]} (encoder/build-query-ids enc text)]
-          (is (= input_ids ids) (str qid " input_ids"))
-          (is (= attention_mask attention) (str qid " attention_mask")))))))
+          (is (= shipped (count ids)))
+          (is (= input_ids (vec (take reference-limit ids)))
+              (str qid " reference ids are an exact prefix at the shipped limit"))
+          (is (= attention_mask (vec (take reference-limit attention)))
+              (str qid " reference attention is an exact prefix"))
+          (is (every? #(= mask %) (drop reference-limit ids))
+              (str qid " the extension is pure [MASK] query expansion"))
+          (is (every? zero? (drop reference-limit attention))
+              (str qid " and it is not attended (attend_to_mask_tokens=false)")))))))
 
 (deftest doc-tokenization-matches-python-golden
   (let [enc (test-encoder)
