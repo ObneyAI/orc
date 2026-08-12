@@ -1654,9 +1654,11 @@
     [:node-id :uuid]
     [:trace-instance-id :uuid]
     [:exec-context {:optional true} :map]
-    [:inputs {:optional true} :map]
-    [:outputs {:optional true} :map]
-    [:rejected-outputs {:optional true} :map]]
+    [:inputs {:optional true} [:maybe :map]]
+    [:outputs {:optional true} [:maybe :map]]
+    [:rejected-outputs {:optional true} [:maybe :map]]
+    [:failure-kind {:optional true} [:maybe structured-failure-kind]]
+    [:provider-evidence {:optional true} [:maybe provider-failure-evidence]]]
 
    ;; Run Detail Screen Query (single trace with full data)
    :sheet/run-detail-screen
