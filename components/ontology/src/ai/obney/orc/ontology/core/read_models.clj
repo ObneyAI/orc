@@ -1653,6 +1653,62 @@
 ;; PARITY ORACLE (el4-harvest-test): the projected per-class mean EQUALS
 ;; consolidator's tree-class-aggregate-metrics :judge-averages for the same
 ;; event stream.
+;;
+;; CC-24b (ADR 0029) — the read-model additionally keeps, per class, a BOUNDED
+;; ORDERED sequence of its most recent occurrence keys (:class->recent-
+;; occurrences). The lifetime accumulator above is order-free BY CONSTRUCTION
+;; (its whole design note is that a score seen before or after its
+;; classification both land correctly), so it structurally cannot answer "the
+;; last N" — which is exactly what the dimension axis now needs. Order comes
+;; from the :ontology/task-classified fold, the same occurrence order
+;; harvest/occurrence-scores derives from the event stream; the per-judge
+;; SCORES are already in :sheet-judge, so the trailing per-judge sequence is a
+;; join of the two, computed by the accessor. Order-independence is preserved:
+;; a score that arrives before (or after) its occurrence's classification still
+;; lands, because only the occurrence KEY is ordered, never the score.
+
+(def recent-occurrence-bound
+  "How many of a class's most recent occurrence keys the read-model retains.
+   CC-22's lesson: anything that could grow with history must be bounded
+   DELIBERATELY, with the bound argued rather than picked.
+
+   4 x max(dimension_window 10, consistency_window 5) = 40.
+
+   The factor exists because the retained sequence counts OCCURRENCES while
+   the dimension window counts SCORED occurrences, and a third of real
+   occurrences carry no judge signal at all (measured, CC-24a: 51 of the
+   durable dominant class's 156 occurrences are unscored — 32.7% — because
+   `ExcludeAbstainedEvaluations` skips rather than zeroes). Measured on that
+   real stream, the worst case needs **29 consecutive occurrences** to contain
+   ten scored ones; 40 clears that worst case with room, and is still O(1) per
+   class. Pinned by cc24b-recent-occurrence-state-is-bounded, which fails if a
+   future window makes the bound too small to compute its own answer."
+  40)
+
+(defn- conj-recent-occurrence
+  "Append `occurrence-key` to a class's bounded recent-occurrence sequence,
+   preserving occurrence order and dropping the oldest past the bound. An
+   occurrence already inside the retained window is not re-appended (a
+   re-classification of the SAME occurrence is one occurrence, exactly as
+   harvest/occurrence-scores' `distinct` treats it).
+
+   The trim COPIES rather than `subvec`s, and that is load-bearing: `subvec`
+   returns a VIEW that pins the whole underlying vector alive, and `conj` on a
+   SubVector appends to that underlying vector, so a subvec-based trim keeps a
+   window of 40 over a root that grows without limit. Measured directly: 200
+   folded keys leave (count v) = 40 with an underlying root of 200. That is
+   the CC-22 hazard wearing a bound's clothing — the count says bounded while
+   the retention is not. `into []` builds a fresh 40-element vector, which is
+   O(bound) work once per event past the bound and genuinely bounded
+   retention."
+  [v occurrence-key]
+  (let [v (or v [])]
+    (if (some #(= % occurrence-key) v)
+      v
+      (let [v (conj v occurrence-key)]
+        (if (> (count v) recent-occurrence-bound)
+          (into [] (take-last recent-occurrence-bound v))
+          v)))))
 
 (defmulti tree-class-judge-averages*
   (fn [_state event] (:event/type event)))
@@ -1663,6 +1719,13 @@
   [state event]
   (if-let [class-id (:assigned-tree-id event)]
     (-> state
+        ;; CC-24b: the class's own occurrence ORDER, bounded. Keyed by class
+        ;; (not by occurrence) because this is the only reducer branch that
+        ;; knows which class an occurrence belongs to — the score branch
+        ;; deliberately does not, which is what keeps the fold order-free.
+        (update-in [:class->recent-occurrences class-id]
+                   conj-recent-occurrence
+                   [(:source-sheet-id event) (:source-tick-id event)])
         ;; :sheet->class stays keyed on the bare (possibly shared/static)
         ;; sheet-id — get-tree-class-for-sheet (CV-2's post-emit enrichment
         ;; consumer) relies on this "most recent classification for this
@@ -1710,9 +1773,41 @@
           acc))
       {} sheet-judge)))
 
+(defn tree-class-recent-judge-scores-projection
+  "CC-24b: {judge-name -> [score ...]} for one class, in OCCURRENCE order, over
+   the retained recent-occurrence window. Each entry is that judge's score at
+   that occurrence (its per-occurrence mean when a judge scored the same
+   occurrence more than once) — the raw material of the dimension axis's
+   trailing mean.
+
+   Occurrences the class no longer owns are skipped: :occurrence->class is
+   consulted per key exactly as the lifetime projection does, so a
+   re-classification onto a sibling class cannot leak scores across classes
+   (SJ-1). An occurrence with no judge score contributes nothing to any
+   judge's sequence — an unscored occurrence is not a zero (the spec's
+   ExcludeAbstainedEvaluations)."
+  [state tree-class-id]
+  (let [{:keys [occurrence->class sheet-judge class->recent-occurrences]} state]
+    (reduce
+      (fn [acc occurrence-key]
+        (if (= tree-class-id (get occurrence->class occurrence-key))
+          (reduce-kv
+            (fn [a judge-name {:keys [sum count]}]
+              (if (and (number? sum) (number? count) (pos? count))
+                (update a judge-name (fnil conj []) (/ sum (double count)))
+                a))
+            acc (get sheet-judge occurrence-key))
+          acc))
+      {} (get class->recent-occurrences tree-class-id []))))
+
 (defreadmodel :ontology tree-class-judge-averages
   {:events #{:judge/score-emitted :ontology/task-classified}
-   :version 1}
+   ;; CC-24b (ADR 0029): state shape changed — :class->recent-occurrences is
+   ;; new. A cache generation built by code that could not see the new key
+   ;; would project an empty trailing window for every class and silently make
+   ;; the dimension axis inert again, so the generation must rebuild (the
+   ;; CC-28 precedent).
+   :version 2}
   [state event] (tree-class-judge-averages* state event))
 
 (defn get-tree-class-for-sheet
@@ -1742,6 +1837,39 @@
               (map (fn [[judge-name {:keys [sum count]}]]
                      [judge-name (/ sum (double count))]))
               judges)))))
+
+(defn get-tree-class-judge-recent-averages
+  "CC-24b (ADR 0029) — the DIMENSION axis's input: {judge-name -> mean over
+   that judge's most recent `window` scored occurrences of this tree-class},
+   or nil when the class has no judge scores in its retained window.
+
+   This is the companion to `get-tree-class-judge-averages`, not its
+   replacement: the LIFETIME accessor keeps its meaning (and its parity with
+   the consolidator's aggregate) and is still what the harvest log records,
+   while the harvest GATE reads this one. Measured (CC-24a): the lifetime mean
+   against the floor fired 0 times in 105 real positions at BOTH 0.80 and
+   0.75, because a mean can never forget — the dominant class would have
+   needed ~97 consecutive perfect occurrences, and its zero-blocks were
+   produced by ENGINE defects since fixed. The trailing-10 mean fires 38/105
+   and abstains 67/105 on the same data, which is ADR 0027's acceptance bar.
+
+   A judge with fewer than `window` scored occurrences is averaged over what
+   it has; requiring a FULL window is the consistency axis's job (ALL-of-W,
+   ratified unchanged) and adding it here would change no verdict on the real
+   corpus (measured: no prefix shorter than the window clears the floor).
+
+   Bounded by `recent-occurrence-bound` — see its docstring for why the bound
+   is where it is."
+  [ctx tree-class-id window]
+  (let [state (rmp/project ctx :ontology/tree-class-judge-averages)
+        by-judge (tree-class-recent-judge-scores-projection state tree-class-id)]
+    (not-empty
+      (into {}
+            (keep (fn [[judge-name scores]]
+                    (let [w (take-last window scores)]
+                      (when (seq w)
+                        [judge-name (/ (reduce + 0.0 w) (double (count w)))]))))
+            by-judge))))
 
 ;; =============================================================================
 ;; Node Experiences Projection

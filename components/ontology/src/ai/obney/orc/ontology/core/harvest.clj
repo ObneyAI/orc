@@ -27,8 +27,13 @@
 ;;   1. RECURRING       — occurrences >= :min-occurrences
 ;;   2. CONSISTENT      — each of the last :consistency-window scored
 ;;                        occurrences clears :consistency-floor (CC-26)
-;;   3. WELL-SCORED     — EVERY judge dimension's lifetime mean clears
-;;                        :dimension-floor (CC-26)
+;;   3. WELL-SCORED     — EVERY judge dimension's mean over its most recent
+;;                        :dimension-window scored occurrences clears
+;;                        :dimension-floor (CC-26; CC-24b/ADR 0029 replaced
+;;                        the LIFETIME mean here, which measured 0 firings in
+;;                        105 real positions at 0.80 AND at 0.75 — a mean can
+;;                        never forget, so evidence produced by since-fixed
+;;                        engine defects vetoed the class forever)
 ;;   4. COHERENT        — a tight cluster, not a grab-bag: the count of
 ;;                        distinct tree-shapes seen for the class is small
 ;;                        relative to occurrences
@@ -60,20 +65,39 @@
 ;; a single scalar.
 
 (def default-harvest-config
-  "Conservative defaults — started HIGH. Only a class with real recurring
-   volume (>= 10), EVERY judge dimension clearing :dimension-floor, EVERY one
-   of its last :consistency-window scored occurrences clearing
-   :consistency-floor, and shape-convergence (<= half as many distinct shapes
-   as occurrences) is harvested.
+  "Conservative defaults. Only a class with real recurring volume (>= 10),
+   EVERY judge dimension clearing :dimension-floor over its most recent
+   :dimension-window scored occurrences, EVERY one of its last
+   :consistency-window scored occurrences clearing :consistency-floor, and
+   shape-convergence (<= half as many distinct shapes as occurrences) is
+   harvested.
 
    Mirrors specs/ontology.allium's config block:
      promotion_occurrence_threshold = 10   maximum_shape_ratio = 0.5
-     consistency_window = 5                consistency_floor  = 0.8
-     dimension_floor = 0.8"
+     consistency_window = 5                consistency_floor  = 0.75
+     dimension_floor = 0.75                dimension_window   = 10
+
+   CC-24b (ADR 0029, MEASURED) moved both floors 0.8 -> 0.75 and made them
+   mean something chosen. `evaluation/core/scale.clj` maps a discrete 1-5
+   judge scale by (n-1)/(max-min), so the achievable per-occurrence set at one
+   judge is exactly {0, 0.25, 0.5, 0.75, 1.0}. 0.8 sat in the GAP between band
+   4 (described to the judge as good work) and band 5, so it silently read
+   'PERFECT ONLY': every floor in {0.60, 0.70, 0.75} produced identical gate
+   behaviour on the real corpus, as did every floor in {0.80, 0.90, 1.00}.
+   0.75 is the lattice point that says what we mean — band 4 or better
+   qualifies — and 'good work counts' is now an explicit policy rather than an
+   accident of where a number fell between bands. If band 4 later proves too
+   permissive the lever is one ratified value ON the lattice (0.75 -> 1.00),
+   not a redesign. Anything reading these as '80%' is wrong; they are lattice
+   points, and the spec says so.
+
+   :dimension-window is new: the dimension axis reads a TRAILING window, never
+   a raw lifetime mean (see every-dimension-qualified?)."
   {:min-occurrences    10
-   :dimension-floor    0.8
+   :dimension-floor    0.75
+   :dimension-window   10
    :consistency-window 5
-   :consistency-floor  0.8
+   :consistency-floor  0.75
    :max-shapes-ratio   0.5})
 
 (def floor-comparison-tolerance
@@ -170,25 +194,38 @@
 
 (defn every-dimension-qualified?
   "The spec's `quality.all(dimension => dimension.score >= dimension_floor)`:
-   EVERY judge dimension's lifetime mean clears `dimension-floor`. One
-   catastrophic dimension vetoes promotion and cannot be compensated for by
-   strength elsewhere — which a MEAN over the dimensions does allow (measured:
-   at five judges, one dimension scoring ZERO still averages to exactly 0.800
-   and promoted).
+   EVERY judge dimension clears `dimension-floor`.
+
+   CC-24b (ADR 0029): `judge-averages` is each judge's mean over its most
+   recent `dimension_window` SCORED occurrences — a TRAILING WINDOW, never a
+   raw lifetime mean. Measured: the lifetime mean against the floor fired 0
+   times in 105 real positions at BOTH 0.80 and 0.75 (the dominant class would
+   have needed ~97 consecutive perfect occurrences, and its zero-blocks came
+   from ENGINE defects since fixed); trailing-10 fires 38/105 and abstains
+   67/105 — it can do both on real data, which is ADR 0027's bar. Eligibility
+   can therefore be LOST as well as gained; that is intended (enforcement is
+   continuously earned).
+
+   One catastrophic dimension vetoes promotion and cannot be compensated for
+   by strength elsewhere — which a MEAN over the dimensions does allow
+   (measured: at five judges, one dimension scoring ZERO still averages to
+   exactly 0.800 and promoted).
 
    No judge signal at all (nil / empty) never qualifies: a class that was
    never judged has not been judged well.
 
-   Note this is the OTHER axis from consistently-qualified? — per judge over
-   the class's LIFETIME, versus per occurrence over the RECENT window. They
-   are not interchangeable and must not be collapsed back into one scalar.
+   Note this is the OTHER axis from consistently-qualified? — per JUDGE over
+   the class's recent scored occurrences, versus per OCCURRENCE over the
+   consistency window. They are the two marginals of the (judge x occurrence)
+   matrix, are not interchangeable, and must not be collapsed back into one
+   scalar.
 
    CC-29: the floor comparison tolerates representation error — see
    `floor-comparison-tolerance`. This is the MEASURED artifact site: a class
-   whose every score was exactly 0.8 projected its lifetime mean as
+   whose every score was exactly 0.8 projected its mean as
    0.7999999999999999 (double accumulation in the standing read-model) and was
    rejected by the raw >= 0.8 floor. An at-floor mean qualifies; a genuinely
-   below-floor mean (>= quantum/occurrence-count short) is still rejected."
+   below-floor mean (>= quantum/window short) is still rejected."
   [judge-averages dimension-floor]
   (boolean
     (and (number? dimension-floor)
@@ -198,15 +235,34 @@
            (every? #(and (number? %) (>= % effective-floor))
                    (vals judge-averages))))))
 
+(defn coherent-enough?
+  "The spec's `distinct_shape_ratio(tree_class) <= maximum_shape_ratio`: a
+   recurring pattern converges on a few shapes, a grab-bag scatters."
+  [distinct-tree-shapes occurrences max-shapes-ratio]
+  (boolean
+    (and (number? distinct-tree-shapes)
+         (number? occurrences)
+         (pos? occurrences)
+         (<= (/ (double distinct-tree-shapes) (double occurrences))
+             max-shapes-ratio))))
+
 (defn harvest-candidate?
   "Pure conservative gate. Returns true iff the class is RECURRING and
-   well-scored on BOTH axes (every DIMENSION over its lifetime, every recent
-   OCCURRENCE over the window) and COHERENT, per config.
+   well-scored on BOTH axes (every DIMENSION over its recent scored
+   occurrences, every recent OCCURRENCE over the consistency window) and
+   COHERENT, per config.
 
    Metrics:
      :occurrences               lifetime count of classifications
-     :judge-averages            {judge-name -> lifetime mean} — the
-                                DIMENSION axis
+     :judge-trailing-averages   {judge-name -> mean over that judge's most
+                                recent :dimension-window scored occurrences} —
+                                the DIMENSION axis. CC-24b (ADR 0029) renamed
+                                this from :judge-averages, deliberately: the
+                                LIFETIME mean is a different projection, is
+                                still live for logging/parity, and firing the
+                                gate on it measured 0/105 real positions. A
+                                name that no longer says which projection it
+                                is would let that regression back in silently.
      :occurrence-scores         per-occurrence aggregate judge score, in
                                 temporal order (most recent LAST) — the
                                 CONSISTENCY axis
@@ -214,18 +270,70 @@
 
    A non-positive occurrence count never passes (avoids divide-by-zero +
    seeds/total=0 slipping through)."
-  [{:keys [occurrences judge-averages occurrence-scores distinct-tree-shapes]}
+  [{:keys [occurrences judge-trailing-averages occurrence-scores distinct-tree-shapes]}
    {:keys [min-occurrences dimension-floor
            consistency-window consistency-floor max-shapes-ratio]}]
   (boolean
     (and (number? occurrences)
          (pos? occurrences)
          (>= occurrences min-occurrences)
-         (every-dimension-qualified? judge-averages dimension-floor)
+         (every-dimension-qualified? judge-trailing-averages dimension-floor)
          (consistently-qualified? occurrence-scores consistency-window consistency-floor)
-         (number? distinct-tree-shapes)
-         (<= (/ (double distinct-tree-shapes) (double occurrences))
-             max-shapes-ratio))))
+         (coherent-enough? distinct-tree-shapes occurrences max-shapes-ratio))))
+
+(defn harvest-gate-report
+  "The gate's verdict, CLAUSE BY CLAUSE, so a decision nobody watched can be
+   read back afterwards. `:candidate?` is `harvest-candidate?` itself — this
+   is a lens on the gate, never a second implementation of it.
+
+   CC-24b (ADR 0029 decision 5) exists for one clause in particular. The
+   COHERENCE axis passes when `distinct_shape_ratio <= maximum_shape_ratio`,
+   and a class with NO shape evidence at all has ratio 0/N = 0.0, so it passes
+   — vacuously. Measured (CC-24a): that is 100% of occurrences in BOTH real
+   stores. 0 of 138 tree-execution events carry a `:tree-fingerprint` or a
+   `:source-tick-id`, and a class that solves by direct tool call emits no
+   tree at all; HP-2b fixed the emit site but no post-fix bookend exists
+   anywhere, so the signal is unwitnessed end-to-end. We do not gate on a
+   signal we have never seen work — but a gate that reports `coherent` for a
+   signal it has never once observed is reporting a fiction, so the abstention
+   is named: `:abstained`, distinct from `:qualified`. Behaviour is unchanged;
+   only the visibility is new. Requiring shape evidence waits on one real
+   post-HP-2b bookend carrying a non-nil fingerprint."
+  [{:keys [occurrences judge-trailing-averages occurrence-scores distinct-tree-shapes]
+    :as metrics}
+   {:keys [min-occurrences dimension-floor dimension-window
+           consistency-window consistency-floor max-shapes-ratio] :as config}]
+  {:recurring   {:verdict (if (and (number? occurrences)
+                                   (pos? occurrences)
+                                   (>= occurrences min-occurrences))
+                            :qualified :rejected)
+                 :occurrences occurrences
+                 :threshold min-occurrences}
+   :dimension   {:verdict (cond
+                            (not (seq judge-trailing-averages)) :abstained
+                            (every-dimension-qualified? judge-trailing-averages
+                                                        dimension-floor) :qualified
+                            :else :rejected)
+                 :trailing-averages judge-trailing-averages
+                 :window dimension-window
+                 :floor dimension-floor}
+   :consistency {:verdict (if (consistently-qualified? occurrence-scores
+                                                       consistency-window
+                                                       consistency-floor)
+                            :qualified :rejected)
+                 :window (vec (take-last (or consistency-window 0) occurrence-scores))
+                 :floor consistency-floor}
+   :coherence   {:verdict (cond
+                            ;; NO shape evidence at all: the clause passes, but
+                            ;; it passes on an absence, not on a measurement.
+                            (and (number? distinct-tree-shapes)
+                                 (zero? distinct-tree-shapes)) :abstained
+                            (coherent-enough? distinct-tree-shapes occurrences
+                                              max-shapes-ratio) :qualified
+                            :else :rejected)
+                 :distinct-tree-shapes distinct-tree-shapes
+                 :max-shapes-ratio max-shapes-ratio}
+   :candidate?  (harvest-candidate? metrics config)})
 
 ;; =============================================================================
 ;; Slice 3 — harvest orchestration + processor
@@ -416,12 +524,17 @@
      (when (and (>= occurrences (:min-occurrences config))
                 (not (already-harvested? ctx class-id)))
        (let [judge-avgs (rm/get-tree-class-judge-averages ctx class-id)
+             ;; CC-24b (ADR 0029): the GATE reads the trailing window; the
+             ;; lifetime mean is still projected, but only to be recorded.
+             trailing-avgs (rm/get-tree-class-judge-recent-averages
+                             ctx class-id (:dimension-window config))
              scores (occurrence-scores ctx class-id)
              shapes (distinct-tree-shapes ctx class-id)
              metrics {:occurrences occurrences
-                      :judge-averages judge-avgs
+                      :judge-trailing-averages trailing-avgs
                       :occurrence-scores scores
-                      :distinct-tree-shapes shapes}]
+                      :distinct-tree-shapes shapes}
+             report (harvest-gate-report metrics config)]
          ;; The judge count is a LOAD-BEARING ASSUMPTION (see
          ;; known-judge-dimension-count). Announce its expiry rather than
          ;; letting a new judge silently change what the uniform
@@ -437,7 +550,20 @@
                              known-judge-dimension-count
                              " judge dimension(s); per-dimension floors are now a "
                              "decision to make, not an accident to absorb")))
-         (when (harvest-candidate? metrics config)
+         ;; CC-24b (ADR 0029 decision 5): every full-gate evaluation records
+         ;; its clause-by-clause verdict. Reached only past the cheap
+         ;; occurrence pre-gate, so it is rare — and it is the only place the
+         ;; coherence ABSTENTION (a clause passing on absent evidence) is
+         ;; visible to an operator.
+         (u/log ::harvest-gate-report
+                :class-id class-id
+                :recurring (:recurring report)
+                :dimension (:dimension report)
+                :consistency (:consistency report)
+                :coherence (:coherence report)
+                :lifetime-judge-averages judge-avgs
+                :candidate? (:candidate? report))
+         (when (:candidate? report)
            (let [desc (rm/get-description ctx :tree-class class-id)
                  parent (nearest-abstract-behavior ctx class-id)
                  body (harvest-body desc occurrences)]
@@ -456,6 +582,7 @@
                           :parent-behavior parent
                           :occurrences occurrences
                           :judge-averages judge-avgs
+                          :judge-trailing-averages trailing-avgs
                           :recent-occurrence-scores
                           (take-last (:consistency-window config) scores)
                           :distinct-tree-shapes shapes)
