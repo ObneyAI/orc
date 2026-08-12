@@ -2,8 +2,7 @@
   "Explicit runner for every OpenRouter-backed test suite used by CI."
   (:refer-clojure :exclude [run!])
   (:require [clojure.string :as str]
-            [clojure.test :as test]
-            [litellm.router :as router]))
+            [clojure.test :as test]))
 
 (def live-test-namespaces
   '[ai.obney.orc.orc-service.end-to-end-integration-test
@@ -16,13 +15,6 @@
     ai.obney.orc.orc-service.real-llm-tenant-isolation-e2e-test])
 
 (def expected-live-test-count 14)
-(def live-max-tokens 2048)
-
-(defn cap-live-request
-  "Cap the output reservation used by CI's live calls while preserving a
-   smaller limit selected by the production call site."
-  [request]
-  (update request :max-tokens #(min (or % live-max-tokens) live-max-tokens)))
 
 (defn- true-env?
   [name]
@@ -44,25 +36,21 @@
   (let [discovered (count (for [namespace live-test-namespaces
                                 [_ var] (ns-publics namespace)
                                 :when (:test (meta var))]
-                            var))
-        real-completion @#'router/completion]
+                            var))]
     (when-not (= expected-live-test-count discovered)
       (throw (ex-info "Live test discovery count did not match the CI contract"
                       {:expected expected-live-test-count
                        :actual discovered})))
-    (with-redefs [router/completion
-                  (fn [provider request]
-                    (real-completion provider (cap-live-request request)))]
-      (reduce (fn [totals namespace]
-                (let [result (test/run-tests namespace)]
-                  (when-not (test/successful? result)
-                    (throw (ex-info "Live test namespace failed"
-                                    (assoc (select-keys result [:test :pass :fail :error])
-                                           :namespace namespace))))
-                  (merge-with + totals
-                              (select-keys result [:test :pass :fail :error]))))
-              {:test 0 :pass 0 :fail 0 :error 0}
-              live-test-namespaces))))
+    (reduce (fn [totals namespace]
+              (let [result (test/run-tests namespace)]
+                (when-not (test/successful? result)
+                  (throw (ex-info "Live test namespace failed"
+                                  (assoc (select-keys result [:test :pass :fail :error])
+                                         :namespace namespace))))
+                (merge-with + totals
+                            (select-keys result [:test :pass :fail :error]))))
+            {:test 0 :pass 0 :fail 0 :error 0}
+            live-test-namespaces)))
 
 (defn -main
   [& _]
