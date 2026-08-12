@@ -65,5 +65,5 @@ jobs:
             exit 1
           fi
 
-      - name: Run ORC service tests with live LLM gates enabled
-        run: clojure -M:poly test project:orc brick:orc-service
+      - name: Run and verify every live LLM test
+        run: clojure -M:dev:test -m ai.obney.orc.live-test-runner
