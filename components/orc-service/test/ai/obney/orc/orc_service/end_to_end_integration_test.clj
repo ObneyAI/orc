@@ -306,7 +306,7 @@
         :writes [:urgency :is-urgent])
 
       ;; Step 2: Parallel — LLM analysis + fallback category
-      (sheet/parallel "analyze" :success-policy :all
+      (sheet/parallel "analyze" {:success-policy :all}
         ;; Fallback: try LLM category classification, fall back to code default
         (sheet/fallback "classify-category"
           (sheet/llm "llm-classify"
