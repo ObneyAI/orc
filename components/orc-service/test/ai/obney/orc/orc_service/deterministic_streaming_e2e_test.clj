@@ -161,7 +161,10 @@
         (is (= :success (:status execution)))
         (is (< elapsed 5000))
         (is (= 13 (count durable-completions)))
-        (is (<= (count leftovers) 2))
+        (is (> (:seq (first leftovers)) 1)
+            "the stalled subscriber observes a leading sequence gap from sliding loss")
+        (is (apply < (map :seq leftovers))
+            "envelopes retained after loss remain strictly ordered")
         (is (= :stream-closed (:orc.stream/type (last leftovers))))))))
 
 (deftest det-e2e-068-subscriber-exception

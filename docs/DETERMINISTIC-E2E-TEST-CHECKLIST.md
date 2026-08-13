@@ -119,6 +119,20 @@ that verifies the stated observable results.
   Verify stable failure kinds, sanitized durable response evidence, usage and
   finish-reason retention without response text, projection read-back, and
   unchanged successful structured output.
+- [x] **DET-E2E-148 — Optional flattened structured outputs.** Execute a
+  provider-backed leaf whose structured write contains one required discriminator
+  and mutually exclusive optional fields. Verify marker and function-call
+  responses that return only the applicable variant, provider required-field
+  generation, omission-preserving reassembly, authoritative schema validation,
+  public result, and durable projection read-back; a missing required field and
+  a present invalid optional field must fail.
+- [x] **DET-E2E-149 — Optional flattened null normalization.** Execute a
+  provider-backed leaf whose structured write contains required, optional,
+  nullable, and multiple independently flattened map fields. Verify an optional
+  null is canonicalized to absence, non-null optional values and nullable nulls
+  are retained, required nulls are not silently removed, final blackboard
+  validation succeeds for the canonical optional-null response, and the durable
+  projection contains the same canonical value under each original key.
 
 ## P1 — Observability and streaming
 
@@ -130,7 +144,7 @@ that verifies the stated observable results.
 - [x] **DET-E2E-064 — Trace filters.** Mixed successful, failed, draft, published, and unrelated-sheet traces verify sheet scoping plus status, version, node, time, limit, and combined filtering.
 - [x] **DET-E2E-065 — Streaming lifecycle.** One sequence exercising code, condition, fallback, parallel, map-each, and delegate nodes verifies started/completed lifecycle, progress taxonomy, child linkage, tick boundaries, identifiers, timestamps, and gapless sequence numbers.
 - [x] **DET-E2E-066 — Streaming preserves engine result.** Fixed-tick subscribed and unsubscribed executions return identical semantic results and append identical normalized durable event sequences.
-- [x] **DET-E2E-067 — Slow subscriber.** A non-reading one-slot subscriber cannot impede a 12-leaf workflow; all durable completions persist while the sliding channel retains only the terminal edge of the stream.
+- [x] **DET-E2E-067 — Slow subscriber.** A non-reading one-slot subscriber cannot impede a 12-leaf workflow; all durable completions persist while the retained stream exposes a leading sequence gap from sliding loss, remains strictly ordered, and ends with the terminal envelope.
 - [x] **DET-E2E-068 — Subscriber exception.** A consumer that throws after its first envelope does not affect successful workflow output or durable tick completion.
 - [x] **DET-E2E-069 — Late subscription and reconnection.** Subscriptions created after completion receive no historical replay, reconnection remains ephemeral, and the completed execution is recoverable through its durable trace query.
 - [x] **DET-E2E-070 — Stream payload cap.** A 40,000-character value is represented by a marked 16,384-character stream preview while public result and durable node detail return the exact value.
@@ -230,7 +244,7 @@ Record unexpected outcomes even when the final returned status is successful.
 
 - [x] **DET-E2E-102 — REAL-LLM: Mint, index, retrieve, and reuse a novel behavior.**
   - **Purpose:** Prove that a behavior invented during one real RLM run becomes durable, searchable experience that a later independent run can actually reuse.
-  - **Falsifiable predictions:** Exactly one mint audit is stored for the minted behavior identity; its description records the originating execution/model and survives public-query roundtrip; an index rebuild completes after the mint and its source corpus contains that identity; a later classifier returns the same identity above the configured threshold; the later run's effective instruction contains that behavior body and provenance; no pre-mint run can retrieve it.
+  - **Falsifiable predictions:** At least one mint audit is stored; repeated same-name, same-parent invocations converge on exactly one minted behavior identity while every invocation retains the originating workflow and trace provenance; that identity's description records the originating execution/model and survives public-query roundtrip; an index rebuild completes after the mint and its source corpus contains that identity; a later classifier returns the same identity above the configured threshold; the later run's effective instruction contains that behavior body and provenance; no pre-mint run can retrieve it.
 
 - [x] **DET-E2E-103 — REAL-LLM: Evidence consolidation changes future guidance.**
   - **Purpose:** Prove that reaching the evidence threshold produces a new current description which is indexed and used, without destroying history.

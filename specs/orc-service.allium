@@ -124,6 +124,15 @@ contract LeafExecutor {
         -- Provider objects and collections arrive at leaf validation as parsed
         -- values, never as JSON encoded inside strings.
 
+    @invariant FlattenedOutputPresenceIsPreserved
+        -- When a structured output is presented to a provider as separate
+        -- fields, required and optional map-entry presence retains the meaning
+        -- of the original schema. Omitted optional entries and explicit nulls
+        -- for optional entries whose schemas reject null remain absent when the
+        -- provider result is reassembled. Required entries remain present, and
+        -- entries whose schemas accept null preserve it, in both textual and
+        -- function-calling transports.
+
     @invariant StructuredProviderFailuresRemainDiagnosable
         -- Every failed structured provider execution records either sanitized
         -- response evidence captured before decoding or an explicit transport

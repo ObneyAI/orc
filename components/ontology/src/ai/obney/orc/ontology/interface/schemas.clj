@@ -1312,8 +1312,8 @@
    ;; classify-behaviors fits. Hand-authored mints go through the same
    ;; defcommand with :provenance :human-authored.
    ;;
-   ;; The handler generates a fresh UUID for the new behavior's target-id
-   ;; and emits TWO events:
+   ;; The handler derives a stable UUID from name and parent behavior; callers
+   ;; do not provide the new behavior's target-id. It emits TWO events:
    ;;   1. :ontology/behavioral-subtree-minted — the provenance-tagged
    ;;      audit-trail event
    ;;   2. :ontology/tree-description-updated — so the R05a reactive

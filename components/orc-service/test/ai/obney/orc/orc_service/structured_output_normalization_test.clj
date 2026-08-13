@@ -129,6 +129,25 @@
       (is (= ["act_score"]
              (get-in tool-definition [:function :parameters :required])))))
 
+  (testing "flattened optional map entries stay out of provider required fields"
+    (let [module
+          (executor/build-module
+           {:name "choose-action"
+            :reads []
+            :writes [:result]}
+           {:result
+            {:schema
+             [:map
+              [:action [:enum :reply :invoke]]
+              [:reply {:optional true} :string]
+              [:capability {:optional true} :string]
+              [:arguments {:optional true} [:map [:path :string]]]]}})
+          tool-definition
+          (sio/outputs->tool-definition
+           (dissoc module :output-mapping))]
+      (is (= ["action"]
+             (get-in tool-definition [:function :parameters :required])))))
+
   (testing "function-calling keeps root unions of map variants structured"
     (let [decision-schema
           [:or

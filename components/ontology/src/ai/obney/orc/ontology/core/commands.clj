@@ -1407,8 +1407,8 @@
 ;; Hand-authored mints dispatch directly with :provenance :human-authored.
 ;;
 ;; The handler:
-;;   - Generates a fresh UUID for the new target-id (single owner of
-;;     identity; callers don't pass :target-id)
+;;   - Derives a stable UUID from (name, parent-behavior), retaining command
+;;     ownership of identity while making repeated logical mints converge
 ;;   - Emits TWO events: the audit-trail :ontology/behavioral-subtree-minted
 ;;     AND the standard :ontology/tree-description-updated so the R05a
 ;;     reactive processor projects the concept + composes-into edges +

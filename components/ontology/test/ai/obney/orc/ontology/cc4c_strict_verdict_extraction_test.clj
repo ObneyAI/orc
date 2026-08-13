@@ -159,7 +159,17 @@
 
   (testing "a nil field establishes nothing — and must not throw, because a
             verifier that throws is a verifier that stops guarding"
-    (is (false? (verdict-for nil)))))
+    (is (false? (verdict-for nil))))
+
+  (testing "SP-2 — the word the sio pin move leaves behind when a model refers
+            back to its own marker. sio #11 recognises a marker after prose and
+            the parser takes the LAST match, so
+            `[[ ## grounded-verdict ## ]]\\ntrue\\n\\nsee [[ ## grounded-verdict
+            ## ]] above` now arrives as the single word `above` instead of the
+            whole prose block. The real answer is lost either way; what matters
+            is that losing it reads CLOSED, and it does, because only an exact
+            one-word true/false establishes anything"
+    (is (false? (verdict-for "above")))))
 
 ;; ---------------------------------------------------------------------------
 ;; CYCLE 5 — case, whitespace and quoting are tolerated; prose is not

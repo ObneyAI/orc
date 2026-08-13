@@ -99,6 +99,19 @@ that fail their declared schemas. DET-E2E-125 verifies invalid-to-valid recovery
 and invalid-to-invalid exhaustion, including exact call count, final-only
 rejection evidence, and usage accumulated across both attempts.
 
+## Optional structured output presence (2026-08-13)
+
+The structured prediction and leaf execution contracts distinguish an optional
+field that may be absent from a nullable field whose present value may be null.
+Flattening a structured output for provider reliability must preserve that
+presence contract through provider schema generation, marker and tool-call
+parsing, reassembly, authoritative validation, and projection. DET-E2E-148
+verifies required and mutually exclusive optional fields across both provider
+transports and durable projection read-back. DET-E2E-149 additionally verifies
+that provider-supplied null is normalized to absence only for optional entries
+whose schemas reject null, while required and explicitly nullable entries retain
+their values through final validation and durable projection read-back.
+
 ## Structured provider failure evidence (2026-08-11)
 
 Structured provider failures now carry an additive, sanitized evidence map

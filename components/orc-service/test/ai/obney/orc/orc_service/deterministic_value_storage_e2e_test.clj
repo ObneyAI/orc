@@ -96,6 +96,40 @@
                 :max-retries 0
                 :retry-delay-ms 1})))
 
+(def ^:private optional-decision-schema
+  [:map
+   [:action [:enum :reply :invoke]]
+   [:reply {:optional true} :string]
+   [:capability {:optional true} :string]
+   [:arguments {:optional true} [:map [:path :string]]]])
+
+(defn- optional-decision-workflow [name function-calling?]
+  (sheet/workflow name
+    (sheet/blackboard {:decision optional-decision-schema})
+    (sheet/llm "decide"
+      :instruction "Choose one action and return only its applicable fields."
+      :writes [:decision]
+      :options {:use-function-calling? function-calling?
+                :max-retries 0
+                :retry-delay-ms 1})))
+
+(defn- optional-null-workflow [name]
+  (sheet/workflow name
+    (sheet/blackboard
+     {:decision [:map
+                 [:action :keyword]
+                 [:attention-updates {:optional true} [:vector :string]]
+                 [:explanation {:optional true} :string]]
+      :metadata [:map
+                 [:request-id :string]
+                 [:provider-note {:optional true} [:maybe :string]]]})
+    (sheet/llm "normalize-null"
+      :instruction "Return a decision and metadata."
+      :writes [:decision :metadata]
+      :options {:use-function-calling? true
+                :max-retries 0
+                :retry-delay-ms 1})))
+
 (defn- execute-provider-values [ctx workflow-name provider-values]
   (let [remaining (atom provider-values)
         calls (atom 0)]
@@ -218,6 +252,109 @@
         (is (not (contains? (:provider-evidence truncated-detail) :tool-arguments)))
         (is (not (contains? (:provider-evidence truncated-detail)
                             :raw-provider-response)))))))
+
+(deftest det-e2e-148-optional-flattened-structured-outputs
+  (testing "optional variants remain absent through both provider transports and durable projection"
+    (h/with-async-test-context [ctx]
+      (let [requests (atom [])
+            execute-response
+            (fn [suffix function-calling? message]
+              (with-redefs [router/completion
+                            (fn [_provider request]
+                              (swap! requests conj request)
+                              {:id (str "resp-" suffix)
+                               :model "deterministic-model"
+                               :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}
+                               :choices [{:finish-reason (if function-calling? "tool_calls" "stop")
+                                          :message message}]})]
+                (let [sheet-id (sheet/build-workflow!
+                                ctx
+                                (optional-decision-workflow
+                                 (str "det-e2e-148-" suffix)
+                                 function-calling?))]
+                  (sheet/execute (assoc ctx :llm-provider :deterministic-provider)
+                                 sheet-id {}))))
+            marker-result
+            (execute-response
+             "marker-reply" false
+             {:content "[[ ## action ## ]]\nreply\n[[ ## reply ## ]]\nDone."})
+            tool-result
+            (execute-response
+             "tool-invoke" true
+             {:tool-calls [{:function {:name "submit_response"
+                                        :arguments (str "{\"action\":\"invoke\","
+                                                        "\"capability\":\"files/read\","
+                                                        "\"arguments\":{\"path\":\"/tmp/a\"}}")}}]})
+            missing-required
+            (execute-response
+             "missing-action" false
+             {:content "[[ ## reply ## ]]\nDone."})
+            invalid-optional
+            (execute-response
+             "invalid-reply" true
+             {:tool-calls [{:function {:name "submit_response"
+                                        :arguments "{\"action\":\"reply\",\"reply\":42}"}}]})
+            tool-request (some #(when (:tools %) %) @requests)
+            marker-trace (trace-for ctx marker-result)
+            tool-trace (trace-for ctx tool-result)
+            marker-detail (failed-leaf-detail ctx marker-result)
+            tool-detail (failed-leaf-detail ctx tool-result)]
+        (is (= :success (:status marker-result)))
+        (is (= {:action :reply :reply "Done."}
+               (get-in marker-result [:outputs :decision])))
+        (is (not (contains? (get-in marker-result [:outputs :decision]) :capability)))
+        (is (= :success (:status marker-trace)))
+        (is (= (:outputs marker-result) (:outputs marker-detail)))
+
+        (is (= :success (:status tool-result)))
+        (is (= {:action :invoke
+                :capability "files/read"
+                :arguments {:path "/tmp/a"}}
+               (get-in tool-result [:outputs :decision])))
+        (is (not (contains? (get-in tool-result [:outputs :decision]) :reply)))
+        (is (= :success (:status tool-trace)))
+        (is (= (:outputs tool-result) (:outputs tool-detail)))
+
+        (is (= ["action"]
+               (get-in tool-request [:tools 0 :function :parameters :required])))
+        (is (= :failure (:status missing-required)))
+        (is (= :failure (:status invalid-optional)))))))
+
+(deftest det-e2e-149-optional-flattened-null-normalization
+  (testing "provider null becomes absence only for optional non-nullable flattened entries"
+    (h/with-async-test-context [ctx]
+      (with-redefs [router/completion
+                    (fn [_provider _request]
+                      {:id "resp-optional-null"
+                       :model "deterministic-model"
+                       :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}
+                       :choices [{:finish-reason "tool_calls"
+                                  :message
+                                  {:tool-calls
+                                   [{:function
+                                     {:name "submit_response"
+                                      :arguments
+                                      (str "{\"action\":\"none\","
+                                           "\"attention-updates\":null,"
+                                           "\"explanation\":\"Nothing changed\","
+                                           "\"request-id\":\"req-1\","
+                                           "\"provider-note\":null}")}}]}}]})]
+        (let [sheet-id (sheet/build-workflow!
+                        ctx
+                        (optional-null-workflow "det-e2e-149-optional-null"))
+              result (sheet/execute (assoc ctx :llm-provider :deterministic-provider)
+                                    sheet-id {})
+              trace (trace-for ctx result)
+              detail (failed-leaf-detail ctx result)]
+          (is (= :success (:status result)))
+          (is (= {:action :none :explanation "Nothing changed"}
+                 (get-in result [:outputs :decision])))
+          (is (not (contains? (get-in result [:outputs :decision])
+                              :attention-updates)))
+          (is (= {:request-id "req-1" :provider-note nil}
+                 (get-in result [:outputs :metadata])))
+          (is (= :success (:status trace)))
+          (is (= (:outputs result) (:outputs detail))))))))
 
 (deftest det-e2e-053-structured-nested-values
   (testing "nested vectors, maps, map-of values, and absent optional fields survive code, map-each, and delegate"

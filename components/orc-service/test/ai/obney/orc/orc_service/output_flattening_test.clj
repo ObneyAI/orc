@@ -109,15 +109,54 @@
       (is (str/includes? (:description (first result)) "JSON object")))))
 
 (deftest flatten-output-schema-optional-fields-test
-  (testing "handles optional fields in map schema"
+  (testing "preserves required and optional presence when flattening map entries"
     (let [schema [:map
                   [:required-field :string]
                   [:optional-field {:optional true} :int]]
-          result (flatten-output-schema :data schema)]
+          result (flatten-output-schema :data schema)
+          required-field (first (filter #(= :required-field (:name %)) result))
+          optional-field (first (filter #(= :optional-field (:name %)) result))]
       (is (= 2 (count result)))
-      ;; Both fields should be present
-      (is (some #(= :required-field (:name %)) result))
-      (is (some #(= :optional-field (:name %)) result)))))
+      (is (false? (:optional required-field)))
+      (is (true? (:optional optional-field))))))
+
+(deftest reassemble-flattened-outputs-preserves-absence-test
+  (testing "an omitted optional flattened field is not reintroduced as nil"
+    (let [raw-outputs {:action :reply :reply "Done."}
+          output-mapping {:action {:original-key :result :nested-key "action"}
+                          :reply {:original-key :result :nested-key "reply"}
+                          :capability {:original-key :result :nested-key "capability"}}
+          result (reassemble-flattened-outputs raw-outputs output-mapping)]
+      (is (= {:result {:action :reply :reply "Done."}} result))
+      (is (not (contains? (:result result) :capability))))))
+
+(deftest reassemble-flattened-outputs-normalizes-optional-null-test
+  (testing "null is absence only for optional fields whose schemas reject nil"
+    (let [raw-outputs {:optional-value nil
+                       :optional-nullable nil
+                       :required-value nil
+                       :present-value "kept"}
+          output-mapping {:optional-value {:original-key :first
+                                           :nested-key "optional-value"
+                                           :optional true
+                                           :spec :string}
+                          :optional-nullable {:original-key :first
+                                              :nested-key "optional-nullable"
+                                              :optional true
+                                              :spec [:maybe :string]}
+                          :required-value {:original-key :second
+                                           :nested-key "required-value"
+                                           :optional false
+                                           :spec :string}
+                          :present-value {:original-key :second
+                                          :nested-key "present-value"
+                                          :optional true
+                                          :spec :string}}
+          result (reassemble-flattened-outputs raw-outputs output-mapping)]
+      (is (= {:first {:optional-nullable nil}
+              :second {:required-value nil :present-value "kept"}}
+             result))
+      (is (not (contains? (:first result) :optional-value))))))
 
 ;; =============================================================================
 ;; reassemble-flattened-outputs Tests
@@ -203,7 +242,9 @@
       ;; Check output-mapping exists
       (is (contains? module :output-mapping))
       (is (= :score-result (get-in module [:output-mapping :score :original-key])))
-      (is (= "score" (get-in module [:output-mapping :score :nested-key]))))))
+      (is (= "score" (get-in module [:output-mapping :score :nested-key])))
+      (is (false? (get-in module [:output-mapping :score :optional])))
+      (is (= :double (get-in module [:output-mapping :score :spec]))))))
 
 (deftest build-module-simple-output-test
   (testing "build-module handles simple (non-nested) outputs"
