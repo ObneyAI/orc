@@ -25,20 +25,12 @@ jobs:
 
       - uses: ./.github/actions/setup-clojure
 
-      # Polylith runs projects in isolated classloaders but keeps them in one
-      # JVM. DJL's tokenizer native library cannot be loaded by more than one
-      # classloader, and several project suites reach ColBERT lazily. Preserve
-      # the full project coverage while giving each project a fresh JVM.
-      - name: Run package project tests
-        run: |
-          clojure -M:poly test project:orc-service
-          clojure -M:poly test project:orc-evaluation
-          clojure -M:poly test project:orc-gepa
-          clojure -M:poly test project:orc-mcp-sheet-builder
-          clojure -M:poly test project:orc-ontology
-
+      # `project:orc` selects a project but leaves Polylith in its default
+      # incremental mode, which can legitimately select zero tests on a clean
+      # CI checkout. `:all-bricks` forces every test-bearing production brick
+      # in the aggregate project to run exactly once in one classloader.
       - name: Run aggregate ORC project tests
-        run: clojure -M:poly test project:orc
+        run: clojure -M:poly test project:orc :all-bricks
 
       # This brick currently belongs only to the development project. Polylith
       # accepts `test brick:predict-rlm-image-tools` but runs zero tests, so use
