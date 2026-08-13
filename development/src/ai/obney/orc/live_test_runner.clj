@@ -45,21 +45,42 @@
                       {:expected expected-live-tests
                        :actual discovered})))
     (reduce (fn [totals namespace]
-              (let [result (test/run-tests namespace)]
-                (when-not (test/successful? result)
-                  (throw (ex-info "Live test namespace failed"
-                                  (assoc (select-keys result [:test :pass :fail :error])
-                                         :namespace namespace))))
-                (merge-with + totals
-                            (select-keys result [:test :pass :fail :error]))))
+              (println (str "::group::Live tests: " namespace))
+              (try
+                (let [result (test/run-tests namespace)]
+                  (when-not (test/successful? result)
+                    (throw (ex-info "Live test namespace failed"
+                                    (assoc (select-keys result [:test :pass :fail :error])
+                                           :namespace namespace))))
+                  (merge-with + totals
+                              (select-keys result [:test :pass :fail :error])))
+                (finally
+                  (println "::endgroup::"))))
             {:test 0 :pass 0 :fail 0 :error 0}
             live-test-namespaces)))
+
+(defn- workflow-command-value
+  [value]
+  (-> (str value)
+      (str/replace "%" "%25")
+      (str/replace "\r" "%0D")
+      (str/replace "\n" "%0A")))
 
 (defn -main
   [& _]
   (try
-    (let [{:keys [test pass]} (run!)]
-      (println (str "Verified " test " live tests with " pass " passing assertions.")))
+    (try
+      (let [{:keys [test pass]} (run!)]
+        (println (str "Verified " test " live tests with " pass " passing assertions.")))
+      (catch Throwable error
+        ;; GitHub's public API exposes annotations even when raw job logs require
+        ;; authentication. Preserve the failing namespace and result counts in
+        ;; the check itself so CI failures remain diagnosable from either view.
+        (println (str "::error title=Live LLM test failure::"
+                      (workflow-command-value
+                       {:message (.getMessage error)
+                        :data (ex-data error)})))
+        (throw error)))
     (finally
       ;; Futures and async processors use Clojure's agent pools. A successful
       ;; command-line test run must release them so CI cannot hang after its
