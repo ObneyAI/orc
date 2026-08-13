@@ -40,6 +40,23 @@ jobs:
       - name: Run aggregate ORC project tests
         run: clojure -M:poly test project:orc
 
+      # This brick currently belongs only to the development project. Polylith
+      # accepts `test brick:predict-rlm-image-tools` but runs zero tests, so use
+      # clojure.test directly and assert the execution count to prevent a false
+      # green when discovery or project membership changes.
+      - name: Run development-only brick tests
+        run: |
+          clojure -M:dev:test -e '
+          (require (quote clojure.test)
+                   (quote ai.obney.orc.predict-rlm-image-tools.interface-test))
+          (let [result (clojure.test/run-tests
+                        (quote ai.obney.orc.predict-rlm-image-tools.interface-test))]
+            (when-not (= 4 (:test result))
+              (throw (ex-info "Development-only test discovery count changed"
+                              {:expected 4 :actual (:test result)})))
+            (when-not (clojure.test/successful? result)
+              (throw (ex-info "Development-only brick tests failed" result))))'
+
   live-llm-tests:
     name: Live LLM integration tests
     if: >-
