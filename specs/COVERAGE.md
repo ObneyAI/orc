@@ -107,7 +107,10 @@ Flattening a structured output for provider reliability must preserve that
 presence contract through provider schema generation, marker and tool-call
 parsing, reassembly, authoritative validation, and projection. DET-E2E-148
 verifies required and mutually exclusive optional fields across both provider
-transports and durable projection read-back.
+transports and durable projection read-back. DET-E2E-149 additionally verifies
+that provider-supplied null is normalized to absence only for optional entries
+whose schemas reject null, while required and explicitly nullable entries retain
+their values through final validation and durable projection read-back.
 
 ## Structured provider failure evidence (2026-08-11)
 

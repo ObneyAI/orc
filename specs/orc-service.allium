@@ -127,9 +127,11 @@ contract LeafExecutor {
     @invariant FlattenedOutputPresenceIsPreserved
         -- When a structured output is presented to a provider as separate
         -- fields, required and optional map-entry presence retains the meaning
-        -- of the original schema. Omitted optional entries remain absent when
-        -- the provider result is reassembled, and required entries remain
-        -- required in both textual and function-calling transports.
+        -- of the original schema. Omitted optional entries and explicit nulls
+        -- for optional entries whose schemas reject null remain absent when the
+        -- provider result is reassembled. Required entries remain present, and
+        -- entries whose schemas accept null preserve it, in both textual and
+        -- function-calling transports.
 
     @invariant StructuredProviderFailuresRemainDiagnosable
         -- Every failed structured provider execution records either sanitized

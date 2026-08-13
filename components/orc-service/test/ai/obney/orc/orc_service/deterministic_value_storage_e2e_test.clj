@@ -113,6 +113,23 @@
                 :max-retries 0
                 :retry-delay-ms 1})))
 
+(defn- optional-null-workflow [name]
+  (sheet/workflow name
+    (sheet/blackboard
+     {:decision [:map
+                 [:action :keyword]
+                 [:attention-updates {:optional true} [:vector :string]]
+                 [:explanation {:optional true} :string]]
+      :metadata [:map
+                 [:request-id :string]
+                 [:provider-note {:optional true} [:maybe :string]]]})
+    (sheet/llm "normalize-null"
+      :instruction "Return a decision and metadata."
+      :writes [:decision :metadata]
+      :options {:use-function-calling? true
+                :max-retries 0
+                :retry-delay-ms 1})))
+
 (defn- execute-provider-values [ctx workflow-name provider-values]
   (let [remaining (atom provider-values)
         calls (atom 0)]
@@ -302,6 +319,42 @@
                (get-in tool-request [:tools 0 :function :parameters :required])))
         (is (= :failure (:status missing-required)))
         (is (= :failure (:status invalid-optional)))))))
+
+(deftest det-e2e-149-optional-flattened-null-normalization
+  (testing "provider null becomes absence only for optional non-nullable flattened entries"
+    (h/with-async-test-context [ctx]
+      (with-redefs [router/completion
+                    (fn [_provider _request]
+                      {:id "resp-optional-null"
+                       :model "deterministic-model"
+                       :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}
+                       :choices [{:finish-reason "tool_calls"
+                                  :message
+                                  {:tool-calls
+                                   [{:function
+                                     {:name "submit_response"
+                                      :arguments
+                                      (str "{\"action\":\"none\","
+                                           "\"attention-updates\":null,"
+                                           "\"explanation\":\"Nothing changed\","
+                                           "\"request-id\":\"req-1\","
+                                           "\"provider-note\":null}")}}]}}]})]
+        (let [sheet-id (sheet/build-workflow!
+                        ctx
+                        (optional-null-workflow "det-e2e-149-optional-null"))
+              result (sheet/execute (assoc ctx :llm-provider :deterministic-provider)
+                                    sheet-id {})
+              trace (trace-for ctx result)
+              detail (failed-leaf-detail ctx result)]
+          (is (= :success (:status result)))
+          (is (= {:action :none :explanation "Nothing changed"}
+                 (get-in result [:outputs :decision])))
+          (is (not (contains? (get-in result [:outputs :decision])
+                              :attention-updates)))
+          (is (= {:request-id "req-1" :provider-note nil}
+                 (get-in result [:outputs :metadata])))
+          (is (= :success (:status trace)))
+          (is (= (:outputs result) (:outputs detail))))))))
 
 (deftest det-e2e-053-structured-nested-values
   (testing "nested vectors, maps, map-of values, and absent optional fields survive code, map-each, and delegate"
