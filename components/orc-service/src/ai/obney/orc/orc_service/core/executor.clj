@@ -610,6 +610,7 @@
           :original-key key-name
           :nested-key field-name
           :spec field-spec
+          :optional (true? (:optional opts))
           :description description})))
     ;; Not a flattened map - check if it's a map-of (needs JSON guidance)
     (if (map-of-schema? schema)

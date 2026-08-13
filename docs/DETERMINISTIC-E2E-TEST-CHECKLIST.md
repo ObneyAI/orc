@@ -119,6 +119,13 @@ that verifies the stated observable results.
   Verify stable failure kinds, sanitized durable response evidence, usage and
   finish-reason retention without response text, projection read-back, and
   unchanged successful structured output.
+- [x] **DET-E2E-148 — Optional flattened structured outputs.** Execute a
+  provider-backed leaf whose structured write contains one required discriminator
+  and mutually exclusive optional fields. Verify marker and function-call
+  responses that return only the applicable variant, provider required-field
+  generation, omission-preserving reassembly, authoritative schema validation,
+  public result, and durable projection read-back; a missing required field and
+  a present invalid optional field must fail.
 
 ## P1 — Observability and streaming
 
