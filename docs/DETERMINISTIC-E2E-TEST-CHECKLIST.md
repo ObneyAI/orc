@@ -236,9 +236,9 @@ Record unexpected outcomes even when the final returned status is successful.
   - **Purpose:** Prove that reaching the evidence threshold produces a new current description which is indexed and used, without destroying history.
   - **Falsifiable predictions:** Threshold-minus-one observations create no new description version; the threshold observation creates exactly one successor version; its evidence count equals the complete contributing set and its model provenance is `google/gemini-3.6-flash`; the retrieval corpus contains the successor and not the superseded body as current; the next matching execution receives the successor version; all prior versions remain queryable and ordered.
 
-- [x] **DET-E2E-104 — REAL-LLM: Recency-biased consolidation is rejected end to end.**
-  - **Purpose:** Prove that a contradictory recent burst cannot replace a description supported by broader historical evidence merely because an LLM proposes it.
-  - **Falsifiable predictions:** The real consolidator call and proposed body are durably attributable to `google/gemini-3.6-flash`; the rejection event names the recency/evidence guard; the current description ID/version is unchanged; no index source document contains the rejected body; a later matching execution receives the pre-existing guidance; history retains auditable supporting and contradicting evidence for the rejected attempt.
+- [x] **DET-E2E-104 — REAL-LLM: Legacy whole-body consolidation retains history.**
+  - **Purpose:** Prove that the legacy node-type path can replace its current body from contradictory recent evidence without resurrecting ADR 0021's string-matching rejection valve, while retaining the superseded body as durable history.
+  - **Falsifiable predictions:** The real successor is durably attributable to `google/gemini-3.6-flash`; no anti-recency rejection is emitted; versions advance from 1 to 2; the successor records the complete contributing evidence count and becomes current; the original body remains queryable as the first history entry.
 
 - [x] **DET-E2E-105 — REAL-LLM: Recursive RLM targeted recovery journey.**
   - **Purpose:** Prove that a real recursive researcher can inspect a failed emitted tree, preserve successful work, perform focused recovery, and finish under one trace family.

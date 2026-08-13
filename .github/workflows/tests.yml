@@ -1,0 +1,69 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic-tests:
+    name: ORC test suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-clojure
+
+      # Polylith runs projects in isolated classloaders but keeps them in one
+      # JVM. DJL's tokenizer native library cannot be loaded by more than one
+      # classloader, and several project suites reach ColBERT lazily. Preserve
+      # the full project coverage while giving each project a fresh JVM.
+      - name: Run package project tests
+        run: |
+          clojure -M:poly test project:orc-service
+          clojure -M:poly test project:orc-evaluation
+          clojure -M:poly test project:orc-gepa
+          clojure -M:poly test project:orc-mcp-sheet-builder
+          clojure -M:poly test project:orc-ontology
+
+      - name: Run aggregate ORC project tests
+        run: clojure -M:poly test project:orc
+
+  live-llm-tests:
+    name: Live LLM integration tests
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ORC_INTEGRATION_TESTS: 'true'
+      ORC_OPENROUTER_E2E_TESTS: 'true'
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-clojure
+
+      - name: Require OpenRouter credential
+        shell: bash
+        run: |
+          if [[ -z "$OPENROUTER_API_KEY" ]]; then
+            echo "OPENROUTER_API_KEY must be configured as a GitHub Actions secret." >&2
+            exit 1
+          fi
+
+      - name: Run and verify every live LLM test
+        run: clojure -M:dev:test -m ai.obney.orc.live-test-runner

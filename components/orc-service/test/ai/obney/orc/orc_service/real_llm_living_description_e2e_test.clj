@@ -117,7 +117,7 @@
           (is (= 2 (count events)) "Only one successor may be emitted")
           (is (= current (:body successor-event))))))))
 
-(deftest det-e2e-104-real-llm-recency-biased-consolidation-is-rejected
+(deftest det-e2e-104-real-llm-legacy-body-consolidation-retains-history
   (live/with-real-openrouter
     (live/register-openrouter!)
     (h/with-async-test-context
@@ -153,21 +153,23 @@
                        :target-id target-id
                        :on-demand? true})
         (is (h/settle-until!
-              #(seq (filter (fn [e] (= target-id (:target-id e)))
-                            (live/events ctx :ontology/anti-recency-rejection)))
+              #(= 2 (count (ontology/get-description-history
+                             ctx :node-type target-id)))
               :timeout-ms 180000)
-            "The real proposal must trip the missing-protected-evidence guard")
-        (let [rejections (filter #(= target-id (:target-id %))
-                                 (live/events ctx :ontology/anti-recency-rejection))
-              rejection (first rejections)
+            "The legacy whole-body path must durably publish the real proposal")
+        (let [events (description-events ctx target-id)
+              successor-event (last events)
               after (ontology/get-description ctx :node-type target-id)
-              provenance (:model-provenance rejection)]
-          (is (= 1 (count rejections)))
-          (is (= :missing-protected-entry (:reason rejection)))
-          (is (= protected-trait (:entry-trait rejection)))
+              history (ontology/get-description-history ctx :node-type target-id)
+              provenance (:model-provenance successor-event)]
+          (is (empty? (filter #(= target-id (:target-id %))
+                              (live/events ctx :ontology/anti-recency-rejection)))
+              "ADR 0021 removed the string-matching anti-recency rejection valve")
           (live/assert-pinned-model! provenance)
           (is (pos? (get-in provenance [:usage :total-tokens] 0)))
-          (is (map? (:rejected-body rejection)))
-          (is (= before after) "Rejected proposal cannot become current")
-          (is (= 1 (count (ontology/get-description-history ctx :node-type target-id))))
-          (is (= prior-summary (:summary after))))))))
+          (is (= [1 2] (mapv (comp :version :body) history)))
+          (is (= before (:body (first history)))
+              "The superseded historical body remains queryable")
+          (is (= 8 (:consolidated-from-event-count after)))
+          (is (not= before after))
+          (is (= after (:body successor-event))))))))
