@@ -109,15 +109,26 @@
       (is (str/includes? (:description (first result)) "JSON object")))))
 
 (deftest flatten-output-schema-optional-fields-test
-  (testing "handles optional fields in map schema"
+  (testing "preserves required and optional presence when flattening map entries"
     (let [schema [:map
                   [:required-field :string]
                   [:optional-field {:optional true} :int]]
-          result (flatten-output-schema :data schema)]
+          result (flatten-output-schema :data schema)
+          required-field (first (filter #(= :required-field (:name %)) result))
+          optional-field (first (filter #(= :optional-field (:name %)) result))]
       (is (= 2 (count result)))
-      ;; Both fields should be present
-      (is (some #(= :required-field (:name %)) result))
-      (is (some #(= :optional-field (:name %)) result)))))
+      (is (false? (:optional required-field)))
+      (is (true? (:optional optional-field))))))
+
+(deftest reassemble-flattened-outputs-preserves-absence-test
+  (testing "an omitted optional flattened field is not reintroduced as nil"
+    (let [raw-outputs {:action :reply :reply "Done."}
+          output-mapping {:action {:original-key :result :nested-key "action"}
+                          :reply {:original-key :result :nested-key "reply"}
+                          :capability {:original-key :result :nested-key "capability"}}
+          result (reassemble-flattened-outputs raw-outputs output-mapping)]
+      (is (= {:result {:action :reply :reply "Done."}} result))
+      (is (not (contains? (:result result) :capability))))))
 
 ;; =============================================================================
 ;; reassemble-flattened-outputs Tests

@@ -29,6 +29,13 @@ contract StructuredPrediction {
         -- structured contract, including nested values, unions, literals,
         -- canonical enum spellings, optional values, and images.
 
+    @invariant OptionalOutputPresence
+        -- A declared optional output may be absent from provider tool arguments
+        -- or marker-form responses. Absence remains absence through parsing;
+        -- it is not converted into a present null value. Required outputs must
+        -- remain present, while nullable schemas independently govern whether
+        -- a present output may contain null.
+
     @invariant PredictionMetadata
         -- A metadata-bearing blocking result preserves parsed outputs, token
         -- usage, resolved model identity, and available response text. When a
