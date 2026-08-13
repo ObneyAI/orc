@@ -92,10 +92,16 @@
 
 (defn- validate-outputs [fields outputs]
   ;; SIO's public collection validator intentionally validates only values that
-  ;; are present. ORC's prediction boundary additionally requires every
-  ;; declared output to be present unless its Malli schema itself accepts nil.
-  (doseq [{:keys [name spec] :as field} fields
-          :when spec]
+  ;; are present. ORC's prediction boundary additionally requires every declared
+  ;; output to be present unless the field is declared :optional, or its Malli
+  ;; schema itself accepts nil.
+  ;;
+  ;; :optional is about PRESENCE, not about type. An optional field the provider
+  ;; omitted is skipped, because reading its absent key as nil would fail a spec
+  ;; that never agreed to accept nil. An optional field that IS present is still
+  ;; validated exactly like a required one.
+  (doseq [{:keys [name spec optional] :as field} fields
+          :when (and spec (or (contains? outputs name) (not optional)))]
     (sio/validate-field field (get outputs name)))
   outputs)
 

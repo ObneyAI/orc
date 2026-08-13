@@ -247,3 +247,117 @@
       (is (= :empty-provider-response (:failure-kind (ex-data failure))))
       (is (= "resp-empty"
              (get-in (ex-data failure) [:provider-evidence :response-id]))))))
+
+;; ---------------------------------------------------------------------------
+;; SP-2 — ORC's own prediction-boundary validator knows what :optional means
+;;
+;; ORC does not use SIO's collection validator; `llm.core/validate-outputs` is
+;; private and stricter, because ORC's boundary wants every declared output to
+;; actually arrive. That strictness reads an ABSENT key as nil, which is the
+;; right answer for a required field and the wrong answer for an optional one.
+;; ---------------------------------------------------------------------------
+
+(def ^:private partial-reply
+  {:inputs [{:name :question :spec :string}]
+   :outputs [{:name :answer :spec :string}
+             {:name :aside :spec :string :optional true}]})
+
+(deftest an-absent-optional-output-is-not-a-validation-failure
+  (with-redefs [router/supports-function-calling? (constantly false)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:content "[[ ## answer ## ]]\nParis"}}]})]
+    (testing "the provider omitted the optional field entirely"
+      (is (= {:answer "Paris"}
+             (llm/predict :test partial-reply {:question "Capital?"} {:validate? true}))
+          "an absent :optional key is an allowed shape, not a nil that fails :string"))))
+
+(deftest an-absent-required-output-still-fails-validation
+  (with-redefs [router/supports-function-calling? (constantly false)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:content "[[ ## aside ## ]]\nby the way"}}]})]
+    (testing "optional-awareness must not relax the required fields around it"
+      (let [failure (try
+                      (llm/predict :test partial-reply {:question "Capital?"} {:validate? true})
+                      (catch clojure.lang.ExceptionInfo e e))]
+        (is (instance? clojure.lang.ExceptionInfo failure))
+        (is (= :schema-validation-failed (:failure-kind (ex-data failure))))))))
+
+(deftest a-present-optional-output-is-still-validated
+  (with-redefs [router/supports-function-calling? (constantly false)
+                router/completion
+                (fn [& _]
+                  {:choices [{:message {:content "[[ ## answer ## ]]\nParis\n\n[[ ## aside ## ]]\nnoted"}}]})]
+    (testing "present means checked — :optional is about presence, not about type"
+      (is (= {:answer "Paris" :aside "noted"}
+             (llm/predict :test partial-reply {:question "Capital?"} {:validate? true}))))))
+
+;; ---------------------------------------------------------------------------
+;; SP-2 — three parser behaviours that the sio pin move CHANGES
+;;
+;; Nothing in ORC exercised SIO's parser before these: every executor test stubs
+;; `llm/predict` itself, so the parser only ever ran in production. Each case
+;; below is a measured difference between sio 91e7d100 and sio d6d27f9, pinned
+;; here so a later pin move cannot change it again unobserved.
+;; ---------------------------------------------------------------------------
+
+(deftest a-nil-provider-response-yields-nil-fields-not-a-bare-npe
+  ;; At 91e7d100 this threw java.lang.NullPointerException straight out of the
+  ;; parser: "Cannot invoke String.length() because this.text is null". A raw
+  ;; NPE carries no :failure-kind, so ORC's structured-failure vocabulary and
+  ;; every caller that classifies on it were blind to the case.
+  (with-redefs [router/supports-function-calling? (constantly false)
+                router/completion (fn [& _] {:choices [{:message {:content nil}}]})]
+    (testing "the parser reports absence as data"
+      (is (= {:answer nil}
+             (llm/predict :test qa {:question "Capital?"} {:validate? false}))))
+
+    (testing "and ORC's boundary then classifies it, rather than leaking an NPE"
+      (let [failure (try
+                      (llm/predict :test qa {:question "Capital?"} {:validate? true})
+                      (catch Throwable t t))]
+        (is (instance? clojure.lang.ExceptionInfo failure)
+            "a bare NullPointerException here would be the old behaviour returning")
+        (is (= :schema-validation-failed (:failure-kind (ex-data failure))))))))
+
+(def ^:private tagged
+  {:inputs [{:name :question :spec :string}]
+   :outputs [{:name :tags :spec [:vector :string]}]})
+
+(deftest a-scalar-under-a-vector-schema-is-lifted-into-a-one-element-vector
+  ;; At 91e7d100 this parsed as {:tags "\"a\""} — a bare string under a
+  ;; [:vector :string] schema, so validation rejected it and the node failed.
+  ;; It now parses as a one-element vector, which VALIDATES. Nodes that used to
+  ;; fail here will start succeeding; that is a widening, and it is deliberate.
+  (with-redefs [router/supports-function-calling? (constantly false)
+                router/completion (fn [& _]
+                                    {:choices [{:message {:content "[[ ## tags ## ]]\n\"a\""}}]})]
+    (is (= {:tags ["\"a\""]}
+           (llm/predict :test tagged {:question "Tag it"} {:validate? false}))
+        "the element keeps its literal quote characters; only the shape is lifted")
+    (is (= {:tags ["\"a\""]}
+           (llm/predict :test tagged {:question "Tag it"} {:validate? true}))
+        "and the lifted shape passes the vector schema that the scalar failed")))
+
+(def ^:private verdict-spec
+  {:inputs [{:name :question :spec :string}]
+   :outputs [{:name :verdict :spec :string}]})
+
+(deftest a-marker-repeated-after-prose-wins-and-takes-the-answer-with-it
+  ;; sio #11 relaxed the marker to be recognised after prose, and the parser
+  ;; takes the LAST match. Together they mean a model that refers back to its
+  ;; own marker overwrites its real answer with the words that follow the
+  ;; reference. At 91e7d100 this field was "true\n\nsee [[ ## verdict ## ]]
+  ;; above"; it is now "above", and the "true" is gone.
+  ;;
+  ;; This is the CC-4b grounded-verdict family. The direction is SAFE, and it is
+  ;; safe by construction rather than by luck: the strict extractor pinned in
+  ;; `cc4c_strict_verdict_extraction_test` establishes a verdict only from an
+  ;; exact one-word "true"/"false", so "above" reads as fail-CLOSED — as did the
+  ;; longer prose before it. Pinned here so a later parser change cannot quietly
+  ;; turn this field into something that reads OPEN.
+  (with-redefs [router/supports-function-calling? (constantly false)
+                router/completion
+                (fn [& _]
+                  {:choices [{:message {:content "[[ ## verdict ## ]]\ntrue\n\nsee [[ ## verdict ## ]] above"}}]})]
+    (is (= {:verdict "above"}
+           (llm/predict :test verdict-spec {:question "Grounded?"} {:validate? false})))))
