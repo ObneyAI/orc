@@ -248,6 +248,11 @@ contract CustomOntologyMutation {
     @invariant TenantScopedMutation
         -- Every mutation resolves ontology and concept identity within the
         -- initiating consumer's tenant before an event can be emitted.
+
+    @invariant BehavioralMintIdentityIsStable
+        -- Repeated behavioral mints with the same name and parent resolve to
+        -- one stable concept identity. Every invocation remains represented by
+        -- its own provenance audit; idempotency does not erase retry evidence.
 }
 
 contract ScopedConceptLookup {

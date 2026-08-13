@@ -198,7 +198,7 @@
 (def mint-sentinel "NOVEL-EVIDENCE-LATTICE-102")
 
 (def mint-instruction
-  (str "Use recursive RLM mode. Before final!, call mint-behavior! exactly once "
+  (str "Use recursive RLM mode. Before final!, call mint-behavior! "
        "with name `" mint-name "`. Its valid body must include summary `"
        mint-sentinel " preserves independently verified claims across branches`, "
        "one capability, principle-shaped strengths and weaknesses, one "
@@ -206,7 +206,7 @@
        "Then emit a small tree and finish the question."))
 
 (deftest det-e2e-102-real-llm-mint-index-retrieve-and-reuse
-  (testing "a real RLM mint is indexed, classified and injected into a later run"
+  (testing "a real RLM logical mint is indexed, classified and injected into a later run"
     (do
       (live/with-real-openrouter
       (live/register-openrouter-model! live/openrouter-strong-model)
@@ -238,9 +238,13 @@
                                 (live/events ctx :ontology/behavioral-subtree-minted))
                 audit (first audits)
                 behavior-id (:target-id audit)]
-            (is (= 1 (count audits)) "the real model must mint exactly once")
-            (is (= trace-id (:minted-by-tick-id audit)))
-            (is (= sheet-id (:minted-by-sheet-id audit)))
+            (is (seq audits) "the real model must invoke the mint affordance")
+            (is (= #{behavior-id} (set (map :target-id audits)))
+                "model retries converge on one logical behavior identity")
+            (is (every? #(= trace-id (:minted-by-tick-id %)) audits)
+                "every mint invocation remains auditable under the live trace")
+            (is (every? #(= sheet-id (:minted-by-sheet-id %)) audits)
+                "every mint invocation retains its originating workflow")
             (is (not-any? #(= behavior-id (:behavior-id %)) (:behaviors before))
                 "pre-mint classification cannot retrieve the future identity")
             (is (h/settle-until!
