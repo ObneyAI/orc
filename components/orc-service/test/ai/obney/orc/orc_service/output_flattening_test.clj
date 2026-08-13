@@ -130,6 +130,34 @@
       (is (= {:result {:action :reply :reply "Done."}} result))
       (is (not (contains? (:result result) :capability))))))
 
+(deftest reassemble-flattened-outputs-normalizes-optional-null-test
+  (testing "null is absence only for optional fields whose schemas reject nil"
+    (let [raw-outputs {:optional-value nil
+                       :optional-nullable nil
+                       :required-value nil
+                       :present-value "kept"}
+          output-mapping {:optional-value {:original-key :first
+                                           :nested-key "optional-value"
+                                           :optional true
+                                           :spec :string}
+                          :optional-nullable {:original-key :first
+                                              :nested-key "optional-nullable"
+                                              :optional true
+                                              :spec [:maybe :string]}
+                          :required-value {:original-key :second
+                                           :nested-key "required-value"
+                                           :optional false
+                                           :spec :string}
+                          :present-value {:original-key :second
+                                          :nested-key "present-value"
+                                          :optional true
+                                          :spec :string}}
+          result (reassemble-flattened-outputs raw-outputs output-mapping)]
+      (is (= {:first {:optional-nullable nil}
+              :second {:required-value nil :present-value "kept"}}
+             result))
+      (is (not (contains? (:first result) :optional-value))))))
+
 ;; =============================================================================
 ;; reassemble-flattened-outputs Tests
 ;; =============================================================================
@@ -214,7 +242,9 @@
       ;; Check output-mapping exists
       (is (contains? module :output-mapping))
       (is (= :score-result (get-in module [:output-mapping :score :original-key])))
-      (is (= "score" (get-in module [:output-mapping :score :nested-key]))))))
+      (is (= "score" (get-in module [:output-mapping :score :nested-key])))
+      (is (false? (get-in module [:output-mapping :score :optional])))
+      (is (= :double (get-in module [:output-mapping :score :spec]))))))
 
 (deftest build-module-simple-output-test
   (testing "build-module handles simple (non-nested) outputs"

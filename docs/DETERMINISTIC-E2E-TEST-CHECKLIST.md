@@ -126,6 +126,13 @@ that verifies the stated observable results.
   generation, omission-preserving reassembly, authoritative schema validation,
   public result, and durable projection read-back; a missing required field and
   a present invalid optional field must fail.
+- [x] **DET-E2E-149 — Optional flattened null normalization.** Execute a
+  provider-backed leaf whose structured write contains required, optional,
+  nullable, and multiple independently flattened map fields. Verify an optional
+  null is canonicalized to absence, non-null optional values and nullable nulls
+  are retained, required nulls are not silently removed, final blackboard
+  validation succeeds for the canonical optional-null response, and the durable
+  projection contains the same canonical value under each original key.
 
 ## P1 — Observability and streaming
 

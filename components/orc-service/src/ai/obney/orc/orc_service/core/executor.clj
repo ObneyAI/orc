@@ -652,10 +652,21 @@
    (fn [acc output-key output-value]
      (if-let [mapping (get output-mapping output-key)]
        (let [original-key (:original-key mapping)
-             nested-key (:nested-key mapping)]
-         (if nested-key
+             nested-key (:nested-key mapping)
+             optional-null? (and (:optional mapping)
+                                 (nil? output-value)
+                                 (not (try
+                                        (m/validate (:spec mapping) nil)
+                                        (catch Exception _ false))))]
+         (cond
+           optional-null?
+           acc
+
+           nested-key
            ;; Nested field - assoc into nested map
            (update acc original-key assoc (keyword nested-key) output-value)
+
+           :else
            ;; Non-nested field - use directly
            (assoc acc original-key output-value)))
        ;; No mapping found, use as-is
@@ -762,13 +773,15 @@
         _ (when (some #(map-of-schema? (:spec %)) outputs)
             (println "[WARN] Node" (:name node) "uses [:map-of ...] schema for LLM output."
                      "Consider using explicit [:map [:field :type] ...] for better reliability."))
-        ;; Build mapping from output field name -> {:original-key :nested-key}
+        ;; Build mapping from output field name to its reassembly metadata.
         ;; Used for reassembling flattened outputs into nested structure
         output-mapping (into {}
                              (map (fn [o]
                                     [(:name o)
                                      {:original-key (:original-key o)
-                                      :nested-key (:nested-key o)}])
+                                      :nested-key (:nested-key o)
+                                      :optional (:optional o)
+                                      :spec (:spec o)}])
                                   outputs))]
     {:inputs inputs
      :outputs outputs
