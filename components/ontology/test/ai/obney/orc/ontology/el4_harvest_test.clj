@@ -13,6 +13,8 @@
      Slice 3 — the harvest PROCESSOR: gate → mint-behavioral-subtree with
                :provenance :harvested, fire-once, waterfall parent."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
@@ -25,6 +27,10 @@
             ;; its schemas so judge-score! actually emits :judge/score-emitted.
             [ai.obney.orc.evaluation.interface.schemas]
             [ai.obney.orc.evaluation.core.commands]
+            ;; CC-24b (ADR 0029): the harvest floors are lattice points of the
+            ;; SHIPPED judge scale, so the gate's tests pin the real scale.
+            [ai.obney.orc.evaluation.core.scale :as scale]
+            [ai.obney.orc.evaluation.core.rubrics :as rubrics]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -32,7 +38,9 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp]
+            [ai.obney.grain.time.interface :as time]
+            [com.brunobonacci.mulog.core :as mulog-core]))
 
 ;; ---------------------------------------------------------------------------
 ;; Stub the consolidator's reflection LLM so autonomous consolidations fired
@@ -354,10 +362,12 @@
 (def ^:private good-class
   "Recurring + well-scored on BOTH axes + coherent. CC-26: the single
    :judge-average scalar was replaced by the two marginals it had flattened —
-   :judge-averages (per DIMENSION, lifetime) and :occurrence-scores (per
-   OCCURRENCE, temporal order, most recent last)."
+   :judge-trailing-averages (per DIMENSION, over the class's most recent
+   :dimension-window scored occurrences — CC-24b/ADR 0029 replaced the
+   lifetime mean here) and :occurrence-scores (per OCCURRENCE, temporal order,
+   most recent last)."
   {:occurrences 12
-   :judge-averages {"quality" 0.85}
+   :judge-trailing-averages {"quality" 0.85}
    :occurrence-scores (vec (repeat 12 0.85))
    :distinct-tree-shapes 3})
 
@@ -381,7 +391,7 @@
   (testing "a judge dimension below the dimension floor -> false, even when every occurrence's
              aggregate clears the consistency floor (the axes are independent)"
     (is (false? (harvest/harvest-candidate?
-                  (assoc good-class :judge-averages {"quality" 1.0 "grounding" 0.6})
+                  (assoc good-class :judge-trailing-averages {"quality" 1.0 "grounding" 0.6})
                   harvest/default-harvest-config)))))
 
 (deftest slice2-gate-fails-grab-bag
@@ -400,17 +410,17 @@
                   harvest/default-harvest-config))
         "an empty score history is not 'has qualified repeatedly'")
     (is (false? (harvest/harvest-candidate?
-                  (assoc good-class :judge-averages nil)
+                  (assoc good-class :judge-trailing-averages nil)
                   harvest/default-harvest-config))
         "a class no judge ever scored has not been judged well")
     (is (false? (harvest/harvest-candidate?
-                  (assoc good-class :judge-averages {})
+                  (assoc good-class :judge-trailing-averages {})
                   harvest/default-harvest-config)))))
 
 (deftest slice2-knobs-are-tunable
   (testing "loosening the config flips a class that fails under defaults to pass"
     (let [borderline {:occurrences 6
-                      :judge-averages {"quality" 0.7}
+                      :judge-trailing-averages {"quality" 0.7}
                       :occurrence-scores (vec (repeat 6 0.7))
                       :distinct-tree-shapes 4}]
       (is (false? (harvest/harvest-candidate? borderline harvest/default-harvest-config))
@@ -919,7 +929,8 @@
         ;; the ONLY thing missing is the anchor.
         (is (true? (harvest/harvest-candidate?
                      {:occurrences (rm/get-consolidation-total ctx :tree-class class-id)
-                      :judge-averages (ontology/get-tree-class-judge-averages ctx class-id)
+                      :judge-trailing-averages (ontology/get-tree-class-judge-recent-averages
+                                                 ctx class-id (:dimension-window harvest/default-harvest-config))
                       :occurrence-scores (harvest/occurrence-scores ctx class-id)
                       :distinct-tree-shapes (harvest/distinct-tree-shapes ctx class-id)}
                      harvest/default-harvest-config))
@@ -993,27 +1004,49 @@
 ;; ===========================================================================
 ;;
 ;; The artifact (measured, CC-26 real-stream check): a class whose EVERY judge
-;; score was exactly 0.8 projected its lifetime mean as 0.7999999999999999 —
-;; double accumulation, (/ (reduce + 0.0 (repeat 12 0.8)) 12.0) — and was
-;; REJECTED by the raw >= 0.8 floor. Judge scores are band values (quantum
-;; 0.05), so any legitimate below-floor mean differs from the floor by at
-;; least quantum/occurrence-count — orders of magnitude above binary-
-;; representation error. The fix (spec: config floor_comparison_tolerance) is
-;; a named tolerance at the floor-COMPARISON seam in harvest.clj only — not
-;; exact/rational arithmetic in the folds — and can never change a verdict
-;; between two values the scale can actually distinguish (pinned by the sweep
-;; below).
+;; score was exactly 0.8 projected its mean as 0.7999999999999999 — double
+;; accumulation, (/ (reduce + 0.0 (repeat 12 0.8)) 12.0) — and was REJECTED by
+;; the raw >= 0.8 floor. Judge scores are band values (quantum 0.25 at one
+;; judge on the shipped 1-5 scale; 0.25/J when J judges are averaged), so any
+;; legitimate below-floor mean differs from the floor by at least
+;; quantum/count — orders of magnitude above binary-representation error. The
+;; fix (spec: config floor_comparison_tolerance) is a named tolerance at the
+;; floor-COMPARISON seam in harvest.clj only — not exact/rational arithmetic
+;; in the folds — and can never change a verdict between two values the scale
+;; can actually distinguish (pinned by the sweep below, which deliberately
+;; sweeps a FINER 20ths grid than the real lattice: a tolerance safe against
+;; the finer grid is safe against the real one).
+;;
+;; CC-24b (ADR 0029) moved the shipped floors onto the band lattice (0.8 ->
+;; 0.75) and moved the dimension axis onto a trailing window. The two fixtures
+;; that REPRODUCE the measured artifact keep comparing at 0.8 — the floor the
+;; artifact was actually measured at — because they exist to reproduce a
+;; specific real event, not to track whatever the shipped floor happens to be;
+;; the sweep below is what pins the property AT the shipped floor. The fixtures
+;; that assert a genuine below-floor REJECTION are re-anchored to the shipped
+;; floor and the shipped axis, because a rejection is a claim about today's
+;; gate.
+
+(def ^:private cc29-measured-artifact-floor
+  "The floor the CC-29 representation artifact was MEASURED at. CC-24b moved
+   the shipped floor onto the band lattice (0.75); the artifact happened at
+   0.8 and is reproduced here at 0.8, so this fixture keeps testing the
+   tolerance rather than becoming a tautology at a lower floor."
+  0.8)
 
 (deftest cc29-class-exactly-on-the-floor-qualifies
-  (testing "the measured artifact: twelve occurrences each scored exactly 0.8 (the floor band) —
-             the lifetime mean the REAL read-model fold projects is 0.7999999999999999, strictly
-             below the 0.8 floor literal, and the class was rejected. A verdict on the discrete
-             scale must treat an at-floor class as qualified: representation error is not a
-             quality distinction."
+  (testing "the measured artifact: twelve occurrences each scored exactly 0.8 (the floor band at
+             the time) — the mean the REAL read-model fold projects is 0.7999999999999999,
+             strictly below the 0.8 floor literal, and the class was rejected. A verdict on the
+             discrete scale must treat an at-floor class as qualified: representation error is
+             not a quality distinction. Both projections drift identically, so the tolerance is
+             load-bearing on the LIFETIME accessor and on the TRAILING one CC-24b added."
     (with-gate-ctx [ctx]
       (let [{:keys [class-id parent-id]} (seed-scored-class!
                                            ctx (single-judge-occurrences (repeat 12 0.8)))
-            avgs (ontology/get-tree-class-judge-averages ctx class-id)]
+            avgs (ontology/get-tree-class-judge-averages ctx class-id)
+            trailing (ontology/get-tree-class-judge-recent-averages
+                       ctx class-id (:dimension-window harvest/default-harvest-config))]
         ;; MEASUREMENT GUARDS — the drift is REPRODUCED from real arithmetic
         ;; (the standing read-model's own accumulation over real events), never
         ;; a hand-typed drifted literal:
@@ -1030,10 +1063,13 @@
         ;; the ONLY rejector.
         (is (= (vec (repeat 12 0.8)) (harvest/occurrence-scores ctx class-id))
             "occurrence scores are the bit-identical band value")
+        (is (= {one-judge 0.7999999999999999} trailing)
+            (str "the TRAILING projection drifts identically (ten 0.8s), got " trailing))
 
-        (is (true? (harvest/every-dimension-qualified?
-                     avgs (:dimension-floor harvest/default-harvest-config)))
+        (is (true? (harvest/every-dimension-qualified? avgs cc29-measured-artifact-floor))
             "an at-floor dimension mean qualifies — the floor comparison tolerates representation error")
+        (is (true? (harvest/every-dimension-qualified? trailing cc29-measured-artifact-floor))
+            "…on the trailing projection too")
         (harvest/maybe-harvest! ctx class-id)
         (Thread/sleep 150)
         (let [minted (minted-harvest-events ctx class-id)]
@@ -1043,28 +1079,37 @@
               "under its resolved abstract parent"))))))
 
 (deftest cc29-genuinely-below-floor-is-still-rejected
-  (testing "verdicts still distinguish real differences: 20 occurrences, ONE banded a single
-             quantum below the floor (0.75) and 19 exactly 0.8 — lifetime mean 0.7975, i.e.
-             quantum/count below the floor at a realistic count, the SMALLEST legitimate
-             below-floor distinction. It must still be rejected with the tolerance in place."
+  (testing "verdicts still distinguish real differences, re-anchored onto the axis CC-24b ships:
+             20 occurrences on the REAL lattice, all band 4 (0.75) except ONE band 3 (0.5)
+             placed at the head of the trailing window. Its trailing-10 mean is 0.725 —
+             quantum/window (0.25/10 = 0.025) below the floor, the SMALLEST legitimate
+             below-floor distinction the scale can express at this window — and it must still be
+             rejected with the tolerance in place. (0.725 is not a made-up number: it is exactly
+             what the real durable class projects at its 90th scored occurrence.)"
     (with-gate-ctx [ctx]
       (let [{:keys [class-id]} (seed-scored-class!
                                  ctx (single-judge-occurrences
-                                       (cons 0.75 (repeat 19 0.8))))
-            avgs (ontology/get-tree-class-judge-averages ctx class-id)
-            m (get avgs one-judge)]
-        ;; MEASUREMENT GUARDS — the 0.75 occurrence is OLDEST, so the recent
-        ;; window is all-0.8 and the consistency axis cannot be what rejects:
-        ;; the dimension floor is isolated. The mean is quantum/20 short.
-        (is (= [0.8 0.8 0.8 0.8 0.8]
+                                       (concat (repeat 10 0.75) [0.5] (repeat 9 0.75))))
+            floor (:dimension-floor harvest/default-harvest-config)
+            window (:dimension-window harvest/default-harvest-config)
+            trailing (ontology/get-tree-class-judge-recent-averages ctx class-id window)
+            m (get trailing one-judge)]
+        ;; MEASUREMENT GUARDS — the band-3 occurrence is the OLDEST member of
+        ;; the trailing window and sits OUTSIDE the consistency window, so the
+        ;; consistency axis clears and the dimension floor is isolated.
+        (is (= [0.75 0.75 0.75 0.75 0.75]
                (vec (take-last 5 (harvest/occurrence-scores ctx class-id))))
             "recent window clears — dimension axis isolated")
-        (is (< (Math/abs (- m 0.7975)) 1.0E-9)
-            (str "lifetime mean is quantum/count (0.0025) below the floor, got " m))
+        (is (true? (harvest/consistently-qualified?
+                     (harvest/occurrence-scores ctx class-id)
+                     (:consistency-window harvest/default-harvest-config)
+                     (:consistency-floor harvest/default-harvest-config)))
+            "…proven, not assumed: the consistency axis is not the rejector")
+        (is (< (Math/abs (- m 0.725)) 1.0E-9)
+            (str "trailing mean is quantum/window (0.025) below the floor, got " m))
 
-        (is (false? (harvest/every-dimension-qualified?
-                      avgs (:dimension-floor harvest/default-harvest-config)))
-            "one band-quantum short at count 20 is a REAL distinction — still rejected")
+        (is (false? (harvest/every-dimension-qualified? trailing floor))
+            "one band-quantum short at window 10 is a REAL distinction — still rejected")
         (harvest/maybe-harvest! ctx class-id)
         (Thread/sleep 150)
         (is (empty? (minted-harvest-events ctx class-id))
@@ -1090,13 +1135,14 @@
         (is (true? (harvest/consistently-qualified?
                      scores
                      (:consistency-window harvest/default-harvest-config)
-                     (:consistency-floor harvest/default-harvest-config)))
+                     cc29-measured-artifact-floor))
             "an at-floor window qualifies — the floor comparison tolerates representation error")
         ;; Predicate-level ON PURPOSE: this fixture's genuinely-0.6 grounding
         ;; DIMENSION must veto the class end-to-end regardless — the tolerance
         ;; admits representation error, never a real quantum-sized deficit.
         (is (false? (harvest/every-dimension-qualified?
-                      (ontology/get-tree-class-judge-averages ctx class-id)
+                      (ontology/get-tree-class-judge-recent-averages
+                        ctx class-id (:dimension-window harvest/default-harvest-config))
                       (:dimension-floor harvest/default-harvest-config)))
             "the 0.6 dimension still vetoes — tolerance changes no scale-expressible verdict")))))
 
@@ -1111,7 +1157,8 @@
                                            {"quality" 0.75}))
             scores (harvest/occurrence-scores ctx class-id)
             window (:consistency-window harvest/default-harvest-config)
-            floor (:consistency-floor harvest/default-harvest-config)]
+            ;; the floor the artifact was measured at — see the section header
+            floor cc29-measured-artifact-floor]
         (is (= 12 (count scores)) (str "twelve scored occurrences, got " (count scores)))
         (is (= 0.75 (peek scores)) "most recent occurrence banded a genuine 0.75")
         (is (every? #(= 0.7999999999999999 %) (pop scores))
@@ -1123,32 +1170,474 @@
             "without it the drifted at-floor window qualifies — the rejector is the 0.75")))))
 
 (deftest cc29-tolerance-never-flips-a-scale-distinguishable-verdict
-  (testing "the spec's safe-window argument, swept rather than asserted: for EVERY mean a band
-             multiset (quantum 0.05) can produce at counts 1..40, the floor verdict on the
+  (testing "the spec's safe-window argument, swept rather than asserted AT THE SHIPPED FLOOR:
+             for EVERY mean a band multiset can produce at counts 1..40 on a 20ths grid — four
+             times finer than the real 0.25 lattice, so the argument is tested against a harder
+             case than the scale can actually produce — the floor verdict on the
              double-ACCUMULATED mean equals the EXACT rational verdict. The tolerance admits
              binary-representation error only — it can never change a verdict between two
-             values the scale can actually distinguish."
-    (let [floor (:dimension-floor harvest/default-harvest-config)
-          checks (vec (for [n (range 1 41)
-                            k (range 0 (inc (* 20 n)))   ;; total score in 20ths
-                            :let [q (quot k n) r (rem k n)
-                                  ;; a concrete band multiset summing to k/20
-                                  bands (concat (repeat r (/ (inc q) 20.0))
-                                                (repeat (- n r) (/ q 20.0)))
-                                  drifted (/ (reduce + 0.0 bands) (double n))
-                                  exact? (>= (/ k (* 20 n)) 4/5)
-                                  verdict? (harvest/every-dimension-qualified?
-                                             {one-judge drifted} floor)]]
-                        {:n n :k k :drifted drifted :exact exact? :verdict verdict?}))
-          disagreements (remove #(= (:exact %) (:verdict %)) checks)
-          drifting-at-floor (filter #(and (:exact %) (< (:drifted %) floor)) checks)]
-      (println "  [cc29 sweep] N =" (count checks) "band-multiset means;"
-               (count drifting-at-floor) "qualify exactly but accumulate BELOW the floor literal;"
-               (count disagreements) "verdict disagreements")
-      (is (<= 16000 (count checks)) "the sweep really covers the reachable means")
-      (is (seq drifting-at-floor)
-          "non-vacuous: the sweep CONTAINS at-floor means whose double accumulation drifts below the floor literal")
-      (is (seq (remove :exact checks)) "non-vacuous: the sweep contains genuinely-below-floor means")
-      (is (empty? disagreements)
-          (str "tolerance FALSIFIED — it flipped a verdict the scale can express: "
-               (pr-str (vec (take 5 disagreements))))))))
+             values the scale can actually distinguish. CC-24b: `floor` is read from the config
+             and compared exactly, so moving the floor onto the lattice re-runs the whole
+             argument at the new value instead of silently leaving it pinned at the old one."
+    (let [sweep (fn [floor]
+                  (let [exact-floor (rationalize floor)]
+                    (vec (for [n (range 1 41)
+                               k (range 0 (inc (* 20 n)))   ;; total score in 20ths
+                               :let [q (quot k n) r (rem k n)
+                                     ;; a concrete band multiset summing to k/20
+                                     bands (concat (repeat r (/ (inc q) 20.0))
+                                                   (repeat (- n r) (/ q 20.0)))
+                                     drifted (/ (reduce + 0.0 bands) (double n))
+                                     exact? (>= (/ k (* 20 n)) exact-floor)
+                                     verdict? (harvest/every-dimension-qualified?
+                                                {one-judge drifted} floor)]]
+                           {:n n :k k :drifted drifted :exact exact? :verdict verdict?}))))
+          disagreements (fn [checks] (remove #(= (:exact %) (:verdict %)) checks))
+          drifting-at-floor (fn [checks floor]
+                              (filter #(and (:exact %) (< (:drifted %) floor)) checks))
+          shipped-floor (:dimension-floor harvest/default-harvest-config)
+          shipped (sweep shipped-floor)
+          ;; The floor the artifact was MEASURED at. The tolerance has to be
+          ;; proven safe wherever the floor is put, and the artifact is only
+          ;; REACHABLE at a non-dyadic floor — see below.
+          measured (sweep cc29-measured-artifact-floor)]
+      (println "  [cc29 sweep] N =" (count shipped) "band-multiset means per floor;"
+               "at" shipped-floor ":" (count (drifting-at-floor shipped shipped-floor))
+               "drift below the floor literal," (count (disagreements shipped)) "disagreements;"
+               "at" cc29-measured-artifact-floor ":"
+               (count (drifting-at-floor measured cc29-measured-artifact-floor))
+               "drift," (count (disagreements measured)) "disagreements")
+      (is (<= 16000 (count shipped)) "the sweep really covers the reachable means")
+      (is (seq (remove :exact shipped)) "non-vacuous: the sweep contains genuinely-below-floor means")
+      (is (seq (filter :exact shipped)) "non-vacuous: the sweep contains qualifying means")
+      ;; NON-VACUITY of the TOLERANCE itself: there must exist at-floor means
+      ;; whose double accumulation lands below the floor literal, or "the
+      ;; tolerance never flips a verdict" is trivially true. At the MEASURED
+      ;; floor there are.
+      (is (seq (drifting-at-floor measured cc29-measured-artifact-floor))
+          "non-vacuous: at the measured floor the sweep CONTAINS at-floor means whose double
+           accumulation drifts below the floor literal")
+      (is (empty? (disagreements measured))
+          (str "tolerance FALSIFIED at the measured floor: "
+               (pr-str (vec (take 5 (disagreements measured))))))
+      (is (empty? (disagreements shipped))
+          (str "tolerance FALSIFIED at the shipped floor: "
+               (pr-str (vec (take 5 (disagreements shipped))))))
+      ;; CC-24b FINDING, pinned rather than hidden: at the SHIPPED floor the
+      ;; artifact is UNREACHABLE. 0.75 is a dyadic rational (3/4), so a
+      ;; multiset whose exact mean is the floor is a multiset of 0.75s, whose
+      ;; sum and quotient are both exact in binary — nothing to drift. Moving
+      ;; the floor onto the band lattice did not merely rename the tolerance's
+      ;; job, it removed the failure mode at the dimension floor. The tolerance
+      ;; stays because it is proven safe (above) and because the CONSISTENCY
+      ;; axis still aggregates ACROSS judges per occurrence, where a
+      ;; non-dyadic per-occurrence mean is reachable at any judge count that is
+      ;; not a power of two (cc29-window-score-exactly-on-the-floor-qualifies
+      ;; is exactly that case, measured).
+      (is (empty? (drifting-at-floor shipped shipped-floor))
+          (str "the shipped floor is dyadic, so an at-floor mean cannot drift below it; if this "
+               "fires, the floor moved OFF a dyadic value and the tolerance is load-bearing "
+               "again at the dimension floor: " (pr-str (vec (take 5 (drifting-at-floor shipped shipped-floor)))))))))
+
+;; ===========================================================================
+;; CC-24b (ADR 0029) — floors ON the band lattice + a TRAILING dimension window
+;; ===========================================================================
+;;
+;; Two ADR-0027 findings, measured in CC-24a (evidence/cc24/CC24-MEASUREMENT.md):
+;;
+;;   1. The floors were OFF-LATTICE. scale.clj maps a discrete 1-5 judge scale
+;;      by (n-1)/(max-min), so the achievable per-occurrence set at one judge is
+;;      exactly {0, 0.25, 0.5, 0.75, 1.0}. The shipped 0.8 sat in the gap between
+;;      band 4 (good work) and band 5, silently meaning "PERFECT ONLY": every
+;;      floor in {0.60,0.70,0.75} produced identical gate behaviour, as did every
+;;      floor in {0.80,0.90,1.00}. 0.75 is the lattice point that says what we
+;;      mean — band 4 or better qualifies.
+;;
+;;   2. The dimension axis was INERT. Per-judge LIFETIME mean against the floor
+;;      fired 0 times in 105 real positions, at 0.80 AND at 0.75; the dominant
+;;      class would have needed ~97 consecutive perfect occurrences, because a
+;;      lifetime mean can never forget — including evidence produced by ENGINE
+;;      defects we have since fixed. A TRAILING window of the last 10 scored
+;;      occurrences fires 38/105 and abstains 67/105 at 0.75: it can both fire
+;;      and abstain on real data, which is ADR 0027's acceptance bar.
+;;
+;; The consistency axis (ALL-of-5-in-window) and the EL-5 z-gate were measured
+;; and ratified UNCHANGED, so nothing below touches their semantics.
+
+(def ^:private cc24-durable
+  "The CC-24a BANKED durable-Postgres dominant tree-class, derived from the raw
+   event dump (never transcribed): the real per-occurrence score sequence in
+   occurrence order, with nil for each of the 51 UNSCORED occurrences."
+  (delay (edn/read-string (slurp (io/resource "cc24b_durable_dominant_class.edn")))))
+
+(defn- mean* [xs] (/ (reduce + 0.0 xs) (double (count xs))))
+
+(defn- prefix-through-scored
+  "The real occurrence prefix (scored AND unscored, in order) ending at the
+   `n`th SCORED occurrence — the shape a class actually had at that moment."
+  [occurrence-scores n]
+  (loop [i 0 scored 0]
+    (if (or (= scored n) (>= i (count occurrence-scores)))
+      (vec (take i occurrence-scores))
+      (recur (inc i) (if (nth occurrence-scores i) (inc scored) scored)))))
+
+(defn- seed-real-occurrences!
+  "Seed ONE tree-class from a real occurrence-score prefix — nil means an
+   UNSCORED occurrence (no judge signal; skip-not-zero), which really is 32.7%
+   of this class's history and is what makes the read-model's recent-occurrence
+   bound load-bearing."
+  [ctx occurrence-scores]
+  (seed-scored-class! ctx (mapv (fn [s] (if s {one-judge s} {})) occurrence-scores)))
+
+(defn- capture-mulog
+  "Intercept the fn mu/log expands to and collect {:event :pairs} entries."
+  [thunk]
+  (let [logs (atom [])]
+    (with-redefs [mulog-core/log* (fn [_logger event-name pairs]
+                                    (swap! logs conj {:event event-name
+                                                      :pairs (apply hash-map pairs)}))]
+      (let [result (thunk)]
+        [@logs result]))))
+
+;; --- RED 1: the ADR-0027 guard. The floors are LATTICE POINTS of the shipped
+;;     judge scale. If a future scale change moves the lattice out from under
+;;     them, this fails loudly instead of silently re-breaking ADR 0027's law.
+
+(deftest cc24b-harvest-floors-are-points-on-the-shipped-judge-lattice
+  (testing "every SHIPPED rubric scale is the discrete 1-5 mapped (n-1)/4, so the achievable
+             per-judge score set is exactly {0, 0.25, 0.5, 0.75, 1.0} — and BOTH harvest floors
+             are members of it. A floor that is not a lattice point is a value whose stated
+             meaning differs from its operative meaning (ADR 0027, ADR 0029 decision 1)."
+    (let [shipped [rubrics/GROUNDING_SCALE rubrics/INSTRUCTION_FOLLOWING_SCALE
+                   rubrics/REASONING_SCALE rubrics/COMPLETENESS_SCALE]
+          lattices (mapv (fn [s] (into (sorted-set) (map #(scale/level->unit-score s %))
+                                       (scale/levels s)))
+                         shipped)]
+      (is (= 4 (count shipped)) "all four shipped rubric scales are under test")
+      (is (= [#{0.0 0.25 0.5 0.75 1.0}] (distinct lattices))
+          (str "the shipped judge lattice, got " (pr-str lattices)))
+      (let [lattice (first lattices)]
+        (is (contains? lattice (:dimension-floor harvest/default-harvest-config))
+            (str "dimension-floor is OFF the lattice: "
+                 (:dimension-floor harvest/default-harvest-config) " not in " lattice))
+        (is (contains? lattice (:consistency-floor harvest/default-harvest-config))
+            (str "consistency-floor is OFF the lattice: "
+                 (:consistency-floor harvest/default-harvest-config) " not in " lattice))))))
+
+;; --- RED 2: the ratified values, and what they MEAN at the band boundary.
+
+(deftest cc24b-floors-admit-band-four-and-reject-band-three
+  (testing "ADR 0029 decision 1: both floors are 0.75 and the dimension window is 10. A class
+             whose every judge trails at exactly band 4 (0.75 — described to the judge as good
+             work) QUALIFIES; one trailing at band 3 (0.5) does not."
+    (is (= 0.75 (:dimension-floor harvest/default-harvest-config)))
+    (is (= 0.75 (:consistency-floor harvest/default-harvest-config)))
+    (is (= 10 (:dimension-window harvest/default-harvest-config)))
+    (is (= 5 (:consistency-window harvest/default-harvest-config))
+        "the consistency window is ratified UNCHANGED")
+    (let [floor (:dimension-floor harvest/default-harvest-config)]
+      (is (true? (harvest/every-dimension-qualified? {one-judge 0.75} floor))
+          "band 4 counts")
+      (is (true? (harvest/every-dimension-qualified? {one-judge 0.75 "grounding" 1.0} floor))
+          "band 4 counts on every dimension")
+      (is (false? (harvest/every-dimension-qualified? {one-judge 0.75 "grounding" 0.5} floor))
+          "one dimension at band 3 vetoes")
+      (is (true? (harvest/consistently-qualified? (vec (repeat 5 0.75)) 5 floor))
+          "a window of band-4 occurrences counts")
+      (is (false? (harvest/consistently-qualified? [0.75 0.75 0.75 0.75 0.5] 5 floor))
+          "one band-3 occurrence in the window vetoes"))))
+
+;; --- RED 3 (the crux): the dimension axis reads a TRAILING WINDOW.
+;;     Fixtures are the CC-24a BANKED real distribution, loaded not transcribed.
+
+(deftest cc24b-banked-fixture-reproduces-the-measurement
+  (testing "the banked fixture really is the measured corpus — 156 occurrences, 105 scored,
+             51 unscored, one judge, lifetime mean 0.6167, trailing-10 mean 0.275"
+    (let [fx @cc24-durable]
+      (is (= 156 (:occurrences fx)))
+      (is (= 105 (:scored-occurrences fx)))
+      (is (= 51 (:unscored-occurrences fx)))
+      (is (= ["implementation-turn/coding-outcome"] (:judges fx)))
+      (is (= 105 (count (:scores fx))))
+      (is (= 156 (count (:occurrence-scores fx))))
+      (is (= {0.0 25, 0.25 4, 0.5 14, 0.75 21, 1.0 41} (into {} (:distribution fx))))
+      (is (< (Math/abs (- (mean* (:scores fx)) 0.6166666666666667)) 1.0E-12))
+      (is (= 0.275 (mean* (take-last 10 (:scores fx)))))
+      (is (= #{0.0 0.25 0.5 0.75 1.0} (set (:scores fx)))
+          "every real value is a band — the lattice is not a model, it is the data"))))
+
+(deftest cc24b-lifetime-mean-is-inert-and-the-trailing-window-is-not
+  (testing "ADR 0027's acceptance bar, replayed through the SHIPPED predicates over the banked
+             real sequence: at floor 0.75 the raw LIFETIME mean fires 0 of 105 real positions
+             (it cannot express the property at all), the TRAILING-10 mean fires 38 and abstains
+             67, and the ratified-unchanged consistency rule fires 15 of 101."
+    (let [scores (vec (:scores @cc24-durable))
+          floor (:dimension-floor harvest/default-harvest-config)
+          window (:dimension-window harvest/default-harvest-config)
+          cwindow (:consistency-window harvest/default-harvest-config)
+          sweep (fn [f]
+                  (vec (for [i (range 1 (inc (count scores)))
+                             :let [p (subvec scores 0 i)]]
+                         {:i i
+                          :lifetime (harvest/every-dimension-qualified?
+                                      {one-judge (mean* p)} f)
+                          :trailing (harvest/every-dimension-qualified?
+                                      {one-judge (mean* (take-last window p))} f)
+                          :consistent (harvest/consistently-qualified? p cwindow f)})))
+          positions (sweep floor)
+          ;; the OLD off-lattice floor, swept too: the ADR's table has two rows,
+          ;; and pinning both proves this replay tracks the floor rather than
+          ;; happening to agree at one value.
+          old-positions (sweep 0.8)
+          fires (fn [ps k] (count (filter k ps)))]
+      (is (= 105 (count positions)) "every real position swept")
+      (is (= 0.75 floor) "…at the SHIPPED floor")
+      (is (= 0 (fires positions :lifetime))
+          "the raw lifetime mean fires ZERO times — the measured inertness")
+      (is (= 0 (fires old-positions :lifetime))
+          "…and fired zero times at the OLD 0.80 floor too: no retuning could have fixed it")
+      (is (= 38 (fires positions :trailing))
+          (str "trailing-10 fires 38/105 at 0.75, got " (fires positions :trailing)))
+      (is (= 27 (fires old-positions :trailing))
+          (str "…and 27/105 at 0.80, the ADR's other row, got " (fires old-positions :trailing)))
+      (is (= 67 (count (remove :trailing positions)))
+          "…and abstains on the rest — it can do BOTH on real data")
+      (is (= 15 (fires (filter #(>= (:i %) cwindow) positions) :consistent))
+          "the consistency axis is unchanged and was never the problem")
+      (is (= 9 (fires (filter #(>= (:i %) cwindow) old-positions) :consistent))
+          "…9/101 at 0.80, the measured figure ADR 0029 decision 3 rests on"))))
+
+(deftest cc24b-trailing-window-earns-eligibility-a-lifetime-mean-cannot
+  (testing "THE REAL SHAPE (banked, occurrence prefix through the 22nd scored occurrence of the
+             durable dominant class): an early block of zeros produced by since-fixed ENGINE
+             defects, followed by recent qualifying work. The LIFETIME mean is 0.5795 and can
+             never clear the floor; the class's most recent 10 scored occurrences mean 0.825 and
+             DO. It is harvested end-to-end."
+    (with-gate-ctx [ctx]
+      (let [fx @cc24-durable
+            prefix (prefix-through-scored (:occurrence-scores fx) 22)
+            scored (vec (keep identity prefix))
+            {:keys [class-id parent-id]} (seed-real-occurrences! ctx prefix)
+            floor (:dimension-floor harvest/default-harvest-config)
+            window (:dimension-window harvest/default-harvest-config)
+            lifetime (ontology/get-tree-class-judge-averages ctx class-id)
+            trailing (ontology/get-tree-class-judge-recent-averages ctx class-id window)]
+        ;; MEASUREMENT GUARDS — the fixture really is the banked real shape.
+        (is (= 22 (count scored)) "twenty-two real scored occurrences")
+        (is (= 5 (count (filter zero? (take 10 scored))))
+            (str "the early block of engine-defect zeros is present, got " (pr-str scored)))
+        (is (pos? (count (remove some? prefix)))
+            (str "the real prefix really interleaves UNSCORED occurrences (skip-not-zero), got "
+                 (count (remove some? prefix)) " of " (count prefix)))
+        (is (= (harvest/occurrence-scores ctx class-id) scored)
+            "the real event path reproduces the banked sequence exactly")
+
+        (is (< (Math/abs (- (get lifetime one-judge) 0.5795454545454546)) 1.0E-9)
+            (str "lifetime mean, got " lifetime))
+        (is (false? (harvest/every-dimension-qualified? lifetime floor))
+            "the LIFETIME mean cannot clear the floor — the mechanism ADR 0029 replaced")
+        (is (= {one-judge 0.825} trailing)
+            (str "the trailing-10 mean clears the floor, got " trailing))
+        (is (true? (harvest/every-dimension-qualified? trailing floor))
+            "the TRAILING window earns eligibility the lifetime mean cannot express")
+
+        ;; …and it really is the dimension axis that flips: same metrics, one key.
+        (let [metrics {:occurrences (rm/get-consolidation-total ctx :tree-class class-id)
+                       :occurrence-scores (harvest/occurrence-scores ctx class-id)
+                       :distinct-tree-shapes (harvest/distinct-tree-shapes ctx class-id)}]
+          (is (true? (harvest/harvest-candidate?
+                       (assoc metrics :judge-trailing-averages trailing)
+                       harvest/default-harvest-config)))
+          (is (false? (harvest/harvest-candidate?
+                        (assoc metrics :judge-trailing-averages lifetime)
+                        harvest/default-harvest-config))
+              "the ONLY difference is trailing-vs-lifetime"))
+
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 200)
+        (let [minted (minted-harvest-events ctx class-id)]
+          (is (= 1 (count minted))
+              "a class can earn a mint on sustained recent quality despite poisoned history")
+          (is (= parent-id (:parent-behavior (first minted)))))))))
+
+(deftest cc24b-trailing-window-loses-eligibility-a-lifetime-mean-would-keep
+  (testing "THE MIRROR, and the same real class: at its 90th scored occurrence its recent 10
+             mean 0.725 — one band-quantum-per-window BELOW the floor — while its last five
+             occurrences all still clear the consistency floor, so the DIMENSION axis is what
+             rejects. Eligibility can be LOST as well as gained: enforcement is continuously
+             earned (ADR 0029 consequence 3)."
+    (with-gate-ctx [ctx]
+      (let [fx @cc24-durable
+            prefix (prefix-through-scored (:occurrence-scores fx) 90)
+            scored (vec (keep identity prefix))
+            {:keys [class-id]} (seed-real-occurrences! ctx prefix)
+            floor (:dimension-floor harvest/default-harvest-config)
+            window (:dimension-window harvest/default-harvest-config)
+            trailing (ontology/get-tree-class-judge-recent-averages ctx class-id window)
+            occ-scores (harvest/occurrence-scores ctx class-id)]
+        (is (= 90 (count scored)) "ninety real scored occurrences")
+        (is (= scored occ-scores) "the real event path reproduces the banked sequence exactly")
+        ;; AXIS ISOLATION — the consistency axis PASSES here, so only the
+        ;; dimension axis can be the rejector.
+        (is (true? (harvest/consistently-qualified?
+                     occ-scores (:consistency-window harvest/default-harvest-config) floor))
+            (str "the last five occurrences all clear the floor, got "
+                 (pr-str (vec (take-last 5 occ-scores)))))
+        (is (= {one-judge 0.725} trailing)
+            (str "the trailing-10 mean has fallen below the floor, got " trailing))
+        (is (false? (harvest/every-dimension-qualified? trailing floor))
+            "quantum/window below the floor is a REAL distinction — eligibility is lost")
+        ;; LOST, not merely absent: this SAME class's trailing window qualified
+        ;; earlier in the very same history (the sibling test drives that state
+        ;; through the real event path and mints from it).
+        (is (true? (harvest/every-dimension-qualified?
+                     {one-judge (mean* (take-last window (subvec scored 0 22)))} floor))
+            "…and it DID qualify at its 22nd scored occurrence — enforcement is continuously earned")
+        (is (false? (harvest/harvest-candidate?
+                      {:occurrences (rm/get-consolidation-total ctx :tree-class class-id)
+                       :judge-trailing-averages trailing
+                       :occurrence-scores occ-scores
+                       :distinct-tree-shapes (harvest/distinct-tree-shapes ctx class-id)}
+                      harvest/default-harvest-config))
+            "the gate rejects it")
+        (harvest/maybe-harvest! ctx class-id)
+        (Thread/sleep 200)
+        (is (empty? (minted-harvest-events ctx class-id))
+            "and nothing is minted end-to-end")))))
+
+(deftest cc24b-recent-occurrence-state-is-bounded
+  (testing "CC-22's lesson: the recent-occurrence sequence the read-model keeps per class is
+             BOUNDED deliberately, and the bound is large enough that the trailing window is
+             still computable when a third of the class's occurrences carry no judge signal
+             (measured: 29 consecutive real occurrences are needed to hold 10 scored ones)."
+    (with-gate-ctx [ctx]
+      (let [fx @cc24-durable
+            {:keys [class-id]} (seed-real-occurrences! ctx (vec (:occurrence-scores fx)))
+            state (rmp/project ctx :ontology/tree-class-judge-averages)
+            retained (get-in state [:class->recent-occurrences class-id])]
+        (is (= 156 (rm/get-consolidation-total ctx :tree-class class-id))
+            "the whole real history was seeded")
+        (is (= rm/recent-occurrence-bound (count retained))
+            (str "the retained sequence is capped at the bound, got " (count retained)))
+        (is (<= 29 rm/recent-occurrence-bound)
+            "the bound exceeds the measured worst-case span needed for 10 scored occurrences")
+        ;; …and the bound is a real bound, not a VIEW over an unbounded root.
+        ;; `subvec` returns a SubVector that pins the whole underlying vector,
+        ;; and `conj` on one appends to that root — so a subvec-trimmed
+        ;; sequence reports (count 40) while retaining every key ever folded.
+        ;; Measured on this very fixture during CC-24b: count 40, root 156.
+        ;; A count assertion alone cannot see that, so assert the retention.
+        (is (not (instance? clojure.lang.APersistentVector$SubVector retained))
+            (str "the retained sequence is a VIEW over an unbounded root vector — the count is "
+                 "bounded but the memory is not (CC-22): " (class retained)))
+        ;; The bound is not merely small — it is still CORRECT: the trailing
+        ;; window over the real (unscored-riddled) tail is the measured 0.275.
+        (is (= {one-judge 0.275}
+               (ontology/get-tree-class-judge-recent-averages
+                 ctx class-id (:dimension-window harvest/default-harvest-config)))
+            "the bounded state still yields the measured trailing-10 mean")))))
+
+(deftest cc24b-lifetime-accessor-is-unchanged-alongside-the-trailing-one
+  (testing "the LIFETIME accessor keeps its meaning and its consolidator parity: on the same
+             real stream get-tree-class-judge-averages still projects the lifetime mean the
+             consolidator's private aggregate computes, while the NEW accessor projects the
+             trailing window. Both are live; neither replaced the other."
+    (with-gate-ctx [ctx]
+      (let [fx @cc24-durable
+            prefix (prefix-through-scored (:occurrence-scores fx) 22)
+            {:keys [class-id]} (seed-real-occurrences! ctx prefix)
+            lifetime (ontology/get-tree-class-judge-averages ctx class-id)
+            trailing (ontology/get-tree-class-judge-recent-averages ctx class-id 10)
+            agg (#'consolidator/tree-class-aggregate-metrics ctx class-id)]
+        (is (= (:judge-averages agg) lifetime)
+            (str "parity oracle holds. aggregate=" (:judge-averages agg) " read-model=" lifetime))
+        (is (not= lifetime trailing)
+            (str "and the two accessors really are different projections: "
+                 lifetime " vs " trailing))))))
+
+;; --- RED 4: the coherence abstention becomes OBSERVABLE (ADR 0029 decision 5).
+;;     No behaviour change — visibility only. Measured: coherence passes
+;;     VACUOUSLY for 100% of occurrences in both real stores (0/138
+;;     tree-execution events carry a fingerprint), so a gate report that says
+;;     "coherent" is reporting a signal it has never once seen.
+
+(deftest cc24b-coherence-abstention-is-observable-in-the-gate-report
+  (testing "a class with NO tree shapes at all must be REPORTED as abstaining on coherence,
+             not silently reported as coherent — while the verdict itself is unchanged"
+    (let [no-shapes {:occurrences 12
+                     :judge-trailing-averages {one-judge 0.75}
+                     :occurrence-scores (vec (repeat 12 0.75))
+                     :distinct-tree-shapes 0}
+          with-shapes (assoc no-shapes :distinct-tree-shapes 3)
+          grab-bag (assoc no-shapes :distinct-tree-shapes 11)
+          report-a (harvest/harvest-gate-report no-shapes harvest/default-harvest-config)
+          report-b (harvest/harvest-gate-report with-shapes harvest/default-harvest-config)
+          report-c (harvest/harvest-gate-report grab-bag harvest/default-harvest-config)]
+      (is (= :abstained (get-in report-a [:coherence :verdict]))
+          (str "no shapes -> ABSTAINED, got " (pr-str report-a)))
+      (is (= :qualified (get-in report-b [:coherence :verdict]))
+          (str "real shapes -> a real verdict, got " (pr-str report-b)))
+      (is (= :rejected (get-in report-c [:coherence :verdict]))
+          (str "a grab-bag is still rejected, got " (pr-str report-c)))
+      ;; NO BEHAVIOUR CHANGE — the abstention still passes, exactly as before.
+      (is (true? (:candidate? report-a)) "the abstention still passes the gate")
+      (is (= (harvest/harvest-candidate? no-shapes harvest/default-harvest-config)
+             (:candidate? report-a))
+          "the report agrees with the gate it reports on")
+      (is (= (harvest/harvest-candidate? grab-bag harvest/default-harvest-config)
+             (:candidate? report-c))))))
+
+(deftest cc24b-coherence-abstention-is-logged-by-maybe-harvest
+  (testing "…and the report really reaches an operator: maybe-harvest! emits the gate report,
+             and on the real corpus (0/138 bookends carry a fingerprint) it says ABSTAINED"
+    (with-gate-ctx [ctx]
+      (let [{:keys [class-id]} (seed-scored-class!
+                                 ctx (single-judge-occurrences (repeat 12 1.0)))
+            [logs _] (capture-mulog #(harvest/maybe-harvest! ctx class-id))
+            reports (filter #(= ::harvest/harvest-gate-report (:event %)) logs)]
+        ;; the fixture's bookends DO carry a fingerprint, so first prove the
+        ;; report is emitted at all and reports a real coherence verdict…
+        (is (= 1 (count reports))
+            (str "exactly one gate report is logged, got " (pr-str (mapv :event logs))))
+        (is (= :qualified (get-in (first reports) [:pairs :coherence :verdict]))
+            (str "shapes present -> qualified, got " (pr-str (first reports))))))))
+
+(deftest cc24b-shapeless-class-logs-the-abstention
+  (testing "the SHAPELESS case measured in both real stores: no tree-execution evidence at all,
+             so the coherence clause passes vacuously — and the log SAYS so"
+    (with-gate-ctx [ctx]
+      (let [class-id (random-uuid)
+            parent-id (random-uuid)
+            host (random-uuid)]
+        (seed-parent-behavior! ctx parent-id)
+        (record-tree-class-desc! ctx class-id good-body)
+        ;; classification + judge score ONLY — no bookend, which is exactly the
+        ;; VOLUME store's shape (sonnet solved every task by direct tool call).
+        (dotimes [i 12]
+          (let [tick (random-uuid)]
+            (cp/process-command
+              (assoc ctx :command
+                     (cond-> {:command/name :ontology/assign-task-class
+                              :command/id (random-uuid)
+                              :command/timestamp (time/now)
+                              :source-sheet-id host
+                              :source-tick-id tick
+                              :source-node-id (random-uuid)
+                              :assigned-tree-id class-id
+                              :confidence 0.95
+                              :top-candidates []
+                              :reasoning "test"
+                              :was-fresh-mint? false}
+                       (zero? i) (assoc :behavioral-subtrees
+                                        [{:behavior-id parent-id :confidence 0.9 :reasoning "x"}]))))
+            (judge-score! ctx host tick one-judge 1.0)))
+        (Thread/sleep 250)
+        (is (zero? (harvest/distinct-tree-shapes ctx class-id))
+            "the measured reality: no shape evidence exists")
+        (let [[logs _] (capture-mulog #(harvest/maybe-harvest! ctx class-id))
+              report (first (filter #(= ::harvest/harvest-gate-report (:event %)) logs))]
+          (is (some? report) "a gate report is logged")
+          (is (= :abstained (get-in report [:pairs :coherence :verdict]))
+              (str "the coherence abstention is VISIBLE, got " (pr-str report)))
+          (is (true? (get-in report [:pairs :candidate?]))
+              "and the verdict is unchanged — visibility only"))))))

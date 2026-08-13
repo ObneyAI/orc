@@ -377,6 +377,14 @@
   [ctx tree-class-id]
   (rm/get-tree-class-judge-averages ctx tree-class-id))
 
+(defn get-tree-class-judge-recent-averages
+  "CC-24b (ADR 0029): return {judge-name -> mean over that judge's most recent
+   `window` scored occurrences of the :tree-class}, or nil when the class has
+   no judge scores in its retained window. The harvest gate's DIMENSION axis
+   reads this; the lifetime accessor above is unchanged and still live."
+  [ctx tree-class-id window]
+  (rm/get-tree-class-judge-recent-averages ctx tree-class-id window))
+
 (defn get-tree-class-for-sheet
   "CV-2 (ADR 0017 decision 3): return the :tree-class id assigned to
    `source-sheet-id` (via the task-classified sheet->class join), or nil
