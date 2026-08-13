@@ -244,7 +244,7 @@ Record unexpected outcomes even when the final returned status is successful.
 
 - [x] **DET-E2E-102 — REAL-LLM: Mint, index, retrieve, and reuse a novel behavior.**
   - **Purpose:** Prove that a behavior invented during one real RLM run becomes durable, searchable experience that a later independent run can actually reuse.
-  - **Falsifiable predictions:** Exactly one mint audit is stored for the minted behavior identity; its description records the originating execution/model and survives public-query roundtrip; an index rebuild completes after the mint and its source corpus contains that identity; a later classifier returns the same identity above the configured threshold; the later run's effective instruction contains that behavior body and provenance; no pre-mint run can retrieve it.
+  - **Falsifiable predictions:** At least one mint audit is stored; repeated same-name, same-parent invocations converge on exactly one minted behavior identity while every invocation retains the originating workflow and trace provenance; that identity's description records the originating execution/model and survives public-query roundtrip; an index rebuild completes after the mint and its source corpus contains that identity; a later classifier returns the same identity above the configured threshold; the later run's effective instruction contains that behavior body and provenance; no pre-mint run can retrieve it.
 
 - [x] **DET-E2E-103 — REAL-LLM: Evidence consolidation changes future guidance.**
   - **Purpose:** Prove that reaching the evidence threshold produces a new current description which is indexed and used, without destroying history.
