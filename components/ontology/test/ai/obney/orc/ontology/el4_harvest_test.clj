@@ -62,18 +62,21 @@
 ;; Context helpers (mirror consolidation_trigger_test)
 ;; ---------------------------------------------------------------------------
 (defn- create-context
-  "Default: every registered todo-processor running (the end-to-end shape).
+  "Default: no todo-processors. Processor-shaped tests opt into the harvest
+   processor explicitly, so this namespace cannot start unrelated processors
+   merely because an earlier test namespace registered them globally.
 
-   CC-26: `{:processors? false}` starts the SAME event store + read-model
-   plumbing with NO todo-processors. The harvest processor is subscribed to
+   `{:processor-names #{:ontology/on-tree-class-check-harvest}}` starts the
+   same event store + read-model plumbing with only the processor under test.
+   The harvest processor is subscribed to
    :ontology/task-classified, so in a processor-full context a class
    auto-harvests the instant it crosses the gate MID-FIXTURE — which makes any
    fixture whose LATER occurrences carry the signal under test untestable (the
    mint fires before the fixture finishes). Read-models are projected on demand
    by rmp/project, not by a todo-processor, so a processor-free context still
    reads back the real projections; the test drives maybe-harvest! explicitly."
-  ([] (create-context {:processors? true}))
-  ([{:keys [processors?]}]
+  ([] (create-context {}))
+  ([{:keys [processor-names] :or {processor-names #{}}}]
    (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
         cache-dir (str "/tmp/el4-test-" (random-uuid))
@@ -86,14 +89,14 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   ::cache-dir cache-dir}
-        processors (if processors?
-                     (reduce-kv
-                       (fn [acc proc-name {:keys [handler-fn topics]}]
+        processors (reduce-kv
+                     (fn [acc proc-name {:keys [handler-fn topics]}]
+                       (if (contains? processor-names proc-name)
                          (assoc acc proc-name
                                 (tp/start {:event-pubsub ps :topics topics
-                                           :handler-fn handler-fn :context base-ctx})))
-                       {} @tp/processor-registry*)
-                     {})]
+                                           :handler-fn handler-fn :context base-ctx}))
+                         acc))
+                     {} @tp/processor-registry*)]
      (assoc base-ctx :processors processors))))
 
 (defn- stop-context [ctx]
@@ -115,7 +118,12 @@
   "CC-26: a processor-free context — the fixture, not the harvest processor,
    decides when maybe-harvest! runs."
   [[sym] & body]
-  `(let [~sym (create-context {:processors? false})]
+  `(let [~sym (create-context)]
+     (try ~@body (finally (stop-context ~sym)))))
+
+(defmacro with-harvest-processor-ctx [[sym] & body]
+  `(let [~sym (create-context
+                {:processor-names #{:ontology/on-tree-class-check-harvest}})]
      (try ~@body (finally (stop-context ~sym)))))
 
 ;; ---------------------------------------------------------------------------
@@ -602,7 +610,7 @@
 
 (deftest slice3-processor-drives-harvest-end-to-end
   (testing "the registered on-tree-class-check-harvest processor mints the good class from real events (no direct call)"
-    (with-test-ctx [ctx]
+    (with-harvest-processor-ctx [ctx]
       (let [{:keys [class-id]} (setup-good-class! ctx)]
         ;; one more real occurrence to trigger the processor after the
         ;; description + volume are already in place
@@ -939,10 +947,10 @@
 ;;     IS constructible, and drives the same veto through the real event path.
 
 (deftest cc26-processor-does-not-harvest-a-recently-failing-class
-  (testing "with EVERY registered processor running and no direct maybe-harvest! call: a class whose
+  (testing "with the registered harvest processor running and no direct maybe-harvest! call: a class whose
              recent occurrences are catastrophic is not minted, while a healthy class in the SAME
              context is — so the negative result is the gate, not a dead processor"
-    (with-test-ctx [ctx]
+    (with-harvest-processor-ctx [ctx]
       (let [failing (seed-scored-class!
                       ctx (single-judge-occurrences
                             (concat (repeat 6 1.0) (repeat 14 0.0))))
