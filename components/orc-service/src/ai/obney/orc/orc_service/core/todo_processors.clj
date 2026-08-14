@@ -597,14 +597,21 @@
    body is nil (caller-side gate).
 
    `traits-cap` is the per-list maximum count for strengths and
-   weaknesses (sorted by :confidence desc before truncation)."
-  [body traits-cap]
+   weaknesses (sorted by :confidence desc before truncation).
+
+   `suppress-claims?` is the CLAIM-ONLY holdout arm (see *claim-holdout*).
+   When true the weakness list renders as if it were empty, so the whole
+   `Weaknesses (…)` section — header included, since the header exists only
+   because claims do — drops out and every other section is byte-identical.
+   Nothing else on this path is arm-dependent."
+  [body traits-cap suppress-claims?]
   (when body
     (let [{:keys [capabilities strengths weaknesses representative-uses]} body
           rank-by-conf (fn [coll] (sort-by (fn [e] (- (double (or (:confidence e) 0.0))))
                                            (or coll [])))
           top-strengths (take traits-cap (rank-by-conf strengths))
-          top-weaknesses (take traits-cap (rank-by-conf weaknesses))]
+          top-weaknesses (when-not suppress-claims?
+                           (take traits-cap (rank-by-conf weaknesses)))]
       (str
         (when (seq capabilities)
           (str "Capabilities:\n"
@@ -626,6 +633,86 @@
           (str "Representative uses (concrete tasks this pattern has shipped on):\n"
                (->> representative-uses (map (fn [u] (str "  - " u))) (str/join "\n"))
                "\n"))))))
+
+;; -----------------------------------------------------------------------------
+;; The SECOND rendering of a claim — inside the quoted `:summary`
+;; -----------------------------------------------------------------------------
+;;
+;; The render quotes a body's assembled `:summary` verbatim as
+;; "Pattern guidance (seed `:summary`)". That summary is not prose someone
+;; wrote: ontology read_models/assemble-summary MECHANICALLY joins one sentence
+;; per claim kind, in a fixed order —
+;;
+;;   Capabilities: … . Representative uses: … . Strengths: … .
+;;   Known weaknesses: <trait>; <trait>. Avoid when: … .
+;;
+;; so the same weakness claims reach the model a second time. A claim-only
+;; holdout that removed only the `format-seed-body` rendering would leave the
+;; claim in the prompt and measure nothing.
+
+(def ^:private known-weaknesses-label
+  "The `assemble-summary` section label that carries weakness CLAIM content
+   into an assembled `:summary`."
+  "Known weaknesses: ")
+
+(def ^:private section-after-known-weaknesses
+  "The label `assemble-summary` emits immediately AFTER `Known weaknesses`.
+   Used only as the fallback terminator, below."
+  " Avoid when: ")
+
+(defn- claim-summary-span
+  "`[start end)` of the `Known weaknesses: …` sentence inside `summary`, or nil
+   when there is none.
+
+   Preferred path: reconstruct the sentence EXACTLY as assemble-summary built
+   it from the body's own `:weaknesses` and locate that literal — nothing
+   adjacent can then be clipped, however the claim text is punctuated.
+
+   Fallback, for a `:summary` that cannot be reconstructed (no body was
+   readable, or the classifier surfaced an indexed summary the body has since
+   moved past): cut from the label to the next section assemble-summary emits,
+   or to the end. Weaker, because a claim containing the literal text
+   ` Avoid when: ` would terminate it early — hence it is the fallback."
+  [summary weaknesses]
+  (when-let [label-at (and (string? summary) (str/index-of summary known-weaknesses-label))]
+    (let [literal (when (seq weaknesses)
+                    (str known-weaknesses-label
+                         (str/join "; " (map :trait weaknesses))
+                         "."))
+          literal-at (when literal (str/index-of summary literal))]
+      (if literal-at
+        [literal-at (+ literal-at (count literal))]
+        [label-at (or (str/index-of summary section-after-known-weaknesses label-at)
+                      (count summary))]))))
+
+(defn- strip-claim-summary-section
+  "`summary` with its `Known weaknesses: …` sentence removed — including the
+   single space assemble-summary joined it with, so the surviving sentences
+   stay spaced exactly as they were. The joining space sits BEFORE the sentence
+   unless the sentence leads the summary (a body whose only claims are
+   weaknesses), in which case it sits after. Returns `summary` unchanged when
+   it carries no weakness sentence."
+  [summary weaknesses]
+  (if-let [[start end] (claim-summary-span summary weaknesses)]
+    (let [before-space? (and (pos? start) (= \space (.charAt ^String summary (dec start))))
+          after-space? (and (not before-space?)
+                            (< end (count summary))
+                            (= \space (.charAt ^String summary end)))
+          start (if before-space? (dec start) start)
+          end (if after-space? (inc end) end)]
+      (str (subs summary 0 start) (subs summary end)))
+    summary))
+
+(defn- guidance-summary
+  "The `:summary` text the render quotes, on the arm it is rendering.
+
+   On the claim-only holdout the weakness sentence is removed; everything else
+   — including the seed-name derivation, which reads the ORIGINAL string — is
+   untouched, so the two arms differ by the claim sentence and nothing else."
+  [summary body suppress-claims?]
+  (if suppress-claims?
+    (strip-claim-summary-section summary (:weaknesses body))
+    summary))
 
 (defn- ->uuid
   "Normalize a target-id to a java.util.UUID before the read-model lookup.
@@ -748,12 +835,16 @@
   "Render one structural candidate with its full seed body.
    `idx` is the 1-based position in the top-N list (used to label
    primary vs alternative)."
-  [ctx idx candidate]
+  [ctx suppress-claims? idx candidate]
   (let [{:keys [content fitness-score reasoning rerank-source
                 document-metadata]} candidate
         target-id (:target-id document-metadata)
         body (fetch-tree-body ctx target-id)
-        rich (format-seed-body body traits-per-seed-cap)
+        rich (format-seed-body body traits-per-seed-cap suppress-claims?)
+        ;; The seed name is derived from the UNSTRIPPED summary on both arms.
+        ;; derive-seed-name scans for a stative verb, and a verb can sit inside
+        ;; a claim — deriving from the stripped text would let the holdout move
+        ;; the candidate's HEADER, which is not claim content.
         seed-name (derive-seed-name content)
         rank-label (cond
                      (= 1 idx) "Top match"
@@ -770,7 +861,8 @@
          "\n"
          "Why this fits: " (or reasoning "(no reasoning recorded)") "\n\n"
          "Pattern guidance (seed `:summary`):\n"
-         (or content "(no guidance content recorded)") "\n\n"
+         (or (guidance-summary content body suppress-claims?)
+             "(no guidance content recorded)") "\n\n"
          (or rich ""))))
 
 (defn- structural-display-candidates
@@ -794,7 +886,7 @@
          (take structural-cap)
          vec)))
 
-(defn- format-structural-section [ctx structural]
+(defn- format-structural-section [ctx suppress-claims? structural]
   (let [{:keys [was-fresh-mint? rerank-fallback?]} structural
         candidates (structural-display-candidates structural)]
     (cond
@@ -814,10 +906,10 @@
            (when rerank-fallback?
              "Classifier reranker fell back to similarity scoring; treat suggestions with caution and prioritize your own reading of the task.\n\n")
            (->> candidates
-                (map-indexed (fn [i c] (format-structural-candidate ctx (inc i) c)))
+                (map-indexed (fn [i c] (format-structural-candidate ctx suppress-claims? (inc i) c)))
                 (str/join "\n"))))))
 
-(defn- format-behavioral-entry [ctx idx behavior]
+(defn- format-behavioral-entry [ctx suppress-claims? idx behavior]
   (let [{:keys [behavior-id confidence was-fresh-mint? reasoning
                 rerank-source]} behavior]
     (if was-fresh-mint?
@@ -890,7 +982,9 @@
            "is needed; designing the tree using known patterns is the right call.\n")
       (let [body (fetch-behavioral-body ctx behavior-id)
             summary (:summary body)
-            rich (format-seed-body body traits-per-seed-cap)
+            rich (format-seed-body body traits-per-seed-cap suppress-claims?)
+            ;; Seed name from the UNSTRIPPED summary on both arms — see the
+            ;; matching note in format-structural-candidate.
             seed-name (derive-seed-name summary)
             header-label (if seed-name
                            (str (inc idx) ". Behavioral: " seed-name)
@@ -901,7 +995,8 @@
              "\n"
              "   Why this fits: " (or reasoning "(no reasoning recorded)") "\n\n"
              "   Guidance (seed `:summary`):\n"
-             "   " (or summary reasoning "(no guidance recorded)") "\n\n"
+             "   " (or (guidance-summary summary body suppress-claims?)
+                       reasoning "(no guidance recorded)") "\n\n"
              (or rich "")
              ;; E2 (ADR 0014, RG-3): references INFORM, they do not GATE. A
              ;; match clearing threshold is NOT a reason to suppress the
@@ -951,7 +1046,7 @@
   [{:keys [behaviors]}]
   (vec (take behavioral-cap (or behaviors []))))
 
-(defn- format-behavioral-section [ctx behavioral]
+(defn- format-behavioral-section [ctx suppress-claims? behavioral]
   (let [{:keys [rerank-fallback?]} behavioral
         entries (behavioral-display-entries behavioral)]
     (when (seq entries)
@@ -960,7 +1055,7 @@
            (when rerank-fallback?
              "Classifier reranker fell back on the behavioral axis; treat the suggestions below with caution.\n\n")
            (->> entries
-                (map-indexed (partial format-behavioral-entry ctx))
+                (map-indexed (partial format-behavioral-entry ctx suppress-claims?))
                 (str/join "\n"))))))
 
 (defn- current-node-type-guidance
@@ -1046,6 +1141,62 @@
    :fraction 0.0
    :baseline-policy-id default-baseline-policy-id})
 
+(def default-claim-baseline-policy-id
+  "Name of the CLAIM-ONLY control condition. A constant, for the same reason
+   default-baseline-policy-id is one."
+  "r-inject/no-claim-injection")
+
+(def ^:dynamic *claim-holdout*
+  "The CLAIM-ONLY holdout policy for R-Inject renders. **OFF BY DEFAULT.**
+   EXPERIMENT-ONLY, exactly like *injection-holdout*, and it is a second,
+   independent arm rather than a mode of that one.
+
+   Why it exists. *injection-holdout* is all-or-nothing: it suppresses the
+   whole `## Suggested patterns from corpus` block. An A/B against it therefore
+   compares tens of thousands of characters of corpus content against none, so
+   (a) a positive result cannot be attributed to any single claim, and (b) the
+   ~30x prompt-size gap is itself a confound running against the treated arm.
+   This holdout keeps the block and suppresses CLAIM-DERIVED content only —
+   both places a weakness claim reaches the prompt:
+
+     1. the `Weaknesses (…)` section format-seed-body renders from a body's
+        `:weaknesses` (header included: it exists only because claims do), and
+     2. the `Known weaknesses: …` sentence the SAME claims put inside the
+        assembled `:summary` the render quotes as `Pattern guidance`.
+
+   Everything else in the block is byte-identical between the arms — that is
+   the property the W2P-1 acceptance test asserts by reconstruction, and it is
+   the only thing that makes the contrast attributable to the claim.
+
+   NOT suppressed, deliberately: a node-type Living Description
+   (format-node-type-guidance) is rendered whole and untouched. It is not a
+   corpus candidate's claim, and it is IDENTICAL on both arms, so it cannot
+   confound the contrast.
+
+   HOW TO SET IT — and why `binding` is usually wrong. The render runs on the
+   app's poller thread, not on the caller's, so a thread-local `binding` in a
+   REPL or a harness NEVER REACHES IT and produces a silent no-op: both arms
+   render treated and the experiment reports a confident false null with no
+   symptom. W2 learned this the hard way. Use one of:
+
+     - process-wide (what an experiment harness wants):
+         (alter-var-root #'*claim-holdout*
+                         (constantly {:enabled? true :fraction 1.0}))
+     - per-run, no global at all (preferred where the caller owns the context):
+         (assoc ctx :claim-holdout {:enabled? true :fraction 1.0})
+
+   `binding` is correct ONLY when the render demonstrably runs on the binding
+   thread — i.e. in unit tests that call apply-r05-classifier-context directly.
+
+   Keys mirror *injection-holdout*: :enabled?, :fraction, :baseline-policy-id.
+   Arm assignment goes through the same *holdout-assignment* seam, salted with
+   :claim so the two holdouts do not co-assign the same occurrences. Running
+   BOTH at once is not a supported configuration; if it happens,
+   *injection-holdout* wins, because it is the stronger suppression."
+  {:enabled? false
+   :fraction 0.0
+   :baseline-policy-id default-claim-baseline-policy-id})
+
 (def ^:dynamic *capture-rendered-block?*
   "Whether the injection record carries the VERBATIM rendered block.
 
@@ -1085,16 +1236,40 @@
   [ctx]
   (merge *injection-holdout* (:injection-holdout ctx)))
 
-(defn- assign-arm
-  "Which arm this render occurrence is in. :treatment unless a holdout is
-   configured AND this occurrence falls into it."
-  [ctx {:keys [enabled? fraction]} node-id]
+(defn- claim-holdout-config
+  "The effective CLAIM-ONLY holdout policy: the process default, overridden
+   per-run by `:claim-holdout` on the context."
+  [ctx]
+  (merge *claim-holdout* (:claim-holdout ctx)))
+
+(defn- holds-out?
+  "True when this occurrence falls into `config`'s holdout. `salt` distinguishes
+   the two holdouts' assignments, so enabling both would not hand the same
+   occurrences to both arms."
+  [ctx {:keys [enabled? fraction]} node-id salt]
   (let [f (double (or fraction 0.0))]
-    (if (and enabled?
-             (pos? f)
-             (*holdout-assignment* [(:sheet-id ctx) (:tick-id ctx) node-id] f))
-      :holdout
-      :treatment)))
+    (boolean (and enabled?
+                  (pos? f)
+                  (*holdout-assignment*
+                    (cond-> [(:sheet-id ctx) (:tick-id ctx) node-id]
+                      salt (conj salt))
+                    f)))))
+
+(defn- assign-arm
+  "Which arm this render occurrence is in.
+
+   :holdout       — the whole block is suppressed (*injection-holdout*)
+   :claim-holdout — the block renders WITHOUT claim-derived content
+                    (*claim-holdout*)
+   :treatment     — the full render
+
+   The all-or-nothing holdout is decided first and wins: it already suppresses
+   every claim, so a row cannot honestly be both."
+  [ctx holdout claim-holdout node-id]
+  (cond
+    (holds-out? ctx holdout node-id nil) :holdout
+    (holds-out? ctx claim-holdout node-id :claim) :claim-holdout
+    :else :treatment))
 
 (defn- injected-candidates
   "The candidate set the render actually showed, each with the VERSION of the
@@ -1183,6 +1358,16 @@
                        :tick-id (:tick-id ctx)
                        :root-trace-id (resolve-root-trace-id ctx (:tick-id ctx))
                        :correlation-id (:correlation-id ctx)}
+                      ;; W2P-1: the host's turn identity, when the host has
+                      ;; one. Without it, a turn is joined to its injection by
+                      ;; WALL-CLOCK WINDOW — which is what W2 had to do, and a
+                      ;; window join is a source of doubt no analysis can
+                      ;; remove after the fact. Optional and ABSENT rather than
+                      ;; nil when there is no turn (a bench probe, a non-
+                      ;; conversational tick): a nil turn-id would join to
+                      ;; every other nil.
+                      (when-let [turn-id (:turn-id ctx)]
+                        {:turn-id turn-id})
                       row)))
       (catch Exception _ nil))))
 
@@ -1195,6 +1380,10 @@
    principle-shaped block — structural pattern + behavioral top-3 with
    reasoning + seed :summary guidance — so the model designing the tree
    in Phase 1 sees the corpus's actual examples.
+
+   Three arms, both controls default-off (see *injection-holdout* and
+   *claim-holdout*): :treatment renders everything, :claim-holdout renders the
+   block without claim-derived content, :holdout renders nothing at all.
 
    Pure transformation; the only effect is reading description bodies
    for behavioral seeds via ontology/get-description (3 reads max)."
@@ -1209,13 +1398,18 @@
             ;; run the treatment (no prepend, and none of the render's corpus
             ;; body reads) rather than rendering and discarding.
             holdout (holdout-config ctx)
-            arm (assign-arm ctx holdout (:id node))
+            claim-holdout (claim-holdout-config ctx)
+            arm (assign-arm ctx holdout claim-holdout (:id node))
+            ;; W2P-1: the claim-only arm renders the block, minus claim-derived
+            ;; content. Distinct from :holdout, which renders nothing at all.
+            suppress-claims? (= :claim-holdout arm)
+            rendering? (not= :holdout arm)
             ;; sio-era main: node-type Living Description guidance joins the
-            ;; rendered block. Read only on the treatment arm — the control
-            ;; condition performs none of the render's body reads.
-            node-type-guidance (when (= :treatment arm)
+            ;; rendered block. Read only when a block is being built — the
+            ;; all-or-nothing control performs none of the render's body reads.
+            node-type-guidance (when rendering?
                                  (current-node-type-guidance ctx node))
-            block (when (= :treatment arm)
+            block (when rendering?
                     (str "## Suggested patterns from corpus\n\n"
                        "These are concrete EXAMPLES retrieved from the seed corpus based on "
                        "classification of your task. Each example includes:\n"
@@ -1234,9 +1428,9 @@
                        "  - SPECIALIZE — mint a CHILD of the nearest reference (`mint-behavior!` with `:parent <that behavior-id>`) when the top hit is a BROAD shape rather than an exact fit; the child keeps the proven shape, pins your domain, and accrues evidence under the parent. This is the RECOMMENDED move when a match cleared threshold only on shape.\n"
                        "  - MINT — mint a fresh behavior (`:parent nil`) when the task is genuinely novel and no reference is a true parent.\n"
                        "A match clearing threshold does NOT mean adopt/adapt is your only option — weigh each reference's strengths AND its `:avoid-when` against THIS task, then pick the right move. Your job is the RIGHT tree for THIS task; the corpus is evidence, not gospel.\n\n"
-                       (format-structural-section ctx structural)
+                       (format-structural-section ctx suppress-claims? structural)
                        "\n"
-                       (format-behavioral-section ctx behavioral)
+                       (format-behavioral-section ctx suppress-claims? behavioral)
                        "\n"
                        (format-node-type-guidance node-type-guidance)
                        "\n---\n"))
@@ -1252,13 +1446,27 @@
         (record-injection! ctx
           (cond-> {:node-id (:id node)
                    :arm arm
-                   :baseline-policy-id (or (:baseline-policy-id holdout)
-                                           default-baseline-policy-id)
+                   ;; Which control this row was compared against. The claim-only
+                   ;; experiment has a DIFFERENT control from the all-or-nothing
+                   ;; one, and BOTH arms of one experiment must name the same
+                   ;; control — so when the claim holdout is running it names it,
+                   ;; on treated rows too. Default-off ⇒ unchanged from CC-13.
+                   :baseline-policy-id (if (:enabled? claim-holdout)
+                                         (or (:baseline-policy-id claim-holdout)
+                                             default-claim-baseline-policy-id)
+                                         (or (:baseline-policy-id holdout)
+                                             default-baseline-policy-id))
                    ;; P(treatment) for this turn: 1.0 when nothing is held out,
                    ;; which is the honest propensity for "everyone treated".
-                   :selection-propensity (if (:enabled? holdout)
-                                           (- 1.0 (double (or (:fraction holdout) 0.0)))
-                                           1.0)
+                   ;; Two independent holdouts ⇒ the product of their
+                   ;; complements; with either disabled its factor is 1.0, so a
+                   ;; default-off claim holdout leaves this exactly as CC-13.
+                   :selection-propensity (* (if (:enabled? holdout)
+                                              (- 1.0 (double (or (:fraction holdout) 0.0)))
+                                              1.0)
+                                            (if (:enabled? claim-holdout)
+                                              (- 1.0 (double (or (:fraction claim-holdout) 0.0)))
+                                              1.0))
                    :candidates candidates
                    ;; The ledger's PRIMARY candidate is the top-ranked
                    ;; STRUCTURAL one: the structural pattern is what shapes the
@@ -1825,8 +2033,16 @@
                   ;; carries the correlated-trace key that joins it to this
                   ;; run's outcomes. Taken from the handler's single
                   ;; projection — it is written once, on tree-tick-started.
-                  wedge-ctx (assoc context :sheet-id sheet-id :tick-id tick-id
-                                   :correlation-id (:correlation-id tick-ctx))
+                  ;; W2P-1: the host's turn id rides along too, so the injection
+                  ;; record joins to the turn DIRECTLY instead of by wall-clock
+                  ;; window. :tool-context stays OPAQUE for threading — orc
+                  ;; neither mints nor requires a turn id — and this reads the
+                  ;; single optional key a measurement needs, degrading to
+                  ;; absent when the host supplies none.
+                  wedge-ctx (cond-> (assoc context :sheet-id sheet-id :tick-id tick-id
+                                           :correlation-id (:correlation-id tick-ctx))
+                              (:turn-id (:tool-context tick-ctx))
+                              (assoc :turn-id (:turn-id (:tool-context tick-ctx))))
                   node (-> base-node
                            (maybe-auto-classify-and-set-context wedge-ctx)
                            ;; R-Inject: replaces the legacy
