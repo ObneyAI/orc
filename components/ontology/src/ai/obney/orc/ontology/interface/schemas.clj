@@ -150,8 +150,18 @@
      :retries-exhausted — every provider attempt errored until the retry
        budget ran out
      :unparseable       — the provider answered but no value could be
-       extracted for the declared writes"
-  [:enum :provider-rejected :timeout :retries-exhausted :unparseable])
+       extracted for the declared writes
+     :caller-interrupted — the CALLER killed the call before the provider
+       could answer: the terminal carries neither an error message nor a
+       structured failure kind, so nothing says a provider attempt was ever
+       consumed (SIO-4b's measured shape: stopping the harness JVM makes
+       grain's stop-tenant-poller shutdownNow the pool, and the interrupt
+       surfaces as an InterruptedException whose .getMessage is nil).
+       Distinct from :retries-exhausted by the spec's AttemptCountIsEvidenced
+       — 'was interrupted before it could answer' is its own fact, not
+       something to be implied by an attempt count of 1"
+  [:enum :provider-rejected :timeout :retries-exhausted :unparseable
+   :caller-interrupted])
 
 (def consolidation-target-identifier
   "The FULL identity range `consolidate!` accepts, one shape per
@@ -799,10 +809,13 @@
    ;; -------------------------------------------------------------------------
    ;;
    ;; The spec's FailureIsVisible: a reflection call that fails — provider
-   ;; rejection, timeout, exhausted retries, unparseable output — leaves a
-   ;; durable failure record carrying the target, the reason class, and the
-   ;; attempt count. "Produced no trustworthy knowledge" (ClaimSetUnchanged)
-   ;; and "never answered" are different facts; this event is the second one.
+   ;; rejection, timeout, exhausted retries, unparseable output, caller
+   ;; interruption — leaves a durable failure record carrying the target, the
+   ;; reason class, and the attempt count. "Produced no trustworthy knowledge"
+   ;; (ClaimSetUnchanged), "never answered", and "was interrupted before it
+   ;; could answer" are THREE different facts; this event carries the second
+   ;; and (since SIO-4b) the third, told apart by :reason and never by an
+   ;; attempt count the reader has to interpret.
    ;;
    ;; ONE event per terminal failure — the whole attempt-set, after the
    ;; executor's internal retries, with :attempts carrying the count. Never
@@ -823,10 +836,12 @@
     [:reason             consolidation-failure-reason]
     [:error              {:optional true} [:maybe :string]]
     ;; Provider attempts consumed by this attempt-set. Exact for the
-    ;; exception-terminal classes (the executor's exception path only
-    ;; escapes after exhausting its retry budget); a floor of 1 for
+    ;; EVIDENCED exception-terminal classes (the executor's exception path
+    ;; only escapes after exhausting its retry budget); a floor of 1 for
     ;; :timeout/:unparseable, whose attempt index the executor does not
-    ;; surface — see classify-reflection-failure.
+    ;; surface, and for :caller-interrupted, where the executor never
+    ;; returned at all (AttemptCountIsEvidenced) — see
+    ;; classify-reflection-failure.
     [:attempts           :int]
     [:failed-at          :string]]
 

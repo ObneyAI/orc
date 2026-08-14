@@ -3,9 +3,12 @@
    specs: orc-cc-sio 926f2bef).
 
    @invariant FailureIsVisible — a reflection call that fails (provider
-   rejection, timeout, exhausted retries, unparseable output) leaves a
-   durable failure record carrying the target, the reason class, and the
-   attempt count. Asserted on the STORE, never on a return value.
+   rejection, timeout, exhausted retries, unparseable output, caller
+   interruption) leaves a durable failure record carrying the target, the
+   reason class, and the attempt count. Asserted on the STORE, never on a
+   return value. Every terminal exercised HERE is an evidenced one; the
+   evidence-free caller-interruption class is pinned by
+   sio4b-caller-interrupted-test.
 
    @invariant FailuresConsumeBudget — the hourly consolidation budget
    counts failed attempts alongside successes; a target whose every

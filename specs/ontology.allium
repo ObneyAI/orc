@@ -144,10 +144,25 @@ contract ClaimConsolidation {
 
     @invariant FailureIsVisible
         -- A reflection call that fails — provider rejection, timeout,
-        -- exhausted retries, unparseable output — leaves a durable failure
-        -- record carrying the target, the reason class, and the attempt
-        -- count. "Produced no trustworthy knowledge" (ClaimSetUnchanged) and
-        -- "never answered" are different facts and must be recorded as such.
+        -- exhausted retries, unparseable output, caller interruption —
+        -- leaves a durable failure record carrying the target, the reason
+        -- class, and the attempt count. "Produced no trustworthy knowledge"
+        -- (ClaimSetUnchanged), "never answered", and "was interrupted before
+        -- it could answer" are three different facts and must be recorded as
+        -- such.
+
+    @invariant AttemptCountIsEvidenced
+        -- The attempt count is a claim about how many provider attempts were
+        -- consumed, and it is only recorded at a value the terminal carries
+        -- evidence for. A terminal bearing neither an error message nor a
+        -- structured failure kind evidences one attempt, never the full retry
+        -- budget. SIO-4 measured the failure this forbids: 12 of 43 durable
+        -- records asserted "4 provider attempts consumed" on reflections that
+        -- were interrupted mid-call by their own caller, where zero attempts
+        -- happened and the executor never returned. A count asserted on no
+        -- evidence is a false fact in the source of truth, and the reason
+        -- class must carry the distinction rather than leaving it implied by
+        -- an attempt count of 1.
 
     @invariant FailuresConsumeBudget
         -- The hourly consolidation budget counts failed attempts alongside

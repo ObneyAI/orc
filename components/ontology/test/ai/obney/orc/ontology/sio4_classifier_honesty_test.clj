@@ -38,7 +38,17 @@
 
    The honest count for a terminal that carries no evidence of the retry
    loop having run is the CERTAIN FLOOR of 1 — exactly the doctrine CC-28
-   already applies to :timeout and the legacy :unparseable shape."
+   already applies to :timeout and the legacy :unparseable shape.
+
+   SIO-4b UPDATE. This slice's own claim — the COUNT — is unchanged and
+   every :attempts assertion below is untouched. What SIO-4 deliberately
+   left alone was the CLASS, so the durable store went on saying 'retries
+   exhausted' about events where nothing was retried. The tended spec now
+   names caller interruption as its own fact (FailureIsVisible) and forbids
+   leaving it implied by an attempt count of 1 (AttemptCountIsEvidenced), so
+   the evidence-free terminal these tests pin now classifies as
+   :caller-interrupted. The reason keywords below therefore MOVED; nothing
+   here was relaxed. See sio4b-caller-interrupted-test."
   (:require [clojure.test :refer [deftest is]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
@@ -109,20 +119,23 @@
 (deftest an-error-less-terminal-does-not-assert-a-consumed-retry-budget
   (let [c consolidator/classify-reflection-failure
         full (inc @#'consolidator/reflection-max-retries)]
-    (is (= {:reason :retries-exhausted :attempts 1}
+    (is (= {:reason :caller-interrupted :attempts 1}
            (c {:status :failure}))
         "no :error, no :failure-kind, not a deadline — NOTHING in this
          terminal says the executor's retry loop ran, so the honest count is
-         the certain floor of 1, never the full budget")
-    (is (= {:reason :retries-exhausted :attempts 1}
+         the certain floor of 1, never the full budget (SIO-4b names the
+         class :caller-interrupted; the count claim is SIO-4's, unchanged)")
+    (is (= {:reason :caller-interrupted :attempts 1}
            (c {:status :failure :error nil :failure-kind nil}))
         "explicit nils are the same absence of evidence")
-    (is (= {:reason :retries-exhausted :attempts 1}
+    (is (= {:reason :caller-interrupted :attempts 1}
            (c {:status :failure :error "   "}))
         "a blank message is no evidence either")
-    (is (contains? #{:provider-rejected :timeout :retries-exhausted :unparseable}
+    (is (contains? #{:provider-rejected :timeout :retries-exhausted :unparseable
+                     :caller-interrupted}
                    (:reason (c {:status :failure})))
-        "the reason set stays CLOSED — SIO-4 narrows a count, it mints no class")
+        "the reason set stays CLOSED — SIO-4 narrowed a count and minted no
+         class; SIO-4b minted exactly one, and the set is five, not open")
     (is (m/validate ontology-schemas/consolidation-failure-reason
                     (:reason (c {:status :failure})))
         "and the produced class validates against the spec's closed enum")
@@ -157,7 +170,7 @@
                    store-derived-terminals)))
       "what CC-28 actually wrote: 4 consumed provider attempts, on every one")
   (doseq [{:keys [terminal event-id granularity]} store-derived-terminals]
-    (is (= {:reason :retries-exhausted :attempts 1}
+    (is (= {:reason :caller-interrupted :attempts 1}
            (consolidator/classify-reflection-failure terminal))
         (str "real event " event-id " (" granularity ") must reclassify to the "
              "certain floor — the retry budget was never exercised"))))
@@ -180,9 +193,10 @@
           "FailureIsVisible still holds — the death certificate is durable")
       (is (= :node-type (:granularity ev)))
       (is (= :llm (:target-identifier ev)))
-      (is (= :retries-exhausted (:reason ev))
-          "the reason set stays closed: an unclassifiable terminal maps to the
-           honest superclass, exactly as CC-28 documents")
+      (is (= :caller-interrupted (:reason ev))
+          "the reason set stays closed, and the terminal is not merely
+           'unclassifiable' — SIO-4's forensic IDENTIFIED it, so SIO-4b gives
+           it its own class instead of the superclass it never belonged to")
       (is (= 1 (:attempts ev))
           "the DURABLE event carries the certain floor, not the fiction of 4")
       (is (not (contains? ev :error))
@@ -197,7 +211,7 @@
       (let [ev (first (failure-events ctx))]
         (is (= :tree-class (:granularity ev)))
         (is (= target (:target-identifier ev)))
-        (is (= :retries-exhausted (:reason ev)))
+        (is (= :caller-interrupted (:reason ev)))
         (is (= 1 (:attempts ev))
             "the claim path records the same honest floor as the body path")))))
 
@@ -217,5 +231,5 @@
          forensic identified behind all 12 error-less durable events")
     (is (nil? (:failure-kind terminal))
         "and no structured kind rides it either")
-    (is (= {:reason :retries-exhausted :attempts 1}
+    (is (= {:reason :caller-interrupted :attempts 1}
            (consolidator/classify-reflection-failure terminal)))))
