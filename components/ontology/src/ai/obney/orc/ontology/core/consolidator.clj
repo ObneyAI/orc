@@ -181,7 +181,7 @@
    PURE, and public for test access. The reason classes are the CLOSED set
    `ontology-schemas/consolidation-failure-reason`; the matching here is a
    heuristic over the executor's terminal shapes, but what it PRODUCES is
-   always one of the four contract classes:
+   always one of the five contract classes:
 
      :timeout           — the exec-result's own :status. The executor does
        not surface which attempt the deadline died on, so :attempts is the
@@ -194,14 +194,20 @@
        context-length caps, invalid-request shapes. The executor retries
        these like any exception (it cannot tell permanent from transient),
        so the full budget was consumed: (inc reflection-max-retries).
-     :retries-exhausted — every other exception-terminal failure: the
-       provider kept erroring until the retry budget ran out. Also the
-       fallback for any unrecognized error string — 'died for a reason we
-       could not classify' is still 'died', and the closed set means an
-       unknown shape maps to the honest superclass rather than minting a
-       new one. Attempts: (inc reflection-max-retries) when the terminal
-       carries EVIDENCE the exception path ran (a message or a structured
-       kind); the certain floor of 1 when it carries none — see SIO-4.
+     :retries-exhausted — every other EVIDENCED exception-terminal failure:
+       the provider kept erroring until the retry budget ran out. Still the
+       fallback for an unrecognized but evidenced terminal (an unknown error
+       string, an unknown structured kind) — 'died for a reason we could not
+       classify' is still 'died', and the closed set means an unknown shape
+       maps to the honest superclass rather than minting a new one. It is NO
+       LONGER the fallback for an evidence-LESS terminal; that is
+       :caller-interrupted. Attempts: (inc reflection-max-retries), because
+       reaching this class now REQUIRES evidence the exception path ran.
+     :caller-interrupted — the terminal carries no error message, no
+       structured :failure-kind and no deadline status: nothing whatsoever
+       says a provider attempt was consumed, because the caller killed the
+       call before the provider could answer. :attempts is the certain floor
+       of 1 — see SIO-4/SIO-4b below.
 
    SIO-4 (attempt-count honesty). The full budget is a claim about how
    many provider attempts were consumed, and CC-28 stamped it on EVERY
@@ -218,9 +224,22 @@
    {:status :failure :error nil}. The executor never returned; zero
    attempts are attributable to a retry budget. So an evidence-free
    terminal reports the CERTAIN FLOOR of 1, the same doctrine :timeout and
-   the legacy :unparseable shape already use. The reason class is
-   unchanged — the set is CLOSED and this mints nothing; only the count
-   stops being a fiction, and FailureIsVisible still gets a count."
+   the legacy :unparseable shape already use.
+
+   SIO-4b (reason-class honesty). SIO-4 fixed the COUNT and deliberately
+   left the CLASS alone, so the durable store went on saying 'retries
+   exhausted' about events where nothing was retried — a false fact in the
+   source of truth, and leaning on :attempts 1 to imply 'interrupted' is
+   the implicit-meaning trap CC-24 spent a slice removing. The tended spec
+   (contract ClaimConsolidation) now names caller interruption as a third
+   fact alongside 'produced no trustworthy knowledge' and 'never answered',
+   and AttemptCountIsEvidenced states that 'the reason class must carry the
+   distinction rather than leaving it implied by an attempt count of 1'. So
+   the evidence-free terminal — the one the forensic IDENTIFIED above —
+   yields :caller-interrupted with the same floor of 1. The set stays
+   CLOSED at five; this mints exactly one named class for a shape we
+   measured, and moves no neighbour: a terminal carrying a message, a
+   structured kind, or a deadline status classifies exactly as before."
   [{:keys [status error failure-kind]}]
   (let [error-str (some-> error str)
         no-evidence? (and (str/blank? error-str) (nil? failure-kind))
@@ -262,10 +281,13 @@
       context-rejection?
       {:reason :provider-rejected :attempts full}
 
-      ;; SIO-4: nothing here is evidence of a consumed retry budget — no
-      ;; message, no structured kind, no deadline status. Report the floor.
+      ;; SIO-4/SIO-4b: nothing here is evidence of a consumed retry budget —
+      ;; no message, no structured kind, no deadline status. Report the
+      ;; floor (SIO-4), and NAME the fact instead of implying it with that
+      ;; floor (SIO-4b): this is the caller killing the call, not a provider
+      ;; erroring through a retry budget.
       no-evidence?
-      {:reason :retries-exhausted :attempts 1}
+      {:reason :caller-interrupted :attempts 1}
 
       :else
       {:reason :retries-exhausted :attempts full})))

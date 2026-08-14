@@ -1159,7 +1159,8 @@
 (defcommand :ontology record-consolidation-failure
   "CC-28, the spec's FailureIsVisible: record a reflection call that never
    answered — provider rejection, timeout, exhausted retries, unparseable
-   output. Emits :ontology/description-consolidation-failed.
+   output, caller interruption (SIO-4b). Emits
+   :ontology/description-consolidation-failed.
 
    ONE command per terminal attempt-set; :attempts carries the count. The
    consolidator dispatches it from BOTH reflection paths (claim and legacy
