@@ -129,6 +129,59 @@
       (is (= ["act_score"]
              (get-in tool-definition [:function :parameters :required])))))
 
+(deftest provider-keyword-enums-decode-through-composite-schemas
+  (let [schema
+        [:map
+         [:action [:enum :invoke]]
+         [:request
+          [:map
+           [:action [:= :beliefs]]
+           [:scope [:enum :current :all]]]]
+         [:items [:vector [:map [:action [:enum :invoke]]]]]
+         [:choice [:or [:enum :invoke] :int]]
+         [:constrained [:and :keyword [:enum :invoke]]]
+         [:variant
+          [:multi {:dispatch :type}
+           [:invoke
+            [:map
+             [:type [:= :invoke]]
+             [:scope [:enum :current :all]]]]]]
+         [:string-choice [:enum "invoke" "skip"]]]
+        raw
+        {:action "invoke"
+         :request {:action "beliefs" :scope "current"}
+         :items [{:action "invoke"}]
+         :choice "invoke"
+         :constrained "invoke"
+         :variant {"type" "invoke" "scope" "all"}
+         :string-choice "invoke"}
+        result (validate {:decision {:schema schema}}
+                         {:status :success :outputs {:decision raw}})]
+    (is (= :success (:status result)))
+    (is (= {:action :invoke
+            :request {:action :beliefs :scope :current}
+            :items [{:action :invoke}]
+            :choice :invoke
+            :constrained :invoke
+            :variant {:type :invoke :scope :all}
+            :string-choice "invoke"}
+           (get-in result [:outputs :decision]))))
+
+  (testing "a rejected composite value retains the original provider representation"
+    (let [raw {:type "invoke" :scope ":current"}
+          result (validate
+                  {:decision
+                   {:schema
+                    [:multi {:dispatch :type}
+                     [:invoke
+                      [:map
+                       [:type [:= :invoke]]
+                       [:scope [:enum :current :all]]]]]}}
+                  {:status :success :outputs {:decision raw}})]
+      (is (= :failure (:status result)))
+      (is (= {:decision raw} (:rejected-writes result)))
+      (is (= {} (:outputs result))))))
+
   (testing "flattened optional map entries stay out of provider required fields"
     (let [module
           (executor/build-module

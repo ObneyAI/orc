@@ -22,8 +22,76 @@
       events)))
 
 (deftest public-boundary-exposes-only-the-structured-prediction-contract
-  (is (= '#{predict predict-stream-v2 register-provider! quick-setup! list-providers}
+  (is (= '#{predict predict-stream-v2 decode-provider-value
+            register-provider! quick-setup! list-providers}
          (set (keys (ns-publics 'ai.obney.orc.llm.interface))))))
+
+(def ^:private nested-keyword-output
+  {:inputs []
+   :outputs
+   [{:name :decision
+     :spec
+     [:map
+      [:action [:enum :invoke]]
+      [:request [:map
+                 [:action [:= :beliefs]]
+                 [:scope [:enum :current :all]]]]]}]})
+
+(def ^:private raw-nested-keyword-output
+  {:action "invoke"
+   :request {:action "beliefs" :scope "current"}})
+
+(def ^:private canonical-nested-keyword-output
+  {:action :invoke
+   :request {:action :beliefs :scope :current}})
+
+(deftest validated-provider-outputs-are-schema-decoded-before-validation
+  (testing "function-calling output returns canonical values"
+    (with-redefs
+      [router/supports-function-calling? (constantly true)
+       router/completion
+       (fn [& _]
+         {:choices
+          [{:message
+            {:tool-calls
+             [{:function
+               {:name "submit_response"
+                :arguments
+                "{\"decision\":{\"action\":\"invoke\",\"request\":{\"action\":\"beliefs\",\"scope\":\"current\"}}}"}}]}}]})]
+      (is (= {:decision canonical-nested-keyword-output}
+             (llm/predict :test nested-keyword-output {}
+                          {:validate? true :use-function-calling? true})))))
+
+  (testing "marker output follows the same normalization contract"
+    (with-redefs
+      [router/supports-function-calling? (constantly false)
+       router/completion
+       (fn [& _]
+         {:choices
+          [{:message
+            {:content
+             (str "[[ ## decision ## ]]\n"
+                  "{\"action\":\"invoke\",\"request\":"
+                  "{\"action\":\"beliefs\",\"scope\":\"current\"}}")}}]})]
+      (is (= {:decision canonical-nested-keyword-output}
+             (llm/predict :test nested-keyword-output {}
+                          {:validate? true :use-function-calling? false})))))
+
+  (testing "validation disabled preserves the raw parsed provider representation"
+    (with-redefs
+      [router/supports-function-calling? (constantly true)
+       router/completion
+       (fn [& _]
+         {:choices
+          [{:message
+            {:tool-calls
+             [{:function
+               {:name "submit_response"
+                :arguments
+                "{\"decision\":{\"action\":\"invoke\",\"request\":{\"action\":\"beliefs\",\"scope\":\"current\"}}}"}}]}}]})]
+      (is (= {:decision raw-nested-keyword-output}
+             (llm/predict :test nested-keyword-output {}
+                          {:validate? false :use-function-calling? true}))))))
 
 (deftest provider-management-is-a-transparent-boundary
   (let [registered (atom nil)]
@@ -133,6 +201,21 @@
                                                   {:validate? true}))]
         (is (= :error (:orc/event (last events))))
         (is (not-any? #(= :final (:orc/event %)) events))))))
+
+(deftest validated-streaming-output-uses-provider-schema-decoding
+  (let [content (str "[[ ## decision ## ]]\n"
+                     "{\"action\":\"invoke\",\"request\":"
+                     "{\"action\":\"beliefs\",\"scope\":\"current\"}}")]
+    (with-redefs [router/completion
+                  (fn [& _]
+                    (fake-stream [{:choices [{:delta {:content content}}]}]))]
+      (let [events (drain (llm/predict-stream-v2
+                           :test nested-keyword-output {}
+                           {:validate? true :debounce-ms 0}))
+            final (last events)]
+        (is (= :final (:orc/event final)))
+        (is (= {:decision canonical-nested-keyword-output}
+               (:outputs final)))))))
 
 ;; ===========================================================================
 ;; The forced tool call must survive the PROVIDER transform, not merely appear

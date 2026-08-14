@@ -99,6 +99,14 @@ that fail their declared schemas. DET-E2E-125 verifies invalid-to-valid recovery
 and invalid-to-invalid exhaustion, including exact call count, final-only
 rejection evidence, and usage accumulated across both attempts.
 
+DET-E2E-150 extends that obligation through nested maps, vectors, unions,
+intersections, and keyword-dispatched variants across marker and function-call
+leaf transports. The provider decoder is shared by the LLM validation boundary
+and the executor's authoritative blackboard validation; validated direct
+predictions return canonical values, while validation-disabled predictions
+retain their parsed provider representation. String enums remain strings and
+noncanonical nested values remain exact rejected-output trace evidence.
+
 ## Optional structured output presence (2026-08-13)
 
 The structured prediction and leaf execution contracts distinguish an optional
