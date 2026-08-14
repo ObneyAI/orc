@@ -1075,15 +1075,14 @@
    (if (not= :success (:status result))
      result
      (let [key-transformer (mt/key-transformer {:decode keyword :encode name})
-           transformer (if provider-output?
-                         (mt/transformer key-transformer (mt/json-transformer))
-                         key-transformer)
            rejected-writes (:outputs result)
            normalized (reduce-kv
                        (fn [outputs key value]
                          (assoc outputs key
                                 (if-let [schema (get-in blackboard [key :schema])]
-                                  (m/decode schema value transformer)
+                                  (if provider-output?
+                                    (llm/decode-provider-value schema value)
+                                    (m/decode schema value key-transformer))
                                   value)))
                        {}
                        (:outputs result))]
@@ -1180,7 +1179,7 @@
         internal-option-keys #{:execution-deadline-ms :reserve-llm-call!
                                :tick-id :node-attempt :max-node-attempts
                                :exec-context
-                               :max-retries :retry-delay-ms}
+                               :max-retries :retry-delay-ms :validate?}
         llm-options (merge {:validate? false
                                :with-metadata? true
                                :with-provider-evidence? true

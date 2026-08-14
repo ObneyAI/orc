@@ -112,9 +112,13 @@ contract LeafExecutor {
         -- Every provider-facing schema representation, including textual
         -- descriptions and function-calling tool definitions, renders
         -- keyword-valued enum choices in their canonical JSON spelling without
-        -- an EDN leading colon. A provider's canonical JSON string is decoded
-        -- to the declared keyword; a colon-prefixed EDN spelling remains
-        -- invalid provider output.
+        -- an EDN leading colon. Before validation, a provider's canonical JSON
+        -- string is decoded to the declared keyword at every schema depth,
+        -- including maps, collections, intersections, unions and discriminated
+        -- variants. String-valued enums remain strings, while colon-prefixed or
+        -- otherwise noncanonical spellings remain invalid provider output. The
+        -- same normalization applies to textual, function-calling and streaming
+        -- structured responses.
 
     @invariant ProviderStructuredOutputsRemainStructured
         -- Function-calling tool definitions preserve structured Malli schemas,

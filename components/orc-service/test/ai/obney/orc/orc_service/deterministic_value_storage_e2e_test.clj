@@ -174,6 +174,45 @@
                         sheet-id {})))
      @modules]))
 
+(def ^:private nested-keyword-enum-schema
+  [:map
+   [:action [:enum :invoke]]
+   [:request [:map
+              [:action [:= :beliefs]]
+              [:scope [:enum :current :all]]]]
+   [:items [:vector [:map [:action [:enum :invoke]]]]]
+   [:choice [:or [:enum :invoke] :int]]
+   [:constrained [:and :keyword [:enum :invoke]]]
+   [:variant
+    [:multi {:dispatch :type}
+     [:invoke [:map
+               [:type [:= :invoke]]
+               [:scope [:enum :current :all]]]]]]
+   [:string-choice [:enum "invoke" "skip"]]])
+
+(defn- execute-nested-provider-keyword-enums
+  [ctx workflow-name use-function-calling? provider-outputs]
+  (let [calls (atom [])
+        workflow
+        (sheet/workflow workflow-name
+          (sheet/blackboard {:decision nested-keyword-enum-schema})
+          (sheet/llm "decide"
+            :instruction "Return the nested decision."
+            :writes [:decision]
+            :options {:use-function-calling? use-function-calling?
+                      :retry-delay-ms 1}))]
+    [(with-redefs [llm/predict
+                   (fn [_provider module _inputs options]
+                     (swap! calls conj {:module module :options options})
+                     {:outputs provider-outputs
+                      :raw-response (pr-str provider-outputs)
+                      :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}
+                      :model "deterministic-provider"})]
+       (let [sheet-id (sheet/build-workflow! ctx workflow)]
+         (sheet/execute (assoc ctx :llm-provider :deterministic-provider)
+                        sheet-id {})))
+     @calls]))
+
 (defn- failed-leaf-detail [ctx result]
   (let [trace (trace-for ctx result)
         leaf (some #(when (= :leaf (:node-type %)) %) (:node-traces trace))]
@@ -632,3 +671,51 @@
             (is (= :success (:status result)))
             (is (= [:selected-provider :openrouter] @providers))
             (is (not-any? #{:removed-provider} @providers))))))))
+(deftest det-e2e-150-nested-provider-keyword-enum-normalization
+  (let [raw {:action "invoke"
+             :request {"action" "beliefs" "scope" "current"}
+             :items [{"action" "invoke"}]
+             :choice "invoke"
+             :constrained "invoke"
+             :variant {"type" "invoke" "scope" "all"}
+             :string-choice "invoke"}
+        canonical {:action :invoke
+                   :request {:action :beliefs :scope :current}
+                   :items [{:action :invoke}]
+                   :choice :invoke
+                   :constrained :invoke
+                   :variant {:type :invoke :scope :all}
+                   :string-choice "invoke"}]
+    (doseq [function-calling? [false true]]
+      (testing (str "canonical values reach the projected blackboard via "
+                    (if function-calling? "function calling" "marker output"))
+        (h/with-async-test-context [ctx]
+          (let [[result calls]
+                (execute-nested-provider-keyword-enums
+                 ctx
+                 (str "det-e2e-150-" (if function-calling? "function" "marker"))
+                 function-calling?
+                 raw)]
+            (is (= :success (:status result)))
+            (is (= canonical (get-in result [:outputs :decision])))
+            (is (= function-calling?
+                   (get-in calls [0 :options :use-function-calling?])))
+            (is (false? (get-in calls [0 :options :validate?]))))))))
+
+  (testing "noncanonical nested values remain exact rejected-output evidence"
+    (h/with-async-test-context [ctx]
+      (let [raw {:action "invoke"
+                 :request {:action "beliefs" :scope "current"}
+                 :items [{:action "invoke"}]
+                 :choice "invoke"
+                 :constrained "invoke"
+                 :variant {:type "invoke" :scope ":all"}
+                 :string-choice "invoke"}
+            [result calls]
+            (execute-nested-provider-keyword-enums
+             ctx "det-e2e-150-rejected" true raw)
+            detail (failed-leaf-detail ctx result)]
+        (is (= 2 (count calls)))
+        (is (= :failure (:status result)))
+        (is (= {:decision raw} (:rejected-outputs detail)))
+        (is (nil? (get-in result [:outputs :decision])))))))

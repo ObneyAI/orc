@@ -133,6 +133,13 @@ that verifies the stated observable results.
   are retained, required nulls are not silently removed, final blackboard
   validation succeeds for the canonical optional-null response, and the durable
   projection contains the same canonical value under each original key.
+- [x] **DET-E2E-150 — Nested provider keyword-enum normalization.** Execute
+  model-backed leaves whose provider responses contain canonical JSON strings
+  for keyword enums nested through maps, vectors, unions, intersections, and
+  keyword-dispatched variants. Verify string enums remain strings,
+  noncanonical spellings fail with the original provider value in trace detail,
+  marker and function-calling transports agree, and projected blackboard values
+  contain canonical nested keywords.
 
 ## P1 — Observability and streaming
 

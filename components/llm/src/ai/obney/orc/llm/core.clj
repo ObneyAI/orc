@@ -8,6 +8,8 @@
             [clojure.string :as str]
             [litellm.router :as router]
             [litellm.streaming :as streaming]
+            [malli.core :as m]
+            [malli.transform :as mt]
             [sio.core :as sio]))
 
 (defn register-provider! [config-name provider-spec]
@@ -90,6 +92,106 @@
 ;; Callers whose tool schemas are free of additionalProperties can opt in per node with
 ;; {:force-tool-choice? true}.
 
+(def ^:private provider-json-transformer
+  (mt/transformer
+   (mt/key-transformer {:decode keyword :encode name})
+   (mt/json-transformer)))
+
+(declare prepare-multi-dispatches)
+
+(defn- map-entry-value [value key]
+  (when (map? value)
+    (cond
+      (contains? value key) [key (get value key)]
+      (and (keyword? key) (contains? value (name key)))
+      [(name key) (get value (name key))])))
+
+(defn- prepare-map-children [schema value]
+  (if-not (map? value)
+    value
+    (reduce
+     (fn [result [key _ child-schema]]
+       (if-let [[actual-key child-value] (map-entry-value result key)]
+         (assoc result actual-key
+                (prepare-multi-dispatches child-schema child-value))
+         result))
+     value
+     (m/children schema))))
+
+(defn- matching-multi-branch [schema dispatch-value]
+  (some (fn [[branch-value _ branch-schema]]
+          (when (or (= branch-value dispatch-value)
+                    (and (keyword? branch-value)
+                         (string? dispatch-value)
+                         (= (subs (str branch-value) 1) dispatch-value)))
+            [branch-value branch-schema]))
+        (m/children schema)))
+
+(defn- prepare-multi [schema value]
+  (let [dispatch (:dispatch (m/properties schema))]
+    (if (and (keyword? dispatch) (map? value))
+      (if-let [[actual-key dispatch-value] (map-entry-value value dispatch)]
+        (if-let [[branch-value branch-schema]
+                 (matching-multi-branch schema dispatch-value)]
+          (prepare-multi-dispatches branch-schema
+                                    (-> value
+                                        (dissoc actual-key)
+                                        (assoc dispatch branch-value)))
+          value)
+        value)
+      value)))
+
+(defn- prepare-multi-dispatches
+  "Normalize keyword-valued :multi dispatches before Malli chooses a branch.
+   Malli's ordinary JSON transformer handles the remaining schema-directed
+   decoding, but branch selection necessarily happens before child decoders."
+  [schema value]
+  (let [schema (m/schema schema)
+        children (m/children schema)]
+    (case (m/type schema)
+      :map (prepare-map-children schema value)
+      :multi (prepare-multi schema value)
+      (:vector :sequential :list :set)
+      (if (sequential? value)
+        (mapv #(prepare-multi-dispatches (first children) %) value)
+        value)
+      :tuple
+      (if (sequential? value)
+        (mapv (fn [child-schema child-value]
+                (prepare-multi-dispatches child-schema child-value))
+              children value)
+        value)
+      :map-of
+      (if (map? value)
+        (into (empty value)
+              (map (fn [[key child-value]]
+                     [key (prepare-multi-dispatches (second children)
+                                                    child-value)]))
+              value)
+        value)
+      (:or :and)
+      (reduce (fn [result child-schema]
+                (prepare-multi-dispatches child-schema result))
+              value children)
+      :orn
+      (reduce (fn [result [_ _ child-schema]]
+                (prepare-multi-dispatches child-schema result))
+              value children)
+      (:maybe :schema)
+      (if-let [child-schema (first children)]
+        (prepare-multi-dispatches child-schema value)
+        value)
+      value)))
+
+(defn decode-provider-value
+  "Decode one parsed provider JSON value through its declared Malli schema.
+   Canonical JSON keyword spellings become keywords; string enums and numeric
+   strings retain their declared semantics."
+  [schema value]
+  (m/decode schema
+            (prepare-multi-dispatches schema value)
+            provider-json-transformer))
+
 (defn- validate-outputs [fields outputs]
   ;; SIO's public collection validator intentionally validates only values that
   ;; are present. ORC's prediction boundary additionally requires every declared
@@ -100,10 +202,15 @@
   ;; omitted is skipped, because reading its absent key as nil would fail a spec
   ;; that never agreed to accept nil. An optional field that IS present is still
   ;; validated exactly like a required one.
-  (doseq [{:keys [name spec optional] :as field} fields
-          :when (and spec (or (contains? outputs name) (not optional)))]
-    (sio/validate-field field (get outputs name)))
-  outputs)
+  (reduce
+   (fn [decoded {:keys [name spec optional] :as field}]
+     (if (and spec (or (contains? decoded name) (not optional)))
+       (let [value (decode-provider-value spec (get decoded name))]
+         (sio/validate-field field value)
+         (assoc decoded name value))
+       decoded))
+   outputs
+   fields))
 
 (defn- provider-name [provider]
   (if (keyword? provider) (name provider) (str provider)))
