@@ -823,6 +823,7 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
+    [:turn-id {:optional true} [:maybe [:or :uuid :string]]]
     [:candidate-id {:optional true} [:maybe :string]]
     [:candidates [:vector ::injected-candidate]]
     [:task-class {:optional true} [:maybe :uuid]]
@@ -831,7 +832,7 @@
     [:prompt-content-hash {:optional true} [:maybe :string]]
     [:root-trace-id {:optional true} [:maybe :uuid]]
     [:correlation-id {:optional true} [:maybe :uuid]]
-    [:arm [:enum :treatment :holdout]]
+    [:arm [:enum :treatment :holdout :claim-holdout]]
     [:baseline-policy-id :string]
     [:selection-propensity :double]
     [:rendered-block {:optional true} :string]
@@ -1546,6 +1547,12 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
+    ;; W2P-1: the HOST's turn identity, when the host has one (orc-sessions
+    ;; threads it on the opaque :tool-context). Present so an analysis joins a
+    ;; turn to its injection DIRECTLY; without it the only available join was a
+    ;; wall-clock window. Optional and host-shaped — orc does not mint turn ids
+    ;; and does not require them.
+    [:turn-id {:optional true} [:maybe [:or :uuid :string]]]
     ;; --- verbatim from the deferred ledger schema ---------------------------
     ;; The PRIMARY candidate under test — the top-ranked structural candidate
     ;; actually rendered. nil when the structural axis rendered nothing.
@@ -1580,7 +1587,11 @@
     ;; exists only where an intervention FIRED; the holdout is precisely the
     ;; case where it did not, so the realized arm has to be explicit rather
     ;; than inferred from an absent field.
-    [:arm [:enum :treatment :holdout]]
+    ;; W2P-1 adds :claim-holdout — the block rendered, but WITHOUT claim-derived
+    ;; content. It is a third realized arm, not a flavour of :holdout: the dose
+    ;; is non-zero and the row still carries a content hash, so an analysis that
+    ;; collapsed the two would compare unlike prompts.
+    [:arm [:enum :treatment :holdout :claim-holdout]]
     ;; Both VERBATIM from the deferred ledger schema. :baseline-policy-id names
     ;; the control condition and is stamped on BOTH arms — a treated row that
     ;; doesn't say what it was compared against is not analysable.
