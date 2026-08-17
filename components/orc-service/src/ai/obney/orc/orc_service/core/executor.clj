@@ -2047,7 +2047,14 @@
    large-data emit-tree! example line drops its exclusivity claim. With
    empty/absent mcp-tools the module is byte-identical to the pre-CE-6b
    output (backward-compatible). Tool names come from the node config; no
-   tool semantics are hardcoded beyond the generic call shape."
+   tool semantics are hardcoded beyond the generic call shape.
+
+   W38-F2: a tool declared in the node's :options :tool-arg-specs
+   ({\"tool-name\" [\"arg-key\" ...]}) renders its REAL argument keys in the
+   Bound Tools call examples instead of the generic {\"arg\" \"value\"}
+   placeholder (which models copy byte-for-byte — the store-proven wrong-key
+   defect). Tools without a spec keep the generic example; with no specs the
+   advertisement is byte-identical to pre-W38."
   ([node inputs-preview history blackboard sandbox-vars-map var-creation-times]
    (build-rlm-code-generation-module node inputs-preview history blackboard
                                      sandbox-vars-map var-creation-times
@@ -2073,7 +2080,15 @@
         has-mcp? (boolean (seq mcp-tools))
         mcp-tool-list (str/join ", " mcp-tools)
         has-namespaced? (some #(str/includes? % "/") mcp-tools)
-        example-tool (first mcp-tools)
+        ;; W38-F2 registration seam: node :options :tool-arg-specs is an
+        ;; OPTIONAL map of tool-name (string) -> ordered vector of that tool's
+        ;; REAL argument-key strings. :options already round-trips the whole
+        ;; command -> event -> read-model -> snapshot -> runtime node path
+        ;; (precedent: :optional-writes), so no plumbing changes; absent or
+        ;; empty specs leave the advertisement byte-identical to pre-W38.
+        tool-arg-specs (get-in node [:options :tool-arg-specs])
+        specced-tools (filterv #(seq (get tool-arg-specs %)) mcp-tools)
+        unspecced-tools (filterv #(not (seq (get tool-arg-specs %))) mcp-tools)
         base-inputs [{:name :task
                       :spec :string
                       :description "The research task to complete"}
@@ -2209,15 +2224,34 @@
                       ;; alone loses to the system-level emit-tree framing
                       ;; (data-processing tree, zero tool calls, iteration 1).
                       ;; Domain-agnostic: names + example come from the node's
-                      ;; own tool list; only the generic call shape is stated.
+                      ;; own tool list.
+                      ;; W38-F2: models copy the taught call shape byte-for-byte
+                      ;; — the store-proven forensic showed real commands sent as
+                      ;; {"arg" ...}/{"command" ...} (copies/guesses of the old
+                      ;; sole (example-tool {"arg" "value"}) example) dying at
+                      ;; the consumer's :cmd lookup. A tool with a declared
+                      ;; arg spec (node :options :tool-arg-specs, an ADDITIVE
+                      ;; map of tool-name -> ordered vector of argument-key
+                      ;; strings) now renders its REAL keys verbatim; tools
+                      ;; without a spec keep the single generic example
+                      ;; (byte-identical to pre-W38 when nothing is declared).
                       (if has-mcp?
                         (str "## Bound Tools\n\n"
                              "The following tools are bound in your sandbox as directly callable functions: "
                              mcp-tool-list "\n"
                              "Each takes a single map of arguments and returns a result map:\n"
                              "```clojure\n"
-                             "(" example-tool " {\"arg\" \"value\"})  ;; => result map\n"
+                             (apply str
+                                    (for [tool specced-tools]
+                                      (str "(" tool " {"
+                                           (str/join " " (map #(str "\"" % "\" \"...\"")
+                                                              (get tool-arg-specs tool)))
+                                           "})  ;; => result map\n")))
+                             (when (seq unspecced-tools)
+                               (str "(" (first unspecced-tools) " {\"arg\" \"value\"})  ;; => result map\n"))
                              "```\n"
+                             (when (seq specced-tools)
+                               "The argument keys shown above are each tool's REAL parameter names — use them verbatim.\n")
                              (if has-namespaced?
                                "Namespaced names (server/tool) are bound per-namespace — call them exactly as listed above.\n"
                                "")

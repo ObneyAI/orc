@@ -248,6 +248,11 @@
      :browser-tools - Vector of agent-browser tool names (e.g., [\"open\" \"snapshot\" \"click\"])
      :max-iterations - Max research iterations (default 10)
      :rlm - Enable RLM mode with BT primitives (default: false)
+     :options - Per-node executor/ORC LLM options map. W38-F2:
+       :tool-arg-specs {\"tool-name\" [\"arg-key\" ...]} declares a bound
+       tool's REAL argument keys; declared tools render those keys verbatim
+       in the Phase-1 tool advertisement instead of the generic
+       {\"arg\" \"value\"} example (undeclared tools keep the generic shape)
 
    Browser tools are shell-based (no session management) and include:
      open, snapshot, click, fill, type, press, scroll, wait,
