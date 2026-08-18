@@ -585,6 +585,11 @@ entity ConsolidationPolicy {
     event_threshold: Integer
     hourly_budget: Integer
     enabled: Boolean
+    -- W39/ADR 0030: the evidence TOKEN budget bounding the reflection window
+    -- (BoundedReflectionEvidence). Optional: absent means the DERIVED default
+    -- (min(half the provider context limit, largest clean measured anchor)) --
+    -- the derivation is the value; a bare number here would be a spec smell.
+    evidence_token_budget: Integer?
 }
 
 entity RegisteredSource {
