@@ -873,22 +873,24 @@
   "Record (or update) the description for a node-type — a cross-sheet
    aggregation across every node of this :type. Emits the
    :ontology/node-type-description-updated event."
-  [{{:keys [target-id body model-provenance]} :command}]
+  [{{:keys [target-id body model-provenance request-id]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/node-type-description-updated
       :tags #{[:description-target (stable-uuid-from (str "node-type:" target-id))]}
-      :body {:target-type :node-type
-             :target-id target-id
-             :body body
-             :recorded-at (now-str)
-             :model-provenance model-provenance}})]})
+      :body (cond-> {:target-type :node-type
+                     :target-id target-id
+                     :body body
+                     :recorded-at (now-str)
+                     :model-provenance model-provenance}
+              ;; PR-2 outcome attribution — omit-not-nil, the CC-31 idiom.
+              (some? request-id) (assoc :request-id request-id))})]})
 
 (defcommand :ontology record-node-instance-description
   "Record (or update) the description for a specific node instance —
    keyed by [sheet-id node-id]. Emits the
    :ontology/node-instance-description-updated event."
-  [{{:keys [target-id body model-provenance]} :command}]
+  [{{:keys [target-id body model-provenance request-id]} :command}]
   (let [[sheet-id node-id] target-id]
     {:command-result/events
      [(->event
@@ -897,27 +899,29 @@
                 [:node node-id]
                 [:description-target (stable-uuid-from
                                        (str "node-instance:" sheet-id ":" node-id))]}
-        :body {:target-type :node-instance
-               :target-id target-id
-               :body body
-               :recorded-at (now-str)
-               :model-provenance model-provenance}})]}))
+        :body (cond-> {:target-type :node-instance
+                       :target-id target-id
+                       :body body
+                       :recorded-at (now-str)
+                       :model-provenance model-provenance}
+                (some? request-id) (assoc :request-id request-id))})]}))
 
 (defcommand :ontology record-tree-description
   "Record (or update) the description for a tree-fingerprint —
    identifying all trees with the same canonical structure. Emits the
    :ontology/tree-description-updated event."
-  [{{:keys [target-id body model-provenance]} :command}]
+  [{{:keys [target-id body model-provenance request-id]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/tree-description-updated
       :tags #{[:description-target (stable-uuid-from
                                      (str "tree-fingerprint:" target-id))]}
-      :body {:target-type :tree-fingerprint
-             :target-id target-id
-             :body body
-             :recorded-at (now-str)
-             :model-provenance model-provenance}})]})
+      :body (cond-> {:target-type :tree-fingerprint
+                     :target-id target-id
+                     :body body
+                     :recorded-at (now-str)
+                     :model-provenance model-provenance}
+              (some? request-id) (assoc :request-id request-id))})]})
 
 (defcommand :ontology record-tree-class-description
   "C-Loop-1: record (or update) the description for a tree-class —
@@ -926,17 +930,18 @@
    SHAs of observed trees; :tree-class keys on the stable seed UUID
    (or fresh-mint root UUID) the classifier assigns. Emits the same
    :ontology/tree-description-updated event with :target-type :tree-class."
-  [{{:keys [target-id body model-provenance]} :command}]
+  [{{:keys [target-id body model-provenance request-id]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/tree-description-updated
       :tags #{[:description-target (stable-uuid-from
                                      (str "tree-class:" target-id))]}
-      :body {:target-type :tree-class
-             :target-id target-id
-             :body body
-             :recorded-at (now-str)
-             :model-provenance model-provenance}})]})
+      :body (cond-> {:target-type :tree-class
+                     :target-id target-id
+                     :body body
+                     :recorded-at (now-str)
+                     :model-provenance model-provenance}
+              (some? request-id) (assoc :request-id request-id))})]})
 
 ;; The two Gap-6 anti-recency AUDIT COMMANDS used to live here. CC-5 deleted
 ;; them along with the validator that was their only caller: a runtime valve
@@ -1052,7 +1057,8 @@
    preconditions that protect the WRITE (`evidence_is_grounded`, the
    claim-set version) are enforced here, where they belong."
   [{{:keys [granularity target-identifier deltas
-            evidence-event-count claim-set-version model-provenance]} :command
+            evidence-event-count claim-set-version model-provenance
+            request-id]} :command
     :as ctx}]
   (let [target-uuid (claim-target-uuid granularity target-identifier)
         current-version (recorded-claim-delta-count ctx target-uuid)]
@@ -1070,13 +1076,15 @@
        [(->event
           {:type :ontology/claim-deltas-refused
            :tags #{[:claim-target target-uuid]}
-           :body {:granularity granularity
-                  :target-identifier target-identifier
-                  :reason :stale-claim-set
-                  :attempted-version claim-set-version
-                  :current-version current-version
-                  :delta-count (count deltas)
-                  :refused-at (now-str)}})]
+           :body (cond-> {:granularity granularity
+                          :target-identifier target-identifier
+                          :reason :stale-claim-set
+                          :attempted-version claim-set-version
+                          :current-version current-version
+                          :delta-count (count deltas)
+                          :refused-at (now-str)}
+                   ;; PR-2 outcome attribution — omit-not-nil (CC-31 idiom).
+                   (some? request-id) (assoc :request-id request-id))})]
        ;; A caller that must RETRY needs to know it lost. Before CC-4 that
        ;; signal was the store's ::anom/conflict; now that the handler
        ;; refuses first, the command succeeds (it wrote the refusal fact),
@@ -1098,15 +1106,19 @@
                     (->event
                       {:type :ontology/promotion-evidence-excluded
                        :tags #{[:claim-target target-uuid]}
-                       :body {:granularity granularity
-                              :target-identifier target-identifier
-                              :reason (:reason verdict)
-                              :episodes (vec (:episodes verdict))
-                              :operation (:operation delta)
-                              :kind (:kind delta)
-                              :content (:content delta)
-                              :settled-by (:settled-by verdict)
-                              :excluded-at (now-str)}}))
+                       :body (cond-> {:granularity granularity
+                                      :target-identifier target-identifier
+                                      :reason (:reason verdict)
+                                      :episodes (vec (:episodes verdict))
+                                      :operation (:operation delta)
+                                      :kind (:kind delta)
+                                      :content (:content delta)
+                                      :settled-by (:settled-by verdict)
+                                      :excluded-at (now-str)}
+                               ;; PR-2 outcome attribution: when EVERY delta
+                               ;; is excluded these events ARE the request's
+                               ;; ClaimSetUnchanged outcome shape.
+                               (some? request-id) (assoc :request-id request-id))}))
                   dropped)]
         (if (empty? kept)
           ;; Nothing survived the guard — OR nothing was proposed at all
@@ -1133,7 +1145,10 @@
                                     :claim-set-version claim-set-version
                                     :recorded-at (now-str)}
                              (some? model-provenance)
-                             (assoc :model-provenance model-provenance))})]
+                             (assoc :model-provenance model-provenance)
+                             ;; PR-2 outcome attribution (CC-31 idiom).
+                             (some? request-id)
+                             (assoc :request-id request-id))})]
                  exclusion-events)
            :command-result/cas
            {:types #{:ontology/claim-deltas-recorded}
@@ -1166,20 +1181,45 @@
    consolidator dispatches it from BOTH reflection paths (claim and legacy
    body). The recent-consolidations read-model folds the event so failures
    consume the same hourly budget successes do (FailuresConsumeBudget)."
-  [{{:keys [granularity target-identifier reason error attempts]} :command}]
+  [{{:keys [granularity target-identifier reason error attempts request-id]} :command}]
   {:command-result/events
    [(->event
      {:type :ontology/description-consolidation-failed
       :tags #{[:description-target (description-target-uuid granularity target-identifier)]}
       ;; :error is attached only when there IS one — omit-not-nil, the
       ;; CC-31 idiom, so the event stays byte-shaped whether or not a
-      ;; message rode along.
+      ;; message rode along. :request-id (PR-2) rides the same idiom.
       :body (cond-> {:granularity granularity
                      :target-identifier target-identifier
                      :reason reason
                      :attempts attempts
                      :failed-at (now-str)}
-              (some? error) (assoc :error error))})]})
+              (some? error) (assoc :error error)
+              (some? request-id) (assoc :request-id request-id))})]})
+
+(defcommand :ontology record-consolidation-skip
+  "PR-2 (EveryConsolidationRequestYieldsAnOutcome): record a deliberate
+   non-write as a durable ANSWER — the budget gate's skip
+   (:budget-exhausted, carrying the gate's two numbers) and the
+   zero-proposal success (:no-operations-proposed, inspection ruling / spec
+   tend e8c15571). Emits :ontology/consolidation-skipped — its own event
+   type, deliberately NOT a failure record: FailuresConsumeBudget folds
+   failure events into the hourly budget, and a budget skip that consumed
+   no LLM attempt must not extend the very exhaustion that caused it."
+  [{{:keys [target-type target-id reason budget recent-count request-id]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/consolidation-skipped
+      ;; Same tag derivation request-consolidation uses.
+      :tags #{[:description-target (stable-uuid-from
+                                     (str (name target-type) ":" target-id))]}
+      :body (cond-> {:target-type target-type
+                     :target-id target-id
+                     :reason reason
+                     :skipped-at (now-str)}
+              (some? budget) (assoc :budget budget)
+              (some? recent-count) (assoc :recent-count recent-count)
+              (some? request-id) (assoc :request-id request-id))})]})
 
 ;; =============================================================================
 ;; C-2a-3a — Consolidation trigger commands
@@ -1293,6 +1333,53 @@
       :body {:target-type target-type
              :budget budget
              :set-at (now-str)}})]})
+
+(defcommand :ontology set-evidence-token-budget
+  "PR-1 (ADR 0030): set the consolidator's evidence token budget — the
+   predicted-prompt-token bound the newest-first evidence window selection
+   respects (spec invariant BoundedReflectionEvidence). GLOBAL, not
+   per-target-type. Emits :ontology/evidence-token-budget-set; the
+   evidence-token-budget read-model projects it for runtime lookup. The
+   DERIVED default (read-models/default-evidence-token-budget) applies when
+   no override has been set."
+  [{{:keys [budget-tokens]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/evidence-token-budget-set
+      :tags #{[:description-target (stable-uuid-from "evidence-token-budget-config")]}
+      :body {:budget-tokens budget-tokens
+             :set-at (now-str)}})]})
+
+(defcommand :ontology record-reflection-evidence-exclusion
+  "PR-2 (ADR 0030, spec invariant BoundedReflectionEvidence): record that a
+   consolidation's evidence window was CUT by the token budget. ONE compact
+   summary event per consolidation-with-exclusions (see the event schema for
+   the volume argument); the consolidator dispatches it only when the
+   excluded half is non-empty, so a zero-exclusion consolidation emits
+   nothing. Emits :ontology/reflection-evidence-excluded."
+  [{{:keys [target-type target-id budget-tokens selected-count excluded-count
+            predicted-prompt-tokens oldest-excluded-at newest-excluded-at
+            request-id]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/reflection-evidence-excluded
+      ;; Same tag derivation request-consolidation uses, so a target's
+      ;; exclusions land in the same [:description-target …] stream as its
+      ;; requests and failures.
+      :tags #{[:description-target (stable-uuid-from
+                                     (str (name target-type) ":" target-id))]}
+      ;; CC-31 idiom: :request-id attached only when the caller HAS one, so
+      ;; direct-caller events stay byte-shaped like every other writer's.
+      :body (cond-> {:target-type target-type
+                     :target-id target-id
+                     :budget-tokens budget-tokens
+                     :selected-count selected-count
+                     :excluded-count excluded-count
+                     :predicted-prompt-tokens predicted-prompt-tokens
+                     :oldest-excluded-at oldest-excluded-at
+                     :newest-excluded-at newest-excluded-at
+                     :excluded-at (now-str)}
+              (some? request-id) (assoc :request-id request-id))})]})
 
 (defcommand :ontology set-reindex-config
   "C-2b-1: set the global ColBERT re-index config (event-count threshold

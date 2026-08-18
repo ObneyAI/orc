@@ -399,6 +399,68 @@
   [ctx target-type]
   (rm/get-consolidation-budget ctx target-type))
 
+(defn get-evidence-token-budget
+  "PR-1 (ADR 0030): return the consolidator's evidence token budget — the
+   predicted-prompt-token bound the newest-first evidence window selection
+   respects. Falls back to the DERIVED default
+   (read-models/default-evidence-token-budget) when no override has been
+   set via :ontology/set-evidence-token-budget."
+  [ctx]
+  (rm/get-evidence-token-budget ctx))
+
+(defn get-consolidation-outcome
+  "PR-2 (spec invariant EveryConsolidationRequestYieldsAnOutcome): the
+   durable outcome that answered the given consolidation request (the
+   REQUEST EVENT's :event/id).
+
+   Returns {:status <:deltas-recorded | :description-updated | :failed |
+                     :refused | :skipped | :claim-set-unchanged | :none>
+            :events [{:event-type … :at … (:reason …)} …]}.
+
+   One command batch = one outcome: a recorded batch's ride-along exclusion
+   events do not make it two, and the all-excluded ClaimSetUnchanged shape
+   (exclusion events only, version unadvanced) reports as ONE
+   :claim-set-unchanged outcome. :none is the 08-18 defect shape — a
+   request nothing ever answered."
+  [ctx request-id]
+  (rm/get-consolidation-outcome ctx request-id))
+
+(defn get-unanswered-consolidation-requests
+  "PR-2 (EveryConsolidationRequestYieldsAnOutcome): every consolidation
+   request with NO durable outcome, oldest first — the store query that
+   makes the 2026-08-18 vanished request (mid-flight JVM death, no event,
+   indistinguishable from health) a DETECTABLE defect.
+
+   opts: :older-than-ms (only requests at least this old — pass the orphan
+   grace period so an in-flight consolidation is not reported dead),
+   :target-type / :target-id scope filters.
+
+   Each entry: {:request-id :target-type :target-id :requested-at}. The
+   consolidator's sweep (sweep-orphaned-consolidation-requests!) converts
+   these into durable :caller-interrupted failure records."
+  [ctx opts]
+  (rm/get-unanswered-consolidation-requests ctx opts))
+
+(defn get-reflection-evidence-exclusions
+  "PR-2 (ADR 0030, spec invariant BoundedReflectionEvidence): return every
+   durable record of a consolidation whose evidence window the token budget
+   CUT for this target, oldest first; [] when none.
+
+   Each entry is
+   {:budget-tokens <the bound in force>
+    :selected-count :excluded-count
+    :predicted-prompt-tokens <what the SELECTED window predicts>
+    :oldest-excluded-at :newest-excluded-at <the excluded range's bounds —
+      exclusion is a contiguous OLDEST prefix, so these plus the target
+      identify every excluded event still durable in the store>
+    :excluded-at <string>
+    :request-id <uuid, when the consolidation was request-driven>}.
+
+   ONE entry per consolidation-with-exclusions; zero-exclusion
+   consolidations record NOTHING."
+  [ctx target-type target-id]
+  (rm/get-reflection-evidence-exclusions ctx target-type target-id))
+
 (defn get-recent-consolidation-count
   "C-2a-3c: return how many consolidation attempts have fired for the
    given target-type in the rolling last-hour window — successes

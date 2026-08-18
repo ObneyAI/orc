@@ -1320,6 +1320,142 @@
       default-consolidation-budget))
 
 ;; =============================================================================
+;; PR-1 (ADR 0030) — evidence token budget config
+;; =============================================================================
+;;
+;; The consolidator's reflection evidence window is selected newest-first
+;; within THIS budget of predicted prompt tokens (see
+;; consolidator/select-evidence-window). Event-sourced config following the
+;; C-2a-3c consolidation-budgets pattern; GLOBAL (one provider context, one
+;; deadline — not per-target-type; per-type variation lives in the density
+;; constants, not the budget).
+
+(def provider-context-token-limit
+  "The provider's context ceiling, proved VERBATIM by CC-21 from the real
+   rejection message: 'This endpoint's maximum context length is 1048576
+   tokens.' (CC21-MEASUREMENT.md §1 — the chars/4 pre-flight identity was
+   proved against this same number to within 0.4%.)"
+  1048576)
+
+(def smallest-timeout-class-prompt-tokens
+  "The floor of the MEASURED failing prompt-size class under the executor's
+   default 300,000 ms deadline (orc/execute :timeout-ms): the E-w20 anchor,
+   574,914 provider-measured prompt tokens. Prompts of this class are
+   failure-dominated today — W39: 0/5 claim-path outcomes since 08-14 with
+   3 :timeout at ~600K-token prompts; W25: marker OMISSION observed at the
+   same scale. (E-w20 itself completed once in P-E's era; its class no
+   longer does.)"
+  574914)
+
+(def largest-clean-anchor-prompt-tokens
+  "The largest of CC-21's 10 provider anchors BELOW the failing class:
+   A-w500, 327,681 provider-measured prompt tokens — accepted, answered,
+   no recorded failure mode at any deadline."
+  327681)
+
+(def default-evidence-token-budget
+  "The DERIVED default evidence budget (predicted prompt tokens) — the
+   derivation IS the value, never a bare number:
+
+     (min (quot provider-context-token-limit 2)   ; = 524,288
+          largest-clean-anchor-prompt-tokens)     ; = 327,681
+     => 327,681
+
+   Ceiling 1 — provider, halved: CC-21's two-ceiling finding is that the
+   chars/4 pre-flight gate under-reads real tokens by up to 50% on dense
+   (2.0 chars/token) payload, so a prompt at half the nominal limit is the
+   largest one that cannot cross the REAL tokenizer ceiling even at maximum
+   measured density — and it leaves the other half of the context for the
+   completion.
+
+   Ceiling 2 — acceptable generation time: under the executor's default
+   300,000 ms deadline the ~575-600K-token class is measured
+   failure-dominated (W39 timeouts, W25 marker omission — see
+   `smallest-timeout-class-prompt-tokens`), so the time-derived ceiling is
+   the largest banked prompt measured CLEAN below that class:
+   `largest-clean-anchor-prompt-tokens`.
+
+   The min binds at ceiling 2. Raising it is an operator decision through
+   :ontology/set-evidence-token-budget, with the derivation above as the
+   thing being consciously overridden."
+  (min (quot provider-context-token-limit 2)
+       largest-clean-anchor-prompt-tokens))
+
+(defmulti evidence-token-budget*
+  (fn [_state event] (:event/type event)))
+
+(defmethod evidence-token-budget* :default [state _] state)
+
+(defmethod evidence-token-budget* :ontology/evidence-token-budget-set
+  [_state event]
+  {:budget-tokens (:budget-tokens event)})
+
+(defn evidence-token-budget
+  "Build the evidence-token-budget config state from a seq of events."
+  [initial-state events]
+  (reduce evidence-token-budget* initial-state events))
+
+(defreadmodel :ontology evidence-token-budget
+  {:events #{:ontology/evidence-token-budget-set} :version 1}
+  [state event] (evidence-token-budget* state event))
+
+(defn get-evidence-token-budget
+  "Return the configured evidence token budget, or the DERIVED default
+   (`default-evidence-token-budget`) when no override has been set via
+   :ontology/set-evidence-token-budget."
+  [ctx]
+  (or (:budget-tokens (rmp/project ctx :ontology/evidence-token-budget))
+      default-evidence-token-budget))
+
+;; =============================================================================
+;; PR-2 (BoundedReflectionEvidence) — reflection-evidence-exclusions read-model
+;; =============================================================================
+;;
+;; The durable, queryable record of every consolidation whose evidence window
+;; the token budget cut. Lives in its own read model for the same reason the
+;; claim-guard facts do: an exclusion is a record of evidence a reflection
+;; never SAW, not part of what the target believes, so its arrival must not
+;; invalidate the descriptions cache generation.
+
+(defmulti reflection-evidence-exclusions*
+  "State: {[target-type target-id] [exclusion-entry ...]} — entries oldest
+   first, one per consolidation-with-exclusions."
+  (fn [_state event] (:event/type event)))
+
+(defmethod reflection-evidence-exclusions* :default [state _event] state)
+
+(defmethod reflection-evidence-exclusions* :ontology/reflection-evidence-excluded
+  [state event]
+  (update state [(:target-type event) (:target-id event)]
+          (fnil conj [])
+          (cond-> {:budget-tokens (:budget-tokens event)
+                   :selected-count (:selected-count event)
+                   :excluded-count (:excluded-count event)
+                   :predicted-prompt-tokens (:predicted-prompt-tokens event)
+                   :oldest-excluded-at (:oldest-excluded-at event)
+                   :newest-excluded-at (:newest-excluded-at event)
+                   :excluded-at (:excluded-at event)}
+            (some? (:request-id event)) (assoc :request-id (:request-id event)))))
+
+(defn reflection-evidence-exclusions
+  "Build the reflection-evidence-exclusions state from a seq of events."
+  [initial-state events]
+  (reduce reflection-evidence-exclusions* initial-state events))
+
+(defreadmodel :ontology reflection-evidence-exclusions
+  {:events #{:ontology/reflection-evidence-excluded} :version 1}
+  [state event] (reflection-evidence-exclusions* state event))
+
+(defn get-reflection-evidence-exclusions
+  "PR-2 (BoundedReflectionEvidence): every budget-cut exclusion record for
+   this target, oldest first; [] when none — a zero-exclusion consolidation
+   emitted nothing, so nothing is here to mislead."
+  [ctx target-type target-id]
+  (or (get (rmp/project ctx :ontology/reflection-evidence-exclusions)
+           [target-type target-id])
+      []))
+
+;; =============================================================================
 ;; C-2b-1 — Re-index config read-model
 ;; =============================================================================
 ;;
@@ -1530,6 +1666,131 @@
          (keep ts->instant)
          (filter #(.isAfter ^java.time.Instant % cutoff))
          count)))
+
+;; =============================================================================
+;; PR-2 (EveryConsolidationRequestYieldsAnOutcome) — the request/outcome ledger
+;; =============================================================================
+;;
+;; Matches every :ontology/consolidation-requested event to the durable
+;; outcome events that answer it, on the :request-id the PR-2 outcome seam
+;; stamps (the REQUEST EVENT's :event/id). What this makes queryable is the
+;; exact 2026-08-18 blindness: a request whose consolidation died mid-flight
+;; leaves NO outcome, and before this ledger that absence was
+;; indistinguishable from health.
+;;
+;; A consolidation's outcome can be SEVERAL events from ONE command batch
+;; (claim-deltas-recorded plus its per-delta exclusions; the all-excluded
+;; ClaimSetUnchanged shape is exclusions only) — they all carry the same
+;; :request-id, so "exactly one outcome" is judged per request, never by
+;; counting events. Outcome events WITHOUT a :request-id (every pre-PR-2
+;; event, and direct callers answering no request) fold to nothing here.
+;;
+;; :ontology/reflection-evidence-excluded is deliberately NOT an outcome: it
+;; is emitted BEFORE the reflection runs, so counting it would mask exactly
+;; the mid-flight death this ledger exists to expose.
+
+(def consolidation-outcome-event-types
+  "Every event type that ANSWERS a consolidation request: deltas recorded,
+   the ClaimSetUnchanged exclusion shape, a stale refusal, a failure record,
+   a description update, or the budget gate's skip."
+  #{:ontology/claim-deltas-recorded
+    :ontology/promotion-evidence-excluded
+    :ontology/claim-deltas-refused
+    :ontology/description-consolidation-failed
+    :ontology/node-type-description-updated
+    :ontology/node-instance-description-updated
+    :ontology/tree-description-updated
+    :ontology/consolidation-skipped})
+
+(defn consolidation-request-ledger*
+  "Apply one event to the ledger state:
+   {:requests {request-id {:target-type … :target-id … :requested-at <str>}}
+    :outcomes {request-id [{:event-type … :at <str> (:reason …)} …]}}"
+  [state event]
+  (if (= :ontology/consolidation-requested (:event/type event))
+    (assoc-in state [:requests (:event/id event)]
+              {:target-type (:target-type event)
+               :target-id (:target-id event)
+               :requested-at (str (:event/timestamp event))})
+    (if-let [rid (:request-id event)]
+      (update-in state [:outcomes rid]
+                 (fnil conj [])
+                 (cond-> {:event-type (:event/type event)
+                          :at (str (:event/timestamp event))}
+                   (some? (:reason event)) (assoc :reason (:reason event))))
+      state)))
+
+(defn consolidation-request-ledger
+  "Build the ledger state from a seq of events."
+  [initial-state events]
+  (reduce consolidation-request-ledger* initial-state events))
+
+(defreadmodel :ontology consolidation-request-ledger
+  {:events (conj consolidation-outcome-event-types
+                 :ontology/consolidation-requested)
+   :version 1}
+  [state event] (consolidation-request-ledger* state event))
+
+(defn get-consolidation-outcome
+  "PR-2: the durable outcome that answered the given consolidation request.
+
+   Returns {:status <kw> :events [{:event-type … :at … (:reason …)} …]}.
+   :status is derived from the outcome events' types, one command batch =
+   one outcome (a recorded batch's ride-along exclusions do not make it two):
+
+     :deltas-recorded       — :ontology/claim-deltas-recorded present
+     :description-updated   — a *-description-updated present
+     :failed                — a failure record present
+     :refused               — the stale-refusal fact present
+     :skipped               — the budget gate answered
+     :claim-set-unchanged   — ONLY promotion-evidence-excluded events (the
+                              spec's ClaimSetUnchanged exclusion shape)
+     :none                  — NO outcome: the 08-18 defect shape"
+  [ctx request-id]
+  (let [events (get-in (rmp/project ctx :ontology/consolidation-request-ledger)
+                       [:outcomes request-id]
+                       [])
+        types (into #{} (map :event-type) events)
+        status (cond
+                 (empty? events) :none
+                 (types :ontology/claim-deltas-recorded) :deltas-recorded
+                 (some types [:ontology/node-type-description-updated
+                              :ontology/node-instance-description-updated
+                              :ontology/tree-description-updated]) :description-updated
+                 (types :ontology/description-consolidation-failed) :failed
+                 (types :ontology/claim-deltas-refused) :refused
+                 (types :ontology/consolidation-skipped) :skipped
+                 :else :claim-set-unchanged)]
+    {:status status :events events}))
+
+(defn get-unanswered-consolidation-requests
+  "PR-2: every consolidation request with NO durable outcome, oldest first —
+   the query that makes the 08-18 vanished request a detectable defect
+   instead of an ambiguity.
+
+   opts:
+     :older-than-ms — only requests at least this old (0 = all); callers
+                      pass the orphan grace period so an in-flight
+                      consolidation is not reported dead while its LLM call
+                      is still legitimately running
+     :target-type / :target-id — optional scope filters
+
+   Each entry: {:request-id … :target-type … :target-id … :requested-at <str>}."
+  [ctx {:keys [older-than-ms target-type target-id]
+        :or {older-than-ms 0}}]
+  (let [ledger (rmp/project ctx :ontology/consolidation-request-ledger)
+        cutoff (.minusMillis (java.time.Instant/now) (long older-than-ms))]
+    (->> (:requests ledger)
+         (remove (fn [[rid _]] (seq (get-in ledger [:outcomes rid]))))
+         (keep (fn [[rid {:keys [requested-at] :as r}]]
+                 (let [inst (ts->instant requested-at)]
+                   (when (and inst
+                              (not (.isAfter ^java.time.Instant inst cutoff))
+                              (or (nil? target-type) (= target-type (:target-type r)))
+                              (or (nil? target-id) (= target-id (:target-id r))))
+                     (assoc r :request-id rid)))))
+         (sort-by :requested-at)
+         vec)))
 
 ;; =============================================================================
 ;; C-2a-3a — Consolidation delta-counter read-model

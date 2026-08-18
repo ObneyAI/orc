@@ -389,8 +389,9 @@
    design note is that a score seen before or after its classification both
    land correctly), so it cannot answer 'the last N'. Recency has to come from
    event-store order — the same idiom the consolidator's
-   gather-recent-tree-class-events uses (`take-last recent-window-size` over
-   an es/read). Like distinct-tree-shapes this is reached only past the cheap
+   gather-recent-tree-class-events uses (a newest-last es/read; since PR-1
+   bounded there by the evidence token budget rather than an event count).
+   Like distinct-tree-shapes this is reached only past the cheap
    occurrence pre-gate, so it runs rarely.
 
    The per-occurrence aggregate is the mean of that occurrence's judge scores

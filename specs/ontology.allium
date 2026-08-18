@@ -169,6 +169,34 @@ contract ClaimConsolidation {
         -- successes; a target whose every attempt dies must not retry
         -- unthrottled, and the budget read cannot report a dying target as
         -- idle.
+
+    @invariant BoundedReflectionEvidence
+        -- The reflection's evidence window is selected newest-first within a
+        -- TOKEN budget predicted from measured density (CC-21: prompt chars
+        -- ~ window EDN chars + 9,000, +/-1.6%, per-type density 2.0-4.0
+        -- chars/token), never by a raw event count: the 2x density spread
+        -- means one event count either wastes headroom or still times out.
+        -- Every event excluded by the budget is OBSERVABLE. Motivating
+        -- incident (W39): the claim path went 0-of-5 timeout-dominated once
+        -- the dominant class reached 274 occurrences; CC-15 had measured
+        -- 688,018 prompt tokens at a 154-occurrence window. ADR 0030.
+
+    @invariant EveryConsolidationRequestYieldsAnOutcome
+        -- A consolidation request terminates in exactly one durable outcome
+        -- event -- deltas recorded, ClaimSetUnchanged's exclusion shape, a
+        -- failure record, or a SKIP answer carrying its reason
+        -- (budget_exhausted | no_operations_proposed). A request with NO
+        -- outcome is a defect, not an ambiguity: the 2026-08-18 request that
+        -- vanished under a mid-flight JVM death was indistinguishable from
+        -- health, which is the exact blindness FailureIsVisible forbids.
+        -- PR-2 tend: without a durable skip, a routine budget skip is
+        -- byte-identical to that death and the orphan sweep would mint FALSE
+        -- caller-interrupted records; and a reflection that succeeds while
+        -- proposing zero operations is a DIFFERENT fact from both -- the
+        -- skip's reason field keeps the facts distinguishable without
+        -- widening the closed failure-reason set. A swept orphan records
+        -- attempts = 0: it has no terminal at all, and zero is the only
+        -- evidenced count (AttemptCountIsEvidenced applied at its floor).
 }
 
 -- CC-22: the parent-inference ColBERT query rendered from a description.
@@ -566,6 +594,11 @@ entity ConsolidationPolicy {
     event_threshold: Integer
     hourly_budget: Integer
     enabled: Boolean
+    -- W39/ADR 0030: the evidence TOKEN budget bounding the reflection window
+    -- (BoundedReflectionEvidence). Optional: absent means the DERIVED default
+    -- (min(half the provider context limit, largest clean measured anchor)) --
+    -- the derivation is the value; a bare number here would be a spec smell.
+    evidence_token_budget: Integer?
 }
 
 entity RegisteredSource {
