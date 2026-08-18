@@ -183,11 +183,20 @@ contract ClaimConsolidation {
 
     @invariant EveryConsolidationRequestYieldsAnOutcome
         -- A consolidation request terminates in exactly one durable outcome
-        -- event -- deltas recorded, ClaimSetUnchanged's exclusion shape, or a
-        -- failure record. A request with NO outcome is a defect, not an
-        -- ambiguity: the 2026-08-18 request that vanished under a mid-flight
-        -- JVM death was indistinguishable from health, which is the exact
-        -- blindness FailureIsVisible exists to forbid.
+        -- event -- deltas recorded, ClaimSetUnchanged's exclusion shape, a
+        -- failure record, or a SKIP answer carrying its reason
+        -- (budget_exhausted | no_operations_proposed). A request with NO
+        -- outcome is a defect, not an ambiguity: the 2026-08-18 request that
+        -- vanished under a mid-flight JVM death was indistinguishable from
+        -- health, which is the exact blindness FailureIsVisible forbids.
+        -- PR-2 tend: without a durable skip, a routine budget skip is
+        -- byte-identical to that death and the orphan sweep would mint FALSE
+        -- caller-interrupted records; and a reflection that succeeds while
+        -- proposing zero operations is a DIFFERENT fact from both -- the
+        -- skip's reason field keeps the facts distinguishable without
+        -- widening the closed failure-reason set. A swept orphan records
+        -- attempts = 0: it has no terminal at all, and zero is the only
+        -- evidenced count (AttemptCountIsEvidenced applied at its floor).
 }
 
 -- CC-22: the parent-inference ColBERT query rendered from a description.
