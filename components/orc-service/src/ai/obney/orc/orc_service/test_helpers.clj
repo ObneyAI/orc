@@ -88,15 +88,17 @@
 
 (defn l2-write-bytes
   "Bytes written to L2, optionally restricted to cache keys beginning with
-   `key-prefix` (a read model's name, e.g. \"tick-execution-contexts\").
+   `key-prefix` (a read model's QUALIFIED name, e.g.
+   :sheet/tick-execution-contexts — grain keys the cache by the full
+   keyword since 5406c93).
 
-   Cache keys are `<name>-<version>-<scope-hash>` plus a `:p<hash>`/`:s<n>`/
-   `:eidx` suffix, so a name prefix selects exactly one read model across all
-   its scopes, partitions and segments."
+   Cache keys are `<qualified-name>-<version>-<scope-hash>` plus a
+   `:p<hash>`/`:s<n>`/`:eidx` suffix, so a name prefix selects exactly one
+   read model across all its scopes, partitions and segments."
   (^long [ctx] (:put-bytes (l2-stats ctx) 0))
   (^long [ctx key-prefix]
    (->> (:by-key (l2-stats ctx))
-        (filter (fn [[k _]] (str/starts-with? k key-prefix)))
+        (filter (fn [[k _]] (str/starts-with? k (str key-prefix))))
         (map (comp :bytes val))
         (reduce + 0))))
 
@@ -164,13 +166,13 @@
    SCOPE (not :partition-key), so each tick mints its own key space and the
    sheet-id is the partition within it."
   [ctx sheet-id tick-id version]
-  (l2-entry-state ctx "tick-execution-contexts" version
+  (l2-entry-state ctx :sheet/tick-execution-contexts version
                   {:tags #{[:tick tick-id]}} sheet-id))
 
 (defn tick-context-l2-bytes
   "Size in bytes of one tick's stored execution-context entry."
   [ctx sheet-id tick-id version]
-  (l2-entry-bytes ctx "tick-execution-contexts" version
+  (l2-entry-bytes ctx :sheet/tick-execution-contexts version
                   {:tags #{[:tick tick-id]}} sheet-id))
 
 (defn contains-value-key?

@@ -12,5 +12,5 @@
                   :extra-deps {dk.ative/docjure {:mvn/version "1.21.0"}
                                obneyai/grain-event-store-sqlite-v3
                                {:git/url "https://github.com/ObneyAI/grain.git"
-                                :git/sha "1616dacab3e287fbabd6a5ca9fe3d0ee51326cf4"
+                                :git/sha "5de0735d04916c63055a76637fa9bdef36345533"
                                 :deps/root "projects/grain-event-store-sqlite-v3"}}}}}
