@@ -3192,7 +3192,10 @@
                             ;; after dispatching so in-flight nodes settle their writes
                             ;; (the bookend :sheet/rlm-tree-execution-completed event
                             ;; needs that window).
-                            _ (when (= :timeout (:status phase2-result))
+                            ;; PR-4: a WEDGED child (distinct :failure, never
+                            ;; retried) still needs the same cancel containment.
+                            _ (when (or (= :timeout (:status phase2-result))
+                                        (:wedged? phase2-result))
                                 (let [child-tick-id (:trace-id phase2-result)
                                       child-sheet-id (:sheet-id phase2-result)]
                                   (when (and child-tick-id child-sheet-id)

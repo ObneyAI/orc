@@ -338,6 +338,10 @@ Record unexpected outcomes even when the final returned status is successful.
   - **Purpose:** Prove an initially empty manually created ontology can be evolved from sources without losing or duplicating manually authored concepts.
   - **Falsifiable predictions:** Evolve recognizes lifecycle-only ontology state; manual concepts participate in URI deduplication and are preferred as existing canonical identities; extracted concepts and relationships join the same public graph; origin metadata distinguishes manual and extracted concepts; replay reconstructs the same unified graph.
 
+- [x] **DET-E2E-124 — Per-run liveness: a wedged run fails distinctly and is never retried.**
+  - **Purpose:** Prove that a run whose engine goes silent past its budget plus the engine's own result-delivery grace yields a bounded, distinct, attributable, non-retryable failure at every run-promise deref seam (`runtime/execute`, `streaming/execute-stream`, `rlm-tree-executor/execute-tree`), while a live over-budget run keeps the retryable `:timeout` contract, a nested wedged run surfaces attributably to its outer run, and a subsequent run in the same process is not starved.
+  - **Falsifiable predictions:** A forever-blocking interrupt-swallowing `:code` leaf returns `{:status :failure :wedged? true}` with `:liveness` naming the seam, tick, waited-ms, silence age, and grace, and the error text contains no retryable "timed out" fragment; a slow leaf with recent tick events at expiry still returns `:status :timeout` with no `:wedged?`; a nested `execute` launched from inside an outer run's leaf returns the wedged failure and the outer run completes carrying the nested tick id; the stream result promise resolves to the same wedged map; a second trivial run in the same process returns `:success` after the wedge; covered by `pr4_run_liveness_test.clj` (6 tests / 51 assertions, red-first).
+
 ## Recommended complex tranche
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions

@@ -558,6 +558,10 @@
      - :sandbox-vars - Variables from Phase 1 to write to blackboard
      - :blackboard - Additional blackboard inputs
      - :timeout-ms - Execution timeout (default 60000)
+     - :result-grace-ms - Silence tolerance for classifying an expired wait
+                          as WEDGED vs over budget (default
+                          runtime/default-result-grace-ms; see
+                          runtime/run-liveness-verdict)
 
    Returns:
    {:status :success/:failure/:timeout
@@ -573,8 +577,9 @@
                            given key, falls back to inferring schema from
                            value type."
   [tree context {:keys [sandbox-vars blackboard blackboard-schemas timeout-ms
-                        generated-tree-raw]
+                        result-grace-ms generated-tree-raw]
                  :or {timeout-ms 60000
+                      result-grace-ms runtime/default-result-grace-ms
                       blackboard-schemas {}}}]
   (println "[DEBUG Tree] execute-tree starting")
   (println "[DEBUG Tree] sandbox-vars keys:" (keys sandbox-vars))
@@ -753,10 +758,41 @@
                                     (str " — explain: " (pr-str explain))))
                       :sheet-id sheet-id
                       :trace-id tick-id})
-                   (deref p timeout-ms {:status :timeout
-                                        :error "Tree execution timed out"
-                                        :sheet-id sheet-id
-                                        :trace-id tick-id}))
+                   (let [r (deref p timeout-ms ::deref-expired)]
+                     (if-not (= ::deref-expired r)
+                       r
+                       ;; PR-4: classify the expired child-tick wait — a WEDGED
+                       ;; child (engine silent past its own budget + grace) is a
+                       ;; distinct, non-retryable failure, never the retryable
+                       ;; :timeout. Containment (cancel-tick) stays with the
+                       ;; caller either way (D-003 / executor phase-2), which
+                       ;; fires on :timeout OR :wedged?.
+                       (let [waited-ms (- (System/currentTimeMillis) start-time)
+                             {:keys [wedged?] :as verdict}
+                             (runtime/run-liveness-verdict context tick-id
+                                                           result-grace-ms
+                                                           waited-ms)]
+                         (if-not wedged?
+                           {:status :timeout
+                            :error "Tree execution timed out"
+                            :sheet-id sheet-id
+                            :trace-id tick-id}
+                           {:status :failure
+                            :wedged? true
+                            :error (str "Run wedged at "
+                                        :orc.rlm-tree-executor/execute-tree
+                                        ": engine silent past the child tick's "
+                                        timeout-ms " ms budget plus " result-grace-ms
+                                        " ms grace on tick " tick-id
+                                        "; a wedged run is terminal and must not"
+                                        " be retried")
+                            :sheet-id sheet-id
+                            :trace-id tick-id
+                            :liveness (assoc verdict
+                                             :seam :orc.rlm-tree-executor/execute-tree
+                                             :tick-id tick-id
+                                             :sheet-id sheet-id
+                                             :waited-ms waited-ms)})))))
           duration-ms (- (System/currentTimeMillis) start-time)
           _ (when parent-tick-id
               (streaming/emit! parent-tick-id
