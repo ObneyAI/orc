@@ -169,6 +169,25 @@ contract ClaimConsolidation {
         -- successes; a target whose every attempt dies must not retry
         -- unthrottled, and the budget read cannot report a dying target as
         -- idle.
+
+    @invariant BoundedReflectionEvidence
+        -- The reflection's evidence window is selected newest-first within a
+        -- TOKEN budget predicted from measured density (CC-21: prompt chars
+        -- ~ window EDN chars + 9,000, +/-1.6%, per-type density 2.0-4.0
+        -- chars/token), never by a raw event count: the 2x density spread
+        -- means one event count either wastes headroom or still times out.
+        -- Every event excluded by the budget is OBSERVABLE. Motivating
+        -- incident (W39): the claim path went 0-of-5 timeout-dominated once
+        -- the dominant class reached 274 occurrences; CC-15 had measured
+        -- 688,018 prompt tokens at a 154-occurrence window. ADR 0030.
+
+    @invariant EveryConsolidationRequestYieldsAnOutcome
+        -- A consolidation request terminates in exactly one durable outcome
+        -- event -- deltas recorded, ClaimSetUnchanged's exclusion shape, or a
+        -- failure record. A request with NO outcome is a defect, not an
+        -- ambiguity: the 2026-08-18 request that vanished under a mid-flight
+        -- JVM death was indistinguishable from health, which is the exact
+        -- blindness FailureIsVisible exists to forbid.
 }
 
 -- CC-22: the parent-inference ColBERT query rendered from a description.
