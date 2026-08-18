@@ -1,6 +1,12 @@
 {:paths []
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
 
+        ;; LMDB-NATIVE-HARNESS-CRASH: pin lmdbjava ahead of grain's transitive
+        ;; 0.9.2. Not a proven fix for the SIGSEGV (no matching changelog
+        ;; entry), but free and can't hurt — see workspace.edn's "orc"
+        ;; project entry and docs/build-timeline/issues/lmdb-native-harness-crash/.
+        org.lmdbjava/lmdbjava {:mvn/version "0.9.3"}
+
         obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
                                :git/sha "5de0735d04916c63055a76637fa9bdef36345533"
                                :deps/root "projects/grain-core-v2"}
