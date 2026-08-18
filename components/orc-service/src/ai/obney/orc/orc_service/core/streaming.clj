@@ -562,22 +562,26 @@
   "Non-blocking streamed execution. Subscribes, then dispatches the tick the
    same way runtime/execute does, and returns immediately.
 
-   Accepts every runtime/execute option (:timeout-ms :use-version
-   :force-draft :trace? :langfuse-client :store-trace? :max-ticks
-   :llm-call-budget :tick-id :correlation-id) plus subscription opts (:include-values?
-   :buffer :ttl-ms).
+   Accepts every runtime/execute option (:timeout-ms :result-grace-ms
+   :use-version :force-draft :trace? :langfuse-client :store-trace?
+   :max-ticks :llm-call-budget :tick-id :correlation-id) plus subscription
+   opts (:include-values? :buffer :ttl-ms). A run declared WEDGED (see
+   runtime/expire-run!) closes the stream with reason :wedged and delivers
+   the distinct non-retryable liveness failure to :result.
 
    Returns {:tick-id uuid
             :events-ch <chan of envelopes>
             :close! (fn [])
             :result <promise of the exact runtime/execute return map>}
    or an anomaly map when subscription fails."
-  [context sheet-id inputs & {:keys [timeout-ms use-version force-draft
+  [context sheet-id inputs & {:keys [timeout-ms result-grace-ms use-version force-draft
                                      trace? langfuse-client store-trace?
                                      max-ticks llm-call-budget tick-id
                                      correlation-id
                                      include-values? llm-deltas? raw-deltas? buffer ttl-ms]
-                              :or {timeout-ms 300000 store-trace? true
+                              :or {timeout-ms 300000
+                                   result-grace-ms runtime/default-result-grace-ms
+                                   store-trace? true
                                    include-values? true
                                    buffer default-buffer}}]
   (let [correlation-id (or correlation-id (:orc/correlation-id context))
@@ -587,8 +591,10 @@
                                           :llm-deltas? llm-deltas?
                                           :raw-deltas? raw-deltas?
                                           :buffer buffer
-                                          ;; stream at least as long as the execution
-                                          :ttl-ms (or ttl-ms (+ timeout-ms 60000)))]
+                                          ;; stream at least as long as the execution;
+                                          ;; the slack is the engine's own result-delivery
+                                          ;; grace (also the PR-4 liveness grace default)
+                                          :ttl-ms (or ttl-ms (+ timeout-ms runtime/default-result-grace-ms)))]
     (if (:cognitect.anomalies/category subscription)
       subscription
       (let [result-promise (promise)
@@ -639,11 +645,13 @@
                   duration-ms (- (System/currentTimeMillis) start-time)]
               (runtime/deregister-completion! tick-id)
               (if (= result ::timeout)
-                (do
-                    (close-subscription! (:sub-id subscription) :timeout)
-                    (deliver result-promise
-                             (runtime/timeout-execution!
-                              context sheet-id tick-id inputs duration-ms)))
+                (let [expired (runtime/expire-run!
+                               context sheet-id tick-id inputs duration-ms
+                               {:grace-ms result-grace-ms
+                                :seam :orc.streaming/execute-stream})]
+                  (close-subscription! (:sub-id subscription)
+                                       (if (:wedged? expired) :wedged :timeout))
+                  (deliver result-promise expired))
                 ;; terminal tick event closes the stream; just deliver
                 (deliver result-promise (assoc result :duration-ms duration-ms))))))
         {:tick-id tick-id

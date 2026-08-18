@@ -11,7 +11,8 @@
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time]
+            [com.brunobonacci.mulog :as u]))
 
 (defn- timeout-node-path [nodes-by-id node-id]
   (loop [current node-id path () seen #{}]
@@ -265,9 +266,18 @@
 
 (defn timeout-execution!
   "Make a caller deadline terminal, interrupt active work, and synchronously
-   persist the partial event-derived trace before returning."
-  [context sheet-id tick-id inputs duration-ms]
-  (let [active-attempts (execution-budget/attempts-for-tick tick-id)
+   persist the partial event-derived trace before returning.
+
+   The optional opts map accepts :error — an override for the durable trace's
+   error string (and the cancel reason), used by `expire-run!` so a WEDGED
+   run's trace carries the liveness attribution instead of the generic
+   \"Execution timed out\". The returned map keeps :status :timeout either
+   way; wedge-distinct RESULT shaping is `expire-run!`'s job."
+  ([context sheet-id tick-id inputs duration-ms]
+   (timeout-execution! context sheet-id tick-id inputs duration-ms nil))
+  ([context sheet-id tick-id inputs duration-ms {:keys [error]}]
+  (let [error (or error "Execution timed out")
+        active-attempts (execution-budget/attempts-for-tick tick-id)
         cancel-command-time (time/now)
         cancel-result (cp/process-command
                        (assoc context :command
@@ -275,7 +285,7 @@
                                :command/timestamp cancel-command-time
                                :command/name :sheet/cancel-tick
                                :sheet-id sheet-id :tick-id tick-id
-                               :reason "Execution timed out"}))
+                               :reason error}))
         cancellation-events (into [] (es/read (:event-store context)
                                               {:tenant-id (:tenant-id context)
                                                :types #{:sheet/tick-cancelled}
@@ -308,15 +318,141 @@
                             :input-snapshot (profile/profile-values (or inputs {}))
                             :output-snapshot {}
                             :node-traces node-traces
-                            :error "Execution timed out"}))]
+                            :error error}))]
         (when (and (:cognitect.anomalies/category stored) (< attempt 4))
           (recur (inc attempt)))))
     (execution-budget/clear-tick! tick-id)
     (forget-ephemeral-context! tick-id)
     {:status :timeout
      :trace-id tick-id
-     :error "Execution timed out"
-     :duration-ms duration-ms}))
+     :error error
+     :duration-ms duration-ms})))
+
+;; =============================================================================
+;; PR-4 per-run liveness (register W37, forensic evidence/pr3/PR3-FORENSIC.md)
+;;
+;; Every promise-deref-on-a-run seam is bounded by the run's own :timeout-ms.
+;; What was missing is DISTINCTNESS at expiry: a run whose engine went SILENT
+;; (Shape A: no thread executes it at all; Shape B: wedged inside a nested
+;; engine run) produced the same {:status :timeout} as a live run that merely
+;; overran its budget — and :timeout is a RETRYABLE status (the ontology
+;; reranker retries it once, RR-1), so a wedge got retried, doubling the
+;; stall. These helpers classify the expiry from the engine's own durable
+;; evidence and give a wedge a distinct, attributable, non-retryable failure.
+;; The completion-registry architecture is untouched (parked decision): we
+;; bound and classify the waits, we do not redesign delivery.
+;; =============================================================================
+
+(def default-result-grace-ms
+  "How much silence beyond the run budget the engine is granted before a run
+   is declared wedged, when the caller does not pass :result-grace-ms.
+
+   DERIVED, not invented: this is the engine's own result-delivery slack —
+   execute-stream keeps a run's stream subscription alive for
+   (+ timeout-ms default-result-grace-ms) (\"stream at least as long as the
+   execution\"), i.e. the engine itself declares that a run's machinery may
+   lag its budget by at most this much before the stream is reaped. The
+   consumer-side W35 bound uses the same relation:
+   (:timeout-ms execution | 300000) + (:result-grace-ms | 60000). An engine
+   silent for longer than its own reaping slack is not slow — it is gone."
+  60000)
+
+(defn run-liveness-verdict
+  "Classify a run whose completion-promise deref just expired: WEDGED or
+   merely over budget. Reads only the engine's own evidence:
+
+   - In-flight provider attempts (`execution-budget/attempts-for-tick`).
+     A recorded attempt is a SELF-BOUNDED wait — the executor caps each
+     provider request at the remaining deadline — so its presence proves
+     the engine is alive inside a bounded call: NOT wedged.
+   - The run's durable tick events. If the newest event is older than
+     `grace-ms`, the engine went silent for longer than its own declared
+     result-delivery slack (see `default-result-grace-ms`) while still
+     owing a result: WEDGED. A run that never emitted a single event has
+     been silent since dispatch, so its silence age is the whole wait
+     (`waited-ms`) — a short-budget run whose tick simply had not started
+     yet stays an ordinary :timeout instead of a false wedge.
+
+   Registered :code work (`active-work`) is deliberately NOT liveness
+   evidence — it has no self-bound, and work-that-never-finishes is exactly
+   the wedge shape this classifier exists to name (the forensic's
+   forever-blocking leaf). A run silent because a nested run under it is
+   busy is still, at THIS seam, past its own budget with no bounded wait to
+   point at; retrying it would relaunch the nested work — the observed
+   W2R-4 harm — so it too classifies as wedged.
+
+   Returns {:wedged? bool
+            :in-flight-attempts n
+            :last-activity-age-ms ms   ;; the whole wait when the run never
+            :grace-ms ms}              ;; emitted a single event"
+  [context tick-id grace-ms waited-ms]
+  (let [attempts (execution-budget/attempts-for-tick tick-id)
+        events (into [] (es/read (:event-store context)
+                                 {:tenant-id (:tenant-id context)
+                                  :tags #{[:tick tick-id]}}))
+        now (time/now)
+        last-activity-age-ms (or (when-let [newest (:event/timestamp (last events))]
+                                   (trace-time/elapsed-ms newest now))
+                                 waited-ms)
+        wedged? (and (empty? attempts)
+                     (>= last-activity-age-ms grace-ms))]
+    {:wedged? wedged?
+     :in-flight-attempts (count attempts)
+     :last-activity-age-ms last-activity-age-ms
+     :grace-ms grace-ms}))
+
+(defn expire-run!
+  "Handle a completion-promise deref that expired at the run's bound.
+
+   Classifies the expiry via `run-liveness-verdict`, then runs the same
+   durable containment either way (`timeout-execution!`: cancel the tick,
+   interrupt active work, persist the partial trace, clear budgets).
+
+   - Over budget but alive (recent events or an in-flight bounded provider
+     attempt): the existing contract, {:status :timeout} — retryable.
+   - WEDGED (silent past the run's own budget + the engine's own grace):
+     a DISTINCT, attributable, NON-RETRYABLE failure:
+       {:status :failure         ;; never :timeout — no retry loop matches
+        :wedged? true
+        :error \"Run wedged: ...\"  ;; carries no retryable fragment
+        :liveness {:seam :tick-id :sheet-id :waited-ms
+                   :last-activity-age-ms :grace-ms :in-flight-attempts}}
+     The durable trace keeps :status :timeout (schema untouched) but its
+     :error carries the wedge attribution.
+
+   `seam` names the deref site that expired (e.g. :orc.runtime/execute)."
+  [context sheet-id tick-id inputs duration-ms {:keys [grace-ms seam]}]
+  (let [grace-ms (or grace-ms default-result-grace-ms)
+        {:keys [wedged? in-flight-attempts last-activity-age-ms]
+         :as verdict} (run-liveness-verdict context tick-id grace-ms duration-ms)]
+    (if-not wedged?
+      (timeout-execution! context sheet-id tick-id inputs duration-ms)
+      (let [error (str "Run wedged at " seam ": engine silent for "
+                       last-activity-age-ms
+                       " ms during a " duration-ms " ms wait on tick " tick-id
+                       " (grace " grace-ms " ms); a wedged run is terminal"
+                       " and must not be retried")]
+        (u/log ::run-wedged
+               :seam seam
+               :tick-id tick-id
+               :sheet-id sheet-id
+               :waited-ms duration-ms
+               :last-activity-age-ms last-activity-age-ms
+               :grace-ms grace-ms
+               :in-flight-attempts in-flight-attempts)
+        (timeout-execution! context sheet-id tick-id inputs duration-ms
+                            {:error error})
+        {:status :failure
+         :wedged? true
+         :error error
+         :outputs {}
+         :trace-id tick-id
+         :duration-ms duration-ms
+         :liveness (assoc verdict
+                          :seam seam
+                          :tick-id tick-id
+                          :sheet-id sheet-id
+                          :waited-ms duration-ms)}))))
 
 (defn register-completion!
   "Register a promise for a tick-id. Returns the promise."
@@ -402,6 +538,10 @@
 
    Options:
      :timeout-ms - Max execution time in ms (default 300000 = 5 minutes)
+     :result-grace-ms - Silence tolerance used to classify an expired wait
+                        as WEDGED vs merely over budget (default
+                        `default-result-grace-ms`, the engine's own
+                        stream-reaping slack; see `run-liveness-verdict`)
      :use-version - Specific version number to execute (overrides execution-mode)
      :force-draft - Force draft execution even if execution-mode is :published
      :trace? - Enable tracing (passed to async pipeline via options)
@@ -424,12 +564,16 @@
       :outputs {\"key\" value ...}
       :duration-ms 1234
       :error string?             ;; Present if status is :failure
-      :executed-version ...}     ;; Version number if published version was used"
-  [context sheet-id inputs & {:keys [timeout-ms use-version force-draft
+      :executed-version ...      ;; Version number if published version was used
+      :wedged? true              ;; Present only when the run was declared
+      :liveness {...}}           ;; wedged — see `expire-run!` (non-retryable)"
+  [context sheet-id inputs & {:keys [timeout-ms result-grace-ms use-version force-draft
                                       trace? langfuse-client store-trace?
                                       max-ticks llm-call-budget tick-id parent-tick-id
                                       correlation-id input-sources return-references?]
-                               :or {timeout-ms 300000 store-trace? true}}]
+                               :or {timeout-ms 300000
+                                    result-grace-ms default-result-grace-ms
+                                    store-trace? true}}]
   (let [correlation-id (or correlation-id (:orc/correlation-id context))
         tick-id (or tick-id (random-uuid))
         p (register-completion! tick-id)
@@ -479,7 +623,9 @@
             duration-ms (- (System/currentTimeMillis) start-time)]
         (swap! completion-registry dissoc tick-id)
         (if (= result ::timeout)
-          (timeout-execution! context sheet-id tick-id inputs duration-ms)
+          (expire-run! context sheet-id tick-id inputs duration-ms
+                       {:grace-ms result-grace-ms
+                        :seam :orc.runtime/execute})
           (cond-> (assoc (if return-references?
                            result
                            (dissoc result :output-sources))
