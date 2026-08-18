@@ -18,9 +18,32 @@
             "orc-gepa" {:test {:include ["gepa"]}}
             "orc-mcp-sheet-builder" {:test {:include ["mcp-sheet-builder"]}}
             "orc-ontology" {:test {:include ["ontology"]}}
-            ;; orc-colbert is a deps-only packaging project; its brick tests
-            ;; already run under the orc project. Re-running them here loads
-            ;; the DJL tokenizers native library in a second classloader in
-            ;; the same test JVM, which the JVM forbids (UnsatisfiedLinkError:
-            ;; already loaded in another classloader). Run them once.
-            "orc-colbert" {:test {:include []}}}}
+            ;; LMDB-NATIVE-HARNESS-CRASH: colbert's brick tests moved OUT of
+            ;; the `orc` project and INTO their own `orc-colbert` project.
+            ;;
+            ;; `clojure -M:poly test project:orc :all-bricks` (CI's "ORC test
+            ;; suites" job) intermittently aborts the whole test JVM with a
+            ;; native SIGSEGV in `lmdbjava-native-library-*.so` (2 of ~40 CI
+            ;; runs observed; both self-healed on rerun). The crash always
+            ;; lands within seconds of `judge-runtime-test` (evaluation
+            ;; brick) starting, immediately after colbert's own LMDB-heavy
+            ;; suite (index-store-test, corpus-test, index-search-test, ...)
+            ;; runs earlier in that SAME JVM/classloader — :all-bricks runs
+            ;; every brick's tests once, in one process, by design. Confirmed
+            ;; unrelated to any application-side leak (every test context's
+            ;; teardown correctly closes its LMDB env) and unrelated to any
+            ;; single PR (reproduced on two unrelated diffs). Full dossier:
+            ;; docs/build-timeline/issues/lmdb-native-harness-crash/.
+            ;;
+            ;; Excluding colbert from `orc` and running it under its own
+            ;; `orc-colbert` project instead gives it a genuinely separate
+            ;; JVM process in CI (a separate `run:` step — see
+            ;; .github/workflows/tests.yml), removing the adjacency without
+            ;; losing coverage. `orc`'s new :exclude and orc-colbert's new
+            ;; :include are mutually exclusive by construction, so colbert's
+            ;; tests run in exactly one project's scope under every
+            ;; invocation mode (solo `project:X`, or a composite mode that
+            ;; touches both projects in one JVM) — never duplicated, and
+            ;; never sharing a classloader with `orc`'s suite.
+            "orc" {:test {:exclude ["colbert"]}}
+            "orc-colbert" {:test {:include ["colbert"]}}}}

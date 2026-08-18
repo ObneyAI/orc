@@ -25,10 +25,22 @@ jobs:
 
       - uses: ./.github/actions/setup-clojure
 
+      # LMDB-NATIVE-HARNESS-CRASH: colbert's tests run here, in their own
+      # process, before the aggregate step below. Rationale and full dossier:
+      # docs/build-timeline/issues/lmdb-native-harness-crash/. Short version —
+      # colbert's LMDB-heavy suite sharing one JVM/classloader with the
+      # evaluation brick's (also LMDB-backed) tests intermittently SIGSEGVs
+      # the whole test JVM. A separate `run:` step is a separate JVM process,
+      # which removes the adjacency without losing coverage (workspace.edn
+      # excludes colbert from the `orc` project's test scope accordingly).
+      - name: Run colbert brick tests (isolated JVM)
+        run: clojure -M:poly test project:orc-colbert :all-bricks
+
       # `project:orc` selects a project but leaves Polylith in its default
       # incremental mode, which can legitimately select zero tests on a clean
       # CI checkout. `:all-bricks` forces every test-bearing production brick
       # in the aggregate project to run exactly once in one classloader.
+      # (colbert excluded here — see workspace.edn and the step above.)
       - name: Run aggregate ORC project tests
         run: clojure -M:poly test project:orc :all-bricks
 
