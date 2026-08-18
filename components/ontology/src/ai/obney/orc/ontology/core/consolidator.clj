@@ -49,14 +49,181 @@
             [com.brunobonacci.mulog :as u]))
 
 ;; =============================================================================
-;; Recent-window size (configurable in C-2a-3c via event-sourced config)
+;; PR-1 (ADR 0030, spec invariant BoundedReflectionEvidence) — the evidence
+;; window is selected NEWEST-FIRST within a TOKEN budget predicted from
+;; CC-21's banked measurement, never by a raw event count.
+;;
+;; The event-count cap this replaces (`recent-window-size` = 500) was the
+;; wrong FORM, not just the wrong number: CC-21 measured per-target-type
+;; density spanning 2.0–4.0 chars/token, so any single count either wastes
+;; headroom on sparse targets or still times out on dense ones (W39: the
+;; claim path went 0/5 timeout-dominated; CC-15 measured 688,018 prompt
+;; tokens at a 154-occurrence window).
+;;
+;; The banked predictor (CC21-MEASUREMENT.md §1, 10 real provider anchors,
+;; raw/anchors.edn): prompt chars ~ window EDN chars + 9,000, within ±1.6%
+;; of the prediction on all 10. If prompt assembly changes shape, that
+;; envelope must be RE-MEASURED — the pin tests in
+;; pr1_bounded_evidence_window_test.clj go red on drift by design.
 ;; =============================================================================
 
-(def ^:private recent-window-size
-  "Default window size for the consolidator's recent-events input.
-   Decoupled from the threshold (trigger fires after N=10 events; the
-   reflection sees up to W=500 historical events for richer context)."
-  500)
+(def ^:private evidence-prompt-overhead-chars
+  "CC-21 §1: the measured non-window share of the rendered reflection prompt
+   (instruction + claim-set scaffolding). prompt chars ~ window EDN chars +
+   THIS, within `evidence-predictor-envelope` on all 10 provider anchors."
+  9000)
+
+(def ^:private evidence-predictor-envelope
+  "CC-21 §1: the banked relative error of the overhead predictor —
+   |measured − predicted| / predicted ≤ 1.6% across all 10 anchors (the
+   E-w20 anchor sits at 1.5995%, so the denominator is the PREDICTION;
+   dividing by the measurement instead puts E-w20 at 1.6255% and falsifies
+   the banked '±1.6%, all 10')."
+  0.016)
+
+(def ^:private banked-reflection-instruction-chars
+  "The length of `reflection-instruction` at the time the CC-21 envelope was
+   banked against production prompts. Pinned EXACTLY by test: any edit to the
+   instruction changes the +9,000-char overhead, so the envelope must be
+   re-measured and this constant re-banked — never silently absorbed."
+  5251)
+
+(def ^:private banked-claim-reflection-instruction-chars
+  "As `banked-reflection-instruction-chars`, for the claim path's
+   `claim-reflection-instruction`."
+  3920)
+
+(def ^:private evidence-density-chars-per-token
+  "CC-21's banked per-target-type density constants (chars of rendered prompt
+   per provider token). Each measured entry is the FLOOR (2 decimals, rounded
+   DOWN) of the minimum provider-measured density for that type, so predicted
+   tokens are never underestimated by the constant:
+
+     :node-type     1.99 — the E anchor (:repl-researcher), 1,145,212 chars /
+                    574,914 provider tokens. The densest payload measured.
+     :node-instance 3.17 — the A/B/C anchors (3.175–3.970); the floor is
+                    A-w500. CAVEAT, stated not hidden: a :node-instance of a
+                    dense node-type (the repl-researcher twin carries the
+                    byte-identical 178-event payload as E) tokenises at ~2.0,
+                    which this constant under-predicts by ~1.6x. Post-CC-21b
+                    projection that window is ~134 KB — bounded far below
+                    both provider ceilings — and the exclusion events (PR-2)
+                    make any resulting truncation observable.
+     :tree-class    3.47 — NO provider anchor exists; this is CC-21 §3's
+                    fitted estimate for the join-path window (1,183,844 B →
+                    340,207 est tokens, p_cls model, ≤10.8% residual).
+                    Weaker provenance than the anchors, flagged as such.
+     :tree-fingerprint 1.99 — unmeasurable today (CC-21 adjacent defect B:
+                    0 events carry the target), so the global measured floor.
+
+   Recovering headroom for an under-predicted type requires NEW anchors,
+   not a bigger constant."
+  {:node-type        1.99
+   :node-instance    3.17
+   :tree-fingerprint 1.99
+   :tree-class       3.47})
+
+(def ^:private evidence-density-fallback-chars-per-token
+  "For a target-type outside the table: the global measured floor (the E
+   anchor), the conservative direction — more predicted tokens, never fewer."
+  1.99)
+
+(defn evidence-density-constants
+  "The CC-21 density constants for one target-type, in the shape
+   `select-evidence-window` consumes: {:chars-per-token :overhead-chars}.
+   Public for test access."
+  [target-type]
+  {:chars-per-token (get evidence-density-chars-per-token target-type
+                         evidence-density-fallback-chars-per-token)
+   :overhead-chars evidence-prompt-overhead-chars})
+
+(defn select-evidence-window
+  "PURE selection of the reflection's evidence window (spec invariant
+   BoundedReflectionEvidence, ADR 0030).
+
+   `events` is the target's observation window in event-store order (most
+   recent LAST — the order `gather-recent-events` produces). The selection
+   walks NEWEST-first and keeps the longest contiguous newest suffix whose
+   PREDICTED prompt tokens fit `budget-tokens`, where
+
+     predicted chars  = overhead-chars + window EDN chars
+                        (window EDN chars = (count (pr-str selected-vector)),
+                         accounted incrementally: Σ per-event pr-str chars
+                         + n separators/brackets + 1)
+     predicted tokens = ⌈predicted chars / chars-per-token⌉
+
+   — CC-21's banked predictor, per-type density supplied by the caller via
+   `evidence-density-constants`. The walk stops at the FIRST event that
+   overflows (a contiguous suffix, so recency order is never violated by
+   skipping a large event to admit an older small one), which also makes the
+   split deterministic: a pure function of (events, constants, budget).
+
+   Returns {:selected :excluded :predicted-prompt-chars
+   :predicted-prompt-tokens} — both vectors chronological (oldest first);
+   `:excluded` is the oldest prefix squeezed out by the budget. PR-2 makes
+   every excluded event OBSERVABLE as a durable exclusion event; this slice
+   returns them and logs, and MUST NOT emit.
+
+   Degenerate case, deliberate: a budget too small for even the newest event
+   (or the bare overhead) selects NOTHING — the empty window then walks into
+   CC-4's evidence guard exactly as an empty gather does today, and the
+   exclusions carry the why."
+  [events {:keys [chars-per-token overhead-chars]} budget-tokens]
+  (let [predict-tokens (fn [chars]
+                         (long (Math/ceil (/ (double chars)
+                                             (double chars-per-token)))))
+        ;; (count (pr-str v)) for a vector of n items whose pr-strs sum to s:
+        ;; s + (n−1) separators + 2 brackets = s + n + 1; "[]" = 2 for n=0.
+        window-chars (fn [sum-chars n]
+                       (if (zero? n) 2 (+ sum-chars n 1)))
+        result (fn [selected excluded sum-chars n]
+                 (let [chars (+ overhead-chars (window-chars sum-chars n))]
+                   {:selected (vec selected)
+                    :excluded excluded
+                    :predicted-prompt-chars chars
+                    :predicted-prompt-tokens (predict-tokens chars)}))]
+    (loop [remaining (reverse events)     ; newest first
+           selected ()                    ; rebuilt chronological by cons
+           sum-chars 0
+           n 0]
+      (if-let [ev (first remaining)]
+        (let [sum' (+ sum-chars (count (pr-str ev)))
+              n' (inc n)]
+          (if (<= (predict-tokens (+ overhead-chars (window-chars sum' n')))
+                  budget-tokens)
+            (recur (rest remaining) (cons ev selected) sum' n')
+            (result selected (vec (reverse remaining)) sum-chars n)))
+        (result selected [] sum-chars n)))))
+
+(defn- budgeted-window
+  "Apply the BoundedReflectionEvidence selection for one gathered window and
+   return its `:selected` half. The `:excluded` half is LOGGED here and
+   consumed durably by PR-2's exclusion events — this slice must not emit."
+  [ctx target-type target-id events]
+  (let [budget (try (ontology/get-evidence-token-budget ctx)
+                    (catch Exception e
+                      ;; CC-27 posture (see `claims-for-inference`): a context
+                      ;; without the read-model cache cannot reach the config
+                      ;; seam — announce LOUDLY and bound by the DERIVED
+                      ;; default rather than throwing or silently unbounding.
+                      (u/log ::evidence-budget-config-read-unavailable
+                             :target-type target-type
+                             :target-id target-id
+                             :error (.getMessage e))
+                      read-models/default-evidence-token-budget))
+        {:keys [selected excluded predicted-prompt-tokens]}
+        (select-evidence-window events
+                                (evidence-density-constants target-type)
+                                budget)]
+    (when (seq excluded)
+      (u/log ::evidence-window-events-excluded
+             :target-type target-type
+             :target-id target-id
+             :budget-tokens budget
+             :selected-count (count selected)
+             :excluded-count (count excluded)
+             :predicted-prompt-tokens predicted-prompt-tokens))
+    selected))
 
 ;; =============================================================================
 ;; Reflection prompt + structured-output workflow
@@ -617,10 +784,10 @@
    The judge-scores join lets the LLM weight judge-grounded signal
    alongside raw execution evidence (Gap-3 C-3 wiring).
 
-   Per LIVING-DESCRIPTIONS.md's decoupled-threshold-and-window safeguard:
-   capped at recent-window-size so a single bad burst doesn't reshape
-   the description; aggregate metrics give the LLM the historical
-   baseline to compare against."
+   Per LIVING-DESCRIPTIONS.md's decoupled-threshold-and-window safeguard the
+   window is BOUNDED — since PR-1 by the token budget (newest-first, ADR
+   0030) rather than an event count; aggregate metrics give the LLM the
+   historical baseline to compare against."
   [ctx target-id]
   (let [task-classifieds (->> (es/read (:event-store ctx)
                                        {:types #{:ontology/task-classified}
@@ -676,12 +843,13 @@
                                                           :emitted-at]))
                                         judge-events)))))
                      task-classifieds)]
-    (vec (take-last recent-window-size joined))))
+    (budgeted-window ctx :tree-class target-id joined)))
 
 (defn- gather-recent-events
-  "Pull the last W events for this target from the event store.
-   Returns a vector of cleaned event maps (in event-store order, most
-   recent last). Capped at recent-window-size.
+  "Pull this target's observation window from the event store. Returns a
+   vector of cleaned event maps (in event-store order, most recent last),
+   selected newest-first within the evidence token budget (PR-1, ADR 0030
+   — see `select-evidence-window`).
 
    C-Loop-1: :tree-class targets use a join path that pairs
    task-classified observations with their execution outcomes — see
@@ -711,8 +879,8 @@
                                                      :score :feedback :dimensions
                                                      :emitted-at])
                                      scores))))))
-             (take-last recent-window-size)
-             vec)))))
+             vec
+             (budgeted-window ctx target-type target-id))))))
 
 (defn- success-rate
   "Fraction of events with :status :success. nil for empty input."
@@ -1454,7 +1622,8 @@
 (def ^:private max-episodes-per-delta
   "How many of the evidence window's occurrences ride on one delta.
 
-   The window itself is capped at `recent-window-size` (500). Filing all 500 on
+   The window itself is bounded by the evidence token budget (PR-1; formerly
+   the 500-event `recent-window-size` cap). Filing every windowed occurrence on
    every claim on every consolidation would grow `:supporting-episodes`
    without bound — CC-2's fold appends without de-duplicating, and it is not
    this slice's to change — which is the same unbounded-growth defect CC-13

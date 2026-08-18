@@ -399,6 +399,15 @@
   [ctx target-type]
   (rm/get-consolidation-budget ctx target-type))
 
+(defn get-evidence-token-budget
+  "PR-1 (ADR 0030): return the consolidator's evidence token budget — the
+   predicted-prompt-token bound the newest-first evidence window selection
+   respects. Falls back to the DERIVED default
+   (read-models/default-evidence-token-budget) when no override has been
+   set via :ontology/set-evidence-token-budget."
+  [ctx]
+  (rm/get-evidence-token-budget ctx))
+
 (defn get-recent-consolidation-count
   "C-2a-3c: return how many consolidation attempts have fired for the
    given target-type in the rolling last-hour window — successes

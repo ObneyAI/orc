@@ -1294,6 +1294,22 @@
              :budget budget
              :set-at (now-str)}})]})
 
+(defcommand :ontology set-evidence-token-budget
+  "PR-1 (ADR 0030): set the consolidator's evidence token budget — the
+   predicted-prompt-token bound the newest-first evidence window selection
+   respects (spec invariant BoundedReflectionEvidence). GLOBAL, not
+   per-target-type. Emits :ontology/evidence-token-budget-set; the
+   evidence-token-budget read-model projects it for runtime lookup. The
+   DERIVED default (read-models/default-evidence-token-budget) applies when
+   no override has been set."
+  [{{:keys [budget-tokens]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/evidence-token-budget-set
+      :tags #{[:description-target (stable-uuid-from "evidence-token-budget-config")]}
+      :body {:budget-tokens budget-tokens
+             :set-at (now-str)}})]})
+
 (defcommand :ontology set-reindex-config
   "C-2b-1: set the global ColBERT re-index config (event-count threshold
    + timer-minutes). Emits :ontology/reindex-config-set; the reindex-config

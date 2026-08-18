@@ -934,6 +934,15 @@
     [:budget :int]
     [:set-at :string]]
 
+   ;; PR-1 (ADR 0030): the consolidator's evidence TOKEN budget — the
+   ;; predicted-prompt-token bound for the newest-first evidence window
+   ;; selection (spec invariant BoundedReflectionEvidence). Global config;
+   ;; the derived default applies when unset.
+   :ontology/evidence-token-budget-set
+   [:map
+    [:budget-tokens :int]
+    [:set-at :string]]
+
    ;; -------------------------------------------------------------------------
    ;; C-2b-1 — Re-index config event
    ;; -------------------------------------------------------------------------
@@ -1379,6 +1388,10 @@
    [:map
     [:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
     [:budget :int]]
+
+   :ontology/set-evidence-token-budget
+   [:map
+    [:budget-tokens :int]]
 
    ;; Gap-1: opt-in flag command (see :ontology/living-description-enabled-set
    ;; event for rationale).

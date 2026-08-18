@@ -1320,6 +1320,94 @@
       default-consolidation-budget))
 
 ;; =============================================================================
+;; PR-1 (ADR 0030) — evidence token budget config
+;; =============================================================================
+;;
+;; The consolidator's reflection evidence window is selected newest-first
+;; within THIS budget of predicted prompt tokens (see
+;; consolidator/select-evidence-window). Event-sourced config following the
+;; C-2a-3c consolidation-budgets pattern; GLOBAL (one provider context, one
+;; deadline — not per-target-type; per-type variation lives in the density
+;; constants, not the budget).
+
+(def provider-context-token-limit
+  "The provider's context ceiling, proved VERBATIM by CC-21 from the real
+   rejection message: 'This endpoint's maximum context length is 1048576
+   tokens.' (CC21-MEASUREMENT.md §1 — the chars/4 pre-flight identity was
+   proved against this same number to within 0.4%.)"
+  1048576)
+
+(def smallest-timeout-class-prompt-tokens
+  "The floor of the MEASURED failing prompt-size class under the executor's
+   default 300,000 ms deadline (orc/execute :timeout-ms): the E-w20 anchor,
+   574,914 provider-measured prompt tokens. Prompts of this class are
+   failure-dominated today — W39: 0/5 claim-path outcomes since 08-14 with
+   3 :timeout at ~600K-token prompts; W25: marker OMISSION observed at the
+   same scale. (E-w20 itself completed once in P-E's era; its class no
+   longer does.)"
+  574914)
+
+(def largest-clean-anchor-prompt-tokens
+  "The largest of CC-21's 10 provider anchors BELOW the failing class:
+   A-w500, 327,681 provider-measured prompt tokens — accepted, answered,
+   no recorded failure mode at any deadline."
+  327681)
+
+(def default-evidence-token-budget
+  "The DERIVED default evidence budget (predicted prompt tokens) — the
+   derivation IS the value, never a bare number:
+
+     (min (quot provider-context-token-limit 2)   ; = 524,288
+          largest-clean-anchor-prompt-tokens)     ; = 327,681
+     => 327,681
+
+   Ceiling 1 — provider, halved: CC-21's two-ceiling finding is that the
+   chars/4 pre-flight gate under-reads real tokens by up to 50% on dense
+   (2.0 chars/token) payload, so a prompt at half the nominal limit is the
+   largest one that cannot cross the REAL tokenizer ceiling even at maximum
+   measured density — and it leaves the other half of the context for the
+   completion.
+
+   Ceiling 2 — acceptable generation time: under the executor's default
+   300,000 ms deadline the ~575-600K-token class is measured
+   failure-dominated (W39 timeouts, W25 marker omission — see
+   `smallest-timeout-class-prompt-tokens`), so the time-derived ceiling is
+   the largest banked prompt measured CLEAN below that class:
+   `largest-clean-anchor-prompt-tokens`.
+
+   The min binds at ceiling 2. Raising it is an operator decision through
+   :ontology/set-evidence-token-budget, with the derivation above as the
+   thing being consciously overridden."
+  (min (quot provider-context-token-limit 2)
+       largest-clean-anchor-prompt-tokens))
+
+(defmulti evidence-token-budget*
+  (fn [_state event] (:event/type event)))
+
+(defmethod evidence-token-budget* :default [state _] state)
+
+(defmethod evidence-token-budget* :ontology/evidence-token-budget-set
+  [_state event]
+  {:budget-tokens (:budget-tokens event)})
+
+(defn evidence-token-budget
+  "Build the evidence-token-budget config state from a seq of events."
+  [initial-state events]
+  (reduce evidence-token-budget* initial-state events))
+
+(defreadmodel :ontology evidence-token-budget
+  {:events #{:ontology/evidence-token-budget-set} :version 1}
+  [state event] (evidence-token-budget* state event))
+
+(defn get-evidence-token-budget
+  "Return the configured evidence token budget, or the DERIVED default
+   (`default-evidence-token-budget`) when no override has been set via
+   :ontology/set-evidence-token-budget."
+  [ctx]
+  (or (:budget-tokens (rmp/project ctx :ontology/evidence-token-budget))
+      default-evidence-token-budget))
+
+;; =============================================================================
 ;; C-2b-1 — Re-index config read-model
 ;; =============================================================================
 ;;
