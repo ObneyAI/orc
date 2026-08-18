@@ -127,7 +127,7 @@
      :tick-id tick-id
      :payload-bytes (* scale (count payload-unit))
      :l2-total (h/l2-write-bytes ctx)
-     :l2-tick-ctx (h/l2-write-bytes ctx "tick-execution-contexts")
+     :l2-tick-ctx (h/l2-write-bytes ctx :sheet/tick-execution-contexts)
      :entry-bytes (h/tick-context-l2-bytes ctx sheet-id tick-id 4)}))
 
 ;; =============================================================================
@@ -177,7 +177,7 @@
     ;; It cannot be satisfied by relocating a value to a different key.
     (h/with-async-test-context [ctx {:count-cache? true}]
       (let [{:keys [sheet-id tick-id]} (run-fixture! ctx 2)
-            raw (h/l2-entry-raw ctx "tick-execution-contexts" 4
+            raw (h/l2-entry-raw ctx :sheet/tick-execution-contexts 4
                                 {:tags #{[:tick tick-id]}} sheet-id)]
         (is (some? raw) "expected a stored entry")
         (is (not (h/bytes-contain? raw payload-unit))
