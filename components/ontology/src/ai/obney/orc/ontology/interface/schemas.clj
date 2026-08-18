@@ -560,6 +560,8 @@
                                                  [:trace-id :uuid]
                                                  [:model :string]
                                                  [:usage [:map-of :keyword :int]]]]]
+    ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
+    [:request-id {:optional true} :uuid]
     [:recorded-at :string]]
 
    :ontology/node-instance-description-updated
@@ -571,6 +573,8 @@
                                                  [:trace-id :uuid]
                                                  [:model :string]
                                                  [:usage [:map-of :keyword :int]]]]]
+    ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
+    [:request-id {:optional true} :uuid]
     [:recorded-at :string]]
 
    :ontology/tree-description-updated
@@ -592,6 +596,8 @@
                                                  [:trace-id :uuid]
                                                  [:model :string]
                                                  [:usage [:map-of :keyword :int]]]]]
+    ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
+    [:request-id {:optional true} :uuid]
     [:recorded-at :string]]
 
    ;; -------------------------------------------------------------------------
@@ -756,6 +762,14 @@
                                                      [:trace-id :uuid]
                                                      [:model :string]
                                                      [:usage [:map-of :keyword :int]]]]]
+    ;; PR-2 (EveryConsolidationRequestYieldsAnOutcome): which
+    ;; :ontology/consolidation-requested event this outcome answers — the
+    ;; REQUEST EVENT's :event/id, threaded by the consolidate-on-request
+    ;; processor. OPTIONAL (the CC-31 idiom): every pre-PR-2 event lacks it
+    ;; and must replay, and a direct caller recording deltas answers no
+    ;; request. The consolidation-request-ledger read model matches
+    ;; requests to outcomes on this key.
+    [:request-id           {:optional true} :uuid]
     [:recorded-at          :string]]
 
    ;; -------------------------------------------------------------------------
@@ -791,6 +805,10 @@
     ;; Which layer settled it: the deterministic check, or the
     ;; explanation verifier it hands the residue to.
     [:settled-by        [:enum :deterministic :verifier]]
+    ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
+    ;; When a consolidation's EVERY delta is excluded, these events ARE the
+    ;; spec's ClaimSetUnchanged outcome shape for the request.
+    [:request-id        {:optional true} :uuid]
     [:excluded-at       :string]]
 
    :ontology/claim-deltas-refused
@@ -802,6 +820,8 @@
     [:attempted-version :int]
     [:current-version   :int]
     [:delta-count       :int]
+    ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
+    [:request-id        {:optional true} :uuid]
     [:refused-at        :string]]
 
    ;; -------------------------------------------------------------------------
@@ -841,8 +861,15 @@
     ;; :timeout/:unparseable, whose attempt index the executor does not
     ;; surface, and for :caller-interrupted, where the executor never
     ;; returned at all (AttemptCountIsEvidenced) — see
-    ;; classify-reflection-failure.
+    ;; classify-reflection-failure. PR-2's orphan sweep records 0: a request
+    ;; whose outcome vanished under a mid-flight death evidences NO consumed
+    ;; provider attempt at all — asserting even the floor of 1 would be a
+    ;; count on no evidence, the exact thing SIO-4 forbids.
     [:attempts           :int]
+    ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded. The
+    ;; orphan sweep stamps the ORPHANED request's id here, which is what
+    ;; makes the swept record answer that request in the ledger.
+    [:request-id         {:optional true} :uuid]
     [:failed-at          :string]]
 
    ;; -------------------------------------------------------------------------
@@ -912,6 +939,46 @@
     [:on-demand? :boolean]
     [:requested-at :string]]
 
+   ;; PR-2 (EveryConsolidationRequestYieldsAnOutcome) — a consolidation that
+   ;; deliberately did NOT run to a write, recorded as a durable ANSWER.
+   ;; Blessed as a named outcome by the inspection ruling (spec tend
+   ;; e8c15571). Two reasons, and the field is what keeps THREE different
+   ;; facts distinguishable without widening the closed failure-reason set:
+   ;;
+   ;;   :budget-exhausted       — the hourly budget gate skipped the call
+   ;;                             before any LLM attempt. Carries :budget +
+   ;;                             :recent-count (what the gate compared, the
+   ;;                             claim-deltas-refused idiom).
+   ;;   :no-operations-proposed — the reflection SUCCEEDED and proposed zero
+   ;;                             operations. Not ClaimSetUnchanged (that
+   ;;                             shape is defined AS exclusion events, and
+   ;;                             there are none) and emphatically not a
+   ;;                             failure: before this event the request
+   ;;                             stayed orphaned and the sweep recorded
+   ;;                             :caller-interrupted about a SUCCESSFUL
+   ;;                             call — a false fact in the source of truth.
+   ;;
+   ;; A skip is an ANSWER, not a failure — its own event type, deliberately
+   ;; NOT folded into recent-consolidations (a budget skip consumed no LLM
+   ;; attempt and must not extend the very exhaustion that caused it; the
+   ;; zero-proposal case's LLM attempt is already counted by nothing else
+   ;; folding it — see FailuresConsumeBudget's note in the PR-2 report).
+   :ontology/consolidation-skipped
+   [:map
+    [:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
+    [:target-id [:or :keyword [:tuple :uuid :uuid] :string :uuid]]
+    ;; REQUIRED: no durable event of this type predates the field — the
+    ;; type was introduced in this same uncommitted slice, so there is no
+    ;; replay population to stay optional for.
+    [:reason [:enum :budget-exhausted :no-operations-proposed]]
+    ;; The gate's comparison — facts of the :budget-exhausted reason only,
+    ;; omitted (CC-31 idiom) on :no-operations-proposed.
+    [:budget {:optional true} :int]
+    [:recent-count {:optional true} :int]
+    ;; PR-2: outcome attribution — see :ontology/claim-deltas-recorded.
+    [:request-id {:optional true} :uuid]
+    [:skipped-at :string]]
+
    :ontology/consolidation-threshold-set
    [:map
     [:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
@@ -942,6 +1009,35 @@
    [:map
     [:budget-tokens :int]
     [:set-at :string]]
+
+   ;; PR-2 (ADR 0030, spec invariant BoundedReflectionEvidence): the durable
+   ;; record of a consolidation whose evidence window the token budget CUT.
+   ;; ONE compact summary event per consolidation-with-exclusions — never one
+   ;; event per excluded item: the motivating W39 window would have been 267
+   ;; exclusion events PER consolidation, and the excluded events themselves
+   ;; are already durable in the store. Because PR-1's selection keeps a
+   ;; contiguous newest suffix, the excluded set is exactly the target's
+   ;; window events in [oldest-excluded-at .. newest-excluded-at] — the
+   ;; bounds + counts identify every excluded event without restating them.
+   ;; Zero-exclusion consolidations emit NOTHING (no misleading empty
+   ;; records).
+   :ontology/reflection-evidence-excluded
+   [:map
+    [:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
+    [:target-id [:or :keyword [:tuple :uuid :uuid] :string :uuid]]
+    [:budget-tokens :int]
+    [:selected-count :int]
+    [:excluded-count :int]
+    ;; What the SELECTED window predicts — the number the budget bounded.
+    [:predicted-prompt-tokens :int]
+    ;; The excluded range's bounds (source-event :timestamp strings). :maybe
+    ;; because a source event predating timestamping carries none.
+    [:oldest-excluded-at [:maybe :string]]
+    [:newest-excluded-at [:maybe :string]]
+    ;; PR-2 outcome-totality attribution: which consolidation request this
+    ;; exclusion belongs to. Omitted (CC-31 idiom) for direct callers.
+    [:request-id {:optional true} :uuid]
+    [:excluded-at :string]]
 
    ;; -------------------------------------------------------------------------
    ;; C-2b-1 — Re-index config event
@@ -1193,17 +1289,22 @@
    ;; record-tree-strength/record-tree-weakness idiom. Each emits the
    ;; corresponding *-description-updated event.
 
+   ;; PR-2: each description command accepts an optional :request-id — the
+   ;; consolidation request its emitted event answers (outcome totality) —
+   ;; and stamps it onto the event.
    :ontology/record-node-type-description
    [:map
     [:target-id :keyword]
     [:body description-body]
-    [:model-provenance {:optional true} [:maybe :map]]]
+    [:model-provenance {:optional true} [:maybe :map]]
+    [:request-id {:optional true} :uuid]]
 
    :ontology/record-node-instance-description
    [:map
     [:target-id node-instance-target]   ;; [sheet-id node-id]
     [:body description-body]
-    [:model-provenance {:optional true} [:maybe :map]]]
+    [:model-provenance {:optional true} [:maybe :map]]
+    [:request-id {:optional true} :uuid]]
 
    :ontology/record-tree-description
    [:map
@@ -1211,7 +1312,8 @@
     ;; for the rationale.
     [:target-id [:or :string :uuid]]
     [:body description-body]
-    [:model-provenance {:optional true} [:maybe :map]]]
+    [:model-provenance {:optional true} [:maybe :map]]
+    [:request-id {:optional true} :uuid]]
 
    :ontology/record-tree-class-description
    [:map
@@ -1220,7 +1322,8 @@
     ;; keys on observed-tree SHA strings.
     [:target-id [:or :string :uuid]]
     [:body description-body]
-    [:model-provenance {:optional true} [:maybe :map]]]
+    [:model-provenance {:optional true} [:maybe :map]]
+    [:request-id {:optional true} :uuid]]
 
    ;; -------------------------------------------------------------------------
    ;; CC-1 (ADR 0021) — Claim delta command
@@ -1243,7 +1346,10 @@
     ;; direct caller recording deltas without an LLM legitimately has none.
     ;; Same loose shape the description commands use; the EVENT schema types
     ;; it precisely.
-    [:model-provenance     {:optional true} [:maybe :map]]]
+    [:model-provenance     {:optional true} [:maybe :map]]
+    ;; PR-2: the consolidation request this batch answers (outcome
+    ;; totality); stamped onto every event the handler emits.
+    [:request-id           {:optional true} :uuid]]
 
    ;; -------------------------------------------------------------------------
    ;; CC-28 — record a consolidation's terminal reflection failure
@@ -1260,7 +1366,24 @@
     [:target-identifier consolidation-target-identifier]
     [:reason            consolidation-failure-reason]
     [:error             {:optional true} [:maybe :string]]
-    [:attempts          :int]]
+    [:attempts          :int]
+    ;; PR-2: the consolidation request this failure answers (outcome
+    ;; totality). The orphan sweep supplies the ORPHANED request's id.
+    [:request-id        {:optional true} :uuid]]
+
+   ;; PR-2 (EveryConsolidationRequestYieldsAnOutcome): record a deliberate
+   ;; non-write as a durable answer — the budget gate's skip and the
+   ;; zero-proposal success. See the :ontology/consolidation-skipped event
+   ;; schema for the two reasons and the ruling (spec tend e8c15571).
+   :ontology/record-consolidation-skip
+   [:map
+    [:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
+    [:target-id [:or :keyword [:tuple :uuid :uuid] :string :uuid]]
+    [:reason [:enum :budget-exhausted :no-operations-proposed]]
+    ;; :budget-exhausted facts only; omitted on :no-operations-proposed.
+    [:budget {:optional true} :int]
+    [:recent-count {:optional true} :int]
+    [:request-id {:optional true} :uuid]]
 
    ;; Gap-6's two anti-recency AUDIT COMMAND schemas were removed by CC-5, with
    ;; the validator and the handlers that were their only callers. Nothing can
@@ -1392,6 +1515,22 @@
    :ontology/set-evidence-token-budget
    [:map
     [:budget-tokens :int]]
+
+   ;; PR-2 (BoundedReflectionEvidence): record the compact exclusion summary
+   ;; for one consolidation whose evidence window the token budget cut.
+   ;; Dispatched by the consolidator's `budgeted-window` ONLY when the
+   ;; excluded half is non-empty. Emits :ontology/reflection-evidence-excluded.
+   :ontology/record-reflection-evidence-exclusion
+   [:map
+    [:target-type [:enum :node-type :node-instance :tree-fingerprint :tree-class]]
+    [:target-id [:or :keyword [:tuple :uuid :uuid] :string :uuid]]
+    [:budget-tokens :int]
+    [:selected-count :int]
+    [:excluded-count :int]
+    [:predicted-prompt-tokens :int]
+    [:oldest-excluded-at [:maybe :string]]
+    [:newest-excluded-at [:maybe :string]]
+    [:request-id {:optional true} :uuid]]
 
    ;; Gap-1: opt-in flag command (see :ontology/living-description-enabled-set
    ;; event for rationale).
