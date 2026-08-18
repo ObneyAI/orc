@@ -3202,17 +3202,6 @@
                          :item-index (or (:completed-count act) 0) :total-items total-items}})]})))))))
 
 ;; =============================================================================
-;; Blackboard Update Processor
-;; =============================================================================
-
-(defn update-blackboard-on-completion
-  "No-op — blackboard writes are handled atomically by complete-node-execution.
-   Kept as a registered processor for event flow compatibility."
-  [_context]
-  nil)
-
-
-;; =============================================================================
 ;; Tree Tick Completion
 ;; =============================================================================
 
@@ -4089,45 +4078,28 @@
 
 (defprocessor :sheet execute-leaf-node
   {:topics #{:sheet/node-execution-started}}
-  "Execute leaf nodes when node execution starts."
-  [context]
-  (execute-leaf-node context))
+  "Execute the started node, whatever its type. Each execute-* fn guards on
+   its own node type and returns nil on non-match, and node types are
+   mutually exclusive, so at most one branch of the `or` acts per event.
 
-(defprocessor :sheet execute-condition-node
-  {:topics #{:sheet/node-execution-started}}
-  "Execute condition nodes when node execution starts."
-  [context]
-  (execute-condition-node context))
+   One processor instead of seven: every processor on a topic durably
+   advances its own checkpoint cursor per event, so six no-op subscribers
+   cost six fsync'd commits per node transition — the dominant fixed cost
+   per hop (docs/issues/005-sheet-execution-checkpoint-amplification.md).
 
-(defprocessor :sheet execute-composite-node
-  {:topics #{:sheet/node-execution-started}}
-  "Execute composite nodes (sequence/fallback) when node execution starts."
+   Deliberately registered under the historical :sheet/execute-leaf-node
+   name so it inherits that processor's checkpoint cursor. A fresh name has
+   no checkpoint, and a checkpoint-less processor catches up from the START
+   of the stream — re-executing every historical node-execution-started
+   event. The six retired names leave inert checkpoints behind."
   [context]
-  (execute-composite-node context))
-
-(defprocessor :sheet execute-parallel-node
-  {:topics #{:sheet/node-execution-started}}
-  "Execute parallel nodes when node execution starts."
-  [context]
-  (execute-parallel-node context))
-
-(defprocessor :sheet execute-map-each-node
-  {:topics #{:sheet/node-execution-started}}
-  "Execute map-each nodes when node execution starts."
-  [context]
-  (execute-map-each-node context))
-
-(defprocessor :sheet execute-repl-researcher-node
-  {:topics #{:sheet/node-execution-started}}
-  "Execute repl-researcher nodes when node execution starts."
-  [context]
-  (execute-repl-researcher-node context))
-
-(defprocessor :sheet execute-delegate-node
-  {:topics #{:sheet/node-execution-started}}
-  "Execute delegate nodes when node execution starts."
-  [context]
-  (execute-delegate-node context))
+  (or (execute-leaf-node context)
+      (execute-condition-node context)
+      (execute-composite-node context)
+      (execute-parallel-node context)
+      (execute-map-each-node context)
+      (execute-repl-researcher-node context)
+      (execute-delegate-node context)))
 
 (defprocessor :sheet handle-child-completion
   {:topics #{:sheet/node-execution-completed}}
@@ -4140,12 +4112,6 @@
   "Handle map-each child iteration completion."
   [context]
   (handle-map-each-child-completion context))
-
-(defprocessor :sheet update-blackboard
-  {:topics #{:sheet/node-execution-completed}}
-  "Update blackboard on node completion."
-  [context]
-  (update-blackboard-on-completion context))
 
 (defprocessor :sheet complete-tree-tick
   {:topics #{:sheet/node-execution-completed}}
