@@ -2523,7 +2523,8 @@
 (defn- completed-statuses [events]
   (reduce (fn [statuses event]
             (if (= :sheet/node-execution-completed (:event/type event))
-              (assoc statuses (:node-id event) (:status event))
+              (assoc statuses (:node-id event)
+                     (select-keys event [:status :error :block-payload]))
               statuses))
           {} events))
 
@@ -2531,8 +2532,8 @@
   (let [node (get nodes-by-id node-id)]
     (case (:type node)
       :leaf
-      (if-let [status (get completed node-id)]
-        {:status status :steps []}
+      (if-let [completion (get completed node-id)]
+        (assoc completion :steps [])
         {:boundary node-id :steps []})
 
       :condition
@@ -2555,27 +2556,28 @@
               (:boundary result) (assoc result :steps next-steps)
               (contains? #{:success :tree-generated :partial} (:status result))
               (recur (rest children) next-steps)
-              :else {:status (:status result)
-                     :steps (conj next-steps {:node-id node-id
-                                              :status (:status result)
-                                              :node-type :sequence})}))
+              :else (assoc (select-keys result [:status :error :block-payload])
+                           :steps (conj next-steps {:node-id node-id
+                                                   :status (:status result)
+                                                   :node-type :sequence}))))
           {:status :success
            :steps (conj steps {:node-id node-id :status :success :node-type :sequence})}))
 
       :fallback
-      (loop [children (:children-ids node) steps []]
+      (loop [children (:children-ids node) steps [] last-failure nil]
         (if-let [child-id (first children)]
           (let [result (evaluate-ephemeral-node child-id nodes-by-id blackboard completed decisions)
                 next-steps (into steps (:steps result))]
             (cond
               (:boundary result) (assoc result :steps next-steps)
-              (= :failure (:status result)) (recur (rest children) next-steps)
-              :else {:status (:status result)
-                     :steps (conj next-steps {:node-id node-id
-                                              :status (:status result)
-                                              :node-type :fallback})}))
-          {:status :failure
-           :steps (conj steps {:node-id node-id :status :failure :node-type :fallback})})))))
+              (= :failure (:status result)) (recur (rest children) next-steps result)
+              :else (assoc (select-keys result [:status :error :block-payload])
+                           :steps (conj next-steps {:node-id node-id
+                                                   :status (:status result)
+                                                   :node-type :fallback}))))
+          (assoc (select-keys last-failure [:error :block-payload])
+                 :status :failure
+                 :steps (conj steps {:node-id node-id :status :failure :node-type :fallback})))))))
 
 (defn advance-ephemeral-frontier
   "Evaluate deterministic ordered control flow to its next durable leaf or
@@ -2614,7 +2616,7 @@
                           {} events)
         blackboard (resolve-blackboard-values context sheet-id tick-id nil)]
     (when (and (not terminal?) (ephemeral-routing-active? context tick-id nodes-by-id))
-      (let [{:keys [boundary status steps]}
+      (let [{:keys [boundary status steps error block-payload]}
             (evaluate-ephemeral-node root-id nodes-by-id blackboard completed decisions)
             summary (ephemeral-summary-event sheet-id tick-id iteration steps)]
         (cond
@@ -2635,7 +2637,9 @@
                             (assoc context :event {:sheet-id sheet-id
                                                    :tick-id tick-id
                                                    :node-id root-id
-                                                   :status status}))]
+                                                   :status status
+                                                   :error error
+                                                   :block-payload block-payload}))]
             (update completion :result/events
                     #(cond-> (vec %)
                        summary (into [summary])))))))))
