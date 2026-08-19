@@ -125,6 +125,27 @@ per input candidate.")
    re-measurement surprises us."
   "google/gemini-3-flash-preview")
 
+(defn resolve-model
+  "RR-CFG: which model the reranker's 'rerank' node is pinned to for THIS
+   call. Per-call opt > per-deployment context slot > the ratified default —
+   the same precedence `resolve-timeout-ms` gives the reranker's other
+   policy knob, and the same CONTEXT-carried seam the ontology's other model
+   slot uses (`:ontology-consolidator-model`, consolidator.clj).
+
+   Why this exists: `default-model` alone made the reranker's model
+   unreachable from configuration. During the PR-6 free shakeout every model
+   slot was set to a `:free` model and the store still recorded PAID
+   `google/gemini-3-flash-preview` executions — a run configured entirely
+   free silently billed a model outside every configured slot, because there
+   was no slot to configure. The ratified default (grill GR-2 Q2 / CC-9c,
+   ADR 0025) is UNCHANGED; it is now the FALLBACK rather than the only
+   possibility.
+
+   Set `:ontology-reranker-model` on the context wherever the deployment's
+   other model slots are wired."
+  [ctx model]
+  (or model (:ontology-reranker-model ctx) default-model))
+
 (def ^:private compact-principle-entry
   "A strengths/weaknesses entry at the RERANKER's provider boundary: the
    COMPACT principle shape EL-2's enrichment actually sends — an actionable
@@ -372,13 +393,14 @@ per input candidate.")
                       workflow. Defaults to default-rerank-timeout-ms
                       (see its docstring for the sizing evidence).
        :model       — OPTIONAL OpenRouter model id override for the
-                      'rerank' node. Defaults to `default-model` (RR-2)
-                      when absent, mirroring the caller-overridable
-                      config-slot pattern so a future deployment can pick
-                      a different model with no code change."
+                      'rerank' node (RR-2). RR-CFG: when absent, the
+                      model resolves from the context slot
+                      `:ontology-reranker-model`, and only then falls
+                      back to the ratified `default-model`. See
+                      `resolve-model`."
   [ctx {:keys [query intent candidates timeout-ms model]}]
   (let [budget-ms (resolve-timeout-ms ctx timeout-ms)
-        resolved-model (or model default-model)
+        resolved-model (resolve-model ctx model)
         sheet-id (orc/build-workflow! ctx (reranker-workflow resolved-model))
         inputs   {:query query
                   :intent intent
