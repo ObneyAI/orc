@@ -51,6 +51,23 @@
 
 (def config
   {:model "google/gemini-3-flash-preview"
+   ;; RR-CFG: the reranker's model is now CONFIGURABLE (context slot
+   ;; :ontology-reranker-model, resolved by reranker/resolve-model). ONE value
+   ;; must drive both halves or the CH-1 guarantee breaks: `create-context`
+   ;; puts this on the bench context (so it is what EXECUTES) and the model
+   ;; lists below read it (so it is what gets REGISTERED). Reading
+   ;; `reranker/default-model` in one place and configuring another is exactly
+   ;; the class of defect RR-CFG exists to close — it would register the
+   ;; default while an unregistered configured model made the call.
+   ;;
+   ;; nil means "whatever the engine's ratified default is AT CALL TIME".
+   ;; It must NOT be `reranker/default-model` itself: that would cache the
+   ;; var's value here at load time and break `required-models`' documented
+   ;; CH-1 property of re-reading the engine rather than caching a literal
+   ;; (model_registry_test's "the required set FOLLOWS the engine" case
+   ;; pins exactly that). Set a real model id here to pin the reranker —
+   ;; e.g. a `:free` model for a free shakeout.
+   :reranker-model nil
    :timeout-ms 600000  ;; 10 minutes for complex tasks
    :documents-dir "development/bench/documents"
    :results-dir "development/bench/generalization-results"})
@@ -81,7 +98,7 @@
      every bench caller. CH-1: it was NEVER registered here, so no reader of
      this file could tell which models the harness would use."
   [(:model config)
-   reranker/default-model
+   (or (:reranker-model config) reranker/default-model)
    evidence-guard/verifier-model])
 
 (defn required-models
@@ -90,7 +107,12 @@
    default change is picked up rather than cached."
   []
   (distinct [(:model config)
-             reranker/default-model
+             ;; RR-CFG: resolve through the reranker's own precedence against
+             ;; the bench's configured slot, so this stays "what the engine
+             ;; WILL use" rather than "what the engine defaults to".
+             (reranker/resolve-model {:ontology-reranker-model
+                                      (:reranker-model config)}
+                                     nil)
              evidence-guard/verifier-model]))
 
 (defn register-models!
@@ -142,6 +164,10 @@
                   :command-registry (cp/global-command-registry)
                   :query-registry (qp/global-query-registry)
                   :llm-provider :openrouter
+                  ;; RR-CFG: the SAME value the model lists register, so what
+                  ;; the reranker executes and what the registry knows about
+                  ;; cannot drift apart.
+                  :ontology-reranker-model (:reranker-model config)
                   ;; CC-13: the bench is exactly the consumer that wants the
                   ;; VERBATIM rendered prepend on the injection record (the
                   ;; reports quote it). Production renders leave this off and
