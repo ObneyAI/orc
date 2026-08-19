@@ -101,18 +101,19 @@
             events (h/read-all-events ctx)
             writes (filter #(and (= :sheet/execution-value-written (:event/type %))
                                  (= :blob (:key %))) events)
-            completions (filter #(and (= :sheet/node-execution-completed (:event/type %))
-                                      (sequences (:node-id %))) events)
-            canonical (first writes)
-            expected-source {:tick-id (:tick-id canonical)
-                             :event-id (:event/id canonical)}]
+            summarized-sequences (->> events
+                                      (filter #(= :sheet/ephemeral-evaluations-recorded
+                                                  (:event/type %)))
+                                      (mapcat :steps)
+                                      (filter #(sequences (:node-id %))))
+            canonical (first writes)]
         (is (= :success (:status result)))
         (is (= large-value (get-in result [:outputs :blob])))
         (is (= 1 (count writes)) "only the leaf owns the value bytes")
         (is (= leaf (:node-id canonical)))
-        (is (= 2 (count completions)))
-        (is (every? #(= expected-source (get-in % [:write-sources :blob])) completions))
-        (is (every? #(not (contains? % :writes)) completions))))))
+        (is (= 2 (count summarized-sequences)))
+        (is (every? #(= :success (:status %)) summarized-sequences))
+        (is (every? #(not (contains? % :writes)) summarized-sequences))))))
 
 (deftest runtime-file-store-externalizes-every-canonical-value
   (testing "one runtime setting stores every write externally and hydration stays transparent"

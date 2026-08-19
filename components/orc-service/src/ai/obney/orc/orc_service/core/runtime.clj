@@ -558,6 +558,8 @@
                       already durable elsewhere are referenced, not copied
      :return-references? - Internal flag to include :output-sources for delegates
      :llm-call-budget - Max LLM calls before failing (opt-in only, NO default)
+     :durability-mode - Internal comparison mode; :legacy restores per-node
+                        routing lifecycle events (default uses summarized routing)
 
    Returns:
      {:status :success | :failure | :timeout
@@ -570,7 +572,8 @@
   [context sheet-id inputs & {:keys [timeout-ms result-grace-ms use-version force-draft
                                       trace? langfuse-client store-trace?
                                       max-ticks llm-call-budget tick-id parent-tick-id
-                                      correlation-id input-sources return-references?]
+                                      correlation-id input-sources return-references?
+                                      durability-mode]
                                :or {timeout-ms 300000
                                     result-grace-ms default-result-grace-ms
                                     store-trace? true}}]
@@ -594,7 +597,8 @@
                                                  trace? (assoc :trace? true)
                                                  langfuse-client (assoc :langfuse-client langfuse-client)
                                                  max-ticks (assoc :max-ticks max-ticks)
-                                                 llm-call-budget (assoc :llm-call-budget llm-call-budget))}
+                                                 llm-call-budget (assoc :llm-call-budget llm-call-budget)
+                                                 durability-mode (assoc :durability-mode durability-mode))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)
                               correlation-id (assoc :correlation-id correlation-id)
                               (seq input-sources) (assoc :input-sources input-sources)

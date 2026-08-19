@@ -1132,6 +1132,18 @@
     ;; do not enqueue the same frontier twice.
     [:resumed-from-event-id {:optional true} :uuid]]
 
+   :sheet/ephemeral-evaluations-recorded
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:iteration :int]
+    [:steps [:vector
+             [:map
+              [:node-id :uuid]
+              [:trace-instance-id :uuid]
+              [:status [:enum :success :failure :running :partial :timeout :blocked]]
+              [:node-type [:enum :condition :sequence :fallback]]]]]]
+
    :sheet/node-execution-completed
    [:map
     [:sheet-id :uuid]

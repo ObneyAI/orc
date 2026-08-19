@@ -434,11 +434,13 @@
                    {:tenant-id (:tenant-id ctx) :events [duplicate]})
         (Thread/sleep 300)
         (let [after (h/read-tick-events ctx tick-id)
-              parent-completions (filter #(and (= :sheet/node-execution-completed
-                                                   (:event/type %))
-                                               (= parent-id (:node-id %))) after)]
-          (is (= 1 (count parent-completions))
-              "parent completion remains canonical under duplicate delivery")
+              parent-summaries (->> after
+                                    (filter #(= :sheet/ephemeral-evaluations-recorded
+                                                (:event/type %)))
+                                    (mapcat :steps)
+                                    (filter #(= parent-id (:node-id %))))]
+          (is (= 1 (count parent-summaries))
+              "ephemeral parent outcome remains canonical under duplicate delivery")
           (is (= 1 @duplicate-side-effects)
               "duplicate completion never re-runs the leaf side effect")
           (is (= tick-id (:trace-id

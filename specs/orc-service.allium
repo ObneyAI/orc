@@ -182,6 +182,48 @@ contract ExecutionEventStream {
         -- recoverable from the execution record and its lineage.
 }
 
+contract ExecutionDurability {
+    classify_node: (node: WorkflowNode) -> String
+    evaluate_ephemeral_chain: (execution: WorkflowExecution, node: WorkflowNode) -> Any
+
+    @invariant DurableBoundariesRemainIndependent
+        -- Model calls, tool or other external effects, delegation, authorization
+        -- decisions, retry attempts, cancellation, timeout, blocking, partial
+        -- outcomes and terminal workflow outcomes each leave independently
+        -- durable evidence before execution advances beyond that boundary.
+
+    @invariant EphemeralEvaluationIsNarrow
+        -- Only built-in static conditions, deterministic routing, sequence or
+        -- fallback advancement, and status propagation derived from completed
+        -- children may be evaluated ephemerally. Parallel and map-each
+        -- coordination, model-backed conditions, delegates, researcher nodes,
+        -- and consumer-supplied code are not implicitly pure and remain durable.
+
+    @invariant EphemeralInputsAreReplayable
+        -- Ephemeral evaluation reads only the immutable workflow version and
+        -- blackboard values already present at the preceding durable boundary.
+        -- It does not read time, randomness, ambient mutable state or an
+        -- unversioned implementation, and it cannot perform an external effect.
+
+    @invariant BoundaryCommitIsUnambiguous
+        -- Advancing through an ephemeral chain produces one unambiguous durable
+        -- frontier before the next effectful or nondeterministic operation may
+        -- begin. Blackboard changes needed by that operation, its stable attempt
+        -- identity, and the frontier become durable together.
+
+    @invariant RecoverableCheckpointPreservesMeaning
+        -- ORC may checkpoint a completed subtree independently when doing so
+        -- materially bounds deterministic replay or preserves coordination
+        -- state. A checkpoint is authoritative recovery state, not merely
+        -- telemetry.
+
+    @invariant BatchedTracePreservesObservability
+        -- A durable boundary may summarize the ordered ephemeral evaluations
+        -- since the preceding boundary. Inspection distinguishes such summaries
+        -- from independently durable node executions without presenting either
+        -- as the other.
+}
+
 contract ExecutionRecovery {
     resume: (execution: WorkflowExecution) -> Any
 
@@ -191,7 +233,8 @@ contract ExecutionRecovery {
 
     @invariant CompletedWorkIsNotRepeated
         -- Durable completion evidence is authoritative. Recovery reconstructs
-        -- only unfinished frontier work and does not repeat completed effects.
+        -- the last durable frontier, deterministically re-evaluates any lost
+        -- ephemeral chain, and does not repeat a completed durable effect.
 
     @invariant IdempotentResume
         -- Repeated recovery requests converge on the same frontier and do not
@@ -468,6 +511,7 @@ rule StartNodeExecution {
     when: ExecuteNode(execution, node, iteration_index)
     requires: execution.status = running
     requires: node.workflow = execution.workflow
+    requires: classify_node(node) != "ephemeral_evaluation"
 
     ensures: NodeExecution.created(
         execution: execution,
@@ -482,6 +526,25 @@ rule StartNodeExecution {
         iteration_index: iteration_index,
         rejected_outputs: null
     )
+}
+
+rule EvaluateEphemeralNode {
+    when: ExecuteNode(execution, node, iteration_index)
+    requires: execution.status = running
+    requires: node.workflow = execution.workflow
+    requires: classify_node(node) = "ephemeral_evaluation"
+
+    ensures: EphemeralNodeEvaluated(
+        execution: execution,
+        node: node,
+        iteration_index: iteration_index,
+        result: evaluate_ephemeral_chain(execution, node)
+    )
+
+    @guidance
+        -- One evaluation may synchronously traverse consecutive ephemeral nodes.
+        -- It stops before any durable boundary and may be represented by one
+        -- ordered trace summary attached to that boundary.
 }
 
 rule NodeSucceeds {
@@ -741,6 +804,7 @@ surface WorkflowExecutionAccess {
 
     contracts:
         fulfils ExecutionEventStream
+        fulfils ExecutionDurability
         fulfils ExecutionRecovery
         demands LeafExecutor
 
@@ -761,10 +825,11 @@ surface WorkflowExecutionAccess {
         -- missing or corrupted bytes rather than returning a partial value.
 
     @guarantee ExactNodeExecutionInspection
-        -- Each node execution has a unique trace instance identifier, and its
-        -- inputs, accepted outputs, and schema-rejected outputs can be inspected
-        -- without ambiguity when the same workflow node runs repeatedly or
-        -- concurrently.
+        -- Each independently durable node execution has a unique trace instance
+        -- identifier, and its inputs, accepted outputs, and schema-rejected
+        -- outputs can be inspected without ambiguity when the same workflow node
+        -- runs repeatedly or concurrently. Ephemeral evaluations are identified
+        -- separately and retain their ordered summarized trace details.
 
     @guarantee SingleExecutionDeadline
         -- The execution option timeout is the authoritative wall-clock budget
@@ -779,18 +844,20 @@ surface WorkflowExecutionAccess {
         -- exhausted, no branch can make a further provider call.
 
     @guarantee PartialTimeoutEvidence
-        -- A workflow timeout preserves every durable node start and completion
-        -- in its queryable trace. A node that started but did not complete is
-        -- identified as the active timed-out node together with its provider
-        -- attempt, node attempt, configured limits, and execution budget state.
+        -- A workflow timeout preserves every independently durable node start and
+        -- completion plus each committed ephemeral trace summary. A durable node
+        -- that started but did not complete is identified as the active timed-out
+        -- node together with its provider attempt, node attempt, configured
+        -- limits, execution budget state, and preceding durable frontier.
 
     @guarantee ActualExecutionTiming
         -- Every terminal execution preserves the durable instant at which it
         -- began, records the terminal instant separately, and reports a
         -- duration equal to the elapsed time between those instants within the
-        -- precision of the public duration representation. Unfinished nodes
-        -- retain their durable start and use the workflow timeout instant only
-        -- as their completion.
+        -- precision of the public duration representation. Unfinished durable
+        -- nodes retain their start and use the workflow timeout instant only as
+        -- their completion; summarized ephemeral steps do not claim independent
+        -- durable timing.
 
     @guarantee ChronologicalTraceQueries
         -- Trace lists, status filters, time filters, families and performance

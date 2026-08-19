@@ -64,13 +64,13 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-11, both `allium check specs` and `allium analyse specs` reported 180
-structural diagnostics across the twelve specifications: 148 informational and 32
+On 2026-08-19, both `allium check specs` and `allium analyse specs` reported 181
+structural diagnostics across the twelve specifications: 149 informational and 32
 warnings. `analyse` reported zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 40 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.rule.unreachableTrigger` | 41 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
 | `allium.field.unused` | 108 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 14 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
