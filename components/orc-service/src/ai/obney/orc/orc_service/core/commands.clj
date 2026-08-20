@@ -622,7 +622,7 @@
 (defcommand :sheet set-repl-researcher-config
   {:authorized? authenticated?}
   "Set configuration for a repl-researcher node."
-  [{{:keys [sheet-id node-id instruction reads writes mcp-tools browser-tools model max-iterations rlm timeout-ms options]} :command
+  [{{:keys [sheet-id node-id instruction reads writes mcp-tools tool-contracts tool-caller-fn browser-tools model max-iterations rlm timeout-ms options]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
         blackboard (rm/get-blackboard-by-key ctx sheet-id)
@@ -658,7 +658,9 @@
                          :reads (vec reads)
                          :writes (vec writes)
                          :mcp-tools (vec (or mcp-tools []))}
+                  tool-contracts (assoc :tool-contracts tool-contracts)
                   browser-tools (assoc :browser-tools (vec browser-tools))
+                  tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
                   model (assoc :model model)
                   max-iterations (assoc :max-iterations max-iterations)
                   (some? rlm) (assoc :rlm rlm)
@@ -669,6 +671,8 @@
                   (seq (:reads node)) (assoc :previous-reads (:reads node))
                   (seq (:writes node)) (assoc :previous-writes (:writes node))
                   (seq (:mcp-tools node)) (assoc :previous-mcp-tools (:mcp-tools node))
+                  (:tool-contracts node) (assoc :previous-tool-contracts (:tool-contracts node))
+                  (:tool-caller-fn node) (assoc :previous-tool-caller-fn (:tool-caller-fn node))
                   (seq (:browser-tools node)) (assoc :previous-browser-tools (:browser-tools node))
                   (:model node) (assoc :previous-model (:model node))
                   (:max-iterations node) (assoc :previous-max-iterations (:max-iterations node))

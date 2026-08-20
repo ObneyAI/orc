@@ -122,6 +122,13 @@
    [:value {:optional true} :any]
    [:on-fail {:optional true} on-fail-behavior]])
 
+(def tool-contracts
+  "Authoritative Malli contracts keyed by the exact bound tool name."
+  [:map-of :string
+   [:map {:closed true}
+    [:arguments {:optional true} :any]
+    [:result {:optional true} :any]]])
+
 ;; =============================================================================
 ;; Domain Schemas (for use in query results)
 ;; =============================================================================
@@ -175,6 +182,7 @@
     [:preserve-failures? {:optional true} :boolean] ;; Slice O: write aligned vector (keep failure markers) to :into
     ;; Repl-researcher-only fields
     [:mcp-tools {:optional true} [:vector :string]] ;; Available MCP tool names for research
+    [:tool-contracts {:optional true} tool-contracts] ;; tool name -> argument/result Malli schemas
     ;; Opt-in hook: FQN of a (fn [blackboard context] -> call-tool-fn)
     ;; that builds this node's tool-caller, threading per-execution
     ;; context (identity/consent/confinement/routing) into tool calls.
@@ -474,6 +482,8 @@
     [:reads [:vector :keyword]]                         ;; Blackboard keys (metadata only shown to LLM)
     [:writes [:vector :keyword]]                        ;; Output keys (final-answer, iterations, etc.)
     [:mcp-tools [:vector :string]]                      ;; Available MCP tool names
+    [:tool-contracts {:optional true} tool-contracts]   ;; Authoritative bound tool contracts
+    [:tool-caller-fn {:optional true} :string]          ;; Consumer-scoped caller builder FQN
     [:model {:optional true} :string]                   ;; OpenRouter model ID
     [:max-iterations {:optional true} :int]             ;; Default 10
     [:rlm {:optional true} [:or :boolean :map]]         ;; Enable RLM mode (true or {:debug? true})
@@ -1013,6 +1023,8 @@
     [:reads [:vector :keyword]]
     [:writes [:vector :keyword]]
     [:mcp-tools [:vector :string]]
+    [:tool-contracts {:optional true} tool-contracts]
+    [:tool-caller-fn {:optional true} :string]
     [:model {:optional true} :string]
     [:max-iterations {:optional true} :int]
     [:rlm {:optional true} [:or :boolean :map]]
@@ -1022,6 +1034,8 @@
     [:previous-reads {:optional true} [:vector :keyword]]
     [:previous-writes {:optional true} [:vector :keyword]]
     [:previous-mcp-tools {:optional true} [:vector :string]]
+    [:previous-tool-contracts {:optional true} tool-contracts]
+    [:previous-tool-caller-fn {:optional true} :string]
     [:previous-model {:optional true} :string]
     [:previous-max-iterations {:optional true} :int]
     [:previous-rlm {:optional true} [:or :boolean :map]]

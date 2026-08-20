@@ -245,6 +245,9 @@
      :reads - Vector of blackboard keys (metadata only shown to LLM, not values)
      :writes - Vector of output keys (e.g., [:final-answer :iterations])
      :mcp-tools - Vector of MCP tool names (require :call-tool-fn in context)
+     :tool-contracts - Map of tool name to {:arguments Malli :result Malli};
+       omitted schemas are advertised to Phase 1 as :untyped
+     :tool-caller-fn - FQN of a consumer builder (fn [blackboard context] call-tool-fn)
      :browser-tools - Vector of agent-browser tool names (e.g., [\"open\" \"snapshot\" \"click\"])
      :max-iterations - Max research iterations (default 10)
      :rlm - Enable RLM mode with BT primitives (default: false)
@@ -270,7 +273,7 @@
      - (final! {:key value}) - Capture validated output
      - (get-input :key) - Load full input value
      - inputs - Preview map (metadata only)"
-  [name & {:keys [model instruction reads writes mcp-tools browser-tools max-iterations rlm context options]}]
+  [name & {:keys [model instruction reads writes mcp-tools tool-contracts tool-caller-fn browser-tools max-iterations rlm context options]}]
   (cond-> {:node-type :repl-researcher
            :name name
            :model model
@@ -281,6 +284,8 @@
            :browser-tools (vec (or browser-tools []))
            :max-iterations (or max-iterations 10)}
     (some? rlm) (assoc :rlm rlm)
+    tool-contracts (assoc :tool-contracts tool-contracts)
+    tool-caller-fn (assoc :tool-caller-fn tool-caller-fn)
     ;; :context is the ontology-injection config (same shape :leaf llm nodes
     ;; accept). The runtime apply-ontology-context pipeline reads :context and
     ;; prepends formatted principles to :instruction at execute time. The
@@ -580,7 +585,9 @@
         (run-build-command! ctx
           (h/make-set-repl-researcher-config-command sheet-id node-id
             (:instruction node) (:reads node) (:writes node) (:mcp-tools node)
+            :tool-contracts (:tool-contracts node)
             :model (:model node)
+            :tool-caller-fn (:tool-caller-fn node)
             :max-iterations (:max-iterations node)
             :browser-tools (:browser-tools node)
             :rlm (:rlm node)
@@ -959,7 +966,9 @@
           (h/make-set-repl-researcher-config-command sheet-id node-id
             (:instruction node) (vec (:reads node)) (vec (:writes node))
             (vec (:mcp-tools node))
+            :tool-contracts (:tool-contracts node)
             :model (:model node)
+            :tool-caller-fn (:tool-caller-fn node)
             :max-iterations (:max-iterations node)
             :rlm (:rlm node))))
 
@@ -1184,6 +1193,7 @@
                 :reads (:reads node)
                 :writes (:writes node)
                 :mcp-tools (:mcp-tools node)
+                :tool-contracts (:tool-contracts node)
                 :max-iterations (:max-iterations node)
                 :rlm (:rlm node)})]
     (if (empty? opts)

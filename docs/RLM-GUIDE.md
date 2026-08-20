@@ -231,6 +231,9 @@ All options accepted by the `repl-researcher` node and the `:rlm` config map.
 | `:instruction` | string | required | The model's task. Verbatim goal-only is preferred; the framework adds the methodology framing. |
 | `:reads` | vector of keywords | `[]` | Blackboard keys to load into Phase-1 sandbox + Phase-2 child sheet. |
 | `:writes` | vector of keywords | `[]` | Blackboard keys the model must populate via `(final! ...)` or via the emit-tree! tree's `:final` node. |
+| `:mcp-tools` | vector of strings | `[]` | Exact tool names bound as callable Phase-1 functions. |
+| `:tool-contracts` | map | `{}` | Authoritative Malli contracts keyed by bound tool name, with optional `:arguments` and `:result` schemas. Phase 1 receives both schemas intact; an omitted side is identified as `:untyped`. Contracts for names absent from `:mcp-tools` are not disclosed. |
+| `:tool-caller-fn` | string | nil | Fully-qualified consumer builder that constructs the gated caller used by inline Phase-1 and generated Phase-2 tool calls. |
 | `:max-iterations` | int | 5 | Max Phase-1 iterations. If the model neither calls `(final! ...)` nor calls `(emit-tree! ...)` within this many iterations, the run returns `{:status :failure :error "Max iterations reached without final!"}`. |
 | `:timeout-ms` | int | 900000 (15 min) | Hard wall-clock budget for Phase 2. Precedence: node's `:timeout-ms` > parent tick's `:timeout-ms` > hardcoded 15-minute default. When Phase 2 budget is exhausted mid-flight the child tick is cancelled. |
 | `:rlm` | map or `true` | `false` | Enables RLM mode. `true` is equivalent to `{}`. See "`:rlm` config map" below. |

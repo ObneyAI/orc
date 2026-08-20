@@ -927,10 +927,18 @@
    it only resolves and calls it."
   [node blackboard context]
   (if-let [builder-sym (:tool-caller-fn node)]
-    (let [{:keys [fn]} (resolve-fn builder-sym)]
-      ;; Unresolvable builder → fall back to the static caller rather
-      ;; than failing the node.
-      (if fn (fn blackboard context) (:call-tool-fn context)))
+    (let [{builder :fn resolve-error :error} (resolve-fn builder-sym)]
+      (when-not builder
+        (throw (ex-info (str "Configured tool-caller builder could not be resolved: "
+                             builder-sym " (" resolve-error ")")
+                        {:tool-caller-fn builder-sym})))
+      (let [caller (builder blackboard context)]
+        (when-not (fn? caller)
+          (throw (ex-info (str "Configured tool-caller builder did not return a function: "
+                               builder-sym)
+                          {:tool-caller-fn builder-sym
+                           :returned-type (some-> caller type str)})))
+        caller))
     (:call-tool-fn context)))
 
 (defn execute-code
@@ -2008,6 +2016,40 @@
            (str/join "\n\n" (concat blackboard-entries sandbox-entries))
            "\n\n"))))
 
+(defn- declared-write-schema-contract
+  "Return the Phase-1 output contract in the node's declared write order.
+
+   Schemas come directly from the parent blackboard projection. Public workflow
+   construction guarantees that every declared write has a schema; keeping this
+   helper as a projection also preserves compatibility for private prompt-only
+   callers that construct partial test nodes."
+  [node blackboard]
+  (into (array-map)
+        (map (fn [key-name]
+               [key-name (get-in blackboard [key-name :schema])]))
+        (:writes node)))
+
+(defn- bound-tool-contracts
+  "Build the complete Phase-1 contract for the tools actually bound to a node."
+  [node mcp-tools]
+  (let [declared (:tool-contracts node)
+        legacy-arguments (get-in node [:options :tool-arg-specs])]
+    (into (array-map)
+          (map (fn [tool]
+                 (let [contract (get declared tool)
+                       arguments (cond
+                                   (some? (:arguments contract)) (:arguments contract)
+                                   (seq (get legacy-arguments tool))
+                                   (into [:map]
+                                         (map (fn [key-name] [key-name :any]))
+                                         (get legacy-arguments tool))
+                                   :else :untyped)
+                       result (if (some? (:result contract))
+                                (:result contract)
+                                :untyped)]
+                   [tool {:arguments arguments :result result}])))
+          mcp-tools)))
+
 (defn- build-ontology-examples-section
   "Build a section of the prompt with few-shot examples from ontology.
    Returns nil if no examples available."
@@ -2089,6 +2131,8 @@
         tool-arg-specs (get-in node [:options :tool-arg-specs])
         specced-tools (filterv #(seq (get tool-arg-specs %)) mcp-tools)
         unspecced-tools (filterv #(not (seq (get tool-arg-specs %))) mcp-tools)
+        tool-contracts (bound-tool-contracts node mcp-tools)
+        write-schema-contract (declared-write-schema-contract node blackboard)
         base-inputs [{:name :task
                       :spec :string
                       :description "The research task to complete"}
@@ -2109,7 +2153,10 @@
                      has-mcp?
                      (conj {:name :tools
                             :spec :string
-                            :description "Available tools you can call as functions"}))]
+                            :description "Available tools you can call as functions"}
+                           {:name :tool-contracts
+                            :spec :map
+                            :description "Authoritative argument and result schemas for bound tools; :untyped means no schema was declared"}))]
     {:inputs all-inputs
    :outputs [{:name :reasoning
               :spec :string
@@ -2239,6 +2286,10 @@
                         (str "## Bound Tools\n\n"
                              "The following tools are bound in your sandbox as directly callable functions: "
                              mcp-tool-list "\n"
+                             "Their authoritative argument and result schemas are:\n"
+                             (pr-str tool-contracts) "\n"
+                             "Use the declared result field names when inspecting successful responses. "
+                             "A schema marked :untyped was not declared and must be inspected defensively.\n"
                              "Each takes a single map of arguments and returns a result map:\n"
                              "```clojure\n"
                              (apply str
@@ -2574,7 +2625,12 @@
                       "evaluation or predictable error attribution.\n\n"
 
                       "## Output Contract\n"
-                      "You MUST call (final! {...}) with keys: " (pr-str (:writes node)) "\n\n"
+                      "Authoritative declared write schemas:\n"
+                      (pr-str write-schema-contract) "\n\n"
+                      "You MUST call (final! {...}) with keys: " (pr-str (:writes node)) "\n"
+                      "Every value passed to final! MUST satisfy its declared Malli schema exactly. "
+                      "Closed maps reject undeclared keys; preserve nested, optional, collection, and union shapes. "
+                      "The examples below are illustrative; this declared contract is authoritative.\n\n"
                       "## CRITICAL OUTPUT FORMAT\n"
                       (if function-calling?
                         ;; Function-calling contract: the transport carries the
@@ -2788,7 +2844,8 @@
                          available-code-nodes (assoc :available-code-nodes available-code-nodes)
                          ;; CE-6b: supply the declared :tools input's VALUE
                          ;; (same joined-list shape as the non-RLM researcher).
-                         (seq mcp-tools) (assoc :tools (str/join ", " mcp-tools)))
+                         (seq mcp-tools) (assoc :tools (str/join ", " mcp-tools)
+                                                :tool-contracts (bound-tool-contracts node mcp-tools)))
                 ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
                 ;; but preserve an explicit caller/node :use-function-calling? override.
                 ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs

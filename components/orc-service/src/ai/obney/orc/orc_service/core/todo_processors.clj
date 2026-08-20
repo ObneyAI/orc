@@ -2107,10 +2107,28 @@
                                                   :node-id node-id)
                                      tool-context (assoc :tool-context tool-context)
                                      correlation-id (assoc :orc/correlation-id correlation-id))
-                  result (if provider
-                           (executor/execute-repl-researcher node blackboard provider enriched-context)
-                           {:status :failure :error "No ORC LLM provider configured"})
-                  {:keys [status outputs error duration-ms generated-tree-raw iteration-reasonings usage iterations block-payload]} result
+                  raw-result (if provider
+                               (executor/execute-repl-researcher node blackboard provider enriched-context)
+                               {:status :failure :error "No ORC LLM provider configured"})
+                  ;; A Phase-2 child returns a delivered blackboard snapshot,
+                  ;; including placeholders and generated-tree internals. The
+                  ;; researcher's output contract is only its declared writes;
+                  ;; validate those values, then retain the full successful
+                  ;; result for the existing observability path.
+                  validated-result (executor/validate-leaf-outputs
+                                     blackboard
+                                     (if (= :success (:status raw-result))
+                                       (assoc raw-result :outputs
+                                              (into {}
+                                                    (remove (comp nil? val))
+                                                    (select-keys (:outputs raw-result)
+                                                                 (:writes node))))
+                                       raw-result)
+                                     false)
+                  result (if (= :success (:status validated-result))
+                           (assoc validated-result :outputs (:outputs raw-result))
+                           validated-result)
+                  {:keys [status outputs rejected-writes error duration-ms generated-tree-raw iteration-reasonings usage iterations block-payload]} result
                   ;; Track usage for this tick (RLM mode aggregates all LLM calls)
                   _ (when usage (add-usage! tick-id usage))
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
@@ -2214,6 +2232,8 @@
                                             (or effective-outputs {})))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
+                         (seq rejected-writes)
+                         (assoc :rejected-writes (normalize-output-keys rejected-writes))
                          ;; Carry the node's real read inputs (plus any map-each
                          ;; context) so the eval trace has honest grounding
                          ;; context. exec-context keys win on conflict to keep

@@ -107,6 +107,49 @@ predictions return canonical values, while validation-disabled predictions
 retain their parsed provider representation. String enums remain strings and
 noncanonical nested values remain exact rejected-output trace evidence.
 
+## Consumer-gated researcher tools and typed finalization (2026-08-20)
+
+The ORC service contract requires an explicitly configured consumer tool gate
+to remain authoritative across inline researcher calls and generated subtree
+calls. Gate resolution or construction failures fail closed rather than using
+the base caller. Researcher `final!` values cross the same declared blackboard
+schema boundary as other successful leaves; rejected values remain evidence and
+never become execution values. DET-E2E-155 and DET-E2E-156 track the complete
+public DSL, durable projection, asynchronous execution, and replay obligations.
+Both obligations are implemented by the deterministic
+`repl-researcher-consumer-gate-e2e-test`; focused tests pass, and both tests
+passed during the broad `orc-service` brick run. That run later stopped on the
+pre-existing timing-sensitive `streaming-test` leftover-buffer assertion
+(observed 3 versus a limit of 2), which passed immediately when rerun alone.
+
+## Researcher Phase-1 output contract disclosure (2026-08-20)
+
+The researcher receives the exact authoritative blackboard schema for every
+declared write before it designs Phase-1 code. Schema disclosure is guidance,
+not a replacement for enforcement: successful `final!` values still cross the
+same blackboard validation boundary, and invalid values still fail without
+becoming canonical. DET-E2E-157 covers exact prompt preservation for structured
+and scalar schemas; DET-E2E-158 covers successful live structured finalization
+from a semantic-only consumer instruction. DET-E2E-157 passed 6 deterministic
+assertions. DET-E2E-158 passed 8 assertions against pinned
+`google/gemini-3.6-flash`, including durable model and token-usage evidence.
+The complete `clojure -M:poly test brick:orc-service` run passed across both
+projects in 12 minutes 18 seconds with no failures or errors.
+
+## Researcher Phase-1 bound tool contracts (2026-08-20)
+
+The ORC service contract requires Phase 1 to receive authoritative argument and
+result schemas for its bound tools, preserving their complete structural form.
+Missing schema declarations remain backward compatible but are visibly untyped,
+and declarations for unbound tools are not disclosed. DET-E2E-159 tracks the
+durable public boundary and deterministic model-input contract; DET-E2E-160
+tracks live schema-guided chaining from a search result into a subsequent tool
+call. DET-E2E-159 passed 12 assertions through the public asynchronous path and
+the complete first-project `orc-service` brick run. DET-E2E-160 passed 10 live
+assertions against pinned `google/gemini-3.6-flash`: the model used the disclosed
+`:candidates` field, transferred `paper-160` into the retrieval call, finalized
+with retrieval-only evidence, and retained durable model/usage provenance.
+
 ## Optional structured output presence (2026-08-13)
 
 The structured prediction and leaf execution contracts distinguish an optional
