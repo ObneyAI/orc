@@ -1561,18 +1561,21 @@
                              :usage {:prompt_tokens 100 :completion_tokens 80 :total_tokens 180}}
 
                             :else
-                            {:outputs {:code "(final! {:answer \"fallback\"})"}
+                            {:outputs {:summary "test summary"}
                              :usage {:prompt_tokens 10 :completion_tokens 5 :total_tokens 15}})))]
           (let [{:keys [sheet-id]} (setup-rlm-repl-researcher-sheet!
                                      ctx
                                      :instruction "Generate a BT for document analysis"
+                                     :reads [:document]
+                                     :writes [:summary]
                                      :rlm-config {:recursive? false})
                 {:keys [promise tick-id]} (dispatch-async-execute! ctx sheet-id {:document "test doc"})
                 result (wait-for-completion promise :timeout-ms 30000)]
 
             ;; Phase 2 executes automatically - returns :success (not :tree-generated)
             (is (= :success (:status result))
-                (str "Expected :success status (Phase 2 auto-execution), got: " (:status result)))
+                (str "Expected :success status (Phase 2 auto-execution), got: "
+                     (pr-str result)))
             ;; Should still have the generated raw tree for observability
             (is (some? (:generated-tree-raw result))
                 "Should have :generated-tree-raw in result")
@@ -1582,8 +1585,8 @@
             (is (= :sequence (first (:generated-tree-raw result)))
                 "Raw tree should start with :sequence")
             ;; Should have outputs from Phase 2 execution
-            (is (some? (:outputs result))
-                "Should have outputs from Phase 2 execution")))))))
+            (is (= "test summary" (get-in result [:outputs :summary]))
+                "Should have the declared Phase 2 output")))))))
 
 ;; =============================================================================
 ;; Slice 5: RLM System Prompt Tests

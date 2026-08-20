@@ -107,7 +107,7 @@ predictions return canonical values, while validation-disabled predictions
 retain their parsed provider representation. String enums remain strings and
 noncanonical nested values remain exact rejected-output trace evidence.
 
-## Consumer-gated researcher tools and typed finalization (2026-08-20)
+## Consumer-gated researcher tools and typed finalization
 
 The ORC service contract requires an explicitly configured consumer tool gate
 to remain authoritative across inline researcher calls and generated subtree
@@ -118,11 +118,23 @@ never become execution values. DET-E2E-155 and DET-E2E-156 track the complete
 public DSL, durable projection, asynchronous execution, and replay obligations.
 Both obligations are implemented by the deterministic
 `repl-researcher-consumer-gate-e2e-test`; focused tests pass, and both tests
-passed during the broad `orc-service` brick run. That run later stopped on the
-pre-existing timing-sensitive `streaming-test` leftover-buffer assertion
-(observed 3 versus a limit of 2), which passed immediately when rerun alone.
+passed during the broad `orc-service` brick run. The final headless canonical
+brick run completed both consuming projects with zero failures or errors.
 
-## Researcher Phase-1 output contract disclosure (2026-08-20)
+DET-E2E-161 closes the researcher's output-contract bypasses across terminal
+`final!` and asynchronous completion: required nil or missing writes fail before
+any sibling write becomes canonical, Malli-normalized declared values cannot be
+replaced by the raw snapshot retained for observability, and top-level writes
+explicitly named by `:options :optional-writes` may be omitted or normalized
+from literal nil to absence. Present structured values still cross their nested
+Malli schema, including all-nil maps, while explicitly nullable nested fields
+preserve nil as data. Optional-write configuration is scoped to each node's
+declared writes and cannot suppress unrelated completion keys. The public
+deterministic namespace passed 12 tests and 53 assertions, including durable
+rejection, canonical event, and projection read-back; the pinned live structured
+finalization test passed 8 assertions with durable provider provenance.
+
+## Researcher Phase-1 output contract disclosure
 
 The researcher receives the exact authoritative blackboard schema for every
 declared write before it designs Phase-1 code. Schema disclosure is guidance,
@@ -136,7 +148,7 @@ assertions. DET-E2E-158 passed 8 assertions against pinned
 The complete `clojure -M:poly test brick:orc-service` run passed across both
 projects in 12 minutes 18 seconds with no failures or errors.
 
-## Researcher Phase-1 bound tool contracts (2026-08-20)
+## Researcher Phase-1 bound tool contracts
 
 The ORC service contract requires Phase 1 to receive authoritative argument and
 result schemas for its bound tools, preserving their complete structural form.

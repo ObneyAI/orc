@@ -392,6 +392,11 @@ Record unexpected outcomes even when the final returned status is successful.
   - **Falsifiable predictions:** Given a semantic-only research instruction, a real model calls a search tool, reads the declared `:candidates` result field, passes a candidate identifier to a second retrieval tool, and finalizes with evidence from the retrieved result; the instruction names neither structural field nor argument key.
   - **Verified:** `real-llm-repl-researcher-tool-contract-e2e-test` passed live against pinned `google/gemini-3.6-flash` with 10 assertions, including the exact two-call chain, transfer of `paper-160` from nested search output into retrieval, final use of retrieval-only evidence, and durable model/usage provenance.
 
+- [x] **DET-E2E-161 — Researcher finalization preserves the exact declared-output contract.**
+  - **Purpose:** Prove a successful researcher cannot bypass required-write presence, non-null, schema, or normalization obligations when its full Phase-2 snapshot is retained for observability.
+  - **Falsifiable predictions:** A required nil or missing write fails with durable rejected evidence and no canonical write; an explicitly optional top-level write may be omitted or supplied as literal nil without becoming durable; present structured values still obey nested nullability; schema-normalized declared values, rather than their raw pre-validation forms, are returned and projected.
+  - **Verified:** `repl-researcher-consumer-gate-e2e-test` exercises required nil and missing writes, top-level optional omission and literal-nil absence, nested optional and explicitly nullable fields, all-nil structured-value rejection, malformed optional-write isolation, normalized return values, canonical events, and value-log/tick replay through the public asynchronous path. The focused namespace passed 12 tests and 53 assertions; the existing live structured-finalization test passed 8 assertions with durable provider provenance.
+
 ## Recommended complex tranche
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions

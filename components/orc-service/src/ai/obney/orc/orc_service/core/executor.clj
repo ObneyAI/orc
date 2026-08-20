@@ -2727,6 +2727,7 @@
                       (assoc context :call-tool-fn
                              (node-call-tool-fn node blackboard context)))
         declared-writes (:writes node)
+        optional-writes (set (get-in node [:options :optional-writes]))
         ;; Extract debug? from node's :rlm config (can be {:debug? true}) or from options
         rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
         debug? (or (get rlm-config :debug? false) (get options :debug? false))
@@ -2965,6 +2966,7 @@
                             {:provider provider
                              :blackboard blackboard
                              :declared-writes declared-writes
+                             :optional-writes optional-writes
                              :call-tool-fn call-tool-fn
                              :mcp-tools mcp-tools
                              :browser-tools browser-tools
