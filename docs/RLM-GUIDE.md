@@ -215,8 +215,8 @@ The model:
 1. Iterates up to `:max-iterations` times, generating Clojure code each iteration.
 2. Code can call `(llm ...)`, `(code ...)`, `(store! ...)`, `(get-var ...)`, etc.
 3. Optionally calls `(emit-tree! [...])` to design a behavior tree for ORC to execute.
-4. Recursive mode (default): when the model calls `emit-tree!`, Phase 2 runs, its `:writes`-declared outputs are merged into the sandbox variables (accessible via `(get-var :key)`), a summary entry is appended to `:tree-results`, and control returns to Phase 1 for another iteration. The loop ends when the model calls `(final! {...})` or `:max-iterations` is exhausted.
-5. Terminal mode (`:rlm {:recursive? false}` — explicit opt-out): when the model calls `emit-tree!`, Phase 2 runs and the result returns to the caller immediately — the loop ends without further Phase 1 iterations.
+4. Recursive mode (default): when the model calls `emit-tree!`, Phase 2 runs, its `:writes`-declared outputs are merged into the sandbox variables (accessible via `(get-var :key)`), a summary entry is appended to `:tree-results`, and control returns to Phase 1 for another iteration. A non-error response with no executable code is recorded as iteration evidence and also returns control for self-correction. The loop ends when the model calls `(final! {...})` or `:max-iterations` is exhausted.
+5. Terminal mode (`:rlm {:recursive? false}` — explicit opt-out): when the model calls `emit-tree!`, Phase 2 runs and the result returns to the caller immediately — the loop ends without further Phase 1 iterations. A response with no executable code retains the immediate `LLM did not generate code` failure used by this compatibility mode.
 
 ## Configuration reference
 
@@ -231,7 +231,11 @@ All options accepted by the `repl-researcher` node and the `:rlm` config map.
 | `:instruction` | string | required | The model's task. Verbatim goal-only is preferred; the framework adds the methodology framing. |
 | `:reads` | vector of keywords | `[]` | Blackboard keys to load into Phase-1 sandbox + Phase-2 child sheet. |
 | `:writes` | vector of keywords | `[]` | Blackboard keys the model must populate via `(final! ...)` or via the emit-tree! tree's `:final` node. |
-| `:max-iterations` | int | 5 | Max Phase-1 iterations. If the model neither calls `(final! ...)` nor calls `(emit-tree! ...)` within this many iterations, the run returns `{:status :failure :error "Max iterations reached without final!"}`. |
+| `:mcp-tools` | vector of strings | `[]` | Exact tool names bound as callable Phase-1 functions. |
+| `:tool-contracts` | map | `{}` | Authoritative Malli contracts keyed by bound tool name, with optional `:arguments` and `:result` schemas. Phase 1 receives both schemas intact; an omitted side is identified as `:untyped`. Contracts for names absent from `:mcp-tools` are not disclosed. |
+| `:tool-caller-fn` | string | nil | Fully-qualified consumer builder that constructs the gated caller used by inline Phase-1 and generated Phase-2 tool calls. Because this hook is an authorization boundary, a missing, throwing, or non-callable configured builder fails the node; ORC never falls back to the ungated base caller. |
+| `:options` | map | `{}` | Per-node execution options. `:optional-writes` names top-level declared writes that may be omitted; a literal nil also means absence. An absent write is neither validated nor durably written. A present structured value still crosses its full schema, so use `[:maybe ...]` when an explicitly present nested nil is valid. |
+| `:max-iterations` | int | 5 | Max Phase-1 iterations. Recursive non-error responses with no executable code consume an iteration and become evidence for the next turn. If the model does not call `(final! ...)` within this many recursive iterations, the run returns `{:status :failure :error "Max iterations reached without final!"}`. |
 | `:timeout-ms` | int | 900000 (15 min) | Hard wall-clock budget for Phase 2. Precedence: node's `:timeout-ms` > parent tick's `:timeout-ms` > hardcoded 15-minute default. When Phase 2 budget is exhausted mid-flight the child tick is cancelled. |
 | `:rlm` | map or `true` | `false` | Enables RLM mode. `true` is equivalent to `{}`. See "`:rlm` config map" below. |
 | `:context` | map | `nil` | Ontology context injection. When set, the framework queries the ontology for patterns tied to the configured `:tree-id` and prepends a formatted summary to the model's instruction at run time. See [Ontology context injection](#ontology-context-injection-context) below. |
@@ -454,6 +458,7 @@ rather than *triggered by* a not-found result:
                  :confidence 0.6
                  :evidence-count 1}]
    :representative-uses ["game-balance playtest tuning"]
+   :avoid-when ["the feedback signal cannot be measured or independently checked"]
    :summary "Iterate parameter adjustments driven by measured feedback until a target metric stabilizes. Pair the LLM's hypothesis generation with a trusted oracle (real measurement or deterministic check) so the feedback signal is grounded."
    :version 1
    :consolidated-from-event-count 0}
@@ -461,8 +466,11 @@ rather than *triggered by* a not-found result:
 ```
 
 The minted body must validate against the description-body Malli
-schema. The mint dispatches `:ontology/mint-behavioral-subtree` and
-returns the minted UUID as a string. The behavior is immediately
+schema. Whenever the ontology mint command is registered, Phase 1 receives that
+exact schema as the authoritative `:mint-behavior-contract`; this does not depend
+on corpus auto-classification being enabled. A rejected body surfaces its schema
+error in iteration history so recursive mode can correct it. The mint dispatches
+`:ontology/mint-behavioral-subtree` and returns the minted UUID as a string. The behavior is immediately
 queryable by future `classify-behaviors` calls — the QP-3 force-rebuild
 processor re-indexes ColBERT on the new content so the next task that
 matches the behavioral shape surfaces it at high confidence (typically
@@ -610,6 +618,7 @@ The loop ends ONLY when:
 - Model calls `(final! {...})` with the declared `:writes` keys
 - `:max-iterations` is exhausted (returns `:failure :error "Max iterations reached without final!"`)
 - The total `:timeout-ms` budget is exhausted
+- The provider returns an explicit error rather than a successful but empty response
 
 ### What the model sees after a tree
 

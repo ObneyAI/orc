@@ -64,16 +64,17 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-19, both `allium check specs` and `allium analyse specs` reported 181
-structural diagnostics across the twelve specifications: 149 informational and 32
-warnings. `analyse` reported zero process findings.
+Under the current checked-in specifications and Allium CLI, both
+`allium check specs` and `allium analyse specs` report 122 structural diagnostics
+across the twelve specifications: 87 informational and 35 warnings. `analyse`
+reports zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 41 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 108 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.rule.unreachableTrigger` | 54 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.field.unused` | 33 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
-| `allium.definition.unused` | 14 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.definition.unused` | 17 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents
@@ -106,6 +107,100 @@ and the executor's authoritative blackboard validation; validated direct
 predictions return canonical values, while validation-disabled predictions
 retain their parsed provider representation. String enums remain strings and
 noncanonical nested values remain exact rejected-output trace evidence.
+
+## Consumer-gated researcher tools and typed finalization
+
+The ORC service contract requires an explicitly configured consumer tool gate
+to remain authoritative across inline researcher calls and generated subtree
+calls. Gate resolution or construction failures fail closed rather than using
+the base caller. Researcher `final!` values cross the same declared blackboard
+schema boundary as other successful leaves; rejected values remain evidence and
+never become execution values. DET-E2E-155 and DET-E2E-156 track the complete
+public DSL, durable projection, asynchronous execution, and replay obligations.
+Both obligations are implemented by the deterministic
+`repl-researcher-consumer-gate-e2e-test`; focused tests pass, and both tests
+passed during the broad `orc-service` brick run. The final headless canonical
+brick run completed both consuming projects with zero failures or errors.
+
+DET-E2E-161 closes the researcher's output-contract bypasses across terminal
+`final!` and asynchronous completion: required nil or missing writes fail before
+any sibling write becomes canonical, Malli-normalized declared values cannot be
+replaced by the raw snapshot retained for observability, and top-level writes
+explicitly named by `:options :optional-writes` may be omitted or normalized
+from literal nil to absence. Present structured values still cross their nested
+Malli schema, including all-nil maps, while explicitly nullable nested fields
+preserve nil as data. Optional-write configuration is scoped to each node's
+declared writes and cannot suppress unrelated completion keys. The public
+deterministic namespace passed 12 tests and 53 assertions, including durable
+rejection, canonical event, and projection read-back; the pinned live structured
+finalization test passed 8 assertions with durable provider provenance.
+
+## Recursive researcher empty-turn recovery
+
+The recursive Phase-1 loop treats a successful provider response with no
+executable code as recoverable iteration evidence while ordinary iteration and
+execution budgets remain. The evidence is included in the next model turn and
+in the durable researcher-iterations event; usage from the empty turn remains
+accounted. Repeated empty turns terminate through the existing max-iterations
+boundary. Explicit provider errors remain terminal, and terminal compatibility
+mode retains its immediate `LLM did not generate code` failure. DET-E2E-162
+proves all four boundaries through the public asynchronous workflow path,
+including command/event processing, projection replay, and value-log read-back.
+The focused namespace passed 16 tests and 75 assertions. The real OpenRouter
+adaptive-loop journey passed 2 tests and 43 assertions after exercising generated
+Phase-2 recovery.
+
+## Researcher behavioral-mint contract disclosure
+
+When the ontology mint command is registered, the researcher receives the exact
+registered Grain/Malli command contract for `mint-behavior!` before Phase-1 code
+generation. The disclosure includes the authoritative description-body schema and the
+optional parent shape, does not require corpus auto-classification, and is absent when
+the optional command is not registered. DET-E2E-163 proves the classifier-disabled
+public asynchronous path through the real sandbox command, durable provenance audit,
+and successful final output. It also guards unavailable-command and malformed-schema
+boundaries. Its focused run passed 3 tests and 11 assertions; the combined
+mint/classifier/RH1/RH2 contract run passed 46 tests and 219 assertions. The real
+OpenRouter adaptive-loop journey passed 2 tests and 43 assertions with
+classification, evolution, and mint-capable Phase-1 execution.
+
+## Researcher configuration round-trip fidelity
+
+The public export, DSL rendering/evaluation, and EDN import boundaries must preserve
+every behavior-affecting researcher field. DET-E2E-164 tracks tool contracts, the
+consumer tool gate, browser tools, ontology context, and execution options through
+all three boundaries through the real command/event/projection path. It also preserves
+explicit empty `:rlm {}` and `:context {}` choices, which respectively select recursive
+mode and suppress automatic context classification. The complete DSL round-trip
+namespace passed 17 tests and 33 assertions.
+
+## Researcher Phase-1 output contract disclosure
+
+The researcher receives the exact authoritative blackboard schema for every
+declared write before it designs Phase-1 code. Schema disclosure is guidance,
+not a replacement for enforcement: successful `final!` values still cross the
+same blackboard validation boundary, and invalid values still fail without
+becoming canonical. DET-E2E-157 covers exact prompt preservation for structured
+and scalar schemas; DET-E2E-158 covers successful live structured finalization
+from a semantic-only consumer instruction. DET-E2E-157 passed 6 deterministic
+assertions. DET-E2E-158 passed 8 assertions against pinned
+`google/gemini-3.6-flash`, including durable model and token-usage evidence.
+The complete `clojure -M:poly test brick:orc-service` run passed across both
+projects in 12 minutes 18 seconds with no failures or errors.
+
+## Researcher Phase-1 bound tool contracts
+
+The ORC service contract requires Phase 1 to receive authoritative argument and
+result schemas for its bound tools, preserving their complete structural form.
+Missing schema declarations remain backward compatible but are visibly untyped,
+and declarations for unbound tools are not disclosed. DET-E2E-159 tracks the
+durable public boundary and deterministic model-input contract; DET-E2E-160
+tracks live schema-guided chaining from a search result into a subsequent tool
+call. DET-E2E-159 passed 12 assertions through the public asynchronous path and
+the complete first-project `orc-service` brick run. DET-E2E-160 passed 10 live
+assertions against pinned `google/gemini-3.6-flash`: the model used the disclosed
+`:candidates` field, transferred `paper-160` into the retrieval call, finalized
+with retrieval-only evidence, and retained durable model/usage provenance.
 
 ## Optional structured output presence (2026-08-13)
 

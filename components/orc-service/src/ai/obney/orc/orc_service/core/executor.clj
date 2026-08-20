@@ -927,10 +927,18 @@
    it only resolves and calls it."
   [node blackboard context]
   (if-let [builder-sym (:tool-caller-fn node)]
-    (let [{:keys [fn]} (resolve-fn builder-sym)]
-      ;; Unresolvable builder → fall back to the static caller rather
-      ;; than failing the node.
-      (if fn (fn blackboard context) (:call-tool-fn context)))
+    (let [{builder :fn resolve-error :error} (resolve-fn builder-sym)]
+      (when-not builder
+        (throw (ex-info (str "Configured tool-caller builder could not be resolved: "
+                             builder-sym " (" resolve-error ")")
+                        {:tool-caller-fn builder-sym})))
+      (let [caller (builder blackboard context)]
+        (when-not (fn? caller)
+          (throw (ex-info (str "Configured tool-caller builder did not return a function: "
+                               builder-sym)
+                          {:tool-caller-fn builder-sym
+                           :returned-type (some-> caller type str)})))
+        caller))
     (:call-tool-fn context)))
 
 (defn execute-code
@@ -2008,6 +2016,74 @@
            (str/join "\n\n" (concat blackboard-entries sandbox-entries))
            "\n\n"))))
 
+(defn- declared-write-schema-contract
+  "Return the Phase-1 output contract in the node's declared write order.
+
+   Schemas come directly from the parent blackboard projection. Public workflow
+   construction guarantees that every declared write has a schema; keeping this
+   helper as a projection also preserves compatibility for private prompt-only
+   callers that construct partial test nodes."
+  [node blackboard]
+  (into (array-map)
+        (map (fn [key-name]
+               [key-name (get-in blackboard [key-name :schema])]))
+        (:writes node)))
+
+(defn- bound-tool-contracts
+  "Build the complete Phase-1 contract for the tools actually bound to a node."
+  [node mcp-tools]
+  (let [declared (:tool-contracts node)
+        legacy-arguments (get-in node [:options :tool-arg-specs])]
+    (into (array-map)
+          (map (fn [tool]
+                 (let [contract (get declared tool)
+                       arguments (cond
+                                   (some? (:arguments contract)) (:arguments contract)
+                                   (seq (get legacy-arguments tool))
+                                   (into [:map]
+                                         (map (fn [key-name] [key-name :any]))
+                                         (get legacy-arguments tool))
+                                   :else :untyped)
+                       result (if (some? (:result contract))
+                                (:result contract)
+                                :untyped)]
+                   [tool {:arguments arguments :result result}])))
+          mcp-tools)))
+
+(defn- registered-mint-behavior-contract
+  "Return the SCI mint affordance contract when its Grain command is available.
+
+   The registered command schema is the authority for the public name, body,
+   and parent shapes.  Deriving the contract here keeps orc-service independent
+   of the optional ontology component and prevents the prompt from drifting from
+   the schema Grain actually validates."
+  [command-registry]
+  (when (contains? command-registry :ontology/mint-behavioral-subtree)
+    (let [command-form (m/form
+                         (m/deref
+                           (m/schema :ontology/mint-behavioral-subtree)))
+          field-schemas (into {}
+                              (keep (fn [entry]
+                                      (when (vector? entry)
+                                        [(first entry) (last entry)])))
+                              (rest command-form))
+          required-fields [:name :body :parent-behavior]
+          missing-fields (into []
+                               (remove #(some? (get field-schemas %)))
+                               required-fields)]
+      (when (seq missing-fields)
+        (throw (ex-info
+                 "mint-behavior command schema must declare name, body, and parent-behavior fields"
+                 {:command :ontology/mint-behavioral-subtree
+                  :missing-fields missing-fields
+                  :schema-form command-form})))
+      {:arguments (array-map
+                    :name (:name field-schemas)
+                    :body (:body field-schemas)
+                    :parent {:optional true
+                             :schema (:parent-behavior field-schemas)})
+       :returns :string})))
+
 (defn- build-ontology-examples-section
   "Build a section of the prompt with few-shot examples from ontology.
    Returns nil if no examples available."
@@ -2074,7 +2150,7 @@
   ;; matching contract; default false keeps every existing caller and prompt
   ;; byte-identical.
   ([node inputs-preview history blackboard sandbox-vars-map var-creation-times mcp-tools
-    {:keys [function-calling?]}]
+    {:keys [function-calling? mint-behavior-contract]}]
   (let [rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
         available-code-nodes (get rlm-config :available-code-nodes)
         has-mcp? (boolean (seq mcp-tools))
@@ -2089,6 +2165,8 @@
         tool-arg-specs (get-in node [:options :tool-arg-specs])
         specced-tools (filterv #(seq (get tool-arg-specs %)) mcp-tools)
         unspecced-tools (filterv #(not (seq (get tool-arg-specs %))) mcp-tools)
+        tool-contracts (bound-tool-contracts node mcp-tools)
+        write-schema-contract (declared-write-schema-contract node blackboard)
         base-inputs [{:name :task
                       :spec :string
                       :description "The research task to complete"}
@@ -2099,6 +2177,10 @@
                       :spec :string
                       :description "Results from previous iterations (if any)"}]
         all-inputs (cond-> base-inputs
+                     mint-behavior-contract
+                     (conj {:name :mint-behavior-contract
+                            :spec :map
+                            :description "Authoritative call contract for the built-in mint-behavior! primitive"})
                      available-code-nodes
                      (conj {:name :available-code-nodes
                             :spec :string
@@ -2109,7 +2191,10 @@
                      has-mcp?
                      (conj {:name :tools
                             :spec :string
-                            :description "Available tools you can call as functions"}))]
+                            :description "Available tools you can call as functions"}
+                           {:name :tool-contracts
+                            :spec :map
+                            :description "Authoritative argument and result schemas for bound tools; :untyped means no schema was declared"}))]
     {:inputs all-inputs
    :outputs [{:name :reasoning
               :spec :string
@@ -2175,6 +2260,15 @@
                       "- Executes pure Clojure computation\n"
                       "- No LLM call involved\n"
                       "- Result stored in :writes key\n\n"
+                      (when mint-behavior-contract
+                        (str "### mint-behavior! - Persist a reusable behavioral subtree\n"
+                             "```clojure\n"
+                             "(mint-behavior! name body)\n"
+                             "(mint-behavior! name body :parent parent-id)\n"
+                             "```\n"
+                             "The authoritative call contract is:\n"
+                             (pr-str mint-behavior-contract) "\n"
+                             "Use the declared body schema exactly; the return value is the minted behavior ID as a string.\n\n"))
                       "### emit-tree! - Generate a behavior tree for execution\n"
                       "```clojure\n"
                       "(emit-tree! [:sequence\n"
@@ -2239,6 +2333,10 @@
                         (str "## Bound Tools\n\n"
                              "The following tools are bound in your sandbox as directly callable functions: "
                              mcp-tool-list "\n"
+                             "Their authoritative argument and result schemas are:\n"
+                             (pr-str tool-contracts) "\n"
+                             "Use the declared result field names when inspecting successful responses. "
+                             "A schema marked :untyped was not declared and must be inspected defensively.\n"
                              "Each takes a single map of arguments and returns a result map:\n"
                              "```clojure\n"
                              (apply str
@@ -2574,7 +2672,12 @@
                       "evaluation or predictable error attribution.\n\n"
 
                       "## Output Contract\n"
-                      "You MUST call (final! {...}) with keys: " (pr-str (:writes node)) "\n\n"
+                      "Authoritative declared write schemas:\n"
+                      (pr-str write-schema-contract) "\n\n"
+                      "You MUST call (final! {...}) with keys: " (pr-str (:writes node)) "\n"
+                      "Every value passed to final! MUST satisfy its declared Malli schema exactly. "
+                      "Closed maps reject undeclared keys; preserve nested, optional, collection, and union shapes. "
+                      "The examples below are illustrative; this declared contract is authoritative.\n\n"
                       "## CRITICAL OUTPUT FORMAT\n"
                       (if function-calling?
                         ;; Function-calling contract: the transport carries the
@@ -2671,6 +2774,7 @@
                       (assoc context :call-tool-fn
                              (node-call-tool-fn node blackboard context)))
         declared-writes (:writes node)
+        optional-writes (set (get-in node [:options :optional-writes]))
         ;; Extract debug? from node's :rlm config (can be {:debug? true}) or from options
         rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
         debug? (or (get rlm-config :debug? false) (get options :debug? false))
@@ -2770,10 +2874,13 @@
                 function-calling? (boolean (:use-function-calling?
                                             (merge {:use-function-calling? false}
                                                    options)))
+                mint-behavior-contract
+                (registered-mint-behavior-contract (:command-registry context))
                 module (build-rlm-code-generation-module node inputs-preview history
                                                           blackboard @sandbox-vars @var-creation-times
                                                           mcp-tools
-                                                          {:function-calling? function-calling?})
+                                                          {:function-calling? function-calling?
+                                                           :mint-behavior-contract mint-behavior-contract})
                 ;; G2 (ADR 0018): pass the :available-code-nodes VALUE into the
                 ;; runtime inputs so the module's declared field + catalog prompt
                 ;; note are non-empty and the model can reference catalog :code
@@ -2786,9 +2893,12 @@
                                 :inputs-info (pr-str inputs-preview)
                                 :history (or (build-iteration-history history) "None")}
                          available-code-nodes (assoc :available-code-nodes available-code-nodes)
+                         mint-behavior-contract
+                         (assoc :mint-behavior-contract mint-behavior-contract)
                          ;; CE-6b: supply the declared :tools input's VALUE
                          ;; (same joined-list shape as the non-RLM researcher).
-                         (seq mcp-tools) (assoc :tools (str/join ", " mcp-tools)))
+                         (seq mcp-tools) (assoc :tools (str/join ", " mcp-tools)
+                                                :tool-contracts (bound-tool-contracts node mcp-tools)))
                 ;; Default to marker parsing for historical OpenRouter/Gemini behavior,
                 ;; but preserve an explicit caller/node :use-function-calling? override.
                 ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
@@ -2894,11 +3004,21 @@
 
             (cond
                 (str/blank? code)
-                {:status :failure
-                 :error (or (:error llm-result) "LLM did not generate code")
-                 :iterations history
-                 :duration-ms (- (System/currentTimeMillis) start-time)
-                 :usage @total-usage}
+                (if-let [terminal-error (or (:error llm-result)
+                                            (when-not recursive-mode?
+                                              "LLM did not generate code"))]
+                  {:status :failure
+                   :error terminal-error
+                   :iterations history
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage @total-usage}
+                  (recur (inc iteration)
+                         (conj history
+                               {:code code
+                                :result nil
+                                :stdout nil
+                                :error "LLM did not generate code"
+                                :vars-created []})))
 
                 :else
                 ;; Build RLM sandbox context with BT primitives
@@ -2908,6 +3028,7 @@
                             {:provider provider
                              :blackboard blackboard
                              :declared-writes declared-writes
+                             :optional-writes optional-writes
                              :call-tool-fn call-tool-fn
                              :mcp-tools mcp-tools
                              :browser-tools browser-tools

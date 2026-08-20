@@ -989,7 +989,7 @@
            "   CRITICAL: :strengths and :weaknesses are VECTORS OF MAPS, not vectors of "
            "strings. Each entry is principle-shaped — :trait + context-guard + concrete "
            "recommended action + confidence + evidence-count. A vector of bare strings "
-           "fails schema validation and the mint is dropped silently. Look at any "
+           "fails schema validation; the rejection is returned in iteration history for correction. Look at any "
            "existing seed body in the corpus retrieval above to see the expected shape.\n\n"
            "   The minted behavior will be retrievable on subsequent classify-behaviors "
            "calls — your contribution persists in the corpus for future tasks. Without "
@@ -1054,7 +1054,7 @@
              " reference is the true nearest parent).\n"
              "   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard +"
              " concrete recommended action + :confidence + :evidence-count) — a vector of bare strings"
-             " fails schema validation and the mint is dropped silently.\n")))))
+             " fails schema validation; the rejection is returned in iteration history for correction.\n")))))
 
 (defn- behavioral-display-entries
   "The behavioral entries the render puts in front of the model. Companion to
@@ -1984,6 +1984,17 @@
 ;; REPL Researcher Node Execution Processor
 ;; =============================================================================
 
+(defn- strip-nil-researcher-optional-writes
+  "Treat only a literal nil top-level researcher write as optional absence.
+   Present structured values must cross their declared Malli schema boundary,
+   even when every nested value is nil."
+  [outputs optional-writes]
+  (if (and (map? outputs) (seq optional-writes))
+    (into {} (remove (fn [[k v]]
+                       (and (contains? optional-writes k) (nil? v)))
+                     outputs))
+    outputs))
+
 (defn execute-repl-researcher-node
   "Execute a repl-researcher node when node-execution-started is emitted.
    Runs in a future like leaf/llm-condition nodes to avoid blocking pubsub."
@@ -2107,10 +2118,50 @@
                                                   :node-id node-id)
                                      tool-context (assoc :tool-context tool-context)
                                      correlation-id (assoc :orc/correlation-id correlation-id))
-                  result (if provider
-                           (executor/execute-repl-researcher node blackboard provider enriched-context)
-                           {:status :failure :error "No ORC LLM provider configured"})
-                  {:keys [status outputs error duration-ms generated-tree-raw iteration-reasonings usage iterations block-payload]} result
+                  raw-result (if provider
+                               (executor/execute-repl-researcher node blackboard provider enriched-context)
+                               {:status :failure :error "No ORC LLM provider configured"})
+                  optional-writes (set (get-in node [:options :optional-writes]))
+                  missing-or-nil-required-writes
+                  (when (= :success (:status raw-result))
+                    (let [raw-outputs (or (:outputs raw-result) {})]
+                      (into []
+                            (filter #(and (not (contains? optional-writes %))
+                                          (or (not (contains? raw-outputs %))
+                                              (nil? (get raw-outputs %)))))
+                            (:writes node))))
+                  contract-result
+                  (if (seq missing-or-nil-required-writes)
+                    (assoc raw-result
+                           :status :failure
+                           :error (str "Required researcher outputs are missing or nil: "
+                                       (pr-str missing-or-nil-required-writes))
+                           :outputs {}
+                           :rejected-writes
+                           (merge (select-keys (:outputs raw-result) (:writes node))
+                                  (zipmap missing-or-nil-required-writes (repeat nil))))
+                    raw-result)
+                  declared-outputs (when (= :success (:status contract-result))
+                                     (strip-nil-researcher-optional-writes
+                                      (select-keys (:outputs contract-result) (:writes node))
+                                      optional-writes))
+                  ;; A Phase-2 child returns a delivered blackboard snapshot,
+                  ;; including placeholders and generated-tree internals. The
+                  ;; researcher's output contract is only its declared writes;
+                  ;; validate those values, then retain the full successful
+                  ;; result for the existing observability path.
+                  validated-result (executor/validate-leaf-outputs
+                                     blackboard
+                                     (if (= :success (:status contract-result))
+                                       (assoc contract-result :outputs declared-outputs)
+                                       contract-result)
+                                     false)
+                  result (if (= :success (:status validated-result))
+                           (assoc validated-result :outputs
+                                  (merge (apply dissoc (:outputs raw-result) (:writes node))
+                                         (:outputs validated-result)))
+                           validated-result)
+                  {:keys [status outputs rejected-writes error duration-ms generated-tree-raw iteration-reasonings usage iterations block-payload]} result
                   ;; Track usage for this tick (RLM mode aggregates all LLM calls)
                   _ (when usage (add-usage! tick-id usage))
                   ;; Handle :tree-generated status - only propagate raw tree (canonical contains fns)
@@ -2214,6 +2265,8 @@
                                             (or effective-outputs {})))}
                          duration-ms (assoc :duration-ms duration-ms)
                          error (assoc :error error)
+                         (seq rejected-writes)
+                         (assoc :rejected-writes (normalize-output-keys rejected-writes))
                          ;; Carry the node's real read inputs (plus any map-each
                          ;; context) so the eval trace has honest grounding
                          ;; context. exec-context keys win on conflict to keep
@@ -3873,7 +3926,13 @@
   [{:keys [event event-store tenant-id] :as context}]
   (let [tick-id (:tick-id event)
         root-status (:root-status event)
-        executed-version (:version-number (rm/get-tick-execution-context context tick-id))
+        tick-ctx (rm/get-tick-execution-context context tick-id)
+        executed-version (:version-number tick-ctx)
+        optional-write-keys (into #{}
+                                  (mapcat (fn [{:keys [writes options]}]
+                                            (filter (set writes)
+                                                    (:optional-writes options))))
+                                  (vals (:nodes-by-id tick-ctx)))
         ;; complete-tree-tick stores only the keys this tick wrote, so the
         ;; full blackboard is rehydrated here from the tick-execution-context
         ;; read model. Falls back to the event's own :outputs for legacy ticks
@@ -3891,7 +3950,8 @@
         ;;
         ;; MUST run before forget-tick! below, which drops the memoized seeds.
         outputs (or (when-let [bb (rm/get-tick-blackboard context tick-id)]
-                      (merge (zipmap (keys bb) (repeat nil))
+                      (merge (zipmap (remove optional-write-keys (keys bb))
+                                     (repeat nil))
                              (value-log/final-values context tenant-id tick-id)))
                     (:outputs event))
         error (:error event)

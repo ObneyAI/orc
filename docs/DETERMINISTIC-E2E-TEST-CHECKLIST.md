@@ -362,6 +362,56 @@ Record unexpected outcomes even when the final returned status is successful.
   - **Falsifiable predictions:** The test records wall time, event count, serialized event bytes, event-store append transactions, storage writes, and processor dispatch count for legacy and optimized execution; optimized execution reduces events, bytes, append transactions, and lifecycle dispatches while preserving outputs and durable blackboard writes. DET-E2E-152/153 separately measures recovery convergence and completed-effect invocation count.
   - **Verified:** `durability_boundary_e2e_test.clj` (`det-e2e-154-durability-optimization-measurement`).
 
+- [x] **DET-E2E-155 — Consumer-gated researcher tools survive the public durable boundary.**
+  - **Purpose:** Prove a consumer can configure a `repl-researcher` through the public DSL with a scoped tool-caller builder and retain that authorization boundary through asynchronous execution and projection replay.
+  - **Falsifiable predictions:** DSL construction, configuration command, event, node projection, and replay retain the builder identity; an inline Phase-1 tool call and a generated Phase-2 code-node tool call both reach the consumer gate with the durable execution tool context; the ungated base caller records zero calls; an absent gate preserves existing base-caller behavior; an explicitly configured missing, throwing, or non-callable gate fails the node without invoking the base caller.
+  - **Verified:** `repl-researcher-consumer-gate-e2e-test` exercises the public asynchronous durable path; `repl-researcher-tool-caller-test` and `generated-tree-tool-gate-test` cover backward compatibility and fail-closed builder boundaries. The focused run passed 36 assertions, and the test passed in the broad brick run before its unrelated streaming flake.
+
+- [x] **DET-E2E-156 — Researcher finalization enforces typed blackboard writes.**
+  - **Purpose:** Prove `final!` cannot turn schema-invalid SCI values into successful durable workflow output.
+  - **Falsifiable predictions:** A valid structured final value succeeds and projects unchanged; an invalid value produces one failed researcher completion naming the write key and schema mismatch, retains rejected-output evidence, emits no durable execution-value write for the rejected key, and prevents downstream execution; projection replay preserves the failed outcome and absence of the invalid value.
+  - **Verified:** `repl-researcher-consumer-gate-e2e-test` passed both valid and invalid asynchronous `final!` paths, including durable rejection evidence, downstream suppression, and replayed terminal failure.
+
+- [x] **DET-E2E-157 — Phase-1 receives the authoritative declared write schemas.**
+  - **Purpose:** Prove a researcher can design and finalize output from its durable blackboard contract without the consumer restating the shape in prose.
+  - **Falsifiable predictions:** The actual Phase-1 module contains every declared write key paired with its exact Malli schema; closed maps, nested maps, optional entries, collections, unions, and scalar schemas survive without simplification; the prompt identifies this mapping as authoritative and requires `final!` values to satisfy it; a scalar-write researcher remains compatible.
+  - **Verified:** `repl-researcher-output-contract-test` passed 6 assertions through the public asynchronous path, preserving the exact structured and scalar Malli forms in the captured Phase-1 module and successfully finalizing both values.
+
+- [x] **DET-E2E-158 — A real Phase-1 model finalizes structured output from schema guidance alone.**
+  - **Purpose:** Prove the disclosed contract is usable by a live researcher rather than merely present as prompt text.
+  - **Falsifiable predictions:** Given a semantic-only consumer instruction and a closed structured write schema, a real model produces a conforming `final!` value, the tick succeeds, the projected value retains its structured type, and no rejected-value event exists for the write.
+  - **Verified:** `real-llm-repl-researcher-output-contract-e2e-test` passed live against pinned `google/gemini-3.6-flash` with 8 assertions, durable model/usage provenance, a successful tick, a conforming closed-map value, and no rejected write; the consumer instruction named no output key or shape.
+
+- [x] **DET-E2E-159 — Phase-1 receives authoritative contracts for every bound tool.**
+  - **Purpose:** Prove a researcher can call and inspect consumer tools from their durable declarations without duplicating structural guidance in its instruction.
+  - **Falsifiable predictions:** Public DSL construction, command, event, projection, replay, and the actual Phase-1 model input retain each bound tool's exact argument and result Malli schemas; nested maps, closed maps, optional entries, collections, and unions remain unchanged; unbound declarations are omitted; missing argument or result schemas are explicitly advertised as untyped; legacy `:tool-arg-specs` and tools with no contracts remain callable.
+  - **Verified:** `repl-researcher-tool-contract-test` passed 12 assertions through the public asynchronous path and passed in the complete first-project `orc-service` brick run.
+
+- [x] **DET-E2E-160 — A real Phase-1 model chains bound tools using disclosed result fields.**
+  - **Purpose:** Prove result-schema disclosure changes live researcher behavior rather than merely adding prompt text.
+  - **Falsifiable predictions:** Given a semantic-only research instruction, a real model calls a search tool, reads the declared `:candidates` result field, passes a candidate identifier to a second retrieval tool, and finalizes with evidence from the retrieved result; the instruction names neither structural field nor argument key.
+  - **Verified:** `real-llm-repl-researcher-tool-contract-e2e-test` passed live against pinned `google/gemini-3.6-flash` with 10 assertions, including the exact two-call chain, transfer of `paper-160` from nested search output into retrieval, final use of retrieval-only evidence, and durable model/usage provenance.
+
+- [x] **DET-E2E-161 — Researcher finalization preserves the exact declared-output contract.**
+  - **Purpose:** Prove a successful researcher cannot bypass required-write presence, non-null, schema, or normalization obligations when its full Phase-2 snapshot is retained for observability.
+  - **Falsifiable predictions:** A required nil or missing write fails with durable rejected evidence and no canonical write; an explicitly optional top-level write may be omitted or supplied as literal nil without becoming durable; present structured values still obey nested nullability; schema-normalized declared values, rather than their raw pre-validation forms, are returned and projected.
+  - **Verified:** `repl-researcher-consumer-gate-e2e-test` exercises required nil and missing writes, top-level optional omission and literal-nil absence, nested optional and explicitly nullable fields, all-nil structured-value rejection, malformed optional-write isolation, normalized return values, canonical events, and value-log/tick replay through the public asynchronous path. The focused namespace passed 12 tests and 53 assertions; the existing live structured-finalization test passed 8 assertions with durable provider provenance.
+
+- [x] **DET-E2E-162 — Recursive researcher recovers from an empty Phase-1 code turn.**
+  - **Purpose:** Prove a non-terminal empty model response cannot discard useful recursive state or fail a researcher while iteration and execution budgets remain.
+  - **Falsifiable predictions:** A public asynchronous recursive researcher whose first Phase-1 response contains no executable code records an attributable iteration error, presents that evidence to the next Phase-1 turn, and succeeds when the next response calls `final!`; provider usage from both turns is accumulated, the final value is durable, and projection replay returns the same success. Repeated empty responses consume exactly `:max-iterations` calls and fail with the ordinary max-iterations error rather than an immediate `LLM did not generate code` failure. An explicit provider error remains terminal.
+  - **Verified:** `repl-researcher-consumer-gate-e2e-test` covers recovery, durable iteration evidence, cumulative usage, projection/value-log replay, exact max-iteration exhaustion, explicit provider-error precedence, and terminal-mode compatibility through the public asynchronous boundary. The focused namespace passed 16 tests and 75 assertions. The real OpenRouter adaptive-loop journey passed 2 tests and 43 assertions after recovering through generated Phase-2 work.
+
+- [x] **DET-E2E-163 — Phase-1 always receives the authoritative mint-behavior contract.**
+  - **Purpose:** Prove a researcher can invoke the built-in behavioral mint affordance without depending on optional corpus-classification prose or a consumer restating the ontology schema.
+  - **Falsifiable predictions:** With `:auto-classify? false`, the actual Phase-1 model input contains the exact current `description-body` Malli schema plus the `mint-behavior!` name/body/optional-parent call shape; a schema-valid invocation crosses the public asynchronous command/event path, emits a provenance-linked mint audit, and lets the researcher complete successfully.
+  - **Verified:** `repl-researcher-mint-contract-test` captures the actual classifier-disabled Phase-1 module/input, compares the full contract with Grain's registered schema, executes the real sandbox mint command, verifies the provenance-linked audit and successful final output, omits the primitive when its optional command is unregistered, and rejects malformed registered schemas. The focused namespace passed 3 tests and 11 assertions; the combined mint/classifier/RH1/RH2 contract run passed 46 tests and 219 assertions. The real OpenRouter adaptive-loop journey passed 2 tests and 43 assertions with classification, evolution, and mint-capable Phase-1 execution.
+
+- [x] **DET-E2E-164 — Researcher security and execution configuration survives public round-trips.**
+  - **Purpose:** Prove export, DSL rendering/evaluation, and EDN import cannot strip a researcher's behavior-affecting public configuration or turn a gated workflow into an ungated one.
+  - **Falsifiable predictions:** A researcher carrying tool contracts, a consumer tool-gate builder, browser tools, ontology context, and execution options retains those exact values in the exported node, evaluated DSL definition, and re-imported durable node. `:options :optional-writes` remains present so output optionality cannot change after transport.
+  - **Verified:** `dsl-roundtrip-test` exercises public `build-workflow!`, `export-sheet`, `export-to-dsl`, evaluated DSL, and `import-sheet` boundaries through the real command/event/projection path. It covers both populated configuration and explicit empty `:rlm {}` / `:context {}` choices. The complete namespace passed 17 tests and 33 assertions.
+
 ## Recommended complex tranche
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions

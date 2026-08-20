@@ -250,36 +250,39 @@
      mode where the model calls (final! ...) with all-blank values to
      satisfy the schema without doing actual work — common in recursive
      mode when the model never emits a tree and gives up at max-iterations."
-  [output declared-writes]
-  (let [output-keys (set (keys output))
-        writes-set (set declared-writes)
-        extra-keys (clojure.set/difference output-keys writes-set)
-        missing-keys (clojure.set/difference writes-set output-keys)]
-    (when (seq extra-keys)
-      (throw (ex-info (str "final! contains keys not in :writes declaration: " extra-keys
-                           ". Declared writes: " declared-writes)
-                      {:extra-keys extra-keys
-                       :declared-writes declared-writes
-                       :output-keys output-keys})))
-    (when (seq missing-keys)
-      (throw (ex-info (str "final! is missing required keys from :writes: " missing-keys
-                           ". Declared writes: " declared-writes)
-                      {:missing-keys missing-keys
-                       :declared-writes declared-writes
-                       :output-keys output-keys})))
-    ;; Reject all-empty outputs — every declared write maps to nil / empty
-    ;; collection / empty string. This is the "model gave up" failure mode
-    ;; (e.g. recursive mode exhausting iterations without ever emitting a tree).
-    (when (and (seq declared-writes)
-               (every? #(empty-value? (get output %)) declared-writes))
-      (throw (ex-info (str "final! called with all empty values — every declared write "
-                           "maps to nil/empty-collection/empty-string. The model should "
-                           "produce meaningful work via emit-tree! before terminating. "
-                           "Declared writes: " declared-writes)
-                      {:empty-keys (vec declared-writes)
-                       :declared-writes declared-writes
-                       :output output})))
-    output))
+  ([output declared-writes]
+   (validate-final! output declared-writes #{}))
+  ([output declared-writes optional-writes]
+   (let [output-keys (set (keys output))
+         writes-set (set declared-writes)
+         required-writes (clojure.set/difference writes-set (set optional-writes))
+         extra-keys (clojure.set/difference output-keys writes-set)
+         missing-keys (clojure.set/difference required-writes output-keys)]
+     (when (seq extra-keys)
+       (throw (ex-info (str "final! contains keys not in :writes declaration: " extra-keys
+                            ". Declared writes: " declared-writes)
+                       {:extra-keys extra-keys
+                        :declared-writes declared-writes
+                        :output-keys output-keys})))
+     (when (seq missing-keys)
+       (throw (ex-info (str "final! is missing required keys from :writes: " missing-keys
+                            ". Declared writes: " declared-writes)
+                       {:missing-keys missing-keys
+                        :declared-writes declared-writes
+                        :output-keys output-keys})))
+     ;; Reject all-empty outputs — every declared write maps to nil / empty
+     ;; collection / empty string. This is the "model gave up" failure mode
+     ;; (e.g. recursive mode exhausting iterations without ever emitting a tree).
+     (when (and (seq declared-writes)
+                (every? #(empty-value? (get output %)) declared-writes))
+       (throw (ex-info (str "final! called with all empty values — every declared write "
+                            "maps to nil/empty-collection/empty-string. The model should "
+                            "produce meaningful work via emit-tree! before terminating. "
+                            "Declared writes: " declared-writes)
+                       {:empty-keys (vec declared-writes)
+                        :declared-writes declared-writes
+                        :output output})))
+     output)))
 
 ;; =============================================================================
 ;; RLM Sandbox Context
@@ -300,6 +303,7 @@
    - :provider - ORC LLM provider keyword (e.g., :openrouter)
    - :blackboard - Map of key -> {:key, :schema, :value, :version}
    - :declared-writes - Vector of declared write keys for validation
+   - :optional-writes - Set of declared top-level write keys that may be omitted
    - :parent-trace-id - UUID for event tracing
    - :call-tool-fn - Optional MCP tool function
    - :mcp-tools - Optional vector of MCP tool names
@@ -309,7 +313,7 @@
    - :recursive? - When true, enables R-2 drill-down primitives (tree-detail, etc.)
    - :event-store - Required when :recursive? true. Used by drill-down primitives.
    - :tenant-id - Optional; passed through to the event-store read"
-  [{:keys [provider blackboard declared-writes parent-trace-id
+  [{:keys [provider blackboard declared-writes optional-writes parent-trace-id
            call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
            recursive? event-store tenant-id cache
            sheet-id tick-id command-registry reserve-llm-call!] :as context}]
@@ -348,7 +352,7 @@
 
         ;; final! function with validation
         final!-fn (fn [output]
-                    (let [validated (validate-final! output declared-writes)]
+                    (let [validated (validate-final! output declared-writes optional-writes)]
                       (reset! final-output validated)
                       ;; Return a marker string for detection
                       (str "FINAL_ANSWER: " (pr-str validated))))
@@ -571,6 +575,9 @@
              (some? command-registry)
              (some? sheet-id)
              (some? tick-id))
+        mint-behavior-available?
+        (or (nil? command-registry)
+            (contains? command-registry :ontology/mint-behavioral-subtree))
         mint-behavior!-fn
         (fn [name body & kw-args]
           (when-not command-context-ready?
@@ -747,29 +754,31 @@
                           'node-input-profile node-input-profile-fn})
 
         ;; RLM bindings - these are the key primitives
-        rlm-bindings (merge {'llm llm-fn
-                             'final! final!-fn
-                             'get-input get-input-fn
-                             'store! store!-fn
-                             'get-var get-var-fn
-                             'list-vars list-vars-fn
-                             'inputs inputs-preview
-                             'sequence sequence-fn
-                             'parallel parallel-fn
-                             'map-each map-each-fn
-                             'fallback fallback-fn
-                             'condition condition-fn
-                             'code code-fn
-                             'emit-tree! emit-tree!-fn
-                             ;; R05c: minting affordance for the recursive RLM
-                             ;; researcher. Always exposed — agents can mint
-                             ;; behaviors in terminal mode too (a final
-                             ;; (mint-behavior! ...) before (final! ...)).
-                             'mint-behavior! mint-behavior!-fn
-                             ;; C-Loop-2 S5: read the description body for a
-                             ;; minted/seeded target so the agent can verify
-                             ;; its own mints + inspect existing seeds.
-                             'get-description get-description-fn}
+        rlm-bindings (merge (cond-> {'llm llm-fn
+                                     'final! final!-fn
+                                     'get-input get-input-fn
+                                     'store! store!-fn
+                                     'get-var get-var-fn
+                                     'list-vars list-vars-fn
+                                     'inputs inputs-preview
+                                     'sequence sequence-fn
+                                     'parallel parallel-fn
+                                     'map-each map-each-fn
+                                     'fallback fallback-fn
+                                     'condition condition-fn
+                                     'code code-fn
+                                     'emit-tree! emit-tree!-fn
+                                     ;; C-Loop-2 S5: read the description body for a
+                                     ;; minted/seeded target so the agent can verify
+                                     ;; its own mints + inspect existing seeds.
+                                     'get-description get-description-fn}
+                              ;; Preserve the no-registry dry-run binding so it
+                              ;; fails with the established missing-context error.
+                              ;; A supplied registry, however, is authoritative:
+                              ;; an unregistered optional command is not a sandbox
+                              ;; affordance.
+                              mint-behavior-available?
+                              (assoc 'mint-behavior! mint-behavior!-fn))
                             drill-bindings)
 
         ;; MCP tool bindings — make :mcp-tools callable as bare fns in the RLM

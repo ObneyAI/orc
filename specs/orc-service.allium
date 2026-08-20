@@ -88,13 +88,70 @@ contract LeafExecutor {
         -- workflow consumer. Successful execution does not require that the
         -- callable be owned by ORC.
 
+    @invariant ConfiguredConsumerToolGateIsAuthoritative
+        -- When a researcher names a consumer-supplied tool gate, every inline
+        -- tool call and every tool call from its generated subtree uses that
+        -- gate with the execution's durable consumer context. A configured gate
+        -- that cannot be resolved or constructed fails the node; it never falls
+        -- back to an ungated caller. With no configured gate, the ordinary tool
+        -- caller remains available for backwards compatibility.
+
+    @invariant ResearcherSeesBoundToolContracts
+        -- Before calling a bound tool, a researcher's Phase-1 model receives
+        -- that tool's authoritative argument and result schemas. Nested,
+        -- closed, optional, collection and union semantics remain intact.
+        -- Bound tools whose declarations omit either schema remain callable
+        -- and identify the missing side explicitly as untyped. Unbound tool
+        -- declarations are never exposed.
+
+    @invariant ResearcherSeesMintBehaviorContract
+        -- Whenever mint-behavior! is available in the researcher sandbox, the
+        -- Phase-1 model receives the authoritative behavioral-description body
+        -- schema and the call's name, body, and optional-parent shape before it
+        -- generates code. The contract is present even when corpus
+        -- auto-classification and contextual pattern injection are disabled;
+        -- optional retrieval guidance may illustrate the contract but is never
+        -- its sole source.
+
     @invariant DeclaredInputsOnly
         -- A leaf receives only the blackboard values named by its read contract.
 
     @invariant DeclaredOutputsOnly
-        -- A successful leaf supplies a non-null value for every key named by
-        -- its write contract, supplies no undeclared keys, and every supplied
-        -- value satisfies the key's declared schema.
+        -- A successful leaf supplies a non-null value for every required key
+        -- named by its write contract, supplies no undeclared keys, and every
+        -- supplied value satisfies the key's declared schema. A leaf may name
+        -- top-level writes as optional according to that executor's documented
+        -- absence-normalization policy; a value normalized to absence is not
+        -- written durably.
+
+    @invariant ResearcherSeesDeclaredOutputContract
+        -- Before designing or finalizing work, a researcher's Phase-1 model
+        -- receives every declared write key paired with its authoritative
+        -- blackboard schema. Structured, closed, optional, collection, union,
+        -- and scalar schema semantics remain intact, so consumers do not need
+        -- to duplicate output shapes in task instructions.
+
+    @invariant ResearcherFinalizationUsesDeclaredSchemas
+        -- Values supplied through a researcher's finalization operation cross
+        -- the same declared-output validation boundary as every other leaf.
+        -- Invalid values fail the node with attributable schema evidence and
+        -- never become durable execution values.
+
+    @invariant ResearcherOptionalWritesPreserveNestedSchemas
+        -- A researcher may omit a declared top-level optional write, or supply
+        -- a literal null that is normalized to absence. Any present non-null
+        -- value, including a structured value whose nested fields are null,
+        -- still crosses its complete declared schema boundary. Top-level write
+        -- optionality never changes nested-field nullability.
+
+    @invariant ResearcherBlankCodeIsRecoverable
+        -- While recursive Phase-1 iteration and execution budgets remain, a
+        -- model response that contains no executable code and no provider
+        -- error becomes attributable iteration evidence for the next turn; it
+        -- does not fail the researcher immediately. Repeated empty responses
+        -- consume the ordinary iteration budget and fail clearly when that
+        -- budget is exhausted. Provider, security, cancellation, and execution
+        -- budget failures retain their existing terminal semantics.
 
     @invariant ProviderRetryCoversSchemaFailure
         -- The default provider retry applies when a returned structured output
@@ -166,6 +223,13 @@ contract WorkflowDefinitionConstruction {
         -- with feedback that identifies the offending key and schema path, and
         -- directs the consumer to use the most specific schema that expresses
         -- its intent.
+
+    @invariant ResearcherConfigurationSurvivesRoundTrip
+        -- Exporting, rendering as public DSL, evaluating, or importing a
+        -- researcher definition preserves every behavior-affecting public
+        -- configuration field exactly. Tool contracts, consumer tool gates,
+        -- browser tools, ontology context, and execution options never
+        -- disappear or widen permissions at a serialization boundary.
 }
 
 contract ExecutionEventStream {

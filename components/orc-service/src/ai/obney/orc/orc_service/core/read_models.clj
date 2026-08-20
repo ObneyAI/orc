@@ -392,6 +392,8 @@
       (assoc-in [(:node-id event) :reads] (:reads event))
       (assoc-in [(:node-id event) :writes] (:writes event))
       (assoc-in [(:node-id event) :mcp-tools] (:mcp-tools event))
+      (assoc-in [(:node-id event) :tool-contracts] (:tool-contracts event))
+      (assoc-in [(:node-id event) :tool-caller-fn] (:tool-caller-fn event))
       (assoc-in [(:node-id event) :browser-tools] (:browser-tools event))
       (assoc-in [(:node-id event) :model] (:model event))
       (assoc-in [(:node-id event) :max-iterations] (:max-iterations event))
