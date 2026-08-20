@@ -575,6 +575,9 @@
              (some? command-registry)
              (some? sheet-id)
              (some? tick-id))
+        mint-behavior-available?
+        (or (nil? command-registry)
+            (contains? command-registry :ontology/mint-behavioral-subtree))
         mint-behavior!-fn
         (fn [name body & kw-args]
           (when-not command-context-ready?
@@ -751,29 +754,31 @@
                           'node-input-profile node-input-profile-fn})
 
         ;; RLM bindings - these are the key primitives
-        rlm-bindings (merge {'llm llm-fn
-                             'final! final!-fn
-                             'get-input get-input-fn
-                             'store! store!-fn
-                             'get-var get-var-fn
-                             'list-vars list-vars-fn
-                             'inputs inputs-preview
-                             'sequence sequence-fn
-                             'parallel parallel-fn
-                             'map-each map-each-fn
-                             'fallback fallback-fn
-                             'condition condition-fn
-                             'code code-fn
-                             'emit-tree! emit-tree!-fn
-                             ;; R05c: minting affordance for the recursive RLM
-                             ;; researcher. Always exposed — agents can mint
-                             ;; behaviors in terminal mode too (a final
-                             ;; (mint-behavior! ...) before (final! ...)).
-                             'mint-behavior! mint-behavior!-fn
-                             ;; C-Loop-2 S5: read the description body for a
-                             ;; minted/seeded target so the agent can verify
-                             ;; its own mints + inspect existing seeds.
-                             'get-description get-description-fn}
+        rlm-bindings (merge (cond-> {'llm llm-fn
+                                     'final! final!-fn
+                                     'get-input get-input-fn
+                                     'store! store!-fn
+                                     'get-var get-var-fn
+                                     'list-vars list-vars-fn
+                                     'inputs inputs-preview
+                                     'sequence sequence-fn
+                                     'parallel parallel-fn
+                                     'map-each map-each-fn
+                                     'fallback fallback-fn
+                                     'condition condition-fn
+                                     'code code-fn
+                                     'emit-tree! emit-tree!-fn
+                                     ;; C-Loop-2 S5: read the description body for a
+                                     ;; minted/seeded target so the agent can verify
+                                     ;; its own mints + inspect existing seeds.
+                                     'get-description get-description-fn}
+                              ;; Preserve the no-registry dry-run binding so it
+                              ;; fails with the established missing-context error.
+                              ;; A supplied registry, however, is authoritative:
+                              ;; an unregistered optional command is not a sandbox
+                              ;; affordance.
+                              mint-behavior-available?
+                              (assoc 'mint-behavior! mint-behavior!-fn))
                             drill-bindings)
 
         ;; MCP tool bindings — make :mcp-tools callable as bare fns in the RLM

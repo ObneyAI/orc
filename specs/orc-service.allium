@@ -104,6 +104,15 @@ contract LeafExecutor {
         -- and identify the missing side explicitly as untyped. Unbound tool
         -- declarations are never exposed.
 
+    @invariant ResearcherSeesMintBehaviorContract
+        -- Whenever mint-behavior! is available in the researcher sandbox, the
+        -- Phase-1 model receives the authoritative behavioral-description body
+        -- schema and the call's name, body, and optional-parent shape before it
+        -- generates code. The contract is present even when corpus
+        -- auto-classification and contextual pattern injection are disabled;
+        -- optional retrieval guidance may illustrate the contract but is never
+        -- its sole source.
+
     @invariant DeclaredInputsOnly
         -- A leaf receives only the blackboard values named by its read contract.
 
@@ -134,6 +143,15 @@ contract LeafExecutor {
         -- value, including a structured value whose nested fields are null,
         -- still crosses its complete declared schema boundary. Top-level write
         -- optionality never changes nested-field nullability.
+
+    @invariant ResearcherBlankCodeIsRecoverable
+        -- While recursive Phase-1 iteration and execution budgets remain, a
+        -- model response that contains no executable code and no provider
+        -- error becomes attributable iteration evidence for the next turn; it
+        -- does not fail the researcher immediately. Repeated empty responses
+        -- consume the ordinary iteration budget and fail clearly when that
+        -- budget is exhausted. Provider, security, cancellation, and execution
+        -- budget failures retain their existing terminal semantics.
 
     @invariant ProviderRetryCoversSchemaFailure
         -- The default provider retry applies when a returned structured output
@@ -205,6 +223,13 @@ contract WorkflowDefinitionConstruction {
         -- with feedback that identifies the offending key and schema path, and
         -- directs the consumer to use the most specific schema that expresses
         -- its intent.
+
+    @invariant ResearcherConfigurationSurvivesRoundTrip
+        -- Exporting, rendering as public DSL, evaluating, or importing a
+        -- researcher definition preserves every behavior-affecting public
+        -- configuration field exactly. Tool contracts, consumer tool gates,
+        -- browser tools, ontology context, and execution options never
+        -- disappear or widen permissions at a serialization boundary.
 }
 
 contract ExecutionEventStream {

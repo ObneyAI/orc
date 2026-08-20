@@ -29,9 +29,86 @@
       (update :sheet dissoc :id)
       (update :nodes normalize-node)))
 
+(def ^:private researcher-roundtrip-fields
+  [:model :instruction :reads :writes :mcp-tools :tool-contracts
+   :tool-caller-fn :browser-tools :max-iterations :rlm :context :options])
+
 ;; =============================================================================
 ;; Simple Round-Trip Tests
 ;; =============================================================================
+
+(deftest det-e2e-164-researcher-configuration-survives-public-roundtrips
+  (testing "researcher gates, contracts, context, and options survive export, DSL, and import"
+    (h/with-test-context [ctx]
+      (let [tool-contracts {"search" {:arguments [:map [:query :string]]
+                                       :result [:map [:hits [:vector :string]]]}}
+            expected {:model "google/gemini-3.6-flash"
+                      :instruction "Research with the configured capabilities."
+                      :reads [:question]
+                      :writes [:answer :optional-note]
+                      :mcp-tools ["search"]
+                      :tool-contracts tool-contracts
+                      :tool-caller-fn "consumer.security/build-tool-caller"
+                      :browser-tools ["open" "snapshot"]
+                      :max-iterations 4
+                      :rlm {:recursive? true :auto-classify? false}
+                      :context {:problem-type "problem:Research"
+                                :self-learning? true}
+                      :options {:optional-writes [:optional-note]
+                                :tool-arg-specs {"search" ["query"]}}}
+            definition (dsl/workflow "det-e2e-164-researcher-roundtrip"
+                         (dsl/blackboard {:question :string
+                                          :answer :string
+                                          :optional-note :string})
+                         (apply dsl/repl-researcher "researcher"
+                                (mapcat identity expected)))
+            source-id (dsl/build-workflow! ctx definition)
+            exported (dsl/export-sheet ctx source-id)
+            exported-node (:nodes exported)
+            dsl-code (dsl/export-to-dsl exported)
+            regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+                          (eval (read-string dsl-code)))
+            regenerated-node (:root-node regenerated)
+            imported-id (dsl/import-sheet
+                         ctx
+                         (assoc-in exported [:sheet :name]
+                                   "det-e2e-164-researcher-imported"))
+            imported-node (:nodes (dsl/export-sheet ctx imported-id))]
+        (is (= expected (select-keys exported-node researcher-roundtrip-fields))
+            "exported EDN preserves the complete public researcher configuration")
+        (is (= expected (select-keys regenerated-node researcher-roundtrip-fields))
+            "rendered and evaluated public DSL preserves the same configuration")
+        (is (= expected (select-keys imported-node researcher-roundtrip-fields))
+            "EDN import persists the same configuration through commands and projection")))))
+
+(deftest det-e2e-164-explicit-empty-researcher-choices-survive-public-roundtrips
+  (testing "empty recursive configuration and context remain explicit choices"
+    (h/with-test-context [ctx]
+      (let [expected {:rlm {} :context {}}
+            definition (dsl/workflow "det-e2e-164-empty-researcher-choices"
+                         (dsl/blackboard {:question :string :answer :string})
+                         (dsl/repl-researcher "researcher"
+                           :instruction "Research without injected context."
+                           :reads [:question]
+                           :writes [:answer]
+                           :rlm {}
+                           :context {}))
+            source-id (dsl/build-workflow! ctx definition)
+            exported (dsl/export-sheet ctx source-id)
+            dsl-code (dsl/export-to-dsl exported)
+            regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+                          (eval (read-string dsl-code)))
+            imported-id (dsl/import-sheet
+                         ctx
+                         (assoc-in exported [:sheet :name]
+                                   "det-e2e-164-empty-researcher-choices-imported"))]
+        (is (= expected (select-keys (:nodes exported) [:rlm :context]))
+            "EDN export retains explicit empty researcher choices")
+        (is (= expected (select-keys (:root-node regenerated) [:rlm :context]))
+            "rendered and evaluated DSL retains explicit empty researcher choices")
+        (is (= expected
+               (select-keys (:nodes (dsl/export-sheet ctx imported-id)) [:rlm :context]))
+            "EDN import persists explicit empty researcher choices")))))
 
 (deftest simple-llm-workflow-roundtrip-test
   (testing "simple LLM workflow survives round-trip"

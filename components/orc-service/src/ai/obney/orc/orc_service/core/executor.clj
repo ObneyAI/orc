@@ -2050,6 +2050,40 @@
                    [tool {:arguments arguments :result result}])))
           mcp-tools)))
 
+(defn- registered-mint-behavior-contract
+  "Return the SCI mint affordance contract when its Grain command is available.
+
+   The registered command schema is the authority for the public name, body,
+   and parent shapes.  Deriving the contract here keeps orc-service independent
+   of the optional ontology component and prevents the prompt from drifting from
+   the schema Grain actually validates."
+  [command-registry]
+  (when (contains? command-registry :ontology/mint-behavioral-subtree)
+    (let [command-form (m/form
+                         (m/deref
+                           (m/schema :ontology/mint-behavioral-subtree)))
+          field-schemas (into {}
+                              (keep (fn [entry]
+                                      (when (vector? entry)
+                                        [(first entry) (last entry)])))
+                              (rest command-form))
+          required-fields [:name :body :parent-behavior]
+          missing-fields (into []
+                               (remove #(some? (get field-schemas %)))
+                               required-fields)]
+      (when (seq missing-fields)
+        (throw (ex-info
+                 "mint-behavior command schema must declare name, body, and parent-behavior fields"
+                 {:command :ontology/mint-behavioral-subtree
+                  :missing-fields missing-fields
+                  :schema-form command-form})))
+      {:arguments (array-map
+                    :name (:name field-schemas)
+                    :body (:body field-schemas)
+                    :parent {:optional true
+                             :schema (:parent-behavior field-schemas)})
+       :returns :string})))
+
 (defn- build-ontology-examples-section
   "Build a section of the prompt with few-shot examples from ontology.
    Returns nil if no examples available."
@@ -2116,7 +2150,7 @@
   ;; matching contract; default false keeps every existing caller and prompt
   ;; byte-identical.
   ([node inputs-preview history blackboard sandbox-vars-map var-creation-times mcp-tools
-    {:keys [function-calling?]}]
+    {:keys [function-calling? mint-behavior-contract]}]
   (let [rlm-config (let [rlm (:rlm node)] (if (map? rlm) rlm {}))
         available-code-nodes (get rlm-config :available-code-nodes)
         has-mcp? (boolean (seq mcp-tools))
@@ -2143,6 +2177,10 @@
                       :spec :string
                       :description "Results from previous iterations (if any)"}]
         all-inputs (cond-> base-inputs
+                     mint-behavior-contract
+                     (conj {:name :mint-behavior-contract
+                            :spec :map
+                            :description "Authoritative call contract for the built-in mint-behavior! primitive"})
                      available-code-nodes
                      (conj {:name :available-code-nodes
                             :spec :string
@@ -2222,6 +2260,15 @@
                       "- Executes pure Clojure computation\n"
                       "- No LLM call involved\n"
                       "- Result stored in :writes key\n\n"
+                      (when mint-behavior-contract
+                        (str "### mint-behavior! - Persist a reusable behavioral subtree\n"
+                             "```clojure\n"
+                             "(mint-behavior! name body)\n"
+                             "(mint-behavior! name body :parent parent-id)\n"
+                             "```\n"
+                             "The authoritative call contract is:\n"
+                             (pr-str mint-behavior-contract) "\n"
+                             "Use the declared body schema exactly; the return value is the minted behavior ID as a string.\n\n"))
                       "### emit-tree! - Generate a behavior tree for execution\n"
                       "```clojure\n"
                       "(emit-tree! [:sequence\n"
@@ -2827,10 +2874,13 @@
                 function-calling? (boolean (:use-function-calling?
                                             (merge {:use-function-calling? false}
                                                    options)))
+                mint-behavior-contract
+                (registered-mint-behavior-contract (:command-registry context))
                 module (build-rlm-code-generation-module node inputs-preview history
                                                           blackboard @sandbox-vars @var-creation-times
                                                           mcp-tools
-                                                          {:function-calling? function-calling?})
+                                                          {:function-calling? function-calling?
+                                                           :mint-behavior-contract mint-behavior-contract})
                 ;; G2 (ADR 0018): pass the :available-code-nodes VALUE into the
                 ;; runtime inputs so the module's declared field + catalog prompt
                 ;; note are non-empty and the model can reference catalog :code
@@ -2843,6 +2893,8 @@
                                 :inputs-info (pr-str inputs-preview)
                                 :history (or (build-iteration-history history) "None")}
                          available-code-nodes (assoc :available-code-nodes available-code-nodes)
+                         mint-behavior-contract
+                         (assoc :mint-behavior-contract mint-behavior-contract)
                          ;; CE-6b: supply the declared :tools input's VALUE
                          ;; (same joined-list shape as the non-RLM researcher).
                          (seq mcp-tools) (assoc :tools (str/join ", " mcp-tools)
@@ -2952,11 +3004,21 @@
 
             (cond
                 (str/blank? code)
-                {:status :failure
-                 :error (or (:error llm-result) "LLM did not generate code")
-                 :iterations history
-                 :duration-ms (- (System/currentTimeMillis) start-time)
-                 :usage @total-usage}
+                (if-let [terminal-error (or (:error llm-result)
+                                            (when-not recursive-mode?
+                                              "LLM did not generate code"))]
+                  {:status :failure
+                   :error terminal-error
+                   :iterations history
+                   :duration-ms (- (System/currentTimeMillis) start-time)
+                   :usage @total-usage}
+                  (recur (inc iteration)
+                         (conj history
+                               {:code code
+                                :result nil
+                                :stdout nil
+                                :error "LLM did not generate code"
+                                :vars-created []})))
 
                 :else
                 ;; Build RLM sandbox context with BT primitives

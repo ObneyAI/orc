@@ -477,3 +477,144 @@
             (is (= :success (:status result)) (pr-str result))
             (is (contains? (:outputs result) :unrelated))
             (is (nil? (get-in result [:outputs :unrelated])))))))))
+
+(deftest det-e2e-162-recursive-researcher-recovers-after-empty-code-turn
+  (testing "an empty non-error Phase-1 response becomes evidence for the next recursive turn"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [definition
+            (sheet/workflow "det-e2e-162-empty-code-recovery"
+              (sheet/blackboard {:question :string
+                                 :answer :string})
+              (sheet/repl-researcher "recovering-researcher"
+                :instruction "Answer after considering prior iteration evidence."
+                :reads [:question]
+                :writes [:answer]
+                :rlm {:recursive? true}
+                :max-iterations 3))
+            sheet-id (sheet/build-workflow! ctx definition)
+            calls (atom [])]
+        (with-redefs [llm/predict
+                      (fn [_ _ inputs _]
+                        (swap! calls conj inputs)
+                        (if (= 1 (count @calls))
+                          {:outputs {:code "   "}
+                           :usage {:prompt_tokens 2 :completion_tokens 1 :total_tokens 3}}
+                          {:outputs {:code "(final! {:answer \"recovered\"})"}
+                           :usage {:prompt_tokens 3 :completion_tokens 2 :total_tokens 5}}))]
+          (let [result (sheet/execute ctx sheet-id {:question "research"}
+                                      :timeout-ms 30000)
+                tick-id (:trace-id result)
+                iteration-event (some #(when (and (= :rlm/researcher-iterations
+                                                       (:event/type %))
+                                                    (= tick-id (:execution-id %))) %)
+                                      (events ctx))
+                replayed-tick (get (reduce rm/ticks* {} (events ctx)) tick-id)
+                tick-blackboard (rm/get-tick-blackboard ctx tick-id)
+                replayed-values (value-log/resolve-values
+                                 (:event-store ctx) (:tenant-id ctx) tick-id
+                                 tick-blackboard [:answer])]
+            (is (= :success (:status result)) (pr-str result))
+            (is (= 2 (count @calls)))
+            (is (str/includes? (str (:history (second @calls)))
+                               "LLM did not generate code"))
+            (is (= "LLM did not generate code"
+                   (get-in iteration-event [:iterations 0 :error])))
+            (is (= {:prompt-tokens 5 :completion-tokens 3 :total-tokens 8}
+                   (select-keys (:usage result)
+                                [:prompt-tokens :completion-tokens :total-tokens])))
+            (is (= "recovered" (get-in result [:outputs :answer])))
+            (is (= :success (:root-status replayed-tick)))
+            (is (= {:answer "recovered"} replayed-values))))))))
+
+(deftest det-e2e-162-repeated-empty-code-exhausts-the-iteration-budget
+  (testing "empty Phase-1 turns consume the normal recursive iteration budget"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [definition
+            (sheet/workflow "det-e2e-162-empty-code-exhaustion"
+              (sheet/blackboard {:question :string
+                                 :answer :string})
+              (sheet/repl-researcher "bounded-researcher"
+                :instruction "Answer within the iteration budget."
+                :reads [:question]
+                :writes [:answer]
+                :rlm {:recursive? true}
+                :max-iterations 3))
+            sheet-id (sheet/build-workflow! ctx definition)
+            call-count (atom 0)]
+        (with-redefs [llm/predict
+                      (fn [_ _ _ _]
+                        (swap! call-count inc)
+                        {:outputs {:code ""}
+                         :usage {:prompt_tokens 2 :completion_tokens 1 :total_tokens 3}})]
+          (let [result (sheet/execute ctx sheet-id {:question "research"}
+                                      :timeout-ms 30000)
+                replayed-tick (get (reduce rm/ticks* {} (events ctx))
+                                   (:trace-id result))]
+            (is (= :failure (:status result)) (pr-str result))
+            (is (= 3 @call-count))
+            (is (str/includes? (:error result)
+                               "Max iterations reached without final!"))
+            (is (not (str/includes? (:error result)
+                                    "LLM did not generate code")))
+            (is (= {:prompt-tokens 6 :completion-tokens 3 :total-tokens 9}
+                   (select-keys (:usage result)
+                                [:prompt-tokens :completion-tokens :total-tokens])))
+            (is (= :failure (:root-status replayed-tick)))))))))
+
+(deftest det-e2e-162-explicit-provider-error-remains-terminal
+  (testing "recursive self-correction does not replace the provider's failure contract"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [definition
+            (sheet/workflow "det-e2e-162-provider-error"
+              (sheet/blackboard {:question :string
+                                 :answer :string})
+              (sheet/repl-researcher "provider-failing-researcher"
+                :instruction "Answer the question."
+                :reads [:question]
+                :writes [:answer]
+                :rlm {:recursive? true}
+                :max-iterations 3))
+            sheet-id (sheet/build-workflow! ctx definition)
+            call-count (atom 0)]
+        (with-redefs [llm/predict
+                      (fn [_ _ _ _]
+                        (swap! call-count inc)
+                        {:error "provider unavailable"
+                         :usage {:prompt_tokens 2 :completion_tokens 0 :total_tokens 2}})]
+          (let [result (sheet/execute ctx sheet-id {:question "research"}
+                                      :timeout-ms 30000)
+                replayed-tick (get (reduce rm/ticks* {} (events ctx))
+                                   (:trace-id result))]
+            (is (= :failure (:status result)) (pr-str result))
+            (is (= 1 @call-count))
+            (is (= "provider unavailable" (:error result)))
+            (is (= {:prompt-tokens 2 :completion-tokens 0 :total-tokens 2}
+                   (select-keys (:usage result)
+                                [:prompt-tokens :completion-tokens :total-tokens])))
+            (is (= :failure (:root-status replayed-tick)))))))))
+
+(deftest det-e2e-162-terminal-mode-preserves-immediate-empty-code-failure
+  (testing "recursive recovery does not change terminal-mode compatibility behavior"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [definition
+            (sheet/workflow "det-e2e-162-terminal-empty-code"
+              (sheet/blackboard {:question :string
+                                 :answer :string})
+              (sheet/repl-researcher "terminal-researcher"
+                :instruction "Answer the question."
+                :reads [:question]
+                :writes [:answer]
+                :rlm {:recursive? false}
+                :max-iterations 3))
+            sheet-id (sheet/build-workflow! ctx definition)
+            call-count (atom 0)]
+        (with-redefs [llm/predict
+                      (fn [_ _ _ _]
+                        (swap! call-count inc)
+                        {:outputs {:code ""}
+                         :usage {:prompt_tokens 2 :completion_tokens 1 :total_tokens 3}})]
+          (let [result (sheet/execute ctx sheet-id {:question "research"}
+                                      :timeout-ms 30000)]
+            (is (= :failure (:status result)) (pr-str result))
+            (is (= 1 @call-count))
+            (is (= "LLM did not generate code" (:error result)))))))))

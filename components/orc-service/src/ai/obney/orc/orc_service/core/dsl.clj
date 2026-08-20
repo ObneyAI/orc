@@ -871,9 +871,14 @@
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (seq (:mcp-tools node)) (assoc :mcp-tools (:mcp-tools node))
+                   (:tool-contracts node) (assoc :tool-contracts (:tool-contracts node))
+                   (:tool-caller-fn node) (assoc :tool-caller-fn (:tool-caller-fn node))
+                   (seq (:browser-tools node)) (assoc :browser-tools (:browser-tools node))
                    (:model node) (assoc :model (:model node))
                    (:max-iterations node) (assoc :max-iterations (:max-iterations node))
-                   (some? (:rlm node)) (assoc :rlm (:rlm node))))
+                   (some? (:rlm node)) (assoc :rlm (:rlm node))
+                   (:context node) (assoc :context (:context node))
+                   (:options node) (assoc :options (:options node))))
           ;; Delegate-specific
           (= :delegate (:type node))
           (merge (cond-> {}
@@ -961,16 +966,22 @@
             :model (:model node))))
 
       :repl-researcher
-      (when (:instruction node)
-        (h/run-and-apply! ctx
-          (h/make-set-repl-researcher-config-command sheet-id node-id
-            (:instruction node) (vec (:reads node)) (vec (:writes node))
-            (vec (:mcp-tools node))
-            :tool-contracts (:tool-contracts node)
-            :model (:model node)
-            :tool-caller-fn (:tool-caller-fn node)
-            :max-iterations (:max-iterations node)
-            :rlm (:rlm node))))
+      (do
+        (when (:instruction node)
+          (h/run-and-apply! ctx
+            (h/make-set-repl-researcher-config-command sheet-id node-id
+              (:instruction node) (vec (:reads node)) (vec (:writes node))
+              (vec (:mcp-tools node))
+              :tool-contracts (:tool-contracts node)
+              :model (:model node)
+              :tool-caller-fn (:tool-caller-fn node)
+              :max-iterations (:max-iterations node)
+              :browser-tools (:browser-tools node)
+              :rlm (:rlm node)
+              :options (:options node))))
+        (when-let [context (:context node)]
+          (h/run-and-apply! ctx
+            (h/make-set-node-context-command sheet-id node-id context))))
 
       :delegate
       (when (:target-sheet-id node)
@@ -1122,14 +1133,19 @@
         (clojure.string/replace "\r" "\\r"))))
 
 (defn- build-keyword-args
-  "Build keyword argument pairs from a map, filtering nil/empty values.
+  "Build keyword argument pairs from a map, filtering nil/empty values except
+   keys explicitly named in preserve-empty-keys.
    Returns a flat sequence of [:key value :key value ...] sorted by key name."
-  [opts-map]
-  (->> opts-map
-       (remove (fn [[_ v]] (or (nil? v)
-                               (and (coll? v) (empty? v)))))
-       (sort-by (comp name first))
-       (mapcat (fn [[k v]] [(keyword (name k)) v]))))
+  ([opts-map]
+   (build-keyword-args opts-map #{}))
+  ([opts-map preserve-empty-keys]
+   (->> opts-map
+        (remove (fn [[k v]] (or (nil? v)
+                                (and (coll? v)
+                                     (empty? v)
+                                     (not (contains? preserve-empty-keys k))))))
+        (sort-by (comp name first))
+        (mapcat (fn [[k v]] [(keyword (name k)) v])))))
 
 (defn- leaf-node->form
   "Convert a leaf node to llm or code DSL form."
@@ -1194,8 +1210,13 @@
                 :writes (:writes node)
                 :mcp-tools (:mcp-tools node)
                 :tool-contracts (:tool-contracts node)
+                :tool-caller-fn (:tool-caller-fn node)
+                :browser-tools (:browser-tools node)
                 :max-iterations (:max-iterations node)
-                :rlm (:rlm node)})]
+                :rlm (:rlm node)
+                :context (:context node)
+                :options (:options node)}
+               #{:rlm :context})]
     (if (empty? opts)
       (list (dsl-sym 'repl-researcher) (:name node))
       (apply list (dsl-sym 'repl-researcher) (:name node) opts))))

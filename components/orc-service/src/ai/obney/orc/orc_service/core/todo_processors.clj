@@ -989,7 +989,7 @@
            "   CRITICAL: :strengths and :weaknesses are VECTORS OF MAPS, not vectors of "
            "strings. Each entry is principle-shaped — :trait + context-guard + concrete "
            "recommended action + confidence + evidence-count. A vector of bare strings "
-           "fails schema validation and the mint is dropped silently. Look at any "
+           "fails schema validation; the rejection is returned in iteration history for correction. Look at any "
            "existing seed body in the corpus retrieval above to see the expected shape.\n\n"
            "   The minted behavior will be retrievable on subsequent classify-behaviors "
            "calls — your contribution persists in the corpus for future tasks. Without "
@@ -1054,7 +1054,7 @@
              " reference is the true nearest parent).\n"
              "   :strengths/:weaknesses are VECTORS OF MAPS (principle-shaped: :trait + context-guard +"
              " concrete recommended action + :confidence + :evidence-count) — a vector of bare strings"
-             " fails schema validation and the mint is dropped silently.\n")))))
+             " fails schema validation; the rejection is returned in iteration history for correction.\n")))))
 
 (defn- behavioral-display-entries
   "The behavioral entries the render puts in front of the model. Companion to

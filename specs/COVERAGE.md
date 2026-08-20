@@ -64,16 +64,17 @@ and zero process findings under Allium language version 3.
 
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-On 2026-08-19, both `allium check specs` and `allium analyse specs` reported 181
-structural diagnostics across the twelve specifications: 149 informational and 32
-warnings. `analyse` reported zero process findings.
+Under the current checked-in specifications and Allium CLI, both
+`allium check specs` and `allium analyse specs` report 122 structural diagnostics
+across the twelve specifications: 87 informational and 35 warnings. `analyse`
+reports zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 41 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 108 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.rule.unreachableTrigger` | 54 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.field.unused` | 33 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
-| `allium.definition.unused` | 14 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
+| `allium.definition.unused` | 17 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
 
 This is a characterized baseline, not an allowlist for future warnings. Agents
@@ -133,6 +134,45 @@ declared writes and cannot suppress unrelated completion keys. The public
 deterministic namespace passed 12 tests and 53 assertions, including durable
 rejection, canonical event, and projection read-back; the pinned live structured
 finalization test passed 8 assertions with durable provider provenance.
+
+## Recursive researcher empty-turn recovery
+
+The recursive Phase-1 loop treats a successful provider response with no
+executable code as recoverable iteration evidence while ordinary iteration and
+execution budgets remain. The evidence is included in the next model turn and
+in the durable researcher-iterations event; usage from the empty turn remains
+accounted. Repeated empty turns terminate through the existing max-iterations
+boundary. Explicit provider errors remain terminal, and terminal compatibility
+mode retains its immediate `LLM did not generate code` failure. DET-E2E-162
+proves all four boundaries through the public asynchronous workflow path,
+including command/event processing, projection replay, and value-log read-back.
+The focused namespace passed 16 tests and 75 assertions. The real OpenRouter
+adaptive-loop journey passed 2 tests and 43 assertions after exercising generated
+Phase-2 recovery.
+
+## Researcher behavioral-mint contract disclosure
+
+When the ontology mint command is registered, the researcher receives the exact
+registered Grain/Malli command contract for `mint-behavior!` before Phase-1 code
+generation. The disclosure includes the authoritative description-body schema and the
+optional parent shape, does not require corpus auto-classification, and is absent when
+the optional command is not registered. DET-E2E-163 proves the classifier-disabled
+public asynchronous path through the real sandbox command, durable provenance audit,
+and successful final output. It also guards unavailable-command and malformed-schema
+boundaries. Its focused run passed 3 tests and 11 assertions; the combined
+mint/classifier/RH1/RH2 contract run passed 46 tests and 219 assertions. The real
+OpenRouter adaptive-loop journey passed 2 tests and 43 assertions with
+classification, evolution, and mint-capable Phase-1 execution.
+
+## Researcher configuration round-trip fidelity
+
+The public export, DSL rendering/evaluation, and EDN import boundaries must preserve
+every behavior-affecting researcher field. DET-E2E-164 tracks tool contracts, the
+consumer tool gate, browser tools, ontology context, and execution options through
+all three boundaries through the real command/event/projection path. It also preserves
+explicit empty `:rlm {}` and `:context {}` choices, which respectively select recursive
+mode and suppress automatic context classification. The complete DSL round-trip
+namespace passed 17 tests and 33 assertions.
 
 ## Researcher Phase-1 output contract disclosure
 
