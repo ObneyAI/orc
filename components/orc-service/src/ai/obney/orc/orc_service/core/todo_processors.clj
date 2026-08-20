@@ -56,24 +56,29 @@
 ;; A budget can be exceeded concurrently by sibling leaves. Reserve each
 ;; cancellation dispatch once so those leaves cannot append duplicate terminal
 ;; events before the first cancellation has reached the ticks projection.
-(defonce ^:private budget-cancellation-claims (atom #{}))
+(def ^:private budget-cancellation-claim-ttl-ms 300000)
+(defonce ^:private budget-cancellation-claims (atom {}))
 
 (defn- claim-budget-cancellation!
   [tick-id]
-  (let [claimed? (atom false)]
+  (let [claimed? (atom false)
+        now (System/currentTimeMillis)]
     (swap! budget-cancellation-claims
            (fn [claims]
-             (if (contains? claims tick-id)
-               claims
-               (do (reset! claimed? true)
-                   (conj claims tick-id)))))
+             (let [claims (into {} (filter (fn [[_ claimed-at]]
+                                              (< (- now claimed-at)
+                                                 budget-cancellation-claim-ttl-ms)))
+                                claims)]
+               (if (contains? claims tick-id)
+                 claims
+                 (do (reset! claimed? true)
+                     (assoc claims tick-id now))))))
     @claimed?))
 
 (defn clear-llm-count!
   "Clear LLM count for a tick (called on tick completion)."
   [tick-id]
-  (swap! tick-llm-counts dissoc tick-id)
-  (swap! budget-cancellation-claims disj tick-id))
+  (swap! tick-llm-counts dissoc tick-id))
 
 ;; =============================================================================
 ;; Tick-Scoped Usage Tracking
@@ -144,27 +149,36 @@
       ;; first, then the shared-budget root when they differ. Root-node
       ;; completions racing either cancellation are fenced by
       ;; complete-tree-tick and cannot append a second terminal event.
+      ;; Before the first cancellation is projected, the process-local claim
+      ;; closes the concurrent-sibling race. Once projection catches up, the
+      ;; durable tick status closes later deliveries. Both checks are required:
+      ;; using either one alone permits two identical :sheet/tick-cancelled
+      ;; events around the projection boundary.
       (when (claim-budget-cancellation! tick-id)
-        (cp/process-command
-         (assoc context :command
-                {:command/id (random-uuid)
-                 :command/timestamp (time/now)
-                 :command/name :sheet/cancel-tick
-                 :sheet-id sheet-id
-                 :tick-id tick-id
-                 :reason reason})))
+        (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
+          (swap! budget-cancellation-claims dissoc tick-id)
+          (cp/process-command
+           (assoc context :command
+                  {:command/id (random-uuid)
+                   :command/timestamp (time/now)
+                   :command/name :sheet/cancel-tick
+                   :sheet-id sheet-id
+                   :tick-id tick-id
+                   :reason reason}))))
       (when (and (:root-sheet-id exceeded)
                  (:root-tick-id exceeded)
                  (not= tick-id (:root-tick-id exceeded))
                  (claim-budget-cancellation! (:root-tick-id exceeded)))
-        (cp/process-command
-         (assoc context :command
-                {:command/id (random-uuid)
-                 :command/timestamp (time/now)
-                 :command/name :sheet/cancel-tick
-                 :sheet-id (:root-sheet-id exceeded)
-                 :tick-id (:root-tick-id exceeded)
-                 :reason reason})))
+        (if (rm/is-tick-or-ancestor-cancelled? context (:root-tick-id exceeded))
+          (swap! budget-cancellation-claims dissoc (:root-tick-id exceeded))
+          (cp/process-command
+           (assoc context :command
+                  {:command/id (random-uuid)
+                   :command/timestamp (time/now)
+                   :command/name :sheet/cancel-tick
+                   :sheet-id (:root-sheet-id exceeded)
+                   :tick-id (:root-tick-id exceeded)
+                   :reason reason}))))
       exceeded)))
 
 ;; =============================================================================
@@ -3960,7 +3974,11 @@
        :trace-id tick-id})
     ;; A cancelled tick never reaches deliver-execution-result, so its seed
     ;; memo would otherwise be retained for the life of the process.
-    (clear-llm-count! tick-id)
+    ;; Keep the short-lived cancellation claim after the event is delivered.
+    ;; Event subscribers can observe cancellation before the tick projection
+    ;; does; clearing here reopens that gap to late budget-exhausted siblings.
+    ;; claim-budget-cancellation! prunes the bounded ledger by age.
+    (swap! tick-llm-counts dissoc tick-id)
     (execution-budget/cancel-active-work! tick-id)
     (execution-budget/clear-tick! tick-id)
     (value-log/forget-tick! tick-id)

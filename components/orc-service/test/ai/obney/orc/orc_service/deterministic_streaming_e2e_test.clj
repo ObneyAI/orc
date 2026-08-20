@@ -387,6 +387,10 @@
             result-b (deref (:result stream-b) 10000 ::timeout)
             events-a (drain! (:events-ch stream-a))
             events-b (drain! (:events-ch stream-b))
+            _ (is (h/settle-until!
+                   #(and (h/trace-stored? ctx (:tick-id stream-a))
+                         (h/trace-stored? ctx (:tick-id stream-b))))
+                  "both asynchronous trace projections complete")
             trace-a (get-in (h/run-query ctx (h/make-get-trace-query (:tick-id stream-a)))
                             [:query/result :trace])
             trace-b (get-in (h/run-query ctx (h/make-get-trace-query (:tick-id stream-b)))
