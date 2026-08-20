@@ -140,9 +140,13 @@
               (is (some? (:started-at (by-id nid)))
                   (str "node " nid " started-at"))
               (is (uuid? (:trace-instance-id (by-id nid)))
-                  (str "node " nid " trace instance"))
+                  (str "node " nid " trace instance")))
+            (doseq [nid [upcase exclaim]]
               (is (nat-int? (:duration-ms (by-id nid)))
-                  (str "node " nid " duration")))))))))
+                  (str "durable node " nid " duration")))
+            (is (:ephemeral? (by-id seq-id)))
+            (is (not (contains? (by-id seq-id) :duration-ms))
+                "summarized routing does not claim independent durable timing")))))))
 
 (deftest trace-records-failure
   (testing "a failing leaf is recorded with :failure and an error string"

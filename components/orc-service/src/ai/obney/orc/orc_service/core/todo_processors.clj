@@ -23,6 +23,8 @@
             [clojure.string :as str]
             [com.brunobonacci.mulog :as u]))
 
+(declare advance-ephemeral-frontier complete-tree-tick)
+
 ;; =============================================================================
 ;; Output Key Normalization
 ;; =============================================================================
@@ -54,24 +56,29 @@
 ;; A budget can be exceeded concurrently by sibling leaves. Reserve each
 ;; cancellation dispatch once so those leaves cannot append duplicate terminal
 ;; events before the first cancellation has reached the ticks projection.
-(defonce ^:private budget-cancellation-claims (atom #{}))
+(def ^:private budget-cancellation-claim-ttl-ms 300000)
+(defonce ^:private budget-cancellation-claims (atom {}))
 
 (defn- claim-budget-cancellation!
   [tick-id]
-  (let [claimed? (atom false)]
+  (let [claimed? (atom false)
+        now (System/currentTimeMillis)]
     (swap! budget-cancellation-claims
            (fn [claims]
-             (if (contains? claims tick-id)
-               claims
-               (do (reset! claimed? true)
-                   (conj claims tick-id)))))
+             (let [claims (into {} (filter (fn [[_ claimed-at]]
+                                              (< (- now claimed-at)
+                                                 budget-cancellation-claim-ttl-ms)))
+                                claims)]
+               (if (contains? claims tick-id)
+                 claims
+                 (do (reset! claimed? true)
+                     (assoc claims tick-id now))))))
     @claimed?))
 
 (defn clear-llm-count!
   "Clear LLM count for a tick (called on tick completion)."
   [tick-id]
-  (swap! tick-llm-counts dissoc tick-id)
-  (swap! budget-cancellation-claims disj tick-id))
+  (swap! tick-llm-counts dissoc tick-id))
 
 ;; =============================================================================
 ;; Tick-Scoped Usage Tracking
@@ -142,27 +149,36 @@
       ;; first, then the shared-budget root when they differ. Root-node
       ;; completions racing either cancellation are fenced by
       ;; complete-tree-tick and cannot append a second terminal event.
+      ;; Before the first cancellation is projected, the process-local claim
+      ;; closes the concurrent-sibling race. Once projection catches up, the
+      ;; durable tick status closes later deliveries. Both checks are required:
+      ;; using either one alone permits two identical :sheet/tick-cancelled
+      ;; events around the projection boundary.
       (when (claim-budget-cancellation! tick-id)
-        (cp/process-command
-         (assoc context :command
-                {:command/id (random-uuid)
-                 :command/timestamp (time/now)
-                 :command/name :sheet/cancel-tick
-                 :sheet-id sheet-id
-                 :tick-id tick-id
-                 :reason reason})))
+        (if (rm/is-tick-or-ancestor-cancelled? context tick-id)
+          (swap! budget-cancellation-claims dissoc tick-id)
+          (cp/process-command
+           (assoc context :command
+                  {:command/id (random-uuid)
+                   :command/timestamp (time/now)
+                   :command/name :sheet/cancel-tick
+                   :sheet-id sheet-id
+                   :tick-id tick-id
+                   :reason reason}))))
       (when (and (:root-sheet-id exceeded)
                  (:root-tick-id exceeded)
                  (not= tick-id (:root-tick-id exceeded))
                  (claim-budget-cancellation! (:root-tick-id exceeded)))
-        (cp/process-command
-         (assoc context :command
-                {:command/id (random-uuid)
-                 :command/timestamp (time/now)
-                 :command/name :sheet/cancel-tick
-                 :sheet-id (:root-sheet-id exceeded)
-                 :tick-id (:root-tick-id exceeded)
-                 :reason reason})))
+        (if (rm/is-tick-or-ancestor-cancelled? context (:root-tick-id exceeded))
+          (swap! budget-cancellation-claims dissoc (:root-tick-id exceeded))
+          (cp/process-command
+           (assoc context :command
+                  {:command/id (random-uuid)
+                   :command/timestamp (time/now)
+                   :command/name :sheet/cancel-tick
+                   :sheet-id (:root-sheet-id exceeded)
+                   :tick-id (:root-tick-id exceeded)
+                   :reason reason}))))
       exceeded)))
 
 ;; =============================================================================
@@ -1585,6 +1601,10 @@
         nodes-by-id (:nodes-by-id tick-ctx)
         root-node (when root-id (get nodes-by-id root-id))]
     (when root-node
+      (if (and (not= :legacy (get-in tick-ctx [:options :durability-mode]))
+               (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
+                       (vals nodes-by-id)))
+        (advance-ephemeral-frontier context)
       ;; :inputs carries only what cannot be resolved from the tick
       ;; blackboard — execution context and map-each item overrides. The
       ;; root's declared reads are already in the blackboard and
@@ -1605,7 +1625,7 @@
                  ;; newly started tree.
                  :inputs (cond-> {}
                            (> (or (:iteration event) 1) 1)
-                           (assoc ::tick-iteration (:iteration event)))}})]})))
+                           (assoc ::tick-iteration (:iteration event)))}})]}))))
 
 ;; =============================================================================
 ;; Node Execution Processor
@@ -2495,6 +2515,149 @@
       ;; Not a condition node
       :else nil)))
 
+(defn- ephemeral-routing-tree? [nodes-by-id]
+  (and (seq nodes-by-id)
+       (every? #(contains? #{:sequence :fallback :condition :leaf} (:type %))
+               (vals nodes-by-id))))
+
+(defn- ephemeral-routing-active? [context tick-id nodes-by-id]
+  (and (not= :legacy (get-in (rm/get-tick-execution-context context tick-id)
+                             [:options :durability-mode]))
+       (ephemeral-routing-tree? nodes-by-id)))
+
+(defn- ephemeral-summary-event [sheet-id tick-id iteration steps]
+  (when (seq steps)
+    (->event {:type :sheet/ephemeral-evaluations-recorded
+              :tags #{[:sheet sheet-id] [:tick tick-id]}
+              :body {:sheet-id sheet-id
+                     :tick-id tick-id
+                     :iteration iteration
+                     :steps (mapv #(assoc % :trace-instance-id (random-uuid)) steps)}})))
+
+(defn- completed-statuses [events]
+  (reduce (fn [statuses event]
+            (if (= :sheet/node-execution-completed (:event/type event))
+              (assoc statuses (:node-id event)
+                     (select-keys event [:status :error :block-payload]))
+              statuses))
+          {} events))
+
+(defn- evaluate-ephemeral-node [node-id nodes-by-id blackboard completed decisions]
+  (let [node (get nodes-by-id node-id)]
+    (case (:type node)
+      :leaf
+      (if-let [completion (get completed node-id)]
+        (assoc completion :steps [])
+        {:boundary node-id :steps []})
+
+      :condition
+      (let [check (:check node)
+            passed? (and check (evaluate-condition-check check blackboard))
+            recorded? (contains? decisions node-id)
+            status (or (get decisions node-id)
+                       (if passed? :success (get check :on-fail :failure)))]
+        {:status status
+         :steps (if recorded?
+                  []
+                  [{:node-id node-id :status status :node-type :condition}])})
+
+      :sequence
+      (loop [children (:children-ids node) steps []]
+        (if-let [child-id (first children)]
+          (let [result (evaluate-ephemeral-node child-id nodes-by-id blackboard completed decisions)
+                next-steps (into steps (:steps result))]
+            (cond
+              (:boundary result) (assoc result :steps next-steps)
+              (contains? #{:success :tree-generated :partial} (:status result))
+              (recur (rest children) next-steps)
+              :else (assoc (select-keys result [:status :error :block-payload])
+                           :steps (conj next-steps {:node-id node-id
+                                                   :status (:status result)
+                                                   :node-type :sequence}))))
+          {:status :success
+           :steps (conj steps {:node-id node-id :status :success :node-type :sequence})}))
+
+      :fallback
+      (loop [children (:children-ids node) steps [] last-failure nil]
+        (if-let [child-id (first children)]
+          (let [result (evaluate-ephemeral-node child-id nodes-by-id blackboard completed decisions)
+                next-steps (into steps (:steps result))]
+            (cond
+              (:boundary result) (assoc result :steps next-steps)
+              (= :failure (:status result)) (recur (rest children) next-steps result)
+              :else (assoc (select-keys result [:status :error :block-payload])
+                           :steps (conj next-steps {:node-id node-id
+                                                   :status (:status result)
+                                                   :node-type :fallback}))))
+          (assoc (select-keys last-failure [:error :block-payload])
+                 :status :failure
+                 :steps (conj steps {:node-id node-id :status :failure :node-type :fallback})))))))
+
+(defn advance-ephemeral-frontier
+  "Evaluate deterministic ordered control flow to its next durable leaf or
+   terminal outcome. Repeated delivery cannot start the same frontier twice."
+  [{:keys [event event-store tenant-id] :as context}]
+  (let [sheet-id (:sheet-id event)
+        tick-id (:tick-id event)
+        tick-ctx (rm/get-tick-execution-context context tick-id)
+        nodes-by-id (:nodes-by-id tick-ctx)
+        root-id (:root-node-id tick-ctx)
+        iteration (or (:iteration event) (get-in event [:inputs ::tick-iteration]) 1)
+        iteration-context (when (> iteration 1) {::tick-iteration iteration})
+        events (into [] (es/read event-store {:tenant-id tenant-id
+                                             :tags #{[:tick tick-id]}}))
+        terminal? (some #(and (= :sheet/tree-tick-completed (:event/type %))
+                              (not= :running (:root-status %))) events)
+        current-iteration? (fn [lifecycle-event]
+                             (= iteration-context
+                                (not-empty (select-keys (:inputs lifecycle-event)
+                                                        [::tick-iteration]))))
+        started (into #{} (comp (filter #(and (= :sheet/node-execution-started
+                                                    (:event/type %))
+                                                 (current-iteration? %)))
+                                (map :node-id)) events)
+        completed (completed-statuses (filter current-iteration? events))
+        decisions (reduce (fn [result summary]
+                            (if (and (= :sheet/ephemeral-evaluations-recorded
+                                        (:event/type summary))
+                                     (= iteration (:iteration summary)))
+                              (reduce (fn [m step]
+                                        (if (= :condition (:node-type step))
+                                          (assoc m (:node-id step) (:status step))
+                                          m))
+                                      result (:steps summary))
+                              result))
+                          {} events)
+        blackboard (resolve-blackboard-values context sheet-id tick-id nil)]
+    (when (and (not terminal?) (ephemeral-routing-active? context tick-id nodes-by-id))
+      (let [{:keys [boundary status steps error block-payload]}
+            (evaluate-ephemeral-node root-id nodes-by-id blackboard completed decisions)
+            summary (ephemeral-summary-event sheet-id tick-id iteration steps)]
+        (cond
+          (and boundary (not (contains? started boundary)))
+          {:result/events
+           (cond-> []
+             summary (conj summary)
+             true (conj (->event {:type :sheet/node-execution-started
+                                  :tags #{[:sheet sheet-id] [:node boundary] [:tick tick-id]}
+                                  :body {:sheet-id sheet-id :tick-id tick-id
+                                         :node-id boundary
+                                         :inputs (or iteration-context {})}})))}
+
+          boundary nil
+
+          :else
+          (let [completion (complete-tree-tick
+                            (assoc context :event {:sheet-id sheet-id
+                                                   :tick-id tick-id
+                                                   :node-id root-id
+                                                   :status status
+                                                   :error error
+                                                   :block-payload block-payload}))]
+            (update completion :result/events
+                    #(cond-> (vec %)
+                       summary (into [summary])))))))))
+
 ;; =============================================================================
 ;; Composite Node Execution Processor
 ;; =============================================================================
@@ -2713,7 +2876,9 @@
         nodes-by-id (resolve-nodes-by-id context sheet-id tick-id)
         child (get nodes-by-id child-id)
         parent-id (:parent-id child)]
-    (when (and parent-id
+    (if (ephemeral-routing-active? context tick-id nodes-by-id)
+      (advance-ephemeral-frontier context)
+      (when (and parent-id
                ;; Parent completion is a canonical fact for one execution
                ;; context. At-least-once delivery of a child completion must
                ;; not propagate another terminal parent completion.
@@ -3006,7 +3171,7 @@
           nil
 
           ;; Unknown parent type
-          nil)))))
+          nil))))))
 
 ;; =============================================================================
 ;; Map-Each Node Execution Processor
@@ -3809,7 +3974,11 @@
        :trace-id tick-id})
     ;; A cancelled tick never reaches deliver-execution-result, so its seed
     ;; memo would otherwise be retained for the life of the process.
-    (clear-llm-count! tick-id)
+    ;; Keep the short-lived cancellation claim after the event is delivered.
+    ;; Event subscribers can observe cancellation before the tick projection
+    ;; does; clearing here reopens that gap to late budget-exhausted siblings.
+    ;; claim-budget-cancellation! prunes the bounded ledger by age.
+    (swap! tick-llm-counts dissoc tick-id)
     (execution-budget/cancel-active-work! tick-id)
     (execution-budget/clear-tick! tick-id)
     (value-log/forget-tick! tick-id)
@@ -3935,6 +4104,8 @@
             ;; Correlate node-execution-started and completed events
             started-events (filter #(= :sheet/node-execution-started (:event/type %)) tick-events)
             completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) tick-events)
+            ephemeral-events (filter #(= :sheet/ephemeral-evaluations-recorded
+                                           (:event/type %)) tick-events)
             started-by-execution (into {} (map (juxt trace-execution-key identity) started-events))
             ;; Build completed map by node plus execution context. Map-each runs
             ;; the same child node-id once per item, so keying only by node-id
@@ -3944,8 +4115,9 @@
                                            {}
                                            completed-events)
             ;; Build node traces
-            node-traces (vec
-                          (for [started started-events
+            durable-node-traces
+            (vec
+             (for [started started-events
                                 :let [node-id (:node-id started)
                                       node (get nodes-by-id node-id)
                                       completed (get completed-by-execution
@@ -4009,6 +4181,37 @@
                               (seq (:read-keys completed))
                               (assoc :read-keys (:read-keys completed)
                                      :input-profile (:input-profile completed)))))
+            ephemeral-node-traces
+            (vec
+             (mapcat (fn [summary]
+                       (for [step (:steps summary)
+                             :let [node-id (:node-id step)
+                                   node (get nodes-by-id node-id)]
+                             :when node]
+                         (cond-> {:node-id node-id
+                                  :trace-instance-id (:trace-instance-id step)
+                                  :node-name (:name node)
+                                  :node-type (:type node)
+                                  :path (trace-node-path nodes-by-id node-id)
+                                  :status (:status step)
+                                  :started-at (str (:event/timestamp summary))
+                                  :completed-at (str (:event/timestamp summary))
+                                  :ephemeral? true}
+                           (:parent-id node) (assoc :parent-id (:parent-id node)))))
+                     ephemeral-events))
+            all-node-traces (concat durable-node-traces ephemeral-node-traces)
+            trace-instance-by-node (into {} (map (juxt :node-id :trace-instance-id))
+                                         all-node-traces)
+            node-traces (->> all-node-traces
+                             (map (fn [node-trace]
+                                    (if-let [parent-id (:parent-id node-trace)]
+                                      (cond-> node-trace
+                                        (trace-instance-by-node parent-id)
+                                        (assoc :parent-trace-instance-id
+                                               (trace-instance-by-node parent-id)))
+                                      node-trace)))
+                             (sort-by :started-at)
+                             vec)
             ;; Calculate duration
             duration-ms (if (and started-at completed-at)
                           (max 0 (- (timestamp-ms completed-at)

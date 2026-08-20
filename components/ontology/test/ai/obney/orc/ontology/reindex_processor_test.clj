@@ -71,6 +71,17 @@
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
 
+(defn- await-pred
+  "Return the first truthy result from f within timeout-ms."
+  [f timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (if-let [value (f)]
+        value
+        (when (< (System/currentTimeMillis) deadline)
+          (Thread/sleep 25)
+          (recur))))))
+
 ;; =============================================================================
 ;; RED #1 — :ontology/reindex-config-set event schema validates
 ;; =============================================================================
@@ -582,14 +593,17 @@
     (with-test-ctx [ctx]
       ;; Pre-seed an index so we are testing timer-trigger, not cold-start.
       (inject-index-created! ctx)
-      (Thread/sleep 100)
+      (is (await-pred #(true? (:index-built? (ontology/get-reindex-state ctx)))
+                      5000)
+          "the pre-seeded index is visible before exercising the timer")
       (let [[calls stub] (stub-create-index!)]
         (with-redefs [colbert-ops/create-index! stub
                       ;; Fake: pretend 6 minutes have elapsed (> default 5)
                       todo-processors/minutes-since (fn [_iso-str] 6)]
           ;; Only 1 event — well below threshold 10
           (emit-description-updated! ctx :node-type :map-each)
-          (Thread/sleep 300)
+          (is (await-pred #(when (= 1 (count @calls)) @calls) 5000)
+              "the asynchronous processor dispatches while the fake clock is active")
           (is (= 1 (count @calls))
               "create-index! is called once because the timer threshold was crossed even though only 1 event accumulated")
           (let [opts (first @calls)]

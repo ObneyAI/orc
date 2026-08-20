@@ -342,6 +342,26 @@ Record unexpected outcomes even when the final returned status is successful.
   - **Purpose:** Prove that a run whose engine goes silent past its budget plus the engine's own result-delivery grace yields a bounded, distinct, attributable, non-retryable failure at every run-promise deref seam (`runtime/execute`, `streaming/execute-stream`, `rlm-tree-executor/execute-tree`), while a live over-budget run keeps the retryable `:timeout` contract, a nested wedged run surfaces attributably to its outer run, and a subsequent run in the same process is not starved.
   - **Falsifiable predictions:** A forever-blocking interrupt-swallowing `:code` leaf returns `{:status :failure :wedged? true}` with `:liveness` naming the seam, tick, waited-ms, silence age, and grace, and the error text contains no retryable "timed out" fragment; a slow leaf with recent tick events at expiry still returns `:status :timeout` with no `:wedged?`; a nested `execute` launched from inside an outer run's leaf returns the wedged failure and the outer run completes carrying the nested tick id; the stream result promise resolves to the same wedged map; a second trivial run in the same process returns `:success` after the wedge; covered by `pr4_run_liveness_test.clj` (6 tests / 51 assertions, red-first).
 
+- [x] **DET-E2E-151 — Ephemeral deterministic routing retains observable trace.**
+  - **Purpose:** Prove static conditions plus sequence/fallback routing and parent status propagation execute without independent durable node lifecycle records while their ordered decisions remain inspectable.
+  - **Falsifiable predictions:** A false static condition selects the fallback alternative; condition and composite nodes have no independent durable start/completion events; the selected consumer `:code` leaf retains exactly one durable start and completion; the public trace identifies all evaluated routing nodes and the durable leaf.
+  - **Verified:** `durability_boundary_e2e_test.clj` (`det-e2e-151-ephemeral-routing-retains-observable-trace`).
+
+- [x] **DET-E2E-152 — Ephemeral chain stops atomically before a durable effect boundary.**
+  - **Purpose:** Prove a chain of deterministic routing cannot launch effectful or consumer-supplied work until the resulting durable frontier and required blackboard state are committed.
+  - **Falsifiable predictions:** The ordered routing summary is committed before the selected leaf start; stopping the leaf processor after a completed durable leaf leaves the next selected leaf durably started; restart cannot skip that leaf or launch the unselected branch.
+  - **Verified:** `durability_boundary_e2e_test.clj` (`det-e2e-152-153-atomic-frontier-and-restart-recovery`).
+
+- [x] **DET-E2E-153 — Recovery deterministically recomputes lost ephemeral traversal.**
+  - **Purpose:** Prove restart from the preceding durable boundary safely recomputes a condition/sequence/fallback chain without repeating completed durable work.
+  - **Falsifiable predictions:** Restart after a durable child completion and the following ephemeral propagation resumes the same selected frontier and terminal output; the completed durable leaf is invoked once; repeated recovery scans converge, with the first resuming one frontier and the second resuming none.
+  - **Verified:** `durability_boundary_e2e_test.clj` (`det-e2e-152-153-atomic-frontier-and-restart-recovery`).
+
+- [x] **DET-E2E-154 — Durability optimization measurement contract.**
+  - **Purpose:** Quantify the optimization on a Sormo-shaped deterministic fallback traversal without weakening recovery or observability.
+  - **Falsifiable predictions:** The test records wall time, event count, serialized event bytes, event-store append transactions, storage writes, and processor dispatch count for legacy and optimized execution; optimized execution reduces events, bytes, append transactions, and lifecycle dispatches while preserving outputs and durable blackboard writes. DET-E2E-152/153 separately measures recovery convergence and completed-effect invocation count.
+  - **Verified:** `durability_boundary_e2e_test.clj` (`det-e2e-154-durability-optimization-measurement`).
+
 ## Recommended complex tranche
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions
