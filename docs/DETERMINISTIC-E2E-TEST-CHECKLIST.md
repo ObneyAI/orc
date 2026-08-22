@@ -412,6 +412,36 @@ Record unexpected outcomes even when the final returned status is successful.
   - **Falsifiable predictions:** A researcher carrying tool contracts, a consumer tool-gate builder, browser tools, ontology context, and execution options retains those exact values in the exported node, evaluated DSL definition, and re-imported durable node. `:options :optional-writes` remains present so output optionality cannot change after transport.
   - **Verified:** `dsl-roundtrip-test` exercises public `build-workflow!`, `export-sheet`, `export-to-dsl`, evaluated DSL, and `import-sheet` boundaries through the real command/event/projection path. It covers both populated configuration and explicit empty `:rlm {}` / `:context {}` choices. The complete namespace passed 17 tests and 33 assertions.
 
+- [x] **DET-E2E-165 — Pi loop lifecycle and transcript conformance.**
+  - **Purpose:** Prove the ORC demo reproduces the prompt, continuation, assistant, tool-result, turn and agent lifecycle of pinned Pi `agent-loop.ts` without using model judgment as a test oracle.
+  - **Falsifiable predictions:** Scripted model streams drive exact Pi-ordered events; accumulated transcript roles and contents match each model request; continuation emits no duplicate input lifecycle; provider error and abort produce one terminal turn and one agent end; returned new messages exclude pre-existing context.
+  - **Verified (2026-08-22):** `pi-agent-loop.core-test` passed the exact lifecycle, transform-before-convert, accumulated-context, continuation, terminal error/abort, single-invocation tool failure, and new-message boundary assertions as part of the completed 29-test / 107-assertion suite.
+
+- [x] **DET-E2E-166 — Pi tool-batch ordering and termination through ORC.**
+  - **Purpose:** Prove Pi's tool-batch semantics while every executable call crosses a real public ORC workflow boundary.
+  - **Falsifiable predictions:** Parallel completion events follow controlled completion order while transcript results retain assistant source order; any sequential tool forces the whole batch sequential; length-truncated calls invoke no workflow; blocked, missing and failed tools produce ordered error results; only an unanimously terminating batch suppresses the next model turn; durable outputs, trace, replay and correlated child lineage agree with transcript outcomes.
+  - **Verified (2026-08-22):** `pi-agent-loop.core-test` executes controlled parallel and sequential batches through public ORC workflows, proves completion/source ordering, no truncated dispatch, ordered blocked/missing/durable-failure results, unanimous termination, exact returned outputs, correlated tick events, and equality between live trace projections and clean event replay.
+
+- [x] **DET-E2E-167 — Pi steering, follow-up and graceful-stop boundaries.**
+  - **Purpose:** Prove queued input enters only at the same safe boundaries as pinned Pi and cannot split an active tool batch.
+  - **Falsifiable predictions:** Steering queued behind a latch appears after all current tool results and before the next assistant message; follow-ups are polled only when the run would stop; a next-turn snapshot applies before that model request; stop-after-turn emits agent end without starting more work; abort clears pending progress and ORC starts no later nodes.
+  - **Verified (2026-08-22):** `pi-agent-loop.core-test` passed latch-controlled steering, follow-up polling, next-turn snapshots, graceful stopping and stateful overlap checks. Its cancellation scenario aborts a genuinely active ORC sequence, retains the cancellation result/event, terminates with Pi's post-batch aborted turn, and proves the later node effect never ran.
+
+- [x] **DET-E2E-168 — REAL-LLM Pi tool selection and evidence grounding.**
+  - **Purpose:** Prove a pinned real model can operate the harness/provider/tool contract rather than merely replaying a scripted loop.
+  - **Falsifiable predictions:** With answer-critical data available only behind a typed ORC tool, the real model emits a schema-valid call, receives its result on a later model turn, and includes a result-only nonce in its final response; exact transcript, tool invocation, model/provider identity, usage, durable values, trace and tick lineage are present. Scripted or captured model output cannot satisfy this item.
+  - **Verified (2026-08-22):** The runnable `--live` scenarios passed against pinned `google/gemini-3.6-flash`: both ordinary and provider-streamed schema-valid ORC tool calls, real result-consuming provider turns, result-only nonce grounding, and durable tool plus provider-evidence ticks. The streamed proof retained fragmented tool-call updates and reconstructed the exact invocation before executing it once.
+
+- [x] **DET-E2E-169 — REAL-LLM Pi recovery, steering and structured ORC adaptation.**
+  - **Purpose:** Prove claims that require model adaptation: recovering from tool failure, obeying mid-run steering, and choosing structured ORC work.
+  - **Falsifiable predictions:** Across bounded live scenarios, a pinned real model changes its next action after an attributable tool error, changes its subsequent action after steering injected at the post-batch boundary, and emits or delegates structured ORC work whose child-only output is used later; provenance proves every provider call and descendant execution. No prewritten action sequence can satisfy this item.
+  - **Verified (2026-08-22):** Three bounded real-provider scenarios passed against pinned `google/gemini-3.6-flash`: primary failure caused a backup call, post-batch steering changed the final prefix, and a selected ORC tool executed a parent plus delegated child and grounded its final answer in the child-only nonce. Every model turn retained provider/model/usage evidence through durable ORC ticks.
+
+- [x] **DET-E2E-170 — Local nREPL Pi harness control.**
+  - **Purpose:** Prove an operator can use the demo as a long-lived, entirely REPL-driven harness rather than only as a predefined scenario runner.
+  - **Falsifiable predictions:** The demo binds nREPL only to loopback; a client can create an explicitly named deterministic session, issue repeated prompts with retained transcript context, inspect the latest events and history, and close it; duplicate and unknown session names fail explicitly; server shutdown releases both nREPL and the disposable Grain/ORC system.
+  - **Verified (2026-08-22):** `pi-agent-loop.repl-test` passed 4 tests and 28 assertions through a real loopback nREPL socket and disposable Grain/ORC system, including named steering, follow-up, stop and abort controls. The combined Pi demo suite passed 33 tests and 135 assertions. A launched `main --nrepl 0` process accepted a remote `server-info` evaluation, and a separate real-provider run issued two retained prompts through `create-demo-session!`, executed the typed ORC tool, retained six transcript messages and three provider responses, and grounded the second answer in the earlier tool result.
+
 ## Recommended complex tranche
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions

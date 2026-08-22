@@ -1,0 +1,233 @@
+-- allium: 3
+-- pi-agent-loop-demo.allium
+--
+-- Scope: a runnable demonstration of Pi's transcript-driven model/tool core
+-- loop expressed through ORC execution primitives.
+-- Includes: message context, streamed assistant turns, tool batches, steering,
+-- follow-ups, graceful stopping, abort, a local nREPL operator surface,
+-- durable ORC evidence, and the boundary between deterministic conformance and
+-- live-model capability.
+-- Excludes: durable Pi session persistence, UI, skill loading, prompt templates,
+-- compaction policy, filesystem tools, authentication, and deployment.
+-- Upstream reference: badlogic/pi-mono commit
+-- c49906ec77788625aacbdc53ebca6fbe65bd20f5,
+-- packages/agent/src/agent-loop.ts lines 95-780.
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity DemoOperator {}
+entity ModelProvider {}
+entity ToolRuntime {}
+entity OrcRuntime {}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value AgentMessage {
+    role: user | assistant | tool_result
+    content: Any
+    tool_call_identifier: String?
+    error: Boolean?
+}
+
+value ToolCall {
+    identifier: String
+    name: String
+    arguments: Any
+    source_index: Integer
+}
+
+value HarnessEvent {
+    kind: String
+    sequence_number: Integer
+    body: Any
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+contract PiCoreLoopConformance {
+    start: (prompts: List<AgentMessage>) -> Any
+    continue: (context: List<AgentMessage>) -> Any
+    steer: (messages: List<AgentMessage>) -> Any
+    follow_up: (messages: List<AgentMessage>) -> Any
+    stop_after_turn: () -> Any
+    abort: () -> Any
+
+    @invariant TranscriptDrivenContinuation
+        -- Every model request sees the transformed accumulated transcript.
+        -- Assistant messages are appended before their tool results. A further
+        -- model turn occurs only for a non-terminating tool batch or queued
+        -- steering/follow-up input.
+
+    @invariant PiLifecycleOrder
+        -- Observable lifecycle order matches the pinned Pi runLoop contract:
+        -- agent start; turn start; message lifecycle; tool lifecycle and
+        -- ordered tool-result messages; turn end; then another turn or agent
+        -- end. Streaming updates occur only between message start and end.
+
+    @invariant ParallelBatchOrder
+        -- Parallel tool calls may finish in completion order, but transcript
+        -- tool-result messages and the turn's result collection retain the
+        -- assistant message's source order.
+
+    @invariant ToolUpdateInterleaving
+        -- Tool updates and completion events retain their observed live order.
+        -- A pre-call hook may alter already-validated arguments, and those
+        -- altered arguments execute without a second validation pass.
+
+    @invariant SequentialOverride
+        -- A globally sequential configuration or any called tool marked
+        -- sequential makes the complete batch execute sequentially.
+
+    @invariant TruncatedCallsNeverExecute
+        -- When an assistant response stops for output length, every contained
+        -- tool call becomes an error result and none reaches the tool runtime.
+
+    @invariant SteeringBoundary
+        -- Steering queued during a turn is injected after the current tool
+        -- batch completes and before the next model request.
+
+    @invariant FollowUpBoundary
+        -- Follow-up input is polled only when the agent would otherwise stop;
+        -- non-empty follow-up input starts another turn before agent end.
+
+    @invariant UnanimousToolTermination
+        -- A tool batch suppresses the next model turn only when every finalized
+        -- outcome requests termination. A mixed batch continues.
+
+    @invariant TerminalFailures
+        -- Provider error and abort stop immediately after the current turn end.
+        -- An explicit stop-after-turn decision ends after turn end without
+        -- starting or aborting another turn.
+}
+
+contract OrcExecutionEvidence {
+    execute_tool: (call: ToolCall) -> Any
+    read_events: (execution_identifier: String) -> List<HarnessEvent>
+
+    @invariant PublicOrcBoundary
+        -- Tool effects execute through public ORC workflows, including their
+        -- commands, processors, typed values, projections and queries.
+
+    @invariant DurableProjectionAgreement
+        -- Returned tool outcomes, durable execution values, lifecycle events,
+        -- trace projections and clean replay agree for every completed call.
+
+    @invariant CorrelatedLineage
+        -- One harness run has one operation correlation; every tool workflow,
+        -- generated subtree and delegate retains descendant tick lineage.
+
+    @invariant HonestCancellation
+        -- Cancellation prevents new ORC work from starting and terminates the
+        -- harness promptly. An already-dispatched provider HTTP request may
+        -- still finish and consume tokens until ORC gains provider abort.
+}
+
+contract LiveModelEvidence {
+    run_live_scenario: (scenario: String, provider: ModelProvider) -> Any
+
+    @invariant NoScriptedSubstitution
+        -- A live-model obligation is satisfied only by a pinned real model over
+        -- the real provider transport. Scripted responses, captured responses,
+        -- replay and deterministic model doubles cannot satisfy it.
+
+    @invariant ToolUseCapability
+        -- The real model receives the accumulated messages and authoritative
+        -- tool schemas, elects to call a needed tool, emits schema-valid
+        -- arguments, consumes its result on a later model turn, and grounds its
+        -- final response in evidence available only from that result.
+
+    @invariant AdaptiveCapability
+        -- Claims about steering, recovery from tool failure, or choosing an
+        -- ORC subtree require the real model to observe the new evidence and
+        -- alter its subsequent action. A prewritten action sequence is not
+        -- evidence of adaptation.
+
+    @invariant LiveProvenance
+        -- Every live proof retains model identity, provider response identity
+        -- when available, token usage, exact tool calls, transcript order, ORC
+        -- tick lineage, durable outputs and terminal status.
+
+    @invariant ProviderNativeStreaming
+        -- A real provider stream fragments at least one tool call, the harness
+        -- reconstructs its identifier, name and schema-valid arguments, ORC
+        -- executes it exactly once, and a later streamed model turn grounds its
+        -- final response in the result. A non-streaming call cannot prove this.
+}
+
+contract ReplHarnessControl {
+    start: () -> Any
+    create_session: (name: String) -> Any
+    prompt: (name: String, content: String) -> Any
+    history: (name: String) -> List<AgentMessage>
+    event_history: (name: String) -> List<HarnessEvent>
+    steer: (name: String, content: String) -> Any
+    follow_up: (name: String, content: String) -> Any
+    stop_after_turn: (name: String) -> Any
+    abort: (name: String) -> Any
+    close_session: (name: String) -> Any
+    shutdown: () -> Any
+
+    @invariant LocalExplicitLifecycle
+        -- Starting the demo binds nREPL to the loopback interface and creates
+        -- no model conversation. Sessions and provider work begin only through
+        -- explicit operator evaluation, and shutdown releases nREPL and ORC.
+
+    @invariant NamedSessionIsolation
+        -- Each named session owns an independent transcript, event history and
+        -- control queues. Duplicate names are rejected until explicitly closed.
+
+    @invariant StatefulReplConversation
+        -- Repeated prompts for one name retain the accumulated transcript and
+        -- return the latest turn result for direct REPL inspection.
+
+    @invariant HonestReplControl
+        -- Steering, follow-up, stop and abort evaluated from another nREPL
+        -- client act on the named running session through the harness controls.
+        -- Unknown names fail explicitly rather than creating implicit state.
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface PiAgentLoopDemo {
+    facing operator: DemoOperator
+
+    contracts:
+        fulfils PiCoreLoopConformance
+        fulfils OrcExecutionEvidence
+        fulfils LiveModelEvidence
+        fulfils ReplHarnessControl
+
+    @guarantee EvidenceClassesCannotSubstitute
+        -- Deterministic conformance proves harness mechanics. Live-model runs
+        -- prove model/provider capability. Neither class is reported as proof
+        -- of the other.
+}
+
+surface ModelBoundary {
+    facing provider: ModelProvider
+
+    contracts:
+        demands LiveModelEvidence
+}
+
+surface ToolBoundary {
+    facing runtime: ToolRuntime
+
+    contracts:
+        demands OrcExecutionEvidence
+}
+
+surface OrcBoundary {
+    facing runtime: OrcRuntime
+
+    contracts:
+        demands OrcExecutionEvidence
+}

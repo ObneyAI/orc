@@ -30,10 +30,15 @@ tests are evidence for these domains rather than separately governed product
 domains. Any behavior found there that is not represented by a component is
 added to this ledger rather than silently excluded.
 
+The development-only Pi core-loop demonstration is governed by
+`pi-agent-loop-demo.allium`. It specifies conformance and evidence obligations
+for both scenario execution and its loopback nREPL harness surface without
+adding a production component or source namespace to this audit.
+
 ## Source audit
 
 The final audit enumerated every Clojure namespace under each component's
-`src/` tree. The twelve specifications cover 132 product namespaces across the 16
+`src/` tree. The thirteen specifications cover 132 product namespaces across the 16
 non-empty product components. The one additional namespace belongs to
 `grain-test-utils`, whose public purpose is test-fixture construction and is
 explicitly excluded above.
@@ -50,6 +55,7 @@ explicitly excluded above.
 | `observability.allium` | 2 |
 | `ontology.allium` | 34 |
 | `orc-service.allium` | 29 |
+| `pi-agent-loop-demo.allium` | 0; development-only behavioral demonstration |
 | `predict-rlm-tools.allium` | 4 across image, invoice, PDF, and redaction tools |
 
 Cross-component dependencies are represented as named external entities and
@@ -65,14 +71,14 @@ and zero process findings under Allium language version 3.
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
 Under the current checked-in specifications and Allium CLI, both
-`allium check specs` and `allium analyse specs` report 122 structural diagnostics
-across the twelve specifications: 87 informational and 35 warnings. `analyse`
+`allium check specs` and `allium analyse specs` report 204 structural diagnostics
+across the thirteen specifications: 169 informational and 35 warnings. `analyse`
 reports zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
 | `allium.rule.unreachableTrigger` | 54 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 33 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.field.unused` | 115 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 17 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
