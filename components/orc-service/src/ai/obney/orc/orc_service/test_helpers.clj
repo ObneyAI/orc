@@ -786,7 +786,7 @@
 (defn make-set-delegate-config-command
   "Create a set-delegate-config command.
    Delegate nodes execute another sheet with isolated blackboard."
-  [sheet-id node-id target-sheet-id & {:keys [reads writes timeout-ms inherit-ontology?]}]
+  [sheet-id node-id target-sheet-id & {:keys [reads writes timeout-ms max-ticks inherit-ontology?]}]
   (cond-> {:command/name :sheet/set-delegate-config
            :command/id (random-uuid)
            :command/timestamp (time/now)
@@ -796,6 +796,7 @@
            :reads (vec (or reads []))
            :writes (vec (or writes []))}
     timeout-ms (assoc :timeout-ms timeout-ms)
+    max-ticks (assoc :max-ticks max-ticks)
     (some? inherit-ontology?) (assoc :inherit-ontology? inherit-ontology?)))
 
 ;; =============================================================================

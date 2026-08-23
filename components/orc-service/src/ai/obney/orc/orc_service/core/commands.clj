@@ -684,7 +684,7 @@
   "Set configuration for a delegate node.
    Delegate nodes execute another sheet with isolated blackboard,
    mapping inputs from parent and outputs back to parent."
-  [{{:keys [sheet-id node-id target-sheet-id reads writes timeout-ms inherit-ontology?]} :command
+  [{{:keys [sheet-id node-id target-sheet-id reads writes timeout-ms max-ticks inherit-ontology?]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
         target-sheet (when target-sheet-id
@@ -714,6 +714,10 @@
       {::anom/category ::anom/incorrect
        ::anom/message (str "Unknown blackboard keys in writes: " (vec unknown-writes))}
 
+      (and (some? max-ticks) (not (pos-int? max-ticks)))
+      {::anom/category ::anom/incorrect
+       ::anom/message "Delegate max-ticks must be a positive integer"}
+
       :else
       {:command-result/events
        [(->event
@@ -726,11 +730,13 @@
                          :reads (vec reads)
                          :writes (vec writes)}
                   timeout-ms (assoc :timeout-ms timeout-ms)
+                  max-ticks (assoc :max-ticks max-ticks)
                   (some? inherit-ontology?) (assoc :inherit-ontology? inherit-ontology?)
                   (:target-sheet-id node) (assoc :previous-target-sheet-id (:target-sheet-id node))
                   (seq (:reads node)) (assoc :previous-reads (:reads node))
                   (seq (:writes node)) (assoc :previous-writes (:writes node))
                   (:delegate-timeout-ms node) (assoc :previous-timeout-ms (:delegate-timeout-ms node))
+                  (:delegate-max-ticks node) (assoc :previous-max-ticks (:delegate-max-ticks node))
                   (some? (:inherit-ontology? node)) (assoc :previous-inherit-ontology? (:inherit-ontology? node)))})]})))
 
 ;; =============================================================================
@@ -1519,7 +1525,8 @@
   "System command: store a full execution trace for analytics and debugging."
   [{{:keys [trace-id sheet-id parent-trace-id correlation-id root-trace-id child-trace-ids
             version-number started-at completed-at
-            duration-ms status input-snapshot output-snapshot node-traces error]} :command}]
+            duration-ms status configured-max-ticks consumed-ticks terminal-reason
+            input-snapshot output-snapshot node-traces error]} :command}]
   {:command-result/events
    [(->event {:type :sheet/execution-traced
               :tags (cond-> #{[:sheet sheet-id] [:trace trace-id] [:tick trace-id]}
@@ -1538,6 +1545,9 @@
                       parent-trace-id (assoc :parent-trace-id parent-trace-id)
                       correlation-id (assoc :correlation-id correlation-id)
                       version-number (assoc :version-number version-number)
+                      configured-max-ticks (assoc :configured-max-ticks configured-max-ticks)
+                      consumed-ticks (assoc :consumed-ticks consumed-ticks)
+                      terminal-reason (assoc :terminal-reason terminal-reason)
                       error (assoc :error error))})]})
 
 ;; =============================================================================
@@ -1587,6 +1597,13 @@
                    (:output-key node) (assoc :output-key (:output-key node))
                    (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))
                    (some? (:preserve-failures? node)) (assoc :preserve-failures? (:preserve-failures? node))))
+          (= :delegate (:type node))
+          (merge (cond-> {:target-sheet-id (:target-sheet-id node)
+                          :reads (vec (or (:reads node) []))
+                          :writes (vec (or (:writes node) []))}
+                   (:delegate-timeout-ms node) (assoc :delegate-timeout-ms (:delegate-timeout-ms node))
+                   (:delegate-max-ticks node) (assoc :delegate-max-ticks (:delegate-max-ticks node))
+                   (some? (:inherit-ontology? node)) (assoc :inherit-ontology? (:inherit-ontology? node))))
           ;; Children for composite nodes
           (seq (:children-ids node))
           (assoc :children

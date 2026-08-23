@@ -196,6 +196,7 @@
     ;; Delegate-only fields
     [:target-sheet-id {:optional true} :uuid]       ;; Sheet to delegate execution to
     [:delegate-timeout-ms {:optional true} :int]    ;; Timeout for delegated execution
+    [:delegate-max-ticks {:optional true} [:and :int [:> 0]]]
     [:inherit-ontology? {:optional true} :boolean]  ;; Share ontology context with target
     ;; Execution tracking
     [:last-error {:optional true} :string]]
@@ -303,6 +304,9 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout :partial]]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
     ;; key -> size-profile, not key -> value. :input-snapshot profiles the
     ;; keys the tick was given and did not write; :output-snapshot profiles
     ;; the keys it wrote.
@@ -498,6 +502,7 @@
     [:reads [:vector :keyword]]                         ;; Blackboard keys to pass as inputs
     [:writes [:vector :keyword]]                        ;; Output keys to receive from target
     [:timeout-ms {:optional true} :int]                 ;; Timeout for delegated execution
+    [:max-ticks {:optional true} [:and :int [:> 0]]]
     [:inherit-ontology? {:optional true} :boolean]]     ;; Share ontology context (default true)
 
    ;; -------------------------------------------------------------------------
@@ -803,6 +808,9 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status :keyword]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
     ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
@@ -1050,11 +1058,13 @@
     [:reads [:vector :keyword]]
     [:writes [:vector :keyword]]
     [:timeout-ms {:optional true} :int]
+    [:max-ticks {:optional true} [:and :int [:> 0]]]
     [:inherit-ontology? {:optional true} :boolean]
     [:previous-target-sheet-id {:optional true} :uuid]
     [:previous-reads {:optional true} [:vector :keyword]]
     [:previous-writes {:optional true} [:vector :keyword]]
     [:previous-timeout-ms {:optional true} :int]
+    [:previous-max-ticks {:optional true} [:and :int [:> 0]]]
     [:previous-inherit-ontology? {:optional true} :boolean]]
 
    ;; -------------------------------------------------------------------------
@@ -1285,9 +1295,12 @@
    :sheet/tree-tick-completed
    [:map
     [:sheet-id :uuid]
-    [:tick-id :uuid]
+   [:tick-id :uuid]
     [:correlation-id {:optional true} :uuid]
     [:iteration {:optional true} :int]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
     ;; D-008: :partial added so map-each can surface partial outcomes.
     ;; D-003: :timeout added so RLM repl-researcher can surface Phase 2
     ;; budget cancellation as a tree-level signal.
@@ -1447,6 +1460,9 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status [:enum :success :failure :timeout :partial]]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
     ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]

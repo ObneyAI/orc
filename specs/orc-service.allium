@@ -45,6 +45,7 @@ value RetryPolicy {
 
 value ExecutionOptions {
     timeout: Duration?
+    maximum_ticks: Integer?
     llm_call_budget: Integer?
     version_number: Integer?
     force_draft: Boolean
@@ -444,6 +445,9 @@ entity DelegateInvocation {
     node_execution: NodeExecution
     child_execution: WorkflowExecution
     status: DelegateInvocationStatus
+    configured_maximum_ticks: Integer?
+    consumed_ticks: Integer
+    terminal_reason: String?
 
     transitions status {
         running -> success
@@ -853,6 +857,15 @@ invariant ExecutionValuesBelongToWorkflow {
 invariant CorrelationIdentifiersAreUUIDs {
     for execution in WorkflowExecutions:
         is_uuid(execution.correlation_identifier)
+}
+
+invariant DelegateTickBudgetsArePositiveAndBounded {
+    for invocation in DelegateInvocations:
+        (invocation.configured_maximum_ticks = null
+         or invocation.configured_maximum_ticks > 0)
+        and invocation.consumed_ticks >= 0
+        and (invocation.configured_maximum_ticks = null
+             or invocation.consumed_ticks <= invocation.configured_maximum_ticks)
 }
 
 invariant TraceInstanceIdentifiersAreUnique {

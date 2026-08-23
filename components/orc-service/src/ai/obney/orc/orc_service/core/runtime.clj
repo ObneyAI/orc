@@ -502,7 +502,10 @@
                  :outputs (value-log/final-values context tenant-id tick-id)
                  :output-sources (value-log/final-sources context tenant-id tick-id)
                  :trace-id tick-id
-                 :error (:error completion)}
+                 :error (:error completion)
+                 :configured-max-ticks (:configured-max-ticks completion)
+                 :consumed-ticks (:consumed-ticks completion)
+                 :terminal-reason (:terminal-reason completion)}
           (:version-number tick-ctx)
           (assoc :executed-version (:version-number tick-ctx))
           (= :blocked (:root-status completion))

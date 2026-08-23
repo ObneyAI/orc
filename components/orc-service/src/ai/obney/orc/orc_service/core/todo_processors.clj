@@ -2334,6 +2334,10 @@
 ;; Delegate Node Execution Processor
 ;; =============================================================================
 
+(def ^:dynamic *max-tick-iterations*
+  "Default maximum number of tree ticks before a Running execution fails."
+  10)
+
 (defn execute-delegate-node
   "Execute delegate node by dispatching to target sheet.
    Maps parent blackboard inputs to target, executes, maps outputs back.
@@ -2371,7 +2375,19 @@
             target-sheet-id (:target-sheet-id node)
             read-keys (:reads node)
             write-keys (:writes node)
-            timeout-ms (or (:delegate-timeout-ms node) 300000)
+            parent-tick-ctx (rm/get-tick-execution-context context tick-id)
+            parent-deadline-ms (get-in parent-tick-ctx [:options :execution-deadline-ms])
+            local-timeout-ms (or (:delegate-timeout-ms node) 300000)
+            timeout-ms (if parent-deadline-ms
+                         (max 1 (min local-timeout-ms
+                                     (- parent-deadline-ms (System/currentTimeMillis))))
+                         local-timeout-ms)
+            parent-max-ticks (or (get-in parent-tick-ctx [:options :max-ticks])
+                                 *max-tick-iterations*)
+            parent-iteration (or (:iteration (rm/get-tick context tick-id)) 1)
+            parent-remaining-ticks (max 1 (- parent-max-ticks (dec parent-iteration)))
+            max-ticks (min (or (:delegate-max-ticks node) *max-tick-iterations*)
+                           parent-remaining-ticks)
 
             ;; Map parent blackboard to target inputs (string keys for execute)
             target-inputs (reduce
@@ -2410,6 +2426,7 @@
                   result (runtime/execute context target-sheet-id
                                           target-inputs
                                           :timeout-ms timeout-ms
+                                          :max-ticks max-ticks
                                           :tick-id child-tick-id
                                           :parent-tick-id tick-id
                                           :correlation-id correlation-id
@@ -3681,9 +3698,6 @@
 ;; Tree Tick Completion
 ;; =============================================================================
 
-;; Maximum iterations to prevent infinite loops
-(def ^:dynamic *max-tick-iterations* 10)
-
 (defn- tick-written-keys
   "The set of blackboard keys this tick actually wrote, read from its
    canonical value and reference events.
@@ -3766,10 +3780,17 @@
 
         ;; Either success/failure, or hit max iterations
         :else
-        (let [final-status (if (and (= status :running)
-                                     (>= current-iteration max-ticks))
+        (let [max-ticks-exhausted? (and (= status :running)
+                                        (>= current-iteration max-ticks))
+              final-status (if max-ticks-exhausted?
                              :failure
                              status)
+              terminal-reason (if max-ticks-exhausted?
+                                :max-ticks-exhausted
+                                final-status)
+              final-error (or error
+                              (when max-ticks-exhausted?
+                                (str "Maximum tick budget exhausted (" max-ticks ")")))
               ;; Only the keys this tick WROTE, not the whole blackboard. A
               ;; tick is seeded with its caller's working set, so echoing every
               ;; seeded key back out re-stores values the tick never touched.
@@ -3794,12 +3815,15 @@
               :body (cond-> {:sheet-id sheet-id
                              :tick-id tick-id
                              :iteration current-iteration
+                             :configured-max-ticks max-ticks
+                             :consumed-ticks current-iteration
+                             :terminal-reason terminal-reason
                              :root-status final-status}
                       output-keys (assoc :output-keys output-keys)
                       correlation-id (assoc :correlation-id correlation-id)
                       ;; WS-2a: carry the opaque payload when the tree blocked.
                       (= :blocked final-status) (assoc :block-payload block-payload)
-                      error (assoc :error error))})]})))))
+                      final-error (assoc :error final-error))})]})))))
 
 
 ;; =============================================================================
@@ -4048,7 +4072,10 @@
                    ;; Include raw tree for :tree-generated status (canonical form generated at execution time)
                    :generated-tree-raw (get outputs :generated-tree-raw)
                    :trace-id tick-id
-                   :error error}
+                   :error error
+                   :configured-max-ticks (:configured-max-ticks event)
+                   :consumed-ticks (:consumed-ticks event)
+                   :terminal-reason (:terminal-reason event)}
             executed-version (assoc :executed-version executed-version)
             ;; Include usage if any LLM calls were made
             (pos? (:total-tokens usage 0)) (assoc :usage usage-with-breakdown)
@@ -4329,7 +4356,15 @@
                            :timeout :timeout
                            :running :running
                            :tree-generated :tree-generated
-                           :failure)]
+                           :failure)
+            configured-max-ticks (or (:configured-max-ticks event)
+                                     (get-in tick-ctx [:options :max-ticks])
+                                     *max-tick-iterations*)
+            consumed-ticks (or (:consumed-ticks event)
+                               (:iteration event)
+                               (:iteration (rm/get-tick context tick-id))
+                               1)
+            terminal-reason (or (:terminal-reason event) root-status)]
         ;; Store trace via command in a future (best-effort, non-blocking).
         ;; Must be async because cp/process-command -> es/append -> pubsub/pub
         ;; can deadlock if called synchronously within a todo processor thread.
@@ -4348,6 +4383,9 @@
                               :completed-at (str (or completed-at (time/now)))
                               :duration-ms duration-ms
                               :status final-status
+                              :configured-max-ticks configured-max-ticks
+                              :consumed-ticks consumed-ticks
+                              :terminal-reason terminal-reason
                               :input-snapshot input-snapshot
                               :output-snapshot output-snapshot
                               :node-traces node-traces}
@@ -4573,6 +4611,8 @@
                                                                 :writes (or (:writes snapshot-node) [])}
                                                          (:delegate-timeout-ms snapshot-node)
                                                          (assoc :timeout-ms (:delegate-timeout-ms snapshot-node))
+                                                         (:delegate-max-ticks snapshot-node)
+                                                         (assoc :max-ticks (:delegate-max-ticks snapshot-node))
                                                          (some? (:inherit-ontology? snapshot-node))
                                                          (assoc :inherit-ontology? (:inherit-ontology? snapshot-node)))}))])
 

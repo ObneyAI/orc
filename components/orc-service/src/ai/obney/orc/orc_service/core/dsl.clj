@@ -307,6 +307,7 @@
      :reads - Vector of blackboard keys to pass as inputs to target
      :writes - Vector of blackboard keys to receive outputs from target
      :timeout-ms - Max execution time for the delegation (default: 300000ms)
+     :max-ticks - Positive child retick limit (default: runtime default)
      :inherit-ontology? - Share ontology context with target (default: true)
 
    Example:
@@ -317,14 +318,18 @@
      :writes [:analysis-result :metrics]
      :timeout-ms 60000)
    ```"
-  [name & {:keys [target-sheet-id reads writes timeout-ms inherit-ontology?]
+  [name & {:keys [target-sheet-id reads writes timeout-ms max-ticks inherit-ontology?]
            :or {inherit-ontology? true}}]
+  (when (and (some? max-ticks) (not (pos-int? max-ticks)))
+    (throw (ex-info "Delegate :max-ticks must be a positive integer"
+                    {:max-ticks max-ticks})))
   (cond-> {:node-type :delegate
            :name name
            :target-sheet-id target-sheet-id
            :reads (vec (or reads []))
            :writes (vec (or writes []))}
     timeout-ms (assoc :timeout-ms timeout-ms)
+    max-ticks (assoc :max-ticks max-ticks)
     (some? inherit-ontology?) (assoc :inherit-ontology? inherit-ontology?)))
 
 (defn sequence
@@ -611,6 +616,7 @@
             :reads (:reads node)
             :writes (:writes node)
             :timeout-ms (:timeout-ms node)
+            :max-ticks (:max-ticks node)
             :inherit-ontology? (:inherit-ontology? node))))
 
       :parallel
@@ -886,6 +892,7 @@
                    (seq (:reads node)) (assoc :reads (:reads node))
                    (seq (:writes node)) (assoc :writes (:writes node))
                    (:delegate-timeout-ms node) (assoc :timeout-ms (:delegate-timeout-ms node))
+                   (:delegate-max-ticks node) (assoc :max-ticks (:delegate-max-ticks node))
                    (some? (:inherit-ontology? node)) (assoc :inherit-ontology? (:inherit-ontology? node))))
           ;; Children for composite nodes
           (seq (:children-ids node))
@@ -991,6 +998,7 @@
             :reads (vec (:reads node))
             :writes (vec (:writes node))
             :timeout-ms (:timeout-ms node)
+            :max-ticks (:max-ticks node)
             :inherit-ontology? (:inherit-ontology? node))))
 
       :parallel
@@ -1229,6 +1237,7 @@
                 :reads (:reads node)
                 :writes (:writes node)
                 :timeout-ms (:delegate-timeout-ms node)
+                :max-ticks (:delegate-max-ticks node)
                 :inherit-ontology? (:inherit-ontology? node)})]
     (if (empty? opts)
       (list (dsl-sym 'delegate) (:name node))
