@@ -36,6 +36,7 @@ that verifies the stated observable results.
 - [x] **DET-E2E-018 — Delegate timeout.** Verify timeout status, bounded elapsed time, no late parent writes, and child trace termination.
 - [x] **DET-E2E-019 — Nested delegates.** Execute parent → child → grandchild and verify trace lineage, one trace family, and final value propagation.
 - [x] **DET-E2E-020 — Parallel delegates.** Verify concurrent child execution, blackboard isolation, no cross-child values, and distinct child ticks under one correlation ID.
+- [x] **DET-E2E-108 — Durable delegate child identity.** A delegate whose child remains Running across 100 parent re-ticks, duplicate delivery, and processor recovery creates exactly one child tick; the parent receives its terminal outputs, cancellation and timeout remain consistent, nested lineage is queryable, and executor/thread growth stays bounded.
 
 ## P0 — Failure, partial-result, and retry semantics
 

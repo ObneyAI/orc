@@ -985,6 +985,11 @@
             tool-context]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))
+        already-started? (and tick-id
+                              (seq (into [] (es/read (:event-store context)
+                                                    {:tenant-id (:tenant-id context)
+                                                     :types #{:sheet/tree-tick-started}
+                                                     :tags #{[:tick tick-id]}}))))
         ;; Blackboard keys are simple keywords (see declare-key), but callers
         ;; may pass string-keyed inputs — runtime/execute documents that form,
         ;; and execute-delegate-node builds them that way. The tick-execution
@@ -999,7 +1004,9 @@
         input-sources (reduce-kv (fn [acc k source]
                                    (assoc acc (if (string? k) (keyword k) k) source))
                                  {} (or input-sources {}))]
-    (if inputs
+    (if already-started?
+      {:command-result/events []}
+      (if inputs
       ;; Snapshot-based execution: build full snapshot for isolation
       (let [instruction-overrides (:gepa/patched-instructions context)
             sheet-tenant-id (when (not= (:system-tenant-id context) (:tenant-id context))
@@ -1100,7 +1107,7 @@
                       correlation-id (assoc :correlation-id correlation-id)
                       ;; G1 (ADR 0018): opaque :tool-context also rides the
                       ;; snapshot-less UI tick path for symmetry.
-                      tool-context (assoc :tool-context tool-context))})]})))))
+                      tool-context (assoc :tool-context tool-context))})]}))))))
 (defcommand :sheet tick-node
   {:authorized? authenticated?}
   "Start a single node tick (for testing or manual execution)."

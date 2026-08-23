@@ -324,6 +324,8 @@ enum NodeExecutionStatus {
     running | success | failure | partial | timeout | blocked | skipped
 }
 
+enum DelegateInvocationStatus { running | success | failure | timeout | cancelled }
+
 enum StructuredFailureKind {
     transport_failure | missing_forced_tool_call | tool_call_parsing_failed |
     schema_validation_failed | empty_provider_response
@@ -435,6 +437,21 @@ entity NodeExecution {
     }
 
     writes: ExecutionValue with node_execution = this
+    delegate_invocation: DelegateInvocation with node_execution = this
+}
+
+entity DelegateInvocation {
+    node_execution: NodeExecution
+    child_execution: WorkflowExecution
+    status: DelegateInvocationStatus
+
+    transitions status {
+        running -> success
+        running -> failure
+        running -> timeout
+        running -> cancelled
+        terminal: success, failure, timeout, cancelled
+    }
 }
 
 entity ExecutionValue {
@@ -758,18 +775,38 @@ rule DelegateToWorkflow {
     requires: node_execution.status = running
     requires: node_execution.node.kind = delegate
     requires: inputs_valid_for(target_workflow, mapped_inputs)
+    requires: not exists node_execution.delegate_invocation
 
-    ensures: WorkflowExecution.created(
-        workflow: target_workflow,
-        status: running,
-        started_at: now,
-        completed_at: null,
-        duration: null,
-        version_number: selected_version(target_workflow, options),
-        parent: node_execution.execution,
-        correlation_identifier: node_execution.execution.correlation_identifier,
-        options: options,
-        error: null
+    ensures:
+        let child = WorkflowExecution.created(
+            workflow: target_workflow,
+            status: running,
+            started_at: now,
+            completed_at: null,
+            duration: null,
+            version_number: selected_version(target_workflow, options),
+            parent: node_execution.execution,
+            correlation_identifier: node_execution.execution.correlation_identifier,
+            options: options,
+            error: null
+        )
+        DelegateInvocation.created(
+            node_execution: node_execution,
+            child_execution: child,
+            status: running
+        )
+}
+
+rule ObserveRunningDelegate {
+    when: ExecuteDelegateNode(node_execution, target_workflow, mapped_inputs, options)
+    requires: node_execution.status = running
+    requires: node_execution.node.kind = delegate
+    requires: exists node_execution.delegate_invocation
+    requires: node_execution.delegate_invocation.status = running
+
+    ensures: ExistingDelegateChildObserved(
+        node_execution: node_execution,
+        child_execution: node_execution.delegate_invocation.child_execution
     )
 }
 
@@ -939,4 +976,11 @@ surface WorkflowExecutionAccess {
         -- Once an execution or any ancestor is cancelled or times out, work
         -- already in flight cannot create execution values or node/tree
         -- completions for that terminal execution.
+
+    @guarantee StableDelegateLifecycle
+        -- A delegate node execution durably identifies exactly one child
+        -- execution while that child is running. Re-ticks, duplicate delivery,
+        -- and process recovery observe or resume that child rather than creating
+        -- another. Its terminal result and outputs flow back to the parent, and
+        -- cancellation and trace lineage remain consistent across nested delegates.
 }

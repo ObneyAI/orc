@@ -1640,6 +1640,37 @@
   [inputs]
   (select-keys inputs [::map-each-index ::map-each-parent ::tick-iteration]))
 
+(defn delegate-child-tick-id
+  "Return the durable identity of one logical delegate frontier. Parent tree
+   iteration is deliberately excluded: Running re-ticks observe the same child.
+   Map-each identity remains included so concurrent logical invocations stay
+   isolated."
+  [parent-tick-id node-id execution-context]
+  (let [work-context (select-keys execution-context
+                                  [::map-each-index ::map-each-parent])]
+    (java.util.UUID/nameUUIDFromBytes
+     (.getBytes (pr-str [parent-tick-id node-id (into (sorted-map) work-context)])
+                "UTF-8"))))
+
+(defonce ^:private delegate-claims (atom #{}))
+
+(defn claim-delegate!
+  "Claim process-local responsibility for observing one durable child tick.
+   The tick id remains the cross-process claim; this set closes the interval
+   before its originating event lands and bounds duplicate-delivery futures."
+  [child-tick-id]
+  (let [claimed? (volatile! false)]
+    (swap! delegate-claims
+           (fn [claims]
+             (if (contains? claims child-tick-id)
+               claims
+               (do (vreset! claimed? true)
+                   (conj claims child-tick-id)))))
+    @claimed?))
+
+(defn release-delegate! [child-tick-id]
+  (swap! delegate-claims disj child-tick-id))
+
 ;; =============================================================================
 ;; Input Profile Computation (deep module — pure function, testable in isolation)
 ;; =============================================================================
@@ -2358,14 +2389,23 @@
             ;; read values (truncated) for the completion event.
             read-inputs (extract-read-inputs read-keys blackboard)]
 
-        ;; Async execution pattern (ORC standard)
-        (future
+        ;; A stable child id is the durable idempotency claim. The child tick's
+        ;; originating event persists it with parent lineage; duplicate delivery
+        ;; observes that event and does not allocate another future or execution.
+        (let [child-tick-id (delegate-child-tick-id tick-id node-id exec-context)
+              child-started? (seq (into [] (es/read event-store
+                                                   {:tenant-id (:tenant-id context)
+                                                    :types #{:sheet/tree-tick-started}
+                                                    :tags #{[:tick child-tick-id]}})))
+              recovering? (some? (:resumed-from-event-id event))]
+          (when (and (or (not child-started?) recovering?)
+                     (claim-delegate! child-tick-id))
+            (future
           (try
             (let [start-time (System/currentTimeMillis)
                   ;; Lineage: delegate sub-workflows run as child ticks. Link
                   ;; BEFORE dispatch so stream subscribers on the parent tick
                   ;; see the whole cascade.
-                  child-tick-id (random-uuid)
                   _ (streaming/link-child! tick-id child-tick-id)
                   result (runtime/execute context target-sheet-id
                                           target-inputs
@@ -2434,9 +2474,11 @@
                         :sheet-id sheet-id
                         :tick-id tick-id
                         :node-id node-id
-                        :error (.getMessage e)})))))
-        ;; Return nil - completion handled async via process-command
-        nil))))
+                        :error (.getMessage e)})))
+            (finally
+              (release-delegate! child-tick-id)))
+            ;; Return nil - completion handled async via process-command
+            nil)))))))
 
 ;; =============================================================================
 ;; Condition Node Execution Processor

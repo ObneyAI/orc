@@ -9,6 +9,7 @@
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
@@ -476,12 +477,43 @@
   [tick-id]
   (swap! completion-registry dissoc tick-id))
 
+(defn durable-terminal-result
+  "Reconstruct the result of an already-terminal tick from durable facts.
+   This is the process-recovery path for callers reattaching after the
+   completion promise and its observer thread were lost."
+  [{:keys [event-store tenant-id] :as context} tick-id]
+  (when event-store
+    (when-let [completion
+               (last (filter #(and (= :sheet/tree-tick-completed (:event/type %))
+                                   (not= :running (:root-status %)))
+                             (into [] (es/read event-store
+                                               {:tenant-id tenant-id
+                                                :types #{:sheet/tree-tick-completed}
+                                                :tags #{[:tick tick-id]}}))))]
+      (let [tick-ctx (rm/get-tick-execution-context context tick-id)]
+        (cond-> {:status (case (:root-status completion)
+                           :success :success
+                           :failure :failure
+                           :partial :partial
+                           :timeout :timeout
+                           :blocked :blocked
+                           :tree-generated :tree-generated
+                           :failure)
+                 :outputs (value-log/final-values context tenant-id tick-id)
+                 :output-sources (value-log/final-sources context tenant-id tick-id)
+                 :trace-id tick-id
+                 :error (:error completion)}
+          (:version-number tick-ctx)
+          (assoc :executed-version (:version-number tick-ctx))
+          (= :blocked (:root-status completion))
+          (assoc :block-payload (:block-payload completion)))))))
+
 ;; =============================================================================
 ;; Public API
 ;; =============================================================================
 
 (defn resume-in-progress!
-  "Resume abandoned leaf frontiers from durable execution state.
+  "Resume abandoned leaf and delegate frontiers from durable execution state.
 
    Intended to be called after todo processors have been rebuilt against the
    same event store. Completed nodes are never re-enqueued. Each recovery start
@@ -498,7 +530,7 @@
                                            :tags #{[:tick tick-id]}}))]
         (keep
          (fn [node-id]
-           (when (= :leaf (:type (get nodes-by-id node-id)))
+           (when (contains? #{:leaf :delegate} (:type (get nodes-by-id node-id)))
              (when-let [start (last (filter #(and (= :sheet/node-execution-started
                                                       (:event/type %))
                                                    (= node-id (:node-id %)))
@@ -623,7 +655,8 @@
            :error (:cognitect.anomalies/message cmd-result)
            :duration-ms (- (System/currentTimeMillis) start-time)})
       ;; Wait for async completion
-      (let [result (deref p timeout-ms ::timeout)
+      (let [result (or (durable-terminal-result context tick-id)
+                       (deref p timeout-ms ::timeout))
             duration-ms (- (System/currentTimeMillis) start-time)]
         (swap! completion-registry dissoc tick-id)
         (if (= result ::timeout)
