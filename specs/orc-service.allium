@@ -996,4 +996,16 @@ surface WorkflowExecutionAccess {
         -- and process recovery observe or resume that child rather than creating
         -- another. Its terminal result and outputs flow back to the parent, and
         -- cancellation and trace lineage remain consistent across nested delegates.
+
+    @guarantee ConsistentCodeFunctionResolution
+        -- A public application function that is loaded before its code node runs
+        -- resolves identically for synchronous, background, resumed and delegated
+        -- execution, including workflows registered after background processing starts.
+        -- A genuinely absent function terminates the node with traceable evidence.
+
+    @guarantee DurableDelegateCompletionDelivery
+        -- A terminal delegated child durably makes its parent runnable. Exactly
+        -- one parent-node completion consumes the child's success outputs or
+        -- structured failure, independent of process-local observers, duplicate
+        -- wakes, parent re-ticks and repeated process recovery.
 }

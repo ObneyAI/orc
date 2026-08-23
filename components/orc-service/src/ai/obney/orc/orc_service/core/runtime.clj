@@ -607,6 +607,8 @@
   [context sheet-id inputs & {:keys [timeout-ms result-grace-ms use-version force-draft
                                       trace? langfuse-client store-trace?
                                       max-ticks llm-call-budget tick-id parent-tick-id
+                                      delegate-parent-sheet-id delegate-parent-node-id
+                                      delegate-parent-exec-context
                                       correlation-id input-sources return-references?
                                       durability-mode]
                                :or {timeout-ms 300000
@@ -632,6 +634,12 @@
                                                  trace? (assoc :trace? true)
                                                  langfuse-client (assoc :langfuse-client langfuse-client)
                                                  max-ticks (assoc :max-ticks max-ticks)
+                                                 delegate-parent-sheet-id
+                                                 (assoc :delegate-parent-sheet-id delegate-parent-sheet-id)
+                                                 delegate-parent-node-id
+                                                 (assoc :delegate-parent-node-id delegate-parent-node-id)
+                                                 (seq delegate-parent-exec-context)
+                                                 (assoc :delegate-parent-exec-context delegate-parent-exec-context)
                                                  llm-call-budget (assoc :llm-call-budget llm-call-budget)
                                                  durability-mode (assoc :durability-mode durability-mode))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)

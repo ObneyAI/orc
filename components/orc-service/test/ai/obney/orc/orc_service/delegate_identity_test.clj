@@ -13,9 +13,66 @@
 (defn recovered-output [_] {:output "recovered"})
 
 (def delegate-counter (atom 0))
+(def delegate-release (atom nil))
 
 (defn increment-delegate-counter [_]
   {:counter (str (swap! delegate-counter inc))})
+
+(defn wait-for-delegate-release [_]
+  (deref @delegate-release 5000 nil)
+  {:output "delivered"})
+
+(defn fail-delegated-child [_]
+  (throw (ex-info "delegated child failed" {:kind :test})))
+
+(deftest terminal-child-failure-is-delivered-to-parent
+  (h/with-async-test-context [ctx]
+    (let [child (sheet/workflow "failing-delegate-child"
+                  (sheet/blackboard {})
+                  (sheet/code "fail"
+                    :fn "ai.obney.orc.orc-service.delegate-identity-test/fail-delegated-child"))
+          child-sheet-id (sheet/build-workflow! ctx child)
+          parent (sheet/workflow "failing-delegate-parent"
+                   (sheet/blackboard {})
+                   (sheet/delegate "child" :target-sheet-id child-sheet-id))
+          parent-sheet-id (sheet/build-workflow! ctx parent)
+          result (sheet/execute ctx parent-sheet-id {} :timeout-ms 5000)]
+      (is (= :failure (:status result)))
+      (is (re-find #"delegated child failed" (:error result))))))
+
+(deftest terminal-child-event-wakes-parent-without-process-local-observer
+  (testing "durable child completion advances a parent after its observer is lost"
+    (h/with-async-test-context [ctx]
+      (reset! delegate-release (promise))
+      (let [child (sheet/workflow "observer-loss-child"
+                    (sheet/blackboard {:output :string})
+                    (sheet/code "wait"
+                      :fn "ai.obney.orc.orc-service.delegate-identity-test/wait-for-delegate-release"
+                      :writes [:output]))
+            child-sheet-id (sheet/build-workflow! ctx child)
+            parent (sheet/workflow "observer-loss-parent"
+                     (sheet/blackboard {:output :string})
+                     (sheet/delegate "child"
+                       :target-sheet-id child-sheet-id
+                       :writes [:output]
+                       :timeout-ms 4000))
+            parent-sheet-id (sheet/build-workflow! ctx parent)
+            parent-result (future (sheet/execute ctx parent-sheet-id {} :timeout-ms 5000))
+            child-tick-id (loop [attempt 0]
+                            (or (some #(when (and (= :sheet/tree-tick-started (:event/type %))
+                                                 (:parent-tick-id %))
+                                        (:tick-id %))
+                                      (h/read-all-events ctx))
+                                (when (< attempt 200)
+                                  (Thread/sleep 10)
+                                  (recur (inc attempt)))))]
+        (is (uuid? child-tick-id))
+        (runtime/deregister-completion! child-tick-id)
+        (deliver @delegate-release true)
+        (let [result (deref parent-result 3000 ::timeout)]
+          (is (not= ::timeout result) "parent wake does not depend on the lost observer")
+          (is (= :success (:status result)))
+          (is (= "delivered" (get-in result [:outputs :output]))))))))
 
 (deftest delegate-max-ticks-validates-positive-integers
   (is (= 100 (:max-ticks (sheet/delegate "child" :target-sheet-id (random-uuid)
@@ -72,7 +129,17 @@
                               (recur (inc attempt)))))]
             (is (= 100 (:configured-max-ticks trace)))
             (is (= 100 (:consumed-ticks trace)))
-            (is (= :success (:terminal-reason trace)))))))))
+            (is (= :success (:terminal-reason trace))))
+          (let [child-result (runtime/durable-terminal-result ctx (:tick-id child-completion))]
+            (run! deref
+                  (repeatedly 100
+                              #(future
+                                 (tp/complete-delegate-parent!
+                                  ctx (:tick-id child-completion) child-result)))))
+          (let [deliveries (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                                         (= (:tick-id child-completion) (:completion-id %)))
+                                   (h/read-all-events ctx))]
+            (is (= 1 (count deliveries)) "duplicate wakes deliver child completion once")))))))
 
 (deftest delegate-child-identity-is-stable-across-reticks-and-redelivery
   (testing "one logical delegate frontier always resolves to one child tick"

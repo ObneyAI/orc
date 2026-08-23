@@ -1213,11 +1213,17 @@
    atomically with the completion event to avoid race conditions.
 
    Optional :usage carries per-node token counts from LLM calls."
-  [{{:keys [sheet-id tick-id node-id status writes rejected-writes write-sources write-references? duration-ms error inputs usage model
+  [{{:keys [sheet-id tick-id node-id completion-id status writes rejected-writes write-sources write-references? duration-ms error inputs usage model
             node-type completion-kind raw-response failure-kind provider-evidence
             block-payload read-sources]} :command
     :as ctx}]
-  (if (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+  (if (or (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+          (and completion-id
+               (some #(= completion-id (:completion-id %))
+                     (into [] (es/read (:event-store ctx)
+                                       {:tenant-id (:tenant-id ctx)
+                                        :types #{:sheet/node-execution-completed}
+                                        :tags #{[:tick tick-id]}})))))
     {:command-result/events []}
     (let [;; Gap-7: when the dispatch site didn't explicitly set
         ;; :completion-kind but the node is a recursive repl-researcher,
@@ -1290,6 +1296,7 @@
                                            :tick-id tick-id
                                            :node-id node-id
                                            :status status}
+                                    completion-id (assoc :completion-id completion-id)
                                     ;; Shape, not values — but only when the
                                     ;; values are durable elsewhere. The write
                                     ;; events carry :node-id and :exec-context

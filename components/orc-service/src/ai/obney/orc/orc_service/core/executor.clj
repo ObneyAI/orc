@@ -882,6 +882,21 @@
 ;; Code Executor
 ;; =============================================================================
 
+(defonce ^:private application-classloader
+  (.getContextClassLoader (Thread/currentThread)))
+
+(defn- resolve-qualified-var
+  [qualified-sym classloader]
+  (let [thread (Thread/currentThread)
+        previous (.getContextClassLoader thread)]
+    (try
+      (.setContextClassLoader thread classloader)
+      (try
+        (requiring-resolve qualified-sym)
+        (catch Exception _ nil))
+      (finally
+        (.setContextClassLoader thread previous)))))
+
 (defn resolve-fn
   "Resolve a trusted, fully-qualified JVM function symbol string to a function.
    Consumer applications may reference functions from their own classpath
@@ -899,16 +914,24 @@
     ;; Standard namespace/function resolution
     :else
     (try
-      (let [[ns-str fn-str] (str/split fn-symbol-str #"/")
-            ns-sym (symbol ns-str)
-            fn-sym (symbol fn-str)]
-        ;; Try to find namespace first (may already be loaded)
-        (when-not (find-ns ns-sym)
-          ;; Only require if namespace not already loaded
-          (require ns-sym))
-        (if-let [f (ns-resolve (find-ns ns-sym) fn-sym)]
-          {:fn (if (var? f) @f f)}
-          {:error (str "Function not found: " fn-symbol-str)}))
+      (let [qualified-sym (symbol fn-symbol-str)
+            ns-sym (some-> qualified-sym namespace symbol)
+            fn-sym (some-> qualified-sym name symbol)
+            thread-loader (.getContextClassLoader (Thread/currentThread))
+            resolved (when (and ns-sym fn-sym)
+                       (or (resolve-qualified-var qualified-sym thread-loader)
+                           (when-not (identical? thread-loader application-classloader)
+                             (resolve-qualified-var qualified-sym application-classloader))
+                           (when-let [ns-obj (find-ns ns-sym)]
+                             (ns-resolve ns-obj fn-sym))))]
+        (if resolved
+          {:fn (if (var? resolved) @resolved resolved)}
+          {:error (str (if (find-ns ns-sym)
+                         "Function not found: "
+                         "Failed to resolve function: ")
+                       fn-symbol-str
+                       " (namespace-loaded=" (boolean (find-ns ns-sym))
+                       ", thread=" (.getName (Thread/currentThread)) ")")}))
       (catch Exception e
         {:error (str "Failed to resolve function: " fn-symbol-str " - " (.getMessage e))}))))
 

@@ -210,7 +210,7 @@
 
    ::node-layout
    [:map
-    [:node-id :uuid]
+   [:node-id :uuid]
     [:row :int]
     [:start-col :double]
     [:end-col :double]]
@@ -251,6 +251,9 @@
    ::node-trace
    [:map
     [:node-id :uuid]
+    [:delegate-child-tick-id {:optional true} :uuid]
+    [:delegate-child-status {:optional true} :keyword]
+    [:completion-delivered? {:optional true} :boolean]
     [:trace-instance-id :uuid]                    ;; Unique ID for this execution instance
     [:parent-trace-instance-id {:optional true} :uuid]  ;; Links to parent's trace-instance-id
     [:node-name :string]
@@ -615,6 +618,7 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
+    [:completion-id {:optional true} :uuid]
     ;; WS-2a: :blocked — a leaf raised the orc block signal (a gated tool call
     ;; needs permission). The node completes (so the tick completes and the
     ;; parent deref returns immediately) instead of the throwable escaping the
@@ -1173,6 +1177,7 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
+    [:completion-id {:optional true} :uuid]
     ;; WS-2a: :blocked — see :sheet/complete-node-execution.
     [:status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
     ;; Shape, not values — the values are durable in this node's

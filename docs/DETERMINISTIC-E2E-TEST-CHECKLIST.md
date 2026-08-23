@@ -416,6 +416,8 @@ Record unexpected outcomes even when the final returned status is successful.
 ## Recommended complex tranche
 
 - [x] DET-E2E-165 — Delegate-configured child retick budget and trace accounting
+- [x] DET-E2E-166 — Late-loaded application function through background execution
+- [x] DET-E2E-167 — Durable delegated-child completion delivery and duplicate wake safety
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions
 - [x] DET-E2E-102 — Mint, index, retrieve, and reuse a novel behavior
