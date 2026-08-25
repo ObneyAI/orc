@@ -880,6 +880,8 @@
                     :terminal-reason (:terminal-reason event)
                     :input-snapshot (:input-snapshot event)
                     :output-snapshot (:output-snapshot event)
+                    :researcher-iterations (vec (or (:researcher-iterations event) []))
+                    :researcher-events (vec (or (:researcher-events event) []))
                     :node-traces (mapv (fn [node-trace]
                                          (-> node-trace
                                              (update :started-at trace-time/canonical-string)
@@ -898,7 +900,7 @@
   (reduce traces* (or initial-state {}) events))
 
 (defreadmodel :sheet traces
-  {:events trace-events :version 5
+  {:events trace-events :version 6
    :partition-fn :sheet-id
    :entity-id-fn :trace-id}
   [state event] (traces* state event))
@@ -1595,3 +1597,40 @@
   "The injection record for one render occurrence, or nil."
   [ctx sheet-id tick-id node-id]
   (get (get-injection-records ctx sheet-id) [sheet-id tick-id node-id]))
+
+;; The latest durable continuation state for each researcher occurrence.
+(defmulti researcher-checkpoints* (fn [_state event] (:event/type event)))
+(defmethod researcher-checkpoints* :default [state _event] state)
+(defmethod researcher-checkpoints* :rlm/researcher-checkpointed [state event]
+  (assoc state [(:tick-id event) (:node-id event)]
+         (select-keys event [:sheet-id :tick-id :node-id :checkpoint :checkpointed-at])))
+
+(defreadmodel :sheet researcher-checkpoints
+  {:events #{:rlm/researcher-checkpointed} :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn (juxt :tick-id :node-id)}
+  [state event] (researcher-checkpoints* state event))
+
+(defn get-researcher-checkpoint [ctx sheet-id tick-id node-id]
+  (get (rmp/project ctx :sheet/researcher-checkpoints {:partition-key sheet-id})
+       [tick-id node-id]))
+
+(defmulti researcher-actions* (fn [_state event] (:event/type event)))
+(defmethod researcher-actions* :default [state _event] state)
+(defmethod researcher-actions* :rlm/researcher-action-completed [state event]
+  (assoc state [(:tick-id event) (:node-id event) (:action-id event)]
+         (select-keys event [:sheet-id :tick-id :node-id :action-id :action-kind
+                             :iteration :result :completed-at])))
+
+(defreadmodel :sheet researcher-actions
+  {:events #{:rlm/researcher-action-completed} :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn (juxt :tick-id :node-id :action-id)}
+  [state event] (researcher-actions* state event))
+
+(defn get-researcher-actions [ctx sheet-id tick-id node-id]
+  (->> (rmp/project ctx :sheet/researcher-actions {:partition-key sheet-id})
+       (keep (fn [[[event-tick event-node action-id] action]]
+               (when (and (= tick-id event-tick) (= node-id event-node))
+                 [action-id action])))
+       (into {})))

@@ -374,7 +374,7 @@ contract CheckpointedResearcherExecution {
 
     @invariant CampaignDeadlineSurvivesRecovery
         -- A checkpointed campaign records one absolute campaign deadline when
-        -- it starts. Yield, retick, blocking and process restart do not reset the
+        -- it starts. Yield, retick and process restart do not reset the
         -- deadline or any accumulated usage and timing budget.
 
     @invariant TimedOutIterationRetriesFromCheckpoint
@@ -383,10 +383,11 @@ contract CheckpointedResearcherExecution {
         -- retaining its stable logical action identities. Exhausting the
         -- configured iteration-attempt limit terminates the campaign as timeout.
 
-    @invariant BlockedChildPausesTheCampaign
-        -- A blocked generated child checkpoints the waiting frontier and blocks
-        -- the parent researcher. Approval resumes that same child and logical
-        -- action rather than creating a new child or research iteration.
+    @invariant BlockedChildPreservesPriorProgress
+        -- A blocked generated child truthfully blocks the parent researcher and
+        -- preserves all checkpoints completed before the blocked iteration.
+        -- Blocking is a terminal workflow outcome under the ordinary ORC
+        -- contract; it does not silently restart the child or campaign.
 
     @invariant CancellationIsTerminalForRecovery
         -- Cancelling the parent workflow cancels the campaign and its active
@@ -398,10 +399,11 @@ contract CheckpointedResearcherExecution {
         -- Concurrent reticks, duplicate resume requests and automatic recovery
         -- converge without duplicating provider, tool or child work.
 
-    @invariant ActiveCampaignsRecoverAutomatically
-        -- After process restart, every checkpointed campaign whose parent
-        -- execution remains active is rediscovered and resumed without caller
-        -- resubmission. Explicit resume remains safe and idempotent.
+    @invariant ActiveCampaignsResumeFromRecoveryScan
+        -- After process restart, the ordinary ORC recovery scan rediscovers
+        -- every checkpointed campaign whose parent execution remains active and
+        -- resumes it without resubmitting the workflow. Repeated recovery scans
+        -- and explicit resume remain safe and idempotent.
 
     @invariant IterationTraceIsDurableAndOrdered
         -- Trace inspection exposes every completed researcher iteration even

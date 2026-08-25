@@ -2137,6 +2137,10 @@
                   ;; between dispatch and this future running.
                   tool-context (:tool-context tick-ctx)
                   correlation-id (:correlation-id tick-ctx)
+                  durable-checkpoint (some-> (rm/get-researcher-checkpoint
+                                               context sheet-id tick-id node-id)
+                                              :checkpoint)
+                  durable-actions (rm/get-researcher-actions context sheet-id tick-id node-id)
                   enriched-context (cond-> (assoc context
                                                   :sheet-id sheet-id
                                                   :tick-id tick-id
@@ -2149,12 +2153,44 @@
                                                   :reserve-llm-call!
                                                   #(reserve-llm-call-or-cancel!
                                                     context tick-ctx sheet-id tick-id)
+                                                  :persist-researcher-checkpoint!
+                                                  (fn [checkpoint]
+                                                    (cp/process-command
+                                                     (assoc context :command
+                                                            {:command/id (random-uuid)
+                                                             :command/timestamp (time/now)
+                                                             :command/name :sheet/checkpoint-researcher-iteration
+                                                             :sheet-id sheet-id
+                                                             :tick-id tick-id
+                                                             :node-id node-id
+                                                             :checkpoint checkpoint
+                                                             :resume? false
+                                                             :inputs event-inputs})))
+                                                  :persist-researcher-action!
+                                                  (fn [{:keys [action-id action-kind iteration result]}]
+                                                    (cp/process-command
+                                                     (assoc context :command
+                                                            {:command/id (random-uuid)
+                                                             :command/timestamp (time/now)
+                                                             :command/name :sheet/record-researcher-action
+                                                             :sheet-id sheet-id
+                                                             :tick-id tick-id
+                                                             :node-id node-id
+                                                             :action-id action-id
+                                                             :action-kind action-kind
+                                                             :iteration iteration
+                                                             :result result
+                                                             :completed-at (str (java.time.Instant/now))})))
                                                   ;; node-id rides along so RLM stream
                                                   ;; events (iteration/phase2) carry the
                                                   ;; hosting repl-researcher node.
                                                   :node-id node-id)
                                      tool-context (assoc :tool-context tool-context)
-                                     correlation-id (assoc :orc/correlation-id correlation-id))
+                                     correlation-id (assoc :orc/correlation-id correlation-id)
+                                     durable-checkpoint
+                                     (assoc :researcher-checkpoint durable-checkpoint)
+                                     (seq durable-actions)
+                                     (assoc :researcher-actions durable-actions))
                   raw-result (if provider
                                (executor/execute-repl-researcher node blackboard provider enriched-context)
                                {:status :failure :error "No ORC LLM provider configured"})
@@ -2234,6 +2270,18 @@
                                       ;; tick's execution-context read model; orc does not interpret
                                       ;; it. Absent -> not carried (backward-compatible).
                                       tool-context (assoc :tool-context tool-context))]
+              (if (= :running effective-status)
+                (cp/process-command
+                 (assoc context :command
+                        {:command/id (random-uuid)
+                         :command/timestamp (time/now)
+                         :command/name :sheet/checkpoint-researcher-iteration
+                         :sheet-id sheet-id
+                         :tick-id tick-id
+                         :node-id node-id
+                         :checkpoint (:checkpoint result)
+                         :inputs event-inputs}))
+                (do
               ;; Emit :rlm/tree-generated event when tree is generated
               ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
               (when (some? generated-tree-raw)
@@ -2323,7 +2371,7 @@
                          ;; Propagate :usage (including :by-node from Phase 2)
                          ;; so per-node detail bubbles up to the parent tick.
                          (seq usage) (assoc :usage usage)
-                         (:model node) (assoc :model (:model node))))))
+                         (:model node) (assoc :model (:model node))))))))
             (catch Exception e
               (cp/process-command
                 (assoc context :command
@@ -4316,6 +4364,70 @@
             completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) tick-events)
             ephemeral-events (filter #(= :sheet/ephemeral-evaluations-recorded
                                            (:event/type %)) tick-events)
+            researcher-checkpoint-events
+            (filter #(= :rlm/researcher-checkpointed (:event/type %)) tick-events)
+            researcher-resume-events
+            (filter #(and (= :sheet/node-execution-started (:event/type %))
+                          (:researcher-resume? %))
+                    tick-events)
+            researcher-action-events
+            (filter #(= :rlm/researcher-action-completed (:event/type %)) tick-events)
+            terminal-researcher-event
+            (last (filter #(= :rlm/researcher-iterations (:event/type %)) tick-events))
+            checkpoint-iterations
+            (into {}
+                  (keep (fn [checkpoint-event]
+                          (let [checkpoint (:checkpoint checkpoint-event)
+                                next-iteration (:next-iteration checkpoint)
+                                entry (when (pos? next-iteration)
+                                        (nth (:history checkpoint) (dec next-iteration) nil))]
+                            (when entry
+                              [next-iteration
+                               (assoc entry
+                                      :iteration next-iteration
+                                      :checkpointed-at
+                                      (or (:checkpointed-at checkpoint-event)
+                                          (str (:event/timestamp checkpoint-event))))])))
+                        researcher-checkpoint-events))
+            terminal-iterations
+            (into {}
+                  (map-indexed (fn [index entry]
+                                 [(inc index) (assoc entry :iteration (inc index))]))
+                  (:iterations terminal-researcher-event))
+            researcher-iterations
+            (->> (merge terminal-iterations checkpoint-iterations)
+                 (sort-by key)
+                 (mapv val))
+            researcher-events
+            (->>
+             (concat
+              (map (fn [action-event]
+                     {:type :action-completed
+                      :action-id (:action-id action-event)
+                      :action-kind (:action-kind action-event)
+                      :iteration (inc (:iteration action-event))
+                      :at (or (:completed-at action-event)
+                              (str (:event/timestamp action-event)))})
+                   researcher-action-events)
+              (mapcat (fn [checkpoint-event]
+                        (cond-> [{:type :checkpoint
+                                  :iteration (get-in checkpoint-event
+                                                     [:checkpoint :next-iteration])
+                                  :at (or (:checkpointed-at checkpoint-event)
+                                          (str (:event/timestamp checkpoint-event)))}]
+                          (not= false (:yielded? checkpoint-event))
+                          (conj {:type :yield
+                                 :iteration (get-in checkpoint-event
+                                                    [:checkpoint :next-iteration])
+                                 :at (str (:event/timestamp checkpoint-event))})))
+                      researcher-checkpoint-events)
+              (map (fn [resume-event]
+                     {:type :resume
+                      :iteration (:checkpoint-next-iteration resume-event)
+                      :at (str (:event/timestamp resume-event))})
+                   researcher-resume-events))
+             (sort-by :at)
+             vec)
             started-by-execution (into {} (map (juxt trace-execution-key identity) started-events))
             ;; Build completed map by node plus execution context. Map-each runs
             ;; the same child node-id once per item, so keying only by node-id
@@ -4475,6 +4587,10 @@
                               :input-snapshot input-snapshot
                               :output-snapshot output-snapshot
                               :node-traces node-traces}
+                       (seq researcher-iterations)
+                       (assoc :researcher-iterations researcher-iterations)
+                       (seq researcher-events)
+                       (assoc :researcher-events researcher-events)
                        parent-trace-id (assoc :parent-trace-id parent-trace-id)
                        correlation-id (assoc :correlation-id correlation-id)
                        version-number (assoc :version-number version-number)

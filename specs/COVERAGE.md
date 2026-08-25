@@ -316,9 +316,34 @@ automatic restart recovery, fenced resume ownership, blocking and cancellation,
 and ordered iteration trace reconstruction. Existing non-checkpointed researcher
 behavior remains the compatibility path.
 
-This capability is specified but not implemented. DET-E2E-210 through
-DET-E2E-217 are intentionally open and cover yield/retick, real restart,
-idempotency windows, child incorporation, timeout boundaries, sandbox replay,
-blocking/cancellation/concurrency, and unfinished-campaign tracing. Until those
-obligations pass through the public command/event/projection boundary, no
-checkpointed researcher execution or recovery coverage is claimed.
+The opt-in runtime path is now implemented with checkpoint/action events and
+projections, per-iteration `:running` continuation, cold checkpoint rehydration,
+stable generated-child attempt ticks, checkpoint-safe tool keys, independent
+deadline scopes, durable iteration traces, and compatibility coverage for the
+legacy path. Focused deterministic tests exercise the executor, public async
+workflow boundary, SQLite close/reopen replay, child-completion crash window,
+codec rehydration, CAS fencing, timeout boundaries, and paired latency sampling.
+A gated pinned-model journey was verified live against OpenRouter on 2026-08-25:
+the checkpointed researcher crossed a durable yield, resumed with its sandbox
+and history, completed successfully, and satisfied all 11 output, checkpoint,
+provider-latency, usage, and trace assertions. The complete live recursive-
+researcher namespace also passed 3 tests and 32 assertions, including generated-
+child recovery and nested call-budget enforcement.
+
+DET-E2E-210 through DET-E2E-227 remain open until each complete
+integration-shaped obligation is executed and recorded. DET-E2E-210 through DET-E2E-217 cover
+yield/retick, real restart, idempotency windows, child incorporation, timeout
+boundaries, sandbox replay, blocking/cancellation/concurrency, and unfinished-
+campaign tracing. DET-E2E-218 through DET-E2E-227 add the complete crash-window
+matrix plus checkpoint, continuation, restart, replay, storage, concurrency,
+large-value, deadline, compatibility-regression, and soak measurements with
+recorded percentile distributions and raw benchmark evidence. Until those
+obligations pass through the public command/event/projection boundary, the
+focused coverage above must not be represented as exhaustive recovery or
+performance qualification.
+DET-E2E-228 is closed by the live multi-quantum state-reuse journey above.
+DET-E2E-229 through DET-E2E-233 remain open for generated-child recovery,
+checkpoint-safe tool deduplication, clean-JVM automatic recovery, live provider
+timeout evidence, and checkpointed-versus-compatibility benchmark comparison.
+These journeys complement the deterministic suite and are not substitutes for
+crash-boundary correctness proofs.

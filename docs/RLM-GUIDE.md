@@ -245,10 +245,28 @@ All options accepted by the `repl-researcher` node and the `:rlm` config map.
 | Option | Type | Default | Purpose |
 |---|---|---|---|
 | `:recursive?` | bool | `true` | Non-terminal `emit-tree!` — after each Phase-2 tree completes, control returns to Phase 1 for inspection / follow-up / `(final! ...)`. Defaults to `true` — recursive is the default; pass `:recursive? false` to opt out (deprecated escape hatch). See [Recursive mode](#recursive-mode-rlm-recursive-true). |
+| `:checkpointed?` | bool | `false` | Persist completed iterations and resume the same researcher occurrence after a `:running` yield. Checkpoints contain durable sandbox state, history, usage, timing, retry state, and child lineage. Unsupported JVM-local values are rejected unless the runtime registers an explicit checkpoint codec. |
+| `:quantum` | map | `{:max-iterations 1}` | Maximum iterations executed before yielding `:running`. Every completed iteration is checkpointed even when a quantum contains more than one iteration. |
+| `:timeouts` | map | — | Independent `:provider-ms`, `:iteration-ms`, `:phase2-ms`, and `:campaign-ms` deadlines. The effective operation deadline is the earliest applicable deadline; the campaign deadline is absolute and survives restart. |
+| `:iteration-retry` | map | `{:max-attempts 3}` | Retry a timed-out iteration from its prior durable checkpoint. Exhaustion returns `:timeout`. |
 | `:auto-classify?` | bool | `false` | Before Phase 1 starts, classify the task against the seed corpus and prepend the top-fitting pattern's body (capabilities + worked-example DSL snippets in `:strengths.:recommended-pattern` + observed weaknesses + representative-uses) to the model's instruction. Pairs naturally with `:recursive? true`. See [Pattern injection via R-Inject](#pattern-injection-via-r-inject-auto-classify) below. |
 | `:debug?` | bool | `false` | Verbose `[DEBUG RLM]` / `[DEBUG Tree]` stderr logging useful during development. Default off for production. |
 | `:available-code-nodes` | string | nil | Markdown catalog of pre-built `:code` fns the model can reference via `[:code {:fn "ns/sym"}]`. Surfaced as an extra input field on the framework's LLM module. See [Pre-built code-node catalog](#pre-built-code-node-catalog-available-code-nodes). |
 | `:sub-model` | string | nil | Alternative location for `:sub-model` — `(:sub-model (:rlm node))` takes precedence over `(:sub-model node)`. Either works. |
+
+Checkpointed researchers may call only tools whose `:tool-contracts` entry
+declares `:checkpoint-safe? true`. ORC supplies a stable
+`:orc/idempotency-key` in the tool context for the logical iteration/action;
+the tool implementation must use that key to deduplicate its external effect.
+ORC durably preserves the identity, while the effect owner remains responsible
+for enforcing idempotency at the external boundary.
+
+Applications may register codecs in the execution context under
+`:researcher-checkpoint-codecs`. Each codec provides a durable `:tag`, a
+`:match?` predicate, and `:encode`/`:decode` functions. Encoded payloads must
+themselves be durable data. A restarted runtime must register the same decoder;
+a missing decoder fails rehydration explicitly instead of dropping or
+stringifying the value.
 
 ### Per-`:llm`-node options inside `emit-tree!` trees
 

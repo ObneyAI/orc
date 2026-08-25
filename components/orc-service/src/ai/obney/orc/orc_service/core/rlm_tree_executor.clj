@@ -17,10 +17,75 @@
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.commands] ;; Load command handlers
             [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.time.interface :as time]
             [clojure.walk :as walk]))
+
+(declare compute-by-node-from-tick-events)
+
+(defn- persisted-tick-events [context tick-id]
+  (when (and tick-id (:event-store context))
+    (into [] (es/read (:event-store context)
+                      {:tenant-id (:tenant-id context)
+                       :tags #{[:tick tick-id]}}))))
+
+(defn- reconstruct-completed-tick
+  "Return a durable child result when the stable Phase-2 tick already reached a
+   terminal event. This closes the crash window between child completion and
+   recording the result in the parent researcher action log."
+  [context tick-id]
+  (let [events (persisted-tick-events context tick-id)]
+  (when-let [completion (last (filter #(= :sheet/tree-tick-completed (:event/type %))
+                                      events))]
+    (let [root-status (:root-status completion)
+          usage (reduce (fn [acc event]
+                          (if (and (= :sheet/node-execution-completed (:event/type event))
+                                   (:usage event))
+                            (merge-with + acc
+                                        (select-keys (:usage event)
+                                                     [:prompt-tokens
+                                                      :completion-tokens
+                                                      :total-tokens]))
+                            acc))
+                        {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}
+                        events)
+          by-node (compute-by-node-from-tick-events
+                   (:event-store context) (:tenant-id context) tick-id)]
+      (cond-> {:status (case root-status
+                         :success :success
+                         :partial :partial
+                         :timeout :timeout
+                         :blocked :blocked
+                         :cancelled :cancelled
+                         :failure)
+               :outputs (value-log/final-values context (:tenant-id context) tick-id)
+               :sheet-id (:sheet-id completion)
+               :trace-id tick-id
+               :replayed? true}
+        (pos? (:total-tokens usage 0))
+        (assoc :usage (cond-> usage (seq by-node) (assoc :by-node by-node)))
+        (:error completion) (assoc :error (:error completion))
+        (:block-payload completion) (assoc :block-payload (:block-payload completion)))))))
+
+(defn- await-existing-tick
+  [context tick-id timeout-ms]
+  (when-let [started (first (filter #(= :sheet/tree-tick-started (:event/type %))
+                                    (persisted-tick-events context tick-id)))]
+    (or (reconstruct-completed-tick context tick-id)
+        (let [p (runtime/register-completion! tick-id)]
+          ;; Close the read/register race before waiting.
+          (or (reconstruct-completed-tick context tick-id)
+              (let [result (deref p timeout-ms ::deref-expired)]
+                (if (= ::deref-expired result)
+                  (do
+                    (runtime/deregister-completion! tick-id)
+                    {:status :timeout
+                     :error "Tree execution timed out"
+                     :sheet-id (:sheet-id started)
+                     :trace-id tick-id})
+                  (assoc result :replayed? true))))))))
 
 ;; =============================================================================
 ;; Ephemeral Function Registry
@@ -577,10 +642,14 @@
                            given key, falls back to inferring schema from
                            value type."
   [tree context {:keys [sandbox-vars blackboard blackboard-schemas timeout-ms
-                        result-grace-ms generated-tree-raw]
+                        result-grace-ms generated-tree-raw stable-tick-id]
                  :or {timeout-ms 60000
                       result-grace-ms runtime/default-result-grace-ms
                       blackboard-schemas {}}}]
+  (if-let [existing (and stable-tick-id
+                         (await-existing-tick context stable-tick-id timeout-ms))]
+    existing
+    (do
   (println "[DEBUG Tree] execute-tree starting")
   (println "[DEBUG Tree] sandbox-vars keys:" (keys sandbox-vars))
   (println "[DEBUG Tree] blackboard keys:" (keys blackboard))
@@ -671,7 +740,7 @@
 
           ;; Execute the child tick
           ;; Pass sandbox-vars as inputs - they'll be seeded into the blackboard
-          tick-id (random-uuid)
+          tick-id (or stable-tick-id (random-uuid))
           _ (println "[DEBUG Tree] Starting tick:" tick-id)
           ;; Lineage: the hosting repl-researcher's tick (enriched onto context
           ;; by execute-repl-researcher-node). Link BEFORE dispatch so stream
@@ -899,4 +968,4 @@
       (.printStackTrace e)
       {:status :failure
        :error (str "Tree execution failed: " (.getMessage e))
-       :duration-ms 0})))
+       :duration-ms 0})))))

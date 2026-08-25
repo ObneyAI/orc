@@ -1188,6 +1188,7 @@
         completed? (some #(and (= :sheet/node-execution-completed (:event/type %))
                                (= node-id (:node-id %)))
                          events-after-original)
+        cancelled? (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
         already-resumed? (some #(and (= :sheet/node-execution-started (:event/type %))
                                      (= original-start-event-id
                                         (:resumed-from-event-id %)))
@@ -1197,7 +1198,7 @@
       {::anom/category ::anom/not-found
        ::anom/message "Original node execution start not found"}
 
-      (or completed? already-resumed?)
+      (or cancelled? completed? already-resumed?)
       {:command-result/events []}
 
       :else
@@ -1209,7 +1210,117 @@
                  :tick-id tick-id
                  :node-id node-id
                  :inputs inputs
-                 :resumed-from-event-id original-start-event-id}})]})))
+                 :resumed-from-event-id original-start-event-id}})]
+       :command-result/cas
+       {:types #{:sheet/node-execution-started :sheet/node-execution-completed}
+        :tags #{[:tick tick-id] [:node node-id]}
+        :predicate-fn
+        (fn [existing]
+          (let [events (into [] existing)
+                original-index (first (keep-indexed
+                                       (fn [index event]
+                                         (when (= original-start-event-id (:event/id event))
+                                           index))
+                                       events))
+                later (if (some? original-index)
+                        (subvec events (inc original-index))
+                        [])]
+            (and (some? original-index)
+                 (not-any? #(or (and (= :sheet/node-execution-completed
+                                         (:event/type %))
+                                      (= node-id (:node-id %)))
+                                 (and (= :sheet/node-execution-started
+                                         (:event/type %))
+                                      (= original-start-event-id
+                                         (:resumed-from-event-id %))))
+                           later))))}})))
+
+(defcommand :sheet checkpoint-researcher-iteration
+  {:authorized? authenticated?}
+  "Atomically persist a completed researcher iteration and enqueue its next quantum."
+  [{{:keys [sheet-id tick-id node-id checkpoint inputs resume?]} :command :as ctx}]
+  (let [latest (some->> (into [] (es/read (:event-store ctx)
+                                          {:tenant-id (:tenant-id ctx)
+                                           :tags #{[:tick tick-id] [:node node-id]}}))
+                        (filter #(= :rlm/researcher-checkpointed (:event/type %)))
+                        last
+                        :checkpoint)
+        latest-order [(or (:revision latest) 0) (or (:next-iteration latest) -1)]
+        checkpoint-order [(or (:revision checkpoint) 0) (:next-iteration checkpoint)]
+        cancelled? (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+        already-recorded? (or cancelled?
+                              (not (neg? (compare latest-order checkpoint-order))))]
+    (cond-> {:command-result/events
+             (if already-recorded?
+               []
+               (cond->
+                [(->event
+                  {:type :rlm/researcher-checkpointed
+                   :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+                   :body {:sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :checkpoint checkpoint
+                          :yielded? (not= false resume?)
+                          :checkpointed-at (str (java.time.Instant/now))}})]
+                 (not= false resume?)
+                 (conj
+                  (->event
+                   {:type :sheet/node-execution-started
+                    :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+                    :body {:sheet-id sheet-id
+                           :tick-id tick-id
+                           :node-id node-id
+                           :inputs inputs
+                           :researcher-resume? true
+                           :checkpoint-version (:version checkpoint)
+                           :checkpoint-next-iteration (:next-iteration checkpoint)}}))))}
+      (not already-recorded?)
+      (assoc :command-result/cas
+             {:types #{:rlm/researcher-checkpointed}
+              :tags #{[:tick tick-id] [:node node-id]}
+              :predicate-fn
+              (fn [existing]
+                (not-any?
+                 #(and (= :rlm/researcher-checkpointed (:event/type %))
+                       (not (neg?
+                             (compare [(get-in % [:checkpoint :revision] 0)
+                                       (get-in % [:checkpoint :next-iteration] -1)]
+                                      checkpoint-order))))
+                 (into [] existing))) }))))
+
+(defcommand :sheet record-researcher-action
+  {:authorized? authenticated?}
+  "Durably record one logical provider/tool action result before Phase 1 continues."
+  [{{:keys [sheet-id tick-id node-id action-id action-kind iteration result completed-at]}
+    :command :as ctx}]
+  (let [action-tag-id (java.util.UUID/nameUUIDFromBytes (.getBytes action-id "UTF-8"))
+        recorded? (seq (into [] (es/read (:event-store ctx)
+                                         {:tenant-id (:tenant-id ctx)
+                                          :types #{:rlm/researcher-action-completed}
+                                          :tags #{[:researcher-action action-tag-id]}})))]
+    (cond-> {:command-result/events
+     (if recorded?
+       []
+       [(->event
+       {:type :rlm/researcher-action-completed
+        :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]
+                [:researcher-action action-tag-id]}
+        :body {:sheet-id sheet-id
+               :tick-id tick-id
+               :node-id node-id
+               :action-id action-id
+               :action-kind action-kind
+               :iteration iteration
+               :result result
+               :completed-at completed-at}})])}
+      (not recorded?)
+      (assoc :command-result/cas
+             {:types #{:rlm/researcher-action-completed}
+              :tags #{[:researcher-action action-tag-id]}
+              :predicate-fn (fn [existing]
+                              (not-any? #(= action-id (:action-id %))
+                                        (into [] existing)))}))))
 
 (defcommand :sheet complete-node-execution
   {:authorized? authenticated?}
@@ -1567,7 +1678,8 @@
   [{{:keys [trace-id sheet-id parent-trace-id correlation-id root-trace-id child-trace-ids
             version-number started-at completed-at
             duration-ms status configured-max-ticks consumed-ticks terminal-reason
-            input-snapshot output-snapshot node-traces error]} :command}]
+            input-snapshot output-snapshot node-traces researcher-iterations
+            researcher-events error]} :command}]
   {:command-result/events
    [(->event {:type :sheet/execution-traced
               :tags (cond-> #{[:sheet sheet-id] [:trace trace-id] [:tick trace-id]}
@@ -1583,6 +1695,10 @@
                              :input-snapshot input-snapshot
                              :output-snapshot output-snapshot
                              :node-traces node-traces}
+                      (seq researcher-iterations)
+                      (assoc :researcher-iterations researcher-iterations)
+                      (seq researcher-events)
+                      (assoc :researcher-events researcher-events)
                       parent-trace-id (assoc :parent-trace-id parent-trace-id)
                       correlation-id (assoc :correlation-id correlation-id)
                       version-number (assoc :version-number version-number)
