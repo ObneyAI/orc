@@ -11,6 +11,7 @@
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.metadata :as metadata]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.value-storage :as value-storage]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
@@ -684,7 +685,7 @@
   "Set configuration for a delegate node.
    Delegate nodes execute another sheet with isolated blackboard,
    mapping inputs from parent and outputs back to parent."
-  [{{:keys [sheet-id node-id target-sheet-id reads writes timeout-ms inherit-ontology?]} :command
+  [{{:keys [sheet-id node-id target-sheet-id reads writes timeout-ms max-ticks inherit-ontology?]} :command
     :as ctx}]
   (let [node (rm/get-node ctx sheet-id node-id)
         target-sheet (when target-sheet-id
@@ -714,6 +715,14 @@
       {::anom/category ::anom/incorrect
        ::anom/message (str "Unknown blackboard keys in writes: " (vec unknown-writes))}
 
+      (and (some? timeout-ms) (not (pos-int? timeout-ms)))
+      {::anom/category ::anom/incorrect
+       ::anom/message "Delegate timeout-ms must be a positive integer"}
+
+      (and (some? max-ticks) (not (pos-int? max-ticks)))
+      {::anom/category ::anom/incorrect
+       ::anom/message "Delegate max-ticks must be a positive integer"}
+
       :else
       {:command-result/events
        [(->event
@@ -726,11 +735,13 @@
                          :reads (vec reads)
                          :writes (vec writes)}
                   timeout-ms (assoc :timeout-ms timeout-ms)
+                  max-ticks (assoc :max-ticks max-ticks)
                   (some? inherit-ontology?) (assoc :inherit-ontology? inherit-ontology?)
                   (:target-sheet-id node) (assoc :previous-target-sheet-id (:target-sheet-id node))
                   (seq (:reads node)) (assoc :previous-reads (:reads node))
                   (seq (:writes node)) (assoc :previous-writes (:writes node))
                   (:delegate-timeout-ms node) (assoc :previous-timeout-ms (:delegate-timeout-ms node))
+                  (:delegate-max-ticks node) (assoc :previous-max-ticks (:delegate-max-ticks node))
                   (some? (:inherit-ontology? node)) (assoc :previous-inherit-ontology? (:inherit-ontology? node)))})]})))
 
 ;; =============================================================================
@@ -985,6 +996,11 @@
             tool-context]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))
+        already-started? (and tick-id
+                              (seq (into [] (es/read (:event-store context)
+                                                    {:tenant-id (:tenant-id context)
+                                                     :types #{:sheet/tree-tick-started}
+                                                     :tags #{[:tick tick-id]}}))))
         ;; Blackboard keys are simple keywords (see declare-key), but callers
         ;; may pass string-keyed inputs — runtime/execute documents that form,
         ;; and execute-delegate-node builds them that way. The tick-execution
@@ -999,7 +1015,9 @@
         input-sources (reduce-kv (fn [acc k source]
                                    (assoc acc (if (string? k) (keyword k) k) source))
                                  {} (or input-sources {}))]
-    (if inputs
+    (if already-started?
+      {:command-result/events []}
+      (if inputs
       ;; Snapshot-based execution: build full snapshot for isolation
       (let [instruction-overrides (:gepa/patched-instructions context)
             sheet-tenant-id (when (not= (:system-tenant-id context) (:tenant-id context))
@@ -1100,7 +1118,7 @@
                       correlation-id (assoc :correlation-id correlation-id)
                       ;; G1 (ADR 0018): opaque :tool-context also rides the
                       ;; snapshot-less UI tick path for symmetry.
-                      tool-context (assoc :tool-context tool-context))})]})))))
+                      tool-context (assoc :tool-context tool-context))})]}))))))
 (defcommand :sheet tick-node
   {:authorized? authenticated?}
   "Start a single node tick (for testing or manual execution)."
@@ -1200,11 +1218,19 @@
    atomically with the completion event to avoid race conditions.
 
    Optional :usage carries per-node token counts from LLM calls."
-  [{{:keys [sheet-id tick-id node-id status writes rejected-writes write-sources write-references? duration-ms error inputs usage model
+  [{{:keys [sheet-id tick-id node-id completion-id status writes rejected-writes write-sources write-references? duration-ms error inputs usage model
             node-type completion-kind raw-response failure-kind provider-evidence
             block-payload read-sources]} :command
     :as ctx}]
-  (if (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+  (if (or (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+          (and completion-id
+               (some #(and (= completion-id (:completion-id %))
+                           (= (value-log/exec-context inputs)
+                              (value-log/exec-context (:inputs %))))
+                     (into [] (es/read (:event-store ctx)
+                                       {:tenant-id (:tenant-id ctx)
+                                        :types #{:sheet/node-execution-completed}
+                                        :tags #{[:tick tick-id]}})))))
     {:command-result/events []}
     (let [;; Gap-7: when the dispatch site didn't explicitly set
         ;; :completion-kind but the node is a recursive repl-researcher,
@@ -1277,6 +1303,7 @@
                                            :tick-id tick-id
                                            :node-id node-id
                                            :status status}
+                                    completion-id (assoc :completion-id completion-id)
                                     ;; Shape, not values — but only when the
                                     ;; values are durable elsewhere. The write
                                     ;; events carry :node-id and :exec-context
@@ -1374,8 +1401,18 @@
                            (seq exec-context)
                            (assoc :exec-context exec-context)))}))
               rejected-writes)]
-      {:command-result/events
-       (into [] (concat bb-write-events rejected-write-events reference-events [completion-event]))})))
+      (cond-> {:command-result/events
+               (into [] (concat bb-write-events rejected-write-events reference-events [completion-event]))}
+        completion-id
+        (assoc :command-result/cas
+               {:types #{:sheet/node-execution-completed}
+                :tags #{[:tick tick-id]}
+                :predicate-fn
+                (fn [existing]
+                  (not-any? #(and (= completion-id (:completion-id %))
+                                  (= (value-log/exec-context inputs)
+                                     (value-log/exec-context (:inputs %))))
+                            (into [] existing)))})))))
 
 (defcommand :sheet record-rlm-tree-node-completion
   {:authorized? authenticated?}
@@ -1494,25 +1531,43 @@
 (defcommand :sheet emit-tick-completed
   {:authorized? authenticated?}
   "System command: record that a tree tick execution has completed."
-  [{{:keys [sheet-id tick-id correlation-id root-status]} :command
+  [{{:keys [sheet-id tick-id correlation-id root-status iteration
+            configured-max-ticks consumed-ticks terminal-reason output-keys
+            block-payload error]} :command
     :as ctx}]
-  (if (contains? #{:completed :cancelled} (:status (rm/get-tick ctx tick-id)))
-    {:command-result/events []}
-    {:command-result/events
+  {:command-result/events
      [(->event {:type :sheet/tree-tick-completed
                 :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
                         correlation-id (conj [:correlation correlation-id]))
                 :body (cond-> {:sheet-id sheet-id
                                :tick-id tick-id
                                :root-status root-status}
-                        correlation-id (assoc :correlation-id correlation-id))})]}))
+                        correlation-id (assoc :correlation-id correlation-id)
+                        iteration (assoc :iteration iteration)
+                        configured-max-ticks (assoc :configured-max-ticks configured-max-ticks)
+                        consumed-ticks (assoc :consumed-ticks consumed-ticks)
+                        terminal-reason (assoc :terminal-reason terminal-reason)
+                        output-keys (assoc :output-keys output-keys)
+                        block-payload (assoc :block-payload block-payload)
+                        error (assoc :error error))})]
+     :command-result/cas
+     {:types #{:sheet/tree-tick-completed :sheet/tick-cancelled}
+      :tags #{[:tick tick-id]}
+      :predicate-fn
+      (fn [existing]
+        (not-any? #(or (and (= :sheet/tick-cancelled (:event/type %))
+                            (not= :timeout root-status))
+                       (and (= :sheet/tree-tick-completed (:event/type %))
+                            (not= :running (:root-status %))))
+                  (into [] existing)))}})
 
 (defcommand :sheet store-execution-trace
   {:authorized? authenticated?}
   "System command: store a full execution trace for analytics and debugging."
   [{{:keys [trace-id sheet-id parent-trace-id correlation-id root-trace-id child-trace-ids
             version-number started-at completed-at
-            duration-ms status input-snapshot output-snapshot node-traces error]} :command}]
+            duration-ms status configured-max-ticks consumed-ticks terminal-reason
+            input-snapshot output-snapshot node-traces error]} :command}]
   {:command-result/events
    [(->event {:type :sheet/execution-traced
               :tags (cond-> #{[:sheet sheet-id] [:trace trace-id] [:tick trace-id]}
@@ -1531,6 +1586,9 @@
                       parent-trace-id (assoc :parent-trace-id parent-trace-id)
                       correlation-id (assoc :correlation-id correlation-id)
                       version-number (assoc :version-number version-number)
+                      configured-max-ticks (assoc :configured-max-ticks configured-max-ticks)
+                      consumed-ticks (assoc :consumed-ticks consumed-ticks)
+                      terminal-reason (assoc :terminal-reason terminal-reason)
                       error (assoc :error error))})]})
 
 ;; =============================================================================
@@ -1580,6 +1638,13 @@
                    (:output-key node) (assoc :output-key (:output-key node))
                    (:max-concurrency node) (assoc :max-concurrency (:max-concurrency node))
                    (some? (:preserve-failures? node)) (assoc :preserve-failures? (:preserve-failures? node))))
+          (= :delegate (:type node))
+          (merge (cond-> {:target-sheet-id (:target-sheet-id node)
+                          :reads (vec (or (:reads node) []))
+                          :writes (vec (or (:writes node) []))}
+                   (:delegate-timeout-ms node) (assoc :delegate-timeout-ms (:delegate-timeout-ms node))
+                   (:delegate-max-ticks node) (assoc :delegate-max-ticks (:delegate-max-ticks node))
+                   (some? (:inherit-ontology? node)) (assoc :inherit-ontology? (:inherit-ontology? node))))
           ;; Children for composite nodes
           (seq (:children-ids node))
           (assoc :children

@@ -263,6 +263,28 @@
 ;; Async Test Context (with PubSub + Todo Processors)
 ;; =============================================================================
 
+(defn start-test-processors
+  "Start every registered todo processor against an existing async context.
+   Kept separate so recovery tests can tear down and rebuild processors while
+   retaining the same strongly consistent event store, cache, and pubsub."
+  [base-ctx]
+  (reduce-kv
+   (fn [acc proc-name {:keys [handler-fn topics]}]
+     (assoc acc proc-name
+            (tp/start
+             (cond-> {:event-pubsub (:event-pubsub base-ctx)
+                      :topics topics
+                      :handler-fn handler-fn
+                      :context base-ctx}
+               (= "evaluation" (namespace proc-name))
+               (assoc :processor-name proc-name)))))
+   {}
+   @tp/processor-registry*))
+
+(defn stop-test-processors! [ctx]
+  (doseq [[_ processor] (:processors ctx)]
+    (tp/stop processor)))
+
 (defn create-async-test-context
   "Create a test context with real pubsub and todo processors.
    Events are published and trigger todo processor handlers asynchronously.
@@ -297,26 +319,7 @@
                          ::cache-dir dir}
                         context)
         ;; Start a todo processor for each registered processor
-        processors (reduce-kv
-                    (fn [acc proc-name {:keys [handler-fn topics]}]
-                      (assoc acc proc-name
-                             ;; Evaluation processors return :result/effect and
-                             ;; therefore require a stable processor identity
-                             ;; for Grain's checkpointed effect path. This
-                             ;; mirrors production and the evaluation
-                             ;; component's own integration harness. Pure
-                             ;; processors remain unnamed because naming them
-                             ;; would opt them into checkpoint semantics they
-                             ;; do not use.
-                             (tp/start
-                              (cond-> {:event-pubsub ps
-                                       :topics topics
-                                       :handler-fn handler-fn
-                                       :context base-ctx}
-                                (= "evaluation" (namespace proc-name))
-                                (assoc :processor-name proc-name)))))
-                    {}
-                    @tp/processor-registry*)]
+        processors (start-test-processors base-ctx)]
     (assoc base-ctx
            :event-pubsub ps
            :processors processors))))
@@ -325,8 +328,7 @@
   "Stop and clean up async test context."
   [ctx]
   ;; Stop processors first, then pubsub, then event store, then cache
-  (doseq [[_ processor] (:processors ctx)]
-    (tp/stop processor))
+  (stop-test-processors! ctx)
   (when-let [ps (:event-pubsub ctx)]
     (pubsub/stop ps))
   ;; Clear L1 cache after processors stopped to prevent stale writes
@@ -786,7 +788,7 @@
 (defn make-set-delegate-config-command
   "Create a set-delegate-config command.
    Delegate nodes execute another sheet with isolated blackboard."
-  [sheet-id node-id target-sheet-id & {:keys [reads writes timeout-ms inherit-ontology?]}]
+  [sheet-id node-id target-sheet-id & {:keys [reads writes timeout-ms max-ticks inherit-ontology?]}]
   (cond-> {:command/name :sheet/set-delegate-config
            :command/id (random-uuid)
            :command/timestamp (time/now)
@@ -796,6 +798,7 @@
            :reads (vec (or reads []))
            :writes (vec (or writes []))}
     timeout-ms (assoc :timeout-ms timeout-ms)
+    max-ticks (assoc :max-ticks max-ticks)
     (some? inherit-ontology?) (assoc :inherit-ontology? inherit-ontology?)))
 
 ;; =============================================================================

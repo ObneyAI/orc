@@ -46,6 +46,12 @@
 (defn copy-input [{:keys [inputs]}]
   {:output (:input inputs)})
 
+(defn echo-delegate-contract [{:keys [inputs]}]
+  {:out-vector (:in-vector inputs)
+   :out-nested (:in-nested inputs)
+   :out-map-of (:in-map-of inputs)
+   :out-large (:in-large inputs)})
+
 (defn- fq [function-name]
   (str "ai.obney.orc.orc-service.deterministic-value-storage-e2e-test/"
        function-name))
@@ -491,6 +497,88 @@
           (is (>= (count refs) 2))
           (is (every? #(not (contains? % :value)) refs))
           (is (every? map? (map :source refs))))))))
+
+(deftest det-e2e-180-structured-optional-nil-and-externalized-delegate-values
+  (testing "the full structured value matrix crosses a delegate through canonical references"
+    (let [objects (atom {}) store (->MemoryFileStore objects)
+          vector-value [{:id 1 :tags ["one"]} {:id 2 :tags []}]
+          nested-value {:rows vector-value :meta {:owner "deterministic"}}
+          map-of-value {:alpha "a" :beta "b"}]
+      (h/with-async-test-context
+        [ctx {:context {:orc/value-storage {:type :file-store :prefix "det-e2e-180"}
+                        :orc/file-store store}}]
+        (let [schema {:in-vector [:vector [:map [:id :int] [:tags [:vector :string]]]]
+                      :in-nested [:map [:rows [:vector [:map [:id :int]
+                                                           [:tags [:vector :string]]]]]
+                                  [:meta [:map-of :keyword :string]]]
+                      :in-map-of [:map-of :keyword :string]
+                      :in-optional [:maybe :string]
+                      :in-nullable [:maybe :string]
+                      :in-large [:map
+                                 [:rows [:vector [:map [:id :int]
+                                                        [:tags [:vector :string]]]]]
+                                 [:attributes [:map-of :keyword :string]]
+                                 [:note {:optional true} :string]]
+                      :out-vector [:vector [:map [:id :int] [:tags [:vector :string]]]]
+                      :out-nested [:map [:rows [:vector [:map [:id :int]
+                                                            [:tags [:vector :string]]]]]
+                                   [:meta [:map-of :keyword :string]]]
+                      :out-map-of [:map-of :keyword :string]
+                      :out-optional [:maybe :string]
+                      :out-nullable [:maybe :string]
+                      :out-large [:map
+                                  [:rows [:vector [:map [:id :int]
+                                                         [:tags [:vector :string]]]]]
+                                  [:attributes [:map-of :keyword :string]]
+                                  [:note {:optional true} :string]]}
+              child-id (sheet/build-workflow!
+                        ctx
+                        (sheet/workflow "det-e2e-180-child"
+                          (sheet/blackboard schema)
+                          (sheet/code "echo" :fn (fq "echo-delegate-contract")
+                            :reads [:in-vector :in-nested :in-map-of :in-optional
+                                    :in-nullable :in-large]
+                            :writes [:out-vector :out-nested :out-map-of :out-large])))
+              parent-id (sheet/build-workflow!
+                         ctx
+                         (sheet/workflow "det-e2e-180-parent"
+                           (sheet/blackboard schema)
+                           (sheet/delegate "child" :target-sheet-id child-id
+                             :reads [:in-vector :in-nested :in-map-of :in-optional
+                                     :in-nullable :in-large]
+                             :writes [:out-vector :out-nested :out-map-of :out-large])))
+              result (sheet/execute ctx parent-id
+                                    {:in-vector vector-value
+                                     :in-nested nested-value
+                                     :in-map-of map-of-value
+                                     ;; Deliberately omit :in-optional.
+                                     :in-nullable nil
+                                     :in-large large-value})
+              family (get-in (h/run-query ctx {:query/name :sheet/get-trace-family
+                                                :trace-id (:trace-id result)})
+                             [:query/result])
+              family-ticks (set (map :trace-id (:traces family)))
+              value-events (filter #(and (family-ticks (:tick-id %))
+                                         (#{:sheet/execution-value-written
+                                            :sheet/execution-value-referenced}
+                                          (:event/type %)))
+                                   (h/read-all-events ctx))]
+          (is (= :success (:status result)))
+          (is (= vector-value (get-in result [:outputs :out-vector])))
+          (is (= nested-value (get-in result [:outputs :out-nested])))
+          (is (= map-of-value (get-in result [:outputs :out-map-of])))
+          (is (nil? (get-in result [:outputs :out-optional])))
+          (is (nil? (get-in result [:outputs :out-nullable])))
+          (is (= large-value (get-in result [:outputs :out-large])))
+          (is (seq @objects))
+          (is (every? #(and (not (contains? % :value))
+                            (case (:event/type %)
+                              :sheet/execution-value-written
+                              (map? (:value-reference %))
+
+                              :sheet/execution-value-referenced
+                              (map? (:source %))))
+                      value-events)))))))
 
 (deftest det-e2e-057-concurrent-value-isolation
   (testing "concurrent externalized executions never cross values or references"

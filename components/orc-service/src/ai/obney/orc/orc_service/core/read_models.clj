@@ -409,6 +409,7 @@
       (assoc-in [(:node-id event) :reads] (:reads event))
       (assoc-in [(:node-id event) :writes] (:writes event))
       (assoc-in [(:node-id event) :delegate-timeout-ms] (:timeout-ms event))
+      (assoc-in [(:node-id event) :delegate-max-ticks] (:max-ticks event))
       (assoc-in [(:node-id event) :inherit-ontology?] (:inherit-ontology? event))))
 
 (defmethod nodes* :sheet/node-judges-set
@@ -874,6 +875,9 @@
                     :completed-at (trace-time/canonical-string (:completed-at event))
                     :duration-ms (:duration-ms event)
                     :status (:status event)
+                    :configured-max-ticks (:configured-max-ticks event)
+                    :consumed-ticks (:consumed-ticks event)
+                    :terminal-reason (:terminal-reason event)
                     :input-snapshot (:input-snapshot event)
                     :output-snapshot (:output-snapshot event)
                     :node-traces (mapv (fn [node-trace]

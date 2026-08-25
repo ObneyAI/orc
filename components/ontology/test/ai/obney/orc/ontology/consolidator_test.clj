@@ -74,6 +74,17 @@
   `(let [~sym (create-context)]
      (try ~@body (finally (stop-context ~sym)))))
 
+(defn- settle-until!
+  "Wait for an asynchronous durable condition without assuming processor
+   scheduling latency. Returns the predicate's truthy value or nil on timeout."
+  [pred]
+  (let [deadline (+ (System/currentTimeMillis) 15000)]
+    (loop []
+      (or (pred)
+          (when (< (System/currentTimeMillis) deadline)
+            (Thread/sleep 25)
+            (recur))))))
+
 ;; =============================================================================
 ;; Fake LLM response — well-formed description-body
 ;; =============================================================================
@@ -653,7 +664,6 @@
         (fn []
           (let [tree-class-id (random-uuid)]
             (grounded-task-class-evidence! ctx tree-class-id)
-            (Thread/sleep 100)
             (cp/process-command
               (assoc ctx :command
                      {:command/name :ontology/request-consolidation
@@ -662,7 +672,12 @@
                       :target-type :tree-class
                       :target-id tree-class-id
                       :on-demand? true}))
-            (Thread/sleep 600)
+            (is (settle-until!
+                 #(let [claims (ontology/get-claims ctx :tree-class tree-class-id)
+                        description (ontology/get-description
+                                     ctx :tree-class tree-class-id)]
+                    (and (= 1 (count claims)) description)))
+                "the asynchronous consolidation reached its durable claim and assembled body")
             (let [cs (ontology/get-claims ctx :tree-class tree-class-id)
                   body (ontology/get-description ctx :tree-class tree-class-id)]
               (is (= 1 (count cs))

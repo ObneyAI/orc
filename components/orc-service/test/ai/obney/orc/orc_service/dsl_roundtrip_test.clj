@@ -33,6 +33,9 @@
   [:model :instruction :reads :writes :mcp-tools :tool-contracts
    :tool-caller-fn :browser-tools :max-iterations :rlm :context :options])
 
+(def ^:private delegate-roundtrip-fields
+  [:target-sheet-id :reads :writes :timeout-ms :max-ticks :inherit-ontology?])
+
 ;; =============================================================================
 ;; Simple Round-Trip Tests
 ;; =============================================================================
@@ -109,6 +112,50 @@
         (is (= expected
                (select-keys (:nodes (dsl/export-sheet ctx imported-id)) [:rlm :context]))
             "EDN import persists explicit empty researcher choices")))))
+
+(deftest det-e2e-171-delegate-configuration-survives-public-roundtrips
+  (testing "delegate target, mappings, budgets, and ontology choice survive every public transport"
+    (h/with-test-context [ctx]
+      (let [target-id (dsl/build-workflow!
+                       ctx
+                       (dsl/workflow "det-e2e-171-target"
+                         (dsl/blackboard {:input :string :output :string})
+                         (dsl/code "copy" :fn "consumer.delegate/copy"
+                           :reads [:input] :writes [:output])))
+            expected {:target-sheet-id target-id
+                      :reads [:input]
+                      :writes [:output]
+                      :timeout-ms 4321
+                      :max-ticks 17
+                      :inherit-ontology? false}
+            definition (dsl/workflow "det-e2e-171-delegate-roundtrip"
+                         (dsl/blackboard {:input :string :output :string})
+                         (apply dsl/delegate "child" (mapcat identity expected)))
+            source-id (dsl/build-workflow! ctx definition)
+            exported (dsl/export-sheet ctx source-id)
+            dsl-code (dsl/export-to-dsl exported)
+            regenerated (binding [*ns* (find-ns 'ai.obney.orc.orc-service.core.dsl)]
+                          (eval (read-string dsl-code)))
+            imported-id (dsl/import-sheet
+                         ctx
+                         (assoc-in exported [:sheet :name]
+                                   "det-e2e-171-delegate-imported"))
+            imported-node (:nodes (dsl/export-sheet ctx imported-id))]
+        (is (= expected (select-keys (:nodes exported) delegate-roundtrip-fields)))
+        (is (= expected (select-keys (:root-node regenerated) delegate-roundtrip-fields)))
+        (is (= expected (select-keys imported-node delegate-roundtrip-fields)))
+        (is (= expected
+               (select-keys (:root-node definition) delegate-roundtrip-fields))))))
+  (testing "omitted limits and empty mappings remain omitted and empty"
+    (let [target-id (random-uuid)
+          node (dsl/delegate "empty" :target-sheet-id target-id)]
+      (is (= {:target-sheet-id target-id
+              :reads []
+              :writes []
+              :inherit-ontology? true}
+             (select-keys node delegate-roundtrip-fields)))
+      (is (not (contains? node :timeout-ms)))
+      (is (not (contains? node :max-ticks))))))
 
 (deftest simple-llm-workflow-roundtrip-test
   (testing "simple LLM workflow survives round-trip"

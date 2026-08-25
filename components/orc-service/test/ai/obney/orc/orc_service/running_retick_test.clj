@@ -5,6 +5,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.todo-processors :as tp]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -15,6 +16,8 @@
 ;; =============================================================================
 
 (def tick-counter (atom 0))
+(def downstream-counter (atom 0))
+(def delegated-inputs (atom []))
 
 (defn increment-counter
   "Code executor that increments a counter each time it's called."
@@ -22,9 +25,124 @@
   (let [n (swap! tick-counter inc)]
     {:counter (str n)}))
 
+(defn prepare-delegated-work [_]
+  (let [n (swap! tick-counter inc)]
+    {:counter (str n)
+     :delegate-input ({1 "A" 2 "B" 3 "C"} n)}))
+
+(defn complete-delegated-work [{:keys [inputs]}]
+  (let [delegate-input (:delegate-input inputs)]
+    (swap! delegated-inputs conj delegate-input)
+    {:delegated-result delegate-input}))
+
+(defn complete-downstream-work [_]
+  (swap! downstream-counter inc)
+  {:final-result "advanced"})
+
+(defn- node-detail [ctx trace-id trace-instance-id]
+  (:query/result
+   (h/run-query ctx {:query/name :sheet/node-trace-detail
+                     :trace-id trace-id
+                     :trace-instance-id trace-instance-id})))
+
 ;; =============================================================================
 ;; Tests
 ;; =============================================================================
+
+(deftest later-parent-iterations-start-distinct-durable-delegate-invocations
+  (testing "three visits deliver current inputs and resume only their matching parent invocation"
+    (h/with-async-test-context [ctx]
+      (reset! tick-counter 0)
+      (reset! downstream-counter 0)
+      (reset! delegated-inputs [])
+      (let [child (sheet/workflow "retick-after-delegate-child"
+                    (sheet/blackboard {:delegate-input :string
+                                       :delegated-result :string})
+                    (sheet/code "delegated-work"
+                      :fn "ai.obney.orc.orc-service.running-retick-test/complete-delegated-work"
+                      :reads [:delegate-input]
+                      :writes [:delegated-result]))
+            child-id (sheet/build-workflow! ctx child)
+            parent (sheet/workflow "retick-after-delegate-parent"
+                     (sheet/blackboard {:counter :string
+                                        :delegate-input :string
+                                        :delegated-result :string
+                                        :final-result :string})
+                     (sheet/sequence "root"
+                       (sheet/code "prepare-delegate-input"
+                         :fn "ai.obney.orc.orc-service.running-retick-test/prepare-delegated-work"
+                         :writes [:counter :delegate-input])
+                       (sheet/delegate "successful-delegate"
+                         :target-sheet-id child-id
+                         :reads [:delegate-input]
+                         :writes [:delegated-result])
+                       (sheet/condition "continue-after-delegate"
+                         :check {:key :counter :op :equals :value "3"
+                                 :on-fail :running})
+                       (sheet/code "next-tick-work"
+                         :fn "ai.obney.orc.orc-service.running-retick-test/complete-downstream-work"
+                         :writes [:final-result])))
+            parent-id (sheet/build-workflow! ctx parent)
+            result (sheet/execute ctx parent-id {} :timeout-ms 5000 :max-ticks 4)
+            trace (loop [attempt 0]
+                    (or (rm/get-trace ctx (:trace-id result))
+                        (when (< attempt 200)
+                          (Thread/sleep 10)
+                          (recur (inc attempt)))))
+            events (h/read-tick-events ctx (:trace-id result))
+            child-starts (filter #(and (= :sheet/tree-tick-started (:event/type %))
+                                       (= (:trace-id result) (:parent-tick-id %)))
+                                 (h/read-all-events ctx))
+            delegate-traces (filter #(= "successful-delegate" (:node-name %))
+                                    (:node-traces trace))
+            condition-traces (filter #(= "continue-after-delegate" (:node-name %))
+                                     (:node-traces trace))
+            child-ids (mapv :tick-id child-starts)]
+        (is (= :success (:status result)))
+        (is (= 3 @tick-counter))
+        (is (= ["A" "B" "C"] @delegated-inputs))
+        (is (= 1 @downstream-counter))
+        (is (= "C" (get-in result [:outputs :delegated-result])))
+        (is (= "advanced" (get-in result [:outputs :final-result])))
+        (is (= 3 (count (filter #(= :sheet/tree-tick-started (:event/type %)) events))))
+        (is (= 3 (count child-starts)))
+        (is (= 3 (count (set child-ids))))
+        (is (= :success (:status trace)))
+        (is (= 3 (count delegate-traces)))
+        (is (= #{1 2 3}
+               (set (map #(or (get (:exec-context %) ::tp/tick-iteration)
+                              1)
+                         delegate-traces))))
+        (is (= #{{:delegate-input "A"}
+                 {:delegate-input "B"}
+                 {:delegate-input "C"}}
+               (set (map #(-> (node-detail ctx (:trace-id result)
+                                           (:trace-instance-id %))
+                              :inputs)
+                         delegate-traces))))
+        (is (= #{{:delegated-result "A"}
+                 {:delegated-result "B"}
+                 {:delegated-result "C"}}
+               (set (map #(-> (node-detail ctx (:trace-id result)
+                                           (:trace-instance-id %))
+                              :outputs)
+                         delegate-traces))))
+        (doseq [child-id child-ids]
+          (let [child-result (runtime/durable-terminal-result ctx child-id)]
+            (tp/complete-delegate-parent! ctx child-id child-result)
+            (tp/complete-delegate-parent! ctx child-id child-result)))
+        (let [deliveries (filter #(and (= :sheet/node-execution-completed
+                                          (:event/type %))
+                                       (contains? (set child-ids) (:completion-id %)))
+                                 (h/read-all-events ctx))]
+          (is (= 3 (count deliveries))
+              "duplicate delivery retains exactly one parent completion per invocation"))
+        (is (= 3 (count condition-traces))
+            "the sibling after the delegate executes once per invocation")
+        (is (= #{:running :success} (set (map :status condition-traces))))
+        (is (some #(and (= "next-tick-work" (:node-name %))
+                        (= :success (:status %)))
+                  (:node-traces trace)))))))
 
 (deftest running-condition-causes-retick
   (testing "a condition with :on-fail :running causes the tree to re-tick multiple times"

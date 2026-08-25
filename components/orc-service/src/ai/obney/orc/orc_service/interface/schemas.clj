@@ -195,7 +195,8 @@
     [:timeout-ms {:optional true} :int]
     ;; Delegate-only fields
     [:target-sheet-id {:optional true} :uuid]       ;; Sheet to delegate execution to
-    [:delegate-timeout-ms {:optional true} :int]    ;; Timeout for delegated execution
+    [:delegate-timeout-ms {:optional true} [:and :int [:> 0]]] ;; Timeout for delegated execution
+    [:delegate-max-ticks {:optional true} [:and :int [:> 0]]]
     [:inherit-ontology? {:optional true} :boolean]  ;; Share ontology context with target
     ;; Execution tracking
     [:last-error {:optional true} :string]]
@@ -209,7 +210,7 @@
 
    ::node-layout
    [:map
-    [:node-id :uuid]
+   [:node-id :uuid]
     [:row :int]
     [:start-col :double]
     [:end-col :double]]
@@ -250,6 +251,9 @@
    ::node-trace
    [:map
     [:node-id :uuid]
+    [:delegate-child-tick-id {:optional true} :uuid]
+    [:delegate-child-status {:optional true} :keyword]
+    [:completion-delivered? {:optional true} :boolean]
     [:trace-instance-id :uuid]                    ;; Unique ID for this execution instance
     [:parent-trace-instance-id {:optional true} :uuid]  ;; Links to parent's trace-instance-id
     [:node-name :string]
@@ -302,7 +306,10 @@
     [:started-at :any]
     [:completed-at :any]
     [:duration-ms :int]
-    [:status [:enum :success :failure :timeout :partial]]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
     ;; key -> size-profile, not key -> value. :input-snapshot profiles the
     ;; keys the tick was given and did not write; :output-snapshot profiles
     ;; the keys it wrote.
@@ -497,7 +504,8 @@
     [:target-sheet-id :uuid]                            ;; Sheet to delegate to
     [:reads [:vector :keyword]]                         ;; Blackboard keys to pass as inputs
     [:writes [:vector :keyword]]                        ;; Output keys to receive from target
-    [:timeout-ms {:optional true} :int]                 ;; Timeout for delegated execution
+    [:timeout-ms {:optional true} [:and :int [:> 0]]]   ;; Timeout for delegated execution
+    [:max-ticks {:optional true} [:and :int [:> 0]]]
     [:inherit-ontology? {:optional true} :boolean]]     ;; Share ontology context (default true)
 
    ;; -------------------------------------------------------------------------
@@ -610,6 +618,7 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
+    [:completion-id {:optional true} :uuid]
     ;; WS-2a: :blocked — a leaf raised the orc block signal (a gated tool call
     ;; needs permission). The node completes (so the tick completes and the
     ;; parent deref returns immediately) instead of the throwable escaping the
@@ -803,6 +812,9 @@
     [:completed-at :any]
     [:duration-ms :int]
     [:status :keyword]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
     ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
@@ -1050,11 +1062,13 @@
     [:reads [:vector :keyword]]
     [:writes [:vector :keyword]]
     [:timeout-ms {:optional true} :int]
+    [:max-ticks {:optional true} [:and :int [:> 0]]]
     [:inherit-ontology? {:optional true} :boolean]
     [:previous-target-sheet-id {:optional true} :uuid]
     [:previous-reads {:optional true} [:vector :keyword]]
     [:previous-writes {:optional true} [:vector :keyword]]
     [:previous-timeout-ms {:optional true} :int]
+    [:previous-max-ticks {:optional true} [:and :int [:> 0]]]
     [:previous-inherit-ontology? {:optional true} :boolean]]
 
    ;; -------------------------------------------------------------------------
@@ -1163,6 +1177,7 @@
     [:sheet-id :uuid]
     [:tick-id :uuid]
     [:node-id :uuid]
+    [:completion-id {:optional true} :uuid]
     ;; WS-2a: :blocked — see :sheet/complete-node-execution.
     [:status [:enum :success :failure :running :tree-generated :partial :timeout :blocked]]
     ;; Shape, not values — the values are durable in this node's
@@ -1285,9 +1300,12 @@
    :sheet/tree-tick-completed
    [:map
     [:sheet-id :uuid]
-    [:tick-id :uuid]
+   [:tick-id :uuid]
     [:correlation-id {:optional true} :uuid]
     [:iteration {:optional true} :int]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
     ;; D-008: :partial added so map-each can surface partial outcomes.
     ;; D-003: :timeout added so RLM repl-researcher can surface Phase 2
     ;; budget cancellation as a tree-level signal.
@@ -1383,7 +1401,8 @@
     [:tick-id :uuid]
     [:node-id :uuid]
     [:child-index :int]
-    [:total-children :int]]
+    [:total-children :int]
+    [:exec-context {:optional true} :map]]
 
    :sheet/map-each-progress-updated
    [:map
@@ -1446,7 +1465,10 @@
     [:started-at :any]
     [:completed-at :any]
     [:duration-ms :int]
-    [:status [:enum :success :failure :timeout :partial]]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
     ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
@@ -1744,7 +1766,7 @@
     [:parent-trace-id {:optional true} :uuid]
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
-    [:status [:enum :success :failure :timeout :partial]]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
     [:started-at :any]
     [:duration-ms :int]
     [:node-count :int]]
@@ -1773,7 +1795,7 @@
    [:map
     [:sheet-id :uuid]
     [:version-number {:optional true} :int]       ;; Filter by version
-    [:status {:optional true} [:enum :success :failure :timeout :partial]]
+    [:status {:optional true} [:enum :success :failure :timeout :partial :blocked]]
     [:node-id {:optional true} :uuid]             ;; Filter by node involvement
     [:since {:optional true} :any]                ;; Filter by time
     [:limit {:optional true} :int]]
@@ -1790,7 +1812,7 @@
    :sheet/runs-screen
    [:map
     [:trace-id {:optional true} :uuid]
-    [:status {:optional true} [:enum :success :failure :timeout :partial]]
+    [:status {:optional true} [:enum :success :failure :timeout :partial :blocked]]
     [:limit {:optional true} :int]]
 
    :sheet/runs-screen-result
@@ -1808,7 +1830,7 @@
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
     [:sheet-name :string]
-    [:status [:enum :success :failure :timeout :partial]]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
     [:started-at :any]
     [:duration-ms :int]
     [:node-count :int]

@@ -55,6 +55,23 @@
       (is (contains? result :error))
       (is (re-find #"Function not found" (:error result))))))
 
+(deftest late-loaded-consumer-function-runs-in-background
+  (testing "a workflow registered after processors start resolves its application function"
+    (h/with-async-test-context [ctx]
+      (let [ns-sym (symbol (str "late.loaded.consumer-" (random-uuid)))
+            fn-name 'initialize-campaign
+            _ (intern (create-ns ns-sym) fn-name (fn [_] {:result "started"}))
+            fn-ref (str ns-sym "/" fn-name)
+            workflow (sheet/workflow (str "late-loaded-" (random-uuid))
+                       (sheet/blackboard {:result :string})
+                       (sheet/code "initialize"
+                         :fn fn-ref
+                         :writes [:result]))
+            sheet-id (sheet/build-workflow! ctx workflow)
+            result (sheet/execute ctx sheet-id {} :timeout-ms 5000)]
+        (is (= :success (:status result)))
+        (is (= "started" (get-in result [:outputs :result])))))))
+
 ;; =============================================================================
 ;; execute-code Tests
 ;; =============================================================================

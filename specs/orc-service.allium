@@ -45,6 +45,7 @@ value RetryPolicy {
 
 value ExecutionOptions {
     timeout: Duration?
+    maximum_ticks: Integer?
     llm_call_budget: Integer?
     version_number: Integer?
     force_draft: Boolean
@@ -305,6 +306,112 @@ contract ExecutionRecovery {
         -- duplicate resumptions, completions, or externally visible effects.
 }
 
+contract CheckpointedResearcherExecution {
+    execute_quantum: (execution: WorkflowExecution, node: WorkflowNode) -> Any
+    resume_campaign: (execution: WorkflowExecution, node: WorkflowNode) -> Any
+    inspect_iterations: (execution: WorkflowExecution, node: WorkflowNode) -> Any
+
+    @invariant ExplicitOptInPreservesCompatibility
+        -- Checkpointed execution applies only when the researcher explicitly
+        -- enables it. Researchers without that option retain their existing
+        -- single-invocation behavior, configuration meaning and result shape.
+
+    @invariant BoundedQuantumYieldsDurably
+        -- A work quantum completes at most its configured number of Phase-1
+        -- iterations, one by default. Every completed iteration is checkpointed
+        -- before a non-terminal campaign yields running. A larger quantum may
+        -- reduce yields but never reduces checkpoint frequency.
+
+    @invariant ResearcherResumesInPlace
+        -- A yielded researcher resumes at its durable node frontier within the
+        -- same workflow execution. Completed ancestors and siblings are not
+        -- re-executed merely because the researcher requires another quantum.
+
+    @invariant ExternalBoundariesAdvanceTheFrontier
+        -- Provider responses, inline tool outcomes and generated child-tree
+        -- outcomes each become durable before execution advances beyond that
+        -- external boundary. The iteration checkpoint additionally captures
+        -- ordered history, reasoning, sandbox state and metadata, accumulated
+        -- usage and timing, child lineage, and remaining budgets.
+
+    @invariant StableLogicalActionsPreventDuplicateWork
+        -- Every provider call, inline tool call and generated child tree has a
+        -- stable logical action identity established before dispatch. Duplicate
+        -- delivery, retick and recovery observe a completed action rather than
+        -- dispatching it again.
+
+    @invariant CheckpointSafeToolsShareIdempotencyKeys
+        -- A checkpointed researcher may invoke an effectful inline tool only
+        -- when its bound contract explicitly declares checkpoint safety. ORC
+        -- supplies that logical action's stable idempotency key through the tool
+        -- execution context on every attempt; the tool is responsible for
+        -- deduplicating the external effect. A tool that does not declare this
+        -- capability is rejected before its effect begins.
+
+    @invariant CompletedChildrenAreIncorporatedOnce
+        -- A generated child receives stable logical action and child execution
+        -- identities before dispatch. A durable success, partial or failure
+        -- outcome is incorporated into the parent researcher exactly once,
+        -- including when the process stops after child completion but before
+        -- parent incorporation. Such a child is never replaced or rerun.
+
+    @invariant IncompleteChildrenRetainLogicalIdentity
+        -- A timed-out or cancelled generated child may receive another attempt
+        -- only under the same logical action identity and within the iteration's
+        -- retry allowance. Each attempt remains separately traceable.
+
+    @invariant DurableSandboxValuesPreserveMeaning
+        -- Checkpointed sandbox variables use the canonical durable value policy
+        -- or an explicitly registered codec and retain creation and update
+        -- metadata. Unsupported runtime values fail the iteration checkpoint
+        -- explicitly; they are never silently dropped or stringified.
+
+    @invariant TimeoutScopesRemainIndependent
+        -- Provider-call, iteration, generated-child, researcher-campaign and
+        -- enclosing-workflow deadlines are independently configured and
+        -- evidenced. Each operation is bounded by the shortest applicable
+        -- remaining deadline.
+
+    @invariant CampaignDeadlineSurvivesRecovery
+        -- A checkpointed campaign records one absolute campaign deadline when
+        -- it starts. Yield, retick, blocking and process restart do not reset the
+        -- deadline or any accumulated usage and timing budget.
+
+    @invariant TimedOutIterationRetriesFromCheckpoint
+        -- An iteration timeout preserves every preceding completed iteration
+        -- and yields a retry of the same iteration from the last checkpoint,
+        -- retaining its stable logical action identities. Exhausting the
+        -- configured iteration-attempt limit terminates the campaign as timeout.
+
+    @invariant BlockedChildPausesTheCampaign
+        -- A blocked generated child checkpoints the waiting frontier and blocks
+        -- the parent researcher. Approval resumes that same child and logical
+        -- action rather than creating a new child or research iteration.
+
+    @invariant CancellationIsTerminalForRecovery
+        -- Cancelling the parent workflow cancels the campaign and its active
+        -- child. Existing checkpoints remain inspectable, but neither automatic
+        -- nor explicit recovery resumes a cancelled campaign.
+
+    @invariant ResumeOwnershipIsFenced
+        -- At most one worker owns a researcher frontier attempt at a time.
+        -- Concurrent reticks, duplicate resume requests and automatic recovery
+        -- converge without duplicating provider, tool or child work.
+
+    @invariant ActiveCampaignsRecoverAutomatically
+        -- After process restart, every checkpointed campaign whose parent
+        -- execution remains active is rediscovered and resumed without caller
+        -- resubmission. Explicit resume remains safe and idempotent.
+
+    @invariant IterationTraceIsDurableAndOrdered
+        -- Trace inspection exposes every completed researcher iteration even
+        -- when a later iteration fails or times out. Each ordered iteration
+        -- includes generated reasoning and code, provider latency and usage,
+        -- sandbox result or error, variable changes, checkpoint/yield/resume
+        -- evidence, and links to generated child traces and outcomes without
+        -- duplicating the child trace itself.
+}
+
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
@@ -323,6 +430,8 @@ enum ExecutionStatus {
 enum NodeExecutionStatus {
     running | success | failure | partial | timeout | blocked | skipped
 }
+
+enum DelegateInvocationStatus { running | success | failure | timeout | cancelled }
 
 enum StructuredFailureKind {
     transport_failure | missing_forced_tool_call | tool_call_parsing_failed |
@@ -435,6 +544,26 @@ entity NodeExecution {
     }
 
     writes: ExecutionValue with node_execution = this
+    delegate_invocation: DelegateInvocation with node_execution = this
+}
+
+entity DelegateInvocation {
+    node_execution: NodeExecution
+    child_execution: WorkflowExecution
+    invocation_ordinal: Integer
+    status: DelegateInvocationStatus
+    configured_timeout: Duration?
+    configured_maximum_ticks: Integer?
+    consumed_ticks: Integer
+    terminal_reason: String?
+
+    transitions status {
+        running -> success
+        running -> failure
+        running -> timeout
+        running -> cancelled
+        terminal: success, failure, timeout, cancelled
+    }
 }
 
 entity ExecutionValue {
@@ -753,23 +882,61 @@ rule ResumeWorkflowExecution {
     ensures: RecoveryFrontierReconstructed(execution: execution)
 }
 
+rule RetickRunningWorkflowFrontier {
+    when: NodeRemainsRunning(node_execution)
+    requires: node_execution.status = running
+    requires: node_execution.execution.status = running
+    requires: execution_tick_budget_remaining(node_execution.execution)
+
+    ensures: NextWorkflowIterationRequested(
+        execution: node_execution.execution,
+        after_iteration: node_execution.iteration_index
+    )
+
+    @guidance
+        -- A node reached after a completed delegate participates in the current
+        -- parent iteration. Historical delegate observations from an earlier
+        -- iteration cannot suppress this running frontier or its next tick.
+}
+
 rule DelegateToWorkflow {
     when: ExecuteDelegateNode(node_execution, target_workflow, mapped_inputs, options)
     requires: node_execution.status = running
     requires: node_execution.node.kind = delegate
     requires: inputs_valid_for(target_workflow, mapped_inputs)
+    requires: not exists node_execution.delegate_invocation
 
-    ensures: WorkflowExecution.created(
-        workflow: target_workflow,
-        status: running,
-        started_at: now,
-        completed_at: null,
-        duration: null,
-        version_number: selected_version(target_workflow, options),
-        parent: node_execution.execution,
-        correlation_identifier: node_execution.execution.correlation_identifier,
-        options: options,
-        error: null
+    ensures:
+        let child = WorkflowExecution.created(
+            workflow: target_workflow,
+            status: running,
+            started_at: now,
+            completed_at: null,
+            duration: null,
+            version_number: selected_version(target_workflow, options),
+            parent: node_execution.execution,
+            correlation_identifier: node_execution.execution.correlation_identifier,
+            options: options,
+            error: null
+        )
+        DelegateInvocation.created(
+            node_execution: node_execution,
+            child_execution: child,
+            invocation_ordinal: node_execution.iteration_index ?? 1,
+            status: running
+        )
+}
+
+rule ObserveRunningDelegate {
+    when: ExecuteDelegateNode(node_execution, target_workflow, mapped_inputs, options)
+    requires: node_execution.status = running
+    requires: node_execution.node.kind = delegate
+    requires: exists node_execution.delegate_invocation
+    requires: node_execution.delegate_invocation.status = running
+
+    ensures: ExistingDelegateChildObserved(
+        node_execution: node_execution,
+        child_execution: node_execution.delegate_invocation.child_execution
     )
 }
 
@@ -816,6 +983,17 @@ invariant ExecutionValuesBelongToWorkflow {
 invariant CorrelationIdentifiersAreUUIDs {
     for execution in WorkflowExecutions:
         is_uuid(execution.correlation_identifier)
+}
+
+invariant DelegateBudgetsArePositiveAndBounded {
+    for invocation in DelegateInvocations:
+        (invocation.configured_timeout = null
+         or invocation.configured_timeout > 0.seconds)
+        and (invocation.configured_maximum_ticks = null
+         or invocation.configured_maximum_ticks > 0)
+        and invocation.consumed_ticks >= 0
+        and (invocation.configured_maximum_ticks = null
+             or invocation.consumed_ticks <= invocation.configured_maximum_ticks)
 }
 
 invariant TraceInstanceIdentifiersAreUnique {
@@ -870,6 +1048,7 @@ surface WorkflowExecutionAccess {
         fulfils ExecutionEventStream
         fulfils ExecutionDurability
         fulfils ExecutionRecovery
+        fulfils CheckpointedResearcherExecution
         demands LeafExecutor
 
     @guarantee IsolatedBlackboard
@@ -939,4 +1118,31 @@ surface WorkflowExecutionAccess {
         -- Once an execution or any ancestor is cancelled or times out, work
         -- already in flight cannot create execution values or node/tree
         -- completions for that terminal execution.
+
+    @guarantee StableDelegateLifecycle
+        -- One logical delegate invocation durably identifies exactly one child
+        -- execution. Duplicate delivery and process recovery observe or resume
+        -- that child rather than creating another. Reaching the same delegate in
+        -- a later parent iteration after its prior child terminated creates a new
+        -- invocation with current inputs and distinct trace lineage. Its terminal
+        -- result and outputs flow back only to its originating parent iteration;
+        -- cancellation and lineage remain consistent across nested delegates.
+
+    @guarantee ConsistentCodeFunctionResolution
+        -- A public application function that is loaded before its code node runs
+        -- resolves identically for synchronous, background, resumed and delegated
+        -- execution, including workflows registered after background processing starts.
+        -- A genuinely absent function terminates the node with traceable evidence.
+
+    @guarantee DurableDelegateCompletionDelivery
+        -- A terminal delegated child durably makes its parent runnable. Exactly
+        -- one parent-node completion consumes the child's success outputs or
+        -- structured failure, independent of process-local observers, duplicate
+        -- wakes, parent re-ticks and repeated process recovery.
+
+    @guarantee DurableRunningFrontierRetick
+        -- When a condition or code frontier deliberately remains running and
+        -- execution budget remains, the workflow durably requests its next
+        -- root iteration. A previously completed delegate cannot make that
+        -- transition silent, including after recovery or duplicate delivery.
 }
