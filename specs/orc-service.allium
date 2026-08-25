@@ -306,6 +306,112 @@ contract ExecutionRecovery {
         -- duplicate resumptions, completions, or externally visible effects.
 }
 
+contract CheckpointedResearcherExecution {
+    execute_quantum: (execution: WorkflowExecution, node: WorkflowNode) -> Any
+    resume_campaign: (execution: WorkflowExecution, node: WorkflowNode) -> Any
+    inspect_iterations: (execution: WorkflowExecution, node: WorkflowNode) -> Any
+
+    @invariant ExplicitOptInPreservesCompatibility
+        -- Checkpointed execution applies only when the researcher explicitly
+        -- enables it. Researchers without that option retain their existing
+        -- single-invocation behavior, configuration meaning and result shape.
+
+    @invariant BoundedQuantumYieldsDurably
+        -- A work quantum completes at most its configured number of Phase-1
+        -- iterations, one by default. Every completed iteration is checkpointed
+        -- before a non-terminal campaign yields running. A larger quantum may
+        -- reduce yields but never reduces checkpoint frequency.
+
+    @invariant ResearcherResumesInPlace
+        -- A yielded researcher resumes at its durable node frontier within the
+        -- same workflow execution. Completed ancestors and siblings are not
+        -- re-executed merely because the researcher requires another quantum.
+
+    @invariant ExternalBoundariesAdvanceTheFrontier
+        -- Provider responses, inline tool outcomes and generated child-tree
+        -- outcomes each become durable before execution advances beyond that
+        -- external boundary. The iteration checkpoint additionally captures
+        -- ordered history, reasoning, sandbox state and metadata, accumulated
+        -- usage and timing, child lineage, and remaining budgets.
+
+    @invariant StableLogicalActionsPreventDuplicateWork
+        -- Every provider call, inline tool call and generated child tree has a
+        -- stable logical action identity established before dispatch. Duplicate
+        -- delivery, retick and recovery observe a completed action rather than
+        -- dispatching it again.
+
+    @invariant CheckpointSafeToolsShareIdempotencyKeys
+        -- A checkpointed researcher may invoke an effectful inline tool only
+        -- when its bound contract explicitly declares checkpoint safety. ORC
+        -- supplies that logical action's stable idempotency key through the tool
+        -- execution context on every attempt; the tool is responsible for
+        -- deduplicating the external effect. A tool that does not declare this
+        -- capability is rejected before its effect begins.
+
+    @invariant CompletedChildrenAreIncorporatedOnce
+        -- A generated child receives stable logical action and child execution
+        -- identities before dispatch. A durable success, partial or failure
+        -- outcome is incorporated into the parent researcher exactly once,
+        -- including when the process stops after child completion but before
+        -- parent incorporation. Such a child is never replaced or rerun.
+
+    @invariant IncompleteChildrenRetainLogicalIdentity
+        -- A timed-out or cancelled generated child may receive another attempt
+        -- only under the same logical action identity and within the iteration's
+        -- retry allowance. Each attempt remains separately traceable.
+
+    @invariant DurableSandboxValuesPreserveMeaning
+        -- Checkpointed sandbox variables use the canonical durable value policy
+        -- or an explicitly registered codec and retain creation and update
+        -- metadata. Unsupported runtime values fail the iteration checkpoint
+        -- explicitly; they are never silently dropped or stringified.
+
+    @invariant TimeoutScopesRemainIndependent
+        -- Provider-call, iteration, generated-child, researcher-campaign and
+        -- enclosing-workflow deadlines are independently configured and
+        -- evidenced. Each operation is bounded by the shortest applicable
+        -- remaining deadline.
+
+    @invariant CampaignDeadlineSurvivesRecovery
+        -- A checkpointed campaign records one absolute campaign deadline when
+        -- it starts. Yield, retick, blocking and process restart do not reset the
+        -- deadline or any accumulated usage and timing budget.
+
+    @invariant TimedOutIterationRetriesFromCheckpoint
+        -- An iteration timeout preserves every preceding completed iteration
+        -- and yields a retry of the same iteration from the last checkpoint,
+        -- retaining its stable logical action identities. Exhausting the
+        -- configured iteration-attempt limit terminates the campaign as timeout.
+
+    @invariant BlockedChildPausesTheCampaign
+        -- A blocked generated child checkpoints the waiting frontier and blocks
+        -- the parent researcher. Approval resumes that same child and logical
+        -- action rather than creating a new child or research iteration.
+
+    @invariant CancellationIsTerminalForRecovery
+        -- Cancelling the parent workflow cancels the campaign and its active
+        -- child. Existing checkpoints remain inspectable, but neither automatic
+        -- nor explicit recovery resumes a cancelled campaign.
+
+    @invariant ResumeOwnershipIsFenced
+        -- At most one worker owns a researcher frontier attempt at a time.
+        -- Concurrent reticks, duplicate resume requests and automatic recovery
+        -- converge without duplicating provider, tool or child work.
+
+    @invariant ActiveCampaignsRecoverAutomatically
+        -- After process restart, every checkpointed campaign whose parent
+        -- execution remains active is rediscovered and resumed without caller
+        -- resubmission. Explicit resume remains safe and idempotent.
+
+    @invariant IterationTraceIsDurableAndOrdered
+        -- Trace inspection exposes every completed researcher iteration even
+        -- when a later iteration fails or times out. Each ordered iteration
+        -- includes generated reasoning and code, provider latency and usage,
+        -- sandbox result or error, variable changes, checkpoint/yield/resume
+        -- evidence, and links to generated child traces and outcomes without
+        -- duplicating the child trace itself.
+}
+
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
@@ -942,6 +1048,7 @@ surface WorkflowExecutionAccess {
         fulfils ExecutionEventStream
         fulfils ExecutionDurability
         fulfils ExecutionRecovery
+        fulfils CheckpointedResearcherExecution
         demands LeafExecutor
 
     @guarantee IsolatedBlackboard
