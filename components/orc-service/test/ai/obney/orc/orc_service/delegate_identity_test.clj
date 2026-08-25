@@ -74,6 +74,63 @@
           (is (= :success (:status result)))
           (is (= "delivered" (get-in result [:outputs :output]))))))))
 
+(deftest recovery-consumes-child-completion-before-parent-continuation
+  (testing "durable child state resumes a parent when delivery was interrupted after child completion"
+    (h/with-async-test-context [ctx]
+      (reset! delegate-release (promise))
+      (let [child (sheet/workflow "completion-gap-child"
+                    (sheet/blackboard {:output :string})
+                    (sheet/code "wait"
+                      :fn "ai.obney.orc.orc-service.delegate-identity-test/wait-for-delegate-release"
+                      :writes [:output]))
+            child-sheet-id (sheet/build-workflow! ctx child)
+            parent (sheet/workflow "completion-gap-parent"
+                     (sheet/blackboard {:output :string})
+                     (sheet/delegate "child"
+                       :target-sheet-id child-sheet-id
+                       :writes [:output]
+                       :timeout-ms 4000))
+            parent-sheet-id (sheet/build-workflow! ctx parent)
+            complete! tp/complete-delegate-parent!
+            parent-result (with-redefs [tp/complete-delegate-parent! (fn [& _] nil)]
+                            (let [result (future
+                                           (sheet/execute ctx parent-sheet-id {}
+                                                          :timeout-ms 5000))
+                                  child-tick-id
+                                  (loop [attempt 0]
+                                    (or (some #(when (and (= :sheet/tree-tick-started
+                                                               (:event/type %))
+                                                          (:parent-tick-id %))
+                                                 (:tick-id %))
+                                              (h/read-all-events ctx))
+                                        (when (< attempt 200)
+                                          (Thread/sleep 10)
+                                          (recur (inc attempt)))))]
+                              (is (uuid? child-tick-id))
+                              (deliver @delegate-release true)
+                              (let [terminal
+                                    (loop [attempt 0]
+                                      (or (runtime/durable-terminal-result ctx child-tick-id)
+                                          (when (< attempt 200)
+                                            (Thread/sleep 10)
+                                            (recur (inc attempt)))))]
+                                (is (= :success (:status terminal)))
+                                (is (= ::waiting (deref result 50 ::waiting))
+                                    "the simulated interruption leaves the parent uncontinued")
+                                {:future result
+                                 :child-tick-id child-tick-id
+                                 :terminal terminal})))]
+        (complete! ctx (:child-tick-id parent-result) (:terminal parent-result))
+        (let [result (deref (:future parent-result) 3000 ::timeout)
+              deliveries (filter #(and (= :sheet/node-execution-completed (:event/type %))
+                                       (= (:child-tick-id parent-result)
+                                          (:completion-id %)))
+                                 (h/read-all-events ctx))]
+          (is (not= ::timeout result))
+          (is (= :success (:status result)))
+          (is (= "delivered" (get-in result [:outputs :output])))
+          (is (= 1 (count deliveries))))))))
+
 (deftest delegate-max-ticks-validates-positive-integers
   (is (= 100 (:max-ticks (sheet/delegate "child" :target-sheet-id (random-uuid)
                                           :max-ticks 100))))
@@ -141,16 +198,21 @@
                                    (h/read-all-events ctx))]
             (is (= 1 (count deliveries)) "duplicate wakes deliver child completion once")))))))
 
-(deftest delegate-child-identity-is-stable-across-reticks-and-redelivery
-  (testing "one logical delegate frontier always resolves to one child tick"
+(deftest delegate-child-identity-is-stable-within-an-invocation
+  (testing "one parent iteration resolves duplicate delegate delivery to one child tick"
     (let [parent (random-uuid)
           node (random-uuid)
-          first-id (delegate-child-tick-id parent node {})]
-      (is (= first-id (delegate-child-tick-id parent node {})))
-      (is (= first-id
-             (delegate-child-tick-id
-              parent node
-              {::tp/tick-iteration 100})))
+          first-id (delegate-child-tick-id parent node {})
+          second-id (delegate-child-tick-id
+                     parent node
+                     {::tp/tick-iteration 2})]
+      (is (= first-id (delegate-child-tick-id parent node {}))
+          "duplicate delivery in iteration one is stable")
+      (is (not= first-id second-id)
+          "a later durable parent iteration is a new logical invocation")
+      (is (= second-id
+             (delegate-child-tick-id parent node {::tp/tick-iteration 2}))
+          "duplicate delivery in the later invocation is stable")
       (is (not= first-id
                 (delegate-child-tick-id
                  parent node

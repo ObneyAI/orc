@@ -195,7 +195,7 @@
     [:timeout-ms {:optional true} :int]
     ;; Delegate-only fields
     [:target-sheet-id {:optional true} :uuid]       ;; Sheet to delegate execution to
-    [:delegate-timeout-ms {:optional true} :int]    ;; Timeout for delegated execution
+    [:delegate-timeout-ms {:optional true} [:and :int [:> 0]]] ;; Timeout for delegated execution
     [:delegate-max-ticks {:optional true} [:and :int [:> 0]]]
     [:inherit-ontology? {:optional true} :boolean]  ;; Share ontology context with target
     ;; Execution tracking
@@ -306,7 +306,7 @@
     [:started-at :any]
     [:completed-at :any]
     [:duration-ms :int]
-    [:status [:enum :success :failure :timeout :partial]]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
     [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
     [:consumed-ticks {:optional true} :int]
     [:terminal-reason {:optional true} :keyword]
@@ -504,7 +504,7 @@
     [:target-sheet-id :uuid]                            ;; Sheet to delegate to
     [:reads [:vector :keyword]]                         ;; Blackboard keys to pass as inputs
     [:writes [:vector :keyword]]                        ;; Output keys to receive from target
-    [:timeout-ms {:optional true} :int]                 ;; Timeout for delegated execution
+    [:timeout-ms {:optional true} [:and :int [:> 0]]]   ;; Timeout for delegated execution
     [:max-ticks {:optional true} [:and :int [:> 0]]]
     [:inherit-ontology? {:optional true} :boolean]]     ;; Share ontology context (default true)
 
@@ -1401,7 +1401,8 @@
     [:tick-id :uuid]
     [:node-id :uuid]
     [:child-index :int]
-    [:total-children :int]]
+    [:total-children :int]
+    [:exec-context {:optional true} :map]]
 
    :sheet/map-each-progress-updated
    [:map
@@ -1464,7 +1465,7 @@
     [:started-at :any]
     [:completed-at :any]
     [:duration-ms :int]
-    [:status [:enum :success :failure :timeout :partial]]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
     [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
     [:consumed-ticks {:optional true} :int]
     [:terminal-reason {:optional true} :keyword]
@@ -1765,7 +1766,7 @@
     [:parent-trace-id {:optional true} :uuid]
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
-    [:status [:enum :success :failure :timeout :partial]]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
     [:started-at :any]
     [:duration-ms :int]
     [:node-count :int]]
@@ -1794,7 +1795,7 @@
    [:map
     [:sheet-id :uuid]
     [:version-number {:optional true} :int]       ;; Filter by version
-    [:status {:optional true} [:enum :success :failure :timeout :partial]]
+    [:status {:optional true} [:enum :success :failure :timeout :partial :blocked]]
     [:node-id {:optional true} :uuid]             ;; Filter by node involvement
     [:since {:optional true} :any]                ;; Filter by time
     [:limit {:optional true} :int]]
@@ -1811,7 +1812,7 @@
    :sheet/runs-screen
    [:map
     [:trace-id {:optional true} :uuid]
-    [:status {:optional true} [:enum :success :failure :timeout :partial]]
+    [:status {:optional true} [:enum :success :failure :timeout :partial :blocked]]
     [:limit {:optional true} :int]]
 
    :sheet/runs-screen-result
@@ -1829,7 +1830,7 @@
     [:root-trace-id :uuid]
     [:child-trace-ids [:vector :uuid]]
     [:sheet-name :string]
-    [:status [:enum :success :failure :timeout :partial]]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
     [:started-at :any]
     [:duration-ms :int]
     [:node-count :int]

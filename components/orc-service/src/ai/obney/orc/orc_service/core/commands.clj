@@ -11,6 +11,7 @@
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.metadata :as metadata]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.value-storage :as value-storage]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
@@ -714,6 +715,10 @@
       {::anom/category ::anom/incorrect
        ::anom/message (str "Unknown blackboard keys in writes: " (vec unknown-writes))}
 
+      (and (some? timeout-ms) (not (pos-int? timeout-ms)))
+      {::anom/category ::anom/incorrect
+       ::anom/message "Delegate timeout-ms must be a positive integer"}
+
       (and (some? max-ticks) (not (pos-int? max-ticks)))
       {::anom/category ::anom/incorrect
        ::anom/message "Delegate max-ticks must be a positive integer"}
@@ -1219,7 +1224,9 @@
     :as ctx}]
   (if (or (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
           (and completion-id
-               (some #(= completion-id (:completion-id %))
+               (some #(and (= completion-id (:completion-id %))
+                           (= (value-log/exec-context inputs)
+                              (value-log/exec-context (:inputs %))))
                      (into [] (es/read (:event-store ctx)
                                        {:tenant-id (:tenant-id ctx)
                                         :types #{:sheet/node-execution-completed}
@@ -1394,8 +1401,18 @@
                            (seq exec-context)
                            (assoc :exec-context exec-context)))}))
               rejected-writes)]
-      {:command-result/events
-       (into [] (concat bb-write-events rejected-write-events reference-events [completion-event]))})))
+      (cond-> {:command-result/events
+               (into [] (concat bb-write-events rejected-write-events reference-events [completion-event]))}
+        completion-id
+        (assoc :command-result/cas
+               {:types #{:sheet/node-execution-completed}
+                :tags #{[:tick tick-id]}
+                :predicate-fn
+                (fn [existing]
+                  (not-any? #(and (= completion-id (:completion-id %))
+                                  (= (value-log/exec-context inputs)
+                                     (value-log/exec-context (:inputs %))))
+                            (into [] existing)))})))))
 
 (defcommand :sheet record-rlm-tree-node-completion
   {:authorized? authenticated?}
@@ -1514,18 +1531,35 @@
 (defcommand :sheet emit-tick-completed
   {:authorized? authenticated?}
   "System command: record that a tree tick execution has completed."
-  [{{:keys [sheet-id tick-id correlation-id root-status]} :command
+  [{{:keys [sheet-id tick-id correlation-id root-status iteration
+            configured-max-ticks consumed-ticks terminal-reason output-keys
+            block-payload error]} :command
     :as ctx}]
-  (if (contains? #{:completed :cancelled} (:status (rm/get-tick ctx tick-id)))
-    {:command-result/events []}
-    {:command-result/events
+  {:command-result/events
      [(->event {:type :sheet/tree-tick-completed
                 :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
                         correlation-id (conj [:correlation correlation-id]))
                 :body (cond-> {:sheet-id sheet-id
                                :tick-id tick-id
                                :root-status root-status}
-                        correlation-id (assoc :correlation-id correlation-id))})]}))
+                        correlation-id (assoc :correlation-id correlation-id)
+                        iteration (assoc :iteration iteration)
+                        configured-max-ticks (assoc :configured-max-ticks configured-max-ticks)
+                        consumed-ticks (assoc :consumed-ticks consumed-ticks)
+                        terminal-reason (assoc :terminal-reason terminal-reason)
+                        output-keys (assoc :output-keys output-keys)
+                        block-payload (assoc :block-payload block-payload)
+                        error (assoc :error error))})]
+     :command-result/cas
+     {:types #{:sheet/tree-tick-completed :sheet/tick-cancelled}
+      :tags #{[:tick tick-id]}
+      :predicate-fn
+      (fn [existing]
+        (not-any? #(or (and (= :sheet/tick-cancelled (:event/type %))
+                            (not= :timeout root-status))
+                       (and (= :sheet/tree-tick-completed (:event/type %))
+                            (not= :running (:root-status %))))
+                  (into [] existing)))}})
 
 (defcommand :sheet store-execution-trace
   {:authorized? authenticated?}

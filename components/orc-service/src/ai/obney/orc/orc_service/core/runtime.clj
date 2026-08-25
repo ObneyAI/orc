@@ -158,6 +158,17 @@
                        ;; Repl-researcher fields
                        :mcp-tools (or (:mcp-tools snapshot-node) [])
                        :max-iterations (:max-iterations snapshot-node)
+                       ;; Delegate fields. Published snapshots use the public
+                       ;; export names for limits; runtime nodes use the
+                       ;; durable internal names consumed by the processor.
+                       :target-sheet-id (:target-sheet-id snapshot-node)
+                       :delegate-timeout-ms (or (:delegate-timeout-ms snapshot-node)
+                                                (:timeout-ms snapshot-node))
+                       :delegate-max-ticks (or (:delegate-max-ticks snapshot-node)
+                                               (:max-ticks snapshot-node))
+                       :inherit-ontology? (if (contains? snapshot-node :inherit-ontology?)
+                                            (:inherit-ontology? snapshot-node)
+                                            true)
                        ;; Ontology context injection
                        :context (:context snapshot-node)}
           ;; Recursively parse children
@@ -265,6 +276,27 @@
 (defn forget-ephemeral-context! [tick-id]
   (swap! ephemeral-context-registry dissoc tick-id))
 
+(defn- durable-trace-lineage
+  [context tick-id]
+  (let [store (:event-store context)
+        tenant-id (:tenant-id context)
+        started (fn [id]
+                  (first (into [] (es/read store {:tenant-id tenant-id
+                                                  :types #{:sheet/tree-tick-started}
+                                                  :tags #{[:tick id]}}))))
+        parent-id (:parent-tick-id (started tick-id))
+        root-id (loop [id tick-id]
+                  (if-let [parent (:parent-tick-id (started id))]
+                    (recur parent)
+                    id))
+        child-ids (mapv :tick-id
+                        (into [] (es/read store {:tenant-id tenant-id
+                                                :types #{:sheet/tree-tick-started}
+                                                :tags #{[:parent-tick tick-id]}})))]
+    {:parent-trace-id parent-id
+     :root-trace-id root-id
+     :child-trace-ids child-ids}))
+
 (defn timeout-execution!
   "Make a caller deadline terminal, interrupt active work, and synchronously
    persist the partial event-derived trace before returning.
@@ -304,22 +336,43 @@
                               duration-ms)
         node-traces (partial-timeout-node-traces context tick-id completed-at-str
                                                  active-attempts)
+        {:keys [parent-trace-id root-trace-id child-trace-ids]}
+        (durable-trace-lineage context tick-id)
+        tick-ctx (rm/get-tick-execution-context context tick-id)
+        _terminal (cp/process-command
+                   (assoc context :command
+                          (cond-> {:command/id (random-uuid)
+                                   :command/timestamp (time/now)
+                                   :command/name :sheet/emit-tick-completed
+                                   :sheet-id sheet-id
+                                   :tick-id tick-id
+                                   :root-status :timeout
+                                   :terminal-reason :timeout
+                                   :error error}
+                            (:correlation-id tick-ctx)
+                            (assoc :correlation-id (:correlation-id tick-ctx))
+                            (get-in tick-ctx [:options :max-ticks])
+                            (assoc :configured-max-ticks
+                                   (get-in tick-ctx [:options :max-ticks])))))
         _cancelled-work (execution-budget/cancel-active-work! tick-id)]
     (loop [attempt 0]
       (let [stored (cp/process-command
                     (assoc context :command
-                           {:command/id (random-uuid)
-                            :command/timestamp (time/now)
-                            :command/name :sheet/store-execution-trace
-                            :trace-id tick-id :sheet-id sheet-id
-                            :root-trace-id tick-id :child-trace-ids []
-                            :started-at started-at-str
-                            :completed-at completed-at-str
-                            :duration-ms trace-duration-ms :status :timeout
-                            :input-snapshot (profile/profile-values (or inputs {}))
-                            :output-snapshot {}
-                            :node-traces node-traces
-                            :error error}))]
+                           (cond-> {:command/id (random-uuid)
+                                    :command/timestamp (time/now)
+                                    :command/name :sheet/store-execution-trace
+                                    :trace-id tick-id :sheet-id sheet-id
+                                    :root-trace-id root-trace-id
+                                    :child-trace-ids child-trace-ids
+                                    :started-at started-at-str
+                                    :completed-at completed-at-str
+                                    :duration-ms trace-duration-ms :status :timeout
+                                    :input-snapshot (profile/profile-values (or inputs {}))
+                                    :output-snapshot {}
+                                    :node-traces node-traces
+                                    :error error}
+                             parent-trace-id
+                             (assoc :parent-trace-id parent-trace-id))))]
         (when (and (:cognitect.anomalies/category stored) (< attempt 4))
           (recur (inc attempt)))))
     (execution-budget/clear-tick! tick-id)
@@ -608,7 +661,8 @@
                                       trace? langfuse-client store-trace?
                                       max-ticks llm-call-budget tick-id parent-tick-id
                                       delegate-parent-sheet-id delegate-parent-node-id
-                                      delegate-parent-exec-context
+                                      delegate-parent-exec-context delegate-parent-read-inputs
+                                      delegate-parent-read-sources
                                       correlation-id input-sources return-references?
                                       durability-mode]
                                :or {timeout-ms 300000
@@ -640,6 +694,10 @@
                                                  (assoc :delegate-parent-node-id delegate-parent-node-id)
                                                  (seq delegate-parent-exec-context)
                                                  (assoc :delegate-parent-exec-context delegate-parent-exec-context)
+                                                 (seq delegate-parent-read-inputs)
+                                                 (assoc :delegate-parent-read-inputs delegate-parent-read-inputs)
+                                                 (seq delegate-parent-read-sources)
+                                                 (assoc :delegate-parent-read-sources delegate-parent-read-sources)
                                                  llm-call-budget (assoc :llm-call-budget llm-call-budget)
                                                  durability-mode (assoc :durability-mode durability-mode))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)

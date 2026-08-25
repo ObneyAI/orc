@@ -320,6 +320,9 @@
    ```"
   [name & {:keys [target-sheet-id reads writes timeout-ms max-ticks inherit-ontology?]
            :or {inherit-ontology? true}}]
+  (when (and (some? timeout-ms) (not (pos-int? timeout-ms)))
+    (throw (ex-info "Delegate :timeout-ms must be a positive integer"
+                    {:timeout-ms timeout-ms})))
   (when (and (some? max-ticks) (not (pos-int? max-ticks)))
     (throw (ex-info "Delegate :max-ticks must be a positive integer"
                     {:max-ticks max-ticks})))
@@ -1236,8 +1239,8 @@
                {:target-sheet-id (:target-sheet-id node)
                 :reads (:reads node)
                 :writes (:writes node)
-                :timeout-ms (:delegate-timeout-ms node)
-                :max-ticks (:delegate-max-ticks node)
+                :timeout-ms (or (:timeout-ms node) (:delegate-timeout-ms node))
+                :max-ticks (or (:max-ticks node) (:delegate-max-ticks node))
                 :inherit-ontology? (:inherit-ontology? node)})]
     (if (empty? opts)
       (list (dsl-sym 'delegate) (:name node))

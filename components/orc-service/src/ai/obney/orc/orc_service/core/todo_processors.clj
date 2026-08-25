@@ -1641,13 +1641,16 @@
   (select-keys inputs [::map-each-index ::map-each-parent ::tick-iteration]))
 
 (defn delegate-child-tick-id
-  "Return the durable identity of one logical delegate frontier. Parent tree
-   iteration is deliberately excluded: Running re-ticks observe the same child.
-   Map-each identity remains included so concurrent logical invocations stay
-   isolated."
+  "Return the durable identity of one logical delegate invocation.
+
+   The parent tick iteration is the durable invocation ordinal: duplicate
+   delivery and recovery within an iteration resolve to the same child, while
+   reaching the same delegate after a Running frontier starts a new child.
+   Map-each identity remains included so concurrent invocations stay isolated."
   [parent-tick-id node-id execution-context]
   (let [work-context (select-keys execution-context
-                                  [::map-each-index ::map-each-parent])]
+                                  [::map-each-index ::map-each-parent
+                                   ::tick-iteration])]
     (java.util.UUID/nameUUIDFromBytes
      (.getBytes (pr-str [parent-tick-id node-id (into (sorted-map) work-context)])
                 "UTF-8"))))
@@ -1703,8 +1706,10 @@
   "For each of a node's declared :reads, the id of the write event that
    produced the value the node is about to see: {read-key event-id}.
 
-   Returns {} when `exec-context` is non-empty — i.e. inside a map-each
-   iteration. The blackboard holds ONE :source per key, and
+   Returns {} inside a map-each iteration. A root tick iteration is sequential
+   and therefore retains an exact blackboard source; it must not be treated as
+   map-each merely because it also carries execution-disambiguating context.
+   Inside map-each the blackboard holds ONE :source per key, and
    concurrent iterations sharing the item key clobber it, so any id captured
    here would name an arbitrary iteration's write. The iteration's own
    exec-context is the reliable identity and travels on both the completion
@@ -1721,7 +1726,8 @@
    seeded inputs for those. Pure function — testable in isolation."
   ([reads blackboard] (read-sources reads blackboard nil))
   ([reads blackboard exec-context]
-   (if (seq exec-context)
+   (if (or (contains? exec-context ::map-each-index)
+           (contains? exec-context ::map-each-parent))
      {}
      (reduce (fn [acc k]
                (if-let [src (get-in blackboard [k :source])]
@@ -2340,14 +2346,22 @@
 
 (defn complete-delegate-parent!
   "Consume a terminal child tick into its durably linked parent delegate.
-   The child tick id is the idempotency key, so duplicate wakes are harmless."
-  [context child-tick-id result]
-  (let [child-ctx (rm/get-tick-execution-context context child-tick-id)
-        options (:options child-ctx)
-        parent-sheet-id (:delegate-parent-sheet-id options)
-        parent-tick-id (:parent-tick-id (rm/get-tick context child-tick-id))
-        parent-node-id (:delegate-parent-node-id options)
-        exec-context (or (:delegate-parent-exec-context options) {})]
+   The child tick id plus parent execution context is the idempotency key, so
+   duplicate wakes are harmless without suppressing a distinct invocation in
+   a later parent iteration."
+  ([context child-tick-id result]
+   (complete-delegate-parent! context child-tick-id result nil))
+  ([context child-tick-id result current-parent-exec-context]
+   (let [child-ctx (rm/get-tick-execution-context context child-tick-id)
+         options (:options child-ctx)
+         parent-sheet-id (:delegate-parent-sheet-id options)
+         parent-tick-id (:parent-tick-id (rm/get-tick context child-tick-id))
+         parent-node-id (:delegate-parent-node-id options)
+         exec-context (or current-parent-exec-context
+                          (:delegate-parent-exec-context options)
+                          {})
+         read-inputs (or (:delegate-parent-read-inputs options) {})
+         read-sources (:delegate-parent-read-sources options)]
     (when (and parent-sheet-id parent-tick-id parent-node-id)
       (let [parent-ctx (rm/get-tick-execution-context context parent-tick-id)
             node (get (:nodes-by-id parent-ctx) parent-node-id)
@@ -2385,8 +2399,9 @@
                          :writes copied-outputs
                          :write-sources (normalize-output-keys output-sources)
                          :write-references? true
-                         :inputs exec-context}
-                  (:error result) (assoc :error (:error result)))))))))
+                         :inputs (merge read-inputs exec-context)}
+                  (seq read-sources) (assoc :read-sources read-sources)
+                  (:error result) (assoc :error (:error result))))))))))
 
 (defn deliver-delegate-child-completion
   "Wake a parent delegate from the child's durable terminal event."
@@ -2476,7 +2491,7 @@
           ;; of depending on a historical event being delivered again.
           (when-let [terminal-result (and child-started?
                                           (runtime/durable-terminal-result context child-tick-id))]
-            (complete-delegate-parent! context child-tick-id terminal-result))
+            (complete-delegate-parent! context child-tick-id terminal-result exec-context))
           (when (and (or (not child-started?) recovering?)
                      (not (runtime/durable-terminal-result context child-tick-id))
                      (claim-delegate! child-tick-id))
@@ -2487,7 +2502,7 @@
                   ;; BEFORE dispatch so stream subscribers on the parent tick
                   ;; see the whole cascade.
                   _ (streaming/link-child! tick-id child-tick-id)
-                  _result (runtime/execute context target-sheet-id
+                  child-result (runtime/execute context target-sheet-id
                                            target-inputs
                                            :timeout-ms timeout-ms
                                            :max-ticks max-ticks
@@ -2496,13 +2511,31 @@
                                            :delegate-parent-sheet-id sheet-id
                                            :delegate-parent-node-id node-id
                                            :delegate-parent-exec-context exec-context
+                                           :delegate-parent-read-inputs read-inputs
+                                           :delegate-parent-read-sources
+                                           (normalize-output-keys target-input-sources)
                                            :correlation-id correlation-id
                                            :input-sources target-input-sources
                                            :return-references? true)
+                  child-started-after? (seq (into [] (es/read event-store
+                                                             {:tenant-id (:tenant-id context)
+                                                              :types #{:sheet/tree-tick-started}
+                                                              :tags #{[:tick child-tick-id]}})))
                   _duration-ms (- (System/currentTimeMillis) start-time)]
               ;; Parent delivery is owned exclusively by the durable terminal
               ;; event processor. Recovery and ordinary re-ticks consume an
               ;; already-terminal child before starting this observer.
+              (when (and (= :failure (:status child-result))
+                         (not child-started-after?))
+                (cp/process-command
+                 (assoc context :command
+                        {:command/id (random-uuid)
+                         :command/timestamp (time/now)
+                         :command/name :sheet/fail-node-execution
+                         :sheet-id sheet-id
+                         :tick-id tick-id
+                         :node-id node-id
+                         :error (:error child-result)})))
               nil)
 
             (catch Exception e
@@ -3045,6 +3078,20 @@
               ;; Continue to next child
               (let [next-index (inc child-index)
                     total-children (count siblings)
+                    ;; Recovery can redeliver the same durable child
+                    ;; completion after this continuation was appended. Grain
+                    ;; is strongly consistent/read-your-own-write, so the
+                    ;; progress fact is the durable idempotency boundary.
+                    already-continued?
+                    (some #(and (= :sheet/sequence-progress-updated
+                                    (:event/type %))
+                                (= parent-id (:node-id %))
+                                (= next-index (:child-index %))
+                                (= exec-context (or (:exec-context %) {})))
+                          (into [] (es/read event-store
+                                           {:types #{:sheet/sequence-progress-updated}
+                                            :tags #{[:tick tick-id]}
+                                            :tenant-id tenant-id})))
                     ;; Declared reads are not inlined — the next child resolves
                     ;; them from the tick blackboard, which is
                     ;; read-your-own-write.
@@ -3059,27 +3106,30 @@
                     inputs (if (seq exec-context)
                              (merge exec-context child-writes)
                              exec-context)]
-                {:result/events
-                 [;; Emit sequence progress event
-                  (->event
-                   {:type :sheet/sequence-progress-updated
-                    :tags #{[:sheet sheet-id]
-                            [:node parent-id]
-                            [:tick tick-id]}
-                    :body {:sheet-id sheet-id
-                           :tick-id tick-id
-                           :node-id parent-id
-                           :child-index next-index
-                           :total-children total-children}})
-                  (->event
-                   {:type :sheet/node-execution-started
-                    :tags #{[:sheet sheet-id]
-                            [:node next-child-id]
-                            [:tick tick-id]}
-                    :body {:sheet-id sheet-id
-                           :tick-id tick-id
-                           :node-id next-child-id
-                           :inputs inputs}})]})
+                (when-not already-continued?
+                  {:result/events
+                   [;; Emit sequence progress event
+                    (->event
+                     {:type :sheet/sequence-progress-updated
+                      :tags #{[:sheet sheet-id]
+                              [:node parent-id]
+                              [:tick tick-id]}
+                      :body (cond-> {:sheet-id sheet-id
+                                     :tick-id tick-id
+                                     :node-id parent-id
+                                     :child-index next-index
+                                     :total-children total-children}
+                              (seq exec-context)
+                              (assoc :exec-context exec-context))})
+                    (->event
+                     {:type :sheet/node-execution-started
+                      :tags #{[:sheet sheet-id]
+                              [:node next-child-id]
+                              [:tick tick-id]}
+                      :body {:sheet-id sheet-id
+                             :tick-id tick-id
+                             :node-id next-child-id
+                             :inputs inputs}})]}))
               ;; All children succeeded — sequence completes.
               ;; D-008 sticky :partial: if ANY prior sibling completed with :partial,
               ;; propagate :partial up so the at-a-glance status truthfully reflects
@@ -3526,7 +3576,11 @@
         ;; anywhere else: with max-concurrency > 1 several iterations of the
         ;; same child node-id race on the SAME item key, so resolving by key
         ;; alone would give every iteration whichever value landed last.
-        writes (value-log/writes-for tick-events event)
+        ;; Delegate children publish lightweight cross-tick references rather
+        ;; than local value-written events. Resolve both forms here; using
+        ;; writes-for alone silently fell back to the map input seed and lost
+        ;; delegated transforms under concurrent map-each execution.
+        writes (value-log/resolve-writes context (:tenant-id context) tick-id event)
         ;; Check if this is a map-each child
         map-each-parent-id (get inputs ::map-each-parent)
         item-index (get inputs ::map-each-index)]
@@ -3831,23 +3885,25 @@
                                          ;; determined => name every key.
                                          :when (or (nil? written) (contains? written k))]
                                      k))))]
-          {:result/events
-           [(->event
-             {:type :sheet/tree-tick-completed
-              :tags (cond-> #{[:sheet sheet-id] [:tick tick-id]}
-                      correlation-id (conj [:correlation correlation-id]))
-              :body (cond-> {:sheet-id sheet-id
-                             :tick-id tick-id
-                             :iteration current-iteration
-                             :configured-max-ticks max-ticks
-                             :consumed-ticks current-iteration
-                             :terminal-reason terminal-reason
-                             :root-status final-status}
-                      output-keys (assoc :output-keys output-keys)
-                      correlation-id (assoc :correlation-id correlation-id)
-                      ;; WS-2a: carry the opaque payload when the tree blocked.
-                      (= :blocked final-status) (assoc :block-payload block-payload)
-                      final-error (assoc :error final-error))})]})))))
+          ;; Route terminal append through the command CAS. A pubsub event may
+          ;; be delivered more than once; returning a raw processor event here
+          ;; allowed equivalent terminal records to race into the log.
+          (cp/process-command
+           (assoc context :command
+                  (cond-> {:command/id (random-uuid)
+                           :command/timestamp (time/now)
+                           :command/name :sheet/emit-tick-completed
+                           :sheet-id sheet-id
+                           :tick-id tick-id
+                           :iteration current-iteration
+                           :configured-max-ticks max-ticks
+                           :consumed-ticks current-iteration
+                           :terminal-reason terminal-reason
+                           :root-status final-status}
+                    output-keys (assoc :output-keys output-keys)
+                    correlation-id (assoc :correlation-id correlation-id)
+                    (= :blocked final-status) (assoc :block-payload block-payload)
+                    final-error (assoc :error final-error)))))))))
 
 
 ;; =============================================================================
@@ -4146,7 +4202,8 @@
   "Return the execution-disambiguating context for trace correlation.
    This distinguishes repeated executions of the same node under map-each."
   [inputs]
-  (select-keys (or inputs {}) [::map-each-index ::map-each-parent]))
+  (select-keys (or inputs {})
+               [::map-each-index ::map-each-parent ::tick-iteration]))
 
 (defn trace-execution-key
   "Correlation key for matching started/completed events in trace assembly."
@@ -4381,6 +4438,7 @@
                            :success :success
                            :failure :failure
                            :partial :partial
+                           :blocked :blocked
                            :timeout :timeout
                            :running :running
                            :tree-generated :tree-generated

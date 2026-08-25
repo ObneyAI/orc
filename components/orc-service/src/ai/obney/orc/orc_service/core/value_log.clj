@@ -31,12 +31,16 @@
 (def ^:private map-each-parent-key
   :ai.obney.orc.orc-service.core.todo-processors/map-each-parent)
 
+(def ^:private tick-iteration-key
+  :ai.obney.orc.orc-service.core.todo-processors/tick-iteration)
+
 (defn exec-context
   "The execution-disambiguating context from a map of inputs. Mirrors
    todo-processors/trace-execution-context; defined here to avoid a
    dependency cycle between commands, processors and this namespace."
   [inputs]
-  (select-keys (or inputs {}) [map-each-index-key map-each-parent-key]))
+  (select-keys (or inputs {})
+               [map-each-index-key map-each-parent-key tick-iteration-key]))
 
 (defn execution-key
   "Correlation key for one node execution: [node-id exec-context].

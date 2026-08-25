@@ -290,3 +290,18 @@ and projection replay. DET-E2E-123 exercises a registered deterministic
 N-Triples source through the public evolution boundary, including manual URI
 canonicalization, extracted provenance, unified graph relationships, and
 projection replay.
+
+## Durable continuation and repeated delegates (2026-08-23)
+
+A logical delegate invocation remains one stable child execution across
+duplicate delivery and recovery. After that child terminates, reaching the
+delegate in a later durable parent iteration creates a distinct invocation with
+the current inputs. Completion append atomically rejects duplicate wakes within
+an invocation without suppressing later invocations. Node write attribution and
+trace correlation retain the parent iteration so each child result advances only
+its originating parent visit. DET-E2E-168 verifies the complete code → delegate
+→ running condition → next-tick work continuation. DET-E2E-169 additionally
+verifies three invocations with inputs A, B and C create distinct child ticks,
+execute once each, retain rehydratable per-invocation trace inputs and outputs,
+reject duplicate completion delivery, and resume from durable child state after
+an interruption before parent continuation.

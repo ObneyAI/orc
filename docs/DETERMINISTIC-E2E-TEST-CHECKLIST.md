@@ -31,12 +31,12 @@ that verifies the stated observable results.
 - [x] **DET-E2E-013 — Map-each sequential.** Verify ordered transformation, output cardinality, and unique iteration trace identities at concurrency one.
 - [x] **DET-E2E-014 — Map-each bounded parallel.** Verify input-aligned output order and that observed active workers never exceed the configured limit.
 - [x] **DET-E2E-015 — Nested composites.** Execute sequence → parallel → map-each → fallback and verify the final value, complete node tree, parent instance IDs, and no missing executions.
-- [x] **DET-E2E-016 — Delegate success.** Verify isolated child blackboard, selected reads/writes, parent/child trace lineage, and result transfer.
-- [x] **DET-E2E-017 — Delegate child failure.** Verify delegate and parent failure, uncorrupted parent state, and queryable child failure.
-- [x] **DET-E2E-018 — Delegate timeout.** Verify timeout status, bounded elapsed time, no late parent writes, and child trace termination.
-- [x] **DET-E2E-019 — Nested delegates.** Execute parent → child → grandchild and verify trace lineage, one trace family, and final value propagation.
-- [x] **DET-E2E-020 — Parallel delegates.** Verify concurrent child execution, blackboard isolation, no cross-child values, and distinct child ticks under one correlation ID.
-- [x] **DET-E2E-108 — Durable delegate child identity.** A delegate whose child remains Running across 100 parent re-ticks, duplicate delivery, and processor recovery creates exactly one child tick; the parent receives its terminal outputs, cancellation and timeout remain consistent, nested lineage is queryable, and executor/thread growth stays bounded.
+- [x] **DET-E2E-016 — Delegate success.** Verify isolated child blackboard, selected reads/writes, parent/child trace lineage, and result transfer. Reverified by DET-E2E-177/178: the child inspects its mapped and optional-unmapped inputs, undeclared child output cannot overwrite the parent, and the two-trace lineage is asserted.
+- [ ] **DET-E2E-017 — Delegate child failure.** Verify delegate and parent failure, uncorrupted parent state, and queryable child failure. Reopened by the 2026-08-25 audit: the current test does not assert the delegate node's own terminal trace.
+- [ ] **DET-E2E-018 — Delegate timeout.** Verify timeout status, bounded elapsed time, no late parent writes, and child trace termination. Reopened by the 2026-08-25 audit: child termination is not asserted and the related timeout/lineage suite is currently red.
+- [ ] **DET-E2E-019 — Nested delegates.** Execute parent → child → grandchild and verify trace lineage, one trace family, and final value propagation. Reopened by the 2026-08-25 audit: family size is asserted, but the exact immediate-parent chain is not.
+- [ ] **DET-E2E-020 — Parallel delegates.** Verify concurrent child execution, blackboard isolation, no cross-child values, and distinct child ticks under one correlation ID. Reopened by the 2026-08-25 audit: distinct traces and outputs do not prove overlap or isolation.
+- [ ] **DET-E2E-170 — Durable delegate child identity.** A delegate whose child remains Running across 100 parent re-ticks, duplicate delivery, and processor recovery creates exactly one child tick; the parent receives its terminal outputs, cancellation and timeout remain consistent, nested lineage is queryable, and executor/thread growth stays bounded. This obligation was formerly misnumbered DET-E2E-108 and remains open because its combined predictions are not all exercised by one integration-shaped test.
 
 ## P0 — Failure, partial-result, and retry semantics
 
@@ -418,6 +418,86 @@ Record unexpected outcomes even when the final returned status is successful.
 - [x] DET-E2E-165 — Delegate-configured child retick budget and trace accounting
 - [x] DET-E2E-166 — Late-loaded application function through background execution
 - [x] DET-E2E-167 — Durable delegated-child completion delivery and duplicate wake safety
+- [x] DET-E2E-168 — A running condition after a successful durable delegate schedules the next root iteration and reaches downstream work
+- [x] DET-E2E-169 — Three visits to a delegate create distinct durable children, preserve per-invocation trace inputs and outputs, deliver each completion exactly once, and survive recovery between child completion and parent continuation
+
+## Delegate-specific completeness tranche
+
+This tranche is the canonical inventory for the complete public and durable
+`:delegate` surface. Existing delegate-shaped tests elsewhere in this checklist
+remain useful, but an item below stays unchecked until its full prediction is
+exercised through the public command/event/projection boundary. Tests must inspect
+the child as well as the returned parent result; a parent-only assertion cannot
+prove isolation, lineage, terminal fencing, or durable recovery.
+
+### Authoring, validation, and versioning
+
+- [x] **DET-E2E-171 — Delegate DSL and durable configuration round-trip.** Build a delegate with target, ordered reads/writes, timeout, maximum ticks, and both ontology-inheritance values; verify the authored definition, durable node projection, export, DSL render/evaluation, import, and rebuilt definition preserve every value exactly, including empty reads/writes and omitted optional limits.
+- [x] **DET-E2E-172 — Delegate target validation matrix.** Through the public build/configuration boundary, reject an omitted target, a non-UUID target, an unknown target sheet, and a target visible only in another tenant; each rejection names the target concern and emits no delegate-configuration event.
+- [x] **DET-E2E-173 — Delegate node-kind and mapping validation matrix.** Reject delegate configuration applied to a non-delegate node, unknown parent read keys, unknown parent write keys, duplicate mapping keys if unsupported, zero/fractional/negative maximum ticks, and zero/negative timeout if unsupported; accepted boundary values survive projection unchanged.
+- [ ] **DET-E2E-174 — Delegate authorization and tenant scoping.** Unauthenticated configuration/execution is denied, an authenticated tenant cannot target or query another tenant's workflow or child execution, and identical sheet/tick identifiers in two tenants remain independent in events, projections, traces, and outputs.
+- [x] **DET-E2E-175 — Parent version freezes delegate configuration.** Publish a parent, then change its delegate target/mappings/limits in draft; published execution retains the published configuration while forced-draft execution uses the changed configuration, with each trace identifying the version actually executed.
+- [x] **DET-E2E-176 — Delegated target version selection.** Execute against a target with distinct draft and published behavior under every supported selection mode; the child runs exactly the selected immutable version, records that version in its trace, and a concurrent target publish cannot change an already-started child.
+
+### Blackboard contract and value transport
+
+- [x] **DET-E2E-177 — Exact delegate input allowlist and child isolation.** Seed mapped and unmapped parent values, have the child inspect its complete public inputs, and prove it receives exactly the declared reads—no parent-only, sibling, internal execution-context, or prior-invocation values—while the parent retains its original state.
+- [x] **DET-E2E-178 — Exact delegate output allowlist.** Have the child produce declared and undeclared values, including a key already present in the parent; prove only declared writes cross the seam, undeclared child values remain queryable only on the child, and unrelated parent values and versions are unchanged.
+- [x] **DET-E2E-179 — Empty delegate contract.** A child invoked with no reads and no writes executes once and can succeed, fail, time out, or be cancelled without leaking child blackboard values or inventing parent writes.
+- [x] **DET-E2E-180 — Structured, optional, nil, and externalized delegate values.** Vectors, nested maps, map-of values, an absent optional key, an explicit nullable value where valid, and a value above the file-store threshold cross both directions exactly; public results hydrate transparently and durable events/projections retain canonical references rather than inline large bytes.
+- [x] **DET-E2E-181 — Delegate read/write provenance.** Parent write attribution becomes the child's exact input source, the delegate completion records its real mapped inputs and child-derived output sources, and the downstream parent consumer resolves the delegate write as its source across live projection and replay.
+- [ ] **DET-E2E-182 — Delegate input contract rejection.** Missing required child inputs, child-schema type mismatches, and structurally invalid nested inputs fail before child work executes; the parent, delegate node, and child expose consistent failure evidence and no output write occurs.
+- [x] **DET-E2E-183 — Delegate output contract rejection.** A successful child executor that omits a required mapped output, returns nil for a non-nullable output, or returns a schema-invalid output cannot publish that value to the parent; failure evidence identifies the child output contract and downstream parent work does not execute.
+
+### Terminal outcomes and state-machine integrity
+
+- [x] **DET-E2E-184 — Delegate success transition.** A running invocation reaches success exactly once; parent result, delegate node, child execution, invocation projection, completion event, trace detail, and mapped outputs all agree, and no later event can move any terminal record.
+- [x] **DET-E2E-185 — Delegate failure transition.** A deterministic child exception reaches failure exactly once with structured error propagation; the parent and delegate fail, the child remains queryable, pre-existing parent state is uncorrupted, and fallback recovery—when structurally present—runs once without converting the child trace to success.
+- [x] **DET-E2E-186 — Delegate partial-child semantics.** A child terminating `:partial` exercises the documented mapping to delegate-node and parent control-flow status, transfers only contractually permitted partial values, preserves failed-item evidence, and never fabricates delegate-invocation status outside its declared state machine.
+- [ ] **DET-E2E-187 — Delegate blocked-child semantics.** A child requesting `:blocked` exercises the documented delegate/parent status mapping, persists the blocking request and resumable lineage, emits no premature terminal completion, and transfers outputs only when the resumed child legitimately completes.
+- [x] **DET-E2E-188 — Delegate timeout transition and child termination.** A node-local timeout produces one timeout transition for the invocation, delegate, child, and parent as specified; elapsed time is bounded using controllable synchronization rather than scheduler-sensitive sleep thresholds, and the complete child trace is queryable.
+- [x] **DET-E2E-189 — Delegate terminal-state immutability.** For success, failure, timeout, and cancellation, replay duplicate, reordered, and conflicting late terminal stimuli; each invocation retains its first legitimate terminal state, one completion, one output set, and no outbound transition from terminal state.
+
+### Budgets, cancellation, and recursion
+
+- [ ] **DET-E2E-190 — Delegate timeout precedence matrix.** Cover child-node timeout shorter/equal/longer than parent deadline, parent already near deadline, and omitted local timeout; the effective deadline is the minimum applicable budget, terminal evidence identifies the winning boundary, and assertions use barriers/fake time rather than wall-clock races.
+- [ ] **DET-E2E-191 — Delegate maximum-tick boundary matrix.** Cover omitted, one, exact-success-boundary, one-short, child-greater-than-parent, and parent-near-exhaustion limits; configured/consumed ticks and terminal reason agree in events and traces, never exceed the effective minimum, and zero work starts after exhaustion.
+- [ ] **DET-E2E-192 — Nested delegate budget composition.** Parent → child → grandchild composes tick, elapsed-time, and LLM-call budgets; the smallest boundary wins, all active descendants terminate consistently, aggregated usage is charged once, and no deeper work starts after exhaustion.
+- [ ] **DET-E2E-193 — Cancellation before delegate dispatch.** Cancel after the parent delegate becomes runnable but before child dispatch; no child tick, executor call, value, or completion is created, while the parent and delegate expose one durable cancellation-compatible terminal outcome.
+- [ ] **DET-E2E-194 — Cancellation during a running delegate.** Cancel while the child is barrier-blocked; root, delegate, child, and nested active descendants terminate consistently, queued work never starts, the caller and stream close promptly, and releasing the barrier cannot create late writes or completions.
+- [ ] **DET-E2E-195 — Cancellation racing terminal child completion.** Deterministically order cancellation immediately before and immediately after the child's terminal append; each ordering has one documented winner, exactly one parent-node completion or cancellation outcome, stable live/replay projections, and no hybrid output/status state.
+- [ ] **DET-E2E-196 — Self and mutual delegation are bounded.** A workflow delegating to itself and two workflows delegating cyclically terminate at the configured tick/depth/deadline boundary without stack overflow, unbounded child creation, orphaned running traces, or executor/thread leakage.
+
+### Invocation identity, concurrency, and composition
+
+- [x] **DET-E2E-197 — Duplicate dispatch preserves one child identity.** Deliver the same durable parent-node work concurrently and repeatedly before and after child start; exactly one child tick and execution occur, all observers resolve the same identity, and the parent receives one completion.
+- [x] **DET-E2E-198 — Distinct delegate nodes targeting one workflow.** Two delegate nodes in one parent target the same child with equal inputs; they receive distinct durable child identities and trace instances, execute independently, and cannot consume each other's terminal delivery.
+- [x] **DET-E2E-199 — Later parent visits create fresh invocations.** Revisit one delegate across multiple root iterations with changing inputs; each logical visit creates exactly one distinct child, retains its ordinal and exact IO provenance, and a historical completion cannot satisfy a later visit.
+- [x] **DET-E2E-200 — Delegate inside map-each.** Concurrent map items invoking the same delegate retain identity by map index and parent instance, preserve input-aligned output order, respect the map concurrency bound, and expose no cross-item blackboard values or completion delivery.
+- [x] **DET-E2E-201 — Truly parallel delegates.** Barrier-controlled sibling delegates are simultaneously active, have distinct child ticks under one correlation identifier, see no sibling-only values, merge non-conflicting outputs exactly once, and obey the surrounding parallel node's success/failure policies.
+- [x] **DET-E2E-202 — Nested delegate lineage chain.** Parent → child → grandchild records the exact immediate-parent chain, one root identity, one correlation identity, unique trace and node-instance identities, correct sheet/version at each level, and final value provenance across both seams.
+- [ ] **DET-E2E-203 — Delegate composition in sequence and fallback.** A successful delegate advances sequence once; a failing delegate prevents later sequence work; fallback observes delegate failure and tries the next branch once; timeout, blocked, partial, and cancellation statuses follow their explicitly documented composite semantics.
+
+### Durable delivery and recovery windows
+
+- [x] **DET-E2E-204 — Recovery before durable child start.** Interrupt after delegate-node work is durable but before the child-start event; recovery creates exactly one child with the original invocation identity and inputs, then completes the parent once.
+- [x] **DET-E2E-205 — Recovery while child is running.** Lose processor/runtime observers while a barrier-blocked child is running, rebuild from the same event stream, and prove recovery observes/resumes the existing child rather than redispatching its completed work or external effects.
+- [x] **DET-E2E-206 — Recovery after child terminal append, before delivery.** Suppress parent delivery after the child terminal event, restart processors repeatedly, and prove durable child state wakes the parent with exact success outputs or structured failure exactly once.
+- [x] **DET-E2E-207 — Recovery after delivery, before parent continuation.** Interrupt after the parent delegate completion is durable but before downstream scheduling; recovery neither redelivers nor reruns the child, and downstream work advances exactly once from the original output provenance.
+- [x] **DET-E2E-208 — Duplicate and reordered terminal delivery.** Concurrently deliver the child's terminal event, explicit recovery observation, and duplicate parent re-ticks in multiple orders; one idempotency key wins, one completion is appended, and later logical invocations remain deliverable.
+- [ ] **DET-E2E-209 — Repeated processor recovery remains bounded.** Across many recovery cycles with a long-running child, child tick count, completion count, registered observers, futures, and executor threads remain bounded; after release, the parent completes and all process-local claims/lineage registrations are cleaned up.
+
+### Observability, streaming, replay, and contextual propagation
+
+- [ ] **DET-E2E-210 — Delegate trace detail is exact at both boundaries.** Supported trace queries expose parent delegate inputs/outputs, child root/leaf inputs/outputs, statuses, durations, read sources, parent/root IDs, invocation ordinal, configured/consumed budgets, and error evidence without leaking inline large values or unrelated blackboard data.
+- [x] **DET-E2E-211 — Delegate family and correlation queries.** Querying from root, child, or grandchild returns the identical complete family in deterministic order; correlation lookup groups multiple delegated roots correctly, excludes uncorrelated/other-tenant traces, and preserves immediate-parent relationships.
+- [ ] **DET-E2E-212 — Delegate streaming lifecycle.** A root subscription receives gapless ordered envelopes for child linkage, root/child/node start and terminal states, progress, outputs, timeout/cancellation, and one terminal close; every envelope carries correct root/tick/parent identifiers and no event appears after close.
+- [ ] **DET-E2E-213 — Stream subscription timing and recovery.** Subscribe before dispatch, while the child is running, and after durable child completion; live delivery plus durable catch-up yields the documented non-duplicated sequence and reconstructs the same terminal delegate family after process-local lineage is lost.
+- [ ] **DET-E2E-214 — Delegate projection replay equivalence.** After success, failure, timeout, cancellation, repeated invocation, and nested delegation, rebuild all relevant projections from the event stream; normalized tick, blackboard, node trace, trace-family, correlation, budget, and terminal-delivery states equal their live counterparts byte-for-byte where canonical.
+- [x] **DET-E2E-215 — Delegate event-schema and causation integrity.** Every delegate-related event validates against the registered schema and carries tenant, tick, sheet, node, completion, parent/root, correlation, iteration/map context, and causation metadata appropriate to its role; no caller supplies store-owned event identity or timestamp.
+- [ ] **DET-E2E-216 — Ontology-context inheritance matrix.** Default/true inheritance passes the intended immutable ontology context into child and nested delegates; false provides none; child mutation cannot alter parent context; export/import and published versions preserve the choice.
+- [ ] **DET-E2E-217 — Late-loaded code resolution through delegates.** A public child code function loaded after background processors start but before execution resolves identically in direct, delegated, nested, recovered, and repeated-invocation runs; a genuinely absent function fails with durable child and parent evidence.
+- [ ] **DET-E2E-218 — Delegate resource cleanup and throughput bound.** Repeated successful, failed, timed-out, cancelled, duplicated, and recovered delegate runs return observer/future/thread/stream-lineage counts to baseline within a deterministic settling condition, while a controlled parallel batch demonstrates bounded—not serialized and not unbounded—execution.
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions
 - [x] DET-E2E-102 — Mint, index, retrieve, and reuse a novel behavior
@@ -436,7 +516,7 @@ Record unexpected outcomes even when the final returned status is successful.
 - [x] DET-E2E-009 through DET-E2E-011 — Parallel policy matrix
 - [x] DET-E2E-014 — Bounded parallel map-each
 - [x] DET-E2E-021 — Map-each partial-result semantics
-- [x] DET-E2E-017 — Delegate failure isolation
+- [ ] DET-E2E-017 — Delegate failure isolation (reopened: delegate-node terminal trace is not asserted)
 - [x] DET-E2E-030 — Node-versus-tick timeout precedence
 - [x] DET-E2E-036 and DET-E2E-038 — Build idempotency and atomicity
 - [x] DET-E2E-041 — Published-version isolation
