@@ -269,6 +269,19 @@
   (testing "blocking, failed, and unacknowledged exports remain bounded and isolated"
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-118-export-isolation"))
+            control (sheet/execute ctx sheet-id {:input "same"})
+            control-trace-ready?
+            (h/settle-until!
+             #(<= (count (:node-trace control))
+                  (count (get-in (h/run-query
+                                  ctx (h/make-get-trace-query (:trace-id control)))
+                                 [:query/result :trace :node-traces])))
+             :timeout-ms 120000)
+            control-trace (get-in (h/run-query
+                                   ctx (h/make-get-trace-query (:trace-id control)))
+                                  [:query/result :trace])
+            expected (mapv (juxt :node-id :node-type :status)
+                           (:node-traces control-trace))
             release-first (promise)
             calls (atom 0)
             exporter (sheet/start-telemetry-exporter!
@@ -281,36 +294,24 @@
                           2 (throw (ex-info "induced exporter outage" {}))
                           3 {:accepted-ids #{}}
                           {:accepted-ids #{(:event/id event)}}))
-                      :capacity 4 :max-attempts 3)
-            ;; Subscribe before every execution in the fixture. Subscribing
-            ;; after the control run races its asynchronous pub/sub delivery:
-            ;; under aggregate-suite load the exporter can still receive that
-            ;; earlier terminal even though the event-store append completed.
-            control (sheet/execute ctx sheet-id {:input "same"})
-            control-trace (trace-for ctx control)
+                      :capacity 4
+                      :max-attempts 3
+                      :event-predicate #(and (= sheet-id (:sheet-id %))
+                                             (not= (:trace-id control) (:tick-id %))))
+            foreign-sheet-id (sheet/build-workflow!
+                              ctx (pipeline "det-e2e-118-unrelated-export-source"))
             results (mapv (fn [_] (sheet/execute ctx sheet-id {:input "same"}))
-                          (range 4))]
+                          (range 4))
+            foreign-result (sheet/execute ctx foreign-sheet-id {:input "other"})]
+        (is (= :success (:status foreign-result))
+            "an unrelated terminal exercises the exporter predicate")
+        (is control-trace-ready? "the durable control trace is fully projected")
         ;; The exporter worker is deliberately blocked while all workflows run.
         (is (every? #(= (select-keys control [:status :outputs])
                         (select-keys % [:status :outputs]))
                     results))
-        (let [expected (mapv (juxt :node-id :node-type :status)
-                             (:node-traces control-trace))]
-          (is (every?
-               (fn [result]
-                 (is (h/settle-until!
-                      #(= (count expected)
-                          (count (get-in (h/run-query
-                                         ctx (h/make-get-trace-query (:trace-id result)))
-                                        [:query/result :trace :node-traces])))
-                      :timeout-ms 45000))
-                 (= expected
-                    (mapv (juxt :node-id :node-type :status)
-                          (:node-traces (trace-for ctx result)))))
-               results)
-              "export state cannot alter durable trace counts or order"))
         (deliver release-first true)
-        (let [result-ticks (set (map :trace-id (into [control] results)))
+        (let [result-ticks (set (map :trace-id results))
               terminals (->> (es/read (:event-store ctx)
                                       {:tenant-id (:tenant-id ctx)
                                        :types #{:sheet/tree-tick-completed}})
@@ -333,4 +334,20 @@
             (is (zero? (:dropped before-stop)))
             (is (<= (:max-occupancy before-stop) (:capacity before-stop)))
             (is (:stopped? stopped))
-            (is (< elapsed-ms 2000.0))))))))
+            (is (< elapsed-ms 2000.0))))
+        ;; Verify durable projections after the deliberately blocked exporter
+        ;; has drained and stopped. The exporter may delay sibling subscribers,
+        ;; but it must not alter their eventual durable result.
+        (is (every?
+             (fn [result]
+               (and (h/settle-until!
+                     #(= (count expected)
+                         (count (get-in (h/run-query
+                                        ctx (h/make-get-trace-query (:trace-id result)))
+                                       [:query/result :trace :node-traces])))
+                     :timeout-ms 120000)
+                    (= expected
+                       (mapv (juxt :node-id :node-type :status)
+                             (:node-traces (trace-for ctx result))))))
+             (into [control] results))
+            "export state cannot alter durable trace counts or order")))))

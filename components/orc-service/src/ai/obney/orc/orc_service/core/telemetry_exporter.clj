@@ -20,10 +20,12 @@
    `export-fn` receives a one-element vector and returns
    `{:accepted-ids #{event-id ...}}`. Throws and missing acknowledgements are
    retried up to `max-attempts`. Queue overflow and exhausted retries are
-   visible in `stats`. Pub/sub callbacks only use non-blocking queue offer."
+   visible in `stats`. `event-predicate` optionally scopes events before they
+   enter the queue or affect statistics. Pub/sub callbacks only use non-blocking
+   queue offer."
   [event-pubsub event-types export-fn
-   & {:keys [capacity max-attempts]
-      :or {capacity 256 max-attempts 3}}]
+   & {:keys [capacity max-attempts event-predicate]
+      :or {capacity 256 max-attempts 3 event-predicate (constantly true)}}]
   {:pre [(pos? capacity) (pos? max-attempts) (seq event-types)]}
   (let [queue (java.util.concurrent.ArrayBlockingQueue. capacity)
         running? (atom true)
@@ -35,15 +37,16 @@
                         (pubsub/sub event-pubsub {:topic event-type :sub-chan ch})
                         (async/go-loop []
                           (when-let [event (async/<! ch)]
-                            (let [offered? (.offer queue event)]
-                              (swap! stats
-                                     (fn [s]
-                                       (cond-> (-> s
-                                                   (update :offered inc)
-                                                   (update :max-occupancy max (.size queue)))
-                                         (not offered?)
-                                         (-> (update :dropped inc)
-                                             (update :dropped-ids conj (event-id event)))))))
+                            (when (event-predicate event)
+                              (let [offered? (.offer queue event)]
+                                (swap! stats
+                                       (fn [s]
+                                         (cond-> (-> s
+                                                     (update :offered inc)
+                                                     (update :max-occupancy max (.size queue)))
+                                           (not offered?)
+                                           (-> (update :dropped inc)
+                                               (update :dropped-ids conj (event-id event))))))))
                             (recur)))
                         ch))
                     event-types)

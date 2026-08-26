@@ -242,6 +242,11 @@ contract ExecutionEventStream {
         -- Envelope sequence numbers strictly increase within one subscription;
         -- a gap explicitly indicates that ephemeral events were lost.
 
+    @invariant SubscriberScopePrecedesBackpressure
+        -- When a subscriber narrows its observation scope, unrelated events are
+        -- excluded before they consume bounded delivery capacity or affect that
+        -- subscriber's accepted, retried, failed or dropped accounting.
+
     @invariant DurableRecovery
         -- Every durable fact represented by the ephemeral stream remains
         -- recoverable from the execution record and its lineage.

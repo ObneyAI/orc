@@ -4601,6 +4601,23 @@
         ;; No events to emit directly
         nil))))
 
+(defn refresh-execution-trace-after-node-completion
+  "Reassemble a terminal trace when a node completion arrives after the tree
+   terminal event. Processor delivery is asynchronous across topics, so the
+   terminal assembler cannot assume every node lifecycle append is already
+   visible. Reusing the durable terminal event makes the eventual trace
+   independent of processor scheduling order."
+  [{:keys [event event-store] :as context}]
+  (let [tick-id (:tick-id event)
+        terminal-event (->> (es/read event-store
+                                     {:tenant-id (:tenant-id context)
+                                      :tags #{[:tick tick-id]}
+                                      :types #{:sheet/tree-tick-completed}})
+                            (into [])
+                            last)]
+    (when terminal-event
+      (assemble-execution-trace (assoc context :event terminal-event)))))
+
 ;; =============================================================================
 ;; Todo Processor Registry
 ;; =============================================================================
@@ -4911,6 +4928,12 @@
   "Assemble and store execution trace from events."
   [context]
   (assemble-execution-trace context))
+
+(defprocessor :sheet refresh-execution-trace-after-node-completion
+  {:topics #{:sheet/node-execution-completed}}
+  "Refresh a terminal trace when node lifecycle projection arrives later."
+  [context]
+  (refresh-execution-trace-after-node-completion context))
 
 ;; =============================================================================
 ;; RLM Rolling Judge — RETIRED in Gap-2
