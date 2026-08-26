@@ -4902,10 +4902,18 @@
 (defprocessor :sheet complete-tree-tick
   {:topics #{:sheet/node-execution-completed}}
   "Complete the tree tick when its root completes, then refresh any terminal
-   trace from the same durable node-completion delivery."
+   trace from the same durable node-completion delivery.
+
+   The processor's RETURN VALUE is `complete-tree-tick`'s. The trace refresh
+   runs for its effect only and returns nil, so returning it discards
+   `complete-tree-tick`'s `:result/events` — including the `:running` re-tick
+   pair (tree-tick-completed + tree-tick-started) that advances every workflow
+   whose root deliberately stays running. Any root `:running` completion would
+   silently stop re-ticking."
   [context]
-  (complete-tree-tick context)
-  (refresh-execution-trace-after-node-completion context))
+  (let [result (complete-tree-tick context)]
+    (refresh-execution-trace-after-node-completion context)
+    result))
 
 (defprocessor :sheet restore-from-snapshot
   {:topics #{:sheet/draft-reverted :sheet/stash-restored}}
