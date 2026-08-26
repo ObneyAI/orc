@@ -247,6 +247,12 @@ contract ExecutionEventStream {
         -- excluded before they consume bounded delivery capacity or affect that
         -- subscriber's accepted, retried, failed or dropped accounting.
 
+    @invariant StalledSubscriberRemainsBounded
+        -- A subscriber that stops consuming cannot exceed its configured
+        -- delivery capacity or delay workflow execution. Older ephemeral
+        -- envelopes may be discarded, but the terminal stream closure remains
+        -- the newest observable envelope.
+
     @invariant DurableRecovery
         -- Every durable fact represented by the ephemeral stream remains
         -- recoverable from the execution record and its lineage.

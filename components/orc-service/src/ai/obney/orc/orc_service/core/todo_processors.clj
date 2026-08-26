@@ -4901,9 +4901,11 @@
 
 (defprocessor :sheet complete-tree-tick
   {:topics #{:sheet/node-execution-completed}}
-  "Complete tree tick when root node completes."
+  "Complete the tree tick when its root completes, then refresh any terminal
+   trace from the same durable node-completion delivery."
   [context]
-  (complete-tree-tick context))
+  (complete-tree-tick context)
+  (refresh-execution-trace-after-node-completion context))
 
 (defprocessor :sheet restore-from-snapshot
   {:topics #{:sheet/draft-reverted :sheet/stash-restored}}
@@ -4928,12 +4930,6 @@
   "Assemble and store execution trace from events."
   [context]
   (assemble-execution-trace context))
-
-(defprocessor :sheet refresh-execution-trace-after-node-completion
-  {:topics #{:sheet/node-execution-completed}}
-  "Refresh a terminal trace when node lifecycle projection arrives later."
-  [context]
-  (refresh-execution-trace-after-node-completion context))
 
 ;; =============================================================================
 ;; RLM Rolling Judge — RETIRED in Gap-2

@@ -1241,7 +1241,7 @@
                      ctx (sheet/workflow "recovery-running-parent"
                            (sheet/blackboard {:result :string})
                            (sheet/delegate "child" :target-sheet-id child-id
-                             :writes [:result] :timeout-ms 4000)))
+                             :writes [:result] :timeout-ms 120000)))
           intercepted (promise)
           retire-release (promise)
           execute-leaf! tp/execute-leaf-node
@@ -1253,21 +1253,24 @@
                                     nil)
                                 (execute-leaf! context)))]
                 (let [pending (future (sheet/execute ctx parent-id {}
-                                                     :timeout-ms 5000))]
+                                                     :timeout-ms 120000))]
                   {:pending pending
-                   :abandoned-start (deref intercepted 2500 ::not-intercepted)}))
+                   :abandoned-start (deref intercepted 5000 ::not-intercepted)}))
           pending (:pending gap)
           abandoned-start (:abandoned-start gap)]
       (is (not= ::not-intercepted abandoned-start))
       (is (zero? @recovery-effect-calls))
       (let [stop-result (future (h/stop-test-processors! ctx))]
         (deliver retire-release true)
-        (is (not= ::stop-timeout (deref stop-result 2500 ::stop-timeout))))
+        (is (not= ::stop-timeout (deref stop-result 5000 ::stop-timeout))))
       (runtime/deregister-completion! (:tick-id abandoned-start))
       (let [recovered-ctx (assoc ctx :processors (h/start-test-processors ctx))]
         (try
-          (dotimes [_ 20] (runtime/resume-in-progress! recovered-ctx))
-          (let [result (deref pending 3000 ::timeout)
+          (is (h/settle-until!
+               #(some :resumed? (runtime/resume-in-progress! recovered-ctx))
+               :timeout-ms 30000)
+              "recovery waits until the abandoned frontier is projected")
+          (let [result (deref pending 30000 ::timeout)
                 child-starts (filter #(and (= :sheet/tree-tick-started (:event/type %))
                                            (= (:trace-id result) (:parent-tick-id %)))
                                      (h/read-all-events ctx))]

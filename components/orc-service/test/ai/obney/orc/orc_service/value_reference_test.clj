@@ -98,6 +98,16 @@
     (h/with-async-test-context [ctx]
       (let [{:keys [sheet-id leaf sequences]} (setup-nested-producer! ctx)
             result (runtime/execute ctx sheet-id {})
+            summaries-settled?
+            (h/settle-until!
+             #(= 2
+                 (->> (h/read-all-events ctx)
+                      (filter (fn [event]
+                                (= :sheet/ephemeral-evaluations-recorded
+                                   (:event/type event))))
+                      (mapcat :steps)
+                      (filter (fn [step] (sequences (:node-id step))))
+                      count)))
             events (h/read-all-events ctx)
             writes (filter #(and (= :sheet/execution-value-written (:event/type %))
                                  (= :blob (:key %))) events)
@@ -108,6 +118,8 @@
                                       (filter #(sequences (:node-id %))))
             canonical (first writes)]
         (is (= :success (:status result)))
+        (is summaries-settled?
+            "sequence provenance is durable before it is inspected")
         (is (= large-value (get-in result [:outputs :blob])))
         (is (= 1 (count writes)) "only the leaf owns the value bytes")
         (is (= leaf (:node-id canonical)))
