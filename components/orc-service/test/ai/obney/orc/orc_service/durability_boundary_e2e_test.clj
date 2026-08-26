@@ -41,6 +41,20 @@
                      :tags #{[:sheet sheet-id]}})))
 
 (defn- execution-metrics [ctx result elapsed-ns]
+  ;; Trace assembly is appended by an async future and is the LAST thing a
+  ;; completed tick writes, so reading before it lands counts a different set
+  ;; of events run to run. That is not noise in the accounting — the traced
+  ;; event is ~3 KB, and the two executions here are not measured in the same
+  ;; state: the legacy run has had the optimized run's whole duration for its
+  ;; trace to settle, while the optimized run is measured immediately. When the
+  ;; optimized trace happens to land in time its byte total jumps past legacy
+  ;; and the comparison inverts.
+  ;;
+  ;; h/trace-stored? is the documented settle signal for exactly this ("trace
+  ;; assembly is the last thing a completed tick writes, so it is the settle
+  ;; signal for whole-run byte accounting"). Wait for it so both executions are
+  ;; always measured in the same, fully-settled state.
+  (h/settle-until! #(h/trace-stored? ctx (:trace-id result)))
   (let [events (tick-events ctx (:trace-id result))]
     {:elapsed-ns elapsed-ns
      :event-count (count events)
