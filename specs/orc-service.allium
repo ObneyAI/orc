@@ -298,6 +298,12 @@ contract ExecutionDurability {
         -- since the preceding boundary. Inspection distinguishes such summaries
         -- from independently durable node executions without presenting either
         -- as the other.
+
+    @invariant TraceRefreshNeverRegresses
+        -- Reassembling a terminal execution trace may add durable evidence that
+        -- arrived after an earlier assembly. A delayed or duplicate refresh
+        -- never removes evidence already represented by a newer assembly and
+        -- never changes the canonical order of the executions it retains.
 }
 
 contract ExecutionRecovery {

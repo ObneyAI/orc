@@ -890,6 +890,8 @@
              (nil? (:correlation-id event)) (dissoc :correlation-id)
              (:parent-trace-id event) (assoc :parent-trace-id (:parent-trace-id event))
              (:version-number event) (assoc :version-number (:version-number event))
+             (some? (:source-event-count event))
+             (assoc :source-event-count (:source-event-count event))
              (:error event) (assoc :error (:error event))))))
 
 (defmethod traces* :default [state _] state)
@@ -900,7 +902,7 @@
   (reduce traces* (or initial-state {}) events))
 
 (defreadmodel :sheet traces
-  {:events trace-events :version 6
+  {:events trace-events :version 7
    :partition-fn :sheet-id
    :entity-id-fn :trace-id}
   [state event] (traces* state event))

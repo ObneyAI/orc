@@ -265,17 +265,64 @@
           (is (every? #(.endsWith ^String (:started-at %) "Z")
                       (:traces (query)))))))))
 
+(deftest det-e2e-258-stale-trace-refresh-cannot-regress-durable-evidence
+  (testing "an older asynchronous assembly cannot replace a newer complete trace"
+    (h/with-async-test-context [ctx]
+      (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-258-trace-refresh"))
+            trace-id (random-uuid)
+            node-a {:node-id (random-uuid) :node-type :sequence :status :success}
+            node-b {:node-id (random-uuid) :node-type :leaf :status :success}
+            node-c {:node-id (random-uuid) :node-type :leaf :status :success}
+            node-d {:node-id (random-uuid) :node-type :leaf :status :success}
+            store! (fn [source-event-count node-traces]
+                     (h/run-and-apply!
+                      ctx {:command/id (random-uuid)
+                           :command/timestamp (java.time.OffsetDateTime/now)
+                           :command/name :sheet/store-execution-trace
+                           :trace-id trace-id
+                           :sheet-id sheet-id
+                           :root-trace-id trace-id
+                           :child-trace-ids []
+                           :started-at "2026-08-26T12:00:00Z"
+                           :completed-at "2026-08-26T12:00:01Z"
+                           :duration-ms 1000
+                           :status :success
+                           :input-snapshot {}
+                           :output-snapshot {}
+                           :source-event-count source-event-count
+                           :node-traces node-traces}))]
+        (store! 3 [node-a node-b node-c])
+        (store! 2 [node-a node-b])
+        (store! 3 [node-a node-b])
+        (store! 4 [node-a node-b node-c node-d])
+        (let [trace (get-in (h/run-query ctx (h/make-get-trace-query trace-id))
+                            [:query/result :trace])
+              stored (->> (es/read (:event-store ctx)
+                                   {:tenant-id (:tenant-id ctx)
+                                    :types #{:sheet/execution-traced}
+                                    :tags #{[:trace trace-id]}})
+                          (into []))]
+          (is (= 4 (:source-event-count trace)))
+          (is (= [node-a node-b node-c node-d]
+                 (mapv #(select-keys % [:node-id :node-type :status])
+                       (:node-traces trace))))
+          (is (= [3 4] (mapv :source-event-count stored))
+              "stale and duplicate refreshes append nothing; newer evidence advances once"))))))
+
 (deftest det-e2e-118-observability-outage-does-not-corrupt-execution
   (testing "blocking, failed, and unacknowledged exports remain bounded and isolated"
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-118-export-isolation"))
             control (sheet/execute ctx sheet-id {:input "same"})
+            ;; The public trace is the sequence summary plus two durable
+            ;; leaves. The returned :node-trace contains only those leaves,
+            ;; so it cannot be used as the settle count.
             control-trace-ready?
             (h/settle-until!
-             #(<= (count (:node-trace control))
-                  (count (get-in (h/run-query
-                                  ctx (h/make-get-trace-query (:trace-id control)))
-                                 [:query/result :trace :node-traces])))
+             #(= 3
+                 (count (get-in (h/run-query
+                                 ctx (h/make-get-trace-query (:trace-id control)))
+                                [:query/result :trace :node-traces])))
              :timeout-ms 120000)
             control-trace (get-in (h/run-query
                                    ctx (h/make-get-trace-query (:trace-id control)))

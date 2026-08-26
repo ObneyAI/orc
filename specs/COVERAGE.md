@@ -65,14 +65,14 @@ and zero process findings under Allium language version 3.
 The Allium CLI treats warnings and informational diagnostics as a non-zero
 result, so “zero errors” above does not mean `allium check specs` exits cleanly.
 Under the current checked-in specifications and Allium CLI, both
-`allium check specs` and `allium analyse specs` report 122 structural diagnostics
-across the twelve specifications: 87 informational and 35 warnings. `analyse`
+`allium check specs` and `allium analyse specs` report 125 structural diagnostics
+across the twelve specifications: 90 informational and 35 warnings. `analyse`
 reports zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 54 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 33 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.rule.unreachableTrigger` | 56 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.field.unused` | 34 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 17 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
@@ -347,3 +347,16 @@ checkpoint-safe tool deduplication, clean-JVM automatic recovery, live provider
 timeout evidence, and checkpointed-versus-compatibility benchmark comparison.
 These journeys complement the deterministic suite and are not substitutes for
 crash-boundary correctness proofs.
+
+## Monotonic terminal-trace refresh
+
+Terminal trace assembly carries a revision derived from the durable, non-trace
+events visible for the execution. The command/event boundary atomically rejects
+stale and duplicate revisions while allowing a newer source snapshot to add
+evidence; trace publication itself cannot advance the revision. The synchronous
+timeout writer uses the same boundary, so its partial active-attempt evidence
+cannot race an equal or older asynchronous refresh into a second replacement.
+DET-E2E-258 verifies stale, duplicate and advancing revisions through command,
+event and projection read-back. The public timeout path, affected trace
+namespaces, repeated observability and durability tests, and the complete
+`orc-service` brick pass all succeed with this contract in place.

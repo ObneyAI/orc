@@ -315,6 +315,7 @@
     ;; the keys it wrote.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count {:optional true} [:and :int [:>= 0]]]
     [:node-traces [:vector ::node-trace]]
     [:researcher-iterations {:optional true} [:vector :any]]
     [:researcher-events {:optional true} [:vector :any]]
@@ -840,6 +841,7 @@
     ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count {:optional true} [:and :int [:>= 0]]]
     [:node-traces [:vector :any]]
     [:researcher-iterations {:optional true} [:vector :any]]
     [:researcher-events {:optional true} [:vector :any]]
@@ -1496,6 +1498,7 @@
     ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count {:optional true} [:and :int [:>= 0]]]
     [:node-traces [:vector :any]]                 ;; Vector of ::node-trace
     [:researcher-iterations {:optional true} [:vector :any]]
     [:researcher-events {:optional true} [:vector :any]]

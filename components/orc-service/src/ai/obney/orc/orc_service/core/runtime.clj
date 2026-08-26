@@ -354,6 +354,16 @@
                             (get-in tick-ctx [:options :max-ticks])
                             (assoc :configured-max-ticks
                                    (get-in tick-ctx [:options :max-ticks])))))
+        ;; Count the durable source after the terminal append. Trace events use
+        ;; the same tick tag and are excluded so publication is not itself a
+        ;; source revision.
+        source-event-count
+        (->> (es/read (:event-store context)
+                      {:tenant-id (:tenant-id context)
+                       :tags #{[:tick tick-id]}})
+             (into [])
+             (remove #(= :sheet/execution-traced (:event/type %)))
+             count)
         _cancelled-work (execution-budget/cancel-active-work! tick-id)]
     (loop [attempt 0]
       (let [stored (cp/process-command
@@ -369,6 +379,7 @@
                                     :duration-ms trace-duration-ms :status :timeout
                                     :input-snapshot (profile/profile-values (or inputs {}))
                                     :output-snapshot {}
+                                    :source-event-count source-event-count
                                     :node-traces node-traces
                                     :error error}
                              parent-trace-id

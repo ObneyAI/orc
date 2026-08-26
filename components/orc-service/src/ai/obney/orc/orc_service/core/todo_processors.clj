@@ -4329,6 +4329,12 @@
             correlation-id (:correlation-id tick-ctx)
             ;; Read all events for this tick (into [] to realize reducible)
             tick-events (into [] (es/read event-store {:tags #{[:tick tick-id]} :tenant-id (:tenant-id context)}))
+            ;; Trace publications carry the tick tag too. Exclude them so a
+            ;; refresh cannot manufacture a newer source revision merely by
+            ;; observing an earlier trace assembly.
+            source-event-count (count (remove #(= :sheet/execution-traced
+                                                   (:event/type %))
+                                              tick-events))
             ;; Find tick-started event for timing
             started-event (first (filter #(= :sheet/tree-tick-started (:event/type %)) tick-events))
             started-at (when started-event (:event/timestamp started-event))
@@ -4586,6 +4592,7 @@
                               :terminal-reason terminal-reason
                               :input-snapshot input-snapshot
                               :output-snapshot output-snapshot
+                              :source-event-count source-event-count
                               :node-traces node-traces}
                        (seq researcher-iterations)
                        (assoc :researcher-iterations researcher-iterations)
