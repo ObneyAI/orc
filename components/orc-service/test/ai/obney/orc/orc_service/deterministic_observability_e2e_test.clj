@@ -269,8 +269,6 @@
   (testing "blocking, failed, and unacknowledged exports remain bounded and isolated"
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-118-export-isolation"))
-            control (sheet/execute ctx sheet-id {:input "same"})
-            control-trace (trace-for ctx control)
             release-first (promise)
             calls (atom 0)
             exporter (sheet/start-telemetry-exporter!
@@ -284,6 +282,12 @@
                           3 {:accepted-ids #{}}
                           {:accepted-ids #{(:event/id event)}}))
                       :capacity 4 :max-attempts 3)
+            ;; Subscribe before every execution in the fixture. Subscribing
+            ;; after the control run races its asynchronous pub/sub delivery:
+            ;; under aggregate-suite load the exporter can still receive that
+            ;; earlier terminal even though the event-store append completed.
+            control (sheet/execute ctx sheet-id {:input "same"})
+            control-trace (trace-for ctx control)
             results (mapv (fn [_] (sheet/execute ctx sheet-id {:input "same"}))
                           (range 4))]
         ;; The exporter worker is deliberately blocked while all workflows run.
@@ -298,14 +302,15 @@
                       #(= (count expected)
                           (count (get-in (h/run-query
                                          ctx (h/make-get-trace-query (:trace-id result)))
-                                        [:query/result :trace :node-traces])))))
+                                        [:query/result :trace :node-traces])))
+                      :timeout-ms 45000))
                  (= expected
                     (mapv (juxt :node-id :node-type :status)
                           (:node-traces (trace-for ctx result)))))
                results)
               "export state cannot alter durable trace counts or order"))
         (deliver release-first true)
-        (let [result-ticks (set (map :trace-id results))
+        (let [result-ticks (set (map :trace-id (into [control] results)))
               terminals (->> (es/read (:event-store ctx)
                                       {:tenant-id (:tenant-id ctx)
                                        :types #{:sheet/tree-tick-completed}})
