@@ -766,6 +766,44 @@
           (is (some #{:memo} (:vars-updated (second history))))
           (is (= 2 (get-in result [:checkpoint :sandbox-vars :memo]))))))))
 
+(deftest checkpoint-survives-generated-tree-containing-inline-fn
+  (testing "A campaign whose emitted tree carries inline (fn ...) code nodes checkpoints and resumes instead of dying"
+    ;; merge-clears-dispatch-marker-but-preserves-tree-raw pins that
+    ;; :generated-tree-raw is DELIBERATELY preserved in sandbox-vars. For a tree
+    ;; with inline [:code {:fn (fn ...)}] nodes that value holds live SCI fn
+    ;; objects, which encode-checkpoint-value cannot make durable. Unguarded, the
+    ;; throw escapes the checkpoint and kills the whole campaign with no
+    ;; :iterations — losing every completed iteration to a durability problem.
+    (with-test-ctx [ctx]
+      (let [calls (atom 0)
+            node {:type :repl-researcher
+                  :instruction "design a tree with inline code, then finish"
+                  :writes [:summary]
+                  :rlm {:recursive? true
+                        :checkpointed? true
+                        :quantum {:max-iterations 1}}
+                  :max-iterations 5}]
+        (with-redefs [llm/predict
+                      (fn [_provider _module _inputs _opts]
+                        (case (swap! calls inc)
+                          1 {:outputs {:code "(store! :generated-tree-raw [:sequence [:code {:fn (fn [in] in)}] [:final {:keys [:summary]}]])"}}
+                          2 {:outputs {:code "(final! {:summary \"done\"})"}}
+                          (throw (ex-info "completed iteration was replayed" {}))))]
+          (let [yielded (executor/execute-repl-researcher-rlm node {} :openrouter ctx)]
+            (is (= :running (:status yielded))
+                (str "an inline-fn tree must not fail the campaign: "
+                     (pr-str (select-keys yielded [:status :error]))))
+            (is (seq (:iterations yielded))
+                "the completed iteration survives the checkpoint")
+            (is (executor/checkpoint-durable-value? (:checkpoint yielded))
+                "the yielded checkpoint is durable end to end")
+            (let [resumed (executor/execute-repl-researcher-rlm
+                           node {} :openrouter
+                           (assoc ctx :researcher-checkpoint (:checkpoint yielded)))]
+              (is (= :success (:status resumed)))
+              (is (= 2 @calls)
+                  "the completed first iteration is not sent to the provider again"))))))))
+
 (deftest checkpoint-values-reject-jvm-local-state
   (is (executor/checkpoint-durable-value?
        {:nested [1 "two" #{:three}]

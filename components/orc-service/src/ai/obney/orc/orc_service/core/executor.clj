@@ -2965,18 +2965,48 @@
         checkpoint-result
         (fn [next-iteration history]
           (when checkpointed?
-            (let [checkpoint {:version 1
+            (let [;; A generated tree keeps its inline (fn ...) nodes as LIVE SCI
+                  ;; objects under :generated-tree-raw, deliberately preserved by
+                  ;; merge-tree-result-into-sandbox so final! can report what the
+                  ;; model designed. SCI fns are not durable and encoding one
+                  ;; throws. Sanitize to the event representation first — exactly
+                  ;; what compute-tree-result-summary already does for
+                  ;; :tree-results.
+                  durable-sandbox-vars
+                  (let [vars @sandbox-vars]
+                    (cond-> vars
+                      (contains? vars :generated-tree-raw)
+                      (update :generated-tree-raw
+                              tree-executor/sanitize-tree-for-events)))
+                  checkpoint {:version 1
                               :revision (swap! checkpoint-revision inc)
                               :next-iteration next-iteration
                               :history history
-                              :sandbox-vars @sandbox-vars
+                              :sandbox-vars durable-sandbox-vars
                               :var-creation-times @var-creation-times
                               :usage @total-usage
                               :cumulative-tree-ms @cumulative-tree-ms
                               :iteration-attempts (dissoc iteration-attempts (dec next-iteration))
                               :campaign-started-at-ms campaign-started-at-ms
-                              :campaign-deadline-ms campaign-deadline-ms}]
-              (let [durable-checkpoint (encode-checkpoint-value checkpoint-codecs checkpoint)]
+                              :campaign-deadline-ms campaign-deadline-ms}
+                  ;; encode-checkpoint-value THROWS on a value it cannot make
+                  ;; durable. Uncaught, that throw escapes to the outer handler
+                  ;; and the campaign dies with NO :iterations — every completed
+                  ;; iteration lost to a durability problem, and the explicit
+                  ;; failure below unreachable. Catch it here so the campaign
+                  ;; fails with its history intact and a message naming the cause.
+                  encoded (try
+                            {:checkpoint (encode-checkpoint-value checkpoint-codecs checkpoint)}
+                            (catch Exception e
+                              {:encode-error (ex-message e)}))]
+              (if-let [encode-error (:encode-error encoded)]
+                {:status :failure
+                 :iterations history
+                 :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                 :usage @total-usage
+                 :error (str "Researcher checkpoint contains a non-durable sandbox value; "
+                             "use EDN data or a registered durable codec (" encode-error ")")}
+              (let [durable-checkpoint (:checkpoint encoded)]
               (if (checkpoint-durable-value? durable-checkpoint)
                 (if (>= (- next-iteration initial-iteration)
                         quantum-max-iterations)
@@ -2993,7 +3023,7 @@
                  :iterations history
                  :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
                  :usage @total-usage
-                 :error "Researcher checkpoint contains a non-durable sandbox value; use EDN data or a registered durable codec"})))))
+                 :error "Researcher checkpoint contains a non-durable sandbox value; use EDN data or a registered durable codec"}))))))
         persist-terminal-result
         (fn [iteration history terminal-result]
           (if-not checkpointed?
