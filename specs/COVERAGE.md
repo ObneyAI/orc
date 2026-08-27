@@ -273,6 +273,12 @@ canonical HTTP transformation plus explicit rejection of unsupported or
 ambiguous controls. DET-E2E-130 remains open until the complete persisted-node
 through HTTP-body contract is exercised in one integration-shaped test.
 
+The boundary regression also verifies that ORC's public `:timeout-ms` request
+control is translated to LiteLLM's provider-facing `:timeout` key and that the
+ORC-only spelling is not leaked. This closes the adapter gap that caused a
+180-second live execution budget to be silently replaced by OpenRouter's
+30-second default before the request reached the provider.
+
 ## Composed AI retry deadlines and timeout evidence (2026-08-09)
 
 AI executor retries and node retries now share the root execution deadline and
@@ -283,6 +289,13 @@ timeout. DET-E2E-131 verifies the provider-call cap through the public workflow
 boundary. DET-E2E-132 verifies that a timeout trace preserves completed routing
 nodes and identifies the unfinished AI node with provider attempt, node attempt,
 configured limits, provider timeout, and remaining-budget evidence.
+
+The recursive-researcher regression proves that its computed per-provider
+budget reaches the LLM boundary; the focused LLM-boundary regression proves
+that the same value reaches the provider configuration spelling consumed by
+LiteLLM. Together they close the final adapter path for
+`SingleExecutionDeadline` instead of falling back to an unrelated transport
+default.
 
 ## Timeout trace chronology and canonical timestamps (2026-08-11)
 

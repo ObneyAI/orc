@@ -851,6 +851,7 @@
 (deftest checkpointed-provider-deadline-is-independent
   (with-test-ctx [ctx]
     (let [started (System/nanoTime)
+          provider-options (atom nil)
           node {:type :repl-researcher
                 :instruction "timeout"
                 :writes [:summary]
@@ -859,11 +860,16 @@
                                  :iteration-ms 500
                                  :campaign-ms 2000}
                       :iteration-retry {:max-attempts 1}}}]
-      (with-redefs [llm/predict (fn [& _] (Thread/sleep 250) {:outputs {:code "nil"}})]
+      (with-redefs [llm/predict (fn [_ _ _ options]
+                                  (reset! provider-options options)
+                                  (Thread/sleep 250)
+                                  {:outputs {:code "nil"}})]
         (let [result (executor/execute-repl-researcher-rlm node {} :openrouter ctx)
               elapsed-ms (/ (- (System/nanoTime) started) 1000000.0)]
           (is (= :timeout (:status result)))
           (is (= :provider (:timeout-kind result)))
+          (is (= 10 (:timeout-ms @provider-options))
+              "the computed provider deadline reaches the LLM boundary")
           (is (< elapsed-ms 200.0)
               (str "provider timeout should return before the 250ms call; elapsed=" elapsed-ms)))))))
 

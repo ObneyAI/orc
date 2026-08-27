@@ -3245,7 +3245,8 @@
                                   (:current exceeded) "/" (:budget exceeded))
                              exceeded)))
                    (llm/predict provider module inputs
-                                (cond-> llm-options
+                                (cond-> (assoc llm-options
+                                                :timeout-ms provider-timeout-ms)
                                   checkpointed?
                                   (assoc :orc/idempotency-key provider-action-id))))
                 provider-call (if completed-provider-action

@@ -132,9 +132,14 @@
              (llm/predict :openrouter qa {:question "Capital?"}
                           {:validate? false
                            :reasoning-effort :none
-                           :max-tokens 512})))
+                           :max-tokens 512
+                           :timeout-ms 42000})))
       (is (= :none (:reasoning-effort @captured-request)))
-      (is (= 512 (:max-tokens @captured-request))))))
+      (is (= 512 (:max-tokens @captured-request)))
+      (is (= 42000 (:timeout @captured-request))
+          "ORC's millisecond deadline reaches LiteLLM's provider timeout key")
+      (is (not (contains? @captured-request :timeout-ms))
+          "the ORC-only spelling does not leak into the provider request"))))
 
 (deftest function-calling-performs-one-provider-invocation
   (let [calls (atom 0)]
