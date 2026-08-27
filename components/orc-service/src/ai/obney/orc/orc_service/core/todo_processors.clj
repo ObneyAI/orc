@@ -4345,12 +4345,30 @@
                (conj seen current)
                (inc depth))))))
 
+(defn- await-event-visible!
+  "Fence pubsub delivery against event-store query visibility. A processor may
+   receive an event from a multi-event append before a concurrent read exposes
+   the complete append batch; trace assembly must not snapshot that prefix."
+  [event-store tenant-id event]
+  (when-let [event-id (:event/id event)]
+    (let [deadline (+ (System/currentTimeMillis) 5000)]
+      (loop []
+        (let [visible? (some #(= event-id (:event/id %))
+                             (into []
+                                   (es/read event-store
+                                            {:tenant-id tenant-id
+                                             :tags #{[:tick (:tick-id event)]}})))]
+          (when-not (or visible? (>= (System/currentTimeMillis) deadline))
+            (Thread/sleep 5)
+            (recur)))))))
+
 (defn assemble-execution-trace
   "After a tick completes, assemble an execution trace from events and store it.
    Only runs for tick-scoped executions (snapshot-based).
    Reads node-execution-started/completed events, correlates them with node
    metadata from the execution snapshot, and stores via store-execution-trace."
   [{:keys [event event-store] :as context}]
+  (await-event-visible! event-store (:tenant-id context) event)
   (let [tick-id (:tick-id event)
         sheet-id (:sheet-id event)
         root-status (:root-status event)
