@@ -6,6 +6,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.orc-service.complex-e2e-support :as live]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]))
 
@@ -26,6 +27,50 @@
 
 (defn- usage-total [usage]
   (long (or (:total-tokens usage) (:total_tokens usage) 0)))
+
+(deftest det-e2e-228-real-model-checkpointed-multi-iteration
+  (testing "a pinned real model crosses a durable yield and finishes from prior state"
+    (live/with-real-openrouter
+      (live/register-openrouter!)
+      (h/with-async-test-context
+        [ctx {:context {:llm-provider :openrouter :model live/openrouter-model}}]
+        (let [{:keys [sheet-id]} (live/build-recursive-rlm!
+                                  ctx {:name "det-e2e-228-checkpointed"
+                                       :instruction
+                                       (str "Use at least two Phase-1 iterations. In the first iteration call "
+                                            "(store! :evidence \"CHECKPOINTED\") and do not call final!. "
+                                            "In the next iteration read :evidence and call final! with "
+                                            "{:answer evidence}. Return exactly CHECKPOINTED.")
+                                       :writes [:answer]
+                                       :max-iterations 5
+                                       :rlm {:checkpointed? true
+                                             :quantum {:max-iterations 1}
+                                             :timeouts {:provider-ms 60000
+                                                        :iteration-ms 90000
+                                                        :phase2-ms 90000
+                                                        :campaign-ms 180000}}})
+              started-at-ms (System/currentTimeMillis)
+              result (sheet/execute ctx sheet-id {:question "Perform the checkpoint audit."}
+                                    :timeout-ms 180000
+                                    :llm-call-budget 6)
+              elapsed-ms (- (System/currentTimeMillis) started-at-ms)
+              tick-id (:trace-id result)
+              events (root-events ctx tick-id)
+              checkpoints (filter #(= :rlm/researcher-checkpointed (:event/type %)) events)]
+          (is (= :success (:status result)) (pr-str result))
+          (is (= "CHECKPOINTED" (get-in result [:outputs :answer])))
+          (is (seq checkpoints) "at least one iteration crossed a durable yield")
+          (is (every? #(number? (get-in % [:checkpoint :history 0 :provider-latency-ms]))
+                      checkpoints))
+          (is (pos? elapsed-ms) "the live journey records end-to-end latency")
+          (is (h/settle-until! #(some? (rm/get-trace ctx tick-id))))
+          (let [trace (rm/get-trace ctx tick-id)
+                iterations (:researcher-iterations trace)]
+            (is (<= 2 (count iterations)))
+            (is (every? #(number? (:provider-latency-ms %)) iterations))
+            (is (every? #(pos? (usage-total (:provider-usage %))) iterations))
+            (is (some #{:yield} (map :type (:researcher-events trace))))
+            (is (some #{:resume} (map :type (:researcher-events trace))))))))))
 
 (def targeted-recovery-instruction
   (str

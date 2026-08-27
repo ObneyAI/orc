@@ -13,6 +13,7 @@
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.value-storage :as value-storage]
@@ -2137,6 +2138,10 @@
                   ;; between dispatch and this future running.
                   tool-context (:tool-context tick-ctx)
                   correlation-id (:correlation-id tick-ctx)
+                  durable-checkpoint (some-> (rm/get-researcher-checkpoint
+                                               context sheet-id tick-id node-id)
+                                              :checkpoint)
+                  durable-actions (rm/get-researcher-actions context sheet-id tick-id node-id)
                   enriched-context (cond-> (assoc context
                                                   :sheet-id sheet-id
                                                   :tick-id tick-id
@@ -2149,12 +2154,44 @@
                                                   :reserve-llm-call!
                                                   #(reserve-llm-call-or-cancel!
                                                     context tick-ctx sheet-id tick-id)
+                                                  :persist-researcher-checkpoint!
+                                                  (fn [checkpoint]
+                                                    (cp/process-command
+                                                     (assoc context :command
+                                                            {:command/id (random-uuid)
+                                                             :command/timestamp (time/now)
+                                                             :command/name :sheet/checkpoint-researcher-iteration
+                                                             :sheet-id sheet-id
+                                                             :tick-id tick-id
+                                                             :node-id node-id
+                                                             :checkpoint checkpoint
+                                                             :resume? false
+                                                             :inputs event-inputs})))
+                                                  :persist-researcher-action!
+                                                  (fn [{:keys [action-id action-kind iteration result]}]
+                                                    (cp/process-command
+                                                     (assoc context :command
+                                                            {:command/id (random-uuid)
+                                                             :command/timestamp (time/now)
+                                                             :command/name :sheet/record-researcher-action
+                                                             :sheet-id sheet-id
+                                                             :tick-id tick-id
+                                                             :node-id node-id
+                                                             :action-id action-id
+                                                             :action-kind action-kind
+                                                             :iteration iteration
+                                                             :result result
+                                                             :completed-at (str (java.time.Instant/now))})))
                                                   ;; node-id rides along so RLM stream
                                                   ;; events (iteration/phase2) carry the
                                                   ;; hosting repl-researcher node.
                                                   :node-id node-id)
                                      tool-context (assoc :tool-context tool-context)
-                                     correlation-id (assoc :orc/correlation-id correlation-id))
+                                     correlation-id (assoc :orc/correlation-id correlation-id)
+                                     durable-checkpoint
+                                     (assoc :researcher-checkpoint durable-checkpoint)
+                                     (seq durable-actions)
+                                     (assoc :researcher-actions durable-actions))
                   raw-result (if provider
                                (executor/execute-repl-researcher node blackboard provider enriched-context)
                                {:status :failure :error "No ORC LLM provider configured"})
@@ -2234,6 +2271,18 @@
                                       ;; tick's execution-context read model; orc does not interpret
                                       ;; it. Absent -> not carried (backward-compatible).
                                       tool-context (assoc :tool-context tool-context))]
+              (if (= :running effective-status)
+                (cp/process-command
+                 (assoc context :command
+                        {:command/id (random-uuid)
+                         :command/timestamp (time/now)
+                         :command/name :sheet/checkpoint-researcher-iteration
+                         :sheet-id sheet-id
+                         :tick-id tick-id
+                         :node-id node-id
+                         :checkpoint (:checkpoint result)
+                         :inputs event-inputs}))
+                (do
               ;; Emit :rlm/tree-generated event when tree is generated
               ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
               (when (some? generated-tree-raw)
@@ -2323,7 +2372,7 @@
                          ;; Propagate :usage (including :by-node from Phase 2)
                          ;; so per-node detail bubbles up to the parent tick.
                          (seq usage) (assoc :usage usage)
-                         (:model node) (assoc :model (:model node))))))
+                         (:model node) (assoc :model (:model node))))))))
             (catch Exception e
               (cp/process-command
                 (assoc context :command
@@ -2481,21 +2530,42 @@
         ;; originating event persists it with parent lineage; duplicate delivery
         ;; observes that event and does not allocate another future or execution.
         (let [child-tick-id (delegate-child-tick-id tick-id node-id exec-context)
-              child-started? (seq (into [] (es/read event-store
-                                                   {:tenant-id (:tenant-id context)
-                                                    :types #{:sheet/tree-tick-started}
-                                                    :tags #{[:tick child-tick-id]}})))
+              child-started? (fn []
+                               (seq (into [] (es/read event-store
+                                                     {:tenant-id (:tenant-id context)
+                                                      :types #{:sheet/tree-tick-started}
+                                                      :tags #{[:tick child-tick-id]}}))))
+              child-started-before-claim? (child-started?)
               recovering? (some? (:resumed-from-event-id event))]
           ;; A normal parent re-tick or recovery may arrive after the durable
           ;; child terminal event. Consume that same child immediately instead
           ;; of depending on a historical event being delivered again.
-          (when-let [terminal-result (and child-started?
+          (when-let [terminal-result (and child-started-before-claim?
                                           (runtime/durable-terminal-result context child-tick-id))]
             (complete-delegate-parent! context child-tick-id terminal-result exec-context))
-          (when (and (or (not child-started?) recovering?)
+          (when (and (or (not child-started-before-claim?) recovering?)
                      (not (runtime/durable-terminal-result context child-tick-id))
                      (claim-delegate! child-tick-id))
-            (future
+            ;; A contender can read "not started", wait behind the current
+            ;; observer, and acquire this claim only after that observer exits.
+            ;; Re-read after winning so the stale observation cannot redispatch
+            ;; a child whose durable start landed in the meantime.
+            (let [child-started-after-claim? (child-started?)
+                  terminal-after-claim (when child-started-after-claim?
+                                         (runtime/durable-terminal-result
+                                          context child-tick-id))]
+              (cond
+                terminal-after-claim
+                (do
+                  (complete-delegate-parent! context child-tick-id
+                                             terminal-after-claim exec-context)
+                  (release-delegate! child-tick-id))
+
+                (and child-started-after-claim? (not recovering?))
+                (release-delegate! child-tick-id)
+
+                :else
+                (future
           (try
             (let [start-time (System/currentTimeMillis)
                   ;; Lineage: delegate sub-workflows run as child ticks. Link
@@ -2552,7 +2622,7 @@
             (finally
               (release-delegate! child-tick-id)))
             ;; Return nil - completion handled async via process-command
-            nil)))))))
+            nil)))))))))
 
 ;; =============================================================================
 ;; Condition Node Execution Processor
@@ -2797,11 +2867,23 @@
                                       result (:steps summary))
                               result))
                           {} events)
+        recorded-step-signatures
+        (into #{}
+              (comp
+               (filter #(and (= :sheet/ephemeral-evaluations-recorded
+                                  (:event/type %))
+                              (= iteration (:iteration %))))
+               (mapcat :steps)
+               (map (juxt :node-id :node-type :status)))
+              events)
         blackboard (resolve-blackboard-values context sheet-id tick-id nil)]
     (when (and (not terminal?) (ephemeral-routing-active? context tick-id nodes-by-id))
       (let [{:keys [boundary status steps error block-payload]}
             (evaluate-ephemeral-node root-id nodes-by-id blackboard completed decisions)
-            summary (ephemeral-summary-event sheet-id tick-id iteration steps)]
+            new-steps (remove #(contains? recorded-step-signatures
+                                          [(:node-id %) (:node-type %) (:status %)])
+                              steps)
+            summary (ephemeral-summary-event sheet-id tick-id iteration new-steps)]
         (cond
           (and boundary (not (contains? started boundary)))
           {:result/events
@@ -4264,12 +4346,26 @@
                (conj seen current)
                (inc depth))))))
 
-(defn assemble-execution-trace
-  "After a tick completes, assemble an execution trace from events and store it.
-   Only runs for tick-scoped executions (snapshot-based).
-   Reads node-execution-started/completed events, correlates them with node
-   metadata from the execution snapshot, and stores via store-execution-trace."
+(defn- await-event-visible!
+  "Fence pubsub delivery against event-store query visibility. A processor may
+   receive an event from a multi-event append before a concurrent read exposes
+   the complete append batch; trace assembly must not snapshot that prefix."
+  [event-store tenant-id event]
+  (when-let [event-id (:event/id event)]
+    (let [deadline (+ (System/currentTimeMillis) 5000)]
+      (loop []
+        (let [visible? (some #(= event-id (:event/id %))
+                             (into []
+                                   (es/read event-store
+                                            {:tenant-id tenant-id
+                                             :tags #{[:tick (:tick-id event)]}})))]
+          (when-not (or visible? (>= (System/currentTimeMillis) deadline))
+            (Thread/sleep 5)
+            (recur)))))))
+
+(defn- assemble-execution-trace-owned
   [{:keys [event event-store] :as context}]
+  (await-event-visible! event-store (:tenant-id context) event)
   (let [tick-id (:tick-id event)
         sheet-id (:sheet-id event)
         root-status (:root-status event)
@@ -4281,6 +4377,13 @@
             correlation-id (:correlation-id tick-ctx)
             ;; Read all events for this tick (into [] to realize reducible)
             tick-events (into [] (es/read event-store {:tags #{[:tick tick-id]} :tenant-id (:tenant-id context)}))
+            ;; Trace publications carry the tick tag too. Exclude them so a
+            ;; refresh cannot manufacture a newer source revision merely by
+            ;; observing an earlier trace assembly.
+            source-event-count (count (remove #(contains? #{:sheet/execution-traced
+                                                            :sheet/execution-trace-refreshed}
+                                                          (:event/type %))
+                                              tick-events))
             ;; Find tick-started event for timing
             started-event (first (filter #(= :sheet/tree-tick-started (:event/type %)) tick-events))
             started-at (when started-event (:event/timestamp started-event))
@@ -4316,6 +4419,70 @@
             completed-events (filter #(= :sheet/node-execution-completed (:event/type %)) tick-events)
             ephemeral-events (filter #(= :sheet/ephemeral-evaluations-recorded
                                            (:event/type %)) tick-events)
+            researcher-checkpoint-events
+            (filter #(= :rlm/researcher-checkpointed (:event/type %)) tick-events)
+            researcher-resume-events
+            (filter #(and (= :sheet/node-execution-started (:event/type %))
+                          (:researcher-resume? %))
+                    tick-events)
+            researcher-action-events
+            (filter #(= :rlm/researcher-action-completed (:event/type %)) tick-events)
+            terminal-researcher-event
+            (last (filter #(= :rlm/researcher-iterations (:event/type %)) tick-events))
+            checkpoint-iterations
+            (into {}
+                  (keep (fn [checkpoint-event]
+                          (let [checkpoint (:checkpoint checkpoint-event)
+                                next-iteration (:next-iteration checkpoint)
+                                entry (when (pos? next-iteration)
+                                        (nth (:history checkpoint) (dec next-iteration) nil))]
+                            (when entry
+                              [next-iteration
+                               (assoc entry
+                                      :iteration next-iteration
+                                      :checkpointed-at
+                                      (or (:checkpointed-at checkpoint-event)
+                                          (str (:event/timestamp checkpoint-event))))])))
+                        researcher-checkpoint-events))
+            terminal-iterations
+            (into {}
+                  (map-indexed (fn [index entry]
+                                 [(inc index) (assoc entry :iteration (inc index))]))
+                  (:iterations terminal-researcher-event))
+            researcher-iterations
+            (->> (merge terminal-iterations checkpoint-iterations)
+                 (sort-by key)
+                 (mapv val))
+            researcher-events
+            (->>
+             (concat
+              (map (fn [action-event]
+                     {:type :action-completed
+                      :action-id (:action-id action-event)
+                      :action-kind (:action-kind action-event)
+                      :iteration (inc (:iteration action-event))
+                      :at (or (:completed-at action-event)
+                              (str (:event/timestamp action-event)))})
+                   researcher-action-events)
+              (mapcat (fn [checkpoint-event]
+                        (cond-> [{:type :checkpoint
+                                  :iteration (get-in checkpoint-event
+                                                     [:checkpoint :next-iteration])
+                                  :at (or (:checkpointed-at checkpoint-event)
+                                          (str (:event/timestamp checkpoint-event)))}]
+                          (not= false (:yielded? checkpoint-event))
+                          (conj {:type :yield
+                                 :iteration (get-in checkpoint-event
+                                                    [:checkpoint :next-iteration])
+                                 :at (str (:event/timestamp checkpoint-event))})))
+                      researcher-checkpoint-events)
+              (map (fn [resume-event]
+                     {:type :resume
+                      :iteration (:checkpoint-next-iteration resume-event)
+                      :at (str (:event/timestamp resume-event))})
+                   researcher-resume-events))
+             (sort-by :at)
+             vec)
             started-by-execution (into {} (map (juxt trace-execution-key identity) started-events))
             ;; Build completed map by node plus execution context. Map-each runs
             ;; the same child node-id once per item, so keying only by node-id
@@ -4451,39 +4618,76 @@
                                (:iteration (rm/get-tick context tick-id))
                                1)
             terminal-reason (or (:terminal-reason event) root-status)]
-        ;; Store trace via command in a future (best-effort, non-blocking).
+        ;; Store trace via supervised background work (best-effort, non-blocking).
         ;; Must be async because cp/process-command -> es/append -> pubsub/pub
         ;; can deadlock if called synchronously within a todo processor thread.
-        (future
-          (try
-            (cp/process-command
-              (assoc context :command
-                     (cond-> {:command/id (random-uuid)
-                              :command/timestamp (time/now)
-                              :command/name :sheet/store-execution-trace
-                              :trace-id trace-id
-                              :sheet-id sheet-id
-                              :root-trace-id root-trace-id
-                              :child-trace-ids child-trace-ids
-                              :started-at (str (or started-at (time/now)))
-                              :completed-at (str (or completed-at (time/now)))
-                              :duration-ms duration-ms
-                              :status final-status
-                              :configured-max-ticks configured-max-ticks
-                              :consumed-ticks consumed-ticks
-                              :terminal-reason terminal-reason
-                              :input-snapshot input-snapshot
-                              :output-snapshot output-snapshot
-                              :node-traces node-traces}
-                       parent-trace-id (assoc :parent-trace-id parent-trace-id)
-                       correlation-id (assoc :correlation-id correlation-id)
-                       version-number (assoc :version-number version-number)
-                       (:error event) (assoc :error (:error event)))))
-            (catch Exception _e
-              ;; Log but don't fail — trace storage is best-effort
-              nil)))
+        ;; Hosts may inject lifecycle ownership; the ordinary library default
+        ;; remains a future because ORC does not own the host's shutdown.
+        ((or (:orc/submit-background! context)
+             (fn [task] (future (task))))
+         (fn []
+           (try
+             (trace-publication/publish!
+              context
+              (cond-> {:trace-id trace-id
+                       :sheet-id sheet-id
+                       :root-trace-id root-trace-id
+                       :child-trace-ids child-trace-ids
+                       :started-at (str (or started-at (time/now)))
+                       :completed-at (str (or completed-at (time/now)))
+                       :duration-ms duration-ms
+                       :status final-status
+                       :configured-max-ticks configured-max-ticks
+                       :consumed-ticks consumed-ticks
+                       :terminal-reason terminal-reason
+                       :input-snapshot input-snapshot
+                       :output-snapshot output-snapshot
+                       :source-event-count source-event-count
+                       :node-traces node-traces}
+                (seq researcher-iterations)
+                (assoc :researcher-iterations researcher-iterations)
+                (seq researcher-events)
+                (assoc :researcher-events researcher-events)
+                parent-trace-id (assoc :parent-trace-id parent-trace-id)
+                correlation-id (assoc :correlation-id correlation-id)
+                version-number (assoc :version-number version-number)
+                (:error event) (assoc :error (:error event))))
+             (catch Exception _e
+               ;; Log but don't fail — trace storage is best-effort
+               nil))))
         ;; No events to emit directly
         nil))))
+
+(defn assemble-execution-trace
+  "After a tick completes, assemble an execution trace from events and store it.
+   Only runs for tick-scoped executions (snapshot-based).
+   Reads node-execution-started/completed events, correlates them with node
+   metadata from the execution snapshot, and stores via store-execution-trace."
+  [context]
+  (let [release! ((or (:orc/acquire-background! context)
+                      (fn [] (fn [] nil))))]
+    (when release!
+      (try
+        (assemble-execution-trace-owned context)
+        (finally
+          (release!))))))
+
+(defn refresh-terminal-execution-trace
+  "Reassemble a terminal trace when durable trace evidence arrives after the
+   tree terminal event. Processor delivery is asynchronous across topics, so
+   the terminal assembler cannot assume every node lifecycle or ephemeral
+   summary append is already visible. Reusing the durable terminal event makes
+   the eventual trace independent of processor scheduling order."
+  [{:keys [event event-store] :as context}]
+  (let [tick-id (:tick-id event)
+        terminal-event (->> (es/read event-store
+                                     {:tenant-id (:tenant-id context)
+                                      :tags #{[:tick tick-id]}
+                                      :types #{:sheet/tree-tick-completed}})
+                            (into [])
+                            last)]
+    (when terminal-event
+      (assemble-execution-trace (assoc context :event terminal-event)))))
 
 ;; =============================================================================
 ;; Todo Processor Registry
@@ -4768,9 +4972,27 @@
 
 (defprocessor :sheet complete-tree-tick
   {:topics #{:sheet/node-execution-completed}}
-  "Complete tree tick when root node completes."
+  "Complete the tree tick when its root completes, then refresh any terminal
+   trace from the same durable node-completion delivery.
+
+   The processor's RETURN VALUE is `complete-tree-tick`'s. The trace refresh
+   runs for its effect only and returns nil, so returning it discards
+   `complete-tree-tick`'s `:result/events` — including the `:running` re-tick
+   pair (tree-tick-completed + tree-tick-started) that advances every workflow
+   whose root deliberately stays running. Any root `:running` completion would
+   silently stop re-ticking."
   [context]
-  (complete-tree-tick context))
+  (let [result (complete-tree-tick context)]
+    (refresh-terminal-execution-trace context)
+    result))
+
+(defprocessor :sheet refresh-execution-trace-after-ephemeral-summary
+  {:topics #{:sheet/ephemeral-evaluations-recorded}}
+  "Refresh a trace after its ordered ephemeral routing evidence is durable.
+   A final routing summary can be appended after the terminal event that first
+   triggered assembly, so this delivery is the settle signal for that evidence."
+  [context]
+  (refresh-terminal-execution-trace context))
 
 (defprocessor :sheet restore-from-snapshot
   {:topics #{:sheet/draft-reverted :sheet/stash-restored}}

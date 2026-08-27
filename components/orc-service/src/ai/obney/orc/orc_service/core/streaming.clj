@@ -386,13 +386,13 @@
 
           (::close m)
           (let [n (swap! (:seq-counter sub) inc)]
-            (async/put! (:events-ch sub)
-                        {:orc.stream/type :stream-closed
-                         :seq n
-                         :ts (time/now)
-                         :tick-id (:root-tick-id sub)
-                         :root-tick-id (:root-tick-id sub)
-                         :reason (::close m)})
+            (async/offer! (:events-ch sub)
+                          {:orc.stream/type :stream-closed
+                           :seq n
+                           :ts (time/now)
+                           :tick-id (:root-tick-id sub)
+                           :root-tick-id (:root-tick-id sub)
+                           :reason (::close m)})
             (finalize-subscription! sub-id))
 
           :else
@@ -415,11 +415,11 @@
                     terminal? (and (contains? #{:tick-completed :tick-cancelled}
                                               (:orc.stream/type envelope))
                                    (= (:tick-id envelope) (:root-tick-id sub)))]
-                (async/put! (:events-ch sub)
-                            (assoc envelope
-                                   :seq n
-                                   :ts (time/now)
-                                   :root-tick-id (:root-tick-id sub)))
+                (async/offer! (:events-ch sub)
+                              (assoc envelope
+                                     :seq n
+                                     :ts (time/now)
+                                     :root-tick-id (:root-tick-id sub)))
                 (when terminal?
                   ;; Close immediately after the root terminal envelope. A
                   ;; queued descendant event must not slip between the root
@@ -428,13 +428,13 @@
                         reason (if (= :tick-cancelled (:orc.stream/type envelope))
                                  :cancelled
                                  :completed)]
-                    (async/put! (:events-ch sub)
-                                {:orc.stream/type :stream-closed
-                                 :seq close-n
-                                 :ts (time/now)
-                                 :tick-id (:root-tick-id sub)
-                                 :root-tick-id (:root-tick-id sub)
-                                 :reason reason})
+                    (async/offer! (:events-ch sub)
+                                  {:orc.stream/type :stream-closed
+                                   :seq close-n
+                                   :ts (time/now)
+                                   :tick-id (:root-tick-id sub)
+                                   :root-tick-id (:root-tick-id sub)
+                                   :reason reason})
                     (finalize-subscription! sub-id)))))
             (when (get @subscriptions sub-id)
               (recur))))))))

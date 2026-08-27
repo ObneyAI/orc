@@ -50,13 +50,15 @@ concern raised separately: is PR #29's work exacerbating this?
     contains. This is not "upgrade and the bug's proven gone." A newer patch,
     `0.9.3` (Feb 2026), exists but its changelog doesn't name a matching fix
     — bumping to it is cheap and can't hurt, but is not a proven fix.
-  - *ORC-side resource leak (env/db never closed)*: checked. Every one of the
+  - *ORC-side direct resource leak (env/db never closed)*: checked. Every one of the
     ~121 test-context-creating namespaces goes through
     `orc-service/test_helpers.clj`'s `create-test-context` /
     `with-async-test-context`, whose teardown (`stop-context` /
     `stop-async-context`) unconditionally calls `kv/stop` (closes the `Dbi`
-    then the `Env`) before deleting the temp dir. Teardown is disciplined;
-    this is not an obvious application-level leak.
+    then the `Env`) before deleting the temp dir. That audit established that
+    resources are closed, but it did not establish that every nested future
+    has stopped before the close. The later follow-up below falsifies the
+    stronger interpretation that teardown was therefore safe.
 
 - **Root-cause candidates NOT ruled out (genuine open question):**
   - `kv-store-lmdb/core.clj` already documents that ORC's threaded/futures
@@ -173,3 +175,63 @@ Chose (1) + (2): isolate colbert into its own CI JVM, and bump lmdbjava.
   not proof the crash can no longer occur. The real test is CI over the next
   handful of runs. No claim of "fixed" beyond "isolated per the confirmed
   trigger mechanism, with a free version bump alongside."
+
+## Follow-up: the isolation mitigation was incomplete
+
+A later aggregate run falsified the original adjacency hypothesis. ColBERT ran
+in its isolated JVM and passed; the aggregate JVM completed every displayed
+namespace through `repl-researcher-mint-contract-test`, then crashed as
+`gepa-integration-test` began. The native frame was `_mdb_txn_commit` in
+`lmdbjava-native-library-*.so`, exit 134. Therefore ColBERT sharing a JVM with
+evaluation was one pressure pattern, not the root lifecycle defect.
+
+The missing ownership fence is code-mapped:
+
+- terminal result delivery can release `sheet/execute` before trace storage is
+  finished;
+- `assemble-execution-trace` launched its store command with a raw, untracked
+  `future` from inside a todo processor;
+- `stop-async-context` stopped the processors and immediately closed the event
+  store and LMDB cache. Grain's processor stop closes its input channel but
+  does not join handler threads already dispatched through its core.async
+  executor, nor can it join a future that a handler already detached;
+- PR #36 did not originate that raw future, but its post-node and
+  post-ephemeral trace refreshes cause the same assembly path to launch more
+  often, making the latent lifetime race materially easier to expose.
+
+The harness proof is deterministic rather than a lucky native-crash sample.
+Before the fix, a gated owned worker showed teardown returning and closing the
+cache while the worker was still blocked; the observed order was
+`[:cache-closed :background-finished]`. A separate execution-shaped test showed
+that trace storage bypassed an injected context supervisor entirely. Both
+tests failed before implementation.
+
+## Follow-up implementation
+
+- Trace storage submits through the injected `:orc/submit-background!`
+  capability. Library callers that do not provide lifecycle supervision retain
+  the existing non-blocking future behavior.
+- Async test contexts install an admission-fenced supervisor. Trace assembly
+  acquires ownership before its first projection/cache read, and the nested
+  store future acquires its own token before it can run.
+- Teardown atomically closes admission before stopping processors. A handler
+  dispatched late is rejected before it can touch LMDB; every handler or task
+  admitted before the fence is drained while pubsub, event store, and LMDB
+  remain alive. A token that cannot drain within the bounded teardown budget
+  fails teardown without closing LMDB underneath it.
+
+The three RED proofs are green after the implementation: trace writes traverse
+the context supervisor, the gated order is now
+`[:background-finished :cache-closed]`, and late trace work is rejected after
+the admission fence closes. The intermittent native symptom still requires
+repeated aggregate/CI observation; the supported claim is that the previously
+unowned work-after-close path is now closed, not that one green run can prove a
+native crash impossible.
+
+Adversarial inspection found and rejected an incomplete first version of this
+fix: it stopped processors and then snapshotted registered futures. Because
+Grain processor stop does not join already-dispatched handlers, a late handler
+could register after that snapshot. A third RED regression submitted trace work
+while teardown was blocked at the drain; the work ran under the incomplete
+design. With atomic admission closure it is rejected, and the regression passed
+10/10 stress repetitions.

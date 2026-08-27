@@ -62,17 +62,19 @@ and zero process findings under Allium language version 3.
 
 ## Current diagnostic baseline
 
-The Allium CLI treats warnings and informational diagnostics as a non-zero
-result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-Under the current checked-in specifications and Allium CLI, both
-`allium check specs` and `allium analyse specs` report 122 structural diagnostics
-across the twelve specifications: 87 informational and 35 warnings. `analyse`
+`allium check` exits non-zero when warnings or informational diagnostics are
+present, while `allium analyse` returns success when those diagnostics produce
+no process findings. Thus “zero errors” above does not mean
+`allium check specs` exits cleanly. Under the current checked-in specifications
+and Allium CLI, both
+`allium check specs` and `allium analyse specs` report 125 structural diagnostics
+across the twelve specifications: 90 informational and 35 warnings. `analyse`
 reports zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 54 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 33 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.rule.unreachableTrigger` | 56 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.field.unused` | 34 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 17 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
@@ -80,7 +82,42 @@ reports zero process findings.
 This is a characterized baseline, not an allowlist for future warnings. Agents
 must review every newly introduced or changed diagnostic, update this table when
 the accepted baseline deliberately changes, and avoid claiming a clean Allium
-gate while either command exits non-zero.
+check while its characterized diagnostics remain.
+
+## Concurrent execution and trace boundary evidence
+
+The resumable-execution path now fences four timing-sensitive boundaries at
+their durable event-store seams. Every execution publishes exactly one trace
+creation fact; later assemblies compare their source event counts and publish a
+distinct revision fact only when they advance the canonical trace
+(DET-E2E-258). Concurrent public
+cancellations share the same terminal append decision as tick completion, so
+twelve synchronized attempts produce one cancellation event and late work stays
+fenced (DET-E2E-259). Concurrent commands carrying one stable tick identity use
+one append-time start claim; delegate delivery re-reads the child after acquiring
+its process-local observer claim, preserving recovery while preventing a stale
+pre-claim read from dispatching the child twice. The concurrent tick-start test
+proved the defect with 32 starts before the append fence and one afterward, and
+DET-E2E-197 retains exact child identity and lineage coverage under the broad
+suite.
+
+Ephemeral routing summaries now exclude facts for the same node, status and
+iteration that were already committed at a preceding durable boundary. This
+preserves the `BatchedTracePreservesObservability` contract without suppressing
+later tick iterations; DET-E2E-007 settles on and verifies the exact four-node
+trace. A summary delivered after terminal trace assembly also triggers a
+monotonic refresh, so the final composite evidence is not dependent on
+cross-topic processor timing; the exact-count contracts in DET-E2E-005 and
+DET-E2E-008 exercise that boundary. Streaming verification separately reflects
+the documented transport contract: independently tapped event types need not
+arrive in durable lifecycle order, so DET-E2E-065 proves root-start presence and
+monotonic stream sequence while checking strict tick-before-node ordering in
+durable history.
+
+The exact CI aggregate command, `clojure -M:poly test project:orc :all-bricks`,
+completed in 16 minutes 25 seconds with zero failures or errors. This broad pass
+included the deterministic failure, control-flow, streaming and delegate suites
+and the async command tests that exercise these races.
 
 ## Provider output normalization and rejection evidence (2026-08-07)
 
@@ -238,6 +275,12 @@ canonical HTTP transformation plus explicit rejection of unsupported or
 ambiguous controls. DET-E2E-130 remains open until the complete persisted-node
 through HTTP-body contract is exercised in one integration-shaped test.
 
+The boundary regression also verifies that ORC's public `:timeout-ms` request
+control is translated to LiteLLM's provider-facing `:timeout` key and that the
+ORC-only spelling is not leaked. This closes the adapter gap that caused a
+180-second live execution budget to be silently replaced by OpenRouter's
+30-second default before the request reached the provider.
+
 ## Composed AI retry deadlines and timeout evidence (2026-08-09)
 
 AI executor retries and node retries now share the root execution deadline and
@@ -248,6 +291,13 @@ timeout. DET-E2E-131 verifies the provider-call cap through the public workflow
 boundary. DET-E2E-132 verifies that a timeout trace preserves completed routing
 nodes and identifies the unfinished AI node with provider attempt, node attempt,
 configured limits, provider timeout, and remaining-budget evidence.
+
+The recursive-researcher regression proves that its computed per-provider
+budget reaches the LLM boundary; the focused LLM-boundary regression proves
+that the same value reaches the provider configuration spelling consumed by
+LiteLLM. Together they close the final adapter path for
+`SingleExecutionDeadline` instead of falling back to an unrelated transport
+default.
 
 ## Timeout trace chronology and canonical timestamps (2026-08-11)
 
@@ -316,9 +366,50 @@ automatic restart recovery, fenced resume ownership, blocking and cancellation,
 and ordered iteration trace reconstruction. Existing non-checkpointed researcher
 behavior remains the compatibility path.
 
-This capability is specified but not implemented. DET-E2E-210 through
-DET-E2E-217 are intentionally open and cover yield/retick, real restart,
-idempotency windows, child incorporation, timeout boundaries, sandbox replay,
-blocking/cancellation/concurrency, and unfinished-campaign tracing. Until those
-obligations pass through the public command/event/projection boundary, no
-checkpointed researcher execution or recovery coverage is claimed.
+The opt-in runtime path is now implemented with checkpoint/action events and
+projections, per-iteration `:running` continuation, cold checkpoint rehydration,
+stable generated-child attempt ticks, checkpoint-safe tool keys, independent
+deadline scopes, durable iteration traces, and compatibility coverage for the
+legacy path. Focused deterministic tests exercise the executor, public async
+workflow boundary, SQLite close/reopen replay, child-completion crash window,
+codec rehydration, CAS fencing, timeout boundaries, and paired latency sampling.
+A gated pinned-model journey was verified live against OpenRouter on 2026-08-25:
+the checkpointed researcher crossed a durable yield, resumed with its sandbox
+and history, completed successfully, and satisfied all 11 output, checkpoint,
+provider-latency, usage, and trace assertions. The complete live recursive-
+researcher namespace also passed 3 tests and 32 assertions, including generated-
+child recovery and nested call-budget enforcement.
+
+DET-E2E-210 through DET-E2E-227 remain open until each complete
+integration-shaped obligation is executed and recorded. DET-E2E-210 through DET-E2E-217 cover
+yield/retick, real restart, idempotency windows, child incorporation, timeout
+boundaries, sandbox replay, blocking/cancellation/concurrency, and unfinished-
+campaign tracing. DET-E2E-218 through DET-E2E-227 add the complete crash-window
+matrix plus checkpoint, continuation, restart, replay, storage, concurrency,
+large-value, deadline, compatibility-regression, and soak measurements with
+recorded percentile distributions and raw benchmark evidence. Until those
+obligations pass through the public command/event/projection boundary, the
+focused coverage above must not be represented as exhaustive recovery or
+performance qualification.
+DET-E2E-228 is closed by the live multi-quantum state-reuse journey above.
+DET-E2E-229 through DET-E2E-233 remain open for generated-child recovery,
+checkpoint-safe tool deduplication, clean-JVM automatic recovery, live provider
+timeout evidence, and checkpointed-versus-compatibility benchmark comparison.
+These journeys complement the deterministic suite and are not substitutes for
+crash-boundary correctness proofs.
+
+## Monotonic terminal-trace refresh
+
+Terminal trace assembly carries a revision derived from the durable, non-trace
+events visible for the execution. Competing publishers first contend for one
+atomic creation claim. A loser retries through the revision command, whose CAS
+rejects stale and duplicate source counts while allowing a newer source snapshot
+to add evidence. Creation uses `:sheet/execution-traced`; later advances use
+`:sheet/execution-trace-refreshed`, and both replay into the same versioned
+canonical projection. Neither publication event can advance the source revision.
+The synchronous timeout writer uses the same publication boundary, so its
+partial active-attempt evidence cannot race an equal or older asynchronous
+assembly into a second creation fact. DET-E2E-258 verifies creation, stale,
+duplicate and advancing publications through command, event and projection
+read-back. Its named `TraceRefreshNeverRegresses` obligation is covered (one
+obligation, one covered, zero uncovered).

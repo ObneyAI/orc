@@ -100,15 +100,29 @@
         (is (contains? (:event/tags event) [:parent-tick parent-tick-id]))))))
 
 (deftest duplicate-tick-command-is-idempotent
-  (testing "a stable tick identity can be dispatched repeatedly without another execution start"
+  (testing "a stable tick identity can be dispatched concurrently without another execution start"
     (h/with-async-test-context [ctx]
       (let [sheet-id (-> (h/run-and-apply! ctx (h/make-create-sheet-command :name "duplicate-tick-command"))
                          :command-result/events first :sheet-id)
             _ (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
             tick-id (random-uuid)
-            command (assoc (h/make-tick-tree-command sheet-id :tick-id tick-id) :inputs {})]
-        (h/run-and-apply! ctx command)
-        (h/run-and-apply! ctx command)
+            contenders 32
+            ready (java.util.concurrent.CountDownLatch. contenders)
+            release (promise)
+            attempts (doall
+                      (repeatedly contenders
+                                  #(future
+                                     (.countDown ready)
+                                     @release
+                                     (h/run-and-apply!
+                                      ctx
+                                      (assoc (h/make-tick-tree-command
+                                              sheet-id :tick-id tick-id)
+                                             :inputs {})))))]
+        (is (.await ready 2 java.util.concurrent.TimeUnit/SECONDS))
+        (deliver release true)
+        (is (not-any? #{::timeout}
+                      (mapv #(deref % 2000 ::timeout) attempts)))
         (is (= 1 (count (filter #(and (= :sheet/tree-tick-started (:event/type %))
                                       (= tick-id (:tick-id %)))
                                 (h/read-all-events ctx)))))))))

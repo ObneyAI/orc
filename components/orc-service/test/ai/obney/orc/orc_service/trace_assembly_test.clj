@@ -13,6 +13,7 @@
             [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.grain.command-processor-v2.interface :as cp]
+            [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.time.interface :as time]))
 
 ;; =============================================================================
@@ -98,6 +99,60 @@
    (h/run-query ctx {:query/name :sheet/node-trace-detail
                      :trace-id trace-id
                      :trace-instance-id trace-instance-id})))
+
+(deftest trace-storage-uses-the-context-background-supervisor
+  (testing "trace work is owned by the execution context instead of an orphan future"
+    (let [submitted (atom [])
+          submit! (fn [task]
+                    (swap! submitted conj task)
+                    (future (task)))]
+      (h/with-async-test-context
+        [ctx {:context {:orc/submit-background! submit!}}]
+        (let [{:keys [sheet-id]} (setup-pipeline! ctx)
+              [result _trace-id] (run! ctx sheet-id {:phrase "owned"})]
+          (is (= :success (:status result)))
+          (is (pos? (count @submitted))
+              "every asynchronous trace write must pass through the context supervisor"))))))
+
+(deftest async-context-teardown-drains-owned-background-work-before-cache-close
+  (testing "LMDB remains open until every supervised trace write has completed"
+    (let [release (promise)
+          order (atom [])
+          worker (future
+                   @release
+                   (swap! order conj :background-finished))
+          ctx {:processors {}
+               :cache ::cache
+               :orc/background-work (atom [worker])}
+          stopper (future
+                    (with-redefs [kv/stop (fn [_]
+                                            (swap! order conj :cache-closed))]
+                      (h/stop-async-context ctx)))]
+      (try
+        (is (= ::still-draining (deref stopper 100 ::still-draining))
+            "teardown must wait while supervised work is still running")
+        (finally
+          (deliver release true)))
+      (is (not= ::stop-timeout (deref stopper 5000 ::stop-timeout)))
+      (is (= [:background-finished :cache-closed] @order)))))
+
+(deftest async-context-teardown-fences-late-trace-work
+  (testing "trace work submitted after teardown begins cannot touch closed resources"
+    (let [ctx (h/create-async-test-context)
+          release (promise)
+          late-ran? (promise)
+          submit! (:orc/submit-background! ctx)
+          _first-worker (submit! (fn [] @release))
+          stopper (future (h/stop-async-context ctx))]
+      (try
+        (is (= ::still-draining (deref stopper 100 ::still-draining))
+            "the first owned worker holds teardown at the drain fence")
+        (submit! #(deliver late-ran? true))
+        (is (= ::rejected (deref late-ran? 100 ::rejected))
+            "the teardown fence rejects work that arrives after its drain snapshot")
+        (finally
+          (deliver release true)))
+      (is (not= ::stop-timeout (deref stopper 5000 ::stop-timeout))))))
 
 ;; =============================================================================
 ;; Structure

@@ -315,7 +315,10 @@
     ;; the keys it wrote.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count {:optional true} [:and :int [:>= 0]]]
     [:node-traces [:vector ::node-trace]]
+    [:researcher-iterations {:optional true} [:vector :any]]
+    [:researcher-events {:optional true} [:vector :any]]
     [:error {:optional true} :string]]
 
    ;; -------------------------------------------------------------------------
@@ -612,6 +615,26 @@
     [:original-start-event-id :uuid]
     [:inputs [:map-of :keyword :any]]]
 
+   :sheet/checkpoint-researcher-iteration
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:checkpoint :map]
+    [:resume? {:optional true} :boolean]
+    [:inputs [:map-of :keyword :any]]]
+
+   :sheet/record-researcher-action
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:action-id :string]
+    [:action-kind :keyword]
+    [:iteration :int]
+    [:result :any]
+    [:completed-at :string]]
+
    ;; Internal commands (issued by todo processors)
    :sheet/complete-node-execution
    [:map
@@ -818,7 +841,34 @@
     ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count {:optional true} [:and :int [:>= 0]]]
     [:node-traces [:vector :any]]
+    [:researcher-iterations {:optional true} [:vector :any]]
+    [:researcher-events {:optional true} [:vector :any]]
+    [:error {:optional true} :string]]
+
+   :sheet/refresh-execution-trace
+   [:map
+    [:trace-id :uuid]
+    [:sheet-id :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
+    [:version-number {:optional true} :int]
+    [:started-at :any]
+    [:completed-at :any]
+    [:duration-ms :int]
+    [:status :keyword]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
+    [:input-snapshot [:map-of :keyword :map]]
+    [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count [:and :int [:>= 0]]]
+    [:node-traces [:vector :any]]
+    [:researcher-iterations {:optional true} [:vector :any]]
+    [:researcher-events {:optional true} [:vector :any]]
     [:error {:optional true} :string]]
 
    ;; -------------------------------------------------------------------------
@@ -1472,7 +1522,34 @@
     ;; key -> size-profile, not key -> value. See ::execution-trace.
     [:input-snapshot [:map-of :keyword :map]]
     [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count {:optional true} [:and :int [:>= 0]]]
     [:node-traces [:vector :any]]                 ;; Vector of ::node-trace
+    [:researcher-iterations {:optional true} [:vector :any]]
+    [:researcher-events {:optional true} [:vector :any]]
+    [:error {:optional true} :string]]
+
+   :sheet/execution-trace-refreshed
+   [:map
+    [:trace-id :uuid]
+    [:sheet-id :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
+    [:version-number {:optional true} :int]
+    [:started-at :any]
+    [:completed-at :any]
+    [:duration-ms :int]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
+    [:input-snapshot [:map-of :keyword :map]]
+    [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count [:and :int [:>= 0]]]
+    [:node-traces [:vector :any]]
+    [:researcher-iterations {:optional true} [:vector :any]]
+    [:researcher-events {:optional true} [:vector :any]]
     [:error {:optional true} :string]]
 
    ;; -------------------------------------------------------------------------
@@ -1563,6 +1640,26 @@
     [:iterations [:vector :any]]                 ;; Each: {:code :result :stdout :error :vars-created}
     [:iteration-count :int]
     [:emitted-at :string]]
+
+   :rlm/researcher-checkpointed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:checkpoint :map]
+    [:yielded? {:optional true} :boolean]
+    [:checkpointed-at :string]]
+
+   :rlm/researcher-action-completed
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:action-id :string]
+    [:action-kind :keyword]
+    [:iteration :int]
+    [:result :any]
+    [:completed-at :string]]
 
    ;; -------------------------------------------------------------------------
    ;; CC-13 — Injection Record (:intervention/* ledger, NARROW SUBSET)

@@ -22,14 +22,16 @@
   (router/list-providers))
 
 (defn- request-options [options]
-  (dissoc options
-          :validate?
-          :with-metadata?
-          :with-provider-evidence?
-          :use-function-calling?
-          :force-tool-choice?
-          :on-chunk
-          :debounce-ms))
+  (cond-> (dissoc options
+                  :validate?
+                  :with-metadata?
+                  :with-provider-evidence?
+                  :use-function-calling?
+                  :force-tool-choice?
+                  :on-chunk
+                  :debounce-ms
+                  :timeout-ms)
+    (:timeout-ms options) (assoc :timeout (:timeout-ms options))))
 
 (defn- input-section [spec inputs marker?]
   (let [image-names (set (map :name (filter #(= :image (:type %)) (:inputs spec))))]

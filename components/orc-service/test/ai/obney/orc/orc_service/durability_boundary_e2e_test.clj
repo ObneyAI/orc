@@ -40,7 +40,16 @@
                     {:tenant-id (:tenant-id ctx)
                      :tags #{[:sheet sheet-id]}})))
 
-(defn- execution-metrics [ctx result elapsed-ns]
+(defn- execution-metrics [ctx result elapsed-ns expected-node-count]
+  ;; Trace creation and later evidence-bearing revisions are asynchronous.
+  ;; Settle on the logical evidence this scenario requires, not merely on the
+  ;; first publication fact, so both runs are measured after the complete
+  ;; eight-node traversal has reached the canonical trace.
+  (is (h/settle-until!
+       #(= expected-node-count
+           (count (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
+                          [:query/result :trace :node-traces]))))
+      (str "canonical trace did not settle at " expected-node-count " nodes"))
   (let [events (tick-events ctx (:trace-id result))]
     {:elapsed-ns elapsed-ns
      :event-count (count events)
@@ -197,11 +206,12 @@
             legacy-start (System/nanoTime)
             legacy-result (sheet/execute ctx sheet-id {:route :none}
                                          :durability-mode :legacy)
-            legacy (execution-metrics ctx legacy-result (- (System/nanoTime) legacy-start))
+            legacy (execution-metrics ctx legacy-result
+                                      (- (System/nanoTime) legacy-start) 8)
             optimized-start (System/nanoTime)
             optimized-result (sheet/execute ctx sheet-id {:route :none})
             optimized (execution-metrics ctx optimized-result
-                                         (- (System/nanoTime) optimized-start))]
+                                         (- (System/nanoTime) optimized-start) 8)]
         (is (= (:outputs legacy-result) (:outputs optimized-result)))
         (is (= :success (:status optimized-result)))
         (is (< (:event-count optimized) (:event-count legacy)) legacy)

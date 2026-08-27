@@ -11,18 +11,22 @@
             [ai.obney.orc.orc-service.interface.schemas :as schemas]))
 
 (deftest execution-traced-event-accepts-partial-status
-  (testing ":sheet/execution-traced (trace event) accepts :status :partial"
-    (let [schema (schemas/events :sheet/execution-traced)
-          trace-id (random-uuid)
-          ev {:trace-id trace-id :sheet-id (random-uuid)
-              :root-trace-id trace-id :child-trace-ids []
-              :started-at "t0" :completed-at "t1" :duration-ms 1
-              :status :partial
-              :input-snapshot {} :output-snapshot {} :node-traces []}]
-      (is (m/validate schema ev)
-          ":partial must validate — map-each emits it (D-008 completion)")
-      (is (not (m/validate schema (assoc ev :status :bogus)))
-          "enum still constrains — a bogus status is rejected"))))
+  (testing "trace creation and revision events accept :status :partial"
+    (doseq [event-type [:sheet/execution-traced
+                        :sheet/execution-trace-refreshed]]
+      (let [schema (schemas/events event-type)
+            trace-id (random-uuid)
+            ev (cond-> {:trace-id trace-id :sheet-id (random-uuid)
+                        :root-trace-id trace-id :child-trace-ids []
+                        :started-at "t0" :completed-at "t1" :duration-ms 1
+                        :status :partial
+                        :input-snapshot {} :output-snapshot {} :node-traces []}
+                 (= :sheet/execution-trace-refreshed event-type)
+                 (assoc :source-event-count 1))]
+        (is (m/validate schema ev)
+            (str event-type " must validate :partial — map-each emits it"))
+        (is (not (m/validate schema (assoc ev :status :bogus)))
+            (str event-type " still constrains bogus statuses"))))))
 
 (deftest get-traces-query-accepts-partial-status
   (testing ":sheet/get-traces status filter accepts :partial"

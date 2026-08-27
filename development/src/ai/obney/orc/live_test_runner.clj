@@ -11,7 +11,7 @@
     ai.obney.orc.orc-service.real-llm-living-description-e2e-test 2
     ai.obney.orc.orc-service.real-llm-ontology-builder-e2e-test 2
     ai.obney.orc.orc-service.real-llm-projection-replay-e2e-test 1
-    ai.obney.orc.orc-service.real-llm-recursive-rlm-e2e-test 2
+    ai.obney.orc.orc-service.real-llm-recursive-rlm-e2e-test 3
     ai.obney.orc.orc-service.real-llm-tenant-isolation-e2e-test 1})
 
 (def live-test-namespaces (vec (keys expected-live-tests)))

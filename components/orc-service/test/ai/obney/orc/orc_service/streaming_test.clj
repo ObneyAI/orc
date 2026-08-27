@@ -239,6 +239,13 @@
                              (into [])
                              (filter #(contains? (set leaf-ids) (:node-id %))))]
           (is (= 10 (count completed))))
+        ;; Result delivery and stream routing are independent consumers of the
+        ;; terminal event. Freeze the producer before reading: otherwise drain!
+        ;; frees buffer slots while the router is still publishing and measures
+        ;; both buffered and newly-arriving envelopes rather than the sliding
+        ;; buffer's retained contents.
+        (is (h/settle-until! #(empty? (subscriptions*)) :timeout-ms 5000)
+            "terminal routing closes the stalled subscription")
         ;; the stalled channel still yields the newest event (sliding semantics)
         (let [leftovers (drain! (:events-ch subscription) :timeout-ms 2000)]
           (is (<= (count leftovers) 2) "sliding buffer kept only the newest")

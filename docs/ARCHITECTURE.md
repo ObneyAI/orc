@@ -117,6 +117,7 @@ Command → Validation → Events → Event Store
 - `:sheet/judge-declared`, `:sheet/node-judges-set`
 - `:sheet/tree-tick-started`, `:sheet/node-execution-completed`
 - `:sheet/execution-traced`
+- `:sheet/execution-trace-refreshed`
 
 **Key Files:**
 - `orc-service/core/commands.clj` - Command handlers (validate via `rmp/project`, emit events)

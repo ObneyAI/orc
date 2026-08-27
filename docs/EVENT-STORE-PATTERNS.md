@@ -186,6 +186,7 @@ duplication ratio of 0 and that a payload appears in exactly one event.
 | `:sheet/node-execution-started` | execution context and genuine overrides only |
 | `:sheet/tree-tick-completed` | `:output-keys` |
 | `:sheet/execution-traced` | keys + size profiles |
+| `:sheet/execution-trace-refreshed` | revised keys + size profiles |
 
 #### Resolving values
 
@@ -422,7 +423,8 @@ Complete reference of all `:sheet/*` event types.
 
 | Event Type | When | Body Fields |
 |------------|------|-------------|
-| `:sheet/execution-traced` | Trace assembled at execution end | `:trace-id`, `:sheet-id`, `:status`, `:duration-ms`, `:input-snapshot` (key → profile), `:output-snapshot` (key → profile), `:node-traces` (shape only) |
+| `:sheet/execution-traced` | Singular trace-creation fact at execution end | `:trace-id`, `:sheet-id`, `:status`, `:duration-ms`, `:source-event-count`, `:input-snapshot` (key → profile), `:output-snapshot` (key → profile), `:node-traces` (shape only) |
+| `:sheet/execution-trace-refreshed` | Strictly newer source evidence revises the canonical trace | Same trace payload as creation, with a greater `:source-event-count` |
 
 ### Example: Node Execution Completed Event
 

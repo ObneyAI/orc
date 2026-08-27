@@ -113,6 +113,42 @@
                                     (:event/type %))
                         after-cancellation)))))))
 
+(deftest det-e2e-259-concurrent-cancellation-has-one-terminal-event
+  (testing "concurrent public cancellation attempts append one terminal event"
+    (h/with-async-test-context [ctx]
+      (reset! cancellation-fence-state
+              {:started (promise) :release (promise)})
+      (let [workflow (sheet/workflow "det-e2e-259-concurrent-cancellation"
+                       (sheet/blackboard {:late-result :string})
+                       (sheet/code "late" :fn (fq "release-after-cancellation")
+                         :reads [] :writes [:late-result]))
+            sheet-id (sheet/build-workflow! ctx workflow)
+            {:keys [tick-id result]} (sheet/execute-stream
+                                      ctx sheet-id {} :timeout-ms 5000)
+            contenders 12
+            ready (java.util.concurrent.CountDownLatch. contenders)
+            release-cancellers (promise)]
+        (is (true? (deref (:started @cancellation-fence-state) 2000 false)))
+        (let [attempts
+              (doall
+               (repeatedly contenders
+                           #(future
+                              (.countDown ready)
+                              @release-cancellers
+                              (sheet/cancel! ctx tick-id))))]
+          (is (.await ready 2 java.util.concurrent.TimeUnit/SECONDS))
+          (deliver release-cancellers true)
+          (let [outcomes (mapv #(deref % 2000 ::timeout) attempts)]
+            (is (not-any? #{::timeout} outcomes))))
+        (deliver (:release @cancellation-fence-state) true)
+        (is (not= ::timeout (deref result 2000 ::timeout)))
+        (let [cancellations (filter #(= :sheet/tick-cancelled (:event/type %))
+                                    (h/read-tick-events ctx tick-id))]
+          (is (= 1 (count cancellations))
+              (str "one tick has one terminal cancellation event: "
+                   (pr-str (mapv #(select-keys % [:event/id :tick-id :reason])
+                                  cancellations)))))))))
+
 (def ^:private item-schema
   [:map
    [:id :int]

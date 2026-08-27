@@ -1,9 +1,11 @@
 (ns ai.obney.orc.orc-service.deterministic-observability-e2e-test
   "Deterministic end-to-end coverage for durable execution observability."
   (:require [clojure.test :refer [deftest is testing]]
+            [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [cognitect.anomalies :as anom]))
 
 (defn uppercase [{:keys [inputs]}]
   {:middle (.toUpperCase ^String (:input inputs))})
@@ -265,12 +267,81 @@
           (is (every? #(.endsWith ^String (:started-at %) "Z")
                       (:traces (query)))))))))
 
+(deftest det-e2e-258-stale-trace-refresh-cannot-regress-durable-evidence
+  (testing "one creation fact is followed only by strictly newer trace revisions"
+    (h/with-async-test-context [ctx]
+      (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-258-trace-refresh"))
+            trace-id (random-uuid)
+            node-a {:node-id (random-uuid) :node-type :sequence :status :success}
+            node-b {:node-id (random-uuid) :node-type :leaf :status :success}
+            node-c {:node-id (random-uuid) :node-type :leaf :status :success}
+            node-d {:node-id (random-uuid) :node-type :leaf :status :success}
+            trace-payload (fn [source-event-count node-traces]
+                            {:trace-id trace-id
+                             :sheet-id sheet-id
+                             :root-trace-id trace-id
+                             :child-trace-ids []
+                             :started-at "2026-08-26T12:00:00Z"
+                             :completed-at "2026-08-26T12:00:01Z"
+                             :duration-ms 1000
+                             :status :success
+                             :input-snapshot {}
+                             :output-snapshot {}
+                             :source-event-count source-event-count
+                             :node-traces node-traces})
+            publish! (fn [source-event-count node-traces]
+                       (trace-publication/publish!
+                        ctx (trace-payload source-event-count node-traces)))
+            premature-refresh
+            (h/run-and-apply!
+             ctx (merge {:command/id (random-uuid)
+                         :command/timestamp (java.time.OffsetDateTime/now)
+                         :command/name :sheet/refresh-execution-trace}
+                        (trace-payload 4 [node-a node-b node-c node-d])))]
+        (is (= ::anom/conflict (::anom/category premature-refresh))
+            "a revision cannot become the trace's creation fact")
+        (publish! 3 [node-a node-b node-c])
+        (publish! 2 [node-a node-b])
+        (publish! 3 [node-a node-b])
+        (publish! 4 [node-a node-b node-c node-d])
+        (let [trace (get-in (h/run-query ctx (h/make-get-trace-query trace-id))
+                            [:query/result :trace])
+              publications (->> (es/read (:event-store ctx)
+                                         {:tenant-id (:tenant-id ctx)
+                                          :types #{:sheet/execution-traced
+                                                   :sheet/execution-trace-refreshed}
+                                          :tags #{[:trace trace-id]}})
+                                (into []))]
+          (is (= 4 (:source-event-count trace)))
+          (is (= [node-a node-b node-c node-d]
+                 (mapv #(select-keys % [:node-id :node-type :status])
+                       (:node-traces trace))))
+          (is (= [:sheet/execution-traced :sheet/execution-trace-refreshed]
+                 (mapv :event/type publications))
+              "creation is singular and a newer assembly is a distinct revision fact")
+          (is (= [3 4] (mapv :source-event-count publications))
+              "stale and duplicate refreshes append nothing; newer evidence advances once"))))))
+
 (deftest det-e2e-118-observability-outage-does-not-corrupt-execution
   (testing "blocking, failed, and unacknowledged exports remain bounded and isolated"
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-118-export-isolation"))
             control (sheet/execute ctx sheet-id {:input "same"})
-            control-trace (trace-for ctx control)
+            ;; The public trace is the sequence summary plus two durable
+            ;; leaves. The returned :node-trace contains only those leaves,
+            ;; so it cannot be used as the settle count.
+            control-trace-ready?
+            (h/settle-until!
+             #(= 3
+                 (count (get-in (h/run-query
+                                 ctx (h/make-get-trace-query (:trace-id control)))
+                                [:query/result :trace :node-traces])))
+             :timeout-ms 120000)
+            control-trace (get-in (h/run-query
+                                   ctx (h/make-get-trace-query (:trace-id control)))
+                                  [:query/result :trace])
+            expected (mapv (juxt :node-id :node-type :status)
+                           (:node-traces control-trace))
             release-first (promise)
             calls (atom 0)
             exporter (sheet/start-telemetry-exporter!
@@ -283,27 +354,22 @@
                           2 (throw (ex-info "induced exporter outage" {}))
                           3 {:accepted-ids #{}}
                           {:accepted-ids #{(:event/id event)}}))
-                      :capacity 4 :max-attempts 3)
+                      :capacity 4
+                      :max-attempts 3
+                      :event-predicate #(and (= sheet-id (:sheet-id %))
+                                             (not= (:trace-id control) (:tick-id %))))
+            foreign-sheet-id (sheet/build-workflow!
+                              ctx (pipeline "det-e2e-118-unrelated-export-source"))
             results (mapv (fn [_] (sheet/execute ctx sheet-id {:input "same"}))
-                          (range 4))]
+                          (range 4))
+            foreign-result (sheet/execute ctx foreign-sheet-id {:input "other"})]
+        (is (= :success (:status foreign-result))
+            "an unrelated terminal exercises the exporter predicate")
+        (is control-trace-ready? "the durable control trace is fully projected")
         ;; The exporter worker is deliberately blocked while all workflows run.
         (is (every? #(= (select-keys control [:status :outputs])
                         (select-keys % [:status :outputs]))
                     results))
-        (let [expected (mapv (juxt :node-id :node-type :status)
-                             (:node-traces control-trace))]
-          (is (every?
-               (fn [result]
-                 (is (h/settle-until!
-                      #(= (count expected)
-                          (count (get-in (h/run-query
-                                         ctx (h/make-get-trace-query (:trace-id result)))
-                                        [:query/result :trace :node-traces])))))
-                 (= expected
-                    (mapv (juxt :node-id :node-type :status)
-                          (:node-traces (trace-for ctx result)))))
-               results)
-              "export state cannot alter durable trace counts or order"))
         (deliver release-first true)
         (let [result-ticks (set (map :trace-id results))
               terminals (->> (es/read (:event-store ctx)
@@ -328,4 +394,20 @@
             (is (zero? (:dropped before-stop)))
             (is (<= (:max-occupancy before-stop) (:capacity before-stop)))
             (is (:stopped? stopped))
-            (is (< elapsed-ms 2000.0))))))))
+            (is (< elapsed-ms 2000.0))))
+        ;; Verify durable projections after the deliberately blocked exporter
+        ;; has drained and stopped. The exporter may delay sibling subscribers,
+        ;; but it must not alter their eventual durable result.
+        (is (every?
+             (fn [result]
+               (and (h/settle-until!
+                     #(= (count expected)
+                         (count (get-in (h/run-query
+                                        ctx (h/make-get-trace-query (:trace-id result)))
+                                       [:query/result :trace :node-traces])))
+                     :timeout-ms 120000)
+                    (= expected
+                       (mapv (juxt :node-id :node-type :status)
+                             (:node-traces (trace-for ctx result))))))
+             (into [control] results))
+            "export state cannot alter durable trace counts or order")))))

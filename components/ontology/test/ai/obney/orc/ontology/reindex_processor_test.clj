@@ -35,26 +35,30 @@
 ;; Test context helpers
 ;; =============================================================================
 
-(defn- create-context []
-  (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
-        event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
-        cache-dir (str "/tmp/c2b1-test-" (random-uuid))
-        cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "test"}))
-        tenant-id (random-uuid)
-        base-ctx {:event-store event-store
-                  :cache cache
-                  :tenant-id tenant-id
-                  :event-pubsub ps
-                  :command-registry (cp/global-command-registry)
-                  :query-registry (qp/global-query-registry)
-                  ::cache-dir cache-dir}
-        processors (reduce-kv
-                     (fn [acc proc-name {:keys [handler-fn topics]}]
-                       (assoc acc proc-name
-                              (tp/start {:event-pubsub ps :topics topics
-                                         :handler-fn handler-fn :context base-ctx})))
-                     {} @tp/processor-registry*)]
-    (assoc base-ctx :processors processors)))
+(defn- create-context
+  ([] (create-context true))
+  ([start-processors?]
+   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
+         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
+         cache-dir (str "/tmp/c2b1-test-" (random-uuid))
+         cache (kv/start (lmdb/->KV-Store-LMDB {:storage-dir cache-dir :db-name "test"}))
+         tenant-id (random-uuid)
+         base-ctx {:event-store event-store
+                   :cache cache
+                   :tenant-id tenant-id
+                   :event-pubsub ps
+                   :command-registry (cp/global-command-registry)
+                   :query-registry (qp/global-query-registry)
+                   ::cache-dir cache-dir}
+         processors (if start-processors?
+                      (reduce-kv
+                        (fn [acc proc-name {:keys [handler-fn topics]}]
+                          (assoc acc proc-name
+                                 (tp/start {:event-pubsub ps :topics topics
+                                            :handler-fn handler-fn :context base-ctx})))
+                        {} @tp/processor-registry*)
+                      {})]
+     (assoc base-ctx :processors processors))))
 
 (defn- stop-context [ctx]
   (doseq [[_ p] (:processors ctx)] (tp/stop p))
@@ -69,6 +73,10 @@
 
 (defmacro with-test-ctx [[sym] & body]
   `(let [~sym (create-context)]
+     (try ~@body (finally (stop-context ~sym)))))
+
+(defmacro with-unwired-test-ctx [[sym] & body]
+  `(let [~sym (create-context false)]
      (try ~@body (finally (stop-context ~sym)))))
 
 (defn- await-pred
@@ -536,30 +544,19 @@
 
 (deftest bootstrap-reindex-rebuilds-cold-corpus
   (testing "When the processor was never wired in (synthetic 'lost wiring' scenario), bootstrap-reindex! still rebuilds from a non-empty descriptions corpus + no index"
-    (with-test-ctx [ctx]
-      ;; Seed descriptions WITHOUT the redef stub installed → real
-      ;; colbert-ops/create-index! gets called by the processor's cold-start
-      ;; path. Since we don't want to actually spawn ColBERT in a unit
-      ;; test, we instead emit raw description events via the command
-      ;; processor but stub create-index! to a no-op atom-recorder that
-      ;; does NOT emit :colbert/index-created. This simulates "the
-      ;; create-index call happened but the event never landed" —
-      ;; equivalent to a fresh-startup with descriptions but no index.
+    (with-unwired-test-ctx [ctx]
+      (is (empty? (:processors ctx))
+          "The cold-corpus fixture leaves todo processors unwired")
       (let [calls (atom [])
-            ;; Silent stub: records the call but throws so the
-            ;; :colbert/create-index defcommand's catch block returns
-            ;; an anomaly instead of emitting an :colbert/index-created
-            ;; event. This simulates "create-index was attempted but
-            ;; the index never landed" — equivalent to a fresh startup
-            ;; with descriptions but no index, so bootstrap-reindex!
-            ;; should still see :index-built? false.
+            ;; Record the explicit bootstrap attempt but prevent an
+            ;; :colbert/index-created event from making the corpus warm.
             silent-stub (fn [_ctx opts]
                           (swap! calls conj opts)
                           (throw (ex-info "silent stub" {})))]
         (with-redefs [colbert-ops/create-index! silent-stub]
           (emit-description-updated! ctx :node-type :validate)
-          (Thread/sleep 200)
-          (reset! calls [])  ;; clear processor's cold-start call
+          (is (some? (ontology/get-description ctx :node-type :validate))
+              "The durable description is visible before bootstrap")
           (is (false? (:index-built? (ontology/get-reindex-state ctx)))
               "Sanity: no :colbert/index-created event was emitted, so :index-built? remains false")
           (ontology/bootstrap-reindex! ctx)
