@@ -329,9 +329,9 @@ contract CheckpointedResearcherExecution {
     resume_campaign: (execution: WorkflowExecution, node: WorkflowNode) -> Any
     inspect_iterations: (execution: WorkflowExecution, node: WorkflowNode) -> Any
 
-    @invariant ExplicitOptInPreservesCompatibility
-        -- Checkpointed execution applies only when the researcher explicitly
-        -- enables it. Researchers without that option retain their existing
+    @invariant ExplicitOptOutPreservesCompatibility
+        -- Recursive campaigns are checkpointed unless the researcher explicitly
+        -- opts out. A researcher that opts out retains its existing
         -- single-invocation behavior, configuration meaning and result shape.
 
     @invariant BoundedQuantumYieldsDurably
@@ -346,17 +346,39 @@ contract CheckpointedResearcherExecution {
         -- re-executed merely because the researcher requires another quantum.
 
     @invariant ExternalBoundariesAdvanceTheFrontier
-        -- Provider responses, inline tool outcomes and generated child-tree
-        -- outcomes each become durable before execution advances beyond that
-        -- external boundary. The iteration checkpoint additionally captures
-        -- ordered history, reasoning, sandbox state and metadata, accumulated
-        -- usage and timing, child lineage, and remaining budgets.
+        -- Provider responses, inline provider primitives, inline tool outcomes,
+        -- behavior mints and generated child-tree outcomes each become durable
+        -- before execution advances beyond that external boundary.
+
+    @invariant ResumeStateAndIterationRecordAreSeparateFacts
+        -- What a campaign needs to continue is distinct from the record of what
+        -- it did. Resume state carries current sandbox values, accumulated usage
+        -- and timing, remaining budgets and the frontier position, and is
+        -- superseded on every quantum. An iteration record is written once when
+        -- an iteration completes and is never rewritten. Neither is reconstructed
+        -- from the other, and the durable cost of a campaign grows in proportion
+        -- to its iterations rather than to their square.
+
+    @invariant GeneratedCodeIsDurableEvidence
+        -- Code a campaign writes, including code inside a tree it emits, is
+        -- durably recorded as source. A recorded tree can be read, compared
+        -- across attempts, and emitted again. Code is never reduced to a
+        -- placeholder that cannot be run or understood.
 
     @invariant StableLogicalActionsPreventDuplicateWork
-        -- Every provider call, inline tool call and generated child tree has a
-        -- stable logical action identity established before dispatch. Duplicate
-        -- delivery, retick and recovery observe a completed action rather than
-        -- dispatching it again.
+        -- Every provider call, inline provider primitive, inline tool call,
+        -- behavior mint and generated child tree has a stable logical action
+        -- identity derived from what the action IS, established before dispatch
+        -- and independent of the order in which the campaign happened to reach
+        -- it. Duplicate delivery, retick and recovery observe a completed action
+        -- rather than dispatching it again, and a recorded result is never
+        -- returned for a different call.
+
+    @invariant EffectsAreClaimedBeforeTheyHappen
+        -- A campaign durably claims an effect, under its ownership epoch, before
+        -- that effect begins. A claim that a later epoch has superseded is
+        -- rejected, so a superseded worker's outcome never lands. The same claim
+        -- is the record that makes an effect's outcome knowable afterwards.
 
     @invariant CheckpointSafeToolsShareIdempotencyKeys
         -- A checkpointed researcher may invoke an effectful inline tool only
@@ -373,6 +395,13 @@ contract CheckpointedResearcherExecution {
         -- including when the process stops after child completion but before
         -- parent incorporation. Such a child is never replaced or rerun.
 
+    @invariant CompletedFanOutWorkIsRejoined
+        -- Within a generated child, work that fanned out over a collection and
+        -- already finished is rejoined after a restart rather than repeated.
+        -- Which items are outstanding is derived from what durably completed,
+        -- and the record of which items failed and why survives the restart, so
+        -- the campaign's next iteration can still act on it.
+
     @invariant IncompleteChildrenRetainLogicalIdentity
         -- A timed-out or cancelled generated child may receive another attempt
         -- only under the same logical action identity and within the iteration's
@@ -382,7 +411,9 @@ contract CheckpointedResearcherExecution {
         -- Checkpointed sandbox variables use the canonical durable value policy
         -- or an explicitly registered codec and retain creation and update
         -- metadata. Unsupported runtime values fail the iteration checkpoint
-        -- explicitly; they are never silently dropped or stringified.
+        -- explicitly, naming the value that could not be made durable; they are
+        -- never silently dropped or stringified, and they never fail the campaign
+        -- in a way that discards the iterations already completed.
 
     @invariant TimeoutScopesRemainIndependent
         -- Provider-call, iteration, generated-child, researcher-campaign and
@@ -390,10 +421,18 @@ contract CheckpointedResearcherExecution {
         -- evidenced. Each operation is bounded by the shortest applicable
         -- remaining deadline.
 
+    @invariant EveryCampaignOperationIsBounded
+        -- Every operation a campaign performs falls inside a deadline, including
+        -- the work done to prepare its first iteration. A campaign's worst-case
+        -- uninterrupted duration is a known, recorded quantity rather than an
+        -- open question, so ownership handover can be reasoned about against it.
+
     @invariant CampaignDeadlineSurvivesRecovery
         -- A checkpointed campaign records one absolute campaign deadline when
         -- it starts. Yield, retick and process restart do not reset the
-        -- deadline or any accumulated usage and timing budget.
+        -- deadline, the accumulated usage and timing budget, or the count of
+        -- provider calls its trace family has already spent. Usage accrues once
+        -- per completed iteration, never once per yield.
 
     @invariant TimedOutIterationRetriesFromCheckpoint
         -- An iteration timeout preserves every preceding completed iteration
@@ -405,7 +444,10 @@ contract CheckpointedResearcherExecution {
         -- A blocked generated child truthfully blocks the parent researcher and
         -- preserves all checkpoints completed before the blocked iteration.
         -- Blocking is a terminal workflow outcome under the ordinary ORC
-        -- contract; it does not silently restart the child or campaign.
+        -- contract; it does not silently restart the child or campaign. The
+        -- blocked outcome and the reason for it are recorded like any other
+        -- outcome, so the child is rejoined rather than repeated and the reason
+        -- is available as evidence about the class of task that blocked.
 
     @invariant CancellationIsTerminalForRecovery
         -- Cancelling the parent workflow cancels the campaign and its active
@@ -413,23 +455,71 @@ contract CheckpointedResearcherExecution {
         -- nor explicit recovery resumes a cancelled campaign.
 
     @invariant ResumeOwnershipIsFenced
-        -- At most one worker owns a researcher frontier attempt at a time.
-        -- Concurrent reticks, duplicate resume requests and automatic recovery
-        -- converge without duplicating provider, tool or child work.
+        -- Campaign state is recorded exactly once: concurrent reticks, duplicate
+        -- resume requests and automatic recovery converge on one account, and a
+        -- superseded worker's result cannot land. Generated children,
+        -- checkpoint-safe tool calls and behavior mints happen exactly once,
+        -- because the campaign is their caller and claims them before dispatch.
+        -- Provider calls happen at least once: they are bounded by the number of
+        -- ownership epochs a quantum crosses, and every call whose outcome is
+        -- unknown is durably recorded and attributable to the epoch that made
+        -- it. Exactly-once provider execution is not claimed, because it cannot
+        -- be obtained without the provider's participation.
 
-    @invariant ActiveCampaignsResumeFromRecoveryScan
-        -- After process restart, the ordinary ORC recovery scan rediscovers
-        -- every checkpointed campaign whose parent execution remains active and
-        -- resumes it without resubmitting the workflow. Repeated recovery scans
-        -- and explicit resume remain safe and idempotent.
+    @invariant IndeterminateEffectsAreResolvedByCalleeParticipation
+        -- An effect that was claimed but has no recorded outcome is resolved
+        -- according to who owns the effect. A generated child is rejoined by its
+        -- stable identity and never repeated. A checkpoint-safe tool and a
+        -- behavior mint are attempted again under the same identity, which their
+        -- owner deduplicates. A provider call is attempted again as a further
+        -- attempt of the same logical action; the indeterminacy is recorded for
+        -- the operator and is not presented to the model, whose reasoning
+        -- records what it did rather than what the engine suffered.
+
+    @invariant RecoveryRecognisesCampaignFrontiers
+        -- The recovery scan rediscovers a campaign frontier as it rediscovers
+        -- any other unfinished work. A campaign is not skipped because of the
+        -- kind of node it runs in. Repeated scans and explicit resume remain
+        -- safe and idempotent.
+
+    @invariant ActiveCampaignsRecoverAutomatically
+        -- After process restart, every campaign whose parent execution remains
+        -- active resumes without any caller resubmitting the workflow or
+        -- invoking recovery. Recovery is something the system does, not
+        -- something an operator must remember.
 
     @invariant IterationTraceIsDurableAndOrdered
         -- Trace inspection exposes every completed researcher iteration even
-        -- when a later iteration fails or times out. Each ordered iteration
-        -- includes generated reasoning and code, provider latency and usage,
-        -- sandbox result or error, variable changes, checkpoint/yield/resume
-        -- evidence, and links to generated child traces and outcomes without
-        -- duplicating the child trace itself.
+        -- when a later iteration fails or times out, and distinguishes repeated
+        -- attempts at one iteration rather than collapsing them. Each ordered
+        -- iteration includes generated reasoning and code, the tree it emitted
+        -- and that tree's shape and outcome, provider latency and usage, sandbox
+        -- result or error, variable changes, claim/yield/resume evidence, and
+        -- links to generated child traces without duplicating the child trace
+        -- itself.
+
+    @invariant OneAccountOfACampaign
+        -- What an observer watches while a campaign runs and what the system
+        -- reads back afterwards are the same account. Live observation is
+        -- derived from the durable iteration record, so it survives restart and
+        -- cannot drift from it. Progress finer than one iteration may be offered
+        -- as a preview that nothing is entitled to rely on.
+
+    @invariant CampaignEvidenceIsRetainedByKind
+        -- Superseded resume state may be discarded once a later epoch has
+        -- replaced it. An iteration record is evidence and is retained on its
+        -- own terms, never discarded merely because the campaign has moved on.
+
+    @guidance
+        -- Blocking is terminal because ORC has no durable frontier that waits on
+        -- a person. A campaign that could pause for an approval and resume the
+        -- same child under the same logical action would need an approval
+        -- identity and lifecycle, a waiting state distinct from both running and
+        -- terminal, and a decision about whether time spent waiting counts
+        -- against the campaign's absolute deadline. That last question is the
+        -- hard one: the deadline is deliberately absolute, and a campaign
+        -- waiting days for a person would exhaust it. See the open question
+        -- below.
 }
 
 ------------------------------------------------------------
@@ -452,6 +542,16 @@ enum NodeExecutionStatus {
 }
 
 enum DelegateInvocationStatus { running | success | failure | timeout | cancelled }
+
+enum CampaignStatus {
+    running | yielded | success | failure | timeout | blocked | abandoned
+}
+
+enum CampaignIterationStatus { running | success | failure | timeout }
+
+enum EffectKind { provider | tool | generated_child | behavior_mint }
+
+enum EffectClaimStatus { claimed | completed | indeterminate }
 
 enum StructuredFailureKind {
     transport_failure | missing_forced_tool_call | tool_call_parsing_failed |
@@ -583,6 +683,70 @@ entity DelegateInvocation {
         running -> timeout
         running -> cancelled
         terminal: success, failure, timeout, cancelled
+    }
+}
+
+entity Campaign {
+    node_execution: NodeExecution
+    ownership_epoch: Integer
+    next_iteration_index: Integer
+    status: CampaignStatus
+    started_at: Timestamp
+    deadline: Timestamp
+    completed_at: Timestamp?
+    terminal_reason: String?
+
+    transitions status {
+        running -> yielded
+        yielded -> running
+        running -> success
+        running -> failure
+        running -> timeout
+        running -> blocked
+        running -> abandoned
+        yielded -> abandoned
+        terminal: success, failure, timeout, blocked, abandoned
+    }
+
+    iterations: CampaignIteration with campaign = this
+    claims: EffectClaim with campaign = this
+}
+
+entity CampaignIteration {
+    campaign: Campaign
+    iteration_index: Integer
+    attempt_ordinal: Integer
+    status: CampaignIterationStatus
+    started_at: Timestamp
+    completed_at: Timestamp?
+    duration: Duration?
+    generated_code_recorded: Boolean
+    emitted_tree_recorded: Boolean
+    emitted_shape: String?
+    error: String?
+
+    transitions status {
+        running -> success
+        running -> failure
+        running -> timeout
+        terminal: success, failure, timeout
+    }
+}
+
+entity EffectClaim {
+    campaign: Campaign
+    iteration: CampaignIteration
+    action_identity: String
+    ownership_epoch: Integer
+    kind: EffectKind
+    status: EffectClaimStatus
+    claimed_at: Timestamp
+    resolved_at: Timestamp?
+
+    transitions status {
+        claimed -> completed
+        claimed -> indeterminate
+        terminal: completed, indeterminate
     }
 }
 
@@ -973,6 +1137,140 @@ rule ReplResearcherEmitsTree {
     )
 }
 
+-- A campaign advances in quanta. Yielding is not finishing: the campaign keeps
+-- its frontier, its budgets and its absolute deadline, and the work already
+-- completed stays completed.
+rule CampaignYieldsQuantum {
+    when: CampaignQuantumCompletes(campaign, next_iteration_index)
+    requires: campaign.status = running
+
+    ensures: campaign.status = yielded
+    ensures: campaign.next_iteration_index = next_iteration_index
+}
+
+-- Resuming claims the frontier under an epoch at least as new as the one the
+-- campaign last recorded. A worker holding a superseded epoch cannot resume.
+rule CampaignResumesAtFrontier {
+    when: CampaignFrontierClaimed(campaign, ownership_epoch)
+    requires: campaign.status = yielded
+    requires: ownership_epoch >= campaign.ownership_epoch
+
+    ensures: campaign.status = running
+    ensures: campaign.ownership_epoch = ownership_epoch
+}
+
+rule CampaignSucceeds {
+    when: CampaignFinalises(campaign)
+    requires: campaign.status = running
+
+    ensures: campaign.status = success
+    ensures: campaign.completed_at = now
+}
+
+rule CampaignFails {
+    when: CampaignFailsIrrecoverably(campaign, reason)
+    requires: campaign.status = running
+
+    ensures: campaign.status = failure
+    ensures: campaign.completed_at = now
+    ensures: campaign.terminal_reason = reason
+}
+
+rule CampaignTimesOut {
+    when: CampaignDeadlineExpires(campaign)
+    requires: campaign.status = running
+
+    ensures: campaign.status = timeout
+    ensures: campaign.completed_at = now
+}
+
+rule CampaignBlocks {
+    when: CampaignChildBlocks(campaign, reason)
+    requires: campaign.status = running
+
+    ensures: campaign.status = blocked
+    ensures: campaign.completed_at = now
+    ensures: campaign.terminal_reason = reason
+}
+
+-- Abandonment is what happens when nobody will ever resume: the enclosing
+-- execution is over. It is a fact about the engine, not a verdict about the
+-- work, so it records no completion.
+rule CampaignIsAbandoned {
+    when: CampaignParentExecutionEnds(campaign)
+    requires: campaign.status = running or campaign.status = yielded
+
+    ensures: campaign.status = abandoned
+}
+
+rule CampaignIterationSucceeds {
+    when: IterationProducesResult(iteration, duration)
+    requires: iteration.status = running
+
+    ensures: iteration.status = success
+    ensures: iteration.completed_at = now
+    ensures: iteration.duration = duration
+    ensures: iteration.generated_code_recorded = true
+}
+
+rule CampaignIterationFails {
+    when: IterationProducesError(iteration, error)
+    requires: iteration.status = running
+
+    ensures: iteration.status = failure
+    ensures: iteration.completed_at = now
+    ensures: iteration.error = error
+    ensures: iteration.generated_code_recorded = true
+}
+
+rule CampaignIterationTimesOut {
+    when: IterationDeadlineExpires(iteration)
+    requires: iteration.status = running
+
+    ensures: iteration.status = timeout
+    ensures: iteration.completed_at = now
+}
+
+-- The claim precedes the effect. Nothing external happens until this record
+-- exists, so an effect that fired always has a claim naming the epoch that
+-- authorised it.
+rule EffectIsClaimedBeforeDispatch {
+    when: CampaignDispatchesEffect(campaign, iteration, action_identity, kind)
+    requires: campaign.status = running
+    requires: not exists EffectClaim{
+        action_identity: action_identity,
+        ownership_epoch: campaign.ownership_epoch
+    }
+
+    ensures: EffectClaim.created(
+        campaign: campaign,
+        iteration: iteration,
+        action_identity: action_identity,
+        ownership_epoch: campaign.ownership_epoch,
+        kind: kind,
+        status: claimed,
+        claimed_at: now
+    )
+}
+
+rule ClaimedEffectCompletes {
+    when: EffectOutcomeObserved(claim)
+    requires: claim.status = claimed
+
+    ensures: claim.status = completed
+    ensures: claim.resolved_at = now
+}
+
+-- An effect whose outcome is unknown says so durably. A later attempt is a new
+-- claim under a newer epoch, so both remain separately traceable.
+rule ClaimedEffectBecomesIndeterminate {
+    when: EffectOutcomeUnknown(claim)
+    requires: claim.status = claimed
+
+    ensures: claim.status = indeterminate
+    ensures: claim.resolved_at = now
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
@@ -1014,6 +1312,64 @@ invariant DelegateBudgetsArePositiveAndBounded {
         and invocation.consumed_ticks >= 0
         and (invocation.configured_maximum_ticks = null
              or invocation.consumed_ticks <= invocation.configured_maximum_ticks)
+}
+
+invariant OneClaimPerActionIdentityPerEpoch {
+    for a in EffectClaims:
+        for b in EffectClaims:
+            a != b implies not (
+                a.action_identity = b.action_identity
+                and a.ownership_epoch = b.ownership_epoch
+            )
+}
+
+invariant OneIterationRecordPerAttempt {
+    for a in CampaignIterations:
+        for b in CampaignIterations:
+            a != b implies not (
+                a.campaign = b.campaign
+                and a.iteration_index = b.iteration_index
+                and a.attempt_ordinal = b.attempt_ordinal
+            )
+}
+
+invariant ClaimsNeverExceedTheirCampaignsEpoch {
+    for claim in EffectClaims:
+        claim.ownership_epoch <= claim.campaign.ownership_epoch
+}
+
+invariant ClaimsBelongToTheirIterationsCampaign {
+    for claim in EffectClaims:
+        claim.iteration.campaign = claim.campaign
+}
+
+invariant AbandonedCampaignsRecordNoVerdict {
+    for campaign in Campaigns:
+        campaign.status = abandoned implies campaign.completed_at = null
+}
+
+invariant SettledCampaignsRecordWhenTheySettled {
+    for campaign in Campaigns:
+        campaign.status = success or campaign.status = failure
+            or campaign.status = timeout or campaign.status = blocked
+            implies campaign.completed_at != null
+}
+
+invariant SettledIterationsRecordTheirCode {
+    for iteration in CampaignIterations:
+        iteration.status = success or iteration.status = failure
+            implies iteration.generated_code_recorded
+}
+
+invariant RecordedTreesCarryTheirShape {
+    for iteration in CampaignIterations:
+        iteration.emitted_tree_recorded implies iteration.emitted_shape != null
+}
+
+invariant ResolvedClaimsRecordWhenTheyResolved {
+    for claim in EffectClaims:
+        claim.status = completed or claim.status = indeterminate
+            implies claim.resolved_at != null
 }
 
 invariant TraceInstanceIdentifiersAreUnique {
@@ -1168,3 +1524,5 @@ surface WorkflowExecutionAccess {
         -- root iteration. A previously completed delegate cannot make that
         -- transition silent, including after recovery or duplicate delivery.
 }
+
+open question "Blocking is terminal because there is no durable frontier that waits on a person. Should a campaign be able to pause for an approval and resume the same generated child under the same logical action, and if so does time spent waiting count against the campaign's absolute deadline?"
