@@ -4659,12 +4659,12 @@
         ;; No events to emit directly
         nil))))
 
-(defn refresh-execution-trace-after-node-completion
-  "Reassemble a terminal trace when a node completion arrives after the tree
-   terminal event. Processor delivery is asynchronous across topics, so the
-   terminal assembler cannot assume every node lifecycle append is already
-   visible. Reusing the durable terminal event makes the eventual trace
-   independent of processor scheduling order."
+(defn refresh-terminal-execution-trace
+  "Reassemble a terminal trace when durable trace evidence arrives after the
+   tree terminal event. Processor delivery is asynchronous across topics, so
+   the terminal assembler cannot assume every node lifecycle or ephemeral
+   summary append is already visible. Reusing the durable terminal event makes
+   the eventual trace independent of processor scheduling order."
   [{:keys [event event-store] :as context}]
   (let [tick-id (:tick-id event)
         terminal-event (->> (es/read event-store
@@ -4970,8 +4970,16 @@
    silently stop re-ticking."
   [context]
   (let [result (complete-tree-tick context)]
-    (refresh-execution-trace-after-node-completion context)
+    (refresh-terminal-execution-trace context)
     result))
+
+(defprocessor :sheet refresh-execution-trace-after-ephemeral-summary
+  {:topics #{:sheet/ephemeral-evaluations-recorded}}
+  "Refresh a trace after its ordered ephemeral routing evidence is durable.
+   A final routing summary can be appended after the terminal event that first
+   triggered assembly, so this delivery is the settle signal for that evidence."
+  [context]
+  (refresh-terminal-execution-trace context))
 
 (defprocessor :sheet restore-from-snapshot
   {:topics #{:sheet/draft-reverted :sheet/stash-restored}}
