@@ -4345,11 +4345,7 @@
                (conj seen current)
                (inc depth))))))
 
-(defn assemble-execution-trace
-  "After a tick completes, assemble an execution trace from events and store it.
-   Only runs for tick-scoped executions (snapshot-based).
-   Reads node-execution-started/completed events, correlates them with node
-   metadata from the execution snapshot, and stores via store-execution-trace."
+(defn- assemble-execution-trace-owned
   [{:keys [event event-store] :as context}]
   (let [tick-id (:tick-id event)
         sheet-id (:sheet-id event)
@@ -4602,14 +4598,18 @@
                                (:iteration (rm/get-tick context tick-id))
                                1)
             terminal-reason (or (:terminal-reason event) root-status)]
-        ;; Store trace via command in a future (best-effort, non-blocking).
+        ;; Store trace via supervised background work (best-effort, non-blocking).
         ;; Must be async because cp/process-command -> es/append -> pubsub/pub
         ;; can deadlock if called synchronously within a todo processor thread.
-        (future
-          (try
-            (cp/process-command
-              (assoc context :command
-                     (cond-> {:command/id (random-uuid)
+        ;; Hosts may inject lifecycle ownership; the ordinary library default
+        ;; remains a future because ORC does not own the host's shutdown.
+        ((or (:orc/submit-background! context)
+             (fn [task] (future (task))))
+         (fn []
+           (try
+             (cp/process-command
+               (assoc context :command
+                      (cond-> {:command/id (random-uuid)
                               :command/timestamp (time/now)
                               :command/name :sheet/store-execution-trace
                               :trace-id trace-id
@@ -4635,11 +4635,25 @@
                        correlation-id (assoc :correlation-id correlation-id)
                        version-number (assoc :version-number version-number)
                        (:error event) (assoc :error (:error event)))))
-            (catch Exception _e
-              ;; Log but don't fail — trace storage is best-effort
-              nil)))
+             (catch Exception _e
+               ;; Log but don't fail — trace storage is best-effort
+               nil))))
         ;; No events to emit directly
         nil))))
+
+(defn assemble-execution-trace
+  "After a tick completes, assemble an execution trace from events and store it.
+   Only runs for tick-scoped executions (snapshot-based).
+   Reads node-execution-started/completed events, correlates them with node
+   metadata from the execution snapshot, and stores via store-execution-trace."
+  [context]
+  (let [release! ((or (:orc/acquire-background! context)
+                      (fn [] (fn [] nil))))]
+    (when release!
+      (try
+        (assemble-execution-trace-owned context)
+        (finally
+          (release!))))))
 
 (defn refresh-terminal-execution-trace
   "Reassemble a terminal trace when durable trace evidence arrives after the

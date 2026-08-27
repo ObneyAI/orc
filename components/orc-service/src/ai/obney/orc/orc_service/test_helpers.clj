@@ -285,6 +285,47 @@
   (doseq [[_ processor] (:processors ctx)]
     (tp/stop processor)))
 
+(def ^:private background-drain-timeout-ms 30000)
+
+(defn- acquire-background-work!
+  [supervisor]
+  (locking supervisor
+    (when (:accepting? @supervisor)
+      (let [done (promise)]
+        (swap! supervisor update :work conj done)
+        #(deliver done true)))))
+
+(defn- tracked-background-submitter
+  [supervisor]
+  (fn [task]
+    (if-let [release! (acquire-background-work! supervisor)]
+      (future
+        (try
+          (task)
+          (finally
+            (release!))))
+      (java.util.concurrent.CompletableFuture/completedFuture nil))))
+
+(defn- fence-background-work!
+  [ctx]
+  (when-let [supervisor (:orc/background-supervisor ctx)]
+    (locking supervisor
+      (swap! supervisor assoc :accepting? false))))
+
+(defn- drain-background-work!
+  [ctx]
+  (when-let [background-work (or (some-> ctx :orc/background-supervisor deref :work)
+                                 (some-> ctx :orc/background-work deref))]
+    (let [deadline (+ (System/currentTimeMillis) background-drain-timeout-ms)]
+      (doseq [worker background-work]
+        (let [remaining (max 1 (- deadline (System/currentTimeMillis)))
+              result (deref worker remaining ::drain-timeout)]
+          (when (= ::drain-timeout result)
+            ;; Closing LMDB while this worker may still be committing can crash
+            ;; the JVM. Fail teardown and deliberately leave the cache open.
+            (throw (ex-info "Background work did not stop before context teardown"
+                            {:timeout-ms background-drain-timeout-ms}))))))))
+
 (defn create-async-test-context
   "Create a test context with real pubsub and todo processors.
    Events are published and trigger todo processor handlers asynchronously.
@@ -299,6 +340,7 @@
   ([{:keys [count-cache? context]}]
   (rmp/l1-clear!)
   (let [dir (str "/tmp/sheet-async-test-" (random-uuid))
+        background-supervisor (atom {:accepting? true :work #{}})
         ps (pubsub/start {:type :core-async
                            :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory}
@@ -316,6 +358,11 @@
                          :command-registry (cp/global-command-registry)
                          :query-registry (qp/global-query-registry)
                          :llm-provider :openrouter
+                         :orc/background-supervisor background-supervisor
+                         :orc/acquire-background!
+                         #(acquire-background-work! background-supervisor)
+                         :orc/submit-background!
+                         (tracked-background-submitter background-supervisor)
                          ::cache-dir dir}
                         context)
         ;; Start a todo processor for each registered processor
@@ -327,8 +374,14 @@
 (defn stop-async-context
   "Stop and clean up async test context."
   [ctx]
-  ;; Stop processors first, then pubsub, then event store, then cache
+  ;; Fence admission first: Grain closes processor inputs on stop but does not
+  ;; join handler threads already dispatched by its core.async executor. The
+  ;; trace handler acquires ownership before touching projections, so a late
+  ;; handler is rejected and every admitted handler/task can be drained while
+  ;; pubsub, event store, and LMDB are still alive.
+  (fence-background-work! ctx)
   (stop-test-processors! ctx)
+  (drain-background-work! ctx)
   (when-let [ps (:event-pubsub ctx)]
     (pubsub/stop ps))
   ;; Clear L1 cache after processors stopped to prevent stale writes
