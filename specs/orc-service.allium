@@ -300,10 +300,11 @@ contract ExecutionDurability {
         -- as the other.
 
     @invariant TraceRefreshNeverRegresses
-        -- Reassembling a terminal execution trace may add durable evidence that
-        -- arrived after an earlier assembly. A delayed or duplicate refresh
-        -- never removes evidence already represented by a newer assembly and
-        -- never changes the canonical order of the executions it retains.
+        -- Each execution publishes exactly one durable trace-creation fact.
+        -- Reassembly may publish a distinct revision fact only when it adds
+        -- durable source evidence beyond the canonical trace. A delayed, stale
+        -- or duplicate publication adds no fact; a newer revision never removes
+        -- evidence or changes the canonical order of retained executions.
 }
 
 contract ExecutionRecovery {

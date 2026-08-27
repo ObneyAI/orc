@@ -855,7 +855,7 @@
 
 (def trace-events
   "Events that affect execution traces read model"
-  #{:sheet/execution-traced})
+  #{:sheet/execution-traced :sheet/execution-trace-refreshed})
 
 (defmulti traces*
   "Apply event to traces read model.
@@ -894,6 +894,10 @@
              (assoc :source-event-count (:source-event-count event))
              (:error event) (assoc :error (:error event))))))
 
+(defmethod traces* :sheet/execution-trace-refreshed
+  [state event]
+  (traces* state (assoc event :event/type :sheet/execution-traced)))
+
 (defmethod traces* :default [state _] state)
 
 (defn traces
@@ -902,7 +906,7 @@
   (reduce traces* (or initial-state {}) events))
 
 (defreadmodel :sheet traces
-  {:events trace-events :version 7
+  {:events trace-events :version 8
    :partition-fn :sheet-id
    :entity-id-fn :trace-id}
   [state event] (traces* state event))

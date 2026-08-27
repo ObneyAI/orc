@@ -421,9 +421,10 @@
         :else (do (Thread/sleep interval-ms) (recur))))))
 
 (defn trace-stored?
-  "True once an execution trace has been appended for `tick-id`. Trace
-   assembly is the last thing a completed tick writes, so it is the settle
-   signal for whole-run byte accounting.
+  "True once the singular execution-trace creation fact exists for `tick-id`.
+   Later durable evidence may still produce a distinct trace revision, so
+   callers that require a complete trace must also settle on their expected
+   evidence (for example, the exact node-trace count).
 
    Reads directly rather than via read-all-events, which is defined below in
    the byte-accounting section. es/read returns a reducible, not a seq — it

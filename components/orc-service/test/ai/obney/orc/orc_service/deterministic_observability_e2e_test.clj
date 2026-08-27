@@ -1,9 +1,11 @@
 (ns ai.obney.orc.orc-service.deterministic-observability-e2e-test
   "Deterministic end-to-end coverage for durable execution observability."
   (:require [clojure.test :refer [deftest is testing]]
+            [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
-            [ai.obney.grain.event-store-v3.interface :as es]))
+            [ai.obney.grain.event-store-v3.interface :as es]
+            [cognitect.anomalies :as anom]))
 
 (defn uppercase [{:keys [inputs]}]
   {:middle (.toUpperCase ^String (:input inputs))})
@@ -266,7 +268,7 @@
                       (:traces (query)))))))))
 
 (deftest det-e2e-258-stale-trace-refresh-cannot-regress-durable-evidence
-  (testing "an older asynchronous assembly cannot replace a newer complete trace"
+  (testing "one creation fact is followed only by strictly newer trace revisions"
     (h/with-async-test-context [ctx]
       (let [sheet-id (sheet/build-workflow! ctx (pipeline "det-e2e-258-trace-refresh"))
             trace-id (random-uuid)
@@ -274,39 +276,50 @@
             node-b {:node-id (random-uuid) :node-type :leaf :status :success}
             node-c {:node-id (random-uuid) :node-type :leaf :status :success}
             node-d {:node-id (random-uuid) :node-type :leaf :status :success}
-            store! (fn [source-event-count node-traces]
-                     (h/run-and-apply!
-                      ctx {:command/id (random-uuid)
-                           :command/timestamp (java.time.OffsetDateTime/now)
-                           :command/name :sheet/store-execution-trace
-                           :trace-id trace-id
-                           :sheet-id sheet-id
-                           :root-trace-id trace-id
-                           :child-trace-ids []
-                           :started-at "2026-08-26T12:00:00Z"
-                           :completed-at "2026-08-26T12:00:01Z"
-                           :duration-ms 1000
-                           :status :success
-                           :input-snapshot {}
-                           :output-snapshot {}
-                           :source-event-count source-event-count
-                           :node-traces node-traces}))]
-        (store! 3 [node-a node-b node-c])
-        (store! 2 [node-a node-b])
-        (store! 3 [node-a node-b])
-        (store! 4 [node-a node-b node-c node-d])
+            trace-payload (fn [source-event-count node-traces]
+                            {:trace-id trace-id
+                             :sheet-id sheet-id
+                             :root-trace-id trace-id
+                             :child-trace-ids []
+                             :started-at "2026-08-26T12:00:00Z"
+                             :completed-at "2026-08-26T12:00:01Z"
+                             :duration-ms 1000
+                             :status :success
+                             :input-snapshot {}
+                             :output-snapshot {}
+                             :source-event-count source-event-count
+                             :node-traces node-traces})
+            publish! (fn [source-event-count node-traces]
+                       (trace-publication/publish!
+                        ctx (trace-payload source-event-count node-traces)))
+            premature-refresh
+            (h/run-and-apply!
+             ctx (merge {:command/id (random-uuid)
+                         :command/timestamp (java.time.OffsetDateTime/now)
+                         :command/name :sheet/refresh-execution-trace}
+                        (trace-payload 4 [node-a node-b node-c node-d])))]
+        (is (= ::anom/conflict (::anom/category premature-refresh))
+            "a revision cannot become the trace's creation fact")
+        (publish! 3 [node-a node-b node-c])
+        (publish! 2 [node-a node-b])
+        (publish! 3 [node-a node-b])
+        (publish! 4 [node-a node-b node-c node-d])
         (let [trace (get-in (h/run-query ctx (h/make-get-trace-query trace-id))
                             [:query/result :trace])
-              stored (->> (es/read (:event-store ctx)
-                                   {:tenant-id (:tenant-id ctx)
-                                    :types #{:sheet/execution-traced}
-                                    :tags #{[:trace trace-id]}})
-                          (into []))]
+              publications (->> (es/read (:event-store ctx)
+                                         {:tenant-id (:tenant-id ctx)
+                                          :types #{:sheet/execution-traced
+                                                   :sheet/execution-trace-refreshed}
+                                          :tags #{[:trace trace-id]}})
+                                (into []))]
           (is (= 4 (:source-event-count trace)))
           (is (= [node-a node-b node-c node-d]
                  (mapv #(select-keys % [:node-id :node-type :status])
                        (:node-traces trace))))
-          (is (= [3 4] (mapv :source-event-count stored))
+          (is (= [:sheet/execution-traced :sheet/execution-trace-refreshed]
+                 (mapv :event/type publications))
+              "creation is singular and a newer assembly is a distinct revision fact")
+          (is (= [3 4] (mapv :source-event-count publications))
               "stale and duplicate refreshes append nothing; newer evidence advances once"))))))
 
 (deftest det-e2e-118-observability-outage-does-not-corrupt-execution

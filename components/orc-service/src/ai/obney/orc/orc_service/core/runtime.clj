@@ -8,6 +8,7 @@
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.command-processor-v2.interface :as cp]
@@ -362,30 +363,26 @@
                       {:tenant-id (:tenant-id context)
                        :tags #{[:tick tick-id]}})
              (into [])
-             (remove #(= :sheet/execution-traced (:event/type %)))
+             (remove #(contains? #{:sheet/execution-traced
+                                   :sheet/execution-trace-refreshed}
+                                 (:event/type %)))
              count)
         _cancelled-work (execution-budget/cancel-active-work! tick-id)]
-    (loop [attempt 0]
-      (let [stored (cp/process-command
-                    (assoc context :command
-                           (cond-> {:command/id (random-uuid)
-                                    :command/timestamp (time/now)
-                                    :command/name :sheet/store-execution-trace
-                                    :trace-id tick-id :sheet-id sheet-id
-                                    :root-trace-id root-trace-id
-                                    :child-trace-ids child-trace-ids
-                                    :started-at started-at-str
-                                    :completed-at completed-at-str
-                                    :duration-ms trace-duration-ms :status :timeout
-                                    :input-snapshot (profile/profile-values (or inputs {}))
-                                    :output-snapshot {}
-                                    :source-event-count source-event-count
-                                    :node-traces node-traces
-                                    :error error}
-                             parent-trace-id
-                             (assoc :parent-trace-id parent-trace-id))))]
-        (when (and (:cognitect.anomalies/category stored) (< attempt 4))
-          (recur (inc attempt)))))
+    (trace-publication/publish!
+     context
+     (cond-> {:trace-id tick-id :sheet-id sheet-id
+              :root-trace-id root-trace-id
+              :child-trace-ids child-trace-ids
+              :started-at started-at-str
+              :completed-at completed-at-str
+              :duration-ms trace-duration-ms :status :timeout
+              :input-snapshot (profile/profile-values (or inputs {}))
+              :output-snapshot {}
+              :source-event-count source-event-count
+              :node-traces node-traces
+              :error error}
+       parent-trace-id
+       (assoc :parent-trace-id parent-trace-id)))
     (execution-budget/clear-tick! tick-id)
     (forget-ephemeral-context! tick-id)
     {:status :timeout

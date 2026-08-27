@@ -847,6 +847,30 @@
     [:researcher-events {:optional true} [:vector :any]]
     [:error {:optional true} :string]]
 
+   :sheet/refresh-execution-trace
+   [:map
+    [:trace-id :uuid]
+    [:sheet-id :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
+    [:version-number {:optional true} :int]
+    [:started-at :any]
+    [:completed-at :any]
+    [:duration-ms :int]
+    [:status :keyword]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
+    [:input-snapshot [:map-of :keyword :map]]
+    [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count [:and :int [:>= 0]]]
+    [:node-traces [:vector :any]]
+    [:researcher-iterations {:optional true} [:vector :any]]
+    [:researcher-events {:optional true} [:vector :any]]
+    [:error {:optional true} :string]]
+
    ;; -------------------------------------------------------------------------
    ;; Tree Metadata Commands
    ;; -------------------------------------------------------------------------
@@ -1500,6 +1524,30 @@
     [:output-snapshot [:map-of :keyword :map]]
     [:source-event-count {:optional true} [:and :int [:>= 0]]]
     [:node-traces [:vector :any]]                 ;; Vector of ::node-trace
+    [:researcher-iterations {:optional true} [:vector :any]]
+    [:researcher-events {:optional true} [:vector :any]]
+    [:error {:optional true} :string]]
+
+   :sheet/execution-trace-refreshed
+   [:map
+    [:trace-id :uuid]
+    [:sheet-id :uuid]
+    [:parent-trace-id {:optional true} :uuid]
+    [:correlation-id {:optional true} :uuid]
+    [:root-trace-id :uuid]
+    [:child-trace-ids [:vector :uuid]]
+    [:version-number {:optional true} :int]
+    [:started-at :any]
+    [:completed-at :any]
+    [:duration-ms :int]
+    [:status [:enum :success :failure :timeout :partial :blocked]]
+    [:configured-max-ticks {:optional true} [:and :int [:> 0]]]
+    [:consumed-ticks {:optional true} :int]
+    [:terminal-reason {:optional true} :keyword]
+    [:input-snapshot [:map-of :keyword :map]]
+    [:output-snapshot [:map-of :keyword :map]]
+    [:source-event-count [:and :int [:>= 0]]]
+    [:node-traces [:vector :any]]
     [:researcher-iterations {:optional true} [:vector :any]]
     [:researcher-events {:optional true} [:vector :any]]
     [:error {:optional true} :string]]

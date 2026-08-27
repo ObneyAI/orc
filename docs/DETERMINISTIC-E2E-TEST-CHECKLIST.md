@@ -550,7 +550,7 @@ prove isolation, lineage, terminal fencing, or durable recovery.
 
 ### Terminal execution races
 
-- [x] **DET-E2E-258 — A stale terminal-trace refresh cannot regress durable evidence.** Publish a complete trace revision and then deliver an older revision for the same execution; the command/event/projection boundary retains the complete node evidence and its source revision, while the stale refresh emits no replacement event.
+- [x] **DET-E2E-258 — Trace creation is singular and refresh cannot regress durable evidence.** Publish one trace creation, then deliver stale, duplicate, and newer assemblies for the same execution; the command/event/projection boundary emits exactly one `:sheet/execution-traced` creation fact, emits `:sheet/execution-trace-refreshed` only for the strictly newer revision, and retains the complete node evidence and source revision.
 - [x] **DET-E2E-259 — Concurrent cancellation has one terminal event.** Release concurrent public cancellation attempts against one running tick; exactly one durable cancellation event wins, the caller unblocks, and in-flight work cannot publish after that terminal boundary.
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions

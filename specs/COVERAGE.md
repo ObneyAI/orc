@@ -87,8 +87,10 @@ check while its characterized diagnostics remain.
 ## Concurrent execution and trace boundary evidence
 
 The resumable-execution path now fences four timing-sensitive boundaries at
-their durable event-store seams. Terminal trace refreshes compare their source
-event counts before replacing an existing trace (DET-E2E-258). Concurrent public
+their durable event-store seams. Every execution publishes exactly one trace
+creation fact; later assemblies compare their source event counts and publish a
+distinct revision fact only when they advance the canonical trace
+(DET-E2E-258). Concurrent public
 cancellations share the same terminal append decision as tick completion, so
 twelve synchronized attempts produce one cancellation event and late work stays
 fenced (DET-E2E-259). Concurrent commands carrying one stable tick identity use
@@ -399,12 +401,15 @@ crash-boundary correctness proofs.
 ## Monotonic terminal-trace refresh
 
 Terminal trace assembly carries a revision derived from the durable, non-trace
-events visible for the execution. The command/event boundary atomically rejects
-stale and duplicate revisions while allowing a newer source snapshot to add
-evidence; trace publication itself cannot advance the revision. The synchronous
-timeout writer uses the same boundary, so its partial active-attempt evidence
-cannot race an equal or older asynchronous refresh into a second replacement.
-DET-E2E-258 verifies stale, duplicate and advancing revisions through command,
-event and projection read-back. The public timeout path, affected trace
-namespaces, repeated observability and durability tests, and the complete
-`orc-service` brick pass all succeed with this contract in place.
+events visible for the execution. Competing publishers first contend for one
+atomic creation claim. A loser retries through the revision command, whose CAS
+rejects stale and duplicate source counts while allowing a newer source snapshot
+to add evidence. Creation uses `:sheet/execution-traced`; later advances use
+`:sheet/execution-trace-refreshed`, and both replay into the same versioned
+canonical projection. Neither publication event can advance the source revision.
+The synchronous timeout writer uses the same publication boundary, so its
+partial active-attempt evidence cannot race an equal or older asynchronous
+assembly into a second creation fact. DET-E2E-258 verifies creation, stale,
+duplicate and advancing publications through command, event and projection
+read-back. Its named `TraceRefreshNeverRegresses` obligation is covered (one
+obligation, one covered, zero uncovered).

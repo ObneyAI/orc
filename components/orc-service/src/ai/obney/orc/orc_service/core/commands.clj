@@ -1692,52 +1692,70 @@
                             (not= :running (:root-status %))))
                   (into [] existing)))}})
 
+(def ^:private trace-publication-event-types
+  #{:sheet/execution-traced :sheet/execution-trace-refreshed})
+
+(defn- execution-trace-event
+  [event-type {:keys [trace-id sheet-id parent-trace-id correlation-id root-trace-id child-trace-ids
+                      version-number started-at completed-at
+                      duration-ms status configured-max-ticks consumed-ticks terminal-reason
+                      input-snapshot output-snapshot node-traces researcher-iterations
+                      researcher-events source-event-count error]}]
+  (->event {:type event-type
+            :tags (cond-> #{[:sheet sheet-id] [:trace trace-id] [:tick trace-id]}
+                    correlation-id (conj [:correlation correlation-id]))
+            :body (cond-> {:trace-id trace-id
+                           :sheet-id sheet-id
+                           :root-trace-id root-trace-id
+                           :child-trace-ids child-trace-ids
+                           :started-at started-at
+                           :completed-at completed-at
+                           :duration-ms duration-ms
+                           :status status
+                           :input-snapshot input-snapshot
+                           :output-snapshot output-snapshot
+                           :node-traces node-traces}
+                    (seq researcher-iterations)
+                    (assoc :researcher-iterations researcher-iterations)
+                    (seq researcher-events)
+                    (assoc :researcher-events researcher-events)
+                    parent-trace-id (assoc :parent-trace-id parent-trace-id)
+                    correlation-id (assoc :correlation-id correlation-id)
+                    version-number (assoc :version-number version-number)
+                    configured-max-ticks (assoc :configured-max-ticks configured-max-ticks)
+                    consumed-ticks (assoc :consumed-ticks consumed-ticks)
+                    terminal-reason (assoc :terminal-reason terminal-reason)
+                    (some? source-event-count) (assoc :source-event-count source-event-count)
+                    error (assoc :error error))}))
+
 (defcommand :sheet store-execution-trace
   {:authorized? authenticated?}
-  "System command: store a full execution trace for analytics and debugging."
-  [{{:keys [trace-id sheet-id parent-trace-id correlation-id root-trace-id child-trace-ids
-            version-number started-at completed-at
-            duration-ms status configured-max-ticks consumed-ticks terminal-reason
-            input-snapshot output-snapshot node-traces researcher-iterations
-            researcher-events source-event-count error]} :command}]
-  (cond->
-   {:command-result/events
-    [(->event {:type :sheet/execution-traced
-               :tags (cond-> #{[:sheet sheet-id] [:trace trace-id] [:tick trace-id]}
-                       correlation-id (conj [:correlation correlation-id]))
-               :body (cond-> {:trace-id trace-id
-                              :sheet-id sheet-id
-                              :root-trace-id root-trace-id
-                              :child-trace-ids child-trace-ids
-                              :started-at started-at
-                              :completed-at completed-at
-                              :duration-ms duration-ms
-                              :status status
-                              :input-snapshot input-snapshot
-                              :output-snapshot output-snapshot
-                              :node-traces node-traces}
-                       (seq researcher-iterations)
-                       (assoc :researcher-iterations researcher-iterations)
-                       (seq researcher-events)
-                       (assoc :researcher-events researcher-events)
-                       parent-trace-id (assoc :parent-trace-id parent-trace-id)
-                       correlation-id (assoc :correlation-id correlation-id)
-                       version-number (assoc :version-number version-number)
-                       configured-max-ticks (assoc :configured-max-ticks configured-max-ticks)
-                       consumed-ticks (assoc :consumed-ticks consumed-ticks)
-                       terminal-reason (assoc :terminal-reason terminal-reason)
-                       (some? source-event-count) (assoc :source-event-count source-event-count)
-                       error (assoc :error error))})]}
-    (some? source-event-count)
-    (assoc :command-result/cas
-           {:types #{:sheet/execution-traced}
-            :tags #{[:trace trace-id]}
-            :predicate-fn
-            (fn [existing]
-              (not-any? #(let [existing-count (:source-event-count %)]
-                           (and (some? existing-count)
-                                (>= existing-count source-event-count)))
-                        (into [] existing))) })))
+  "System command: publish the singular creation fact for an execution trace."
+  [{{:keys [trace-id] :as command} :command}]
+  {:command-result/events
+   [(execution-trace-event :sheet/execution-traced command)]
+   :command-result/cas
+   {:types trace-publication-event-types
+    :tags #{[:trace trace-id]}
+    :predicate-fn (fn [existing] (empty? (into [] existing)))}})
+
+(defcommand :sheet refresh-execution-trace
+  {:authorized? authenticated?}
+  "System command: publish a strictly newer revision of an existing execution trace."
+  [{{:keys [trace-id source-event-count] :as command} :command}]
+  {:command-result/events
+   [(execution-trace-event :sheet/execution-trace-refreshed command)]
+   :command-result/cas
+   {:types trace-publication-event-types
+    :tags #{[:trace trace-id]}
+    :predicate-fn
+    (fn [existing]
+      (let [existing (into [] existing)]
+        (and (seq existing)
+             (every? #(let [existing-count (:source-event-count %)]
+                        (and (some? existing-count)
+                             (< existing-count source-event-count)))
+                     existing))))}})
 
 ;; =============================================================================
 ;; Versioning Commands

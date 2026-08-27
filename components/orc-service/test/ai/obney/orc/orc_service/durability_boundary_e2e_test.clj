@@ -40,21 +40,16 @@
                     {:tenant-id (:tenant-id ctx)
                      :tags #{[:sheet sheet-id]}})))
 
-(defn- execution-metrics [ctx result elapsed-ns]
-  ;; Trace assembly is appended by an async future and is the LAST thing a
-  ;; completed tick writes, so reading before it lands counts a different set
-  ;; of events run to run. That is not noise in the accounting — the traced
-  ;; event is ~3 KB, and the two executions here are not measured in the same
-  ;; state: the legacy run has had the optimized run's whole duration for its
-  ;; trace to settle, while the optimized run is measured immediately. When the
-  ;; optimized trace happens to land in time its byte total jumps past legacy
-  ;; and the comparison inverts.
-  ;;
-  ;; h/trace-stored? is the documented settle signal for exactly this ("trace
-  ;; assembly is the last thing a completed tick writes, so it is the settle
-  ;; signal for whole-run byte accounting"). Wait for it so both executions are
-  ;; always measured in the same, fully-settled state.
-  (h/settle-until! #(h/trace-stored? ctx (:trace-id result)))
+(defn- execution-metrics [ctx result elapsed-ns expected-node-count]
+  ;; Trace creation and later evidence-bearing revisions are asynchronous.
+  ;; Settle on the logical evidence this scenario requires, not merely on the
+  ;; first publication fact, so both runs are measured after the complete
+  ;; eight-node traversal has reached the canonical trace.
+  (is (h/settle-until!
+       #(= expected-node-count
+           (count (get-in (h/run-query ctx (h/make-get-trace-query (:trace-id result)))
+                          [:query/result :trace :node-traces]))))
+      (str "canonical trace did not settle at " expected-node-count " nodes"))
   (let [events (tick-events ctx (:trace-id result))]
     {:elapsed-ns elapsed-ns
      :event-count (count events)
@@ -211,11 +206,12 @@
             legacy-start (System/nanoTime)
             legacy-result (sheet/execute ctx sheet-id {:route :none}
                                          :durability-mode :legacy)
-            legacy (execution-metrics ctx legacy-result (- (System/nanoTime) legacy-start))
+            legacy (execution-metrics ctx legacy-result
+                                      (- (System/nanoTime) legacy-start) 8)
             optimized-start (System/nanoTime)
             optimized-result (sheet/execute ctx sheet-id {:route :none})
             optimized (execution-metrics ctx optimized-result
-                                         (- (System/nanoTime) optimized-start))]
+                                         (- (System/nanoTime) optimized-start) 8)]
         (is (= (:outputs legacy-result) (:outputs optimized-result)))
         (is (= :success (:status optimized-result)))
         (is (< (:event-count optimized) (:event-count legacy)) legacy)

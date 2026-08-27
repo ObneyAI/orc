@@ -13,6 +13,7 @@
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.orc.orc-service.core.value-storage :as value-storage]
@@ -4379,8 +4380,9 @@
             ;; Trace publications carry the tick tag too. Exclude them so a
             ;; refresh cannot manufacture a newer source revision merely by
             ;; observing an earlier trace assembly.
-            source-event-count (count (remove #(= :sheet/execution-traced
-                                                   (:event/type %))
+            source-event-count (count (remove #(contains? #{:sheet/execution-traced
+                                                            :sheet/execution-trace-refreshed}
+                                                          (:event/type %))
                                               tick-events))
             ;; Find tick-started event for timing
             started-event (first (filter #(= :sheet/tree-tick-started (:event/type %)) tick-events))
@@ -4625,34 +4627,31 @@
              (fn [task] (future (task))))
          (fn []
            (try
-             (cp/process-command
-               (assoc context :command
-                      (cond-> {:command/id (random-uuid)
-                              :command/timestamp (time/now)
-                              :command/name :sheet/store-execution-trace
-                              :trace-id trace-id
-                              :sheet-id sheet-id
-                              :root-trace-id root-trace-id
-                              :child-trace-ids child-trace-ids
-                              :started-at (str (or started-at (time/now)))
-                              :completed-at (str (or completed-at (time/now)))
-                              :duration-ms duration-ms
-                              :status final-status
-                              :configured-max-ticks configured-max-ticks
-                              :consumed-ticks consumed-ticks
-                              :terminal-reason terminal-reason
-                              :input-snapshot input-snapshot
-                              :output-snapshot output-snapshot
-                              :source-event-count source-event-count
-                              :node-traces node-traces}
-                       (seq researcher-iterations)
-                       (assoc :researcher-iterations researcher-iterations)
-                       (seq researcher-events)
-                       (assoc :researcher-events researcher-events)
-                       parent-trace-id (assoc :parent-trace-id parent-trace-id)
-                       correlation-id (assoc :correlation-id correlation-id)
-                       version-number (assoc :version-number version-number)
-                       (:error event) (assoc :error (:error event)))))
+             (trace-publication/publish!
+              context
+              (cond-> {:trace-id trace-id
+                       :sheet-id sheet-id
+                       :root-trace-id root-trace-id
+                       :child-trace-ids child-trace-ids
+                       :started-at (str (or started-at (time/now)))
+                       :completed-at (str (or completed-at (time/now)))
+                       :duration-ms duration-ms
+                       :status final-status
+                       :configured-max-ticks configured-max-ticks
+                       :consumed-ticks consumed-ticks
+                       :terminal-reason terminal-reason
+                       :input-snapshot input-snapshot
+                       :output-snapshot output-snapshot
+                       :source-event-count source-event-count
+                       :node-traces node-traces}
+                (seq researcher-iterations)
+                (assoc :researcher-iterations researcher-iterations)
+                (seq researcher-events)
+                (assoc :researcher-events researcher-events)
+                parent-trace-id (assoc :parent-trace-id parent-trace-id)
+                correlation-id (assoc :correlation-id correlation-id)
+                version-number (assoc :version-number version-number)
+                (:error event) (assoc :error (:error event))))
              (catch Exception _e
                ;; Log but don't fail — trace storage is best-effort
                nil))))

@@ -488,6 +488,7 @@ sheet/execute(ctx, sheet-id, inputs)
            ▼
 ┌──────────────────────┐
 │ 5. Assemble Trace    │──► Event: :sheet/execution-traced
+│    Refresh if newer  │    Later: :sheet/execution-trace-refreshed
 └──────────┬───────────┘
            ▼
 ┌──────────────────────┐
@@ -590,7 +591,8 @@ The orc-service uses Grain's event store for persistence and observability.
 | `:sheet/node-execution-started` | Node begins | `:sheet-id`, `:node-id`, `:tick-id` |
 | `:sheet/node-execution-completed` | Node ends | `:sheet-id`, `:node-id`, `:status`, `:duration-ms` |
 | `:sheet/tree-tick-completed` | `execute` end | `:sheet-id`, `:tick-id`, `:root-status` |
-| `:sheet/execution-traced` | Trace assembled at execution end | `:trace-id`, `:sheet-id`, optional `:correlation-id`, structural lineage, `:status`, `:duration-ms`, profile snapshots, and node trace instances |
+| `:sheet/execution-traced` | Singular trace-creation fact at execution end | `:trace-id`, `:sheet-id`, optional `:correlation-id`, structural lineage, `:status`, `:duration-ms`, `:source-event-count`, profile snapshots, and node trace instances |
+| `:sheet/execution-trace-refreshed` | Strictly newer durable evidence revises the canonical trace | Same trace payload as creation, with a greater `:source-event-count` |
 | `:sheet/execution-value-written` | A canonical blackboard write | Inline `:value`, or `:value-reference` when file-store mode is configured |
 
 ### Tracing, correlation, and exact node I/O
