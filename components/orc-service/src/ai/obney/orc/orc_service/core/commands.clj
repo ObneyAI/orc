@@ -996,6 +996,12 @@
             tool-context]} :command
     :as context}]
   (let [new-tick-id (or tick-id (random-uuid))
+        tick-start-cas {:types #{:sheet/tree-tick-started}
+                        :tags #{[:tick new-tick-id]}
+                        :predicate-fn
+                        (fn [existing]
+                          (not-any? #(= :sheet/tree-tick-started (:event/type %))
+                                    (into [] existing)))}
         already-started? (and tick-id
                               (seq (into [] (es/read (:event-store context)
                                                     {:tenant-id (:tenant-id context)
@@ -1088,7 +1094,8 @@
                       ;; can surface it back at the Phase-2 leaf.
                       tool-context (assoc :tool-context tool-context))})]
               {:command-result/events
-               (into [started-event] (vals new-seed-events))}))))
+               (into [started-event] (vals new-seed-events))
+               :command-result/cas tick-start-cas}))))
       ;; Legacy UI tick: no snapshot, reads live sheet state
       (let [read-ctx (if (not= (:system-tenant-id context) (:tenant-id context))
                        (assoc context :tenant-id (:system-tenant-id context))
@@ -1118,7 +1125,8 @@
                       correlation-id (assoc :correlation-id correlation-id)
                       ;; G1 (ADR 0018): opaque :tool-context also rides the
                       ;; snapshot-less UI tick path for symmetry.
-                      tool-context (assoc :tool-context tool-context))})]}))))))
+                      tool-context (assoc :tool-context tool-context))})]
+           :command-result/cas tick-start-cas}))))))
 (defcommand :sheet tick-node
   {:authorized? authenticated?}
   "Start a single node tick (for testing or manual execution)."
@@ -1623,7 +1631,19 @@
                 [:tick tick-id]}
         :body {:sheet-id sheet-id
                :tick-id tick-id
-               :reason reason}})]}))
+               :reason reason}})]
+     ;; The ticks projection is asynchronous, so concurrent cancellation
+     ;; commands can all observe :running. Fence the terminal decision at the
+     ;; append boundary shared by every cancellation producer.
+     :command-result/cas
+     {:types #{:sheet/tree-tick-completed :sheet/tick-cancelled}
+      :tags #{[:tick tick-id]}
+      :predicate-fn
+      (fn [existing]
+        (not-any? #(or (= :sheet/tick-cancelled (:event/type %))
+                       (and (= :sheet/tree-tick-completed (:event/type %))
+                            (not= :running (:root-status %))))
+                  (into [] existing)))}}))
 
 ;; =============================================================================
 ;; System Commands (called internally via cp/process-command, not via HTTP)

@@ -2529,21 +2529,42 @@
         ;; originating event persists it with parent lineage; duplicate delivery
         ;; observes that event and does not allocate another future or execution.
         (let [child-tick-id (delegate-child-tick-id tick-id node-id exec-context)
-              child-started? (seq (into [] (es/read event-store
-                                                   {:tenant-id (:tenant-id context)
-                                                    :types #{:sheet/tree-tick-started}
-                                                    :tags #{[:tick child-tick-id]}})))
+              child-started? (fn []
+                               (seq (into [] (es/read event-store
+                                                     {:tenant-id (:tenant-id context)
+                                                      :types #{:sheet/tree-tick-started}
+                                                      :tags #{[:tick child-tick-id]}}))))
+              child-started-before-claim? (child-started?)
               recovering? (some? (:resumed-from-event-id event))]
           ;; A normal parent re-tick or recovery may arrive after the durable
           ;; child terminal event. Consume that same child immediately instead
           ;; of depending on a historical event being delivered again.
-          (when-let [terminal-result (and child-started?
+          (when-let [terminal-result (and child-started-before-claim?
                                           (runtime/durable-terminal-result context child-tick-id))]
             (complete-delegate-parent! context child-tick-id terminal-result exec-context))
-          (when (and (or (not child-started?) recovering?)
+          (when (and (or (not child-started-before-claim?) recovering?)
                      (not (runtime/durable-terminal-result context child-tick-id))
                      (claim-delegate! child-tick-id))
-            (future
+            ;; A contender can read "not started", wait behind the current
+            ;; observer, and acquire this claim only after that observer exits.
+            ;; Re-read after winning so the stale observation cannot redispatch
+            ;; a child whose durable start landed in the meantime.
+            (let [child-started-after-claim? (child-started?)
+                  terminal-after-claim (when child-started-after-claim?
+                                         (runtime/durable-terminal-result
+                                          context child-tick-id))]
+              (cond
+                terminal-after-claim
+                (do
+                  (complete-delegate-parent! context child-tick-id
+                                             terminal-after-claim exec-context)
+                  (release-delegate! child-tick-id))
+
+                (and child-started-after-claim? (not recovering?))
+                (release-delegate! child-tick-id)
+
+                :else
+                (future
           (try
             (let [start-time (System/currentTimeMillis)
                   ;; Lineage: delegate sub-workflows run as child ticks. Link
@@ -2600,7 +2621,7 @@
             (finally
               (release-delegate! child-tick-id)))
             ;; Return nil - completion handled async via process-command
-            nil)))))))
+            nil)))))))))
 
 ;; =============================================================================
 ;; Condition Node Execution Processor
@@ -2845,11 +2866,23 @@
                                       result (:steps summary))
                               result))
                           {} events)
+        recorded-step-signatures
+        (into #{}
+              (comp
+               (filter #(and (= :sheet/ephemeral-evaluations-recorded
+                                  (:event/type %))
+                              (= iteration (:iteration %))))
+               (mapcat :steps)
+               (map (juxt :node-id :node-type :status)))
+              events)
         blackboard (resolve-blackboard-values context sheet-id tick-id nil)]
     (when (and (not terminal?) (ephemeral-routing-active? context tick-id nodes-by-id))
       (let [{:keys [boundary status steps error block-payload]}
             (evaluate-ephemeral-node root-id nodes-by-id blackboard completed decisions)
-            summary (ephemeral-summary-event sheet-id tick-id iteration steps)]
+            new-steps (remove #(contains? recorded-step-signatures
+                                          [(:node-id %) (:node-type %) (:status %)])
+                              steps)
+            summary (ephemeral-summary-event sheet-id tick-id iteration new-steps)]
         (cond
           (and boundary (not (contains? started boundary)))
           {:result/events

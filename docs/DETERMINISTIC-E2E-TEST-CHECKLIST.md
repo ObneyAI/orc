@@ -548,9 +548,10 @@ prove isolation, lineage, terminal fencing, or durable recovery.
 - [ ] **DET-E2E-217 — Late-loaded code resolution through delegates.** A public child code function loaded after background processors start but before execution resolves identically in direct, delegated, nested, recovered, and repeated-invocation runs; a genuinely absent function fails with durable child and parent evidence.
 - [ ] **DET-E2E-218 — Delegate resource cleanup and throughput bound.** Repeated successful, failed, timed-out, cancelled, duplicated, and recovered delegate runs return observer/future/thread/stream-lineage counts to baseline within a deterministic settling condition, while a controlled parallel batch demonstrates bounded—not serialized and not unbounded—execution.
 
-### Terminal trace refresh
+### Terminal execution races
 
 - [x] **DET-E2E-258 — A stale terminal-trace refresh cannot regress durable evidence.** Publish a complete trace revision and then deliver an older revision for the same execution; the command/event/projection boundary retains the complete node evidence and its source revision, while the stale refresh emits no replacement event.
+- [x] **DET-E2E-259 — Concurrent cancellation has one terminal event.** Release concurrent public cancellation attempts against one running tick; exactly one durable cancellation event wins, the caller unblocks, and in-flight work cannot publish after that terminal boundary.
 
 - [x] DET-E2E-101 — Closed self-learning loop across executions
 - [x] DET-E2E-102 — Mint, index, retrieve, and reuse a novel behavior

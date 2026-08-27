@@ -62,9 +62,11 @@ and zero process findings under Allium language version 3.
 
 ## Current diagnostic baseline
 
-The Allium CLI treats warnings and informational diagnostics as a non-zero
-result, so “zero errors” above does not mean `allium check specs` exits cleanly.
-Under the current checked-in specifications and Allium CLI, both
+`allium check` exits non-zero when warnings or informational diagnostics are
+present, while `allium analyse` returns success when those diagnostics produce
+no process findings. Thus “zero errors” above does not mean
+`allium check specs` exits cleanly. Under the current checked-in specifications
+and Allium CLI, both
 `allium check specs` and `allium analyse specs` report 125 structural diagnostics
 across the twelve specifications: 90 informational and 35 warnings. `analyse`
 reports zero process findings.
@@ -80,7 +82,36 @@ reports zero process findings.
 This is a characterized baseline, not an allowlist for future warnings. Agents
 must review every newly introduced or changed diagnostic, update this table when
 the accepted baseline deliberately changes, and avoid claiming a clean Allium
-gate while either command exits non-zero.
+check while its characterized diagnostics remain.
+
+## Concurrent execution and trace boundary evidence
+
+The resumable-execution path now fences four timing-sensitive boundaries at
+their durable event-store seams. Terminal trace refreshes compare their source
+event counts before replacing an existing trace (DET-E2E-258). Concurrent public
+cancellations share the same terminal append decision as tick completion, so
+twelve synchronized attempts produce one cancellation event and late work stays
+fenced (DET-E2E-259). Concurrent commands carrying one stable tick identity use
+one append-time start claim; delegate delivery re-reads the child after acquiring
+its process-local observer claim, preserving recovery while preventing a stale
+pre-claim read from dispatching the child twice. The concurrent tick-start test
+proved the defect with 32 starts before the append fence and one afterward, and
+DET-E2E-197 retains exact child identity and lineage coverage under the broad
+suite.
+
+Ephemeral routing summaries now exclude facts for the same node, status and
+iteration that were already committed at a preceding durable boundary. This
+preserves the `BatchedTracePreservesObservability` contract without suppressing
+later tick iterations; DET-E2E-007 settles on and verifies the exact four-node
+trace. Streaming verification separately reflects the documented transport
+contract: independently tapped event types need not arrive in durable lifecycle
+order, so DET-E2E-065 proves root-start presence and monotonic stream sequence
+while checking strict tick-before-node ordering in durable history.
+
+The complete `orc-service` brick command ran both consuming projects in one
+13-minute-49-second pass with zero failures or errors. This broad pass included
+the deterministic failure, control-flow, streaming and delegate suites and the
+async command tests that exercise these races.
 
 ## Provider output normalization and rejection evidence (2026-08-07)
 

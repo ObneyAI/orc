@@ -110,9 +110,22 @@
             execution (deref result 15000 ::timeout)
             envelopes (drain! events-ch :timeout-ms 15000)
             types (mapv :orc.stream/type envelopes)
-            node-types (set (keep :node-type envelopes))]
+            node-types (set (keep :node-type envelopes))
+            root-starts (filter #(and (= :tick-started (:orc.stream/type %))
+                                      (= tick-id (:tick-id %)))
+                                envelopes)
+            durable-types (mapv :event/type (h/read-tick-events ctx tick-id))
+            durable-start-index (.indexOf durable-types :sheet/tree-tick-started)
+            durable-first-node-index (.indexOf durable-types :sheet/node-execution-started)]
         (is (= :success (:status execution)))
-        (is (= :tick-started (first types)))
+        ;; Durable event types reach the ephemeral router through independent
+        ;; tap loops, so cross-type stream arrival order is intentionally not a
+        ;; lifecycle-ordering contract. Presence is proved in the stream; the
+        ;; strict lifecycle order is proved at the durable boundary.
+        (is (= 1 (count root-starts)))
+        (is (and (<= 0 durable-start-index)
+                 (< durable-start-index durable-first-node-index))
+            "durable history starts the root tick before its first node")
         (is (= :stream-closed (last types)))
         (is (= :tick-completed (last (butlast types))))
         (is (every? #(= tick-id (:root-tick-id %)) envelopes))

@@ -125,16 +125,31 @@
   (str "ai.obney.orc.orc-service.deterministic-control-flow-e2e-test/"
        function-name))
 
-(defn- trace-for [ctx result]
-  (let [trace-id (:trace-id result)]
-    (is (uuid? trace-id) "execution must expose its durable trace identity")
-    (is (h/settle-until!
-         #(some? (get-in (h/run-query ctx {:query/name :sheet/get-trace
+(defn- trace-for
+  ([ctx result]
+   (trace-for ctx result nil))
+  ([ctx result expected-node-count]
+   (let [trace-id (:trace-id result)]
+     (is (uuid? trace-id) "execution must expose its durable trace identity")
+     (let [settled? (h/settle-until!
+                     #(let [trace (get-in (h/run-query
+                                           ctx
+                                           {:query/name :sheet/get-trace
                                             :trace-id trace-id})
-                          [:query/result :trace])))
-        "execution trace did not settle")
-    (get-in (h/run-query ctx {:query/name :sheet/get-trace :trace-id trace-id})
-            [:query/result :trace])))
+                                          [:query/result :trace])]
+                        (and (some? trace)
+                             (or (nil? expected-node-count)
+                                 (= expected-node-count
+                                    (count (:node-traces trace)))))))
+           trace (get-in (h/run-query ctx {:query/name :sheet/get-trace
+                                            :trace-id trace-id})
+                         [:query/result :trace])]
+       (is settled?
+           (if expected-node-count
+             (str "execution trace did not settle at " expected-node-count
+                  " nodes; observed " (count (:node-traces trace)))
+             "execution trace did not settle"))
+       trace))))
 
 (defn- node-statuses [trace]
   (mapv :status (:node-traces trace)))
@@ -165,7 +180,7 @@
                            :reads [:markers] :writes [:markers])))
             sheet-id (sheet/build-workflow! ctx workflow)
             result (sheet/execute ctx sheet-id {:markers []})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 4)]
         (is (= :success (:status result)))
         (is (= [:a :b :c] @execution-log))
         (is (= [:a :b :c] (get-in result [:outputs :markers])))
@@ -188,7 +203,7 @@
                            :reads [:markers] :writes [:markers])))
             sheet-id (sheet/build-workflow! ctx workflow)
             result (sheet/execute ctx sheet-id {:markers []})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 3)]
         (is (= :failure (:status result)))
         (is (= [:a :b] @execution-log))
         (is (not-any? #(= :c %) @execution-log))
@@ -209,7 +224,7 @@
                          (sheet/code "secondary" :fn (fq "choose-secondary")
                            :reads [] :writes [:route])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow) {})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 2)]
         (is (= :success (:status result)))
         (is (= :primary (get-in result [:outputs :route])))
         (is (= [:primary] @execution-log))
@@ -229,7 +244,7 @@
                          (sheet/code "tertiary" :fn (fq "choose-tertiary")
                            :reads [] :writes [:route])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow) {})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 4)]
         (is (= :success (:status result)))
         (is (= :tertiary (get-in result [:outputs :route])))
         (is (= [:primary :secondary :tertiary] @execution-log))
@@ -250,7 +265,7 @@
                          (sheet/code "tertiary" :fn (fq "fail-tertiary")
                            :reads [] :writes [])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow) {})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 4)]
         (is (= :failure (:status result)))
         (is (= [:primary :secondary :tertiary] @execution-log))
         (is (nil? (get-in result [:outputs :route])))
@@ -270,7 +285,7 @@
                            :reads [] :writes [:route])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow)
                                   {:enabled true})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 3)]
         (is (= :success (:status result)))
         (is (= :guarded (get-in result [:outputs :route])))
         (is (= [:guarded] @execution-log))
@@ -292,7 +307,7 @@
                            :reads [] :writes [:route])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow)
                                   {:enabled false})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 4)]
         (is (= :success (:status result)))
         (is (= :alternative (get-in result [:outputs :route])))
         (is (= [:alternative] @execution-log))
@@ -323,7 +338,7 @@
                              :reads [] :writes [:route])))
               result (sheet/execute ctx (sheet/build-workflow! ctx workflow)
                                     {:candidate input})
-              trace (trace-for ctx result)]
+              trace (trace-for ctx result 3)]
           (is (= :success (:status result)) (str op " must pass"))
           (is (= :guarded (get-in result [:outputs :route])))
           (is (= :success (:status trace))))))))
@@ -339,7 +354,7 @@
                          (sheet/code "a" :fn (fq "parallel-a") :reads [] :writes [:a])
                          (sheet/code "b" :fn (fq "parallel-b") :reads [] :writes [:b])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow) {})
-            trace (trace-for ctx result)
+            trace (trace-for ctx result 3)
             entries @execution-log]
         (is (= :success (:status result)))
         (is (= {:a 1 :b 2} (select-keys (:outputs result) [:a :b])))
@@ -359,7 +374,7 @@
                          (sheet/code "failure" :fn (fq "fail-parallel") :reads [] :writes [])
                          (sheet/code "success" :fn (fq "parallel-a") :reads [] :writes [:a])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow) {})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 3)]
         (is (= :success (:status result)))
         (is (= 1 (get-in result [:outputs :a])))
         (is (= 3 (count (:node-traces trace))))
@@ -387,8 +402,8 @@
             even-result (sheet/execute ctx (sheet/build-workflow! ctx even) {})]
         (is (= :success (:status odd-result)) "two of three is a majority")
         (is (= :failure (:status even-result)) "two of four is not a majority")
-        (is (= :success (:status (trace-for ctx odd-result))))
-        (is (= :failure (:status (trace-for ctx even-result))))))))
+        (is (= :success (:status (trace-for ctx odd-result 4))))
+        (is (= :failure (:status (trace-for ctx even-result 5))))))))
 
 (deftest det-e2e-012-parallel-shared-write-resolution
   (testing "parallel shared writes resolve by canonical merge order, not wall-clock completion"
@@ -408,7 +423,7 @@
         (is (= 1 (count (set values))) "resolution must be repeatable")
         (is (= :first (first values)) "first sibling wins equal-version merge")
         (doseq [result results]
-          (let [trace (trace-for ctx result)]
+          (let [trace (trace-for ctx result 3)]
             (is (= 3 (count (:node-traces trace))))
             (is (every? #{:success} (node-statuses trace)))))))))
 
@@ -425,7 +440,7 @@
                            :reads [:item] :writes [:item])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow)
                                   {:items [1 2 3 4]})
-            trace (trace-for ctx result)
+            trace (trace-for ctx result 5)
             leaf-traces (filter #(= :leaf (:node-type %)) (:node-traces trace))]
         (is (= :success (:status result)))
         (is (= [2 4 6 8] (get-in result [:outputs :results])))
@@ -446,7 +461,7 @@
                            :reads [:item] :writes [:item])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow)
                                   {:items [1 2 3 4 5 6]})
-            trace (trace-for ctx result)]
+            trace (trace-for ctx result 7)]
         (is (= :success (:status result)))
         (is (= [2 4 6 8 10 12] (get-in result [:outputs :results])))
         (is (= 2 (:maximum @concurrency-state)))
@@ -480,7 +495,7 @@
                            :reads [:results :a :b] :writes [:summary])))
             result (sheet/execute ctx (sheet/build-workflow! ctx workflow)
                                   {:items [1 2 3]})
-            trace (trace-for ctx result)
+            trace (trace-for ctx result 11)
             instance-ids (map :trace-instance-id (:node-traces trace))]
         (is (= :success (:status result)))
         (is (= {:doubled [2 4 6] :left 1 :right 2}

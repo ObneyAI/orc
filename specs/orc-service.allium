@@ -1134,9 +1134,11 @@ surface WorkflowExecutionAccess {
         -- timeout remains directly retrievable by its trace identity.
 
     @guarantee TerminalCancellationFence
-        -- Once an execution or any ancestor is cancelled or times out, work
-        -- already in flight cannot create execution values or node/tree
-        -- completions for that terminal execution.
+        -- Concurrent cancellation attempts converge on at most one durable
+        -- cancellation terminal for an execution. Once an execution or any
+        -- ancestor is cancelled or times out, work already in flight cannot
+        -- create execution values or node/tree completions for that terminal
+        -- execution.
 
     @guarantee StableDelegateLifecycle
         -- One logical delegate invocation durably identifies exactly one child

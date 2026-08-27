@@ -1125,7 +1125,10 @@
         (let [child-starts (filter #(and (= :sheet/tree-tick-started (:event/type %))
                                          (= tick-id (:parent-tick-id %)))
                                    (h/read-all-events ctx))]
-          (is (= 1 (count child-starts)))
+          (is (= 1 (count child-starts))
+              (str "one logical delegate child: "
+                   (pr-str (mapv #(select-keys % [:event/id :tick-id :parent-tick-id])
+                                 child-starts))))
           (run! deref (repeatedly 100 #(future (tp/execute-delegate-node
                                                 (assoc ctx :event started-event)))))
           (deliver @empty-release true)
