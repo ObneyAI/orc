@@ -103,15 +103,19 @@ Ephemeral routing summaries now exclude facts for the same node, status and
 iteration that were already committed at a preceding durable boundary. This
 preserves the `BatchedTracePreservesObservability` contract without suppressing
 later tick iterations; DET-E2E-007 settles on and verifies the exact four-node
-trace. Streaming verification separately reflects the documented transport
-contract: independently tapped event types need not arrive in durable lifecycle
-order, so DET-E2E-065 proves root-start presence and monotonic stream sequence
-while checking strict tick-before-node ordering in durable history.
+trace. A summary delivered after terminal trace assembly also triggers a
+monotonic refresh, so the final composite evidence is not dependent on
+cross-topic processor timing; the exact-count contracts in DET-E2E-005 and
+DET-E2E-008 exercise that boundary. Streaming verification separately reflects
+the documented transport contract: independently tapped event types need not
+arrive in durable lifecycle order, so DET-E2E-065 proves root-start presence and
+monotonic stream sequence while checking strict tick-before-node ordering in
+durable history.
 
-The complete `orc-service` brick command ran both consuming projects in one
-13-minute-49-second pass with zero failures or errors. This broad pass included
-the deterministic failure, control-flow, streaming and delegate suites and the
-async command tests that exercise these races.
+The exact CI aggregate command, `clojure -M:poly test project:orc :all-bricks`,
+completed in 16 minutes 25 seconds with zero failures or errors. This broad pass
+included the deterministic failure, control-flow, streaming and delegate suites
+and the async command tests that exercise these races.
 
 ## Provider output normalization and rejection evidence (2026-08-07)
 
