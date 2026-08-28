@@ -29,7 +29,7 @@ the real fix.
 
 ## Spec obligations covered
 
-- `invariant.SettledIterationsRecordTheirCode`
+- `invariant.SuccessfulIterationsRecordTheirCode`
 - `entity-fields.CampaignIteration`
 
 ## Test seams
@@ -38,7 +38,7 @@ Seam-1 (public execution via `with-async-test-context`), Seam-2 (restart: stop p
 
 ## Blocked by
 
-None — can start immediately.
+RR-P1 and RR-4.
 
 ## Handoff plan
 

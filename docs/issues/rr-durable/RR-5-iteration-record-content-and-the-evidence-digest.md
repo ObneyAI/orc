@@ -19,11 +19,12 @@ not code. Code is kilobytes and does not accumulate; it stays.
 
 ## Acceptance criteria
 
-- [ ] Each iteration record carries index, attempt, status, duration, shape, tree, code, bounded error and reasoning, and variable deltas as key lists
-- [ ] Data payload values are reduced to keys and profiles; no raw payload enters the record
-- [ ] A bounded excerpt is bounded by a named, measured limit — not an arbitrary constant
-- [ ] The record is sufficient for a judge to say WHY an outcome happened, demonstrated by a judge reading one
-- [ ] Record size per iteration is measured and reported, not assumed
+- [x] Each iteration record carries index, attempt, status, duration, shape, tree, code, bounded error and reasoning, and variable deltas as key lists
+- [x] Data payload values are reduced to keys and profiles; no raw payload enters the record
+- [x] A bounded excerpt is bounded by a named, measured limit — not an arbitrary constant
+- [x] Resumed prompt history names the keys created, updated and removed by each prior iteration without embedding their payload values
+- [x] The record is sufficient for a judge to say WHY an outcome happened, demonstrated by a judge reading one
+- [x] Record size per iteration is measured and reported, not assumed
 
 ## Spec obligations covered
 
@@ -32,7 +33,7 @@ not code. Code is kilobytes and does not accumulate; it stays.
 - `entity-optional.CampaignIteration.emitted_shape`
 - `entity-optional.CampaignIteration.error`
 - `invariant.RecordedTreesCarryTheirShape`
-- `invariant.SettledIterationsRecordTheirCode`
+- `invariant.SuccessfulIterationsRecordTheirCode`
 
 ## Test seams
 
@@ -40,7 +41,7 @@ Seam-3 (durable evidence: event-store reads) primary; Seam-1 (public execution v
 
 ## Blocked by
 
-None — can start immediately.
+RR-4.
 
 ## Handoff plan
 

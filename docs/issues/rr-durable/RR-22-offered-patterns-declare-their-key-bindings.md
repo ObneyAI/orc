@@ -36,7 +36,7 @@ Seam-4 (ontology consumers over a synthesized event stream) for the offered form
 
 ## Blocked by
 
-None — can start immediately.
+RR-6.
 
 ## Handoff plan
 

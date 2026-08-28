@@ -18,6 +18,9 @@
    The LLM's actual band CHOICE on real traces is calibrated live
    (development/src/prototype_tier1_calibration.clj), not asserted here."
   (:require [clojure.test :refer [deftest testing is]]
+            [clojure.string :as str]
+            [cheshire.core :as json]
+            [ai.obney.orc.evaluation.interface :as evaluation]
             [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.orc.evaluation.core.rubrics :as rubrics]
             [ai.obney.orc.evaluation.core.scale :as scale]
@@ -27,6 +30,66 @@
   {:inputs {:context "FAQ: The gym is open Monday-Friday 6am-10pm."}
    :response "The gym is open Monday-Friday 6am-10pm."
    :instruction "Answer based only on the provided FAQ, in one sentence."})
+
+(deftest reasoning-judge-receives-one-iteration-evidence-digest
+  (testing "the public judge seam can explain an outcome from one bounded iteration digest"
+    (let [calls (atom [])
+          digest {:iteration-index 2
+                  :attempt-ordinal 0
+                  :status :failure
+                  :code "(get-var :missing-source)"
+                  :reasoning "inspect the named source"
+                  :error-class "clojure.lang.ExceptionInfo"
+                  :error-excerpt "No value stored for :missing-source"
+                  :variable-delta {:created-keys []
+                                   :updated-keys []
+                                   :removed-keys []}}
+          trace-data (assoc sample-trace :researcher-iterations [digest])]
+      (with-redefs [llm/predict
+                    (fn [_provider module inputs _options]
+                      (swap! calls conj {:module module :inputs inputs})
+                      (let [received (some-> (:iteration_evidence inputs)
+                                             (json/parse-string true)
+                                             first
+                                             (update :status keyword))
+                            explained? (= (select-keys digest
+                                                       [:iteration-index
+                                                        :attempt-ordinal
+                                                        :status
+                                                        :error-class
+                                                        :error-excerpt])
+                                          (select-keys received
+                                                       [:iteration-index
+                                                        :attempt-ordinal
+                                                        :status
+                                                        :error-class
+                                                        :error-excerpt]))]
+                        {:outputs
+                         {:level (if explained? 2 3)
+                          :reasoning (if explained?
+                                       "Iteration 3 failed because :missing-source was unavailable."
+                                       "No iteration evidence was supplied.")
+                          :reasoning-strengths []
+                          :reasoning-weaknesses
+                          (if explained?
+                            ["The failing iteration read a missing source without recovery."]
+                            ["The outcome cannot be explained from the supplied evidence."])
+                          :feedback "Check :missing-source before reading it."}}))]
+        (let [result (:reasoning-result
+                      (evaluation/evaluate-single :reasoning trace-data))]
+          (is (= 1 (count @calls)) (pr-str @calls))
+          (is (some #{:iteration_evidence}
+                    (map :name (get-in (first @calls) [:module :inputs])))
+              (pr-str @calls))
+          (is (= [digest]
+                 (mapv #(update % :status keyword)
+                       (json/parse-string
+                        (get-in (first @calls) [:inputs :iteration_evidence])
+                        true)))
+              (pr-str @calls))
+          (is (= 2 (:level result)) (pr-str result))
+          (is (str/includes? (:reasoning result) "Iteration 3 failed")
+              (pr-str result)))))))
 
 ;; =============================================================================
 ;; get-tier1-rubric — decoupled criteria × stance × scale, per dimension

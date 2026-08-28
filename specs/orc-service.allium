@@ -363,22 +363,31 @@ contract CheckpointedResearcherExecution {
         -- Code a campaign writes, including code inside a tree it emits, is
         -- durably recorded as source. A recorded tree can be read, compared
         -- across attempts, and emitted again. Code is never reduced to a
-        -- placeholder that cannot be run or understood.
+        -- placeholder that cannot be run or understood. A source-bearing quoted
+        -- tree crosses the emit boundary before inline function forms are
+        -- compiled for execution; source is not recovered from closure metadata
+        -- and code nodes are not rewritten into a string-authored DSL.
 
     @invariant StableLogicalActionsPreventDuplicateWork
         -- Every provider call, inline provider primitive, inline tool call,
         -- behavior mint and generated child tree has a stable logical action
-        -- identity derived from what the action IS, established before dispatch
-        -- and independent of the order in which the campaign happened to reach
-        -- it. Duplicate delivery, retick and recovery observe a completed action
-        -- rather than dispatching it again, and a recorded result is never
-        -- returned for a different call.
+        -- identity derived from campaign/tick, node, iteration, code hash,
+        -- effect kind, target or tool, and canonical arguments. It excludes the
+        -- attempt and the order in which the campaign happened to reach it.
+        -- Every physical dispatch has a distinct attempt identity derived from
+        -- that logical identity, the ownership epoch and its attempt ordinal.
+        -- Retries remain recognisably the same logical action while every spend
+        -- stays attributable; a recorded result is never returned for a
+        -- different call.
 
     @invariant EffectsAreClaimedBeforeTheyHappen
         -- A campaign durably claims an effect, under its ownership epoch, before
         -- that effect begins. A claim that a later epoch has superseded is
-        -- rejected, so a superseded worker's outcome never lands. The same claim
-        -- is the record that makes an effect's outcome knowable afterwards.
+        -- rejected before append, so a superseded worker's outcome never lands.
+        -- The tenant-local predicate reads claims for the same logical action
+        -- and commits its claim in the store's one atomic append boundary. The
+        -- same claim is the record that makes an effect's outcome knowable
+        -- afterwards.
 
     @invariant CheckpointSafeToolsShareIdempotencyKeys
         -- A checkpointed researcher may invoke an effectful inline tool only
@@ -451,8 +460,10 @@ contract CheckpointedResearcherExecution {
 
     @invariant CancellationIsTerminalForRecovery
         -- Cancelling the parent workflow cancels the campaign and its active
-        -- child. Existing checkpoints remain inspectable, but neither automatic
-        -- nor explicit recovery resumes a cancelled campaign.
+        -- child. Existing iteration records and effect claims remain inspectable,
+        -- but neither automatic nor explicit recovery resumes a cancelled
+        -- campaign. Cancellation is infrastructure state, not a behavior
+        -- verdict: it advances neither recurrence nor campaign judging.
 
     @invariant ResumeOwnershipIsFenced
         -- Campaign state is recorded exactly once: concurrent reticks, duplicate
@@ -493,10 +504,11 @@ contract CheckpointedResearcherExecution {
         -- when a later iteration fails or times out, and distinguishes repeated
         -- attempts at one iteration rather than collapsing them. Each ordered
         -- iteration includes generated reasoning and code, the tree it emitted
-        -- and that tree's shape and outcome, provider latency and usage, sandbox
-        -- result or error, variable changes, claim/yield/resume evidence, and
-        -- links to generated child traces without duplicating the child trace
-        -- itself.
+        -- and that tree's shape and outcome, bounded error evidence, variable
+        -- key changes, and result/stdout profiles without their payload values.
+        -- The composed trace also carries provider accounting,
+        -- claim/yield/resume evidence, and links to generated child traces
+        -- without duplicating the child trace itself.
 
     @invariant OneAccountOfACampaign
         -- What an observer watches while a campaign runs and what the system
@@ -544,7 +556,8 @@ enum NodeExecutionStatus {
 enum DelegateInvocationStatus { running | success | failure | timeout | cancelled }
 
 enum CampaignStatus {
-    running | yielded | success | failure | timeout | blocked | abandoned
+    running | yielded | success | failure | timeout | blocked | cancelled |
+    abandoned
 }
 
 enum CampaignIterationStatus { running | success | failure | timeout }
@@ -703,9 +716,11 @@ entity Campaign {
         running -> failure
         running -> timeout
         running -> blocked
+        running -> cancelled
+        yielded -> cancelled
         running -> abandoned
         yielded -> abandoned
-        terminal: success, failure, timeout, blocked, abandoned
+        terminal: success, failure, timeout, blocked, cancelled, abandoned
     }
 
     iterations: CampaignIteration with campaign = this
@@ -736,7 +751,9 @@ entity CampaignIteration {
 entity EffectClaim {
     campaign: Campaign
     iteration: CampaignIteration
-    action_identity: String
+    logical_action_identity: String
+    attempt_identity: String
+    attempt_ordinal: Integer
     ownership_epoch: Integer
     kind: EffectKind
     status: EffectClaimStatus
@@ -1193,6 +1210,15 @@ rule CampaignBlocks {
     ensures: campaign.terminal_reason = reason
 }
 
+rule CampaignIsCancelled {
+    when: CampaignCancellationRequested(campaign, reason)
+    requires: campaign.status = running or campaign.status = yielded
+
+    ensures: campaign.status = cancelled
+    ensures: campaign.completed_at = now
+    ensures: campaign.terminal_reason = reason
+}
+
 -- Abandonment is what happens when nobody will ever resume: the enclosing
 -- execution is over. It is a fact about the engine, not a verdict about the
 -- work, so it records no completion.
@@ -1214,13 +1240,13 @@ rule CampaignIterationSucceeds {
 }
 
 rule CampaignIterationFails {
-    when: IterationProducesError(iteration, error)
+    when: IterationProducesError(iteration, error, generated_code_recorded)
     requires: iteration.status = running
 
     ensures: iteration.status = failure
     ensures: iteration.completed_at = now
     ensures: iteration.error = error
-    ensures: iteration.generated_code_recorded = true
+    ensures: iteration.generated_code_recorded = generated_code_recorded
 }
 
 rule CampaignIterationTimesOut {
@@ -1235,17 +1261,28 @@ rule CampaignIterationTimesOut {
 -- exists, so an effect that fired always has a claim naming the epoch that
 -- authorised it.
 rule EffectIsClaimedBeforeDispatch {
-    when: CampaignDispatchesEffect(campaign, iteration, action_identity, kind)
+    when: CampaignDispatchesEffect(
+        campaign,
+        iteration,
+        logical_action_identity,
+        attempt_identity,
+        attempt_ordinal,
+        kind
+    )
     requires: campaign.status = running
+    requires: attempt_ordinal >= 0
     requires: not exists EffectClaim{
-        action_identity: action_identity,
+        logical_action_identity: logical_action_identity,
         ownership_epoch: campaign.ownership_epoch
     }
+    requires: not exists EffectClaim{attempt_identity: attempt_identity}
 
     ensures: EffectClaim.created(
         campaign: campaign,
         iteration: iteration,
-        action_identity: action_identity,
+        logical_action_identity: logical_action_identity,
+        attempt_identity: attempt_identity,
+        attempt_ordinal: attempt_ordinal,
         ownership_epoch: campaign.ownership_epoch,
         kind: kind,
         status: claimed,
@@ -1261,8 +1298,9 @@ rule ClaimedEffectCompletes {
     ensures: claim.resolved_at = now
 }
 
--- An effect whose outcome is unknown says so durably. A later attempt is a new
--- claim under a newer epoch, so both remain separately traceable.
+-- An effect whose outcome is unknown says so durably. A later ownership epoch
+-- creates a new attempt claim with the same logical action identity, so both
+-- physical dispatches remain separately traceable.
 rule ClaimedEffectBecomesIndeterminate {
     when: EffectOutcomeUnknown(claim)
     requires: claim.status = claimed
@@ -1314,13 +1352,33 @@ invariant DelegateBudgetsArePositiveAndBounded {
              or invocation.consumed_ticks <= invocation.configured_maximum_ticks)
 }
 
-invariant OneClaimPerActionIdentityPerEpoch {
+invariant OneClaimPerLogicalActionIdentityPerEpoch {
     for a in EffectClaims:
         for b in EffectClaims:
             a != b implies not (
-                a.action_identity = b.action_identity
+                a.logical_action_identity = b.logical_action_identity
                 and a.ownership_epoch = b.ownership_epoch
             )
+}
+
+invariant EffectAttemptIdentitiesAreUnique {
+    for a in EffectClaims:
+        for b in EffectClaims:
+            a != b implies a.attempt_identity != b.attempt_identity
+}
+
+invariant EffectAttemptOrdinalsAreNonNegative {
+    for claim in EffectClaims:
+        claim.attempt_ordinal >= 0
+}
+
+invariant EffectAttemptIdentityMatchesLogicalAction {
+    for claim in EffectClaims:
+        claim.attempt_identity = effect_attempt_identity(
+            claim.logical_action_identity,
+            claim.ownership_epoch,
+            claim.attempt_ordinal
+        )
 }
 
 invariant OneIterationRecordPerAttempt {
@@ -1350,15 +1408,18 @@ invariant AbandonedCampaignsRecordNoVerdict {
 
 invariant SettledCampaignsRecordWhenTheySettled {
     for campaign in Campaigns:
-        campaign.status = success or campaign.status = failure
-            or campaign.status = timeout or campaign.status = blocked
+        campaign.status in {success, failure, timeout, blocked, cancelled}
             implies campaign.completed_at != null
 }
 
-invariant SettledIterationsRecordTheirCode {
+invariant CancelledCampaignsRecordCause {
+    for campaign in Campaigns:
+        campaign.status = cancelled implies campaign.terminal_reason != null
+}
+
+invariant SuccessfulIterationsRecordTheirCode {
     for iteration in CampaignIterations:
-        iteration.status = success or iteration.status = failure
-            implies iteration.generated_code_recorded
+        iteration.status = success implies iteration.generated_code_recorded
 }
 
 invariant RecordedTreesCarryTheirShape {

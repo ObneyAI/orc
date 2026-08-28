@@ -52,7 +52,7 @@ Seam-7 (concurrency — NEW) and Seam-8 (gated live provider — NEW, orchestrat
 
 ## Blocked by
 
-None — can start immediately.
+All preceding RR-Durable slices and both prototypes.
 
 ## Handoff plan
 

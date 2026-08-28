@@ -17,6 +17,7 @@
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.commands] ;; Load command handlers
             [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -37,9 +38,16 @@
    recording the result in the parent researcher action log."
   [context tick-id]
   (let [events (persisted-tick-events context tick-id)]
-  (when-let [completion (last (filter #(= :sheet/tree-tick-completed (:event/type %))
+  (when-let [completion (last (filter #(and (= :sheet/tree-tick-completed
+                                                (:event/type %))
+                                             (some? (runtime/terminal-root-status->result-status
+                                                     (:root-status %))))
                                       events))]
     (let [root-status (:root-status completion)
+          started (first (filter #(= :sheet/tree-tick-started (:event/type %))
+                                 events))
+          duration-ms (trace-time/elapsed-ms (:event/timestamp started)
+                                             (:event/timestamp completion))
           usage (reduce (fn [acc event]
                           (if (and (= :sheet/node-execution-completed (:event/type event))
                                    (:usage event))
@@ -53,17 +61,12 @@
                         events)
           by-node (compute-by-node-from-tick-events
                    (:event-store context) (:tenant-id context) tick-id)]
-      (cond-> {:status (case root-status
-                         :success :success
-                         :partial :partial
-                         :timeout :timeout
-                         :blocked :blocked
-                         :cancelled :cancelled
-                         :failure)
+      (cond-> {:status (runtime/terminal-root-status->result-status root-status)
                :outputs (value-log/final-values context (:tenant-id context) tick-id)
                :sheet-id (:sheet-id completion)
                :trace-id tick-id
                :replayed? true}
+        (some? duration-ms) (assoc :duration-ms duration-ms)
         (pos? (:total-tokens usage 0))
         (assoc :usage (cond-> usage (seq by-node) (assoc :by-node by-node)))
         (:error completion) (assoc :error (:error completion))
@@ -85,7 +88,8 @@
                      :error "Tree execution timed out"
                      :sheet-id (:sheet-id started)
                      :trace-id tick-id})
-                  (assoc result :replayed? true))))))))
+                  (or (reconstruct-completed-tick context tick-id)
+                      (assoc result :replayed? true)))))))))
 
 ;; =============================================================================
 ;; Ephemeral Function Registry

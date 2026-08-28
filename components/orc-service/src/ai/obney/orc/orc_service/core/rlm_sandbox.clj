@@ -832,6 +832,7 @@
         {:stdout (str stdout-writer)
          :result nil
          :raw-result nil
+         :error-class (.getName (class e))
          :error (.getMessage e)
          :final-output @final-output
          :sub-llm-usage @usage-tracker}))))

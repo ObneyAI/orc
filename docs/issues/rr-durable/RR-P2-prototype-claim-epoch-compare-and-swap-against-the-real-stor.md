@@ -25,11 +25,14 @@ the layer-2 guarantee is unavailable and the decision returns to the grill.
 
 ## Acceptance criteria
 
-- [ ] A demonstration that the epoch condition commits atomically with the append on each backend
-- [ ] A demonstration that a superseded epoch is REJECTED, not merely detected afterwards
-- [ ] A measurement of the added latency per claim
-- [ ] If any backend cannot express it: an explicit stop with the finding, for re-grilling
-- [ ] No production code is kept
+- [x] A demonstration that the epoch condition commits atomically with the append on each backend
+- [x] A demonstration that a superseded epoch is REJECTED, not merely detected afterwards
+- [x] A measurement of the added latency per claim
+- [x] If any backend cannot express it: an explicit stop with the finding, for re-grilling
+- [x] No production code is kept
+
+Finding: [all three shipped backends provide the required atomic CAS boundary](../../build-timeline/prototype-findings/RR-P2-real-store-claim-epoch-cas.md).
+No backend failed, so the conditional stop criterion did not fire.
 
 ## Spec obligations covered
 

@@ -22,11 +22,19 @@ point of recursive mode — a timed-out child must reach the model as evidence, 
 
 ## Acceptance criteria
 
-- [ ] Budget exhaustion reports as a budget failure, not a timeout, and carries its elapsed/budget/cumulative evidence
-- [ ] A campaign deadline expiring is still reported, distinctly from budget exhaustion
-- [ ] In recursive mode a Phase-2 timeout reaches the next iteration as tree evidence and the campaign continues
-- [ ] In non-recursive mode a Phase-2 timeout terminates as it does today
-- [ ] Existing deadline tests still pass unchanged
+- [x] Budget exhaustion reports as a budget failure, not a timeout, and carries its elapsed/budget/cumulative evidence
+- [x] A campaign deadline expiring is still reported, distinctly from budget exhaustion
+- [x] In recursive mode a Phase-2 timeout reaches the next iteration as tree evidence and the campaign continues
+- [x] In non-recursive mode a Phase-2 timeout terminates as it does today
+- [x] Existing deadline tests still pass unchanged
+
+Inspection evidence: the first implementation's numeric-equality classifier was
+falsified by an equal-valued explicit campaign deadline. The corrected
+provenance-aware implementation passed six focused public tests (25 assertions),
+including the new adversarial regression, with no failures or errors. Allium
+remained at the documented 0-error baseline; weed classified both defects as
+code bugs and found no specification divergence. Coverage: `0 obligations, 0
+covered, 0 uncovered`.
 
 ## Spec obligations covered
 

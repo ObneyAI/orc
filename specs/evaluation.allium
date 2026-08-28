@@ -135,7 +135,9 @@ contract TraceJudge {
         -- the material a judge reads becomes richer, while what it is asked to
         -- judge stays the whole piece of work. Judging every iteration
         -- separately would let a piece of work that took many attempts outvote
-        -- one that took few.
+        -- one that took few. Only verdict-bearing campaign completions are
+        -- judged; cancelled campaigns retain inspectable evidence but receive
+        -- no work-quality verdict.
 
     @invariant DurableModelProvenance
         -- A successful model-backed score retains the resolved model, trace

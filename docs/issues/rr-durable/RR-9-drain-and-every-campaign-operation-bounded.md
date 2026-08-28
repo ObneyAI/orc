@@ -25,6 +25,7 @@ sized against.
 ## Acceptance criteria
 
 - [ ] Campaign work is registered and is cancelled on lease loss
+- [ ] Parent or operator cancellation records one terminal cancelled campaign with a cause; completed iterations and claims remain inspectable and no recovery path resumes it
 - [ ] Reassignment is delayed by a configured interval sized against measured worst-case quantum duration
 - [ ] Classification work falls inside the campaign clock and has its own deadline
 - [ ] A provider or tool call is bounded at the transport, not only by an advisory interrupt
@@ -34,9 +35,14 @@ sized against.
 ## Spec obligations covered
 
 - `invariant.SettledCampaignsRecordWhenTheySettled`
+- `invariant.CancelledCampaignsRecordCause`
 - `rule-success.CampaignTimesOut`
 - `rule-failure.CampaignTimesOut.1`
+- `rule-success.CampaignIsCancelled`
+- `rule-failure.CampaignIsCancelled.1`
 - `transition-edge.Campaign.running.timeout`
+- `transition-edge.Campaign.running.cancelled`
+- `transition-edge.Campaign.yielded.cancelled`
 
 ## Test seams
 
@@ -44,7 +50,7 @@ Seam-1 (public execution via `with-async-test-context`), Seam-2 (restart: stop p
 
 ## Blocked by
 
-None — can start immediately.
+RR-8.
 
 ## Handoff plan
 

@@ -35,7 +35,7 @@ Seam-2 (restart: stop processors, reopen store, restart processors) for fold-cor
 
 ## Blocked by
 
-None — can start immediately.
+RR-4.
 
 ## Handoff plan
 

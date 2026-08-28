@@ -21,11 +21,44 @@ This is the slice that unblocks the default-on flip: a default must not ship qua
 
 ## Acceptance criteria
 
-- [ ] Durable bytes for an N-iteration campaign grow linearly in N, demonstrated by measurement not assertion
-- [ ] An iteration record is written exactly once per completed iteration and never rewritten
-- [ ] Repeated attempts at one iteration are separately recorded, not collapsed last-wins
-- [ ] Resume reconstructs prompt history from iteration records rather than from a blob carried in state
-- [ ] The trace no longer merges two sources; the richer per-iteration content survives
+- [x] Durable bytes for an N-iteration campaign grow linearly in N, demonstrated by measurement not assertion
+- [x] An iteration record is written exactly once per completed iteration and never rewritten
+- [x] Repeated attempts at one iteration are separately recorded, not collapsed last-wins
+- [x] Resume reconstructs prompt history from iteration records rather than from a blob carried in state
+- [x] The trace no longer merges two sources; the richer per-iteration content survives
+- [x] An unsupported checkpoint value names the key and unsupported value kind without stringifying it
+- [x] A later unsupported checkpoint value fails only that iteration and preserves every previously committed iteration record and resumable frontier
+
+## Verified result
+
+Version-2 campaign persistence now writes `:rlm/researcher-iteration-recorded`
+and `:rlm/researcher-resume-state-saved` as separate facts in one guarded
+append. Exact replay and stale frontier writes are atomic no-ops, while a
+distinct retry at the same iteration retains its own attempt ordinal. Version-1
+checkpoint reads remain available for migration, but new checkpointed execution
+writes version 2 and reconstructs prompt history from ordered iteration records.
+
+The serialized-event measurement used equal-sized campaigns at N=2, 4, and 8:
+12,584 bytes / 14 events; 20,199 bytes / 22 events; and 35,639 bytes / 38 events.
+Observed bytes per iteration decreased from 6,292.0 to 5,049.75 to 4,454.875,
+which demonstrates bounded incremental growth rather than a repeated-history
+series.
+
+The focused checkpoint suite passes 15 tests / 109 assertions. The combined
+checkpoint, recursive-researcher, and trace proof passes 78 tests / 409
+assertions. `clojure -M:poly test brick:orc-service` completed with exit code 0
+in both Polylith project contexts. Provider-facing integration tests that require
+external credentials remained gated; the exercised provider was the injected
+deterministic capability.
+
+Obligation audit: `10 obligations, 9 covered, 1 uncovered`.
+
+The uncovered obligation is `entity-fields.CampaignIteration`: RR-4 establishes
+the immutable identity, status, and storage boundary, while RR-5 owns the full
+record content (`started_at`, `completed_at`, duration, shape, tree/code,
+bounded reasoning/error, and variable-key deltas). This is an aspirational
+downstream gap, not a claim that RR-4 already supplies the living-description
+evidence payload.
 
 ## Spec obligations covered
 

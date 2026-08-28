@@ -40,7 +40,7 @@ Seam-2 (restart: stop processors, reopen store, restart processors) for the cras
 
 ## Blocked by
 
-None — can start immediately.
+RR-7.
 
 ## Handoff plan
 

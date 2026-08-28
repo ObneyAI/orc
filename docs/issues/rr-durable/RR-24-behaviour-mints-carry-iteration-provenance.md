@@ -33,7 +33,7 @@ Seam-4 (ontology consumers over a synthesized event stream) primary, Seam-3 (dur
 
 ## Blocked by
 
-None — can start immediately.
+RR-7.
 
 ## Handoff plan
 

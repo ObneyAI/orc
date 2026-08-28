@@ -308,32 +308,43 @@
    example and NO 'return only JSON' directive — the output shape is the typed
    blackboard's job, not the prompt's. The trace data is passed as typed INPUT
    fields (see build-tier1-module), not interpolated here."
-  [{:keys [criteria stance scale]}]
-  (str stance "\n\n"
-       "WHAT TO EVALUATE:\n" criteria "\n\n"
-       "You are given three inputs: `instruction` (the task the producer was "
-       "given), `response` (what the producer wrote), and `inputs` (the "
-       "context/material the producer had). Evaluate the response against the "
-       "instruction (and the inputs where relevant).\n\n"
-       "SCORING BANDS (choose exactly one level for the `level` field):\n"
-       (scale/render-bands scale) "\n\n"
-       "Fill `reasoning` first (adversarial analysis), then the evidence "
-       "lists, then choose `level`, then write `feedback`."))
+  ([rubric]
+   (build-tier1-instruction rubric false))
+  ([{:keys [criteria stance scale]} iteration-evidence?]
+   (str stance "\n\n"
+        "WHAT TO EVALUATE:\n" criteria "\n\n"
+        "You are given three inputs: `instruction` (the task the producer was "
+        "given), `response` (what the producer wrote), and `inputs` (the "
+        "context/material the producer had). Evaluate the response against the "
+        "instruction (and the inputs where relevant)."
+        (when iteration-evidence?
+          (str " You are also given `iteration_evidence`, a bounded durable "
+               "record of the research attempts. Use it to explain why the "
+               "outcome occurred."))
+        "\n\n"
+        "SCORING BANDS (choose exactly one level for the `level` field):\n"
+        (scale/render-bands scale) "\n\n"
+        "Fill `reasoning` first (adversarial analysis), then the evidence "
+        "lists, then choose `level`, then write `feedback`.")))
 
 (defn- build-tier1-module
   "ORC LLM module for a tier-1 (instruction/reasoning/completeness) judge. Typed
    INPUT fields carry the trace data; typed OUTPUT fields carry the verdict. No
    json-in-prompt, no permissive output schema."
-  [instruction output-fields]
-  {:inputs [{:name :instruction
-             :spec :string
-             :description "The instruction the producer was given (the task to evaluate compliance/coverage against)."}
-            {:name :response
-             :spec :string
-             :description "The producer's output to evaluate."}
-            {:name :inputs
-             :spec :string
-             :description "The context/material the producer had (for relevance checks)."}]
+  [instruction output-fields iteration-evidence?]
+  {:inputs (cond-> [{:name :instruction
+                     :spec :string
+                     :description "The instruction the producer was given (the task to evaluate compliance/coverage against)."}
+                    {:name :response
+                     :spec :string
+                     :description "The producer's output to evaluate."}
+                    {:name :inputs
+                     :spec :string
+                     :description "The context/material the producer had (for relevance checks)."}]
+             iteration-evidence?
+             (conj {:name :iteration_evidence
+                    :spec :string
+                    :description "Bounded durable evidence for the research attempts that produced the outcome."}))
    :outputs output-fields
    :instructions instruction})
 
@@ -407,16 +418,22 @@
                                           :or {provider *judge-provider*
                                                model *judge-model*}}]
   (let [rubric (rubrics/get-tier1-rubric rubric-key)
-        instruction (build-tier1-instruction rubric)
-        module (build-tier1-module instruction output-fields)
+        iteration-evidence (not-empty (:researcher-iterations trace-data))
+        instruction (build-tier1-instruction rubric (boolean iteration-evidence))
+        module (build-tier1-module instruction output-fields
+                                   (boolean iteration-evidence))
         response (cond
                    (:response trace-data) (:response trace-data)
                    (string? (:outputs trace-data)) (:outputs trace-data)
                    (:outputs trace-data) (json/generate-string (:outputs trace-data) {:pretty true})
                    :else "")
-        inputs {:instruction (or (:instruction trace-data) "No instruction provided")
-                :response (str response)
-                :inputs (coerce-source-string (:inputs trace-data))}
+        inputs (cond->
+                {:instruction (or (:instruction trace-data) "No instruction provided")
+                 :response (str response)
+                 :inputs (coerce-source-string (:inputs trace-data))}
+                 iteration-evidence
+                 (assoc :iteration_evidence
+                        (coerce-source-string iteration-evidence)))
         result (llm/predict provider module inputs
                                {:with-metadata? true
                                 :validate? false

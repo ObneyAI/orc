@@ -6,7 +6,8 @@
    - Nodes are leaf (execute), sequence (run all until failure), or fallback (run until success)
    - Data flows through a shared blackboard
    - Nodes return status: success, failure, or running"
-  (:require [ai.obney.grain.schema-util.interface :refer [defschemas]]))
+  (:require [ai.obney.grain.schema-util.interface :refer [defschemas]]
+            [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]))
 
 ;; =============================================================================
 ;; Domain Enums
@@ -64,6 +65,82 @@
                                      [:completion-tokens {:optional true} :int]
                                      [:total-tokens {:optional true} :int]]]]
    [:output-truncated? {:optional true} :boolean]])
+
+(def researcher-resume-state-v2
+  [:and
+   [:map
+    [:version [:= 2]]
+    [:revision [:and :int [:>= 0]]]
+    [:next-iteration [:and :int [:>= 0]]]
+    [:sandbox-vars :map]
+    [:var-creation-times
+     [:map-of :keyword [:and :int [:>= 0]]]]
+    [:usage
+     [:map
+      [:prompt-tokens [:and :int [:>= 0]]]
+      [:completion-tokens [:and :int [:>= 0]]]
+      [:total-tokens [:and :int [:>= 0]]]]]
+    [:cumulative-tree-ms [:and :int [:>= 0]]]
+    [:iteration-attempts
+     [:map-of [:and :int [:>= 0]] [:and :int [:>= 0]]]]
+    [:campaign-started-at-ms [:and :int [:>= 0]]]
+    [:campaign-deadline-ms [:and :int [:>= 0]]]]
+   [:fn {:error/message
+         "version-2 researcher resume state cannot contain history or terminal-result"}
+    (fn [state]
+      (and (not (contains? state :history))
+           (not (contains? state :terminal-result))))]])
+
+(def researcher-iteration-record
+  [:and
+   [:map {:closed true}
+   [:iteration-index [:and :int [:>= 0]]]
+   [:attempt-ordinal [:and :int [:>= 0]]]
+   [:status [:enum :success :failure :timeout]]
+   ;; Optional only for RR-4 command compatibility: its public fixtures predate
+   ;; the RR-5 digest and the record has no version discriminator. Production
+   ;; checkpointed execution always supplies this lifecycle/evidence shape.
+   [:started-at {:optional true} :string]
+   [:completed-at {:optional true} :string]
+   [:duration-ms {:optional true} [:and :int [:>= 0]]]
+   [:code {:optional true} [:maybe :string]]
+   [:reasoning
+    {:optional true}
+    [:maybe [:string {:max iteration-evidence/reasoning-max-chars}]]]
+   [:generated-code-recorded? {:optional true} :boolean]
+   [:emitted-tree-recorded? {:optional true} :boolean]
+   [:emitted-tree {:optional true} :any]
+   [:tree-fingerprint {:optional true} :string]
+   [:error-class {:optional true} :string]
+   [:error-excerpt
+    {:optional true}
+    [:string {:max iteration-evidence/error-excerpt-max-chars}]]
+   [:variable-delta
+    {:optional true}
+    [:map {:closed true}
+     [:created-keys [:vector :keyword]]
+     [:updated-keys [:vector :keyword]]
+     [:removed-keys [:vector :keyword]]]]
+   [:result-profile
+    {:optional true}
+    [:map {:closed true}
+     [:type [:enum :string :vector :map :other]]
+     [:length [:and :int [:>= 0]]]
+     [:word-count {:optional true} [:and :int [:>= 0]]]
+     [:line-count {:optional true} [:and :int [:>= 0]]]]]
+   [:stdout-profile
+    {:optional true}
+    [:map {:closed true}
+     [:type [:enum :string :vector :map :other]]
+     [:length [:and :int [:>= 0]]]
+     [:word-count {:optional true} [:and :int [:>= 0]]]
+     [:line-count {:optional true} [:and :int [:>= 0]]]]]]
+   [:fn {:error/message
+         "a recorded emitted tree requires both its durable tree and fingerprint"}
+    (fn [record]
+      (or (not (:emitted-tree-recorded? record))
+          (and (some? (:emitted-tree record))
+               (seq (:tree-fingerprint record)))))]])
 
 ;; Legacy field-type enum - kept for migration from old format
 (def field-type
@@ -616,13 +693,24 @@
     [:inputs [:map-of :keyword :any]]]
 
    :sheet/checkpoint-researcher-iteration
-   [:map
-    [:sheet-id :uuid]
-    [:tick-id :uuid]
-    [:node-id :uuid]
-    [:checkpoint :map]
-    [:resume? {:optional true} :boolean]
-    [:inputs [:map-of :keyword :any]]]
+   ;; Preserve strict version-1 validation while admitting the split version-2
+   ;; write. A partial v2 command must not fall through to the legacy handler.
+   [:or
+    [:map
+     [:sheet-id :uuid]
+     [:tick-id :uuid]
+     [:node-id :uuid]
+     [:checkpoint :map]
+     [:resume? {:optional true} :boolean]
+     [:inputs [:map-of :keyword :any]]]
+    [:map
+     [:sheet-id :uuid]
+     [:tick-id :uuid]
+     [:node-id :uuid]
+     [:resume-state researcher-resume-state-v2]
+     [:iteration-record researcher-iteration-record]
+     [:resume? {:optional true} :boolean]
+     [:inputs [:map-of :keyword :any]]]]
 
    :sheet/record-researcher-action
    [:map
@@ -1649,6 +1737,27 @@
     [:checkpoint :map]
     [:yielded? {:optional true} :boolean]
     [:checkpointed-at :string]]
+
+   :rlm/researcher-iteration-recorded
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:iteration-index :int]
+    [:attempt-ordinal :int]
+    [:iteration-record researcher-iteration-record]
+    [:recorded-at :string]]
+
+   :rlm/researcher-resume-state-saved
+   [:map
+    [:sheet-id :uuid]
+    [:tick-id :uuid]
+    [:node-id :uuid]
+    [:revision :int]
+    [:next-iteration :int]
+    [:resume-state researcher-resume-state-v2]
+    [:yielded? {:optional true} :boolean]
+    [:saved-at :string]]
 
    :rlm/researcher-action-completed
    [:map

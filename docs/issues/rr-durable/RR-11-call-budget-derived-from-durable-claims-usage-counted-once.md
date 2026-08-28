@@ -39,7 +39,7 @@ Seam-2 (restart: stop processors, reopen store, restart processors) for the rest
 
 ## Blocked by
 
-None — can start immediately.
+RR-7.
 
 ## Handoff plan
 

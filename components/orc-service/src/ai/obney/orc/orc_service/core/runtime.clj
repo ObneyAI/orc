@@ -538,6 +538,22 @@
   [tick-id]
   (swap! completion-registry dissoc tick-id))
 
+(defn terminal-root-status->result-status
+  "Map a durable tree root status to the public result status shared by live
+   and replay reconstruction. A :running completion is an intermediate retick
+   bookend, so it has no terminal result."
+  [root-status]
+  (case root-status
+    :running nil
+    :success :success
+    :failure :failure
+    :tree-generated :tree-generated
+    :partial :partial
+    :timeout :timeout
+    :blocked :blocked
+    :cancelled :cancelled
+    :failure))
+
 (defn durable-terminal-result
   "Reconstruct the result of an already-terminal tick from durable facts.
    This is the process-recovery path for callers reattaching after the
@@ -546,20 +562,15 @@
   (when event-store
     (when-let [completion
                (last (filter #(and (= :sheet/tree-tick-completed (:event/type %))
-                                   (not= :running (:root-status %)))
+                                   (some? (terminal-root-status->result-status
+                                           (:root-status %))))
                              (into [] (es/read event-store
                                                {:tenant-id tenant-id
                                                 :types #{:sheet/tree-tick-completed}
                                                 :tags #{[:tick tick-id]}}))))]
       (let [tick-ctx (rm/get-tick-execution-context context tick-id)]
-        (cond-> {:status (case (:root-status completion)
-                           :success :success
-                           :failure :failure
-                           :partial :partial
-                           :timeout :timeout
-                           :blocked :blocked
-                           :tree-generated :tree-generated
-                           :failure)
+        (cond-> {:status (terminal-root-status->result-status
+                          (:root-status completion))
                  :outputs (value-log/final-values context tenant-id tick-id)
                  :output-sources (value-log/final-sources context tenant-id tick-id)
                  :trace-id tick-id

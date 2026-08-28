@@ -18,9 +18,21 @@ contract.
 
 ## Acceptance criteria
 
-- [ ] A host supplying a two-argument tool caller works identically with and without checkpointing
-- [ ] A host supplying a three-argument tool caller still receives the tool context
-- [ ] The failure mode, if a caller is genuinely incompatible, names the arity rather than surfacing a raw exception
+- [x] A host supplying a two-argument tool caller works identically with and without checkpointing
+- [x] A host supplying a three-argument tool caller still receives the tool context
+- [x] The failure mode, if a caller is genuinely incompatible, names the arity rather than surfacing a raw exception
+- [x] A checkpointed campaign rejects an effectful tool that has not declared checkpoint safety before configuration can dispatch its effect
+
+Inspection evidence: the initial non-invoking arity classifier was falsified by
+a Var-backed two-argument host, because `clojure.lang.Var` advertises every IFn
+arity. The corrected implementation dereferences a bound Var once so preflight
+and dispatch inspect the same callable. Independent tests covered two-, three-,
+dual-, variadic-, incompatible-, and Var-backed callables. The complete
+recursive namespace passed 54 tests with 229 assertions, and the existing
+non-checkpointed tool-caller namespace passed 1 test with 8 assertions, with no
+failures or errors. Allium remained at the documented 0-error baseline; weed
+classified the mismatch as a code bug and found no specification divergence.
+Coverage: `0 obligations, 0 covered, 0 uncovered`.
 
 ## Spec obligations covered
 

@@ -37,7 +37,7 @@ Seam-5 (judge runtime) primary, Seam-3 (durable evidence: event-store reads) for
 
 ## Blocked by
 
-None — can start immediately.
+RR-5.
 
 ## Handoff plan
 

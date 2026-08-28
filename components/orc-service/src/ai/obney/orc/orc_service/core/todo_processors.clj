@@ -2033,6 +2033,44 @@
                      outputs))
     outputs))
 
+(defn- checkpoint->v2-researcher-facts
+  "Split the executor's compatibility checkpoint shape at the durable boundary.
+   The executor may still return a history-bearing map to direct callers, but
+  public execution persists the latest completed attempt once and keeps only
+  continuation data in the supersedable resume state."
+  [checkpoint]
+  (let [history (vec (:history checkpoint))
+        history-entry (last history)
+        explicit-record (:iteration-record checkpoint)
+        iteration-index (or (:iteration-index explicit-record)
+                            (:iteration-index history-entry)
+                            (dec (:next-iteration checkpoint)))
+        attempt-ordinal (or (:attempt-ordinal explicit-record)
+                            (:attempt-ordinal history-entry)
+                            0)
+        terminal-status (get-in checkpoint [:terminal-result :status])
+        status (or (:status explicit-record)
+                   terminal-status
+                   (:status history-entry)
+                   (if (:error history-entry) :failure :success))]
+    {:resume-state (-> checkpoint
+                       (dissoc :history :terminal-result :iteration-record)
+                       (assoc :version 2))
+     :iteration-record
+     (cond-> (assoc (or explicit-record history-entry {})
+                    :iteration-index iteration-index
+                    :attempt-ordinal attempt-ordinal
+                    :status status)
+       ;; Explicit records are formed at the attempt's own terminal boundary.
+       ;; Deriving their evidence flags from `history-entry` would read the
+       ;; previous completed iteration when the current attempt timed out.
+       (nil? explicit-record)
+       (assoc :generated-code-recorded?
+              (boolean (seq (:code history-entry)))
+              :emitted-tree-recorded?
+              (boolean (or (:generated-tree-raw history-entry)
+                           (:tree-outcome history-entry)))))}))
+
 (defn execute-repl-researcher-node
   "Execute a repl-researcher node when node-execution-started is emitted.
    Runs in a future like leaf/llm-condition nodes to avoid blocking pubsub."
@@ -2138,10 +2176,31 @@
                   ;; between dispatch and this future running.
                   tool-context (:tool-context tick-ctx)
                   correlation-id (:correlation-id tick-ctx)
-                  durable-checkpoint (some-> (rm/get-researcher-checkpoint
-                                               context sheet-id tick-id node-id)
-                                              :checkpoint)
+                  durable-resume-projection
+                  (rm/get-researcher-resume-state context sheet-id tick-id node-id)
+                  durable-resume-state (:resume-state durable-resume-projection)
+                  durable-iteration-records
+                  (rm/get-researcher-iteration-records context sheet-id tick-id node-id)
+                  legacy-checkpoint (some-> (rm/get-researcher-checkpoint
+                                              context sheet-id tick-id node-id)
+                                             :checkpoint)
                   durable-actions (rm/get-researcher-actions context sheet-id tick-id node-id)
+                  persist-v2-checkpoint!
+                  (fn [checkpoint resume?]
+                    (let [{:keys [resume-state iteration-record]}
+                          (checkpoint->v2-researcher-facts checkpoint)]
+                      (cp/process-command
+                       (assoc context :command
+                              {:command/id (random-uuid)
+                               :command/timestamp (time/now)
+                               :command/name :sheet/checkpoint-researcher-iteration
+                               :sheet-id sheet-id
+                               :tick-id tick-id
+                               :node-id node-id
+                               :resume-state resume-state
+                               :iteration-record iteration-record
+                               :resume? resume?
+                               :inputs event-inputs}))))
                   enriched-context (cond-> (assoc context
                                                   :sheet-id sheet-id
                                                   :tick-id tick-id
@@ -2156,17 +2215,7 @@
                                                     context tick-ctx sheet-id tick-id)
                                                   :persist-researcher-checkpoint!
                                                   (fn [checkpoint]
-                                                    (cp/process-command
-                                                     (assoc context :command
-                                                            {:command/id (random-uuid)
-                                                             :command/timestamp (time/now)
-                                                             :command/name :sheet/checkpoint-researcher-iteration
-                                                             :sheet-id sheet-id
-                                                             :tick-id tick-id
-                                                             :node-id node-id
-                                                             :checkpoint checkpoint
-                                                             :resume? false
-                                                             :inputs event-inputs})))
+                                                    (persist-v2-checkpoint! checkpoint false))
                                                   :persist-researcher-action!
                                                   (fn [{:keys [action-id action-kind iteration result]}]
                                                     (cp/process-command
@@ -2188,8 +2237,13 @@
                                                   :node-id node-id)
                                      tool-context (assoc :tool-context tool-context)
                                      correlation-id (assoc :orc/correlation-id correlation-id)
-                                     durable-checkpoint
-                                     (assoc :researcher-checkpoint durable-checkpoint)
+                                     legacy-checkpoint
+                                     (assoc :researcher-checkpoint legacy-checkpoint)
+                                     durable-resume-state
+                                     (assoc :researcher-resume-state durable-resume-state)
+                                     (seq durable-iteration-records)
+                                     (assoc :researcher-iteration-records
+                                            durable-iteration-records)
                                      (seq durable-actions)
                                      (assoc :researcher-actions durable-actions))
                   raw-result (if provider
@@ -2272,16 +2326,7 @@
                                       ;; it. Absent -> not carried (backward-compatible).
                                       tool-context (assoc :tool-context tool-context))]
               (if (= :running effective-status)
-                (cp/process-command
-                 (assoc context :command
-                        {:command/id (random-uuid)
-                         :command/timestamp (time/now)
-                         :command/name :sheet/checkpoint-researcher-iteration
-                         :sheet-id sheet-id
-                         :tick-id tick-id
-                         :node-id node-id
-                         :checkpoint (:checkpoint result)
-                         :inputs event-inputs}))
+                (persist-v2-checkpoint! (:checkpoint result) true)
                 (do
               ;; Emit :rlm/tree-generated event when tree is generated
               ;; Check for generated-tree-raw presence (Phase 2 auto-execution returns :success with this field)
@@ -4421,6 +4466,10 @@
                                            (:event/type %)) tick-events)
             researcher-checkpoint-events
             (filter #(= :rlm/researcher-checkpointed (:event/type %)) tick-events)
+            researcher-resume-state-events
+            (filter #(= :rlm/researcher-resume-state-saved (:event/type %)) tick-events)
+            researcher-iteration-record-events
+            (filter #(= :rlm/researcher-iteration-recorded (:event/type %)) tick-events)
             researcher-resume-events
             (filter #(and (= :sheet/node-execution-started (:event/type %))
                           (:researcher-resume? %))
@@ -4450,9 +4499,18 @@
                                  [(inc index) (assoc entry :iteration (inc index))]))
                   (:iterations terminal-researcher-event))
             researcher-iterations
-            (->> (merge terminal-iterations checkpoint-iterations)
-                 (sort-by key)
-                 (mapv val))
+            (if (seq researcher-iteration-record-events)
+              ;; Version 2 has one authoritative history source. Preserve the
+              ;; immutable record without re-selecting fields; :iteration is a
+              ;; one-based compatibility alias for existing trace consumers.
+              (->> researcher-iteration-record-events
+                   (map :iteration-record)
+                   (sort-by (juxt :iteration-index :attempt-ordinal))
+                   (mapv #(assoc % :iteration (inc (:iteration-index %)))))
+              ;; Version-1 campaigns remain readable during migration.
+              (->> (merge terminal-iterations checkpoint-iterations)
+                   (sort-by key)
+                   (mapv val)))
             researcher-events
             (->>
              (concat
@@ -4476,6 +4534,16 @@
                                                     [:checkpoint :next-iteration])
                                  :at (str (:event/timestamp checkpoint-event))})))
                       researcher-checkpoint-events)
+              (mapcat (fn [state-event]
+                        (cond-> [{:type :checkpoint
+                                  :iteration (:next-iteration state-event)
+                                  :at (or (:saved-at state-event)
+                                          (str (:event/timestamp state-event)))}]
+                          (not= false (:yielded? state-event))
+                          (conj {:type :yield
+                                 :iteration (:next-iteration state-event)
+                                 :at (str (:event/timestamp state-event))})))
+                      researcher-resume-state-events)
               (map (fn [resume-event]
                      {:type :resume
                       :iteration (:checkpoint-next-iteration resume-event)

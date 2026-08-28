@@ -15,24 +15,28 @@ every competing product's marketing appears to promise.
 
 Exactly-once for an external effect is available exactly when the callee
 participates in the deduplication protocol. Kafka achieves it because the effect
-target is Kafka itself and the broker checks producer epochs; Confluent states
-the boundary plainly — if processing has side effects on other storage systems,
-those APIs are not sufficient.
+target is Kafka itself and the broker checks producer epochs; Confluent's
+[delivery-semantics documentation](https://docs.confluent.io/kafka/design/delivery-semantics.html)
+separately warns about coordinating effects written to external systems.
 
-No LLM provider participates. There is no idempotency key for completions at
-OpenAI, Anthropic, OpenRouter, Azure OpenAI, or Vertex; Bedrock offers one only
-on its asynchronous job APIs. The OpenAI and Anthropic Python SDKs both contain
-complete idempotency plumbing with the header name left unset, so the generated
-key is never sent — code that reads like support and is not. Both SDKs retry
-5xx twice by default with no deduplication key, so a generation whose response
-was lost is re-run and re-billed.
+No completion provider in ORC's reviewed provider path exposes a request key on
+which this design can rely for completion deduplication. The clearest code-level
+example is OpenAI's official Python client: it creates a key for non-GET retries,
+but only emits it when the client's provider-specific idempotency-header name is
+set; the base client leaves that hook unset. Its
+[official README](https://github.com/openai/openai-python#retries) also documents
+two automatic retries for connection failures, timeouts, conflicts, rate limits
+and server errors. That establishes the relevant lost-result window without
+claiming that client-side retry plumbing is provider-side deduplication.
 
-Every durable-execution engine lands in the same place. Temporal, Restate, DBOS,
-Azure Durable Functions and Step Functions are all at-least-once for side
-effects; each "exactly-once" claim scopes to state transitions or workflow
-starts, never to the body of a step. Azure documents the identical hazard with a
-number attached: roughly ten seconds to detect lease loss, during which
-duplicate activity execution may be observed.
+The durable-execution systems sampled land in the same place for step bodies.
+Azure's [Durable Task programming model](https://learn.microsoft.com/en-us/azure/azure-functions/durable/programming-model-overview)
+says an activity may rerun if it completes before its result is recorded. DBOS
+[documents the same execute-before-checkpoint window](https://docs.dbos.dev/golang/tutorials/step-tutorial).
+AWS states that its default is at-least-once per retry and that neither execution
+semantic guarantees exactly once across an entire workflow; at-most-once plus
+no retry buys a possible non-execution instead
+([AWS durable-execution guidance](https://docs.aws.amazon.com/durable-execution/patterns/best-practices/idempotency/)).
 
 Fencing does not close it either. A token only fences when the resource itself
 persists the highest token seen and rejects lower ones; a check immediately
@@ -79,6 +83,8 @@ appending tenant and cross-tenant reads are forbidden.
   teaches it a false lesson about its own work.
 - The idempotency key ORC supplies to tools remains meaningful at ORC's own
   boundary and must not be described anywhere as provider deduplication.
-- Action identity must be derived from content inside the durable step —
-  execution-order ordinals change on replay and can return a recorded result for
-  a different call.
+- Logical action identity must be derived from content inside the durable step
+  and exclude the attempt. Every physical dispatch has a separate attempt
+  identity derived from the logical identity, ownership epoch and attempt
+  ordinal. Execution-order-only identities change on replay and can return a
+  recorded result for a different call.

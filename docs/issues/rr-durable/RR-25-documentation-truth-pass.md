@@ -37,7 +37,7 @@ Documentation only — verified by review, plus a grep proving the false phrasin
 
 ## Blocked by
 
-None — can start immediately.
+RR-7.
 
 ## Handoff plan
 

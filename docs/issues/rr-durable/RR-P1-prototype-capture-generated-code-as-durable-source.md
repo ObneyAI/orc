@@ -25,10 +25,13 @@ which requires re-grilling rather than an in-flight decision — stop and report
 
 ## Acceptance criteria
 
-- [ ] A written finding stating which capture mechanism works, with a runnable demonstration
-- [ ] If the fallback is the only option: an explicit stop, with the DSL-surface change described for re-grilling
-- [ ] The decision is recorded so RR-6's brief can be written from it
-- [ ] No production code is kept — the prototype is discarded
+- [x] A written finding stating which capture mechanism works, with a runnable demonstration
+- [x] If the fallback is the only option: an explicit stop, with the DSL-surface change described for re-grilling
+- [x] The decision is recorded so RR-6's brief can be written from it
+- [x] No production code is kept — the prototype is discarded
+
+Finding: [quoted forms preserve exact source and compile successfully](../../build-timeline/prototype-findings/RR-P1-generated-code-source-capture.md).
+The string fallback was not required, so the conditional stop criterion did not fire.
 
 ## Spec obligations covered
 

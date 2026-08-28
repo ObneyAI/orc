@@ -263,9 +263,11 @@ contract TaskClassification {
         -- signature a classification runs on is fixed by the work that was
         -- asked for, so asking again during the same campaign asks an identical
         -- question; a campaign that resumes reuses the answer it already has.
-        -- One campaign contributes one occurrence, however many quanta, resumes
-        -- or restarts it took, and a repeated assignment for the same occurrence
-        -- does not become a second occurrence.
+        -- A verdict-bearing campaign contributes at most one occurrence,
+        -- however many quanta, resumes or restarts it took, and a repeated
+        -- assignment for the same occurrence does not become a second
+        -- occurrence. Cancelled and abandoned campaigns retain their evidence
+        -- but produce no occurrence.
 
     @invariant DecidedRankingIsRecorded
         -- The classified event records the PRE-GATE ranking the decision ran
@@ -1050,11 +1052,12 @@ rule AssembleDescriptionFromClaims {
 -- quality. Separating them is what lets a recurring-but-mediocre class accrue an
 -- honest account of what it is bad at.
 -- An occurrence is recorded when a campaign reaches a verdict — success,
--- failure or timeout — not when it is classified. A campaign that was abandoned
--- before reaching a verdict says something about our infrastructure and nothing
--- about the behavior, so it never advances recurrence; the record of what it
--- tried remains available for describing the class, but moves no gate. Failure
--- is not abandonment: a campaign that failed has produced a verdict and counts.
+-- failure or timeout — not when it is classified. A campaign that was cancelled
+-- or abandoned before reaching a verdict says something about our infrastructure
+-- and nothing about the behavior, so it never advances recurrence; the record
+-- of what it tried remains available for describing the class, but moves no
+-- gate. Failure is not cancellation or abandonment: a campaign that failed has
+-- produced a verdict and counts.
 rule DescribeRecurringClass {
     when: TreeClassOccurrenceRecorded(tree_class, occurrences)
     requires: occurrences >= description_recurrence_threshold
@@ -1080,14 +1083,13 @@ rule PromoteWellScoredClass {
     -- Consistency, not average: durable creation requires the class to have
     -- qualified repeatedly, so a single disastrous occurrence is not averaged away.
     requires: consistently_qualified(tree_class, consistency_window)
-    -- Coherence: a tight cluster, not a grab-bag. The ratio counts the shapes
-    -- that WON — one per occurrence, the shape that carried the campaign to its
-    -- verdict — against the occurrences themselves. Shapes a campaign tried and
-    -- abandoned on the way are the process, not the result; counting them would
-    -- score a campaign that recovered well as less coherent than one that failed
-    -- outright, and would exceed the ratio by construction whenever repair is
-    -- normal. Shapes that failed are not discarded: they are recorded as what
-    -- did not work for this class.
+    -- Coherence: a tight cluster, not a grab-bag. A winning shape is the terminal
+    -- shape that carried a successful campaign to success. The measured ratio is
+    -- distinct successful terminal shapes divided by successful campaigns.
+    -- Failed and timed-out campaigns remain recurrence, quality and weakness
+    -- evidence, but enter neither side of this ratio and therefore cannot make a
+    -- failure-heavy class look more coherent. Shapes abandoned during repair are
+    -- process evidence, not winning shapes.
     -- ADR 0029 (TRACKED GAP, measured): this axis has never been WITNESSED —
     -- it passed vacuously for 100% of occurrences in both real stores because
     -- no tree-execution event carried a fingerprint. Until its real
@@ -1095,7 +1097,6 @@ rule PromoteWellScoredClass {
     -- blocking promotion, because a threshold that has never fired cannot be
     -- distinguished from one that never will: harvesting nothing looks
     -- identical to nothing qualifying.
-    requires: distinct_shape_ratio(tree_class) <= maximum_shape_ratio
     let parent = nearest_abstract_behavior(tree_class)
     requires: parent != null
 
@@ -1108,6 +1109,32 @@ rule PromoteWellScoredClass {
         tree_class: tree_class,
         body: synthesised_behavior_body(tree_class),
         supporting_evidence: validated_claims(tree_class)
+    )
+}
+
+rule ReportSuccessfulShapeCoherence {
+    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    let successful_campaigns = successful_campaign_count(tree_class)
+    let successful_shapes = successful_terminal_shape_count(tree_class)
+    let distinct_shapes = distinct_successful_terminal_shape_count(tree_class)
+    let measurable = successful_campaigns > 0 and successful_shapes > 0
+    let ratio = if measurable: distinct_shapes / successful_campaigns else: null
+    let report_status = shape_coherence_report_status(
+        successful_campaigns,
+        successful_shapes,
+        distinct_shapes,
+        maximum_shape_ratio
+    )
+
+    ensures: ShapeCoherenceReported(
+        tree_class: tree_class,
+        verdict_occurrences: occurrences,
+        successful_campaigns: successful_campaigns,
+        successful_shape_observations: successful_shapes,
+        distinct_successful_shapes: distinct_shapes,
+        ratio: ratio,
+        status: report_status,
+        recorded_at: now
     )
 }
 

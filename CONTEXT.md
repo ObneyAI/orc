@@ -92,6 +92,10 @@ _Avoid_: history entry, checkpoint history
 A campaign that stopped without reaching success, failure, or timeout — its frontier was never resumed. Evidence about our infrastructure, never a verdict about the behavior.
 _Avoid_: failed campaign (a failure IS a verdict), crashed run
 
+**Cancelled campaign**:
+A campaign deliberately stopped by its parent or operator. Its completed iteration evidence remains inspectable, but cancellation is neither a behavior verdict nor an abandoned recovery frontier and advances no learning gate.
+_Avoid_: abandoned campaign, failed campaign
+
 **Recurrence**:
 How many times a task of a given class has actually been carried out to a verdict. Counted at outcome, never at intent.
 _Avoid_: occurrences count, assignment count
@@ -101,7 +105,7 @@ The structural form of a generated tree, independent of the instructions and cod
 _Avoid_: fingerprint (that is the identifier for a shape, not the concept), pattern (a pattern is a shape plus what it proved)
 
 **Winning shape**:
-The shape that carried a campaign to its verdict. One per campaign; the unit of convergence.
+The shape that carried a successful campaign to success. One per successful campaign; the unit of convergence. Failed and timed-out shapes remain weakness and repair evidence, not winning shapes.
 _Avoid_: final tree, last tree
 
 **Behavior**:

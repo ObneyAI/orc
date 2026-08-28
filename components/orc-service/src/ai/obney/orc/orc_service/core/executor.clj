@@ -30,8 +30,11 @@
             [ai.obney.orc.orc-service.core.observability :as obs]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.block :as block]
+            [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.iteration-evidence :as iteration-evidence]
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
+            [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
@@ -61,30 +64,73 @@
 (def ^:private checkpoint-codec-tag :orc.researcher.codec/tag)
 (def ^:private checkpoint-codec-value :orc.researcher.codec/value)
 
+(def iteration-reasoning-max-chars
+  "Measured maximum reasoning length in the checked-in live RR-5 evidence bank."
+  iteration-evidence/reasoning-max-chars)
+
+(def iteration-error-excerpt-max-chars
+  "Measured maximum error length in the checked-in live RR-5 evidence bank."
+  iteration-evidence/error-excerpt-max-chars)
+
+(defn bound-iteration-evidence-text
+  "Keep at most max-chars from the exact prefix of one durable evidence string."
+  [text max-chars]
+  (iteration-evidence/bound-text text max-chars))
+
+(defn- unsupported-checkpoint-kind [value]
+  (cond
+    (fn? value) "function"
+    (instance? clojure.lang.IAtom value) "atom"
+    (instance? clojure.lang.IPending value) "pending-value"
+    (record? value) (str "record:" (.getName (class value)))
+    :else (or (some-> value class .getName) "unknown")))
+
 (defn encode-checkpoint-value
   "Convert a checkpoint value to canonical durable data. Codecs are maps with
    :tag, :match? and :encode. Their encoded payload must itself be durable."
   [codecs value]
-  (letfn [(encode* [v]
+  (letfn [(encode* [v path]
             (if-let [{:keys [tag encode]}
                      (some (fn [{:keys [match?] :as codec}]
                              (when (and match? (match? v)) codec))
                            codecs)]
               (let [payload (encode v)
-                    encoded-payload (encode* payload)]
+                    encoded-payload (encode* payload (conj path :codec-payload))]
                 (when-not (and tag (checkpoint-durable-value? encoded-payload))
-                  (throw (ex-info "Researcher checkpoint codec produced a non-durable value"
-                                  {:codec tag})))
+                  (throw (ex-info
+                          (str "Researcher checkpoint codec produced a non-durable value at "
+                               (pr-str path))
+                          {:codec tag :path path})))
                 {checkpoint-codec-tag tag checkpoint-codec-value encoded-payload})
               (cond
-                (map? v) (into (empty v) (map (fn [[k x]] [(encode* k) (encode* x)])) v)
-                (vector? v) (mapv encode* v)
-                (set? v) (into #{} (map encode*) v)
-                (list? v) (apply list (map encode* v))
+                (map? v) (into (empty v)
+                               (map (fn [[k x]]
+                                      [(encode* k (conj path :map-key))
+                                       (encode* x
+                                                (conj path
+                                                      (if (checkpoint-durable-value? k)
+                                                        k
+                                                        :map-value)))])
+                                    v))
+                (vector? v) (mapv (fn [index x]
+                                    (encode* x (conj path index)))
+                                  (range)
+                                  v)
+                (set? v) (into #{} (map #(encode* % (conj path :set-member))) v)
+                (list? v) (apply list
+                                 (map (fn [index x]
+                                        (encode* x (conj path index)))
+                                      (range)
+                                      v))
                 (checkpoint-durable-value? v) v
-                :else (throw (ex-info "Researcher checkpoint contains an unsupported runtime value"
-                                      {:value-class (some-> v class str)})))))]
-    (encode* value)))
+                :else
+                (let [kind (unsupported-checkpoint-kind v)]
+                  (throw
+                   (ex-info
+                    (str "Researcher checkpoint contains an unsupported runtime value at "
+                         (pr-str path) " (kind " kind ")")
+                    {:path path :value-kind kind}))))))]
+    (encode* value [])))
 
 (defn decode-checkpoint-value
   "Rehydrate values encoded by encode-checkpoint-value. Missing codecs fail
@@ -1735,11 +1781,9 @@
 (defn- build-iteration-history
   "Format iteration history for LLM context.
 
-   The model sees its own prior code, results, stdout, errors, and the
-   variables each iteration created — VERBATIM. Truncating any of this
-   second-guesses the model and hides what it actually did, degrading
-   its ability to reason across iterations (and, in recursive mode,
-   to see the full trees it has already emitted).
+   Version-1 history retains its original verbatim rendering. Version-2
+   immutable records render authored evidence, bounded errors/reasoning,
+   profiles, and created/updated/removed key names without payload values.
 
    R-6: When an iteration's :error is a SCI parse error with a [line col]
    marker, the formatted history also includes the offending line + a
@@ -1751,22 +1795,47 @@
     (str "\n\n## Previous Iterations\n"
          (str/join "\n\n"
                    (map-indexed
-                    (fn [idx {:keys [code result stdout error vars-created tree-outcome]}]
-                      (str "### Iteration " (inc idx) "\n"
-                           "Code:\n```clojure\n" code "\n```\n"
-                           (when (seq stdout) (str "Output:\n" stdout "\n"))
-                           (cond
-                             error (format-error-with-context code error)
-                             ;; Tree iterations: the eval result is just the
-                             ;; compiled tree object (the model already sees
-                             ;; its own emit-tree! code above) — show the
-                             ;; tree's OUTCOME instead: status, merged outputs
-                             ;; with previews, nil-writes, failed-leaf errors,
-                             ;; surviving vars.
-                             tree-outcome (str "Result: " tree-outcome)
-                             :else (str "Result: " result))
-                           (when (seq vars-created)
-                             (str "\nVariables created: " (str/join ", " (map str vars-created))))))
+                    (fn [idx {:keys [code result stdout error vars-created tree-outcome]
+                             :as entry}]
+                      (if-let [delta (:variable-delta entry)]
+                        (let [{:keys [created-keys updated-keys removed-keys]} delta]
+                          (str "### Iteration " (inc idx) "\n"
+                               "Status: " (:status entry) "\n"
+                               "Code:\n```clojure\n" code "\n```\n"
+                               (when-let [reasoning (:reasoning entry)]
+                                 (str "Reasoning: " reasoning "\n"))
+                               (when-let [error-excerpt (:error-excerpt entry)]
+                                 (str "Error [" (:error-class entry) "]: "
+                                      error-excerpt "\n"))
+                               (when-let [result-profile (:result-profile entry)]
+                                 (str "Result profile: " (pr-str result-profile) "\n"))
+                               (when-let [stdout-profile (:stdout-profile entry)]
+                                 (str "Stdout profile: " (pr-str stdout-profile) "\n"))
+                               (when-let [emitted-tree (:emitted-tree entry)]
+                                 (str "Emitted tree: " (pr-str emitted-tree) "\n"))
+                               (when (seq created-keys)
+                                 (str "Variables created: "
+                                      (str/join ", " (map str created-keys)) "\n"))
+                               (when (seq updated-keys)
+                                 (str "Variables updated: "
+                                      (str/join ", " (map str updated-keys)) "\n"))
+                               (when (seq removed-keys)
+                                 (str "Variables removed: "
+                                      (str/join ", " (map str removed-keys)) "\n"))))
+                        (str "### Iteration " (inc idx) "\n"
+                             "Code:\n```clojure\n" code "\n```\n"
+                             (when (seq stdout) (str "Output:\n" stdout "\n"))
+                             (cond
+                               error (format-error-with-context code error)
+                               ;; Tree iterations: the eval result is just the
+                               ;; compiled tree object (the model already sees
+                               ;; its own emit-tree! code above) — show the
+                               ;; tree's OUTCOME instead.
+                               tree-outcome (str "Result: " tree-outcome)
+                               :else (str "Result: " result))
+                             (when (seq vars-created)
+                               (str "\nVariables created: "
+                                    (str/join ", " (map str vars-created)))))))
                     history)))))
 
 (defn- build-code-generation-module
@@ -1850,6 +1919,50 @@
     (if (and raw tool-context)
       (fn [tool-name args] (raw tool-name args tool-context))
       raw)))
+
+(defn- supports-tool-caller-arity?
+  "True when call-tool-fn can be invoked with arity without probing it.
+
+   Fixed-arity Clojure functions declare their supported invoke methods on the
+   generated function class. RestFn instances accept every arity at or above
+   their required arity. Inspecting those shapes avoids using a real tool call
+   as an arity probe (which could dispatch an effect before failing)."
+  [call-tool-fn arity]
+  (and (ifn? call-tool-fn)
+       (or (some (fn [^java.lang.reflect.Method method]
+                   (and (= "invoke" (.getName method))
+                        (= arity (alength (.getParameterTypes method)))))
+                 (.getDeclaredMethods (class call-tool-fn)))
+           (and (instance? clojure.lang.RestFn call-tool-fn)
+                (>= arity
+                    (.getRequiredArity ^clojure.lang.RestFn call-tool-fn))))))
+
+(defn- tool-caller-target
+  "Return the callable whose arity and effect checkpointing will use.
+
+   Vars expose generic IFn invoke methods for every arity even when their bound
+   function supports only one. Dereference a bound Var once so preflight and
+   dispatch share the same real contract; leave ordinary callers unchanged."
+  [call-tool-fn]
+  (if (var? call-tool-fn)
+    (when (bound? call-tool-fn) @call-tool-fn)
+    call-tool-fn))
+
+(defn- tool-caller-arity
+  "Choose the checkpointed host caller contract without invoking the caller.
+
+   Prefer the context-aware three-argument contract when both are supported;
+   otherwise preserve the legacy two-argument contract."
+  [call-tool-fn]
+  (cond
+    (supports-tool-caller-arity? call-tool-fn 3) 3
+    (supports-tool-caller-arity? call-tool-fn 2) 2
+    :else nil))
+
+(def ^:private tool-caller-arity-error
+  (str "Configured tool caller must accept either 2 arguments "
+       "(tool-name, args) or 3 arguments "
+       "(tool-name, args, tool-context)"))
 
 (defn execute-repl-researcher
   "Execute a repl-researcher node using iterative LLM+SCI code execution.
@@ -2887,8 +3000,23 @@
         inputs-preview (rlm-sandbox/build-inputs-preview blackboard)
 
         checkpoint-codecs (vec (or (:researcher-checkpoint-codecs context) []))
-        checkpoint (some->> (:researcher-checkpoint context)
-                            (decode-checkpoint-value checkpoint-codecs))
+        legacy-checkpoint (some->> (:researcher-checkpoint context)
+                                   (decode-checkpoint-value checkpoint-codecs))
+        resume-state (some->> (:researcher-resume-state context)
+                              (decode-checkpoint-value checkpoint-codecs))
+        iteration-records (some->> (:researcher-iteration-records context)
+                                   (decode-checkpoint-value checkpoint-codecs))
+        ;; Version 2 keeps immutable history outside the supersedable state.
+        ;; Reconstruct the executor's local loop input at this boundary only;
+        ;; version-1 checkpoints remain readable during migration.
+        checkpoint (if resume-state
+                     (assoc resume-state :history (vec iteration-records))
+                     legacy-checkpoint)
+        ;; Attempt evidence has a dedicated injectable time seam. Keep the
+        ;; engine's wall-clock deadlines on System/currentTimeMillis: a test
+        ;; clock must not change admission, provider, or campaign timing.
+        researcher-now-ms-fn (or (:researcher-now-ms-fn context)
+                                 #(System/currentTimeMillis))
         checkpointed? (true? (:checkpointed? rlm-config))
         quantum-max-iterations (max 1 (or (get-in rlm-config [:quantum :max-iterations]) 1))
         initial-iteration (or (:next-iteration checkpoint) 0)
@@ -2906,7 +3034,23 @@
                    (or (:researcher-actions context) {}))
         persist-action! (:persist-researcher-action! context)
         checkpoint-tool-violation (atom nil)
+        unsafe-checkpoint-tool
+        (when checkpointed?
+          (some (fn [tool-name]
+                  (when-not (true? (get-in node [:tool-contracts tool-name
+                                                 :checkpoint-safe?]))
+                    tool-name))
+                mcp-tools))
         raw-call-tool-fn (node-call-tool-fn node blackboard context)
+        checkpoint-call-tool-fn
+        (when checkpointed? (tool-caller-target raw-call-tool-fn))
+        checkpoint-tool-caller-arity
+        (when checkpointed? (tool-caller-arity checkpoint-call-tool-fn))
+        incompatible-checkpoint-tool-caller?
+        (and checkpointed?
+             (seq mcp-tools)
+             (some? raw-call-tool-fn)
+             (nil? checkpoint-tool-caller-arity))
         call-tool-fn
         (if checkpointed?
           (fn [tool-name args]
@@ -2926,7 +3070,13 @@
                                         :orc/action-ordinal ordinal)]
                 (if-let [completed (get completed-actions action-id)]
                   (:result completed)
-                  (let [result (raw-call-tool-fn tool-name args tool-context)]
+                  (let [result (case checkpoint-tool-caller-arity
+                                 3 (checkpoint-call-tool-fn tool-name args tool-context)
+                                 2 (checkpoint-call-tool-fn tool-name args)
+                                 (throw
+                                  (ex-info
+                                   tool-caller-arity-error
+                                   {:expected-arities [2 3]})))]
                     (let [durable-result (encode-checkpoint-value checkpoint-codecs result)]
                     (when persist-action!
                       (persist-action! {:action-id action-id
@@ -2943,6 +3093,18 @@
                                 phase2-default-budget-ms)
         campaign-deadline-ms (or (:campaign-deadline-ms checkpoint)
                                  (+ campaign-started-at-ms campaign-timeout-ms))
+        phase-budget-deadline-ms
+        (+ campaign-started-at-ms
+           (:total-budget-ms
+            (resolve-phase2-budget
+             {:node node
+              :parent-timeout-ms (:parent-timeout-ms context)
+              :phase1-elapsed-ms 0})))
+        campaign-deadline-source
+        (cond
+          (some? (:campaign-ms timeout-config)) :campaign
+          (= campaign-deadline-ms phase-budget-deadline-ms) :phase-budget
+          :else :campaign)
 
         ;; Track usage across iterations
         total-usage (atom (or (:usage checkpoint)
@@ -2962,10 +3124,90 @@
         ;; and :rlm {:debug? true} (no explicit :recursive? key) all default
         ;; to recursive.
         recursive-mode? (not= false (get-in node [:rlm :recursive?]))
+        iteration-record
+        (fn [iteration status history-entry attempt-start-ms]
+          (let [history-entry (or history-entry {})
+                raw-attempt-completed-ms (long (researcher-now-ms-fn))
+                ;; Preserve a coherent lifecycle pair if the wall clock moves
+                ;; backward between the two attempt-scoped readings.
+                attempt-completed-ms (max attempt-start-ms
+                                          raw-attempt-completed-ms)
+                emitted-tree-source (or (:generated-tree history-entry)
+                                        (:generated-tree-raw history-entry))
+                emitted-tree (when emitted-tree-source
+                               (tree-executor/sanitize-tree-for-events
+                                emitted-tree-source))
+                tree-fingerprint (when emitted-tree
+                                   (rlm-fingerprint/fingerprint emitted-tree))
+                error-excerpt (bound-iteration-evidence-text
+                               (:error history-entry)
+                               iteration-error-excerpt-max-chars)
+                bounded-reasoning (bound-iteration-evidence-text
+                                   (:reasoning history-entry)
+                                   iteration-reasoning-max-chars)
+                error-class (or (:error-class history-entry)
+                                (some-> (:timeout-kind history-entry)
+                                        name
+                                        (str "-timeout"))
+                                (when error-excerpt "researcher-error"))
+                created-keys (vec (sort-by str (or (:vars-created history-entry) [])))
+                updated-keys (vec (sort-by str (or (:vars-updated history-entry) [])))
+                removed-keys (vec (sort-by str (or (:vars-removed history-entry) [])))
+                result-profile (or (:result-profile history-entry)
+                                   (when (some? (:result history-entry))
+                                     (profile/profile-value
+                                      (:result history-entry))))
+                stdout-profile (or (:stdout-profile history-entry)
+                                   (when (some? (:stdout history-entry))
+                                     (profile/profile-value
+                                      (:stdout history-entry))))]
+            ;; Construct the immutable fact from an allowlist. History entries
+            ;; also carry transient execution/accounting details used by resume
+            ;; and trace assembly; copying one and trying to remove unsafe fields
+            ;; allowed new metadata (and value-bearing :tree-outcome) to leak
+            ;; whenever the execution path evolved.
+            (cond-> {:iteration-index iteration
+                     :attempt-ordinal (get iteration-attempts iteration 0)
+                     :status status
+                     :started-at (str (java.time.Instant/ofEpochMilli
+                                       attempt-start-ms))
+                     :completed-at (str (java.time.Instant/ofEpochMilli
+                                         attempt-completed-ms))
+                     :duration-ms (max 0 (- attempt-completed-ms
+                                            attempt-start-ms))
+                     :generated-code-recorded?
+                     (boolean (seq (:code history-entry)))
+                     :emitted-tree-recorded?
+                     (boolean (and emitted-tree tree-fingerprint))
+                     :variable-delta {:created-keys created-keys
+                                      :updated-keys updated-keys
+                                      :removed-keys removed-keys}}
+              (contains? history-entry :code)
+              (assoc :code (:code history-entry))
+
+              emitted-tree
+              (assoc :emitted-tree emitted-tree
+                     :tree-fingerprint tree-fingerprint)
+
+              (some? bounded-reasoning)
+              (assoc :reasoning bounded-reasoning)
+
+              error-excerpt
+              (assoc :error-class error-class
+                     :error-excerpt error-excerpt)
+
+              (some? result-profile)
+              (assoc :result-profile result-profile)
+
+              (some? stdout-profile)
+              (assoc :stdout-profile stdout-profile))))
         checkpoint-result
-        (fn [next-iteration history]
+        (fn [next-iteration history attempt-start-ms]
           (when checkpointed?
-            (let [;; A generated tree keeps its inline (fn ...) nodes as LIVE SCI
+            (let [completed-iteration (dec next-iteration)
+                  history-entry (last history)
+                  record-status (if (:error history-entry) :failure :success)
+                  ;; A generated tree keeps its inline (fn ...) nodes as LIVE SCI
                   ;; objects under :generated-tree-raw, deliberately preserved by
                   ;; merge-tree-result-into-sandbox so final! can report what the
                   ;; model designed. SCI fns are not durable and encoding one
@@ -2988,7 +3230,12 @@
                               :cumulative-tree-ms @cumulative-tree-ms
                               :iteration-attempts (dissoc iteration-attempts (dec next-iteration))
                               :campaign-started-at-ms campaign-started-at-ms
-                              :campaign-deadline-ms campaign-deadline-ms}
+                              :campaign-deadline-ms campaign-deadline-ms
+                              :iteration-record
+                              (iteration-record completed-iteration
+                                                record-status
+                                                history-entry
+                                                attempt-start-ms)}
                   ;; encode-checkpoint-value THROWS on a value it cannot make
                   ;; durable. Uncaught, that throw escapes to the outer handler
                   ;; and the campaign dies with NO :iterations — every completed
@@ -3025,7 +3272,7 @@
                  :usage @total-usage
                  :error "Researcher checkpoint contains a non-durable sandbox value; use EDN data or a registered durable codec"}))))))
         persist-terminal-result
-        (fn [iteration history terminal-result]
+        (fn [iteration history terminal-result attempt-start-ms]
           (if-not checkpointed?
             terminal-result
             (let [checkpoint {:version 1
@@ -3039,44 +3286,69 @@
                               :iteration-attempts (dissoc iteration-attempts iteration)
                               :campaign-started-at-ms campaign-started-at-ms
                               :campaign-deadline-ms campaign-deadline-ms
-                              :terminal-result terminal-result}
+                              :terminal-result terminal-result
+                              :iteration-record
+                              (iteration-record iteration
+                                                (:status terminal-result)
+                                                (last history)
+                                                attempt-start-ms)}
                   durable-checkpoint (encode-checkpoint-value checkpoint-codecs checkpoint)]
               (when-let [persist! (:persist-researcher-checkpoint! context)]
                 (persist! durable-checkpoint))
               (assoc terminal-result :checkpoint durable-checkpoint))))
         retry-result
-        (fn [iteration history timeout-kind error]
-          (let [attempt (inc (get iteration-attempts iteration 0))]
+        (fn [iteration history timeout-kind error attempt-start-ms]
+          (let [attempt (inc (get iteration-attempts iteration 0))
+                durable-checkpoint
+                (when checkpointed?
+                  (encode-checkpoint-value
+                   checkpoint-codecs
+                   {:version 1
+                    :revision (swap! checkpoint-revision inc)
+                    ;; A timed-out attempt does not advance the logical
+                    ;; iteration frontier. `attempt` is the ordinal the next
+                    ;; physical attempt would receive if one is allowed.
+                    :next-iteration iteration
+                    :history history
+                    :sandbox-vars @sandbox-vars
+                    :var-creation-times @var-creation-times
+                    :usage @total-usage
+                    :cumulative-tree-ms @cumulative-tree-ms
+                    :iteration-attempts (assoc iteration-attempts iteration attempt)
+                    :campaign-started-at-ms campaign-started-at-ms
+                    :campaign-deadline-ms campaign-deadline-ms
+                    :iteration-record
+                    (iteration-record iteration :timeout
+                                      {:error error
+                                       :timeout-kind timeout-kind}
+                                      attempt-start-ms)}))]
             (if (and checkpointed? (< attempt max-iteration-attempts))
               {:status :running
                :iterations history
                :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
                :usage @total-usage
-               :checkpoint (encode-checkpoint-value
-                            checkpoint-codecs
-                            {:version 1
-                             :revision (swap! checkpoint-revision inc)
-                             :next-iteration iteration
-                             :history history
-                             :sandbox-vars @sandbox-vars
-                             :var-creation-times @var-creation-times
-                             :usage @total-usage
-                             :cumulative-tree-ms @cumulative-tree-ms
-                             :iteration-attempts (assoc iteration-attempts iteration attempt)
-                             :campaign-started-at-ms campaign-started-at-ms
-                             :campaign-deadline-ms campaign-deadline-ms})
+               :checkpoint durable-checkpoint
                :retry {:iteration (inc iteration)
                        :attempt attempt
                        :max-attempts max-iteration-attempts
                        :timeout-kind timeout-kind}}
-              {:status :timeout
-               :timeout-kind timeout-kind
-               :error error
-               :iterations history
-               :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
-               :usage @total-usage
-               :iteration-attempt attempt
-               :max-iteration-attempts max-iteration-attempts})))]
+              (do
+                ;; The last physical attempt is still immutable evidence even
+                ;; though there is no next quantum. Persist the record with the
+                ;; same frontier and mark the state non-yielded at the public
+                ;; adapter; the campaign's terminal event carries the verdict.
+                (when (and checkpointed? durable-checkpoint)
+                  (when-let [persist! (:persist-researcher-checkpoint! context)]
+                    (persist! durable-checkpoint)))
+                (cond-> {:status :timeout
+                         :timeout-kind timeout-kind
+                         :error error
+                         :iterations history
+                         :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                         :usage @total-usage
+                         :iteration-attempt attempt
+                         :max-iteration-attempts max-iteration-attempts}
+                  durable-checkpoint (assoc :checkpoint durable-checkpoint))))))]
 
     (try
       (loop [iteration initial-iteration
@@ -3084,6 +3356,21 @@
         (cond
           (:terminal-result checkpoint)
           (:terminal-result checkpoint)
+
+          unsafe-checkpoint-tool
+          {:status :failure
+           :error (str "Tool " unsafe-checkpoint-tool
+                       " is not declared :checkpoint-safe? for resumable execution")
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
+
+          incompatible-checkpoint-tool-caller?
+          {:status :failure
+           :error tool-caller-arity-error
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
 
           (>= iteration max-iterations)
           (let [total-elapsed (- (System/currentTimeMillis) campaign-started-at-ms)
@@ -3107,7 +3394,8 @@
               (seq iteration-reasonings) (assoc :iteration-reasonings
                                                 (vec iteration-reasonings))))
 
-          (>= (System/currentTimeMillis) campaign-deadline-ms)
+          (and (>= (System/currentTimeMillis) campaign-deadline-ms)
+               (not= :phase-budget campaign-deadline-source))
           {:status :timeout
            :timeout-kind :campaign
            :error "Researcher campaign deadline exceeded"
@@ -3160,6 +3448,8 @@
           (let [_ (reset! current-iteration iteration)
                 _ (reset! action-ordinal 0)
                 iteration-start-ms (System/currentTimeMillis)
+                attempt-start-ms (when checkpointed?
+                                   (long (researcher-now-ms-fn)))
                 sandbox-before-iteration @sandbox-vars
                 creation-times-before-iteration @var-creation-times
                 iteration-deadline-ms (min campaign-deadline-ms
@@ -3355,15 +3645,37 @@
             (cond
                 (str/blank? code)
                 (if-let [terminal-error (or (:error llm-result)
+                                            (when checkpointed?
+                                              (some-> (:throwable provider-call)
+                                                      str))
                                             (when-not recursive-mode?
                                               "LLM did not generate code"))]
                   (if-let [timeout-kind (:timeout-kind llm-result)]
-                    (retry-result iteration history timeout-kind terminal-error)
-                    {:status :failure
-                     :error terminal-error
-                     :iterations history
-                     :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
-                     :usage @total-usage})
+                    (retry-result iteration history timeout-kind terminal-error
+                                  attempt-start-ms)
+                    (if checkpointed?
+                      (let [failure-history
+                            (conj history
+                                  (cond-> {:error terminal-error
+                                           :error-class "provider-failure"}
+                                    (string? reasoning)
+                                    (assoc :reasoning reasoning)))
+                            terminal-result
+                            {:status :failure
+                             :error terminal-error
+                             :iterations history
+                             :duration-ms (- (System/currentTimeMillis)
+                                             campaign-started-at-ms)
+                             :usage @total-usage}]
+                        (persist-terminal-result iteration failure-history
+                                                 terminal-result
+                                                 attempt-start-ms))
+                      {:status :failure
+                       :error terminal-error
+                       :iterations history
+                       :duration-ms (- (System/currentTimeMillis)
+                                       campaign-started-at-ms)
+                       :usage @total-usage}))
                   (let [next-history (conj history
                                            {:code code
                                             :reasoning reasoning
@@ -3373,7 +3685,8 @@
                                             :stdout nil
                                             :error "LLM did not generate code"
                                             :vars-created []})]
-                    (or (checkpoint-result (inc iteration) next-history)
+                    (or (checkpoint-result (inc iteration) next-history
+                                           attempt-start-ms)
                         (recur (inc iteration) next-history))))
 
                 :else
@@ -3437,17 +3750,28 @@
                                         vars-after))
                     _ (doseq [k new-vars]
                         (swap! var-creation-times assoc k (inc iteration)))
-                    new-history (conj history
-                                      {:code code
-                                       :reasoning reasoning
-                                       :provider-latency-ms provider-latency-ms
-                                       :provider-usage (normalize-usage (:usage llm-result))
-                                       :result (:result exec-result)
-                                       :stdout (:stdout exec-result)
-                                       :error (:error exec-result)
-                                       :vars-created (vec new-vars)
-                                       :vars-updated (vec updated-vars)})
                     final-output (:final-output exec-result)
+                    profile-result (if (some? final-output)
+                                     final-output
+                                     (:raw-result exec-result))
+                    history-entry
+                    (cond-> {:code code
+                             :reasoning reasoning
+                             :provider-latency-ms provider-latency-ms
+                             :provider-usage (normalize-usage (:usage llm-result))
+                             :result (:result exec-result)
+                             :stdout (:stdout exec-result)
+                             :error-class (:error-class exec-result)
+                             :error (:error exec-result)
+                             :vars-created (vec new-vars)
+                             :vars-updated (vec updated-vars)}
+                      (some? profile-result)
+                      (assoc :result-profile (profile/profile-value profile-result))
+
+                      (some? (:stdout exec-result))
+                      (assoc :stdout-profile
+                             (profile/profile-value (:stdout exec-result))))
+                    new-history (conj history history-entry)
                     _ (streaming/emit! (:tick-id context)
                                        (cond-> {:orc.stream/type :rlm-sandbox-completed
                                                 :iteration (inc iteration)
@@ -3479,12 +3803,14 @@
                 (cond
                   (= :iteration (:timeout-kind exec-result))
                   (retry-result iteration history :iteration
-                                "Researcher iteration deadline exceeded")
+                                "Researcher iteration deadline exceeded"
+                                attempt-start-ms)
 
                   (and bounded-iteration?
                        (>= (System/currentTimeMillis) iteration-deadline-ms))
                   (retry-result iteration history :iteration
-                                "Researcher iteration deadline exceeded")
+                                "Researcher iteration deadline exceeded"
+                                attempt-start-ms)
 
                   ;; Security violation - fail immediately (no retry)
                   (and (:error exec-result)
@@ -3510,9 +3836,11 @@
                                             :provider-usage (normalize-usage (:usage llm-result))
                                             :result nil
                                             :stdout (:stdout exec-result)
+                                            :error-class (:error-class exec-result)
                                             :error enhanced-error
                                             :vars-created []})]
-                    (or (checkpoint-result (inc iteration) error-history)
+                    (or (checkpoint-result (inc iteration) error-history
+                                           attempt-start-ms)
                         (recur (inc iteration) error-history)))
 
                   ;; CE-6c (ADR 0018): final!+emit-tree! same-iteration guard,
@@ -3554,7 +3882,8 @@
                                              :vars-created (vec (remove #{:generated-tree
                                                                           :generated-tree-raw}
                                                                         new-vars))})]
-                    (or (checkpoint-result (inc iteration) guard-history)
+                    (or (checkpoint-result (inc iteration) guard-history
+                                           attempt-start-ms)
                         (recur (inc iteration) guard-history)))
 
                   ;; final! was called - return the validated output
@@ -3586,7 +3915,8 @@
                               :cumulative-tree-ms @cumulative-tree-ms
                               :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
                        generated-tree-raw
-                       (assoc :generated-tree-raw generated-tree-raw))))
+                       (assoc :generated-tree-raw generated-tree-raw))
+                     attempt-start-ms))
 
                   ;; emit-tree! was called - trigger Phase 2 execution automatically
                   ;; Phase 1 generated the tree, now execute it via child ORC tick
@@ -3795,14 +4125,16 @@
                     ;; executor's job). This also stops the recursive loop from
                     ;; summarizing the block and burning the remaining iterations.
                     (cond
-                      (= :timeout (:status phase2-result))
+                      (and (= :timeout (:status phase2-result))
+                           (or checkpointed? (not recursive-mode?)))
                       (if checkpointed?
                         (do
                           (reset! sandbox-vars sandbox-before-iteration)
                           (reset! var-creation-times creation-times-before-iteration)
                           (retry-result iteration history :phase2
                                         (or (:error phase2-result)
-                                            "Phase-2 child deadline exceeded")))
+                                            "Phase-2 child deadline exceeded")
+                                        attempt-start-ms))
                         (assoc phase2-result
                                :generated-tree-raw generated-tree-raw
                                :iterations new-history
@@ -3946,7 +4278,8 @@
                                                                                             :nodes-timed-out
                                                                                             :error])
                                                                :tree-outcome outcome)))))]
-                        (or (checkpoint-result (inc iteration) new-history)
+                        (or (checkpoint-result (inc iteration) new-history
+                                               attempt-start-ms)
                             (recur (inc iteration) new-history)))
                       ;; Non-recursive (current behavior, preserved) — merge results and return.
                       :else
@@ -4004,7 +4337,8 @@
 
                   ;; Continue iteration
                   :else
-                  (or (checkpoint-result (inc iteration) new-history)
+                  (or (checkpoint-result (inc iteration) new-history
+                                         attempt-start-ms)
                       (recur (inc iteration) new-history))))))))
 
       (catch Exception e

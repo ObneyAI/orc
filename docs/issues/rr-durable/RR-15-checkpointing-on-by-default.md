@@ -37,7 +37,7 @@ Seam-1 (public execution via `with-async-test-context`) for both modes, Seam-2 (
 
 ## Blocked by
 
-None — can start immediately.
+RR-4, RR-14, and the whole durable spine.
 
 ## Handoff plan
 

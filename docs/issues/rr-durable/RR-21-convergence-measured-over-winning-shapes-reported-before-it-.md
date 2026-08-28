@@ -17,8 +17,9 @@ has never once been witnessed on real data, so it passes vacuously.
 It is also perverse in the wrong direction — a model that recovers well from a bad first tree scores as *less* convergent
 than one that fails outright.
 
-Measure the shapes that **won**: one per campaign, the shape that carried it to its verdict. Failed shapes are not
-discarded; they are already recorded as what did not work.
+Measure the shapes that **won**: one per successful campaign, the terminal shape that carried it to success. The ratio is
+distinct successful terminal shapes divided by successful campaigns. Failed and timed-out campaigns remain recurrence,
+quality and weakness evidence, but they enter neither side of the coherence ratio and cannot make it easier to pass.
 
 And roll it out **report-only** first. A threshold that has never fired cannot be distinguished from one that never will:
 harvesting nothing looks identical to nothing qualifying. Compute it, report it, and only gate on it once its real
@@ -26,7 +27,9 @@ distribution has been observed.
 
 ## Acceptance criteria
 
-- [ ] Convergence counts one winning shape per campaign
+- [ ] Convergence counts one winning shape per successful campaign
+- [ ] The reported ratio is distinct successful terminal shapes divided by successful campaigns
+- [ ] Failed, timed-out, cancelled and abandoned campaigns do not enter either side of the ratio
 - [ ] A campaign that repairs is not penalised for the shapes it abandoned
 - [ ] The measure is computed and reported without blocking promotion
 - [ ] The gate report distinguishes 'did not qualify' from 'not yet measurable'
@@ -35,6 +38,7 @@ distribution has been observed.
 ## Spec obligations covered
 
 - `entity-optional.CampaignIteration.emitted_shape`
+- `rule-success.ReportSuccessfulShapeCoherence`
 
 ## Test seams
 
@@ -42,7 +46,7 @@ Seam-4 (ontology consumers over a synthesized event stream) primary.
 
 ## Blocked by
 
-None — can start immediately.
+RR-20.
 
 ## Handoff plan
 

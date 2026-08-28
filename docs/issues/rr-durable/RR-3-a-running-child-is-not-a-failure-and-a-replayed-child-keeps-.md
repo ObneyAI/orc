@@ -19,10 +19,18 @@ derivation.
 
 ## Acceptance criteria
 
-- [ ] A child whose latest record is running is reported as running, never as a failure
-- [ ] A rejoined child contributes its real duration to cumulative child time
-- [ ] Thinking-time derivation is correct across a replay
-- [ ] The two reconstruction paths agree on the status table; a divergence is a test failure
+- [x] A child whose latest record is running is reported as running, never as a failure
+- [x] A rejoined child contributes its real duration to cumulative child time
+- [x] Thinking-time derivation is correct across a replay
+- [x] The two reconstruction paths agree on the status table; a divergence is a test failure
+
+Inspection evidence: six focused public-path tests passed with 37 assertions,
+and the complete tree-executor namespace passed 30 tests with 136 assertions.
+The replay proof uses the real in-memory event store and carries a durable 250
+ms child through emit, checkpoint, resume, and final thinking-time derivation.
+Allium remained at the documented 0-error baseline; weed classified the two
+reconstruction defects as code bugs and found no specification divergence.
+Coverage: `0 obligations, 0 covered, 0 uncovered`.
 
 ## Spec obligations covered
 

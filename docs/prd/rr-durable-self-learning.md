@@ -2,7 +2,7 @@
 
 **Source of truth:** ADR 0004 (campaign effects are at-least-once and attributable) + ADR 0005 (recursive campaigns are checkpointed by default) + `specs/orc-service.allium`, `specs/ontology.allium`, `specs/evaluation.allium` + grill log `docs/build-timeline/grill-sessions/rr-durable-self-learning-dossier.md` (decisions G1–G19, research findings R1–R8).
 
-**Branch:** `feature/rr-durable-self-learning`, based on `checkpointed-resumable-repl-researcher` @ `386cb400` (contains `main` f4d7e848). We own that branch; it is the vehicle, not a finished feature.
+**Branch:** `feature/rr-durable-self-learning`, rebased onto merged `main` @ `1b6f95cb`. PR #36 is the landed durability foundation; this branch owns the recursive and self-learning campaign upgrades built on it.
 
 **Naming note:** this PRD uses `Seam-1`…`Seam-8` for test seams, to avoid collision with the grill log's `S1`–`S5` (self-learning defects).
 
@@ -20,7 +20,7 @@ The consequences compound:
 - The gate that checks whether a class has *converged on a repeatable shape* has never once fired on real data; it passes vacuously today and would block everything the moment it starts working.
 - Recurrence is counted when a task is *classified*, before any work happens, so a campaign that classifies and crashes still counts toward promotion.
 
-An opt-in durability mode was built (PR #36) but is not enabled by the loop's own configuration, has two blocking defects, and its ownership guarantee is stated in wording that is false in the handoff window.
+PR #36 landed the opt-in durability foundation and subsequently closed its retick, inline-function checkpoint, provider-deadline, concurrent-terminal, and monotonic trace-publication defects. It is still not enabled by the loop's own configuration, and it does not supply the campaign/evidence model, recovery fence, or learning-consumer upgrades this arc requires.
 
 ## Solution
 
@@ -100,7 +100,7 @@ Every decision below is ratified in the grill log and encoded in the specs; this
 
 Defects in the inherited branch that are not themselves design decisions, but must land before anything is built on top. Each is a default-path defect once checkpointing is the default.
 
-- **Root `:running` reticks are silently dropped.** The tick-completion processor returns the trace-refresh's nil, discarding the retick events, so any workflow whose root completes `:running` stops advancing. This affects **every workflow**, not only campaigns, and is reproduced: the existing retick suite passes on `main`, fails 18 assertions on the inherited branch, and passes again with the fix.
+- **Landed foundation — root `:running` reticks survive.** PR #36's merge head includes the reproduced fix and regression proof. This is no longer an RR slice, but remains a prerequisite that every campaign test exercises.
 - **The Phase-1 budget branch is unreachable.** A campaign-deadline check was inserted above it at an identical threshold, so budget exhaustion reports as a timeout and loses its diagnostics (elapsed, budget, cumulative tree and thinking time).
 - **A Phase-2 timeout no longer gets a repair turn.** The timeout intercept runs before the recursive-mode branch, orphaning the handling that let the model see a child timeout in its results and try a smaller tree — which is precisely the adaptive recovery the researcher exists for.
 - **The durable tool caller ignores the arity guard** that the non-durable path applies, so a host supplying a two-argument tool caller fails on first use under checkpointing.
@@ -112,7 +112,7 @@ Defects in the inherited branch that are not themselves design decisions, but mu
 
 - **A per-frontier claim epoch is minted into ORC's own event stream** (G7). Grain exposes no fencing token and its compare-and-swap cannot read lease state, so the token must be ours; ORC's store becomes the resource that checks it.
 - **Effects are claimed before they happen, and the claim is the same record as the durable intent** (G7). One append serves as both the fence and the after-the-fact evidence, so the claim is per-effect rather than per-quantum and a superseded worker's spend is bounded to one in-flight effect.
-- **Action identity becomes content-derived** — tick, node, iteration, attempt, code hash, kind, tool name, canonical arguments — generated inside the durable step (G7, R8). Execution-order ordinals change on replay and can return a recorded result for a different call.
+- **Logical action identity becomes content-derived** — tick, node, iteration, code hash, kind, tool name and canonical arguments — generated inside the durable step (G7, R8). It deliberately excludes the attempt so a re-call remains the same logical action. Every physical dispatch also receives a distinct attempt identity derived from the logical action, ownership epoch and attempt ordinal. Execution-order-only ordinals remain forbidden because replay can otherwise return a recorded result for a different call.
 - **Every effect boundary gets an identity**, including the inline provider primitive and behavior minting, which have none today (G7 layer 3, D7).
 - **The platform's lease check is wired** (G7 layer 1) — the contract Grain declares it demands is currently never supplied.
 - **The campaign's in-flight work is registered and cancellable**, and reassignment is delayed beyond worst-case quantum duration (G7 layer 5). Labelled probability reduction, not guarantee.
@@ -130,11 +130,12 @@ Defects in the inherited branch that are not themselves design decisions, but mu
 ### Evidence and the self-learning loop
 
 - **The iteration record carries** iteration index, status, duration, tree fingerprint, the emitted tree including its code, the campaign's own code, error class and bounded excerpt, variable deltas as key lists, and bounded reasoning (G5). Data payload **values** are reduced to keys and profiles — the 6.4 MB reflection failure was payloads, not code.
-- **Generated code is persisted as source** (G6), which simultaneously makes patterns adoptable, dissolves the checkpoint-crash defect at its root, and lets a resumed campaign reconstruct inline functions. **Capture mechanism is prototyped before the design is committed.**
+- **Generated code is persisted as source** (G6), which simultaneously makes patterns adoptable, dissolves the checkpoint-crash defect at its root, and lets a resumed campaign reconstruct inline functions. RR-P1 proved that a quoted emitted tree preserves exact source and can be compiled after capture; closure metadata is insufficient and no string-authored fallback is required.
 - **Classification is one per campaign** (G3), skipped on resume and carried forward, with the assignment command made idempotent on the occurrence key.
 - **Recurrence counts at outcome, not intent** (G10). Abandonment is infrastructure noise; failure is a verdict.
+- **Cancellation is a distinct terminal campaign state.** Completed iteration and effect evidence remains inspectable, but a cancelled campaign is neither a behavior verdict nor an abandoned recovery frontier and advances no recurrence, judging or promotion gate.
 - **The worked pattern is keyed on outcome and shape** (G4) — a failed tree never displaces a successful one, and a class keeps every shape it genuinely succeeds with.
-- **Coherence measures winning shapes**, one per occurrence, and rolls out report-only until its real distribution is known (G11).
+- **Coherence measures successful winning shapes** — distinct successful terminal shapes divided by successful campaigns — and rolls out report-only until its real distribution is known (G11). Failure and timeout remain recurrence, quality and weakness evidence, but cannot make the coherence ratio easier.
 - **Behaviors remain advice**, and their patterns must be genuinely adoptable — real code plus declared key bindings (G13).
 - **Judges receive the iteration material**; verdict identity is unchanged, one per completion (G5, evaluation spec). The tree-scoped judge identity proposed mid-grill was **withdrawn**.
 - **The live stream becomes a projection of the durable record** (G12); the terminal-only iterations event is retired.
@@ -184,6 +185,6 @@ Defects in the inherited branch that are not themselves design decisions, but mu
 
 **Two specification invariants had been weakened to match the code.** One (`ActiveCampaignsRecoverAutomatically`) is restored and split, because the weakening concealed an obligation the code simply had not met. The other (`BlockedChildPausesTheCampaign`) is ratified as weakened, because it reflects a genuine architectural boundary ORC holds consistently. The distinction matters: not every weakening is a retreat, and not every restoration is progress.
 
-**One decision remains prototype-gated.** Capturing generated code as source requires the emitted form to reach the emit primitive as something other than a compiled closure. If neither a quoted form nor interpreter source metadata is available, the fallback changes the surface the model is taught, which requires re-grilling rather than an in-flight decision.
+**Both feasibility gates are resolved.** RR-P1 proved that a quoted emitted tree reaches the emit boundary as source data, round-trips exactly, and compiles in the same SCI context; the string-authored fallback was not needed. RR-P2 proved the claim-epoch predicate against the real in-memory, SQLite and Postgres stores: each rejected a superseded epoch before append, and the predicate plus append shared the backend's atomic boundary. The durable findings are linked from the issue ledger.
 
 **The defect that motivates the whole arc, stated plainly:** a campaign that designs a broken tree, watches it fail, and repairs it can crystallize the *broken* tree as the class's proven pattern — and ship it with its code replaced by a placeholder. That is the ReACT cold-start failure reappearing at precisely the point the corpus exists to prevent it.

@@ -42,7 +42,7 @@ Seam-1 (public execution via `with-async-test-context`) with a live subscriber, 
 
 ## Blocked by
 
-None — can start immediately.
+RR-5.
 
 ## Handoff plan
 

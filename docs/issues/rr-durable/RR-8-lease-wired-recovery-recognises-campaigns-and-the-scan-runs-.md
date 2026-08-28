@@ -44,7 +44,7 @@ Seam-2 (restart: stop processors, reopen store, restart processors) is the prima
 
 ## Blocked by
 
-None — can start immediately.
+RR-7.
 
 ## Handoff plan
 

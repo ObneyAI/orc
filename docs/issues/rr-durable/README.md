@@ -5,21 +5,23 @@ Make a campaign survive, describe itself, and feed what it records back into the
 **PRD:** [`docs/prd/rr-durable-self-learning.md`](../../prd/rr-durable-self-learning.md)
 **Grill log:** [`docs/build-timeline/grill-sessions/rr-durable-self-learning-dossier.md`](../../build-timeline/grill-sessions/rr-durable-self-learning-dossier.md) — decisions G1–G19, research findings R1–R8
 **ADRs:** [0004 — campaign effects are at-least-once and attributable](../../adr/0004-campaign-effects-are-at-least-once-and-attributable.md) · [0005 — recursive campaigns are checkpointed by default](../../adr/0005-recursive-campaigns-are-checkpointed-by-default.md)
-**Specs:** `specs/orc-service.allium`, `specs/ontology.allium`, `specs/evaluation.allium` — 75 campaign obligations from `allium plan`
-**Branch:** `feature/rr-durable-self-learning`, rebased onto `main` once PR #36 merges
+**Specs:** `specs/orc-service.allium`, `specs/ontology.allium`, `specs/evaluation.allium` — the current ORC-service plan contains 275 obligations; slice briefs name the exact campaign obligations they own
+**Branch:** `feature/rr-durable-self-learning`, rebased onto merged `main` @ `1b6f95cb`
 
 ## Relationship to PR #36
 
-PR #36 ships checkpointing as an **opt-in** feature. Its merge gate was exactly two defects, both fixed and pushed to
-that branch:
+PR #36 shipped checkpointing as an **opt-in** feature and landed the runtime foundation this arc builds on. Its merge
+included the repaired root retick and inline-function checkpoint paths plus provider deadlines, concurrent terminal
+fencing, and monotonic trace publication:
 
 - Root `:running` re-ticks were dropped for **every** workflow, opt-in or not (CI catches this).
 - Checkpointing died on any tree containing inline code, destroying the campaign's entire history (CI **cannot** catch
   this — the regression test went in with the fix).
 
-Nothing in this arc blocks that merge. Every remaining defect reaches only someone who opts in — which is precisely why
-**RR-15, the default-on flip, is deliberately the last spine slice**. The moment checkpointing is the default, every
-opt-in-only defect becomes a default-path defect. The flip is the reward for the repairs, not the start of them.
+The merge is complete. The remaining RR defects are now isolated to the opt-in campaign path or its learning consumers,
+which is precisely why **RR-15, the default-on flip, remains the last spine slice**. The moment checkpointing is the
+recursive default, every opt-in-only defect becomes a default-path defect. The flip is the reward for the repairs, not
+the start of them.
 
 ## Slices
 
@@ -88,9 +90,17 @@ is not traded away for speed.
 **Two prototypes, both HITL, both able to falsify a ratified decision:**
 
 - **RR-P1** — if generated code can only be captured by a string-authoring convention, the DSL surface the model is
-  taught changes, which needs re-grilling rather than an in-flight call.
+  taught changes, which needs re-grilling rather than an in-flight call. **Ratified:** quoted forms preserve exact
+  source and can be compiled after capture; the string fallback is unnecessary. See the
+  [finding](../../build-timeline/prototype-findings/RR-P1-generated-code-source-capture.md).
 - **RR-P2** — if the compare-and-swap predicate cannot express the epoch condition atomically on a backend we ship, the
-  fence's state guarantee is unavailable and the decision returns to the grill.
+  fence's state guarantee is unavailable and the decision returns to the grill. **Ratified:** in-memory, SQLite and
+  Postgres all rejected superseded epochs before append under their real atomic boundary. See the
+  [finding](../../build-timeline/prototype-findings/RR-P2-real-store-claim-epoch-cas.md).
+
+The current Allium CLI does not emit executable obligations for these prototype questions. Their falsification criteria,
+evidence and ratified/falsified result therefore live in the two prototype issues and this ledger; after either result is
+accepted, the orchestrator tends the resulting contract into the specification before any dependent handoff is written.
 
 **Every brief** seeds its TDD cycle list from `/propagate` scoped to that slice's obligations, with the generated tests
 confirmed **RED** before dispatch. A generated test that is green before implementation is a finding, not success.

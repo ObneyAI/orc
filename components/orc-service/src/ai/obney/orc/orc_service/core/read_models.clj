@@ -1621,6 +1621,52 @@
   (get (rmp/project ctx :sheet/researcher-checkpoints {:partition-key sheet-id})
        [tick-id node-id]))
 
+;; Version-2 researcher persistence separates the supersedable continuation
+;; state from the immutable record of each completed attempt.
+(defmulti researcher-resume-states* (fn [_state event] (:event/type event)))
+(defmethod researcher-resume-states* :default [state _event] state)
+(defmethod researcher-resume-states* :rlm/researcher-resume-state-saved
+  [state event]
+  ;; Partition routing runs against entity state, so retain the partition key
+  ;; alongside the public payload, matching the legacy checkpoint projection.
+  (assoc state [(:tick-id event) (:node-id event)]
+         {:sheet-id (:sheet-id event)
+          :resume-state (:resume-state event)}))
+
+(defreadmodel :sheet researcher-resume-states
+  {:events #{:rlm/researcher-resume-state-saved} :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn (juxt :tick-id :node-id)}
+  [state event] (researcher-resume-states* state event))
+
+(defn get-researcher-resume-state [ctx sheet-id tick-id node-id]
+  (get (rmp/project ctx :sheet/researcher-resume-states {:partition-key sheet-id})
+       [tick-id node-id]))
+
+(defmulti researcher-iteration-records* (fn [_state event] (:event/type event)))
+(defmethod researcher-iteration-records* :default [state _event] state)
+(defmethod researcher-iteration-records* :rlm/researcher-iteration-recorded
+  [state event]
+  (assoc state [(:tick-id event) (:node-id event)
+                (:iteration-index event) (:attempt-ordinal event)]
+         {:sheet-id (:sheet-id event)
+          :iteration-record (:iteration-record event)}))
+
+(defreadmodel :sheet researcher-iteration-records
+  {:events #{:rlm/researcher-iteration-recorded} :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn (juxt :tick-id :node-id :iteration-index :attempt-ordinal)}
+  [state event] (researcher-iteration-records* state event))
+
+(defn get-researcher-iteration-records [ctx sheet-id tick-id node-id]
+  (->> (rmp/project ctx :sheet/researcher-iteration-records
+                    {:partition-key sheet-id})
+       (keep (fn [[[event-tick event-node _iteration _attempt] entity]]
+               (when (and (= tick-id event-tick) (= node-id event-node))
+                 (:iteration-record entity))))
+       (sort-by (juxt :iteration-index :attempt-ordinal))
+       vec))
+
 (defmulti researcher-actions* (fn [_state event] (:event/type event)))
 (defmethod researcher-actions* :default [state _event] state)
 (defmethod researcher-actions* :rlm/researcher-action-completed [state event]

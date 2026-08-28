@@ -13,21 +13,24 @@ The occurrence event is emitted before the model does any work, and the counter 
 a campaign that classifies and then crashes counts toward promotion while contributing no quality signal at all.
 Recurrence is counted at intent; quality is counted at outcome.
 
-Count recurrence when a campaign reaches a verdict. An abandoned campaign says something about our infrastructure and
-nothing about the behaviour: its iteration records remain available for describing what was tried, but they move no gate.
-A failed campaign is not abandoned — failure is a verdict, and learning from failure is the point.
+Count recurrence when a campaign reaches a verdict. A cancelled or abandoned campaign says something about our
+infrastructure and nothing about the behaviour: its iteration records remain available for describing what was tried,
+but they move no gate. A failed campaign is neither cancelled nor abandoned — failure is a verdict, and learning from
+failure is the point.
 
 ## Acceptance criteria
 
 - [ ] Recurrence advances only when a campaign reaches success, failure or timeout
 - [ ] An abandoned campaign advances no gate
 - [ ] An abandoned campaign's iteration records still reach the reflection as descriptive evidence
+- [ ] A cancelled campaign advances neither recurrence nor judging, while its completed iteration evidence remains inspectable
 - [ ] A failed campaign counts for recurrence and against the quality axes
 - [ ] The gate report's occurrence figure matches the number of campaigns that actually reached a verdict
 
 ## Spec obligations covered
 
 - `invariant.AbandonedCampaignsRecordNoVerdict`
+- `invariant.CancelledCampaignsRecordCause`
 - `rule-success.CampaignIsAbandoned`
 - `transition-terminal.Campaign.status`
 

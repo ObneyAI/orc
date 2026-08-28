@@ -1243,11 +1243,105 @@
                                          (:resumed-from-event-id %))))
                            later))))}})))
 
+(defn- commit-researcher-iteration-v2
+  [{{:keys [sheet-id tick-id node-id resume-state iteration-record inputs resume?]}
+    :command :as ctx}]
+  (let [iteration-index (:iteration-index iteration-record)
+        attempt-ordinal (:attempt-ordinal iteration-record)
+        durable-facts (into [] (es/read (:event-store ctx)
+                                        {:tenant-id (:tenant-id ctx)
+                                         :types #{:rlm/researcher-iteration-recorded
+                                                  :rlm/researcher-resume-state-saved}
+                                         :tags #{[:tick tick-id] [:node node-id]}}))
+        recorded? (some #(and (= :rlm/researcher-iteration-recorded (:event/type %))
+                              (= iteration-index (:iteration-index %))
+                              (= attempt-ordinal (:attempt-ordinal %)))
+                        durable-facts)
+        latest-resume-state (some->> durable-facts
+                                     (filter #(= :rlm/researcher-resume-state-saved
+                                                 (:event/type %)))
+                                     last
+                                     :resume-state)
+        resume-order (fn [state]
+                       [(or (:revision state) -1)
+                        (or (:next-iteration state) -1)])
+        proposed-order (resume-order resume-state)
+        stale-resume-state?
+        (and latest-resume-state
+             (not (neg? (compare (resume-order latest-resume-state)
+                                 proposed-order))))
+        cancelled? (rm/is-tick-or-ancestor-cancelled? ctx tick-id)
+        already-recorded? (or cancelled? recorded? stale-resume-state?)
+        now (str (java.time.Instant/now))]
+    (cond-> {:command-result/events
+             (if already-recorded?
+               []
+               (cond->
+                [(->event
+                  {:type :rlm/researcher-iteration-recorded
+                   :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+                   :body {:sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :iteration-index iteration-index
+                          :attempt-ordinal attempt-ordinal
+                          :iteration-record iteration-record
+                          :recorded-at now}})
+                 (->event
+                  {:type :rlm/researcher-resume-state-saved
+                   :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+                   :body {:sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :revision (:revision resume-state)
+                          :next-iteration (:next-iteration resume-state)
+                          :resume-state resume-state
+                          :yielded? (not= false resume?)
+                          :saved-at now}})]
+                 (not= false resume?)
+                 (conj
+                  (->event
+                   {:type :sheet/node-execution-started
+                    :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id]}
+                    :body {:sheet-id sheet-id
+                           :tick-id tick-id
+                           :node-id node-id
+                           :inputs inputs
+                           :researcher-resume? true
+                           :checkpoint-version (:version resume-state)
+                           :checkpoint-next-iteration (:next-iteration resume-state)}}))))}
+      (not already-recorded?)
+      (assoc :command-result/cas
+             {:types #{:rlm/researcher-iteration-recorded
+                       :rlm/researcher-resume-state-saved}
+              :tags #{[:tick tick-id] [:node node-id]}
+              :predicate-fn
+              (fn [existing]
+                (let [facts (into [] existing)
+                      latest-state (some->> facts
+                                            (filter #(= :rlm/researcher-resume-state-saved
+                                                        (:event/type %)))
+                                            last
+                                            :resume-state)]
+                  (and
+                   (not-any?
+                    #(and (= :rlm/researcher-iteration-recorded (:event/type %))
+                          (= iteration-index (:iteration-index %))
+                          (= attempt-ordinal (:attempt-ordinal %)))
+                    facts)
+                   (or (nil? latest-state)
+                       (neg? (compare (resume-order latest-state)
+                                      proposed-order))))))}))))
+
 (defcommand :sheet checkpoint-researcher-iteration
   {:authorized? authenticated?}
   "Atomically persist a completed researcher iteration and enqueue its next quantum."
-  [{{:keys [sheet-id tick-id node-id checkpoint inputs resume?]} :command :as ctx}]
-  (let [latest (some->> (into [] (es/read (:event-store ctx)
+  [{{:keys [sheet-id tick-id node-id checkpoint resume-state iteration-record
+            inputs resume?]}
+    :command :as ctx}]
+  (if (and resume-state iteration-record)
+    (commit-researcher-iteration-v2 ctx)
+    (let [latest (some->> (into [] (es/read (:event-store ctx)
                                           {:tenant-id (:tenant-id ctx)
                                            :tags #{[:tick tick-id] [:node node-id]}}))
                         (filter #(= :rlm/researcher-checkpointed (:event/type %)))
@@ -1295,7 +1389,7 @@
                              (compare [(get-in % [:checkpoint :revision] 0)
                                        (get-in % [:checkpoint :next-iteration] -1)]
                                       checkpoint-order))))
-                 (into [] existing))) }))))
+                 (into [] existing))) })))))
 
 (defcommand :sheet record-researcher-action
   {:authorized? authenticated?}
