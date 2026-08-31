@@ -7,8 +7,14 @@
         ;; project entry and docs/build-timeline/issues/lmdb-native-harness-crash/.
         org.lmdbjava/lmdbjava {:mvn/version "0.9.3"}
 
+        ;; grain-core-v2 and grain-control-plane each reach schema-util through
+        ;; their own gitlib checkout. Select one canonical checkout.
+        cat/schema-util {:git/url "https://github.com/ObneyAI/grain.git"
+                         :git/sha "47073a2820f571b31fe784311886613a9ed3297e"
+                         :deps/root "components/schema-util"}
+
         obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
-                               :git/sha "8236c80f14a582539cd15ae5426d1da16b5e1839"
+                               :git/sha "47073a2820f571b31fe784311886613a9ed3297e"
                                :deps/root "projects/grain-core-v2"}
 
         orc/llm               {:local/root "../../components/llm"}
@@ -38,5 +44,5 @@
                                orc/predict-rlm-redaction-tools {:local/root "../../components/predict-rlm-redaction-tools"}
                                orc/predict-rlm-invoice-tools {:local/root "../../components/predict-rlm-invoice-tools"}
                                obneyai/grain-control-plane {:git/url "https://github.com/ObneyAI/grain.git"
-                                                           :git/sha "8236c80f14a582539cd15ae5426d1da16b5e1839"
+                                                           :git/sha "47073a2820f571b31fe784311886613a9ed3297e"
                                                            :deps/root "projects/grain-control-plane"}}}}}
