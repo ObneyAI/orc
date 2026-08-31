@@ -7,6 +7,7 @@
             [ai.obney.orc.orc-service.core.commands]
             [ai.obney.orc.orc-service.core.queries]
             [ai.obney.orc.orc-service.core.todo-processors]
+            [ai.obney.orc.orc-service.core.periodic-tasks]
             ;; Load schemas for registration
             [ai.obney.orc.orc-service.interface.schemas]
             ;; Re-export from interface sub-namespaces
@@ -83,6 +84,7 @@
 
 ;; Tick functions
 (def get-tick rm/get-tick)
+(def get-researcher-campaign rm/get-researcher-campaign)
 
 ;; Version functions
 (def get-versions-for-sheet rm/get-versions-for-sheet)
@@ -161,8 +163,8 @@
   runtime/execute)
 
 (def resume-in-progress!
-  "Resume abandoned leaf frontiers after processors restart against the same
-   durable event store. Repeated calls are idempotent."
+  "Resume abandoned leaf, delegate, and researcher frontiers after processors
+   restart against the same durable event store. Repeated calls are idempotent."
   runtime/resume-in-progress!)
 
 ;; =============================================================================

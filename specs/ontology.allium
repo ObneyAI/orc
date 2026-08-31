@@ -258,6 +258,17 @@ contract TaskClassification {
         -- deferral rate is a measured number, never an inference from
         -- missing events.
 
+    @invariant ClassificationIsOnePerCampaign
+        -- A task is classified once for the campaign that carries it out. The
+        -- signature a classification runs on is fixed by the work that was
+        -- asked for, so asking again during the same campaign asks an identical
+        -- question; a campaign that resumes reuses the answer it already has.
+        -- A verdict-bearing campaign contributes at most one occurrence,
+        -- however many quanta, resumes or restarts it took, and a repeated
+        -- assignment for the same occurrence does not become a second
+        -- occurrence. Cancelled and abandoned campaigns retain their evidence
+        -- but produce no occurrence.
+
     @invariant DecidedRankingIsRecorded
         -- The classified event records the PRE-GATE ranking the decision ran
         -- on, bounded to the retrieval's top-k, each entry reduced to
@@ -291,6 +302,21 @@ contract CustomOntologyMutation {
     @invariant TenantScopedMutation
         -- Every mutation resolves ontology and concept identity within the
         -- initiating consumer's tenant before an event can be emitted.
+
+    @invariant WorkedPatternsAreProvenNotMerelyRecent
+        -- The pattern recorded for a class is one a campaign SUCCEEDED with. A
+        -- shape that failed is recorded as having failed and never displaces one
+        -- that worked, and a later attempt does not overwrite an earlier proven
+        -- one merely by being later. A class that genuinely succeeds with more
+        -- than one shape keeps each of them, so what is offered as proven is
+        -- distinguishable from what was merely most recent.
+
+    @invariant OfferedPatternsAreUsable
+        -- A pattern offered to a model as proven can actually be used: the code
+        -- within it is present rather than elided, and what it reads and writes
+        -- is declared, so binding it to a new task is a mechanical step rather
+        -- than a reconstruction. A behavior remains evidence a model reasons
+        -- with and never a pipeline it is compelled down.
 
     @invariant BehavioralMintIdentityIsStable
         -- Repeated behavioral mints with the same name and parent resolve to
@@ -1025,6 +1051,13 @@ rule AssembleDescriptionFromClaims {
 -- is earned by RECURRENCE; promoting one is earned by CONSISTENT, per-dimension
 -- quality. Separating them is what lets a recurring-but-mediocre class accrue an
 -- honest account of what it is bad at.
+-- An occurrence is recorded when a campaign reaches a verdict — success,
+-- failure or timeout — not when it is classified. A campaign that was cancelled
+-- or abandoned before reaching a verdict says something about our infrastructure
+-- and nothing about the behavior, so it never advances recurrence; the record
+-- of what it tried remains available for describing the class, but moves no
+-- gate. Failure is not cancellation or abandonment: a campaign that failed has
+-- produced a verdict and counts.
 rule DescribeRecurringClass {
     when: TreeClassOccurrenceRecorded(tree_class, occurrences)
     requires: occurrences >= description_recurrence_threshold
@@ -1050,16 +1083,20 @@ rule PromoteWellScoredClass {
     -- Consistency, not average: durable creation requires the class to have
     -- qualified repeatedly, so a single disastrous occurrence is not averaged away.
     requires: consistently_qualified(tree_class, consistency_window)
-    -- Coherence: a tight cluster, not a grab-bag.
-    -- ADR 0029 (TRACKED GAP, measured): this axis passes VACUOUSLY for 100% of
-    -- occurrences in both real stores — 0/138 tree-execution events carry a
-    -- fingerprint or a source-tick-id, so there are no shapes to count, and a
-    -- class that solves by direct tool call emits no trees at all. HP-2b fixed
-    -- the emit site but NO post-fix bookend exists anywhere, so the signal is
-    -- unwitnessed end-to-end. The abstention stands (we do not gate on a signal
-    -- we have never seen work) but must be OBSERVABLE; requiring shape evidence
-    -- waits on one real post-HP-2b bookend with a non-nil fingerprint.
-    requires: distinct_shape_ratio(tree_class) <= maximum_shape_ratio
+    -- Coherence: a tight cluster, not a grab-bag. A winning shape is the terminal
+    -- shape that carried a successful campaign to success. The measured ratio is
+    -- distinct successful terminal shapes divided by successful campaigns.
+    -- Failed and timed-out campaigns remain recurrence, quality and weakness
+    -- evidence, but enter neither side of this ratio and therefore cannot make a
+    -- failure-heavy class look more coherent. Shapes abandoned during repair are
+    -- process evidence, not winning shapes.
+    -- ADR 0029 (TRACKED GAP, measured): this axis has never been WITNESSED —
+    -- it passed vacuously for 100% of occurrences in both real stores because
+    -- no tree-execution event carried a fingerprint. Until its real
+    -- distribution has been observed it is computed and REPORTED without
+    -- blocking promotion, because a threshold that has never fired cannot be
+    -- distinguished from one that never will: harvesting nothing looks
+    -- identical to nothing qualifying.
     let parent = nearest_abstract_behavior(tree_class)
     requires: parent != null
 
@@ -1072,6 +1109,32 @@ rule PromoteWellScoredClass {
         tree_class: tree_class,
         body: synthesised_behavior_body(tree_class),
         supporting_evidence: validated_claims(tree_class)
+    )
+}
+
+rule ReportSuccessfulShapeCoherence {
+    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    let successful_campaigns = successful_campaign_count(tree_class)
+    let successful_shapes = successful_terminal_shape_count(tree_class)
+    let distinct_shapes = distinct_successful_terminal_shape_count(tree_class)
+    let measurable = successful_campaigns > 0 and successful_shapes > 0
+    let ratio = if measurable: distinct_shapes / successful_campaigns else: null
+    let report_status = shape_coherence_report_status(
+        successful_campaigns,
+        successful_shapes,
+        distinct_shapes,
+        maximum_shape_ratio
+    )
+
+    ensures: ShapeCoherenceReported(
+        tree_class: tree_class,
+        verdict_occurrences: occurrences,
+        successful_campaigns: successful_campaigns,
+        successful_shape_observations: successful_shapes,
+        distinct_successful_shapes: distinct_shapes,
+        ratio: ratio,
+        status: report_status,
+        recorded_at: now
     )
 }
 

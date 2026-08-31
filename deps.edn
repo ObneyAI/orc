@@ -3,12 +3,19 @@
                             "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"]
                  :extra-deps {org.clojure/clojure {:mvn/version "1.12.0"}
 
+                              ;; grain-core-v2 and grain-control-plane each reach
+                              ;; schema-util through their own gitlib checkout.
+                              ;; Select one canonical checkout for combined use.
+                              cat/schema-util {:git/url "https://github.com/ObneyAI/grain.git"
+                                               :git/sha "47073a2820f571b31fe784311886613a9ed3297e"
+                                               :deps/root "components/schema-util"}
+
                               obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
-                                                    :git/sha "5de0735d04916c63055a76637fa9bdef36345533"
+                                                    :git/sha "47073a2820f571b31fe784311886613a9ed3297e"
                                                     :deps/root "projects/grain-core-v2"}
 
                               obneyai/grain-control-plane {:git/url "https://github.com/ObneyAI/grain.git"
-                                                          :git/sha "5de0735d04916c63055a76637fa9bdef36345533"
+                                                          :git/sha "47073a2820f571b31fe784311886613a9ed3297e"
                                                           :deps/root "projects/grain-control-plane"}
 
                               ;; Test/dev only: SQLite event store, so the
@@ -16,7 +23,7 @@
                               ;; store-agnostic fix on a durable backend as well
                               ;; as the in-memory store.
                               obneyai/grain-event-store-sqlite-v3 {:git/url "https://github.com/ObneyAI/grain.git"
-                                                                  :git/sha "5de0735d04916c63055a76637fa9bdef36345533"
+                                                                  :git/sha "47073a2820f571b31fe784311886613a9ed3297e"
                                                                   :deps/root "projects/grain-event-store-sqlite-v3"}
 
                               ;; Base

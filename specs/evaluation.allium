@@ -127,6 +127,18 @@ contract TraceJudge {
         -- A custom judge runs as a bounded ORC subworkflow, must return a numeric
         -- score from zero through one, and cannot recurse beyond configured depth.
 
+    @invariant JudgesSeeTheWorkNotOnlyItsResult
+        -- A judge scoring work that was carried out over several iterations
+        -- receives an account of those iterations — what was attempted, what
+        -- each attempt produced or failed with, and how the work recovered — not
+        -- only the final values it wrote. A verdict remains one per completion:
+        -- the material a judge reads becomes richer, while what it is asked to
+        -- judge stays the whole piece of work. Judging every iteration
+        -- separately would let a piece of work that took many attempts outvote
+        -- one that took few. Only verdict-bearing campaign completions are
+        -- judged; cancelled campaigns retain inspectable evidence but receive
+        -- no work-quality verdict.
+
     @invariant DurableModelProvenance
         -- A successful model-backed score retains the resolved model, trace
         -- identity, and token usage that produced it; provider mechanics remain

@@ -5,7 +5,7 @@
    `merge-tree-result-into-sandbox`, plus integration tests proving the loop
    recurs after Phase 2 in recursive mode and preserves terminal behavior in
    non-recursive mode."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [ai.obney.orc.llm.interface :as llm]
             ;; Loading interface.schemas registers the malli command schemas
             ;; (:sheet/create-sheet, :sheet/tick-tree, etc.) that the command
@@ -14,6 +14,7 @@
             ;; and Phase 2 silently aborts before any tree events are emitted.
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.orc-service.core.executor :as executor]
+            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.todo-processors :as tp-core]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -23,6 +24,27 @@
             [ai.obney.grain.todo-processor-v2.interface :as tp]
             [ai.obney.grain.kv-store.interface :as lmdb-store]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]))
+
+(defn- with-checkpoint-effect-capabilities
+  "Supply RR-7's injected effect seam to tests that call the executor directly.
+
+   Contexts produced by the real todo processor retain their Grain-backed
+   capabilities because caller-provided entries override these test fakes."
+  [test-fn]
+  (let [execute executor/execute-repl-researcher-rlm]
+    (with-redefs [executor/execute-repl-researcher-rlm
+                  (fn [node blackboard provider context & options]
+                    (apply execute node blackboard provider
+                           (merge {:researcher-ownership-epoch 1
+                                   :claim-researcher-effect!
+                                   (fn [_] {:command-result/events []})
+                                   :complete-researcher-effect!
+                                   (fn [_] {:command-result/events []})}
+                                  context)
+                           options))]
+      (test-fn))))
+
+(use-fixtures :each with-checkpoint-effect-capabilities)
 
 ;; =============================================================================
 ;; Test context (mirrors rlm-tree-executor-test pattern)
@@ -353,11 +375,11 @@
           summary (executor/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
-                     :tree-raw [:sequence
-                                [:llm {:writes [:proposed_schedule]}]
-                                [:code {:fn "<inline-fn>"
-                                        :writes [:schedule :violations :rationale]}]
-                                [:final {:keys [:schedule :violations :rationale]}]]
+                     :tree-raw '[:sequence
+                                 [:llm {:writes [:proposed_schedule]}]
+                                 [:code {:fn (fn [inputs] inputs)
+                                         :writes [:schedule :violations :rationale]}]
+                                 [:final {:keys [:schedule :violations :rationale]}]]
                      :writes [:schedule :violations :rationale]})]
       (is (= :failure (:status summary)))
       (is (vector? (:failed-leaves summary))
@@ -452,8 +474,9 @@
           summary (executor/compute-tree-result-summary
                     {:phase2-result phase2-result
                      :tick-events tick-events
-                     :tree-raw [:sequence [:code {:fn "<inline-fn>" :writes [:a]}]
-                                          [:code {:fn "<inline-fn>" :writes [:b]}]]
+                     :tree-raw '[:sequence
+                                 [:code {:fn (fn [inputs] inputs) :writes [:a]}]
+                                 [:code {:fn (fn [inputs] inputs) :writes [:b]}]]
                      :writes [:a :b]})]
       (is (= :failure (:status summary)))
       (is (= 2 (count (:failed-leaves summary))))
@@ -766,14 +789,12 @@
           (is (some #{:memo} (:vars-updated (second history))))
           (is (= 2 (get-in result [:checkpoint :sandbox-vars :memo]))))))))
 
-(deftest checkpoint-survives-generated-tree-containing-inline-fn
-  (testing "A campaign whose emitted tree carries inline (fn ...) code nodes checkpoints and resumes instead of dying"
+(deftest checkpoint-survives-generated-tree-containing-inline-source
+  (testing "A campaign whose tree evidence carries quoted (fn ...) source checkpoints and resumes instead of dying"
     ;; merge-clears-dispatch-marker-but-preserves-tree-raw pins that
-    ;; :generated-tree-raw is DELIBERATELY preserved in sandbox-vars. For a tree
-    ;; with inline [:code {:fn (fn ...)}] nodes that value holds live SCI fn
-    ;; objects, which encode-checkpoint-value cannot make durable. Unguarded, the
-    ;; throw escapes the checkpoint and kills the whole campaign with no
-    ;; :iterations — losing every completed iteration to a durability problem.
+    ;; :generated-tree-raw is DELIBERATELY preserved in sandbox-vars. RR6 makes
+    ;; that representation authored source data; a live closure is rejected at
+    ;; emit-tree!, while quoted function forms remain durable across a yield.
     (with-test-ctx [ctx]
       (let [calls (atom 0)
             node {:type :repl-researcher
@@ -786,15 +807,19 @@
         (with-redefs [llm/predict
                       (fn [_provider _module _inputs _opts]
                         (case (swap! calls inc)
-                          1 {:outputs {:code "(store! :generated-tree-raw [:sequence [:code {:fn (fn [in] in)}] [:final {:keys [:summary]}]])"}}
+                          1 {:outputs {:code "(store! :generated-tree-raw (quote [:sequence [:code {:fn (fn [in] in)}] [:final {:keys [:summary]}]]))"}}
                           2 {:outputs {:code "(final! {:summary \"done\"})"}}
                           (throw (ex-info "completed iteration was replayed" {}))))]
           (let [yielded (executor/execute-repl-researcher-rlm node {} :openrouter ctx)]
             (is (= :running (:status yielded))
-                (str "an inline-fn tree must not fail the campaign: "
+                (str "quoted inline source must not fail the campaign: "
                      (pr-str (select-keys yielded [:status :error]))))
             (is (seq (:iterations yielded))
                 "the completed iteration survives the checkpoint")
+            (is (seq? (get-in yielded
+                              [:checkpoint :sandbox-vars
+                               :generated-tree-raw 1 1 :fn]))
+                "the checkpoint retains the authored function form")
             (is (executor/checkpoint-durable-value? (:checkpoint yielded))
                 "the yielded checkpoint is durable end to end")
             (let [resumed (executor/execute-repl-researcher-rlm
@@ -901,13 +926,26 @@
           (is (= "recovered" (get-in resumed [:outputs :summary])))
           (is (= 2 @calls)))))))
 
-(deftest phase2-retries-use-distinct-ticks-under-one-logical-action
+(deftest phase2-retries-rejoin-one-stable-tick-under-one-logical-action
   (with-test-ctx [ctx]
     (let [stable-tick-ids (atom [])
           actions (atom {})
           tree-attempts (atom 0)
           tick-id (random-uuid)
           node-id (random-uuid)
+          code "(emit-tree! [:final {:keys [:summary]}])"
+          generated-tree-source "[:final {:keys [:summary]}]"
+          expected-action-id
+          (researcher-effects/logical-action-identity
+           {:tick-id tick-id
+            :node-id node-id
+            :iteration-index 0
+            :generated-code-hash
+            (researcher-effects/generated-code-hash code)
+            :kind :generated-child
+            :target :generated-tree
+            :arguments {:generated-tree-source generated-tree-source
+                        :inputs {}}})
           node {:type :repl-researcher
                 :instruction "retry child"
                 :writes [:summary]
@@ -922,7 +960,7 @@
                          #(swap! actions assoc (:action-id %) %))]
       (with-redefs [llm/predict
                     (fn [& _]
-                      {:outputs {:code "(emit-tree! [:final {:keys [:summary]}])"}})
+                      {:outputs {:code code}})
                     tree-executor/execute-tree
                     (fn [_ _ options]
                       (swap! stable-tick-ids conj (:stable-tick-id options))
@@ -943,9 +981,10 @@
           (is (= :success (:status resumed)) (pr-str resumed))
           (is (= 2 (count @stable-tick-ids)))
           (is (every? uuid? @stable-tick-ids))
-          (is (apply not= @stable-tick-ids))
+          (is (apply = @stable-tick-ids)
+              "physical attempts rejoin the child addressed by logical content")
           (is (= 1 (count phase2-actions)))
-          (is (= (str tick-id "/" node-id "/0/phase2/1")
+          (is (= expected-action-id
                  (:action-id (first phase2-actions)))))))))
 
 (deftest iteration-deadline-bounds-sandbox-and-discards-local-mutations
@@ -1065,6 +1104,114 @@
           (is (= :campaign (:timeout-kind result)))
           (is (zero? @calls)))))))
 
+(deftest derived-campaign-deadline-does-not-shadow-phase-one-budget-evidence
+  (with-test-ctx [ctx]
+    (let [calls (atom 0)
+          checkpoint {:version 1
+                      :next-iteration 1
+                      :history [{:code "completed"}]
+                      :sandbox-vars {}
+                      :var-creation-times {}
+                      :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}
+                      :cumulative-tree-ms 125
+                      :campaign-started-at-ms 1
+                      ;; This is exactly the deadline derived from the node's
+                      ;; 1,000 ms total Phase-1/Phase-2 budget.
+                      :campaign-deadline-ms 1001}
+          node {:type :repl-researcher
+                :instruction "expired budget"
+                :writes [:summary]
+                :timeout-ms 1000
+                :rlm {:checkpointed? true}
+                :max-iterations 5}]
+      (with-redefs [llm/predict (fn [& _] (swap! calls inc))]
+        (let [result (executor/execute-repl-researcher-rlm
+                      node {} :openrouter (assoc ctx :researcher-checkpoint checkpoint))]
+          (is (= :failure (:status result)) (pr-str result))
+          (is (re-find #"Budget exhausted in Phase 1" (str (:error result)))
+              (pr-str result))
+          (is (= 1000 (get-in result [:budget :total-budget-ms])) (pr-str result))
+          (is (= 125 (:cumulative-tree-ms result)) (pr-str result))
+          (is (number? (:cumulative-thinking-ms result)) (pr-str result))
+          (is (zero? @calls)))))))
+
+(deftest explicit-campaign-deadline-wins-when-equal-to-phase-budget
+  (with-test-ctx [ctx]
+    (let [calls (atom 0)
+          checkpoint {:version 1
+                      :next-iteration 1
+                      :history [{:code "completed"}]
+                      :sandbox-vars {}
+                      :var-creation-times {}
+                      :usage {:prompt-tokens 1 :completion-tokens 1 :total-tokens 2}
+                      :cumulative-tree-ms 125
+                      :campaign-started-at-ms 1
+                      :campaign-deadline-ms 1001}
+          node {:type :repl-researcher
+                :instruction "expired explicit campaign deadline"
+                :writes [:summary]
+                :timeout-ms 1000
+                :rlm {:checkpointed? true
+                      :timeouts {:campaign-ms 1000}}
+                :max-iterations 5}]
+      (with-redefs [llm/predict (fn [& _] (swap! calls inc))]
+        (let [result (executor/execute-repl-researcher-rlm
+                      node {} :openrouter (assoc ctx :researcher-checkpoint checkpoint))]
+          (is (= :timeout (:status result)) (pr-str result))
+          (is (= :campaign (:timeout-kind result)) (pr-str result))
+          (is (= "Researcher campaign deadline exceeded" (:error result)) (pr-str result))
+          (is (zero? @calls)))))))
+
+(deftest recursive-phase-two-timeout-becomes-repair-turn-evidence
+  (with-test-ctx [ctx]
+    (let [calls (atom 0)
+          node {:type :repl-researcher
+                :instruction "repair a timed-out child"
+                :writes [:summary]
+                :rlm {:recursive? true}
+                :max-iterations 3}]
+      (with-redefs [llm/predict
+                    (fn [& _]
+                      (case (swap! calls inc)
+                        1 {:outputs {:code "(emit-tree! [:sequence [:final {:keys [:summary]}]])"}}
+                        2 {:outputs {:code "(final! {:summary \"repaired\"})"}}))
+                    tree-executor/execute-tree
+                    (fn [& _]
+                      {:status :timeout
+                       :error "child exceeded Phase-2 deadline"
+                       :duration-ms 37
+                       :trace-id (random-uuid)})]
+        (let [result (executor/execute-repl-researcher-rlm node {} :openrouter ctx)]
+          (is (= :success (:status result)) (pr-str result))
+          (is (= "repaired" (get-in result [:outputs :summary])) (pr-str result))
+          (is (= 2 @calls) "the timeout must be visible to a second reasoning turn")
+          (is (= :timeout (get-in result [:iterations 0 :child-outcome :status]))
+              (pr-str result)))))))
+
+(deftest explicit-non-recursive-phase-two-timeout-remains-terminal
+  (with-test-ctx [ctx]
+    (let [calls (atom 0)
+          node {:type :repl-researcher
+                :instruction "stop on a timed-out child"
+                :writes [:summary]
+                :rlm {:recursive? false}
+                :max-iterations 3}]
+      (with-redefs [llm/predict
+                    (fn [& _]
+                      (swap! calls inc)
+                      {:outputs {:code "(emit-tree! [:sequence [:final {:keys [:summary]}]])"}})
+                    tree-executor/execute-tree
+                    (fn [& _]
+                      {:status :timeout
+                       :error "child exceeded Phase-2 deadline"
+                       :duration-ms 37
+                       :trace-id (random-uuid)})]
+        (let [result (executor/execute-repl-researcher-rlm node {} :openrouter ctx)]
+          (is (= :timeout (:status result)) (pr-str result))
+          (is (= "child exceeded Phase-2 deadline" (:error result)) (pr-str result))
+          (is (= 1 @calls) "explicit non-recursive mode must not start a repair turn")
+          (is (= 1 (count (:iterations result))) (pr-str result)))))))
+
 (deftest checkpointed-tools-require-and-receive-idempotency-contract
   (with-test-ctx [ctx]
     (let [seen-context (atom nil)
@@ -1098,12 +1245,23 @@
                                                   :result :any
                                                   :checkpoint-safe? true}}))]
         (is (= :running (:status safe-result)))
-        (is (= (str tick-id "/" node-id "/0/tool/1")
+        (is (= (researcher-effects/logical-action-identity
+                {:tick-id tick-id
+                 :node-id node-id
+                 :iteration-index 0
+                 :generated-code-hash
+                 (researcher-effects/generated-code-hash
+                  "(do (get-index {}) (store! :memo :done))")
+                 :kind :tool
+                 :target "get-index"
+                 :arguments {}})
                (:orc/idempotency-key @seen-context)))))))
 
-(deftest configured-unsafe-tool-is-allowed-until-invoked
+(deftest configured-unsafe-tool-is-rejected-before-provider-or-effect
   (with-test-ctx [ctx]
-    (let [node {:type :repl-researcher
+    (let [provider-calls (atom 0)
+          effect-calls (atom 0)
+          node {:type :repl-researcher
                 :instruction "finish without tool"
                 :writes [:summary]
                 :mcp-tools ["unused-effect"]
@@ -1111,11 +1269,103 @@
                 :rlm {:checkpointed? true}
                 :max-iterations 2}]
       (with-redefs [llm/predict (fn [& _]
+                                  (swap! provider-calls inc)
                                   {:outputs {:code "(final! {:summary \"done\"})"}})]
         (let [result (executor/execute-repl-researcher-rlm
-                      node {} :openrouter ctx)]
-          (is (= :success (:status result)) (pr-str result))
-          (is (= "done" (get-in result [:outputs :summary]))))))))
+                      node {} :openrouter
+                      (assoc ctx :call-tool-fn
+                             (fn [& _] (swap! effect-calls inc))))]
+          (is (= :failure (:status result)) (pr-str result))
+          (is (re-find #"not declared :checkpoint-safe" (str (:error result)))
+              (pr-str result))
+          (is (zero? @provider-calls) "configuration fails before model work")
+          (is (zero? @effect-calls) "configuration fails before the tool effect"))))))
+
+(deftest checkpointed-safe-tool-rejects-two-argument-host-contract
+  (with-test-ctx [ctx]
+    (let [provider-calls (atom 0)
+          seen (atom nil)
+          node {:type :repl-researcher
+                :instruction "use the host tool"
+                :writes [:summary]
+                :mcp-tools ["get-index"]
+                :tool-contracts {"get-index" {:arguments [:map]
+                                                :result :any
+                                                :checkpoint-safe? true}}
+                :rlm {:checkpointed? true}
+                :max-iterations 2}]
+      (with-redefs [llm/predict
+                    (fn [& _]
+                      (swap! provider-calls inc)
+                      {:outputs {:code "(do (get-index {:page 1}) (final! {:summary \"done\"}))"}})]
+        (let [result (executor/execute-repl-researcher-rlm
+                      node {} :openrouter
+                      (assoc ctx :call-tool-fn
+                             (fn [tool-name args]
+                               (reset! seen [tool-name args])
+                               {:ok true})))]
+          (is (= :failure (:status result)) (pr-str result))
+          (is (re-find #"context-aware 3-argument.*idempotency"
+                       (str (:error result)))
+              (pr-str result))
+          (is (zero? @provider-calls) "configuration fails before model work")
+          (is (nil? @seen) "the two-argument caller is never dispatched"))))))
+
+(deftest checkpointed-safe-tool-rejects-two-argument-var-host-contract
+  (with-test-ctx [ctx]
+    (let [provider-calls (atom 0)
+          seen (atom nil)
+          node {:type :repl-researcher
+                :instruction "use the Var-backed host tool"
+                :writes [:summary]
+                :mcp-tools ["get-index"]
+                :tool-contracts {"get-index" {:arguments [:map]
+                                                :result :any
+                                                :checkpoint-safe? true}}
+                :rlm {:checkpointed? true}
+                :max-iterations 2}]
+      (with-local-vars [host-caller (fn [tool-name args]
+                                      (reset! seen [tool-name args])
+                                      {:ok true})]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (swap! provider-calls inc)
+                        {:outputs {:code "(do (get-index {:page 2}) (final! {:summary \"done\"}))"}})]
+          (let [result (executor/execute-repl-researcher-rlm
+                        node {} :openrouter
+                        (assoc ctx :call-tool-fn host-caller))]
+            (is (= :failure (:status result)) (pr-str result))
+            (is (re-find #"context-aware 3-argument.*idempotency"
+                         (str (:error result)))
+                (pr-str result))
+            (is (zero? @provider-calls) "configuration fails before model work")
+            (is (nil? @seen) "the Var-backed caller is never dispatched")))))))
+
+(deftest checkpointed-tool-caller-rejects-incompatible-host-arity
+  (with-test-ctx [ctx]
+    (let [provider-calls (atom 0)
+          node {:type :repl-researcher
+                :instruction "validate the host tool caller"
+                :writes [:summary]
+                :mcp-tools ["get-index"]
+                :tool-contracts {"get-index" {:arguments [:map]
+                                                :result :any
+                                                :checkpoint-safe? true}}
+                :rlm {:checkpointed? true}
+                :max-iterations 2}]
+      (with-redefs [llm/predict
+                    (fn [& _]
+                      (swap! provider-calls inc)
+                      {:outputs {:code "(final! {:summary \"done\"})"}})]
+        (let [result (executor/execute-repl-researcher-rlm
+                      node {} :openrouter
+                      (assoc ctx :call-tool-fn (fn [_tool-name] {:ok true})))]
+          (is (= :failure (:status result)) (pr-str result))
+          (is (re-find #"context-aware 3-argument.*idempotency"
+                       (str (:error result)))
+              (pr-str result))
+          (is (zero? @provider-calls)
+              "an incompatible host contract fails before model work"))))))
 
 (deftest completed-phase2-child-is-not-repeated-after-resume
   (with-test-ctx [ctx]
@@ -1243,6 +1493,88 @@
                            [:result :usage :total-tokens])))
           (is (= 1 @phase1-calls))
           (is (= 1 @phase2-calls)))))))
+
+(deftest reconstructed-phase2-duration-drives-thinking-time-after-resume
+  (with-test-ctx [ctx]
+    (let [parent-tick-id (random-uuid)
+          node-id (random-uuid)
+          code "(emit-tree! [:sequence [:final {:keys [:summary]}]])"
+          generated-tree-source "[:sequence [:final {:keys [:summary]}]]"
+          phase2-action-id
+          (researcher-effects/logical-action-identity
+           {:tick-id parent-tick-id
+            :node-id node-id
+            :iteration-index 0
+            :generated-code-hash
+            (researcher-effects/generated-code-hash code)
+            :kind :generated-child
+            :target :generated-tree
+            :arguments {:generated-tree-source generated-tree-source
+                        :inputs {}}})
+          stable-tick-id (java.util.UUID/nameUUIDFromBytes
+                          (.getBytes phase2-action-id "UTF-8"))
+          child-sheet-id (random-uuid)
+          child-events [{:event/type :sheet/tree-tick-started
+                         :tick-id stable-tick-id
+                         :sheet-id child-sheet-id
+                         :event/timestamp (java.time.Instant/parse
+                                           "2026-01-01T00:00:00Z")}
+                        {:event/type :sheet/tree-tick-completed
+                         :tick-id stable-tick-id
+                         :sheet-id child-sheet-id
+                         :root-status :success
+                         :event/timestamp (java.time.Instant/parse
+                                           "2026-01-01T00:00:00.250Z")}]
+          stable-child-read? (atom false)
+          phase1-calls (atom 0)
+          phase1-module? #(boolean (some (fn [output] (= :code (:name output)))
+                                         (:outputs %)))
+          node {:type :repl-researcher
+                :instruction "reconstruct a completed child then finish"
+                :writes [:summary]
+                :rlm {:recursive? true :checkpointed? true}
+                :max-iterations 3}
+          context (assoc ctx :tick-id parent-tick-id :node-id node-id)
+          real-read es/read]
+      (with-redefs [es/read
+                    (fn [store opts]
+                      (if (contains? (:tags opts) [:tick stable-tick-id])
+                        (do
+                          (reset! stable-child-read? true)
+                          child-events)
+                        (real-read store opts)))
+                    llm/predict
+                    (fn [_provider module _inputs _options]
+                      (if (phase1-module? module)
+                        (case (swap! phase1-calls inc)
+                          1 {:outputs
+                             {:code code}}
+                          2 {:outputs {:code "(final! {:summary \"done\"})"}})
+                        (throw (ex-info "reconstructed child unexpectedly executed"
+                                        {}))))]
+        (let [yielded (executor/execute-repl-researcher-rlm
+                       node {} :openrouter context)
+              result (executor/execute-repl-researcher-rlm
+                      node {} :openrouter
+                      (assoc context :researcher-checkpoint (:checkpoint yielded)))
+              replayed-child-duration 250]
+          (is @stable-child-read? "the stable child must be reconstructed from durable events")
+          (is (= :running (:status yielded)) (pr-str yielded))
+          (is (= replayed-child-duration
+                 (get-in yielded [:iterations 0 :child-outcome :elapsed-ms]))
+              (pr-str yielded))
+          (is (= replayed-child-duration
+                 (get-in yielded [:checkpoint :cumulative-tree-ms]))
+              (pr-str yielded))
+          (is (= :success (:status result)) (pr-str result))
+          (is (= "done" (get-in result [:outputs :summary])) (pr-str result))
+          (is (= replayed-child-duration (:cumulative-tree-ms result))
+              (pr-str result))
+          (is (= (max 0 (- (:duration-ms result) replayed-child-duration))
+                 (:cumulative-thinking-ms result))
+              (pr-str result))
+          (is (= 2 @phase1-calls)
+              "only the two researcher turns run; the reconstructed child does not"))))))
 
 (deftest recursive-mode-recurs-after-phase2-and-reaches-final
   (testing "With :rlm {:recursive? true}, the loop recurs after emit-tree! and the model reaches final! on iteration 2"

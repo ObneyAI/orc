@@ -1621,6 +1621,216 @@
   (get (rmp/project ctx :sheet/researcher-checkpoints {:partition-key sheet-id})
        [tick-id node-id]))
 
+;; Campaign lifecycle is derived from facts the engine already commits. A
+;; parent terminal event can race a late researcher frontier, so tick status is
+;; retained alongside campaigns and applied both to existing and later rows.
+(def researcher-campaign-events
+  #{:sheet/tree-tick-started
+    :rlm/researcher-frontier-claimed
+    :rlm/researcher-resume-state-saved
+    :sheet/node-execution-completed
+    :sheet/tree-tick-completed
+    :sheet/tick-cancelled})
+
+(def ^:private researcher-campaign-terminal-statuses
+  #{:success :failure :timeout :blocked :cancelled :abandoned})
+
+(defn- terminal-researcher-campaign? [campaign]
+  (contains? researcher-campaign-terminal-statuses (:status campaign)))
+
+(defn- parent-status->campaign-status [tick-state]
+  (case (:execution-status tick-state)
+    :completed :abandoned
+    :cancelled :cancelled
+    nil))
+
+(defn- new-or-active-campaign-status [tick-state requested]
+  (or (parent-status->campaign-status tick-state) requested))
+
+(defn- update-active-campaigns [campaigns f]
+  (into {}
+        (map (fn [[node-id campaign]]
+               [node-id (if (terminal-researcher-campaign? campaign)
+                          campaign
+                          (f campaign))]))
+        campaigns))
+
+(defmulti researcher-campaigns* (fn [_state event] (:event/type event)))
+(defmethod researcher-campaigns* :default [state _event] state)
+
+(defmethod researcher-campaigns* :sheet/tree-tick-started
+  [state event]
+  (update state (:tick-id event)
+          #(merge {:sheet-id (:sheet-id event)
+                   :execution-status :running
+                   :campaigns {}}
+                  %)))
+
+(defmethod researcher-campaigns* :rlm/researcher-frontier-claimed
+  [state event]
+  (let [tick-id (:tick-id event)
+        node-id (:node-id event)
+        tick-state (get state tick-id)
+        campaign (get-in tick-state [:campaigns node-id])]
+    (if (terminal-researcher-campaign? campaign)
+      state
+      (assoc-in state [tick-id :campaigns node-id]
+                (merge campaign
+                       {:sheet-id (:sheet-id event)
+                        :tick-id tick-id
+                        :node-id node-id
+                        :status (new-or-active-campaign-status tick-state :running)
+                        :ownership-epoch
+                        (max (or (:ownership-epoch campaign) 0)
+                             (:ownership-epoch event))
+                        :started-at (or (:started-at campaign)
+                                        (:claimed-at event)
+                                        (str (:event/timestamp event)))
+                        :completed-at
+                        (when (= :cancelled
+                                 (parent-status->campaign-status tick-state))
+                          (:parent-completed-at tick-state))})))))
+
+(defmethod researcher-campaigns* :rlm/researcher-resume-state-saved
+  [state event]
+  (let [tick-id (:tick-id event)
+        node-id (:node-id event)
+        tick-state (get state tick-id)
+        campaign (get-in tick-state [:campaigns node-id])
+        resume-state (:resume-state event)]
+    (if (terminal-researcher-campaign? campaign)
+      state
+      (assoc-in state [tick-id :campaigns node-id]
+                (merge campaign
+                       {:sheet-id (:sheet-id event)
+                        :tick-id tick-id
+                        :node-id node-id
+                        :status
+                        (new-or-active-campaign-status
+                         tick-state
+                         (if (:yielded? event) :yielded :running))
+                        :ownership-epoch (:ownership-epoch resume-state)
+                        :next-iteration-index (:next-iteration resume-state)
+                        :started-at
+                        (or (:started-at campaign)
+                            (some-> (:campaign-started-at-ms resume-state) str))
+                        :deadline
+                        (some-> (:campaign-deadline-ms resume-state) str)
+                        :completed-at
+                        (when (= :cancelled
+                                 (parent-status->campaign-status tick-state))
+                          (:parent-completed-at tick-state))})))))
+
+(def ^:private node-status->campaign-status
+  {:success :success
+   :failure :failure
+   :timeout :timeout
+   :blocked :blocked})
+
+(defmethod researcher-campaigns* :sheet/node-execution-completed
+  [state event]
+  (let [path [(:tick-id event) :campaigns (:node-id event)]
+        campaign (get-in state path)
+        terminal-status (get node-status->campaign-status (:status event))]
+    (if (and campaign terminal-status
+             (not (terminal-researcher-campaign? campaign)))
+      (assoc-in state path
+                (cond-> (assoc campaign
+                               :status terminal-status
+                               :completed-at (str (:event/timestamp event)))
+                  (:error event) (assoc :terminal-reason (:error event))))
+      state)))
+
+(defmethod researcher-campaigns* :sheet/tree-tick-completed
+  [state event]
+  (if (= :running (:root-status event))
+    state
+    (update state (:tick-id event)
+            (fn [tick-state]
+              (let [completed-at (str (:event/timestamp event))]
+                (-> (merge {:sheet-id (:sheet-id event) :campaigns {}}
+                           tick-state)
+                    (assoc :execution-status :completed
+                           :parent-completed-at completed-at)
+                    (update :campaigns update-active-campaigns
+                            #(-> %
+                                 (assoc :status :abandoned)
+                                 (dissoc :completed-at :verdict-at
+                                         :terminal-reason)))))))))
+
+(defmethod researcher-campaigns* :sheet/tick-cancelled
+  [state event]
+  (update state (:tick-id event)
+          (fn [tick-state]
+            (let [completed-at (str (:event/timestamp event))]
+              (-> (merge {:sheet-id (:sheet-id event) :campaigns {}}
+                         tick-state)
+                  (assoc :execution-status :cancelled
+                         :parent-completed-at completed-at)
+                  (update :campaigns update-active-campaigns
+                          #(cond-> (assoc %
+                                         :status :cancelled
+                                         :completed-at completed-at)
+                             (:reason event)
+                             (assoc :terminal-reason (:reason event)))))))))
+
+(defreadmodel :sheet researcher-campaigns
+  {:events researcher-campaign-events :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn :tick-id}
+  [state event] (researcher-campaigns* state event))
+
+(defn get-researcher-campaign [ctx tick-id node-id]
+  (get-in (rmp/project ctx :sheet/researcher-campaigns
+                       {:tags #{[:tick tick-id]}})
+          [tick-id :campaigns node-id]))
+
+;; Version-2 researcher persistence separates the supersedable continuation
+;; state from the immutable record of each completed attempt.
+(defmulti researcher-resume-states* (fn [_state event] (:event/type event)))
+(defmethod researcher-resume-states* :default [state _event] state)
+(defmethod researcher-resume-states* :rlm/researcher-resume-state-saved
+  [state event]
+  ;; Partition routing runs against entity state, so retain the partition key
+  ;; alongside the public payload, matching the legacy checkpoint projection.
+  (assoc state [(:tick-id event) (:node-id event)]
+         {:sheet-id (:sheet-id event)
+          :resume-state (:resume-state event)}))
+
+(defreadmodel :sheet researcher-resume-states
+  {:events #{:rlm/researcher-resume-state-saved} :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn (juxt :tick-id :node-id)}
+  [state event] (researcher-resume-states* state event))
+
+(defn get-researcher-resume-state [ctx sheet-id tick-id node-id]
+  (get (rmp/project ctx :sheet/researcher-resume-states {:partition-key sheet-id})
+       [tick-id node-id]))
+
+(defmulti researcher-iteration-records* (fn [_state event] (:event/type event)))
+(defmethod researcher-iteration-records* :default [state _event] state)
+(defmethod researcher-iteration-records* :rlm/researcher-iteration-recorded
+  [state event]
+  (assoc state [(:tick-id event) (:node-id event)
+                (:iteration-index event) (:attempt-ordinal event)]
+         {:sheet-id (:sheet-id event)
+          :iteration-record (:iteration-record event)}))
+
+(defreadmodel :sheet researcher-iteration-records
+  {:events #{:rlm/researcher-iteration-recorded} :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn (juxt :tick-id :node-id :iteration-index :attempt-ordinal)}
+  [state event] (researcher-iteration-records* state event))
+
+(defn get-researcher-iteration-records [ctx sheet-id tick-id node-id]
+  (->> (rmp/project ctx :sheet/researcher-iteration-records
+                    {:partition-key sheet-id})
+       (keep (fn [[[event-tick event-node _iteration _attempt] entity]]
+               (when (and (= tick-id event-tick) (= node-id event-node))
+                 (:iteration-record entity))))
+       (sort-by (juxt :iteration-index :attempt-ordinal))
+       vec))
+
 (defmulti researcher-actions* (fn [_state event] (:event/type event)))
 (defmethod researcher-actions* :default [state _event] state)
 (defmethod researcher-actions* :rlm/researcher-action-completed [state event]
@@ -1640,3 +1850,32 @@
                (when (and (= tick-id event-tick) (= node-id event-node))
                  [action-id action])))
        (into {})))
+
+(defmulti researcher-effect-claims* (fn [_state event] (:event/type event)))
+(defmethod researcher-effect-claims* :default [state _event] state)
+(defmethod researcher-effect-claims* :rlm/researcher-effect-claimed [state event]
+  (assoc state [(:tick-id event) (:node-id event) (:attempt-identity event)]
+         (select-keys event [:sheet-id :tick-id :node-id :iteration-index
+                             :logical-action-identity :attempt-identity
+                             :attempt-ordinal :ownership-epoch :kind :status
+                             :claimed-at :resolved-at])))
+(defmethod researcher-effect-claims* :rlm/researcher-effect-completed [state event]
+  (update state [(:tick-id event) (:node-id event) (:attempt-identity event)]
+          merge
+          (select-keys event [:status :resolved-at :result])))
+
+(defreadmodel :sheet researcher-effect-claims
+  {:events #{:rlm/researcher-effect-claimed :rlm/researcher-effect-completed}
+   :version 1
+   :partition-fn :sheet-id
+   :entity-id-fn (juxt :tick-id :node-id :attempt-identity)}
+  [state event] (researcher-effect-claims* state event))
+
+(defn get-researcher-effect-claims [ctx sheet-id tick-id node-id]
+  (->> (rmp/project ctx :sheet/researcher-effect-claims
+                    {:partition-key sheet-id})
+       (keep (fn [[[event-tick event-node _attempt] claim]]
+               (when (and (= tick-id event-tick) (= node-id event-node))
+                 claim)))
+       (sort-by (juxt :ownership-epoch :attempt-ordinal :attempt-identity))
+       vec))

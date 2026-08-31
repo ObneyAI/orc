@@ -17,11 +17,11 @@
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.commands] ;; Load command handlers
             [ai.obney.orc.orc-service.core.streaming :as streaming]
+            [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
-            [ai.obney.grain.time.interface :as time]
-            [clojure.walk :as walk]))
+            [ai.obney.grain.time.interface :as time]))
 
 (declare compute-by-node-from-tick-events)
 
@@ -37,9 +37,16 @@
    recording the result in the parent researcher action log."
   [context tick-id]
   (let [events (persisted-tick-events context tick-id)]
-  (when-let [completion (last (filter #(= :sheet/tree-tick-completed (:event/type %))
+  (when-let [completion (last (filter #(and (= :sheet/tree-tick-completed
+                                                (:event/type %))
+                                             (some? (runtime/terminal-root-status->result-status
+                                                     (:root-status %))))
                                       events))]
     (let [root-status (:root-status completion)
+          started (first (filter #(= :sheet/tree-tick-started (:event/type %))
+                                 events))
+          duration-ms (trace-time/elapsed-ms (:event/timestamp started)
+                                             (:event/timestamp completion))
           usage (reduce (fn [acc event]
                           (if (and (= :sheet/node-execution-completed (:event/type event))
                                    (:usage event))
@@ -53,17 +60,12 @@
                         events)
           by-node (compute-by-node-from-tick-events
                    (:event-store context) (:tenant-id context) tick-id)]
-      (cond-> {:status (case root-status
-                         :success :success
-                         :partial :partial
-                         :timeout :timeout
-                         :blocked :blocked
-                         :cancelled :cancelled
-                         :failure)
+      (cond-> {:status (runtime/terminal-root-status->result-status root-status)
                :outputs (value-log/final-values context (:tenant-id context) tick-id)
                :sheet-id (:sheet-id completion)
                :trace-id tick-id
                :replayed? true}
+        (some? duration-ms) (assoc :duration-ms duration-ms)
         (pos? (:total-tokens usage 0))
         (assoc :usage (cond-> usage (seq by-node) (assoc :by-node by-node)))
         (:error completion) (assoc :error (:error completion))
@@ -85,7 +87,8 @@
                      :error "Tree execution timed out"
                      :sheet-id (:sheet-id started)
                      :trace-id tick-id})
-                  (assoc result :replayed? true))))))))
+                  (or (reconstruct-completed-tick context tick-id)
+                      (assoc result :replayed? true)))))))))
 
 ;; =============================================================================
 ;; Ephemeral Function Registry
@@ -202,28 +205,6 @@
   "Remove an ephemeral function from the registry."
   [fn-id]
   (swap! ephemeral-fn-registry dissoc fn-id))
-
-(defn sanitize-tree-for-events
-  "U8: Walk a tree and replace any :fn map-entry whose value is a function
-   object with [:fn \"<inline-fn>\"]. SCI fn objects are not Fressian-
-   serializable; if we store them verbatim in the event store, the
-   read-model fails to project the event and the tick stays pending
-   forever.
-
-   The actual function continues to live in the ephemeral-fn-registry
-   for Phase-2 execution. Only the EVENT representation needs sanitization.
-
-   Qualified-symbol-string :fn values pass through untouched. Tree shape
-   is otherwise preserved."
-  [tree]
-  (walk/postwalk
-    (fn [node]
-      (if (and (map-entry? node)
-               (= :fn (key node))
-               (fn? (val node)))
-        [:fn "<inline-fn>"]
-        node))
-    tree))
 
 ;; =============================================================================
 ;; Command Helpers (inlined to avoid circular dependency with test-helpers)
@@ -642,7 +623,8 @@
                            given key, falls back to inferring schema from
                            value type."
   [tree context {:keys [sandbox-vars blackboard blackboard-schemas timeout-ms
-                        result-grace-ms generated-tree-raw stable-tick-id]
+                        result-grace-ms generated-tree-raw
+                        generated-tree-source stable-tick-id]
                  :or {timeout-ms 60000
                       result-grace-ms runtime/default-result-grace-ms
                       blackboard-schemas {}}}]
@@ -928,16 +910,18 @@
                            (some? (:status result))
                            (assoc :status (:status result))
                            ;; CV-2 (ADR 0017 decision 3): carry the emitted
-                           ;; worked-DSL (sanitized raw S-expr — pure data the
-                           ;; ontology can store + a model can read) + the
+                           ;; worked-DSL plus its exact pre-compilation source
+                           ;; text (pure data the ontology can store and a
+                           ;; model can read) + the
                            ;; SOURCE (host/classified) sheet-id so the post-emit
                            ;; enrichment processor resolves the tree-class via
                            ;; the sheet->class join. Note `sheet-id` above is the
                            ;; EPHEMERAL Phase-2 sheet; the classified sheet is
                            ;; (:sheet-id context). Both optional/backward-compat.
                            (some? generated-tree-raw)
-                           (assoc :generated-tree
-                                  (sanitize-tree-for-events generated-tree-raw))
+                           (assoc :generated-tree generated-tree-raw)
+                           (some? generated-tree-source)
+                           (assoc :generated-tree-source generated-tree-source)
                            ;; HP-2b: canonical shape hash of the emitted tree —
                            ;; the coherence signal distinct-tree-shapes and the
                            ;; per-fingerprint aggregator read. Guarded: a

@@ -720,6 +720,9 @@
     [:provenance         [:enum :agent-minted :human-authored :harvested]]
     [:minted-by-sheet-id {:optional true} :uuid]
     [:minted-by-tick-id  {:optional true} :uuid]
+    [:logical-action-identity {:optional true} :string]
+    [:attempt-identity {:optional true} :string]
+    [:researcher-iteration {:optional true} [:int {:min 0}]]
     ;; EL-4: the source :tree-class this behavior was harvested from
     ;; (present only when :provenance :harvested).
     [:harvested-from-tree-class {:optional true} [:or :uuid :string]]
@@ -1485,6 +1488,9 @@
     ;; build-rlm-context's :sheet-id / :tick-id opts.
     [:minted-by-sheet-id {:optional true} :uuid]
     [:minted-by-tick-id  {:optional true} :uuid]
+    [:logical-action-identity {:optional true} :string]
+    [:attempt-identity {:optional true} :string]
+    [:researcher-iteration {:optional true} [:int {:min 0}]]
     ;; EL-4: the source :tree-class id this behavior is harvested from.
     ;; Present only on the :harvested path; the mint command forwards it
     ;; onto the audit event for the fire-once/provenance trail.

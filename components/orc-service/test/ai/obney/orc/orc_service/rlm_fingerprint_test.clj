@@ -4,12 +4,10 @@
    The fingerprint is a stable string hash derived from a canonical
    normalized view of an emit-tree! S-expression. Two trees with the
    same structural shape produce the same hash; structurally different
-   trees produce different hashes; the hash is stable across the inline-fn
-   sanitization step so that pre/post-sanitization views of the same
-   logical tree converge."
+   trees produce different hashes; the hash is stable across exact durable
+   source serialization."
   (:require [clojure.test :refer [deftest testing is]]
-            [ai.obney.orc.orc-service.core.rlm-fingerprint :as fp]
-            [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]))
+            [ai.obney.orc.orc-service.core.rlm-fingerprint :as fp]))
 
 ;; =============================================================================
 ;; RED #1 — fingerprint is deterministic
@@ -26,29 +24,27 @@
           "Two calls on the same tree should produce identical fingerprint strings"))))
 
 ;; =============================================================================
-;; RED #2 — fingerprint is stable across sanitize-tree-for-events
+;; RED #2 — fingerprint is stable across durable source serialization
 ;; =============================================================================
 ;;
-;; Load-bearing PRD claim: a tree carrying an inline fn value and the same
-;; tree after `sanitize-tree-for-events` has replaced the fn with the
-;; [:fn "<inline-fn>"] placeholder MUST produce the same fingerprint.
+;; Load-bearing PRD claim: source is captured before compilation and survives
+;; pr-str/read-string without changing the tree's shape identity.
 
-(deftest fingerprint-stable-across-sanitize-tree-for-events
-  (testing "Pre-sanitization tree (with inline fn value) and post-sanitization tree (with placeholder) produce the SAME fingerprint"
-    (let [pre-sanitization-tree
-          [:sequence
+(deftest fingerprint-stable-across-durable-source-roundtrip
+  (testing "quoted inline source and its EDN round-trip produce the same fingerprint"
+    (let [source-tree
+          '[:sequence
            [:llm {:reads [:input] :writes [:extracted]}]
            [:code {:reads [:extracted] :writes [:result]
-                   ;; live inline fn — what the model authors before sanitization
-                   :fn (fn [{:keys [extracted]}] {:result extracted})}]
+                   :fn (fn [{:keys [inputs]}]
+                         {:result (:extracted inputs)})}]
            [:final {:keys [:result]}]]
-          post-sanitization-tree
-          (tree-executor/sanitize-tree-for-events pre-sanitization-tree)]
-      (is (not= pre-sanitization-tree post-sanitization-tree)
-          "Sanity check: the sanitize-for-events transform DOES change the tree")
-      (is (= (fp/fingerprint pre-sanitization-tree)
-             (fp/fingerprint post-sanitization-tree))
-          "Fingerprint should normalize both forms to the same canonical hash"))))
+          source-text (pr-str source-tree)
+          reopened-tree (read-string source-text)]
+      (is (= source-tree reopened-tree))
+      (is (= (fp/fingerprint source-tree)
+             (fp/fingerprint reopened-tree))
+          "durable source round-trip preserves the canonical shape hash"))))
 
 ;; =============================================================================
 ;; RED #3 — fingerprint differentiates structurally-different trees

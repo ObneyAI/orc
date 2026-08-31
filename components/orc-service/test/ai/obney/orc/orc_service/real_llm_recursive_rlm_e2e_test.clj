@@ -1,5 +1,5 @@
 (ns ai.obney.orc.orc-service.real-llm-recursive-rlm-e2e-test
-  "Gated real-OpenRouter journeys for DET-E2E-105 and DET-E2E-106.
+  "Gated real-OpenRouter journeys for DET-E2E-105, DET-E2E-106, and DET-E2E-252.
 
   These tests give the model adversarial tasks and judge durable outcomes. They
   never redefine, mock, replay, or script model behavior."
@@ -28,47 +28,73 @@
 (defn- usage-total [usage]
   (long (or (:total-tokens usage) (:total_tokens usage) 0)))
 
-(deftest det-e2e-228-real-model-checkpointed-multi-iteration
+(deftest det-e2e-252-real-model-checkpointed-multi-iteration
   (testing "a pinned real model crosses a durable yield and finishes from prior state"
     (live/with-real-openrouter
       (live/register-openrouter!)
       (h/with-async-test-context
         [ctx {:context {:llm-provider :openrouter :model live/openrouter-model}}]
-        (let [{:keys [sheet-id]} (live/build-recursive-rlm!
-                                  ctx {:name "det-e2e-228-checkpointed"
-                                       :instruction
-                                       (str "Use at least two Phase-1 iterations. In the first iteration call "
-                                            "(store! :evidence \"CHECKPOINTED\") and do not call final!. "
-                                            "In the next iteration read :evidence and call final! with "
-                                            "{:answer evidence}. Return exactly CHECKPOINTED.")
-                                       :writes [:answer]
-                                       :max-iterations 5
-                                       :rlm {:checkpointed? true
-                                             :quantum {:max-iterations 1}
-                                             :timeouts {:provider-ms 60000
-                                                        :iteration-ms 90000
-                                                        :phase2-ms 90000
-                                                        :campaign-ms 180000}}})
+        (let [{:keys [sheet-id node-id]} (live/build-recursive-rlm!
+                                          ctx {:name "det-e2e-252-checkpointed"
+                                               :instruction
+                                               (str "Use at least two Phase-1 iterations. In the first iteration call "
+                                                    "(store! :evidence \"CHECKPOINTED\") and do not call final!. "
+                                                    "In the next iteration read :evidence and call final! with "
+                                                    "{:answer evidence}. Return exactly CHECKPOINTED.")
+                                               :writes [:answer]
+                                               :max-iterations 5
+                                               :rlm {:checkpointed? true
+                                                     :quantum {:max-iterations 1}
+                                                     :timeouts {:provider-ms 60000
+                                                                :iteration-ms 90000
+                                                                :phase2-ms 90000
+                                                                :campaign-ms 180000}}})
               started-at-ms (System/currentTimeMillis)
               result (sheet/execute ctx sheet-id {:question "Perform the checkpoint audit."}
                                     :timeout-ms 180000
                                     :llm-call-budget 6)
               elapsed-ms (- (System/currentTimeMillis) started-at-ms)
-              tick-id (:trace-id result)
-              events (root-events ctx tick-id)
-              checkpoints (filter #(= :rlm/researcher-checkpointed (:event/type %)) events)]
+              tick-id (:trace-id result)]
           (is (= :success (:status result)) (pr-str result))
           (is (= "CHECKPOINTED" (get-in result [:outputs :answer])))
-          (is (seq checkpoints) "at least one iteration crossed a durable yield")
-          (is (every? #(number? (get-in % [:checkpoint :history 0 :provider-latency-ms]))
-                      checkpoints))
           (is (pos? elapsed-ms) "the live journey records end-to-end latency")
-          (is (h/settle-until! #(some? (rm/get-trace ctx tick-id))))
-          (let [trace (rm/get-trace ctx tick-id)
+          (is (h/settle-until!
+               #(let [records (rm/get-researcher-iteration-records
+                               ctx sheet-id tick-id node-id)
+                      trace (rm/get-trace ctx tick-id)]
+                  (and (<= 2 (count records))
+                       (some? trace)
+                       (some #{:yield} (map :type (:researcher-events trace)))
+                       (some #{:resume} (map :type (:researcher-events trace)))))))
+          (let [events (root-events ctx tick-id)
+                records (rm/get-researcher-iteration-records
+                         ctx sheet-id tick-id node-id)
+                provider-claims (filter #(= :provider (:kind %))
+                                        (rm/get-researcher-effect-claims
+                                         ctx sheet-id tick-id node-id))
+                trace (rm/get-trace ctx tick-id)
                 iterations (:researcher-iterations trace)]
-            (is (<= 2 (count iterations)))
-            (is (every? #(number? (:provider-latency-ms %)) iterations))
-            (is (every? #(pos? (usage-total (:provider-usage %))) iterations))
+            (is (<= 2 (count records)))
+            (is (= (mapv :iteration-index records)
+                   (vec (range (count records)))))
+            (is (every? #(and (= :success (:status %))
+                              (:generated-code-recorded? %)
+                              (pos? (:duration-ms %)))
+                        records))
+            (is (= records (mapv #(dissoc % :iteration) iterations))
+                "the trace exposes the authoritative durable iteration records")
+            (is (seq (filter #(= :rlm/researcher-resume-state-saved
+                                  (:event/type %))
+                             events))
+                "at least one completed iteration crossed a durable yield")
+            (is (= (count records) (count provider-claims))
+                "each completed iteration has one attributable provider attempt")
+            (is (every? #(= :completed (:status %)) provider-claims))
+            (is (every? #(number? (get-in % [:result :provider-latency-ms]))
+                        provider-claims))
+            (is (every? #(pos? (usage-total
+                                (get-in % [:result :provider-result :usage])))
+                        provider-claims))
             (is (some #{:yield} (map :type (:researcher-events trace))))
             (is (some #{:resume} (map :type (:researcher-events trace))))))))))
 

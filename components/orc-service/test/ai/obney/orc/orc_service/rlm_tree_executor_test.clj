@@ -10,10 +10,13 @@
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.test-helpers :as h]
+            [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
+            [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.todo-processors :as tp-core]
+            [ai.obney.orc.orc-service.core.value-log :as value-log]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.query-processor.interface :as qp]
@@ -1184,3 +1187,144 @@
                    (long (* 0.8 short-timeout))
                    " ms when the dispatch is rejected; took "
                    elapsed " ms — likely deref'd the timeout, indicating the bug")))))))
+
+(deftest stable-child-running-bookend-is-not-reconstructed-as-failure
+  (let [tick-id (random-uuid)
+        registered? (atom false)
+        completion (doto (promise)
+                     (deliver {:status :success
+                               :outputs {:summary "eventual"}
+                               :trace-id tick-id}))
+        events [{:event/type :sheet/tree-tick-started
+                 :tick-id tick-id
+                 :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00Z")}
+                {:event/type :sheet/tree-tick-completed
+                 :tick-id tick-id
+                 :root-status :running
+                 :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00.100Z")}]
+        ctx {:event-store ::fake-store :tenant-id (random-uuid)}]
+    (with-redefs [es/read (fn [& _] events)
+                  runtime/register-completion!
+                  (fn [_]
+                    (reset! registered? true)
+                    completion)]
+      (let [result (tree-executor/execute-tree
+                    '(sheet/final :keys [:summary])
+                    ctx
+                    {:stable-tick-id tick-id :timeout-ms 1000})]
+        (is @registered? "a running bookend must rejoin the existing child")
+        (is (= :success (:status result)) (pr-str result))))))
+
+(deftest running-stable-child-uses-durable-duration-after-await
+  (let [tick-id (random-uuid)
+        started {:event/type :sheet/tree-tick-started
+                 :tick-id tick-id
+                 :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00Z")}
+        running {:event/type :sheet/tree-tick-completed
+                 :tick-id tick-id
+                 :root-status :running
+                 :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00.100Z")}
+        terminal {:event/type :sheet/tree-tick-completed
+                  :tick-id tick-id
+                  :sheet-id (random-uuid)
+                  :root-status :success
+                  :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00.250Z")}
+        events (atom [started running])
+        reads (atom 0)
+        second-reconstruction-read (promise)
+        completion (promise)
+        ctx {:event-store ::fake-store :tenant-id (random-uuid)}]
+    (with-redefs [es/read (fn [& _]
+                           (let [snapshot @events
+                                 read-number (swap! reads inc)]
+                             (when (= 3 read-number)
+                               (deliver second-reconstruction-read true))
+                             snapshot))
+                  runtime/register-completion!
+                  (fn [_]
+                    (doto (Thread.
+                           (fn []
+                             @second-reconstruction-read
+                             (reset! events [started running terminal])
+                             (deliver completion {:status :success
+                                                  :outputs {:summary "eventual"}
+                                                  :trace-id tick-id})))
+                      (.setDaemon true)
+                      (.start))
+                    completion)]
+      (let [result (tree-executor/execute-tree
+                    '(sheet/final :keys [:summary])
+                    ctx
+                    {:stable-tick-id tick-id :timeout-ms 1000})]
+        (is (= :success (:status result)) (pr-str result))
+        (is (= 250 (:duration-ms result)) (pr-str result))))))
+
+(deftest reconstructed-stable-child-retains-durable-duration
+  (let [tick-id (random-uuid)
+        events [{:event/type :sheet/tree-tick-started
+                 :tick-id tick-id
+                 :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00Z")}
+                {:event/type :sheet/tree-tick-completed
+                 :tick-id tick-id
+                 :sheet-id (random-uuid)
+                 :root-status :success
+                 :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00.250Z")}]
+        ctx {:event-store ::fake-store :tenant-id (random-uuid)}]
+    (with-redefs [es/read (fn [& _] events)]
+      (let [result (tree-executor/execute-tree
+                    '(sheet/final :keys [:summary])
+                    ctx
+                    {:stable-tick-id tick-id :timeout-ms 1000})]
+        (is (= :success (:status result)) (pr-str result))
+        (is (= 250 (:duration-ms result)) (pr-str result))))))
+
+(deftest child-reconstruction-paths-share-terminal-status-table
+  (let [tick-id (random-uuid)
+        sheet-id (random-uuid)
+        started {:event/type :sheet/tree-tick-started
+                 :tick-id tick-id
+                 :sheet-id sheet-id
+                 :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00Z")}
+        ctx {:event-store ::fake-store :tenant-id (random-uuid)}
+        terminal-statuses [:success :failure :tree-generated :partial :timeout :blocked
+                           :cancelled]]
+    (doseq [root-status terminal-statuses]
+      (testing (str root-status " maps identically through both durable reconstruction paths")
+        (let [events [started
+                      {:event/type :sheet/tree-tick-completed
+                       :tick-id tick-id
+                       :sheet-id sheet-id
+                       :root-status root-status
+                       :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00.250Z")}]]
+          (with-redefs [es/read (fn [& _] events)
+                        rm/get-tick-execution-context (fn [& _] nil)
+                        value-log/final-values (fn [& _] {})
+                        value-log/final-sources (fn [& _] {})]
+            (let [stable-result (tree-executor/execute-tree
+                                 '(sheet/final :keys [:summary])
+                                 ctx
+                                 {:stable-tick-id tick-id :timeout-ms 1000})
+                  runtime-result (runtime/durable-terminal-result ctx tick-id)]
+              (is (= root-status (:status stable-result)) (pr-str stable-result))
+              (is (= root-status (:status runtime-result)) (pr-str runtime-result)))))))
+    (testing ":running is intermediate through both durable reconstruction paths"
+      (let [registered? (atom false)
+            completion (doto (promise)
+                         (deliver {:status :success :trace-id tick-id}))
+            events [started
+                    {:event/type :sheet/tree-tick-completed
+                     :tick-id tick-id
+                     :sheet-id sheet-id
+                     :root-status :running
+                     :event/timestamp (java.time.Instant/parse "2026-01-01T00:00:00.250Z")}]]
+        (with-redefs [es/read (fn [& _] events)
+                      runtime/register-completion! (fn [_]
+                                                     (reset! registered? true)
+                                                     completion)]
+          (let [stable-result (tree-executor/execute-tree
+                               '(sheet/final :keys [:summary])
+                               ctx
+                               {:stable-tick-id tick-id :timeout-ms 1000})]
+            (is @registered? "stable reconstruction must await a running child")
+            (is (= :success (:status stable-result)) (pr-str stable-result))
+            (is (nil? (runtime/durable-terminal-result ctx tick-id)))))))))

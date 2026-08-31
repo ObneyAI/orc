@@ -107,8 +107,8 @@
 ;; Fixtures — the emitted worked-DSL is a pure S-expr (matches seed shape).
 ;; ---------------------------------------------------------------------------
 (def ^:private emitted-tree
-  "A pure-data emitted S-expr tree (what emit-tree! produces as
-   :generated-tree-raw and the bookend sanitizes before durable storage)."
+  "A pure-data emitted S-expr tree (what emit-tree! captures before compiling
+   a separate executable representation)."
   [:sequence
    [:llm {:reads [:doc] :writes [:summary]}]
    [:final {:keys [:summary]}]])

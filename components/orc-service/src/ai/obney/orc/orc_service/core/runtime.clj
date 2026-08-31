@@ -8,6 +8,7 @@
   (:require [ai.obney.orc.orc-service.core.read-models :as rm]
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.profile :as profile]
+            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
             [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
@@ -538,6 +539,22 @@
   [tick-id]
   (swap! completion-registry dissoc tick-id))
 
+(defn terminal-root-status->result-status
+  "Map a durable tree root status to the public result status shared by live
+   and replay reconstruction. A :running completion is an intermediate retick
+   bookend, so it has no terminal result."
+  [root-status]
+  (case root-status
+    :running nil
+    :success :success
+    :failure :failure
+    :tree-generated :tree-generated
+    :partial :partial
+    :timeout :timeout
+    :blocked :blocked
+    :cancelled :cancelled
+    :failure))
+
 (defn durable-terminal-result
   "Reconstruct the result of an already-terminal tick from durable facts.
    This is the process-recovery path for callers reattaching after the
@@ -546,27 +563,24 @@
   (when event-store
     (when-let [completion
                (last (filter #(and (= :sheet/tree-tick-completed (:event/type %))
-                                   (not= :running (:root-status %)))
+                                   (some? (terminal-root-status->result-status
+                                           (:root-status %))))
                              (into [] (es/read event-store
                                                {:tenant-id tenant-id
                                                 :types #{:sheet/tree-tick-completed}
                                                 :tags #{[:tick tick-id]}}))))]
-      (let [tick-ctx (rm/get-tick-execution-context context tick-id)]
-        (cond-> {:status (case (:root-status completion)
-                           :success :success
-                           :failure :failure
-                           :partial :partial
-                           :timeout :timeout
-                           :blocked :blocked
-                           :tree-generated :tree-generated
-                           :failure)
-                 :outputs (value-log/final-values context tenant-id tick-id)
-                 :output-sources (value-log/final-sources context tenant-id tick-id)
+      (let [tick-ctx (rm/get-tick-execution-context context tick-id)
+            status (terminal-root-status->result-status
+                    (:root-status completion))]
+        (cond-> {:status status
                  :trace-id tick-id
                  :error (:error completion)
                  :configured-max-ticks (:configured-max-ticks completion)
                  :consumed-ticks (:consumed-ticks completion)
                  :terminal-reason (:terminal-reason completion)}
+          (not= :timeout status)
+          (assoc :outputs (value-log/final-values context tenant-id tick-id)
+                 :output-sources (value-log/final-sources context tenant-id tick-id))
           (:version-number tick-ctx)
           (assoc :executed-version (:version-number tick-ctx))
           (= :blocked (:root-status completion))
@@ -576,8 +590,19 @@
 ;; Public API
 ;; =============================================================================
 
+(defn- latest-researcher-frontier-epoch
+  [{:keys [event-store tenant-id]} sheet-id tick-id node-id]
+  (transduce
+   (map :ownership-epoch)
+   max
+   0
+   (es/read event-store
+            {:tenant-id tenant-id
+             :types #{:rlm/researcher-frontier-claimed}
+             :tags #{(researcher-effects/campaign-tag sheet-id tick-id node-id)}})))
+
 (defn resume-in-progress!
-  "Resume abandoned leaf and delegate frontiers from durable execution state.
+  "Resume abandoned leaf, delegate, and researcher frontiers from durable state.
 
    Intended to be called after todo processors have been rebuilt against the
    same event store. Completed nodes are never re-enqueued. Each recovery start
@@ -594,28 +619,41 @@
                                            :tags #{[:tick tick-id]}}))]
         (keep
          (fn [node-id]
-           (when (contains? #{:leaf :delegate} (:type (get nodes-by-id node-id)))
-             (when-let [start (last (filter #(and (= :sheet/node-execution-started
-                                                      (:event/type %))
-                                                   (= node-id (:node-id %)))
-                                             tick-events))]
-               (when-not (:resumed-from-event-id start)
-                 (let [result (cp/process-command
-                             (assoc context :command
-                                    {:command/id (random-uuid)
-                                     :command/timestamp (time/now)
-                                     :command/name :sheet/resume-node-execution
-                                     :sheet-id sheet-id
-                                     :tick-id tick-id
-                                     :node-id node-id
-                                     :original-start-event-id (:event/id start)
-                                     :inputs (:inputs start)}))]
-                 {:tick-id tick-id
-                  :sheet-id sheet-id
-                  :node-id node-id
-                  :original-start-event-id (:event/id start)
-                  :resumed? (boolean (seq (:command-result/events result)))
-                  :command-result result})))))
+           (let [node-type (:type (get nodes-by-id node-id))]
+             (when (contains? #{:leaf :delegate :repl-researcher} node-type)
+               (when-let [start (last (filter #(and (= :sheet/node-execution-started
+                                                        (:event/type %))
+                                                     (= node-id (:node-id %)))
+                                               tick-events))]
+                 (when-not (:resumed-from-event-id start)
+                   (let [researcher-ownership-epoch
+                         (when (= :repl-researcher node-type)
+                           (inc (latest-researcher-frontier-epoch
+                                 context sheet-id tick-id node-id)))
+                         command
+                         (cond-> {:command/id (random-uuid)
+                                  :command/timestamp (time/now)
+                                  :command/name :sheet/resume-node-execution
+                                  :sheet-id sheet-id
+                                  :tick-id tick-id
+                                  :node-id node-id
+                                  :original-start-event-id (:event/id start)
+                                  :inputs (:inputs start)}
+                           researcher-ownership-epoch
+                           (assoc :researcher-ownership-epoch
+                                  researcher-ownership-epoch))
+                         result (cp/process-command
+                                 (assoc context :command command))]
+                     (cond-> {:tick-id tick-id
+                              :sheet-id sheet-id
+                              :node-id node-id
+                              :original-start-event-id (:event/id start)
+                              :resumed? (boolean
+                                         (seq (:command-result/events result)))
+                              :command-result result}
+                       researcher-ownership-epoch
+                       (assoc :researcher-ownership-epoch
+                              researcher-ownership-epoch))))))))
          nodes-in-progress)))
     (rm/get-all-active-executions context))))
 

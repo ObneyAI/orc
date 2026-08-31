@@ -67,14 +67,14 @@ present, while `allium analyse` returns success when those diagnostics produce
 no process findings. Thus “zero errors” above does not mean
 `allium check specs` exits cleanly. Under the current checked-in specifications
 and Allium CLI, both
-`allium check specs` and `allium analyse specs` report 125 structural diagnostics
-across the twelve specifications: 90 informational and 35 warnings. `analyse`
+`allium check specs` and `allium analyse specs` report 142 structural diagnostics
+across the twelve specifications: 107 informational and 35 warnings. `analyse`
 reports zero process findings.
 
 | Diagnostic | Count | Interpretation |
 |---|---:|---|
-| `allium.rule.unreachableTrigger` | 56 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
-| `allium.field.unused` | 34 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
+| `allium.rule.unreachableTrigger` | 71 | Internal event-processor callbacks modeled as domain triggers; intentionally not exposed as local surface operations |
+| `allium.field.unused` | 36 | Distilled public/domain state not yet referenced by a modeled rule or surface; retained as coverage, but should be reduced when the model can express its use |
 | `allium.externalEntity.missingSourceHint` | 16 | External system or consumer boundaries without an imported governing specification; accepted pending stable cross-repository coordinates |
 | `allium.definition.unused` | 17 | Distilled boundary value shapes not yet referenced by a modeled surface or rule; candidates for connection or removal during tending |
 | `allium.entity.unused` | 2 | Distilled entities not yet connected to the process model; candidates for connection or removal during tending |
@@ -356,14 +356,17 @@ execute once each, retain rehydratable per-invocation trace inputs and outputs,
 reject duplicate completion delivery, and resume from durable child state after
 an interruption before parent continuation.
 
-## Checkpointed researcher execution (designed 2026-08-25)
+## Checkpointed researcher execution
 
-The ORC service specification now defines opt-in checkpointed researcher
-campaigns: per-iteration checkpoints, durable external-action frontiers, stable
+The landed PR #36 runtime supplies opt-in checkpointed researcher campaigns.
+The RR-Durable target specification promotes checkpointing to the recursive
+default only after the producer spine is complete, with explicit opt-out
+compatibility. Together the landed foundation and target contract cover
+per-iteration checkpoints, durable external-action frontiers, stable
 provider/tool/child identities, checkpoint-safe tool idempotency, durable sandbox
 value constraints, independently composed deadlines, in-place continuation,
 automatic restart recovery, fenced resume ownership, blocking and cancellation,
-and ordered iteration trace reconstruction. Existing non-checkpointed researcher
+and ordered iteration trace reconstruction. Explicitly opted-out researcher
 behavior remains the compatibility path.
 
 The opt-in runtime path is now implemented with checkpoint/action events and
@@ -380,23 +383,59 @@ provider-latency, usage, and trace assertions. The complete live recursive-
 researcher namespace also passed 3 tests and 32 assertions, including generated-
 child recovery and nested call-budget enforcement.
 
-DET-E2E-210 through DET-E2E-227 remain open until each complete
-integration-shaped obligation is executed and recorded. DET-E2E-210 through DET-E2E-217 cover
+DET-E2E-234 through DET-E2E-251 remain open until each complete
+integration-shaped obligation is executed and recorded. DET-E2E-234 through DET-E2E-241 cover
 yield/retick, real restart, idempotency windows, child incorporation, timeout
 boundaries, sandbox replay, blocking/cancellation/concurrency, and unfinished-
-campaign tracing. DET-E2E-218 through DET-E2E-227 add the complete crash-window
+campaign tracing. DET-E2E-242 through DET-E2E-251 add the complete crash-window
 matrix plus checkpoint, continuation, restart, replay, storage, concurrency,
 large-value, deadline, compatibility-regression, and soak measurements with
 recorded percentile distributions and raw benchmark evidence. Until those
 obligations pass through the public command/event/projection boundary, the
 focused coverage above must not be represented as exhaustive recovery or
 performance qualification.
-DET-E2E-228 is closed by the live multi-quantum state-reuse journey above.
-DET-E2E-229 through DET-E2E-233 remain open for generated-child recovery,
+DET-E2E-252 is closed by the live multi-quantum state-reuse journey above.
+DET-E2E-253 through DET-E2E-257 remain open for generated-child recovery,
 checkpoint-safe tool deduplication, clean-JVM automatic recovery, live provider
 timeout evidence, and checkpointed-versus-compatibility benchmark comparison.
 These journeys complement the deterministic suite and are not substitutes for
 crash-boundary correctness proofs.
+
+## Claim-before-effect campaign fence
+
+DET-E2E-261 closes the same-frontier claim race through schema-validated Grain
+commands and the public checkpointed researcher boundary. Frontier, claim, and
+completion events share the campaign tag; the store admits one same-epoch claim,
+rejects the racing claimant before its injected effect, and rejects stale claims,
+stale completions, and stale version-2 checkpoint commits after the frontier
+advances. The claim projection moves the admitted claim from `:claimed` to
+`:completed` without manufacturing a second claim.
+
+Content-derived logical identities are canonical across reordered maps and sets,
+distinguish EDN collection types, incorporate durable generated-code source when
+applicable, and exclude attempt order. Attempt identities are derived from the
+logical identity, ownership epoch, and non-negative attempt ordinal. Public
+provider, inline-provider, context-aware three-argument checkpoint-safe tool,
+generated-child, and behavior-mint paths all append the claim before dispatch;
+repeated identical content rejoins the completed logical action. A missing or
+two-argument effectful caller is rejected before model dispatch, effect claim,
+or tool invocation, leaving both raw and projected claims empty. The focused
+namespace passed 21 tests and 154 assertions, the public same-frontier race
+passed 10 repeated runs and 120 assertions, and eight affected namespaces passed
+168 tests and 836 assertions. The final
+`clojure -M:poly test brick:orc-service` proof passed both consuming project
+contexts with exit 0 in 15 minutes 38 seconds. Its first attempt exposed a
+timeout-result reconstruction race outside RR-7; the strengthened DET-E2E-029
+replay proof and repair are recorded in the RR-7 inspection report rather than
+hidden behind the green rerun.
+
+All 18 RR-7 obligations have executable witnesses and are represented in the
+current `allium plan` output. The repository-wide Allium result remains at the
+characterized 35-warning, 107-information, zero-error baseline with zero process
+findings. The former RR-2/RR-7 divergence is resolved: checkpointed effectful
+tools require the context-aware three-argument caller demanded by
+`CheckpointSafeToolsShareIdempotencyKeys`; two-argument compatibility remains
+outside that boundary.
 
 ## Monotonic terminal-trace refresh
 
