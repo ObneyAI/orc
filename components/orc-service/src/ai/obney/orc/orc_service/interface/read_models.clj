@@ -92,6 +92,11 @@
   [ctx tick-id]
   (core/get-tick ctx tick-id))
 
+(defn get-researcher-campaign
+  "Get the durable lifecycle of one checkpointed researcher campaign."
+  [ctx tick-id node-id]
+  (core/get-researcher-campaign ctx tick-id node-id))
+
 ;; =============================================================================
 ;; Version Read Model Functions
 ;; =============================================================================

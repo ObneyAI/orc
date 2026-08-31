@@ -61,17 +61,23 @@ appending tenant and cross-tenant reads are forbidden.
 - **Relocate the strong guarantee to where the callee participates** — chosen.
   ORC mints a per-frontier claim epoch in its own event stream and makes every
   durable write conditional on it, so ORC's own store becomes the resource that
-  checks the token. Effects whose callee is ORC itself — generated children,
-  checkpoint-safe tools, behavior mints — become exactly-once through
-  content-derived action identities claimed before dispatch. The provider call
-  becomes bounded, attributed waste rather than a correctness risk.
+  checks the token. Effects whose callee participates — generated children,
+  context-aware checkpoint-safe tools, and behavior mints — become exactly-once
+  through content-derived action identities claimed before dispatch. A
+  checkpointed effectful tool caller must accept the three-argument context
+  carrying the stable key; two-argument compatibility remains outside that
+  boundary. The provider call becomes bounded, attributed waste rather than a
+  correctness risk.
 
 ## Consequences
 
 - Campaign state is exactly-once. A superseded worker's result cannot land,
   because its epoch is rejected by the store.
-- Generated children, checkpoint-safe tool calls, and behavior mints are
-  exactly-once, because ORC is the callee and the claim precedes the dispatch.
+- Generated children, participating checkpoint-safe tool calls, and behavior
+  mints are exactly-once because the claim precedes dispatch and their callees
+  deduplicate the stable identity. Checkpointed effectful tools require the
+  context-aware three-argument caller; a missing or incompatible caller is
+  rejected before model dispatch, effect claim, or external effect.
 - Provider calls are at-least-once, bounded by the number of ownership epochs a
   quantum crosses — in practice two for a single handoff.
 - Every indeterminate provider call is durably recorded and attributable to the
@@ -81,10 +87,14 @@ appending tenant and cross-tenant reads are forbidden.
   logical action, and is not surfaced to the model. The model did not fail; the
   process did, and feeding infrastructure noise into its reasoning history
   teaches it a false lesson about its own work.
-- The idempotency key ORC supplies to tools remains meaningful at ORC's own
-  boundary and must not be described anywhere as provider deduplication.
+- The idempotency key ORC supplies through the three-argument tool context
+  remains meaningful at the participating tool boundary and must not be
+  described anywhere as provider deduplication.
 - Logical action identity must be derived from content inside the durable step
-  and exclude the attempt. Every physical dispatch has a separate attempt
+  and exclude the attempt. Actions originating in generated code include that
+  durable source hash. The outer provider call that produces code is instead
+  keyed by canonical request/module inputs and provider/model target, never by
+  its not-yet-produced response. Every physical dispatch has a separate attempt
   identity derived from the logical identity, ownership epoch and attempt
   ordinal. Execution-order-only identities change on replay and can return a
   recorded result for a different call.

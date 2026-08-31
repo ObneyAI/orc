@@ -371,9 +371,14 @@ contract CheckpointedResearcherExecution {
     @invariant StableLogicalActionsPreventDuplicateWork
         -- Every provider call, inline provider primitive, inline tool call,
         -- behavior mint and generated child tree has a stable logical action
-        -- identity derived from campaign/tick, node, iteration, code hash,
-        -- effect kind, target or tool, and canonical arguments. It excludes the
-        -- attempt and the order in which the campaign happened to reach it.
+        -- identity derived from campaign/tick, node, iteration, effect kind,
+        -- target or tool, and canonical request or arguments. An action that
+        -- originates in generated code additionally includes that code's
+        -- durable source hash. The outer provider call that produces code is
+        -- keyed by its canonical request or module inputs and provider/model
+        -- target, never by its not-yet-produced response. Logical identity
+        -- excludes the attempt and the order in which the campaign happened to
+        -- reach it.
         -- Every physical dispatch has a distinct attempt identity derived from
         -- that logical identity, the ownership epoch and its attempt ordinal.
         -- Retries remain recognisably the same logical action while every spend
@@ -394,8 +399,12 @@ contract CheckpointedResearcherExecution {
         -- when its bound contract explicitly declares checkpoint safety. ORC
         -- supplies that logical action's stable idempotency key through the tool
         -- execution context on every attempt; the tool is responsible for
-        -- deduplicating the external effect. A tool that does not declare this
-        -- capability is rejected before its effect begins.
+        -- deduplicating the external effect. The checkpointed caller must accept
+        -- that context. A missing caller, a caller that cannot receive it, or a
+        -- tool that does not declare checkpoint safety, is rejected before any
+        -- effect claim or effect.
+        -- Two-argument caller compatibility remains available only outside the
+        -- checkpointed effect boundary.
 
     @invariant CompletedChildrenAreIncorporatedOnce
         -- A generated child receives stable logical action and child execution

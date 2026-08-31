@@ -257,9 +257,13 @@ All options accepted by the `repl-researcher` node and the `:rlm` config map.
 Checkpointed researchers may call only tools whose `:tool-contracts` entry
 declares `:checkpoint-safe? true`. ORC supplies a stable
 `:orc/idempotency-key` in the tool context for the logical iteration/action;
-the tool implementation must use that key to deduplicate its external effect.
-ORC durably preserves the identity, while the effect owner remains responsible
-for enforcing idempotency at the external boundary.
+the checkpointed caller must therefore implement the context-aware
+three-argument contract `(tool-name arguments tool-context)`, and the tool must
+use that key to deduplicate its external effect. A two-argument caller remains
+compatible outside the checkpointed effect boundary, but checkpointed execution
+rejects a missing or incompatible caller before model dispatch, effect claim, or
+tool invocation. ORC durably preserves the identity, while the effect owner
+remains responsible for enforcing idempotency at the external boundary.
 
 Applications may register codecs in the execution context under
 `:researcher-checkpoint-codecs`. Each codec provides a durable `:tag`, a
@@ -914,8 +918,8 @@ Per the Grain methodology — every event is monitorable.
 | `:sheet/node-execution-completed` | Every node finishes | `:status`, `:write-keys` + `:write-profile`, `:read-keys` + `:input-profile`, `:duration-ms`, `:usage`, optional `:partial-summary`. Shape only — the VALUES live on `:sheet/execution-value-written` |
 | `:sheet/execution-value-written` | Every blackboard write (canonical) | `:key`, inline `:value` or external `:value-reference`, `:node-id`, `:exec-context` — the last two attribute a value to one node *execution*, so map-each iterations stay distinct |
 | `:sheet/rlm-tree-node-completed` | Per-node inside RLM Phase 2 trees | Structured `:node-path`, `:usage`, `:input-profile` |
-| `:sheet/rlm-tree-execution-completed` | Bookend per Phase 2 tree | `:trajectory` (full per-event log), `:total-usage`, `:task-fingerprint` placeholder |
-| `:rlm/tree-generated` | When the researcher emitted a tree (Phase-2 will execute) | `:tree-id`, `:execution-id`, `:raw-dsl` (inline-fns sanitized to `"<inline-fn>"`), `:generated-at` |
+| `:sheet/rlm-tree-execution-completed` | Bookend per Phase 2 tree | `:trajectory` (full per-event log), `:total-usage`, `:generated-tree`, `:generated-tree-source` (exact pre-compilation EDN), `:task-fingerprint` placeholder |
+| `:rlm/tree-generated` | When the researcher emitted a tree (Phase-2 will execute) | `:tree-id`, `:execution-id`, `:raw-dsl`, `:source-edn` (exact quoted source captured before compilation), `:generated-at` |
 
 These are the **durable** event bodies. Resolve values from them with
 `ai.obney.orc.orc-service.core.value-log` (`writes-for`, `latest-values`) — see

@@ -95,7 +95,8 @@ is not traded away for speed.
   [finding](../../build-timeline/prototype-findings/RR-P1-generated-code-source-capture.md).
 - **RR-P2** — if the compare-and-swap predicate cannot express the epoch condition atomically on a backend we ship, the
   fence's state guarantee is unavailable and the decision returns to the grill. **Ratified:** in-memory, SQLite and
-  Postgres all rejected superseded epochs before append under their real atomic boundary. See the
+  Postgres all enforce the corrected campaign-scoped frontier predicate: stale-new-action and stale-outcome writes are
+  rejected, and 50/50 same-epoch races per backend produce exactly one claim. See the
   [finding](../../build-timeline/prototype-findings/RR-P2-real-store-claim-epoch-cas.md).
 
 The current Allium CLI does not emit executable obligations for these prototype questions. Their falsification criteria,

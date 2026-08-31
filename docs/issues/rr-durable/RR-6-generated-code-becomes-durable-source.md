@@ -21,11 +21,11 @@ the real fix.
 
 ## Acceptance criteria
 
-- [ ] Code inside an emitted tree is durably recorded as source, not a placeholder
-- [ ] A recorded tree can be emitted again and executes equivalently
-- [ ] A campaign whose tree contains inline code checkpoints and resumes without the sanitize stopgap
-- [ ] The stopgap guard is removed, and its regression test still passes against the real fix
-- [ ] A restart reconstructs inline functions from the durable source rather than a process-local registry
+- [x] Code inside an emitted tree is durably recorded as source, not a placeholder
+- [x] A recorded tree can be emitted again and executes equivalently
+- [x] A campaign whose tree contains inline code checkpoints and resumes without the sanitize stopgap
+- [x] The stopgap guard is removed, and its regression test still passes against the real fix
+- [x] A restart reconstructs inline functions from the durable source rather than a process-local registry
 
 ## Spec obligations covered
 

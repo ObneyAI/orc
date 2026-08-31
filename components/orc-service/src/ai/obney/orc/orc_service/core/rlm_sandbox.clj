@@ -23,6 +23,7 @@
    (what the LLM sees). Large data stays in variable space; only sliced data
    goes to sub-LLM calls."
   (:require [sci.core :as sci]
+            [clojure.walk :as walk]
             [clojure.string :as str]
             [clojure.set]
             [ai.obney.orc.llm.interface :as llm]
@@ -33,6 +34,7 @@
             [ai.obney.orc.orc-service.core.sci-sandbox :as base-sandbox]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
+            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
             [com.brunobonacci.mulog :as u])
   (:import [java.io StringWriter]))
@@ -159,7 +161,14 @@
    executor.clj's build-field behavior for Phase-2 leaf nodes."
   [name opts context]
   (let [{:keys [instruction writes model reads]} opts
-        {:keys [provider blackboard sandbox-vars usage-tracker reserve-llm-call!]} context
+        {:keys [provider blackboard sandbox-vars usage-tracker reserve-llm-call!
+                durable-source-required? tick-id node-id researcher-iteration
+                generated-code-hash researcher-ownership-epoch
+                effect-attempt-ordinal claim-researcher-effect!
+                complete-researcher-effect!
+                completed-researcher-effects
+                encode-researcher-effect-value]} context
+        encode-effect-value (or encode-researcher-effect-value identity)
         ;; Build inputs from reads - pass FULL values (no truncation)
         ;; The generated code manages chunk sizes; we don't second-guess it
         inputs (reduce (fn [acc k]
@@ -190,23 +199,63 @@
         ;; The :model rides through llm into the litellm router as a
         ;; per-request override.
         llm-options (cond-> {:validate? false :with-metadata? true}
-                         model (assoc :model model))]
+                      model (assoc :model model))
+        logical-action-identity
+        (when durable-source-required?
+          (researcher-effects/logical-action-identity
+           {:tick-id tick-id
+            :node-id node-id
+            :iteration-index researcher-iteration
+            :generated-code-hash generated-code-hash
+            :kind :provider
+            :target (encode-effect-value
+                     {:provider provider :model model :name name})
+            :arguments (encode-effect-value
+                        {:module module
+                         :inputs inputs
+                         :options llm-options})}))
+        attempt-identity
+        (when logical-action-identity
+          (researcher-effects/attempt-identity
+           logical-action-identity
+           researcher-ownership-epoch
+           effect-attempt-ordinal))
+        completed-effect
+        (when (and logical-action-identity completed-researcher-effects)
+          (get @completed-researcher-effects logical-action-identity))]
 
     (u/trace ::rlm-llm-primitive
       {:name name :writes writes :model model}
       (try
-        (when-let [exceeded (and reserve-llm-call! (reserve-llm-call!))]
+        (when-let [exceeded (and (nil? completed-effect)
+                                 reserve-llm-call!
+                                 (reserve-llm-call!))]
           (throw (ex-info
                   (str "LLM call budget exceeded: "
                        (:current exceeded) "/" (:budget exceeded))
                   exceeded)))
+        (when (and logical-action-identity (nil? completed-effect))
+          (let [claim-result
+                (claim-researcher-effect!
+                 {:iteration-index researcher-iteration
+                  :logical-action-identity logical-action-identity
+                  :attempt-identity attempt-identity
+                  :attempt-ordinal effect-attempt-ordinal
+                  :kind :provider})]
+            (when (:cognitect.anomalies/category claim-result)
+              (throw (ex-info "Researcher inline-provider claim conflicted"
+                              {:claim-result claim-result
+                               :logical-action-identity logical-action-identity
+                               :attempt-identity attempt-identity})))))
         ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
-        (let [result (llm/predict provider module inputs llm-options)
+        (let [result (if completed-effect
+                       (:result completed-effect)
+                       (llm/predict provider module inputs llm-options))
               outputs (or (:outputs result) result)
               usage (:usage result)
               ;; Aggregate usage into tracker if provided
               ;; Handle both snake_case (raw API) and kebab-case (llm normalized) keys
-              _ (when (and usage-tracker usage)
+              _ (when (and (nil? completed-effect) usage-tracker usage)
                   (swap! usage-tracker
                          (fn [u]
                            {:prompt-tokens (+ (:prompt-tokens u 0)
@@ -215,6 +264,22 @@
                                                   (or (:completion-tokens usage) (:completion_tokens usage) 0))
                             :total-tokens (+ (:total-tokens u 0)
                                              (or (:total-tokens usage) (:total_tokens usage) 0))})))]
+          (when (and logical-action-identity (nil? completed-effect))
+            (let [completion-result
+                  (complete-researcher-effect!
+                   {:logical-action-identity logical-action-identity
+                    :attempt-identity attempt-identity
+                    :result (encode-effect-value result)})]
+              (when (:cognitect.anomalies/category completion-result)
+                (throw (ex-info "Researcher inline-provider outcome lost ownership"
+                                {:completion-result completion-result
+                                 :logical-action-identity logical-action-identity
+                                 :attempt-identity attempt-identity})))))
+          (when (and logical-action-identity
+                     (nil? completed-effect)
+                     completed-researcher-effects)
+            (swap! completed-researcher-effects assoc logical-action-identity
+                   {:status :completed :result result}))
           ;; Return map with write keys (for sandbox-vars merge)
           (reduce (fn [acc k]
                     (assoc acc k (get outputs k)))
@@ -316,9 +381,21 @@
   [{:keys [provider blackboard declared-writes optional-writes parent-trace-id
            call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
            recursive? event-store tenant-id cache
-           sheet-id tick-id command-registry reserve-llm-call!] :as context}]
+           sheet-id tick-id command-registry reserve-llm-call!
+           durable-source-required? node-id researcher-iteration
+           generated-code-hash researcher-ownership-epoch
+           effect-attempt-ordinal claim-researcher-effect!
+           complete-researcher-effect!
+           completed-researcher-effects
+           encode-researcher-effect-value] :as context}]
   (let [;; Atom to capture final! output
         final-output (atom nil)
+
+        ;; emit-tree! is itself installed while the SCI context is being built.
+        ;; Keep the eventual context behind an atom so quoted inline code forms
+        ;; can be compiled by the exact same SCI environment that evaluated the
+        ;; provider's code, while their authored forms remain untouched.
+        sci-ctx* (atom nil)
 
         ;; Atom to track sandbox variables (for llm :reads)
         ;; Use provided atom or create new one
@@ -333,7 +410,20 @@
                       :blackboard blackboard
                       :parent-trace-id parent-trace-id
                       :usage-tracker usage-tracker
-                      :reserve-llm-call! reserve-llm-call!}
+                      :reserve-llm-call! reserve-llm-call!
+                      :durable-source-required? durable-source-required?
+                      :tick-id tick-id
+                      :node-id node-id
+                      :researcher-iteration researcher-iteration
+                      :generated-code-hash generated-code-hash
+                      :researcher-ownership-epoch researcher-ownership-epoch
+                      :effect-attempt-ordinal effect-attempt-ordinal
+                      :encode-researcher-effect-value
+                      encode-researcher-effect-value
+                      :claim-researcher-effect! claim-researcher-effect!
+                      :complete-researcher-effect! complete-researcher-effect!
+                      :completed-researcher-effects
+                      completed-researcher-effects}
 
         ;; Build input previews for token space
         inputs-preview (build-inputs-preview blackboard)
@@ -547,14 +637,46 @@
         ;; 2. Storage in ontology for learning
         ;; 3. Execution in phase 2
         emit-tree!-fn (fn [tree]
-                        ;; Validate and transform the tree
-                        (let [canonical (rlm-dsl/rlm-dsl->orc-dsl tree)]
+                        (let [live-inline-closure?
+                              (boolean
+                               (some (fn [node]
+                                       (and (map-entry? node)
+                                            (= :fn (key node))
+                                            (fn? (val node))))
+                                     (tree-seq coll? seq tree)))]
+                        (when (and durable-source-required? live-inline-closure?)
+                          (throw
+                           (ex-info
+                            (str "Durable emit-tree! code nodes require quoted "
+                                 "(fn ...) source; an already-evaluated closure "
+                                 "cannot be recorded as durable source")
+                            {:requirement :quoted-inline-function-source})))
+                        ;; Preserve the authored source first. Compile only
+                        ;; quoted inline code-node function forms for execution.
+                        (let [executable-tree
+                              (walk/postwalk
+                               (fn [node]
+                                 (if (and (map-entry? node)
+                                          (= :fn (key node))
+                                          (seq? (val node))
+                                          (#{'fn 'fn*} (first (val node))))
+                                   [:fn (sci/eval-form @sci-ctx* (val node))]
+                                   node))
+                               tree)
+                              canonical (rlm-dsl/rlm-dsl->orc-dsl executable-tree)]
                           ;; Store both forms
-                          (swap! sandbox-vars assoc
-                                 :generated-tree canonical
-                                 :generated-tree-raw tree)
+                          (swap! sandbox-vars
+                                 (fn [vars]
+                                   (cond-> (assoc vars :generated-tree canonical)
+                                     (not live-inline-closure?)
+                                     (assoc :generated-tree-raw tree
+                                            :generated-tree-source (pr-str tree))
+
+                                     live-inline-closure?
+                                     (dissoc :generated-tree-raw
+                                             :generated-tree-source))))
                           ;; Return the canonical form
-                          canonical))
+                          canonical)))
 
         ;; R05c — mint-behavior! primitive
         ;;
@@ -600,7 +722,43 @@
                                                       (java.util.UUID/fromString parent)
                                                       (catch Exception _ parent))
                                    :else parent))
-                cmd-result (cp/process-command
+                logical-action-identity
+                (when durable-source-required?
+                  (researcher-effects/logical-action-identity
+                   {:tick-id tick-id
+                    :node-id node-id
+                    :iteration-index researcher-iteration
+                    :generated-code-hash generated-code-hash
+                    :kind :behavior-mint
+                    :target name
+                    :arguments ((or encode-researcher-effect-value identity)
+                                {:name name
+                                 :body body
+                                 :parent parent-as-uuid})}))
+                attempt-identity
+                (when logical-action-identity
+                  (researcher-effects/attempt-identity
+                   logical-action-identity
+                   researcher-ownership-epoch
+                   effect-attempt-ordinal))
+                completed-effect
+                (when (and logical-action-identity completed-researcher-effects)
+                  (get @completed-researcher-effects logical-action-identity))
+                claim-result
+                (when (and logical-action-identity (nil? completed-effect))
+                  (claim-researcher-effect!
+                   {:iteration-index researcher-iteration
+                    :logical-action-identity logical-action-identity
+                    :attempt-identity attempt-identity
+                    :attempt-ordinal effect-attempt-ordinal
+                    :kind :behavior-mint}))
+                _ (when (:cognitect.anomalies/category claim-result)
+                    (throw (ex-info "Researcher behavior-mint claim conflicted"
+                                    {:claim-result claim-result
+                                     :logical-action-identity logical-action-identity
+                                     :attempt-identity attempt-identity})))
+                cmd-result (when-not completed-effect
+                             (cp/process-command
                              (assoc
                                (cond-> {:event-store event-store
                                         :command-registry command-registry
@@ -616,7 +774,11 @@
                                         :provenance :agent-minted
                                         :minted-by-sheet-id sheet-id
                                         :minted-by-tick-id tick-id}
-                                 parent-as-uuid (assoc :parent-behavior parent-as-uuid))))
+                                 logical-action-identity
+                                 (assoc :logical-action-identity logical-action-identity
+                                        :attempt-identity attempt-identity
+                                        :researcher-iteration researcher-iteration)
+                                 parent-as-uuid (assoc :parent-behavior parent-as-uuid)))))
                 ;; QP-1: surface command-processor anomalies. Grain rejects
                 ;; the command (or its emitted events) by returning a
                 ;; cognitect anomaly — :cognitect.anomalies/category +
@@ -625,8 +787,9 @@
                 ;; rejection as success because (:command-result/events
                 ;; <anomaly>) is nil and (str nil) is "". Throw so the
                 ;; sandbox surfaces the error on its next iteration.
-                _ (when (or (:cognitect.anomalies/category cmd-result)
-                            (nil? (:command-result/events cmd-result)))
+                _ (when (and (nil? completed-effect)
+                             (or (:cognitect.anomalies/category cmd-result)
+                                 (nil? (:command-result/events cmd-result))))
                     (throw (ex-info
                              (str "mint-behavior! command rejected: "
                                   (or (:cognitect.anomalies/message cmd-result)
@@ -640,11 +803,31 @@
                 ;; carries the freshly-generated target-id. The event body
                 ;; fields land at the top level of each event map (Grain
                 ;; flattens them), so :target-id is accessed directly.
-                minted-event (->> (:command-result/events cmd-result)
-                                  (filter #(= :ontology/behavioral-subtree-minted
-                                              (:event/type %)))
-                                  first)
-                target-id (:target-id minted-event)]
+                minted-event (when-not completed-effect
+                               (->> (:command-result/events cmd-result)
+                                    (filter #(= :ontology/behavioral-subtree-minted
+                                                (:event/type %)))
+                                    first))
+                target-id (if completed-effect
+                            (:result completed-effect)
+                            (:target-id minted-event))
+                completion-result
+                (when (and logical-action-identity (nil? completed-effect))
+                  (complete-researcher-effect!
+                   {:logical-action-identity logical-action-identity
+                    :attempt-identity attempt-identity
+                    :result (str target-id)}))
+                _ (when (:cognitect.anomalies/category completion-result)
+                    (throw (ex-info "Researcher behavior-mint outcome lost ownership"
+                                    {:completion-result completion-result
+                                     :logical-action-identity logical-action-identity
+                                     :attempt-identity attempt-identity})))
+                _ (when (and logical-action-identity
+                             (nil? completed-effect)
+                             completed-researcher-effects)
+                    (swap! completed-researcher-effects
+                           assoc logical-action-identity
+                           {:status :completed :result (str target-id)}))]
             (str target-id)))
 
         ;; C-Loop-2 S5 — get-description SCI binding.
@@ -800,7 +983,8 @@
                  {:namespaces (merge {'clojure.core safe-core
                                       'user (merge rlm-bindings tool-flat)}
                                      tool-namespaces)
-                  :bindings all-bindings})]
+                  :bindings all-bindings})
+        _ (reset! sci-ctx* sci-ctx)]
 
     ;; Return context with final-output atom accessible
     {:sci-ctx sci-ctx

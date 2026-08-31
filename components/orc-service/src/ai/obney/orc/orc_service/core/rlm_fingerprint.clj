@@ -3,10 +3,8 @@
    emit-tree! S-expression, used to aggregate rolling metrics across
    structurally-equivalent trees.
 
-   The hash is stable across the inline-fn sanitization step (R-3) so
-   that the same logical tree produces the same fingerprint regardless
-   of whether the live SCI fn objects are still resolvable or already
-   replaced with [:fn \"<inline-fn>\"] placeholders.
+   The hash is stable across durable source serialization. It also continues
+   to normalize legacy inline-fn placeholders when replaying older evidence.
 
    Collapsed in normalization (not part of the fingerprint):
    - inline (fn ...) bodies — implementation detail
@@ -22,9 +20,8 @@
 
 (def ^:private fn-placeholder
   "Canonical placeholder for :fn values in the normalized tree. Collapses
-   inline fn values, [:fn \"<inline-fn>\"] markers (sanitize-tree-for-events
-   output), and qualified-symbol-string fn references to the same canonical
-   form so the fingerprint is stable across all three representations."
+   inline fn values, legacy [:fn \"<inline-fn>\"] markers, source forms, and
+   qualified-symbol-string fn references to the same canonical form."
   :fingerprint/fn)
 
 (def ^:private instruction-placeholder

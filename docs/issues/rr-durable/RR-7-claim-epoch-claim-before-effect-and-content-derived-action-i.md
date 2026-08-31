@@ -19,23 +19,36 @@ Every effect is **claimed before it happens**, under that epoch, and the claim i
 outcome knowable afterwards — one append serving as both fence and evidence. Because the claim is per-effect rather than
 per-quantum, a superseded worker's waste is bounded to one in-flight effect.
 
-Logical action identity becomes **content-derived** — tick, node, iteration, hash of the code, kind, tool name and
-canonical arguments — generated inside the durable step and deliberately excluding attempt and execution order. Each
-physical dispatch gets a distinct attempt identity derived from that logical identity, ownership epoch and attempt
-ordinal. Execution-order-only identities change on replay and can return a recorded result for a *different* call,
-which is a wrong answer rather than wasted spend.
+Logical action identity becomes **content-derived** from tick, node, iteration, effect kind, target and canonical
+request or arguments, and is generated inside the durable step. Actions originating in generated code additionally
+include that durable source hash; the outer provider call that produces code is keyed by its canonical request/module
+inputs and provider/model target, never by its not-yet-produced response. Logical identity excludes attempt and
+execution order. Each physical dispatch gets a distinct attempt identity derived from that logical identity, ownership
+epoch and attempt ordinal. Execution-order-only identities change on replay and can return a recorded result for a
+*different* call, which is a wrong answer rather than wasted spend.
 
 Extends identity to the two effects that have none today: the inline provider primitive and behavior minting.
 
 ## Acceptance criteria
 
-- [ ] A superseded epoch's write is rejected by the store, not detected after the fact
-- [ ] Two workers racing one frontier produce exactly one claim per logical action identity per epoch; the loser fires no effect
-- [ ] Logical action identity is stable across replay and independent of execution order — proven by a test that reorders calls
-- [ ] Every physical dispatch has a unique attempt identity derived from logical identity, epoch and non-negative attempt ordinal
-- [ ] A retry retains the logical action identity but does not reuse another physical attempt's identity
-- [ ] Inline provider calls and behavior mints each carry a logical action identity and are claimed
-- [ ] Generated children, checkpoint-safe tools and mints are exactly-once; provider calls are at-least-once and every indeterminate one is attributable
+- [x] A superseded epoch's write is rejected by the store, not detected after the fact
+- [x] Two workers racing one frontier produce exactly one claim per logical action identity per epoch; the loser fires no effect
+- [x] Logical action identity is stable across replay and independent of execution order — proven by a test that reorders calls
+- [x] Every physical dispatch has a unique attempt identity derived from logical identity, epoch and non-negative attempt ordinal
+- [x] A retry retains the logical action identity but does not reuse another physical attempt's identity
+- [x] Inline provider calls and behavior mints each carry a logical action identity and are claimed
+- [x] Generated children, participating checkpoint-safe tools and mints are exactly-once; provider calls are at-least-once and every indeterminate one is attributable
+
+The targeted contract decision is ratified and proven: a checkpoint-safe
+effectful tool participates through the context-aware three-argument caller and
+receives the stable logical idempotency key. A two-argument caller remains
+compatible outside the checkpointed effect boundary, but a missing or
+two-argument caller is rejected before model dispatch, effect claim, or tool
+invocation inside it. The public RED proved the two-argument path dispatched
+both model and tool and wrote claims. Adversarial inspection then proved an
+absent caller could report success after model work and two durable claims. The
+GREEN cases prove zero provider calls, tool calls, raw claims, and projected
+claims.
 
 ## Spec obligations covered
 

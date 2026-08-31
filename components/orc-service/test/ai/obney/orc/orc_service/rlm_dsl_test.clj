@@ -3,8 +3,9 @@
 
    The transformer converts S-expr DSL (what the LLM outputs) to canonical
    ORC DSL (what the executor runs). This enables storing generated trees
-   in the ontology for learning."
-  (:require [clojure.test :refer [deftest testing is]]
+  in the ontology for learning."
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is]]
             [malli.core :as m]
             [ai.obney.orc.llm.interface :as llm]
             [ai.obney.orc.orc-service.core.rlm-dsl :as rlm-dsl]
@@ -443,46 +444,33 @@
                 "image-typed blackboard schema must propagate :type :image to the llm module input")))))))
 
 ;; =============================================================================
-;; U8: Inline-fn sanitization for Fressian-safe event storage
+;; RR6: Inline function source is captured before compilation
 ;; =============================================================================
-;;
-;; When the model writes `[:code {:fn (fn [...] ...)}]` in its Phase-1 sandbox
-;; code, the inline SCI function object propagates into events the framework
-;; tries to store via the event-store (Fressian-serialized). Fressian can't
-;; serialize fn objects → the read-model fails to project the event → the
-;; tick stays pending forever. The fix: walk the tree before storing and
-;; replace inline-fn values with the placeholder string "<inline-fn>".
-;; The actual fn lives in the ephemeral-fn-registry for Phase-2 execution;
-;; only the EVENT representation needs sanitization.
 
-(deftest sanitize-tree-replaces-inline-fn-values-with-placeholder
-  (testing "U8: walking a tree with inline-fn :code values replaces each
-            fn-valued :fn entry with the string \"<inline-fn>\". Other
-            values (including qualified-symbol-string :fn refs) are
-            untouched. The result is Fressian-serializable."
-    (let [inline-fn (fn [{:keys [inputs]}] {:doubled (* 2 (:n inputs))})
-          tree-with-fn [:sequence
-                        [:code {:fn inline-fn
-                                :reads [:n]
-                                :writes [:doubled]}]
-                        [:code {:fn "my.ns/named-fn"
-                                :reads [:a]
-                                :writes [:b]}]
-                        [:final {:keys [:doubled :b]}]]
-          sanitized (tree-executor/sanitize-tree-for-events tree-with-fn)]
-      (let [code-nodes (filter #(and (vector? %) (= :code (first %))) sanitized)
-            first-fn-val (-> code-nodes first second :fn)
-            second-fn-val (-> code-nodes second second :fn)]
-        (is (= "<inline-fn>" first-fn-val)
-            "Inline fn must be replaced with placeholder string")
-        (is (= "my.ns/named-fn" second-fn-val)
-            "Qualified-symbol-string :fn must be untouched")
-        ;; Top-level structure preserved
-        (is (= :sequence (first sanitized))
-            "Top-level :sequence preserved")
-        ;; No fn objects ANYWHERE in the result
-        (is (not (some fn? (tree-seq coll? seq sanitized)))
-            "No function objects should remain anywhere in the sanitized tree")))))
+(deftest quoted-tree-captures-exact-source-before-compilation
+  (testing "emit-tree! keeps exact source text while compiling a separate executable tree"
+    (let [source-tree
+          '[:sequence
+            [:code {:fn (fn [{:keys [inputs]}]
+                          {:doubled (* 2 (:n inputs))})
+                    :reads [:n]
+                    :writes [:doubled]}]
+            [:final {:keys [:doubled]}]]
+          sandbox (rlm-sandbox/build-rlm-context
+                   {:provider :openrouter
+                    :blackboard {}
+                    :inputs {}
+                    :durable-source-required? true})
+          result (rlm-sandbox/execute-rlm-code
+                  sandbox
+                  (str "(emit-tree! (quote " (pr-str source-tree) "))"))
+          vars @(:sandbox-vars sandbox)]
+      (is (nil? (:error result)) (pr-str result))
+      (is (= source-tree (:generated-tree-raw vars)))
+      (is (= source-tree (read-string (:generated-tree-source vars))))
+      (is (not (str/includes? (:generated-tree-source vars) "<inline-fn>")))
+      (is (some fn? (tree-seq coll? seq (:generated-tree vars)))
+          "the separate canonical representation contains compiled code"))))
 
 ;; =============================================================================
 ;; U11: :llm output schemas drive structured-output parsing
@@ -778,29 +766,17 @@
           "Explicit :recursive? false opts OUT of recursive mode (the escape hatch)"))))
 
 ;; =============================================================================
-;; R-3: compute-tree-result-summary sanitizes inline-fns in :tree-raw
-;;
-;; In recursive mode, :tree-results accumulates {:tree-raw <s-expr>} entries
-;; for each emitted tree. If :tree-raw contains live SCI fn objects (from
-;; the model writing [:code {:fn (fn [...] ...)}]), persisting :tree-results
-;; through the event store crashes Fressian:
-;;
-;;   "Cannot write sci.impl.fns$fun$arity_1__29795 as tag null"
-;;
-;; Evidence: results/document-redaction-recursive_2026-05-22_121601.trace.edn
-;; — uncaught exception at T+63s, then 14 minutes of silence before timeout.
-;;
-;; Fix: compute-tree-result-summary applies the existing sanitize-tree-for-events
-;; helper to :tree-raw before storing — same treatment U8 already gives to the
-;; :rlm/tree-generated event.
+;; RR6: compute-tree-result-summary retains authored source data
 ;; =============================================================================
 
-(deftest compute-tree-result-summary-sanitizes-inline-fns-in-tree-raw
-  (testing "Live SCI fn objects in :tree-raw are replaced with placeholder strings"
-    (let [inline-fn (fn [{:keys [inputs]}] {:result (count (vals inputs))})
-          tree-raw [:sequence
-                    [:code {:fn inline-fn :reads [:input-a] :writes [:result-a]}]
-                    [:final {:keys [:result-a]}]]
+(deftest compute-tree-result-summary-preserves-inline-source-in-tree-raw
+  (testing "the recursive summary retains quoted code rather than a placeholder"
+    (let [tree-raw '[:sequence
+                     [:code {:fn (fn [{:keys [inputs]}]
+                                   {:result (count (vals inputs))})
+                             :reads [:input-a]
+                             :writes [:result-a]}]
+                     [:final {:keys [:result-a]}]]
           summary (executor/compute-tree-result-summary
                     {:phase2-result {:status :success
                                      :outputs {:result-a 42}
@@ -808,24 +784,12 @@
                                      :trace-id (random-uuid)}
                      :tick-events []
                      :tree-raw tree-raw
-                     :writes [:result-a]})
-          sanitized-tree (:tree-raw summary)
-          fn-vals-in-sanitized (atom [])]
-      (clojure.walk/postwalk
-        (fn [node]
-          (when (and (map? node) (contains? node :fn))
-            (swap! fn-vals-in-sanitized conj (:fn node)))
-          node)
-        sanitized-tree)
-      (is (some? sanitized-tree)
-          ":tree-raw is preserved in the summary (not dropped)")
-      (is (= 1 (count @fn-vals-in-sanitized))
-          "One :fn entry preserved (the :code node's fn)")
-      (is (= "<inline-fn>" (first @fn-vals-in-sanitized))
-          "Live SCI fn was replaced with placeholder string \"<inline-fn>\"")
-      ;; Sanity: shape preserved otherwise
-      (is (= :sequence (first sanitized-tree)) "Top-level :sequence preserved")
-      (is (= :code (first (second sanitized-tree))) ":code node shape preserved"))))
+                     :writes [:result-a]})]
+      (is (= tree-raw (:tree-raw summary)))
+      (is (seq? (get-in summary [:tree-raw 1 1 :fn])))
+      (is (not (str/includes? (pr-str (:tree-raw summary)) "<inline-fn>")))
+      (is (= :sequence (first (:tree-raw summary))))
+      (is (= :code (first (second (:tree-raw summary))))))))
 
 (deftest compute-tree-result-summary-leaves-string-fn-untouched
   (testing "Qualified-symbol-string :fn values are NOT replaced — already serializable"

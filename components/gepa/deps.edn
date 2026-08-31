@@ -18,5 +18,5 @@
                   ;; isolation in any project context.)
                   :extra-deps {orc/grain-test-utils {:local/root "../grain-test-utils"}
                                obneyai/grain-control-plane {:git/url "https://github.com/ObneyAI/grain.git"
-                                                           :git/sha "5de0735d04916c63055a76637fa9bdef36345533"
+                                                           :git/sha "8236c80f14a582539cd15ae5426d1da16b5e1839"
                                                            :deps/root "projects/grain-control-plane"}}}}}

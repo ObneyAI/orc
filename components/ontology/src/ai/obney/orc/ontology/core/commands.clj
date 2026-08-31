@@ -39,6 +39,11 @@
 (defn- anomaly [category message]
   {::anom/category category ::anom/message message})
 
+(defn- no-events?
+  "Return true only when an IReduce event stream is empty, without realizing it."
+  [events]
+  (reduce (fn [_ _] (reduced false)) true events))
+
 (defn tenant-scoped? [ctx]
   (some? (:tenant-id ctx)))
 
@@ -1515,7 +1520,15 @@
    future C-3 review queues."
   [{{:keys [name body parent-behavior provenance
             minted-by-sheet-id minted-by-tick-id
-            harvested-from-tree-class]} :command}]
+            harvested-from-tree-class logical-action-identity
+            attempt-identity researcher-iteration]} :command}]
+  (when (and harvested-from-tree-class logical-action-identity)
+    (throw (ex-info
+            (str "mint-behavioral-subtree cannot combine the harvested "
+                 "tree-class fence with a researcher logical-action fence")
+            {::anom/category ::anom/incorrect
+             :harvested-from-tree-class harvested-from-tree-class
+             :logical-action-identity logical-action-identity})))
   (let [body-scope (:scope body)]
     (when (and (some? body-scope) (not= body-scope :behavioral-subtree))
       (throw (ex-info
@@ -1545,13 +1558,19 @@
         ;; stable derived target-id + latest-wins description projection).
         harvest-crossing (when harvested-from-tree-class
                            (stable-uuid-from
-                             (str "harvested-tree-class:" harvested-from-tree-class)))]
+                             (str "harvested-tree-class:" harvested-from-tree-class)))
+        logical-action-tag
+        (when logical-action-identity
+          [:researcher-logical-action
+           (stable-uuid-from
+            (str "researcher-logical-action:" logical-action-identity))])]
     (cond->
-      {:command-result/events
+     {:command-result/events
        [(->event
           {:type :ontology/behavioral-subtree-minted
            :tags (cond-> #{[:behavioral-subtree-minted target-id]}
-                   harvest-crossing (conj [:harvested-tree-class harvest-crossing]))
+                   harvest-crossing (conj [:harvested-tree-class harvest-crossing])
+                   logical-action-tag (conj logical-action-tag))
            :body (cond-> {:target-id target-id
                           :name name
                           :provenance provenance
@@ -1559,6 +1578,10 @@
                    parent-behavior   (assoc :parent-behavior parent-behavior)
                    minted-by-sheet-id (assoc :minted-by-sheet-id minted-by-sheet-id)
                    minted-by-tick-id  (assoc :minted-by-tick-id minted-by-tick-id)
+                   logical-action-identity
+                   (assoc :logical-action-identity logical-action-identity
+                          :attempt-identity attempt-identity
+                          :researcher-iteration researcher-iteration)
                    harvested-from-tree-class (assoc :harvested-from-tree-class
                                                     harvested-from-tree-class))})
         (->event
@@ -1568,11 +1591,17 @@
                   :target-id target-id
                   :body stamped-body
                   :recorded-at minted-at}})]}
-      harvest-crossing
-      (assoc :command-result/cas
-             {:types #{:ontology/behavioral-subtree-minted}
-              :tags #{[:harvested-tree-class harvest-crossing]}
-              :predicate-fn (fn [existing] (empty? (into [] existing)))}))))
+     harvest-crossing
+     (assoc :command-result/cas
+            {:types #{:ontology/behavioral-subtree-minted}
+             :tags #{[:harvested-tree-class harvest-crossing]}
+             :predicate-fn no-events?})
+
+     logical-action-tag
+     (assoc :command-result/cas
+            {:types #{:ontology/behavioral-subtree-minted}
+             :tags #{logical-action-tag}
+             :predicate-fn no-events?}))))
 
 ;; =============================================================================
 ;; Site Registry Commands (Generic Site Pattern Learning)

@@ -35,6 +35,7 @@
             [ai.obney.orc.orc-service.core.sci-sandbox :as sci-sandbox]
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
+            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
@@ -354,16 +355,7 @@
         all-leaf-failures (drill/tree-failures-from-events tick-events)
         direct-leaf-failures (vec (filter :node-id all-leaf-failures))]
     (cond-> {:tick-id (:trace-id phase2-result)
-             ;; R-3: sanitize inline-fn SCI objects out of :tree-raw before
-             ;; storing in :tree-results. The summary gets persisted across
-             ;; iterations (and propagates into subsequent :sheet/tree-tick-
-             ;; started events' :inputs), so any live SCI fn objects in
-             ;; :tree-raw will crash Fressian when the read-model-processor
-             ;; tries to write tick state to LMDB. We replace each inline
-             ;; :fn fn with the placeholder string "<inline-fn>" (matching
-             ;; U8's :rlm/tree-generated event sanitization convention).
-             ;; Qualified-symbol-string :fn values pass through untouched.
-             :tree-raw (tree-executor/sanitize-tree-for-events tree-raw)
+             :tree-raw tree-raw
              :status status
              :elapsed-ms (:duration-ms phase2-result)
              :outputs-keys outputs-keys
@@ -1811,8 +1803,11 @@
                                  (str "Result profile: " (pr-str result-profile) "\n"))
                                (when-let [stdout-profile (:stdout-profile entry)]
                                  (str "Stdout profile: " (pr-str stdout-profile) "\n"))
-                               (when-let [emitted-tree (:emitted-tree entry)]
-                                 (str "Emitted tree: " (pr-str emitted-tree) "\n"))
+                               (if-let [emitted-tree-source
+                                        (:emitted-tree-source entry)]
+                                 (str "Emitted tree: " emitted-tree-source "\n")
+                                 (when-let [emitted-tree (:emitted-tree entry)]
+                                   (str "Emitted tree: " (pr-str emitted-tree) "\n")))
                                (when (seq created-keys)
                                  (str "Variables created: "
                                       (str/join ", " (map str created-keys)) "\n"))
@@ -1949,10 +1944,11 @@
     call-tool-fn))
 
 (defn- tool-caller-arity
-  "Choose the checkpointed host caller contract without invoking the caller.
+  "Classify the host caller contract without invoking the caller.
 
-   Prefer the context-aware three-argument contract when both are supported;
-   otherwise preserve the legacy two-argument contract."
+   Prefer the context-aware three-argument contract when both are supported.
+   Recognising the legacy two-argument shape lets checkpointed execution reject
+   it with an actionable error before any model or effect dispatch."
   [call-tool-fn]
   (cond
     (supports-tool-caller-arity? call-tool-fn 3) 3
@@ -1960,9 +1956,9 @@
     :else nil))
 
 (def ^:private tool-caller-arity-error
-  (str "Configured tool caller must accept either 2 arguments "
-       "(tool-name, args) or 3 arguments "
-       "(tool-name, args, tool-context)"))
+  (str "Checkpointed effectful tool caller must accept the context-aware "
+       "3-argument contract (tool-name, args, tool-context) so ORC can supply "
+       "the stable idempotency key"))
 
 (defn execute-repl-researcher
   "Execute a repl-researcher node using iterative LLM+SCI code execution.
@@ -2492,7 +2488,7 @@
                              "Use the declared body schema exactly; the return value is the minted behavior ID as a string.\n\n"))
                       "### emit-tree! - Generate a behavior tree for execution\n"
                       "```clojure\n"
-                      "(emit-tree! [:sequence\n"
+                      "(emit-tree! (quote [:sequence\n"
                       "              [:chunk-document {:from :document :size 5000 :into :chunks}]\n"
                       "              [:map-each {:from :chunks :as :chunk :into :results\n"
                       "                          :output-schemas {:results [:vector [:map [:info :string]]]}}\n"
@@ -2500,7 +2496,7 @@
                       "                       :output-schemas {:info :string}}]]\n"
                       "              [:aggregate {:from :results :writes [:all-info]\n"
                       "                           :output-schemas {:all-info [:map-of :keyword [:vector :string]]}}]\n"
-                      "              [:final {:keys [:summary]}]])\n"
+                      "              [:final {:keys [:summary]}]]))\n"
                       "```\n"
                       "- Emits a behavior tree S-expression for two-phase execution\n"
                       "- Use this when you need to design a processing pipeline\n"
@@ -2939,7 +2935,7 @@
                         "For large DATA processing (documents, collections), use emit-tree!; for workspace/file effects, call your bound tools directly inline:\n"
                         "For ANY large data (documents, collections, etc.), ALWAYS use emit-tree!:\n")
                       "```clojure\n"
-                      "(emit-tree!\n"
+                      "(emit-tree! (quote\n"
                       "  [:sequence\n"
                       "   [:chunk-document {:from :document :size 8000 :into :chunks}]\n"
                       "   [:map-each {:from :chunks :as :chunk :into :chunk_results\n"
@@ -2954,7 +2950,7 @@
                       "          :reads [:all_info]\n"
                       "          :writes [:summary]\n"
                       "          :output-schemas {:summary :string}}]\n"
-                      "   [:final {:keys [:summary]}]])\n"
+                      "   [:final {:keys [:summary]}]]))\n"
                       "```\n"
                       "This is the PREFERRED approach because:\n"
                       "- Tree structure is stored for learning and reuse\n"
@@ -3000,6 +2996,9 @@
         inputs-preview (rlm-sandbox/build-inputs-preview blackboard)
 
         checkpoint-codecs (vec (or (:researcher-checkpoint-codecs context) []))
+        encode-effect-value
+        (fn [value]
+          (encode-checkpoint-value checkpoint-codecs value))
         legacy-checkpoint (some->> (:researcher-checkpoint context)
                                    (decode-checkpoint-value checkpoint-codecs))
         resume-state (some->> (:researcher-resume-state context)
@@ -3018,6 +3017,16 @@
         researcher-now-ms-fn (or (:researcher-now-ms-fn context)
                                  #(System/currentTimeMillis))
         checkpointed? (true? (:checkpointed? rlm-config))
+        ownership-epoch (or (:researcher-ownership-epoch context)
+                            (:ownership-epoch checkpoint)
+                            0)
+        missing-effect-claim-capabilities?
+        (and checkpointed?
+             (or (not (ifn? (:claim-researcher-effect! context)))
+                 (not (ifn? (:complete-researcher-effect! context)))))
+        missing-ownership-epoch?
+        (and checkpointed?
+             (not (and (integer? ownership-epoch) (pos? ownership-epoch))))
         quantum-max-iterations (max 1 (or (get-in rlm-config [:quantum :max-iterations]) 1))
         initial-iteration (or (:next-iteration checkpoint) 0)
         checkpoint-revision (atom (or (:revision checkpoint) 0))
@@ -3025,13 +3034,31 @@
         max-iteration-attempts (max 1 (or (get-in rlm-config [:iteration-retry :max-attempts]) 3))
         current-iteration (atom initial-iteration)
         action-ordinal (atom 0)
-        completed-actions
+        current-generated-code-hash (atom nil)
+        legacy-completed-actions
         (reduce-kv (fn [acc action-id action]
                      (assoc acc action-id
                             (update action :result
                                     #(decode-checkpoint-value checkpoint-codecs %))))
                    {}
                    (or (:researcher-actions context) {}))
+        effect-claim-completions
+        (reduce (fn [acc claim]
+                  (if (= :completed (:status claim))
+                    (assoc acc (:logical-action-identity claim)
+                           (update claim :result
+                                   #(decode-checkpoint-value checkpoint-codecs %)))
+                    acc))
+                {}
+                (or (:researcher-effect-claims context) []))
+        ;; RR-7 claim completions are the authoritative safety record. Legacy
+        ;; post-effect mirrors remain readable for old runs, but cannot
+        ;; override a guarded completion for the same logical action.
+        ;; Seed from durable evidence, then join completions produced during
+        ;; this run. Repeated identical content is one logical action and must
+        ;; reuse its result instead of attempting a duplicate same-epoch claim.
+        completed-actions (atom (merge legacy-completed-actions
+                                       effect-claim-completions))
         persist-action! (:persist-researcher-action! context)
         checkpoint-tool-violation (atom nil)
         unsafe-checkpoint-tool
@@ -3049,8 +3076,7 @@
         incompatible-checkpoint-tool-caller?
         (and checkpointed?
              (seq mcp-tools)
-             (some? raw-call-tool-fn)
-             (nil? checkpoint-tool-caller-arity))
+             (not= 3 checkpoint-tool-caller-arity))
         call-tool-fn
         (if checkpointed?
           (fn [tool-name args]
@@ -3062,22 +3088,59 @@
                              " is not declared :checkpoint-safe? for resumable execution")
                         {:tool tool-name :checkpoint-safe? false})))
               (let [ordinal (swap! action-ordinal inc)
-                    action-id (str (:tick-id context) "/" (:node-id context) "/"
-                                   @current-iteration "/tool/" ordinal)
+                    attempt-ordinal (get iteration-attempts @current-iteration 0)
+                    action-id
+                    (researcher-effects/logical-action-identity
+                     {:tick-id (:tick-id context)
+                      :node-id (:node-id context)
+                      :iteration-index @current-iteration
+                      :generated-code-hash @current-generated-code-hash
+                      :kind :tool
+                      :target tool-name
+                      :arguments (encode-effect-value args)})
+                    legacy-action-id
+                    (str (:tick-id context) "/" (:node-id context) "/"
+                         @current-iteration "/tool/" ordinal)
+                    attempt-id (researcher-effects/attempt-identity
+                                action-id ownership-epoch attempt-ordinal)
                     tool-context (assoc (or (:tool-context context) {})
                                         :orc/idempotency-key action-id
                                         :orc/researcher-iteration @current-iteration
                                         :orc/action-ordinal ordinal)]
-                (if-let [completed (get completed-actions action-id)]
+                (if-let [completed (or (get @completed-actions action-id)
+                                       (get @completed-actions legacy-action-id))]
                   (:result completed)
-                  (let [result (case checkpoint-tool-caller-arity
+                  (let [claim-result
+                        (when-let [claim! (:claim-researcher-effect! context)]
+                          (claim! {:iteration-index @current-iteration
+                                   :logical-action-identity action-id
+                                   :attempt-identity attempt-id
+                                   :attempt-ordinal attempt-ordinal
+                                   :kind :tool}))
+                        _ (when (:cognitect.anomalies/category claim-result)
+                            (throw (ex-info "Researcher tool claim conflicted"
+                                            {:claim-result claim-result
+                                             :logical-action-identity action-id
+                                             :attempt-identity attempt-id})))
+                        result (case checkpoint-tool-caller-arity
                                  3 (checkpoint-call-tool-fn tool-name args tool-context)
-                                 2 (checkpoint-call-tool-fn tool-name args)
                                  (throw
                                   (ex-info
                                    tool-caller-arity-error
-                                   {:expected-arities [2 3]})))]
+                                   {:expected-arities [3]})))]
                     (let [durable-result (encode-checkpoint-value checkpoint-codecs result)]
+                    (when-let [complete! (:complete-researcher-effect! context)]
+                      (let [completion
+                            (complete! {:logical-action-identity action-id
+                                        :attempt-identity attempt-id
+                                        :result durable-result})]
+                        (when (:cognitect.anomalies/category completion)
+                          (throw (ex-info "Researcher tool outcome lost ownership"
+                                          {:completion-result completion
+                                           :logical-action-identity action-id
+                                           :attempt-identity attempt-id})))))
+                    (swap! completed-actions assoc action-id
+                           {:status :completed :result result})
                     (when persist-action!
                       (persist-action! {:action-id action-id
                                         :action-kind :tool
@@ -3132,11 +3195,9 @@
                 ;; backward between the two attempt-scoped readings.
                 attempt-completed-ms (max attempt-start-ms
                                           raw-attempt-completed-ms)
-                emitted-tree-source (or (:generated-tree history-entry)
-                                        (:generated-tree-raw history-entry))
-                emitted-tree (when emitted-tree-source
-                               (tree-executor/sanitize-tree-for-events
-                                emitted-tree-source))
+                emitted-tree-source (:generated-tree-source history-entry)
+                emitted-tree (or (:generated-tree-raw history-entry)
+                                 (:generated-tree history-entry))
                 tree-fingerprint (when emitted-tree
                                    (rlm-fingerprint/fingerprint emitted-tree))
                 error-excerpt (bound-iteration-evidence-text
@@ -3189,6 +3250,9 @@
               (assoc :emitted-tree emitted-tree
                      :tree-fingerprint tree-fingerprint)
 
+              emitted-tree-source
+              (assoc :emitted-tree-source emitted-tree-source)
+
               (some? bounded-reasoning)
               (assoc :reasoning bounded-reasoning)
 
@@ -3207,24 +3271,12 @@
             (let [completed-iteration (dec next-iteration)
                   history-entry (last history)
                   record-status (if (:error history-entry) :failure :success)
-                  ;; A generated tree keeps its inline (fn ...) nodes as LIVE SCI
-                  ;; objects under :generated-tree-raw, deliberately preserved by
-                  ;; merge-tree-result-into-sandbox so final! can report what the
-                  ;; model designed. SCI fns are not durable and encoding one
-                  ;; throws. Sanitize to the event representation first — exactly
-                  ;; what compute-tree-result-summary already does for
-                  ;; :tree-results.
-                  durable-sandbox-vars
-                  (let [vars @sandbox-vars]
-                    (cond-> vars
-                      (contains? vars :generated-tree-raw)
-                      (update :generated-tree-raw
-                              tree-executor/sanitize-tree-for-events)))
                   checkpoint {:version 1
                               :revision (swap! checkpoint-revision inc)
+                              :ownership-epoch ownership-epoch
                               :next-iteration next-iteration
                               :history history
-                              :sandbox-vars durable-sandbox-vars
+                              :sandbox-vars @sandbox-vars
                               :var-creation-times @var-creation-times
                               :usage @total-usage
                               :cumulative-tree-ms @cumulative-tree-ms
@@ -3277,6 +3329,7 @@
             terminal-result
             (let [checkpoint {:version 1
                               :revision (swap! checkpoint-revision inc)
+                              :ownership-epoch ownership-epoch
                               :next-iteration (inc iteration)
                               :history history
                               :sandbox-vars @sandbox-vars
@@ -3305,6 +3358,7 @@
                    checkpoint-codecs
                    {:version 1
                     :revision (swap! checkpoint-revision inc)
+                    :ownership-epoch ownership-epoch
                     ;; A timed-out attempt does not advance the logical
                     ;; iteration frontier. `attempt` is the ordinal the next
                     ;; physical attempt would receive if one is allowed.
@@ -3357,6 +3411,21 @@
           (:terminal-result checkpoint)
           (:terminal-result checkpoint)
 
+          missing-effect-claim-capabilities?
+          {:status :failure
+           :error (str "Checkpointed researcher requires effect-claim and "
+                       "effect-complete capabilities before execution")
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
+
+          missing-ownership-epoch?
+          {:status :failure
+           :error "Checkpointed researcher requires a winning ownership epoch before execution"
+           :iterations history
+           :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+           :usage @total-usage}
+
           unsafe-checkpoint-tool
           {:status :failure
            :error (str "Tool " unsafe-checkpoint-tool
@@ -3379,8 +3448,10 @@
                 final-sandbox @sandbox-vars
                 surviving-vars (dissoc final-sandbox
                                        :generated-tree :generated-tree-raw
+                                       :generated-tree-source
                                        :iteration-reasonings :tree-results)
                 generated-tree-raw (:generated-tree-raw final-sandbox)
+                generated-tree-source (:generated-tree-source final-sandbox)
                 iteration-reasonings (:iteration-reasonings final-sandbox)]
             (cond-> {:status :failure
                      :error "Max iterations reached without final!"
@@ -3391,6 +3462,8 @@
                      :cumulative-tree-ms @cumulative-tree-ms
                      :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
               generated-tree-raw (assoc :generated-tree-raw generated-tree-raw)
+              generated-tree-source
+              (assoc :generated-tree-source generated-tree-source)
               (seq iteration-reasonings) (assoc :iteration-reasonings
                                                 (vec iteration-reasonings))))
 
@@ -3517,9 +3590,28 @@
                                               (- iteration-deadline-ms
                                                  (System/currentTimeMillis))))
                 provider-start-ms (System/currentTimeMillis)
-                provider-action-id (str (:tick-id context) "/" (:node-id context) "/"
-                                        iteration "/provider/1")
-                completed-provider-action (get completed-actions provider-action-id)
+                provider-request-options
+                (assoc llm-options :timeout-ms provider-timeout-ms)
+                provider-action-id
+                (researcher-effects/provider-logical-action-identity
+                 {:tick-id (:tick-id context)
+                  :node-id (:node-id context)
+                  :iteration-index iteration
+                  :provider (encode-effect-value provider)
+                  :model (encode-effect-value (:model node))
+                  :module (encode-effect-value module)
+                  :inputs (encode-effect-value inputs)
+                  :options (encode-effect-value provider-request-options)})
+                legacy-provider-action-id
+                (str (:tick-id context) "/" (:node-id context) "/"
+                     iteration "/provider/1")
+                provider-attempt-ordinal (get iteration-attempts iteration 0)
+                provider-attempt-id
+                (researcher-effects/attempt-identity
+                 provider-action-id ownership-epoch provider-attempt-ordinal)
+                completed-provider-action
+                (or (get @completed-actions provider-action-id)
+                    (get @completed-actions legacy-provider-action-id))
                 completed-provider-envelope (:result completed-provider-action)
                 completed-provider-result
                 (if (and (map? completed-provider-envelope)
@@ -3535,17 +3627,30 @@
                                   (:current exceeded) "/" (:budget exceeded))
                              exceeded)))
                    (llm/predict provider module inputs
-                                (cond-> (assoc llm-options
-                                                :timeout-ms provider-timeout-ms)
+                                (cond-> provider-request-options
                                   checkpointed?
                                   (assoc :orc/idempotency-key provider-action-id))))
+                provider-claim-result
+                (when (and checkpointed?
+                           (nil? completed-provider-action)
+                           (:claim-researcher-effect! context))
+                  ((:claim-researcher-effect! context)
+                   {:iteration-index iteration
+                    :logical-action-identity provider-action-id
+                    :attempt-identity provider-attempt-id
+                    :attempt-ordinal provider-attempt-ordinal
+                    :kind :provider}))
                 provider-call (if completed-provider-action
                                 {:value completed-provider-result
                                  :replayed? true}
-                                (if (or checkpointed? (seq timeout-config))
+                                (if (:cognitect.anomalies/category
+                                     provider-claim-result)
+                                  {:claim-conflict? true
+                                   :claim-result provider-claim-result}
+                                  (if (or checkpointed? (seq timeout-config))
                                   (bounded-call provider-timeout-ms invoke-provider)
                                   (try {:value (invoke-provider)}
-                                       (catch Throwable t {:throwable t}))))
+                                       (catch Throwable t {:throwable t})))))
                 provider-latency-ms
                 (or (when (and (map? completed-provider-envelope)
                                (contains? completed-provider-envelope
@@ -3553,6 +3658,11 @@
                       (:provider-latency-ms completed-provider-envelope))
                     (- (System/currentTimeMillis) provider-start-ms))
                 llm-result (cond
+                             (:claim-conflict? provider-call)
+                             {:code nil
+                              :error "Researcher provider claim conflicted"
+                              :ownership-conflict? true}
+
                              (:timeout? provider-call)
                              {:code nil
                               :error "Provider call deadline exceeded"
@@ -3564,19 +3674,46 @@
                                {:code nil :error (.getMessage e)})
 
                              :else (:value provider-call))
+                durable-provider-envelope
+                (encode-checkpoint-value
+                 checkpoint-codecs
+                 {:provider-result llm-result
+                  :provider-latency-ms provider-latency-ms})
+                provider-completion-result
+                (when (and checkpointed?
+                           (not (:replayed? provider-call))
+                           (not (:claim-conflict? provider-call))
+                           (not (:timeout? provider-call))
+                           (not (:throwable provider-call))
+                           (:complete-researcher-effect! context))
+                  ((:complete-researcher-effect! context)
+                   {:logical-action-identity provider-action-id
+                    :attempt-identity provider-attempt-id
+                    :result durable-provider-envelope}))
+                _ (when (:cognitect.anomalies/category provider-completion-result)
+                    (throw (ex-info "Researcher provider outcome lost ownership"
+                                    {:completion-result provider-completion-result
+                                     :logical-action-identity provider-action-id
+                                     :attempt-identity provider-attempt-id})))
                 _ (when (and checkpointed?
                              (not (:replayed? provider-call))
+                             (not (:claim-conflict? provider-call))
+                             (not (:timeout? provider-call))
+                             (not (:throwable provider-call)))
+                    (swap! completed-actions assoc provider-action-id
+                           {:status :completed
+                            :result {:provider-result llm-result
+                                     :provider-latency-ms provider-latency-ms}}))
+                _ (when (and checkpointed?
+                             (not (:replayed? provider-call))
+                             (not (:claim-conflict? provider-call))
                              (not (:timeout? provider-call))
                              (not (:throwable provider-call))
                              persist-action!)
                     (persist-action! {:action-id provider-action-id
                                       :action-kind :provider
                                       :iteration iteration
-                                      :result (encode-checkpoint-value
-                                               checkpoint-codecs
-                                               {:provider-result llm-result
-                                                :provider-latency-ms
-                                                provider-latency-ms})}))
+                                      :result durable-provider-envelope}))
                 _ (dbg "llm/predict returned")
                 _ (dbg "llm-result keys:" (keys llm-result))
                 _ (when (and debug? (:usage llm-result))
@@ -3613,6 +3750,9 @@
                          (pr-str raw)
 
                          :else nil))
+                _ (reset! current-generated-code-hash
+                          (when (and (string? code) (not (str/blank? code)))
+                            (researcher-effects/generated-code-hash code)))
 
                 ;; Extract reasoning from LLM result and stash it into sandbox-vars
                 ;; under :iteration-reasonings (vector accumulates one per iteration).
@@ -3720,7 +3860,21 @@
                              :cache (:cache context)
                              :sheet-id (:sheet-id context)
                              :tick-id (:tick-id context)
-                             :reserve-llm-call! (:reserve-llm-call! context)})
+                             :node-id (:node-id context)
+                             :researcher-iteration @current-iteration
+                             :generated-code-hash @current-generated-code-hash
+                             :researcher-ownership-epoch ownership-epoch
+                             :effect-attempt-ordinal
+                             (get iteration-attempts @current-iteration 0)
+                             :encode-researcher-effect-value
+                             encode-effect-value
+                             :claim-researcher-effect!
+                             (:claim-researcher-effect! context)
+                             :complete-researcher-effect!
+                             (:complete-researcher-effect! context)
+                             :completed-researcher-effects completed-actions
+                             :reserve-llm-call! (:reserve-llm-call! context)
+                             :durable-source-required? checkpointed?})
                     sandbox-call (if bounded-iteration?
                                    (bounded-call
                                     (max 0 (- iteration-deadline-ms
@@ -3868,7 +4022,10 @@
                         ;; Clear the pending tree so the :generated-tree branch
                         ;; can't fire on it later; the raw marker goes too —
                         ;; it records a tree that was never executed.
-                        _ (swap! sandbox-vars dissoc :generated-tree :generated-tree-raw)
+                        _ (swap! sandbox-vars dissoc
+                                 :generated-tree
+                                 :generated-tree-raw
+                                 :generated-tree-source)
                         guard-history (conj history
                                             {:code code
                                              :reasoning reasoning
@@ -3880,7 +4037,8 @@
                                              ;; Non-marker vars (e.g. store!
                                              ;; calls) DID land and persist.
                                              :vars-created (vec (remove #{:generated-tree
-                                                                          :generated-tree-raw}
+                                                                          :generated-tree-raw
+                                                                          :generated-tree-source}
                                                                         new-vars))})]
                     (or (checkpoint-result (inc iteration) guard-history
                                            attempt-start-ms)
@@ -3897,6 +4055,7 @@
                         ;; final! produced. nil when the model went direct
                         ;; without ever emit-tree!-ing.
                         generated-tree-raw (:generated-tree-raw @sandbox-vars)
+                        generated-tree-source (:generated-tree-source @sandbox-vars)
                         iteration-reasonings (:iteration-reasonings @sandbox-vars)
                         _ (when debug?
                             (dbg "RETURN PATH: final! branch; sandbox-vars keys:" (keys @sandbox-vars))
@@ -3915,7 +4074,10 @@
                               :cumulative-tree-ms @cumulative-tree-ms
                               :cumulative-thinking-ms (max 0 (- total-elapsed @cumulative-tree-ms))}
                        generated-tree-raw
-                       (assoc :generated-tree-raw generated-tree-raw))
+                       (assoc :generated-tree-raw generated-tree-raw)
+
+                       generated-tree-source
+                       (assoc :generated-tree-source generated-tree-source))
                      attempt-start-ms))
 
                   ;; emit-tree! was called - trigger Phase 2 execution automatically
@@ -3940,6 +4102,7 @@
                                            (inject-sub-model sub-model)
                                            (inject-tool-caller-fn (:tool-caller-fn node)))
                         generated-tree-raw (:generated-tree-raw @sandbox-vars)
+                        generated-tree-source (:generated-tree-source @sandbox-vars)
                         ;; Debug: Print the generated tree
                         _ (when debug?
                             (when sub-model
@@ -3993,13 +4156,48 @@
                             phase2-vars (dissoc @sandbox-vars
                                                 :generated-tree
                                                 :generated-tree-raw
+                                                :generated-tree-source
                                                 :iteration-reasonings
                                                 :tree-results)
                             _ (when debug?
                                 (println "\n[DEBUG RLM] Phase 2 sandbox vars:" (keys phase2-vars)))
-                            phase2-action-id (str (:tick-id context) "/" (:node-id context) "/"
-                                                  iteration "/phase2/1")
-                            completed-phase2-action (get completed-actions phase2-action-id)
+                            phase2-action-id
+                            (researcher-effects/logical-action-identity
+                             {:tick-id (:tick-id context)
+                              :node-id (:node-id context)
+                              :iteration-index iteration
+                              :generated-code-hash @current-generated-code-hash
+                              :kind :generated-child
+                              :target :generated-tree
+                              :arguments
+                              (encode-effect-value
+                               {:generated-tree-source generated-tree-source
+                                :inputs phase2-vars})})
+                            legacy-phase2-action-id
+                            (str (:tick-id context) "/" (:node-id context) "/"
+                                 iteration "/phase2/1")
+                            phase2-attempt-ordinal (get iteration-attempts iteration 0)
+                            phase2-attempt-id
+                            (researcher-effects/attempt-identity
+                             phase2-action-id ownership-epoch phase2-attempt-ordinal)
+                            completed-phase2-action
+                            (or (get @completed-actions phase2-action-id)
+                                (get @completed-actions legacy-phase2-action-id))
+                            phase2-claim-result
+                            (when (and checkpointed?
+                                       (nil? completed-phase2-action)
+                                       (:claim-researcher-effect! context))
+                              ((:claim-researcher-effect! context)
+                               {:iteration-index iteration
+                                :logical-action-identity phase2-action-id
+                                :attempt-identity phase2-attempt-id
+                                :attempt-ordinal phase2-attempt-ordinal
+                                :kind :generated-child}))
+                            _ (when (:cognitect.anomalies/category phase2-claim-result)
+                                (throw (ex-info "Researcher generated-child claim conflicted"
+                                                {:claim-result phase2-claim-result
+                                                 :logical-action-identity phase2-action-id
+                                                 :attempt-identity phase2-attempt-id})))
                             phase2-result (if completed-phase2-action
                                             (:result completed-phase2-action)
                                             (try
@@ -4029,6 +4227,7 @@
                                                ;; carry the worked-DSL for the
                                                ;; post-emit tree-class enrichment.
                                                :generated-tree-raw generated-tree-raw
+                                               :generated-tree-source generated-tree-source
                                                :blackboard (reduce-kv
                                                              (fn [acc k entry]
                                                                (assoc acc k (:value entry)))
@@ -4051,8 +4250,7 @@
                                                (when checkpointed?
                                                  (java.util.UUID/nameUUIDFromBytes
                                                   (.getBytes
-                                                   (str phase2-action-id "/attempt/"
-                                                        (get iteration-attempts iteration 0))
+                                                   phase2-action-id
                                                    "UTF-8")))
                                                :timeout-ms (:remaining-ms budget)})
                                             (catch Exception e
@@ -4068,6 +4266,32 @@
                                           :sheet-id :breakdown :phase1-elapsed-ms
                                           :phase2-elapsed-ms :block-payload :preflight-rejected?
                                           :missing-schema-keys])
+                            phase2-completion-result
+                            (when (and checkpointed?
+                                       (nil? completed-phase2-action)
+                                       (contains? #{:success :partial :failure}
+                                                  (:status phase2-result))
+                                       (:complete-researcher-effect! context))
+                              ((:complete-researcher-effect! context)
+                               {:logical-action-identity phase2-action-id
+                                :attempt-identity phase2-attempt-id
+                                :result (encode-checkpoint-value
+                                         checkpoint-codecs
+                                         durable-phase2-result)}))
+                            _ (when (:cognitect.anomalies/category
+                                     phase2-completion-result)
+                                (throw (ex-info "Researcher generated-child outcome lost ownership"
+                                                {:completion-result
+                                                 phase2-completion-result
+                                                 :logical-action-identity phase2-action-id
+                                                 :attempt-identity phase2-attempt-id})))
+                            _ (when (and checkpointed?
+                                         (nil? completed-phase2-action)
+                                         (contains? #{:success :partial :failure}
+                                                    (:status phase2-result)))
+                                (swap! completed-actions assoc phase2-action-id
+                                       {:status :completed
+                                        :result durable-phase2-result}))
                             _ (when (and checkpointed?
                                          (nil? completed-phase2-action)
                                          (contains? #{:success :partial :failure}
@@ -4137,6 +4361,7 @@
                                         attempt-start-ms))
                         (assoc phase2-result
                                :generated-tree-raw generated-tree-raw
+                               :generated-tree-source generated-tree-source
                                :iterations new-history
                                :usage @total-usage
                                :duration-ms (+ phase1-elapsed-ms
@@ -4151,6 +4376,7 @@
                        :block-payload (:block-payload phase2-result)
                        :outputs (:outputs phase2-result)
                        :generated-tree-raw generated-tree-raw
+                       :generated-tree-source generated-tree-source
                        :iterations new-history
                        :duration-ms (+ phase1-elapsed-ms (or (:duration-ms phase2-result) 0))
                        :usage @total-usage
@@ -4192,6 +4418,7 @@
                                                 (:reads node)
                                                 [:tree-results :generated-tree
                                                  :generated-tree-raw
+                                                 :generated-tree-source
                                                  :iteration-reasonings]))
                             summary (cond-> base-summary
                                       (seq surviving)
@@ -4258,7 +4485,9 @@
                                                         prior-updated (or (:vars-updated entry) [])
                                                         ;; Drop the markers; surface the actual
                                                         ;; tree writes instead.
-                                                        marker-syms #{:generated-tree :generated-tree-raw}
+                                                        marker-syms #{:generated-tree
+                                                                      :generated-tree-raw
+                                                                      :generated-tree-source}
                                                         kept (remove marker-syms prior-vars)]
                                                     (-> entry
                                                         (assoc :vars-created
@@ -4268,8 +4497,9 @@
                                                                      (concat prior-updated
                                                                              tree-updated-keys))))
                                                         (assoc :generated-tree
-                                                               (tree-executor/sanitize-tree-for-events
-                                                                generated-tree-raw)
+                                                               generated-tree-raw
+                                                               :generated-tree-source
+                                                               generated-tree-source
                                                                :child-trace-id child-tick-id
                                                                :child-outcome (select-keys summary
                                                                                            [:status :elapsed-ms
@@ -4298,6 +4528,7 @@
                         {:status (:status phase2-result)
                          :outputs (:outputs phase2-result)
                          :generated-tree-raw generated-tree-raw
+                         :generated-tree-source generated-tree-source
                          :iteration-reasonings (:iteration-reasonings @sandbox-vars)
                          :iterations new-history
                          :duration-ms (+ phase1-duration (or (:duration-ms phase2-result) 0))

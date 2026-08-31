@@ -9,18 +9,21 @@ Grill log: [`docs/build-timeline/grill-sessions/rr-durable-self-learning-dossier
 
 ## What to build
 
-The non-durable Phase-1 tool caller only forwards a tool-context argument when one is present, so a host that
-supplies a two-argument tool caller works. The durable path calls the raw caller with three arguments
-unconditionally, so the same host fails on its first tool call under checkpointing.
+Preserve the existing two-argument host contract where no checkpointed effect
+identity must cross the boundary, and classify callable arity without invoking
+the host. A context-aware three-argument caller receives tool context.
 
-Apply the same guard on both paths, so whether a campaign is durable is invisible to the host's tool-caller
-contract.
+RR-7 subsequently ratified a narrower safety boundary: an effectful tool inside
+checkpointed execution must use the three-argument caller so ORC can supply the
+stable idempotency key. The earlier goal of making checkpointing invisible to a
+two-argument effectful caller is superseded at that boundary; compatibility
+remains outside it.
 
 ## Acceptance criteria
 
-- [x] A host supplying a two-argument tool caller works identically with and without checkpointing
-- [x] A host supplying a three-argument tool caller still receives the tool context
-- [x] The failure mode, if a caller is genuinely incompatible, names the arity rather than surfacing a raw exception
+- [x] A host supplying a two-argument tool caller remains supported outside the checkpointed effect boundary
+- [x] A checkpointed host supplying a three-argument tool caller receives the tool context and stable idempotency key
+- [x] A missing or two-argument checkpointed effectful caller is rejected before model dispatch, effect claim, or tool invocation, with an actionable arity/idempotency error
 - [x] A checkpointed campaign rejects an effectful tool that has not declared checkpoint safety before configuration can dispatch its effect
 
 Inspection evidence: the initial non-invoking arity classifier was falsified by
@@ -33,6 +36,15 @@ non-checkpointed tool-caller namespace passed 1 test with 8 assertions, with no
 failures or errors. Allium remained at the documented 0-error baseline; weed
 classified the mismatch as a code bug and found no specification divergence.
 Coverage: `0 obligations, 0 covered, 0 uncovered`.
+
+RR-7 contract-closure evidence: the new public tracer first failed 5/5
+assertions because the provider and tool both ran and durable claims were
+written. After the preflight fence, it passes while provider calls, tool calls,
+raw claims, and projected claims all remain zero. An adversarial follow-up RED
+proved that an absent caller previously let the workflow report success after
+one provider call and two durable claims; the same preflight now rejects that
+configuration. The focused RR-7 namespace passes 21 tests / 154 assertions and
+all eight affected namespaces pass 168 / 836.
 
 ## Spec obligations covered
 

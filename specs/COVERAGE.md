@@ -401,6 +401,42 @@ timeout evidence, and checkpointed-versus-compatibility benchmark comparison.
 These journeys complement the deterministic suite and are not substitutes for
 crash-boundary correctness proofs.
 
+## Claim-before-effect campaign fence
+
+DET-E2E-261 closes the same-frontier claim race through schema-validated Grain
+commands and the public checkpointed researcher boundary. Frontier, claim, and
+completion events share the campaign tag; the store admits one same-epoch claim,
+rejects the racing claimant before its injected effect, and rejects stale claims,
+stale completions, and stale version-2 checkpoint commits after the frontier
+advances. The claim projection moves the admitted claim from `:claimed` to
+`:completed` without manufacturing a second claim.
+
+Content-derived logical identities are canonical across reordered maps and sets,
+distinguish EDN collection types, incorporate durable generated-code source when
+applicable, and exclude attempt order. Attempt identities are derived from the
+logical identity, ownership epoch, and non-negative attempt ordinal. Public
+provider, inline-provider, context-aware three-argument checkpoint-safe tool,
+generated-child, and behavior-mint paths all append the claim before dispatch;
+repeated identical content rejoins the completed logical action. A missing or
+two-argument effectful caller is rejected before model dispatch, effect claim,
+or tool invocation, leaving both raw and projected claims empty. The focused
+namespace passed 21 tests and 154 assertions, the public same-frontier race
+passed 10 repeated runs and 120 assertions, and eight affected namespaces passed
+168 tests and 836 assertions. The final
+`clojure -M:poly test brick:orc-service` proof passed both consuming project
+contexts with exit 0 in 15 minutes 38 seconds. Its first attempt exposed a
+timeout-result reconstruction race outside RR-7; the strengthened DET-E2E-029
+replay proof and repair are recorded in the RR-7 inspection report rather than
+hidden behind the green rerun.
+
+All 18 RR-7 obligations have executable witnesses and are represented in the
+current `allium plan` output. The repository-wide Allium result remains at the
+characterized 35-warning, 107-information, zero-error baseline with zero process
+findings. The former RR-2/RR-7 divergence is resolved: checkpointed effectful
+tools require the context-aware three-argument caller demanded by
+`CheckpointSafeToolsShareIdempotencyKeys`; two-argument compatibility remains
+outside that boundary.
+
 ## Monotonic terminal-trace refresh
 
 Terminal trace assembly carries a revision derived from the durable, non-trace

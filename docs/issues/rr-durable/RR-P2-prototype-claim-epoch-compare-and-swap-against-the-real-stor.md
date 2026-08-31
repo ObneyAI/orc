@@ -15,8 +15,9 @@ The fence depends on a claim epoch that our own event store enforces — the pla
 compare-and-swap cannot read lease state because predicates are scoped to the appending tenant and cross-tenant reads are
 forbidden.
 
-Establish that a compare-and-swap predicate can express "commit only if no higher epoch has claimed this action
-identity", atomically with the append, on the stores we actually run: in-memory, SQLite, and Postgres. The Postgres path
+Establish that a compare-and-swap predicate can express "commit only when this is the campaign frontier's current epoch
+and no claim for this logical action already exists in that epoch", atomically with the append, on the stores we actually
+run: in-memory, SQLite, and Postgres. The Postgres path
 takes a per-tenant advisory lock for the whole append, which should make this genuinely linearizable — confirm rather
 than assume.
 
@@ -27,11 +28,14 @@ the layer-2 guarantee is unavailable and the decision returns to the grill.
 
 - [x] A demonstration that the epoch condition commits atomically with the append on each backend
 - [x] A demonstration that a superseded epoch is REJECTED, not merely detected afterwards
+- [x] A demonstration that a stale owner cannot claim a previously unseen action after the frontier advances
+- [x] Fifty same-action, same-epoch races per backend each produce one durable claim and one conflict
+- [x] A stale outcome is rejected while the current epoch's outcome is accepted
 - [x] A measurement of the added latency per claim
 - [x] If any backend cannot express it: an explicit stop with the finding, for re-grilling
 - [x] No production code is kept
 
-Finding: [all three shipped backends provide the required atomic CAS boundary](../../build-timeline/prototype-findings/RR-P2-real-store-claim-epoch-cas.md).
+Finding: [all three shipped backends provide the corrected campaign-scoped atomic CAS boundary](../../build-timeline/prototype-findings/RR-P2-real-store-claim-epoch-cas.md).
 No backend failed, so the conditional stop criterion did not fire.
 
 ## Spec obligations covered

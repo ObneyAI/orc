@@ -9,6 +9,7 @@
   (:require [ai.obney.orc.orc-service.core.blackboard-schema :as blackboard-schema]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.core.metadata :as metadata]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
@@ -1174,13 +1175,14 @@
 
 (defcommand :sheet resume-node-execution
   {:authorized? authenticated?}
-  "Re-enqueue one abandoned leaf start after a processor restart.
+  "Re-enqueue one abandoned leaf, delegate, or researcher start after restart.
 
    The original start event id is a durable idempotency key. If that start has
    already completed, or a recovery start already points at it, this command is
-   a no-op. This deliberately resumes only a leaf frontier; composite parents
-   remain in progress and consume the recovered leaf's normal completion."
-  [{{:keys [sheet-id tick-id node-id original-start-event-id inputs]} :command
+   a no-op. Composite parents remain in progress and consume the recovered
+   frontier's normal completion."
+  [{{:keys [sheet-id tick-id node-id original-start-event-id inputs
+            researcher-ownership-epoch]} :command
     :as ctx}]
   (let [tick-events (into [] (es/read (:event-store ctx)
                                       {:tenant-id (:tenant-id ctx)
@@ -1214,11 +1216,14 @@
        [(->event
          {:type :sheet/node-execution-started
           :tags #{[:sheet sheet-id] [:node node-id] [:tick tick-id]}
-          :body {:sheet-id sheet-id
-                 :tick-id tick-id
-                 :node-id node-id
-                 :inputs inputs
-                 :resumed-from-event-id original-start-event-id}})]
+          :body (cond-> {:sheet-id sheet-id
+                         :tick-id tick-id
+                         :node-id node-id
+                         :inputs inputs
+                         :resumed-from-event-id original-start-event-id}
+                  researcher-ownership-epoch
+                  (assoc :researcher-ownership-epoch
+                         researcher-ownership-epoch))})]
        :command-result/cas
        {:types #{:sheet/node-execution-started :sheet/node-execution-completed}
         :tags #{[:tick tick-id] [:node node-id]}
@@ -1313,25 +1318,55 @@
       (not already-recorded?)
       (assoc :command-result/cas
              {:types #{:rlm/researcher-iteration-recorded
-                       :rlm/researcher-resume-state-saved}
+                       :rlm/researcher-resume-state-saved
+                       :rlm/researcher-frontier-claimed}
               :tags #{[:tick tick-id] [:node node-id]}
               :predicate-fn
               (fn [existing]
-                (let [facts (into [] existing)
-                      latest-state (some->> facts
-                                            (filter #(= :rlm/researcher-resume-state-saved
-                                                        (:event/type %)))
-                                            last
-                                            :resume-state)]
+                (let [{:keys [iteration-recorded? latest-state
+                              frontier-seen? frontier-epoch]}
+                      (reduce
+                       (fn [state event]
+                         (case (:event/type event)
+                           :rlm/researcher-frontier-claimed
+                           (-> state
+                               (assoc :frontier-seen? true)
+                               (update :frontier-epoch max
+                                       (:ownership-epoch event)))
+
+                           :rlm/researcher-iteration-recorded
+                           (if (and (= iteration-index
+                                       (:iteration-index event))
+                                    (= attempt-ordinal
+                                       (:attempt-ordinal event)))
+                             (assoc state :iteration-recorded? true)
+                             state)
+
+                           :rlm/researcher-resume-state-saved
+                           (let [candidate (:resume-state event)]
+                             (if (or (nil? (:latest-state state))
+                                     (neg? (compare
+                                            (resume-order (:latest-state state))
+                                            (resume-order candidate))))
+                               (assoc state :latest-state candidate)
+                               state))
+
+                           state))
+                       {:iteration-recorded? false
+                        :latest-state nil
+                        :frontier-seen? false
+                        :frontier-epoch 0}
+                       existing)]
                   (and
-                   (not-any?
-                    #(and (= :rlm/researcher-iteration-recorded (:event/type %))
-                          (= iteration-index (:iteration-index %))
-                          (= attempt-ordinal (:attempt-ordinal %)))
-                    facts)
+                   (not iteration-recorded?)
                    (or (nil? latest-state)
                        (neg? (compare (resume-order latest-state)
-                                      proposed-order))))))}))))
+                                      proposed-order)))
+                   ;; Legacy v2 streams predate ownership frontiers. Preserve
+                   ;; their revision ordering; once a frontier exists, only
+                   ;; its current owner may append the iteration+state batch.
+                   (or (not frontier-seen?)
+                       (= frontier-epoch (:ownership-epoch resume-state))))))}))))
 
 (defcommand :sheet checkpoint-researcher-iteration
   {:authorized? authenticated?}
@@ -1390,6 +1425,81 @@
                                        (get-in % [:checkpoint :next-iteration] -1)]
                                       checkpoint-order))))
                  (into [] existing))) })))))
+
+(defcommand :sheet claim-researcher-frontier
+  {:authorized? authenticated?}
+  "Atomically acquire one checkpointed researcher campaign frontier epoch."
+  [{{:keys [sheet-id tick-id node-id ownership-epoch claimed-at]} :command}]
+  (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)]
+    {:command-result/events
+     [(->event
+       {:type :rlm/researcher-frontier-claimed
+        :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id] campaign-tag}
+        :body {:sheet-id sheet-id
+               :tick-id tick-id
+               :node-id node-id
+               :ownership-epoch ownership-epoch
+               :claimed-at claimed-at}})]
+     :command-result/cas
+     (researcher-effects/frontier-cas campaign-tag ownership-epoch)}))
+
+(defcommand :sheet claim-researcher-effect
+  {:authorized? authenticated?}
+  "Atomically claim an effect under the campaign's current ownership epoch."
+  [{{:keys [sheet-id tick-id node-id iteration-index logical-action-identity
+            attempt-identity attempt-ordinal ownership-epoch kind claimed-at]}
+    :command}]
+  (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)
+        expected-attempt-identity
+        (researcher-effects/attempt-identity
+         logical-action-identity ownership-epoch attempt-ordinal)]
+    (if (not= expected-attempt-identity attempt-identity)
+      {::anom/category ::anom/incorrect
+       ::anom/message
+       "Researcher effect attempt identity does not match logical action, epoch, and ordinal"}
+      {:command-result/events
+       [(->event
+         {:type :rlm/researcher-effect-claimed
+          :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id] campaign-tag}
+          :body {:sheet-id sheet-id
+                 :tick-id tick-id
+                 :node-id node-id
+                 :iteration-index iteration-index
+                 :logical-action-identity logical-action-identity
+                 :attempt-identity attempt-identity
+                 :attempt-ordinal attempt-ordinal
+                 :ownership-epoch ownership-epoch
+                 :kind kind
+                 :status :claimed
+                 :claimed-at claimed-at
+                 :resolved-at nil}})]
+       :command-result/cas
+       (researcher-effects/claim-cas campaign-tag ownership-epoch
+                                     logical-action-identity attempt-identity)})))
+
+(defcommand :sheet complete-researcher-effect
+  {:authorized? authenticated?}
+  "Atomically record an observed effect outcome while its claim still owns the frontier."
+  [{{:keys [sheet-id tick-id node-id logical-action-identity attempt-identity
+            ownership-epoch result resolved-at]}
+    :command}]
+  (let [campaign-tag (researcher-effects/campaign-tag sheet-id tick-id node-id)]
+    {:command-result/events
+     [(->event
+       {:type :rlm/researcher-effect-completed
+        :tags #{[:sheet sheet-id] [:tick tick-id] [:node node-id] campaign-tag}
+        :body {:sheet-id sheet-id
+               :tick-id tick-id
+               :node-id node-id
+               :logical-action-identity logical-action-identity
+               :attempt-identity attempt-identity
+               :ownership-epoch ownership-epoch
+               :status :completed
+               :result result
+               :resolved-at resolved-at}})]
+     :command-result/cas
+     (researcher-effects/completion-cas campaign-tag ownership-epoch
+                                        logical-action-identity attempt-identity)}))
 
 (defcommand :sheet record-researcher-action
   {:authorized? authenticated?}
@@ -1661,8 +1771,8 @@
    reads :tree-fingerprint from the event body directly (tag values must
    be UUIDs in event-store-v3, so we don't tag with the string fingerprint)."
   [{{:keys [sheet-id tick-id trajectory total-usage task-fingerprint
-            tree-fingerprint status duration-ms generated-tree source-sheet-id
-            source-tick-id]} :command
+            tree-fingerprint status duration-ms generated-tree
+            generated-tree-source source-sheet-id source-tick-id]} :command
     :as _ctx}]
   {:command-result/events
    [(->event
@@ -1685,6 +1795,8 @@
         ;; optional/backward-compatible — a turn that times out before emit
         ;; carries neither, so no enrichment fires (CV-1 floor still stands).
         (some? generated-tree)   (assoc-in [:body :generated-tree] generated-tree)
+        (some? generated-tree-source)
+        (assoc-in [:body :generated-tree-source] generated-tree-source)
         (some? source-sheet-id)  (assoc-in [:body :source-sheet-id] source-sheet-id)
         ;; HP-2: the hosting TURN's tick — pairs with :source-sheet-id as the
         ;; per-occurrence execution<->classification linkage (the shared/static
