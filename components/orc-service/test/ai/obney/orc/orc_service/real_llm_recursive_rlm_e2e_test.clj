@@ -1,5 +1,5 @@
 (ns ai.obney.orc.orc-service.real-llm-recursive-rlm-e2e-test
-  "Gated real-OpenRouter journeys for DET-E2E-105, DET-E2E-106, and DET-E2E-228.
+  "Gated real-OpenRouter journeys for DET-E2E-105, DET-E2E-106, and DET-E2E-252.
 
   These tests give the model adversarial tasks and judge durable outcomes. They
   never redefine, mock, replay, or script model behavior."
@@ -28,14 +28,14 @@
 (defn- usage-total [usage]
   (long (or (:total-tokens usage) (:total_tokens usage) 0)))
 
-(deftest det-e2e-228-real-model-checkpointed-multi-iteration
+(deftest det-e2e-252-real-model-checkpointed-multi-iteration
   (testing "a pinned real model crosses a durable yield and finishes from prior state"
     (live/with-real-openrouter
       (live/register-openrouter!)
       (h/with-async-test-context
         [ctx {:context {:llm-provider :openrouter :model live/openrouter-model}}]
         (let [{:keys [sheet-id node-id]} (live/build-recursive-rlm!
-                                          ctx {:name "det-e2e-228-checkpointed"
+                                          ctx {:name "det-e2e-252-checkpointed"
                                                :instruction
                                                (str "Use at least two Phase-1 iterations. In the first iteration call "
                                                     "(store! :evidence \"CHECKPOINTED\") and do not call final!. "
