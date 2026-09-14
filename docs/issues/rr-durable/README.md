@@ -93,6 +93,9 @@ The harvest / living-description / recursion upgrades. Each reads what the spine
 | [RR-25](RR-25-documentation-truth-pass.md) — Documentation truth pass | AFK | RR-7 |
 | [RR-26](RR-26-whole-spec-integration-and-the-measurement-pass.md) — **Whole-spec integration and the measurement pass** | HITL | all |
 | [RR-27](RR-27-streaming-tap-off-the-dispatch-pool.md) — The streaming tap never occupies the engine's dispatch pool | AFK | RR-26 |
+| [RR-28](RR-28-remove-the-retired-skipped-status-from-code.md) — Remove the retired `skipped` status from code | AFK | — |
+| [RR-29](RR-29-delete-the-dead-synchronous-evaluation-path.md) — Delete the dead synchronous evaluation path | AFK | — |
+| [RR-30](RR-30-default-judges-carry-dimension-specific-feedback.md) — Default judges carry dimension-specific feedback | AFK | — |
 
 ## Handoff and prototype cycle
 

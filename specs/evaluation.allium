@@ -110,7 +110,6 @@ contract DiscreteBandScoring {
 
 contract TraceJudge {
     evaluate: (judge: Judge, trace: TraceEvidence) -> ScoreWithFeedback
-    evaluate_all: (judges: List<Judge>, trace: TraceEvidence) -> ScoreWithFeedback
 
     @invariant CriteriaStanceScaleSeparation
         -- What a judge evaluates, its adversarial review stance, and its scoring

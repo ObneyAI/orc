@@ -65,3 +65,11 @@ trigger carries only the class; each rule names what it reads — `lifetime_occu
 coherence report, `occurrences_since_last_description` for description consolidation (tended this session, with a
 comment stating the two schedules). Two glossary terms follow. Rejected alternative: keep the shared nominal
 parameter and annotate it. No ADR (an ambiguity, not a trade-off).
+
+## D3 (extension) — `evaluate_all` folded into the retirement
+
+The single-trace synchronous sibling `evaluate_all` also has no non-test caller. With the user's assent it is retired from `TraceJudge` in the same session (tended; `ScoreWithFeedback` stays because `evaluate` and `gate_output` still return it). The code deletion is RR-29.
+
+## Slices
+
+D1 → RR-28, D3 → RR-29, D4 → RR-30 (all AFK, independent). D2 and D5 were spec-only and are complete.
