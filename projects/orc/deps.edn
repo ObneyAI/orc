@@ -9,9 +9,9 @@
 
         ;; grain-core-v2 and grain-control-plane each reach schema-util through
         ;; their own gitlib checkout. Select one canonical checkout.
-        cat/schema-util {:local/root "/Users/darylroberts/Desktop/Code/grain-rr-durable-pin/components/schema-util"}
+        cat/schema-util {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "ba57602781cf081605bb56bdc3c4eebfe0317579" :deps/root "components/schema-util"}
 
-        obneyai/grain-core-v2 {:local/root "/Users/darylroberts/Desktop/Code/grain-rr-durable-pin/projects/grain-core-v2"}
+        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "ba57602781cf081605bb56bdc3c4eebfe0317579" :deps/root "projects/grain-core-v2"}
 
         orc/llm               {:local/root "../../components/llm"}
         orc/orc-service       {:local/root "../../components/orc-service"}
@@ -39,4 +39,4 @@
                                orc/predict-rlm-pdf {:local/root "../../components/predict-rlm-pdf"}
                                orc/predict-rlm-redaction-tools {:local/root "../../components/predict-rlm-redaction-tools"}
                                orc/predict-rlm-invoice-tools {:local/root "../../components/predict-rlm-invoice-tools"}
-                               obneyai/grain-control-plane {:local/root "/Users/darylroberts/Desktop/Code/grain-rr-durable-pin/projects/grain-control-plane"}}}}}
+                               obneyai/grain-control-plane {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "ba57602781cf081605bb56bdc3c4eebfe0317579" :deps/root "projects/grain-control-plane"}}}}}

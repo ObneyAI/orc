@@ -11,4 +11,4 @@
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {dk.ative/docjure {:mvn/version "1.21.0"}
                                obneyai/grain-event-store-sqlite-v3
-                               {:local/root "/private/tmp/orc-rr8-grain-recover3/projects/grain-event-store-sqlite-v3"}}}}}
+                               {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "ba57602781cf081605bb56bdc3c4eebfe0317579" :deps/root "projects/grain-event-store-sqlite-v3"}}}}}

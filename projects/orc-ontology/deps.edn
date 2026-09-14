@@ -5,9 +5,9 @@
         ;; the aggregate ORC projects while those upstream changes are pending.
         ;; Mixing this graph with Grain's gitlib-owned schema-util produces two
         ;; unrelated local roots and prevents the test basis from resolving.
-        cat/schema-util {:local/root "/Users/darylroberts/Desktop/Code/grain-rr-durable-pin/components/schema-util"}
+        cat/schema-util {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "ba57602781cf081605bb56bdc3c4eebfe0317579" :deps/root "components/schema-util"}
 
-        obneyai/grain-core-v2 {:local/root "/Users/darylroberts/Desktop/Code/grain-rr-durable-pin/projects/grain-core-v2"}
+        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "ba57602781cf081605bb56bdc3c4eebfe0317579" :deps/root "projects/grain-core-v2"}
 
         ;; The ontology / general-memory stack — explicitly self-describing:
         ;;   ontology    → event-sourced concept graph + DJL embeddings +

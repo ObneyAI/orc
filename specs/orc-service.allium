@@ -251,6 +251,13 @@ contract ExecutionEventStream {
         -- excluded before they consume bounded delivery capacity or affect that
         -- subscriber's accepted, retried, failed or dropped accounting.
 
+    @invariant StreamingNeverOccupiesTheEngineDispatchPool
+        -- Forwarding a durable event into subscriptions runs on its own thread,
+        -- never on the shared fixed dispatch pool that workflow execution and
+        -- pubsub distribution depend on. A subscription path that is slow or
+        -- blocked therefore holds no engine capacity, so it cannot delay or
+        -- wedge workflow execution — it can only be bounded, dropped or closed.
+
     @invariant StalledSubscriberRemainsBounded
         -- A subscriber that stops consuming cannot exceed its configured
         -- delivery capacity or delay workflow execution. Older ephemeral
