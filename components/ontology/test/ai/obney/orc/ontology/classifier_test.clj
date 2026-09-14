@@ -15,6 +15,7 @@
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.ontology.interface.schemas]
             [ai.obney.orc.ontology.core.commands]
+            [ai.obney.orc.ontology.core.read-models :as read-models]
             [ai.obney.grain.schema-util.interface :as schema-util]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
@@ -23,7 +24,8 @@
             [ai.obney.grain.pubsub.interface :as pubsub]
             [ai.obney.grain.kv-store.interface :as kv]
             [ai.obney.grain.kv-store-lmdb.interface :as lmdb]
-            [ai.obney.grain.time.interface :as time]))
+            [ai.obney.grain.time.interface :as time])
+  (:import (java.util.concurrent CountDownLatch TimeUnit)))
 
 ;; =============================================================================
 ;; Test context helpers
@@ -440,6 +442,140 @@
               (str "Emitted event must satisfy its registered schema. Explanation: "
                    (when schema (pr-str (m/explain schema event))))))))))
 
+(deftest assignment-is-idempotent-on-the-campaign-occurrence
+  (testing "a repeated command id cannot move one occurrence to another class or increment event-backed counters twice"
+    (with-test-ctx [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            other-tick-id (random-uuid)
+            node-id (random-uuid)
+            first-class-id (random-uuid)
+            second-class-id (random-uuid)
+            command (fn [assigned-tree-id]
+                      {:command/name :ontology/assign-task-class
+                       :command/id (random-uuid)
+                       :command/timestamp (time/now)
+                       :source-sheet-id sheet-id
+                       :source-tick-id tick-id
+                       :source-node-id node-id
+                       :assigned-tree-id assigned-tree-id
+                       :confidence 0.9
+                       :top-candidates []
+                       :reasoning "RR-18 occurrence identity proof"
+                       :was-fresh-mint? false})
+            first-result (cp/process-command
+                          (assoc ctx :command (command first-class-id)))
+            duplicate-result (cp/process-command
+                              (assoc ctx :command (command second-class-id)))
+            other-occurrence-result
+            (cp/process-command
+             (assoc ctx :command
+                    (assoc (command second-class-id)
+                           :source-tick-id other-tick-id)))
+            events (into []
+                         (es/read (:event-store ctx)
+                                  {:tenant-id (:tenant-id ctx)
+                                   :types #{:ontology/task-classified}
+                                   :tags #{[:tick tick-id]}}))
+            counters (read-models/consolidation-delta-counters {} events)
+            attribution (reduce read-models/tree-class-judge-averages* {} events)]
+        (is (nil? (:cognitect.anomalies/category first-result)))
+        (is (nil? (:cognitect.anomalies/category duplicate-result))
+            "a sequential retry after the original fact is visible is a successful no-op")
+        (is (nil? (:cognitect.anomalies/category other-occurrence-result)))
+        (is (= 1 (count events))
+            "one campaign occurrence appends one classification fact")
+        (is (= first-class-id (:assigned-tree-id (first events)))
+            "the first classification remains the campaign's classification")
+        (is (nil? (get-in counters [:tree-class first-class-id]))
+            "classification records attribution but does not advance verdict-qualified recurrence")
+        (is (nil? (get-in counters [:tree-class second-class-id])))
+        (is (= first-class-id
+               (get-in attribution
+                       [:occurrence->class [sheet-id tick-id]])))
+        (is (empty? (get-in attribution
+                            [:class->recent-occurrences first-class-id]
+                            []))
+            "classification alone does not enter the recent verdict occurrence window")
+        (is (= second-class-id
+               (:assigned-tree-id
+                (first
+                 (into []
+                       (es/read (:event-store ctx)
+                                {:tenant-id (:tenant-id ctx)
+                                 :types #{:ontology/task-classified}
+                                 :tags #{[:tick other-tick-id]}})))))
+            "a different tick on the same sheet is an independent occurrence")))))
+
+(deftest concurrent-assignment-contenders-have-one-occurrence-winner
+  (testing "two producers that both observe absence cannot append two assignments"
+    (with-test-ctx [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            class-ids [(random-uuid) (random-uuid)]
+            both-pre-reads (CountDownLatch. 2)
+            original-read es/read
+            command (fn [assigned-tree-id]
+                      {:command/name :ontology/assign-task-class
+                       :command/id (random-uuid)
+                       :command/timestamp (time/now)
+                       :source-sheet-id sheet-id
+                       :source-tick-id tick-id
+                       :source-node-id node-id
+                       :assigned-tree-id assigned-tree-id
+                       :confidence 0.9
+                       :top-candidates []
+                       :reasoning "RR-18 concurrent occurrence proof"
+                       :was-fresh-mint? false})
+            results
+            (with-redefs [es/read
+                          (fn [event-store query]
+                            (let [result (original-read event-store query)]
+                              (if (and (= #{:ontology/task-classified}
+                                          (:types query))
+                                       (= #{[:tick tick-id]} (:tags query)))
+                                ;; Materialize BEFORE releasing either caller.
+                                ;; Grain reads are reducibles, so merely capturing
+                                ;; `result` would still defer the actual read until
+                                ;; after the barrier and let one caller observe the
+                                ;; other's append as a sequential no-op.
+                                (let [snapshot (into [] result)]
+                                  (.countDown both-pre-reads)
+                                  (when-not (.await both-pre-reads 5 TimeUnit/SECONDS)
+                                    (throw
+                                     (ex-info
+                                      "assignment commands did not overlap at the absence read"
+                                      {})))
+                                  snapshot)
+                                result)))]
+              (let [contenders
+                    (mapv (fn [class-id]
+                            (future
+                              (cp/process-command
+                               (assoc ctx :command (command class-id)))))
+                          class-ids)]
+                (mapv #(deref % 3000 ::command-timeout) contenders)))
+            events (into []
+                         (original-read (:event-store ctx)
+                                        {:tenant-id (:tenant-id ctx)
+                                         :types #{:ontology/task-classified}
+                                         :tags #{[:tick tick-id]}}))
+            winner-id (:assigned-tree-id (first events))
+            replay-result
+            (cp/process-command
+             (assoc ctx :command
+                    (command (first (remove #{winner-id} class-ids)))))]
+        (is (not-any? #{::command-timeout} results))
+        (is (= 1 (count (remove :cognitect.anomalies/category results))))
+        (is (= 1 (count (filter :cognitect.anomalies/category results)))
+            "the append-time CAS rejects exactly one simultaneous contender")
+        (is (= 1 (count events)))
+        (is (contains? (set class-ids) winner-id))
+        (is (nil? (:cognitect.anomalies/category replay-result))
+            "once the winner is visible, replay is a successful no-op")
+        (is (empty? (:command-result/events replay-result)))))))
+
 ;; =============================================================================
 ;; C-2c-2 RED #3 — repl-researcher DSL passes :auto-classify? + threshold through
 ;;
@@ -801,3 +937,42 @@
                       'ai.obney.orc.orc-service.core.runtime/collect-tick-classification)]
         (is (nil? (collect ctx (random-uuid)))
             "No event for this tick → nil (no envelope to attach)")))))
+
+(deftest collect-classification-retains-the-original-campaign-decision
+  (testing "a historical conflicting duplicate cannot replace the classification shown to the campaign"
+    (with-test-ctx [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            first-class-id (random-uuid)
+            later-class-id (random-uuid)
+            classification-event
+            (fn [assigned-tree-id confidence reasoning]
+              (es/->event
+               {:type :ontology/task-classified
+                :tags #{[:tick tick-id]
+                        [:description-target assigned-tree-id]}
+                :body {:source-sheet-id sheet-id
+                       :source-tick-id tick-id
+                       :source-node-id node-id
+                       :assigned-tree-id assigned-tree-id
+                       :confidence confidence
+                       :top-candidates []
+                       :reasoning reasoning
+                       :classified-at "2026-09-09T00:00:00Z"
+                       :was-fresh-mint? false}}))]
+        ;; Direct append deliberately synthesizes data written before RR-18's
+        ;; occurrence-key command fence existed.
+        (es/append (:event-store ctx)
+                   {:tenant-id (:tenant-id ctx)
+                    :events [(classification-event first-class-id 0.91
+                                                   "shown to the first quantum")
+                             (classification-event later-class-id 0.99
+                                                   "later conflicting duplicate")]})
+        (let [collect (requiring-resolve
+                       'ai.obney.orc.orc-service.core.runtime/collect-tick-classification)]
+          (is (= {:tree-id first-class-id
+                  :confidence 0.91
+                  :top-candidates []
+                  :was-fresh-mint? false}
+                 (collect ctx tick-id))))))))

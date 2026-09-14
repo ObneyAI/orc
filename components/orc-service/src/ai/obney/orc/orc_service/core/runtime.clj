@@ -9,6 +9,7 @@
             [ai.obney.orc.orc-service.core.execution-budget :as execution-budget]
             [ai.obney.orc.orc-service.core.profile :as profile]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
+            [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
             [ai.obney.orc.orc-service.core.trace-publication :as trace-publication]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             [ai.obney.orc.orc-service.core.value-log :as value-log]
@@ -88,13 +89,13 @@
 ;;
 ;; The wedge in todo_processors.clj dispatches :ontology/assign-task-class
 ;; which emits :ontology/task-classified tagged with [:tick tick-id]. After
-;; a tick completes, we query by that tag and fold the latest match into
+;; a tick completes, we query by that tag and fold the original match into
 ;; the run-result envelope as :auto-classification.
 ;; =============================================================================
 
 (defn collect-tick-classification
   "Query the event store for :ontology/task-classified events tagged with
-   [:tick tick-id]; if any, return the latest as a run-result envelope
+   [:tick tick-id]; if any, return the original as a run-result envelope
    map {:tree-id :confidence :top-candidates :was-fresh-mint?}. Returns
    nil when no classification event exists for this tick."
   [context tick-id]
@@ -105,7 +106,7 @@
                                    :types #{:ontology/task-classified}
                                    :tags #{[:tick tick-id]}})
                         (into []))]
-        (when-let [e (last events)]
+        (when-let [e (first events)]
           {:tree-id (:assigned-tree-id e)
            :confidence (:confidence e)
            :top-candidates (vec (take 3 (:top-candidates e)))
@@ -602,12 +603,13 @@
              :tags #{(researcher-effects/campaign-tag sheet-id tick-id node-id)}})))
 
 (defn resume-in-progress!
-  "Resume abandoned leaf, delegate, and researcher frontiers from durable state.
+  "Resume abandoned map coordinators plus leaf, delegate, and researcher
+   frontiers from durable state.
 
    Intended to be called after todo processors have been rebuilt against the
    same event store. Completed nodes are never re-enqueued. Each recovery start
    durably references the abandoned start event, making repeated calls
-   idempotent. Returns one result map per active leaf frontier inspected."
+   idempotent. Returns one result map per active executable frontier inspected."
   [context]
   (vec
    (mapcat
@@ -616,45 +618,106 @@
             nodes-by-id (:nodes-by-id tick-ctx)
             tick-events (into [] (es/read (:event-store context)
                                           {:tenant-id (:tenant-id context)
-                                           :tags #{[:tick tick-id]}}))]
-        (keep
-         (fn [node-id]
-           (let [node-type (:type (get nodes-by-id node-id))]
-             (when (contains? #{:leaf :delegate :repl-researcher} node-type)
-               (when-let [start (last (filter #(and (= :sheet/node-execution-started
-                                                        (:event/type %))
-                                                     (= node-id (:node-id %)))
-                                               tick-events))]
-                 (when-not (:resumed-from-event-id start)
-                   (let [researcher-ownership-epoch
-                         (when (= :repl-researcher node-type)
-                           (inc (latest-researcher-frontier-epoch
-                                 context sheet-id tick-id node-id)))
-                         command
-                         (cond-> {:command/id (random-uuid)
+                                           :tags #{[:tick tick-id]}}))
+            ;; Projection state collapses repeated map child executions to a
+            ;; bare node id. Fold lifecycle events by full execution context
+            ;; instead so one sibling completion cannot hide other abandoned
+            ;; starts of the same child node.
+            open-starts-by-key
+            (reduce (fn [starts event]
+                      (case (:event/type event)
+                        :sheet/node-execution-started
+                        (assoc starts (value-log/execution-key event) event)
+
+                        :sheet/node-execution-completed
+                        (dissoc starts (value-log/execution-key event))
+
+                        starts))
+                    {}
+                    tick-events)
+            ;; A map item context is terminal once any matching completion is
+            ;; durable. A stale/reordered duplicate start after that completion
+            ;; must not reopen the slot. Non-map nodes retain ordered lifecycle
+            ;; folding because they can legitimately execute again in one tick.
+            completed-map-contexts
+            (into #{}
+                  (keep (fn [event]
+                          (let [exec-context (value-log/exec-context (:inputs event))]
+                            (when (and (= :sheet/node-execution-completed
+                                          (:event/type event))
+                                       (contains? exec-context
+                                                  :ai.obney.orc.orc-service.core.todo-processors/map-each-parent))
+                              (value-log/execution-key event)))))
+                  tick-events)
+            open-starts
+            (vals (apply dissoc open-starts-by-key completed-map-contexts))
+            ;; Rebuild each active map coordinator before its in-flight direct
+            ;; child is re-enqueued below. The resumed map start is consumed by
+            ;; the same ordered execute-node processor, so its durable survivor
+            ;; state is installed before the child's completion can be handled.
+            _ (doseq [node-id nodes-in-progress
+                      :when (= :map-each (:type (get nodes-by-id node-id)))
+                      :let [start (first
+                                   (filter #(and (= :sheet/node-execution-started
+                                                    (:event/type %))
+                                                 (= node-id (:node-id %))
+                                                 (nil? (:resumed-from-event-id %)))
+                                           tick-events))]
+                      :when start]
+                ;; todo-processors already depends on runtime, so resolve this
+                ;; late rather than introducing a namespace cycle. Installing
+                ;; the cache synchronously is load-bearing: Grain dispatches
+                ;; processor handlers concurrently and a fast recovered child
+                ;; must never complete before its parent cache exists.
+                ((requiring-resolve
+                  'ai.obney.orc.orc-service.core.todo-processors/recover-map-each-coordinator!)
+                 context sheet-id tick-id node-id)
+                (cp/process-command
+                 (assoc context
+                        :command {:command/id (random-uuid)
                                   :command/timestamp (time/now)
                                   :command/name :sheet/resume-node-execution
                                   :sheet-id sheet-id
                                   :tick-id tick-id
                                   :node-id node-id
                                   :original-start-event-id (:event/id start)
-                                  :inputs (:inputs start)}
-                           researcher-ownership-epoch
-                           (assoc :researcher-ownership-epoch
-                                  researcher-ownership-epoch))
-                         result (cp/process-command
-                                 (assoc context :command command))]
-                     (cond-> {:tick-id tick-id
+                                  :inputs (:inputs start)})))]
+        (keep
+         (fn [start]
+           (let [node-id (:node-id start)
+                 node (get nodes-by-id node-id)
+                 node-type (:type node)]
+             (when (and (contains? #{:leaf :delegate :repl-researcher} node-type)
+                        (nil? (:resumed-from-event-id start)))
+               (let [researcher-ownership-epoch
+                     (when (researcher-mode/checkpointed? node)
+                       (inc (latest-researcher-frontier-epoch
+                             context sheet-id tick-id node-id)))
+                     command
+                     (cond-> {:command/id (random-uuid)
+                              :command/timestamp (time/now)
+                              :command/name :sheet/resume-node-execution
                               :sheet-id sheet-id
+                              :tick-id tick-id
                               :node-id node-id
                               :original-start-event-id (:event/id start)
-                              :resumed? (boolean
-                                         (seq (:command-result/events result)))
-                              :command-result result}
+                              :inputs (:inputs start)}
                        researcher-ownership-epoch
                        (assoc :researcher-ownership-epoch
-                              researcher-ownership-epoch))))))))
-         nodes-in-progress)))
+                              researcher-ownership-epoch))
+                     result (cp/process-command
+                             (assoc context :command command))]
+                 (cond-> {:tick-id tick-id
+                          :sheet-id sheet-id
+                          :node-id node-id
+                          :original-start-event-id (:event/id start)
+                          :resumed? (boolean
+                                     (seq (:command-result/events result)))
+                          :command-result result}
+                   researcher-ownership-epoch
+                   (assoc :researcher-ownership-epoch
+                          researcher-ownership-epoch))))))
+         open-starts)))
     (rm/get-all-active-executions context))))
 
 (defn execute
@@ -710,7 +773,8 @@
                                       delegate-parent-exec-context delegate-parent-read-inputs
                                       delegate-parent-read-sources
                                       correlation-id input-sources return-references?
-                                      durability-mode]
+                                      durability-mode checkpointed-campaign?
+                                      llm-budget-root-sheet-id llm-budget-root-tick-id]
                                :or {timeout-ms 300000
                                     result-grace-ms default-result-grace-ms
                                     store-trace? true}}]
@@ -719,7 +783,14 @@
         p (register-completion! tick-id)
         _ (when-let [ephemeral (not-empty (select-keys context [:mcp-session :call-tool-fn]))]
             (swap! ephemeral-context-registry assoc tick-id ephemeral))
+        ;; Real elapsed time controls the caller wait/result accounting.  The
+        ;; injected execution clock supplies only the persisted absolute
+        ;; workflow deadline so deterministic campaign clocks share its
+        ;; coordinate system without fabricating public durations.
         start-time (System/currentTimeMillis)
+        execution-now-ms-fn (or (:execution-now-ms-fn context)
+                                #(System/currentTimeMillis))
+        execution-start-ms (long (execution-now-ms-fn))
         cmd-result (cp/process-command
                      (assoc context :command
                             (cond-> {:command/id (random-uuid)
@@ -729,7 +800,7 @@
                                      :tick-id tick-id
                                      :inputs (or inputs {})
                                      :options (cond-> {:timeout-ms timeout-ms
-                                                        :execution-deadline-ms (+ start-time timeout-ms)
+                                                        :execution-deadline-ms (+ execution-start-ms timeout-ms)
                                                         :store-trace? store-trace?}
                                                  trace? (assoc :trace? true)
                                                  langfuse-client (assoc :langfuse-client langfuse-client)
@@ -745,6 +816,14 @@
                                                  (seq delegate-parent-read-sources)
                                                  (assoc :delegate-parent-read-sources delegate-parent-read-sources)
                                                  llm-call-budget (assoc :llm-call-budget llm-call-budget)
+                                                 checkpointed-campaign?
+                                                 (assoc :checkpointed-campaign? true)
+                                                 llm-budget-root-sheet-id
+                                                 (assoc :llm-budget-root-sheet-id
+                                                        llm-budget-root-sheet-id)
+                                                 llm-budget-root-tick-id
+                                                 (assoc :llm-budget-root-tick-id
+                                                        llm-budget-root-tick-id)
                                                  durability-mode (assoc :durability-mode durability-mode))}
                               parent-tick-id (assoc :parent-tick-id parent-tick-id)
                               correlation-id (assoc :correlation-id correlation-id)
@@ -772,7 +851,8 @@
       ;; Wait for async completion
       (let [result (or (durable-terminal-result context tick-id)
                        (deref p timeout-ms ::timeout))
-            duration-ms (- (System/currentTimeMillis) start-time)]
+            duration-ms (- (System/currentTimeMillis) start-time)
+            classification (collect-tick-classification context tick-id)]
         (swap! completion-registry dissoc tick-id)
         (if (= result ::timeout)
           (expire-run! context sheet-id tick-id inputs duration-ms
@@ -784,6 +864,5 @@
                          :duration-ms duration-ms)
             ;; Fold the C-2c-2 auto-classification envelope when an
             ;; :ontology/task-classified event was emitted during this tick.
-            (collect-tick-classification context tick-id)
-            (assoc :auto-classification
-                   (collect-tick-classification context tick-id))))))))
+            classification
+            (assoc :auto-classification classification)))))))

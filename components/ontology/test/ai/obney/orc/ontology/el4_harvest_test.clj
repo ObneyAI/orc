@@ -155,6 +155,21 @@
              :reasoning "test"
              :was-fresh-mint? false}))))
 
+(defn- verdict-occurrence! [ctx sheet-id tick-id node-id class-id verdict]
+  (es/append
+   (:event-store ctx)
+   {:tenant-id (:tenant-id ctx)
+    :events [(es/->event
+              {:type :ontology/tree-class-occurrence-recorded
+               :tags #{[:tick tick-id] [:description-target class-id]}
+               :body {:source-sheet-id sheet-id
+                      :source-tick-id tick-id
+                      :source-node-id node-id
+                      :source-completion-event-id (random-uuid)
+                      :assigned-tree-id class-id
+                      :verdict verdict
+                      :recorded-at (str (time/now))}})]}))
+
 (defn- judge-score!
   ([ctx sheet-id judge-name score] (judge-score! ctx sheet-id (random-uuid) judge-name score))
   ([ctx sheet-id tick-id judge-name score]
@@ -276,23 +291,24 @@
    ephemeral tick, carrying the host linkage in :source-sheet-id /
    :source-tick-id."
   [ctx class-id host-sheet turn-tick fingerprint score]
-  (cp/process-command
-    (assoc ctx :command
-           {:command/name :ontology/assign-task-class
+  (let [node-id (random-uuid)]
+    (cp/process-command
+      (assoc ctx :command
+             {:command/name :ontology/assign-task-class
             :command/id (random-uuid)
             :command/timestamp (time/now)
             :source-sheet-id host-sheet
             :source-tick-id turn-tick
-            :source-node-id (random-uuid)
+            :source-node-id node-id
             :assigned-tree-id class-id
             :confidence 0.95
             :top-candidates []
             :reasoning "test"
             :was-fresh-mint? false}))
-  (judge-score! ctx host-sheet turn-tick "quality" score)
-  (cp/process-command
-    (assoc ctx :command
-           {:command/name :sheet/record-rlm-tree-execution-completion
+    (judge-score! ctx host-sheet turn-tick "quality" score)
+    (cp/process-command
+      (assoc ctx :command
+             {:command/name :sheet/record-rlm-tree-execution-completion
             :command/id (random-uuid)
             :command/timestamp (time/now)
             :sheet-id (random-uuid)          ;; EPHEMERAL Phase-2 sheet
@@ -303,19 +319,24 @@
             :total-usage {:total-tokens 0}
             :tree-fingerprint fingerprint
             :status :success
-            :duration-ms 100})))
+            :duration-ms 100}))
+    (verdict-occurrence! ctx host-sheet turn-tick node-id class-id :success)))
 
 (deftest hp2-distinct-tree-shapes-production-faithful
-  (testing "distinct-tree-shapes counts the class's executions' fingerprints via the
-             [source-sheet-id source-tick-id] linkage — NOT the ephemeral :sheet-id"
+  (testing "RR-21 retired harvest.clj's all-trees distinct-tree-shapes measure (the never-witnessed
+             one this test originally pinned); winning-shape-coherence is what replaced it, and this
+             proves the SAME HP-2 linkage the retired measure proved — the
+             [source-sheet-id source-tick-id] join, NOT the ephemeral :sheet-id"
     (with-test-ctx [ctx]
       (let [class-a (random-uuid)
             host (random-uuid)]
         (production-occurrence! ctx class-a host (random-uuid) "shape-A" 0.9)
         (production-occurrence! ctx class-a host (random-uuid) "shape-B" 0.9)
         (Thread/sleep 250)
-        (is (= 2 (harvest/distinct-tree-shapes ctx class-a))
-            "two production-shaped occurrences with two fingerprints -> 2 distinct shapes")))))
+        (let [m (harvest/winning-shape-coherence ctx class-a)]
+          (is (= 2 (:successful-campaigns m)))
+          (is (= 2 (:distinct-successful-shapes m))
+              "two production-shaped occurrences with two fingerprints -> 2 distinct winning shapes"))))))
 
 (deftest hp2-consolidator-gather-attaches-execution-evidence
   (testing "gather-recent-tree-class-events joins each observation to its bookend via
@@ -368,16 +389,16 @@
 ;; ===========================================================================
 
 (def ^:private good-class
-  "Recurring + well-scored on BOTH axes + coherent. CC-26: the single
-   :judge-average scalar was replaced by the two marginals it had flattened —
+  "Recurring + well-scored on BOTH axes. CC-26: the single :judge-average
+   scalar was replaced by the two marginals it had flattened —
    :judge-trailing-averages (per DIMENSION, over the class's most recent
    :dimension-window scored occurrences — CC-24b/ADR 0029 replaced the
    lifetime mean here) and :occurrence-scores (per OCCURRENCE, temporal order,
-   most recent last)."
+   most recent last). RR-21: harvest-candidate? no longer reads a coherence
+   metric at all (report-only rollout), so this fixture carries none."
   {:occurrences 12
    :judge-trailing-averages {"quality" 0.85}
-   :occurrence-scores (vec (repeat 12 0.85))
-   :distinct-tree-shapes 3})
+   :occurrence-scores (vec (repeat 12 0.85))})
 
 (deftest slice2-gate-passes-the-good-class
   (testing "recurring + well-scored + coherent -> harvest-candidate? true"
@@ -402,11 +423,18 @@
                   (assoc good-class :judge-trailing-averages {"quality" 1.0 "grounding" 0.6})
                   harvest/default-harvest-config)))))
 
-(deftest slice2-gate-fails-grab-bag
-  (testing "too many distinct tree-shapes relative to occurrences -> false (grab-bag, not a coherent cluster)"
-    (is (false? (harvest/harvest-candidate?
-                  (assoc good-class :distinct-tree-shapes 11)
-                  harvest/default-harvest-config)))))
+(deftest slice2-gate-no-longer-fails-grab-bag
+  (testing "RR-21: coherence is REPORT-ONLY — harvest-candidate? no longer includes a coherence
+             clause at all (the spec's rule PromoteWellScoredClass carries no coherence `requires`),
+             so a rejected winning-shape-coherence verdict (too many distinct winning shapes
+             relative to successful campaigns) no longer fails the gate. Pre-RR-21 this test named
+             `slice2-gate-fails-grab-bag` and asserted `false?` here — the retired behaviour."
+    (is (true? (harvest/harvest-candidate?
+                 (assoc good-class :winning-shape-coherence
+                        {:successful-campaigns 12 :successful-shape-observations 12
+                         :distinct-successful-shapes 11 :ratio 11/12 :status :rejected})
+                 harvest/default-harvest-config))
+        "a grab-bag's rejected coherence no longer blocks promotion")))
 
 (deftest slice2-gate-fails-nil-judge-signal
   (testing "no judge signal at all -> false (cannot be well-scored) — on EITHER axis"
@@ -476,7 +504,8 @@
    the earlier same-sheet/same-tick bookend fixture hid the disjoint-domain
    join bugs exactly the way SJ-1's same-id fixtures did)."
   [ctx class-id sheet-id fingerprint score behavioral-subtrees]
-  (let [tick-id (random-uuid)]
+  (let [tick-id (random-uuid)
+        node-id (random-uuid)]
     (cp/process-command
       (assoc ctx :command
              (cond-> {:command/name :ontology/assign-task-class
@@ -484,7 +513,7 @@
                       :command/timestamp (time/now)
                       :source-sheet-id sheet-id
                       :source-tick-id tick-id
-                      :source-node-id (random-uuid)
+                      :source-node-id node-id
                       :assigned-tree-id class-id
                       :confidence 0.95
                       :top-candidates []
@@ -505,7 +534,8 @@
               :total-usage {:total-tokens 0}
               :tree-fingerprint fingerprint
               :status :success
-              :duration-ms 100}))))
+              :duration-ms 100}))
+    (verdict-occurrence! ctx sheet-id tick-id node-id class-id :success)))
 
 (def ^:private good-body
   {:capabilities ["classify a document then extract fields per class"]
@@ -601,8 +631,11 @@
         (is (false? (harvest/already-harvested? ctx class-id)) "junk not marked harvested")
         (is (empty? (minted-harvest-events ctx class-id)) "no behavior minted for a below-N class")))))
 
-(deftest slice3-skips-grab-bag
-  (testing "a recurring+well-scored class that is a GRAB-BAG (many distinct shapes) is NOT harvested"
+(deftest slice3-harvests-a-grab-bag-report-only
+  (testing "RR-21: a recurring+well-scored class that is a GRAB-BAG (many distinct winning shapes)
+             IS harvested now — coherence is computed and reported (winning-shape-coherence
+             :rejected) but no longer gates promotion. Pre-RR-21 this test named
+             `slice3-skips-grab-bag` and asserted the mint was empty — the retired behaviour."
     (with-test-ctx [ctx]
       (let [class-id (random-uuid)
             parent-id (random-uuid)]
@@ -613,10 +646,12 @@
           (occurrence! ctx class-id (random-uuid) (str "shape-" i) 0.85
                        (when (zero? i) [{:behavior-id parent-id :confidence 0.9 :reasoning "x"}])))
         (Thread/sleep 300)
+        (let [m (harvest/winning-shape-coherence ctx class-id)]
+          (is (= :rejected (:status m)) "the winning-shape ratio really is a grab-bag"))
         (harvest/maybe-harvest! ctx class-id)
         (Thread/sleep 150)
-        (is (empty? (minted-harvest-events ctx class-id))
-            "grab-bag (distinct-shapes ~= occurrences) fails the coherence gate")))))
+        (is (= 1 (count (minted-harvest-events ctx class-id)))
+            "grab-bag coherence no longer blocks promotion — report-only rollout (RR-21)")))))
 
 (deftest slice3-processor-drives-harvest-end-to-end
   (testing "the registered on-tree-class-check-harvest processor mints the good class from real events (no direct call)"
@@ -654,7 +689,8 @@
    a production-shaped bookend carrying the [source-sheet-id source-tick-id]
    linkage."
   [ctx class-id host-sheet fingerprint judge->score behavioral-subtrees]
-  (let [tick-id (random-uuid)]
+  (let [tick-id (random-uuid)
+        node-id (random-uuid)]
     (cp/process-command
       (assoc ctx :command
              (cond-> {:command/name :ontology/assign-task-class
@@ -662,7 +698,7 @@
                       :command/timestamp (time/now)
                       :source-sheet-id host-sheet
                       :source-tick-id tick-id
-                      :source-node-id (random-uuid)
+                      :source-node-id node-id
                       :assigned-tree-id class-id
                       :confidence 0.95
                       :top-candidates []
@@ -684,7 +720,8 @@
               :total-usage {:total-tokens 0}
               :tree-fingerprint fingerprint
               :status :success
-              :duration-ms 100}))))
+              :duration-ms 100}))
+    (verdict-occurrence! ctx host-sheet tick-id node-id class-id :success)))
 
 (defn- seed-scored-class!
   "Seed ONE tree-class from `per-occurrence` — a seq of {judge-name -> score}
@@ -935,12 +972,15 @@
                                  {:anchor? false})]
         ;; MEASUREMENT GUARDS — the class is otherwise a promoting class, and
         ;; the ONLY thing missing is the anchor.
+        ;; RR-21: harvest-candidate? no longer reads a coherence metric
+        ;; (report-only rollout) — the metrics fixture drops the retired
+        ;; :distinct-tree-shapes key (distinct-tree-shapes no longer exists
+        ;; in harvest.clj).
         (is (true? (harvest/harvest-candidate?
                      {:occurrences (rm/get-consolidation-total ctx :tree-class class-id)
                       :judge-trailing-averages (ontology/get-tree-class-judge-recent-averages
                                                  ctx class-id (:dimension-window harvest/default-harvest-config))
-                      :occurrence-scores (harvest/occurrence-scores ctx class-id)
-                      :distinct-tree-shapes (harvest/distinct-tree-shapes ctx class-id)}
+                      :occurrence-scores (harvest/occurrence-scores ctx class-id)}
                      harvest/default-harvest-config))
             "the quality gate itself passes — only the anchor is missing")
         (is (nil? (harvest/nearest-abstract-behavior ctx class-id))
@@ -1450,9 +1490,12 @@
             "the TRAILING window earns eligibility the lifetime mean cannot express")
 
         ;; …and it really is the dimension axis that flips: same metrics, one key.
+        ;; RR-21: harvest-candidate? no longer reads a coherence metric
+        ;; (report-only rollout), so the retired :distinct-tree-shapes key is
+        ;; dropped from this fixture — distinct-tree-shapes no longer exists
+        ;; in harvest.clj.
         (let [metrics {:occurrences (rm/get-consolidation-total ctx :tree-class class-id)
-                       :occurrence-scores (harvest/occurrence-scores ctx class-id)
-                       :distinct-tree-shapes (harvest/distinct-tree-shapes ctx class-id)}]
+                       :occurrence-scores (harvest/occurrence-scores ctx class-id)}]
           (is (true? (harvest/harvest-candidate?
                        (assoc metrics :judge-trailing-averages trailing)
                        harvest/default-harvest-config)))
@@ -1501,11 +1544,13 @@
         (is (true? (harvest/every-dimension-qualified?
                      {one-judge (mean* (take-last window (subvec scored 0 22)))} floor))
             "…and it DID qualify at its 22nd scored occurrence — enforcement is continuously earned")
+        ;; RR-21: the retired :distinct-tree-shapes key is dropped (harvest-
+        ;; candidate? no longer reads a coherence metric); the dimension axis
+        ;; alone still rejects this class.
         (is (false? (harvest/harvest-candidate?
                       {:occurrences (rm/get-consolidation-total ctx :tree-class class-id)
                        :judge-trailing-averages trailing
-                       :occurrence-scores occ-scores
-                       :distinct-tree-shapes (harvest/distinct-tree-shapes ctx class-id)}
+                       :occurrence-scores occ-scores}
                       harvest/default-harvest-config))
             "the gate rejects it")
         (harvest/maybe-harvest! ctx class-id)
@@ -1563,41 +1608,54 @@
             (str "and the two accessors really are different projections: "
                  lifetime " vs " trailing))))))
 
-;; --- RED 4: the coherence abstention becomes OBSERVABLE (ADR 0029 decision 5).
-;;     No behaviour change — visibility only. Measured: coherence passes
-;;     VACUOUSLY for 100% of occurrences in both real stores (0/138
-;;     tree-execution events carry a fingerprint), so a gate report that says
-;;     "coherent" is reporting a signal it has never once seen.
+;; --- RED 4 (CC-24b, ADR 0029 decision 5), then RR-21: the coherence
+;;     abstention became OBSERVABLE (visibility only, no gating change), and
+;;     RR-21 then retired the all-trees measure that abstained, replacing it
+;;     with winning-shape-coherence's :not-measurable AND making the whole
+;;     clause report-only (never gates, on ANY of its three verdicts).
 
 (deftest cc24b-coherence-abstention-is-observable-in-the-gate-report
-  (testing "a class with NO tree shapes at all must be REPORTED as abstaining on coherence,
-             not silently reported as coherent — while the verdict itself is unchanged"
-    (let [no-shapes {:occurrences 12
-                     :judge-trailing-averages {one-judge 0.75}
-                     :occurrence-scores (vec (repeat 12 0.75))
-                     :distinct-tree-shapes 0}
-          with-shapes (assoc no-shapes :distinct-tree-shapes 3)
-          grab-bag (assoc no-shapes :distinct-tree-shapes 11)
-          report-a (harvest/harvest-gate-report no-shapes harvest/default-harvest-config)
-          report-b (harvest/harvest-gate-report with-shapes harvest/default-harvest-config)
-          report-c (harvest/harvest-gate-report grab-bag harvest/default-harvest-config)]
-      (is (= :abstained (get-in report-a [:coherence :verdict]))
-          (str "no shapes -> ABSTAINED, got " (pr-str report-a)))
+  (testing "a class with NO winning-shape evidence at all must be REPORTED as NOT-MEASURABLE — RR-21
+             replaced the pre-RR-21 all-trees ABSTAINED verdict with this — never silently reported
+             as coherent or rejected; and RR-21 made the WHOLE clause report-only, so none of its
+             three verdicts (:not-measurable / :qualified / :rejected) gates promotion"
+    (let [base {:occurrences 12
+                :judge-trailing-averages {one-judge 0.75}
+                :occurrence-scores (vec (repeat 12 0.75))}
+          not-measurable (assoc base :winning-shape-coherence
+                                 {:successful-campaigns 12 :successful-shape-observations 0
+                                  :distinct-successful-shapes 0 :ratio nil :status :not-measurable})
+          qualified (assoc base :winning-shape-coherence
+                            {:successful-campaigns 12 :successful-shape-observations 12
+                             :distinct-successful-shapes 3 :ratio 1/4 :status :qualified})
+          rejected (assoc base :winning-shape-coherence
+                           {:successful-campaigns 12 :successful-shape-observations 12
+                            :distinct-successful-shapes 11 :ratio 11/12 :status :rejected})
+          report-a (harvest/harvest-gate-report not-measurable harvest/default-harvest-config)
+          report-b (harvest/harvest-gate-report qualified harvest/default-harvest-config)
+          report-c (harvest/harvest-gate-report rejected harvest/default-harvest-config)]
+      (is (= :not-measurable (get-in report-a [:coherence :verdict]))
+          (str "no winning-shape evidence -> NOT-MEASURABLE, got " (pr-str report-a)))
       (is (= :qualified (get-in report-b [:coherence :verdict]))
           (str "real shapes -> a real verdict, got " (pr-str report-b)))
       (is (= :rejected (get-in report-c [:coherence :verdict]))
-          (str "a grab-bag is still rejected, got " (pr-str report-c)))
-      ;; NO BEHAVIOUR CHANGE — the abstention still passes, exactly as before.
-      (is (true? (:candidate? report-a)) "the abstention still passes the gate")
-      (is (= (harvest/harvest-candidate? no-shapes harvest/default-harvest-config)
+          (str "a grab-bag is still REPORTED rejected, got " (pr-str report-c)))
+      ;; RR-21: NONE of the three coherence verdicts gates promotion any more
+      ;; (pre-RR-21 only the abstention passed vacuously; :rejected DID gate).
+      (is (true? (:candidate? report-a)) "not-measurable never gates promotion")
+      (is (true? (:candidate? report-b)) "qualified never gated promotion either")
+      (is (true? (:candidate? report-c)) "REJECTED no longer gates promotion — report-only rollout")
+      (is (= (harvest/harvest-candidate? not-measurable harvest/default-harvest-config)
              (:candidate? report-a))
           "the report agrees with the gate it reports on")
-      (is (= (harvest/harvest-candidate? grab-bag harvest/default-harvest-config)
+      (is (= (harvest/harvest-candidate? rejected harvest/default-harvest-config)
              (:candidate? report-c))))))
 
 (deftest cc24b-coherence-abstention-is-logged-by-maybe-harvest
-  (testing "…and the report really reaches an operator: maybe-harvest! emits the gate report,
-             and on the real corpus (0/138 bookends carry a fingerprint) it says ABSTAINED"
+  (testing "…and the report really reaches an operator: maybe-harvest! emits the gate report, and
+             on this fixture (real fingerprints on every bookend) it says QUALIFIED — RR-21's
+             not-measurable case (no shape evidence at all) is proven separately, in
+             cc24b-shapeless-class-logs-the-abstention"
     (with-gate-ctx [ctx]
       (let [{:keys [class-id]} (seed-scored-class!
                                  ctx (single-judge-occurrences (repeat 12 1.0)))
@@ -1611,8 +1669,9 @@
             (str "shapes present -> qualified, got " (pr-str (first reports))))))))
 
 (deftest cc24b-shapeless-class-logs-the-abstention
-  (testing "the SHAPELESS case measured in both real stores: no tree-execution evidence at all,
-             so the coherence clause passes vacuously — and the log SAYS so"
+  (testing "the SHAPELESS case measured in both real stores: no tree-execution evidence at all, so
+             winning-shape-coherence is NOT-MEASURABLE (RR-21 replaced the all-trees ABSTAINED
+             verdict this test originally pinned with this) — and the log SAYS so, report-only"
     (with-gate-ctx [ctx]
       (let [class-id (random-uuid)
             parent-id (random-uuid)
@@ -1622,7 +1681,8 @@
         ;; classification + judge score ONLY — no bookend, which is exactly the
         ;; VOLUME store's shape (sonnet solved every task by direct tool call).
         (dotimes [i 12]
-          (let [tick (random-uuid)]
+          (let [tick (random-uuid)
+                node-id (random-uuid)]
             (cp/process-command
               (assoc ctx :command
                      (cond-> {:command/name :ontology/assign-task-class
@@ -1630,7 +1690,7 @@
                               :command/timestamp (time/now)
                               :source-sheet-id host
                               :source-tick-id tick
-                              :source-node-id (random-uuid)
+                              :source-node-id node-id
                               :assigned-tree-id class-id
                               :confidence 0.95
                               :top-candidates []
@@ -1638,14 +1698,109 @@
                               :was-fresh-mint? false}
                        (zero? i) (assoc :behavioral-subtrees
                                         [{:behavior-id parent-id :confidence 0.9 :reasoning "x"}]))))
-            (judge-score! ctx host tick one-judge 1.0)))
+            (judge-score! ctx host tick one-judge 1.0)
+            ;; The campaign still reached success even though it emitted no
+            ;; Phase-2 tree bookend; recurrence follows the verdict, not shape.
+            (verdict-occurrence! ctx host tick node-id class-id :success)))
         (Thread/sleep 250)
-        (is (zero? (harvest/distinct-tree-shapes ctx class-id))
-            "the measured reality: no shape evidence exists")
+        (let [m (harvest/winning-shape-coherence ctx class-id)]
+          (is (= 12 (:successful-campaigns m)) "the measured reality: 12 successful campaigns")
+          (is (zero? (:successful-shape-observations m)) "…and no shape evidence at all")
+          (is (nil? (:ratio m)))
+          (is (= :not-measurable (:status m))))
         (let [[logs _] (capture-mulog #(harvest/maybe-harvest! ctx class-id))
               report (first (filter #(= ::harvest/harvest-gate-report (:event %)) logs))]
           (is (some? report) "a gate report is logged")
-          (is (= :abstained (get-in report [:pairs :coherence :verdict]))
-              (str "the coherence abstention is VISIBLE, got " (pr-str report)))
+          (is (= :not-measurable (get-in report [:pairs :coherence :verdict]))
+              (str "the not-yet-measurable verdict is VISIBLE, got " (pr-str report)))
           (is (true? (get-in report [:pairs :candidate?]))
-              "and the verdict is unchanged — visibility only"))))))
+              "and the verdict is unchanged — report-only, never a gate"))))))
+
+;; ===========================================================================
+;; RR-21 — the durable shape-coherence report is bounded to ITS OWN occurrence
+;; ===========================================================================
+;;
+;; INSPECTION FINDING (reproduced, root-caused, fixed): the report command
+;; originally computed :verdict-occurrences and the coherence measure from
+;; the event store's CURRENT state at PROCESSING time. A backlog — several
+;; occurrence events already landed before the handler processes any of
+;; them — made every report read back the FINAL count/ratio instead of its
+;; own durable position (measured: :verdict-occurrences [3 3 3] and every
+;; report [2 2 2 :rejected], instead of the contract's [1 2 3] with the
+;; first two reports [1 1 1 :rejected]). The fix bounds both numbers to the
+;; triggering occurrence's own :event/id (UUIDv7, durably time-ordered) via
+;; `harvest/class-occurrences-through` / `winning-shape-coherence`'s 4-arity.
+
+(defn- land-campaign!
+  "Land one full campaign — classify, the given Phase-2 bookends IN ORDER,
+   then a verdict — WITHOUT driving any processor, so several campaigns'
+   occurrence events can be made to land in the store as a BACKLOG before the
+   harvest-check handler ever processes any of them. `bookends` is a vector
+   of [fingerprint status] pairs, mirroring the propagated RR-21 contract
+   test's own `campaign!`/`bookend!` fixture shape."
+  [ctx class-id bookends verdict]
+  (let [sheet (random-uuid) tick (random-uuid) node (random-uuid)]
+    (classify! ctx sheet class-id tick)
+    (doseq [[fingerprint status] bookends]
+      (cp/process-command
+        (assoc ctx :command
+               {:command/name :sheet/record-rlm-tree-execution-completion
+                :command/id (random-uuid)
+                :command/timestamp (time/now)
+                :sheet-id (random-uuid)
+                :tick-id (random-uuid)
+                :source-sheet-id sheet
+                :source-tick-id tick
+                :trajectory []
+                :total-usage {:total-tokens 0}
+                :tree-fingerprint fingerprint
+                :status status
+                :duration-ms 1})))
+    (verdict-occurrence! ctx sheet tick node class-id verdict)))
+
+(deftest rr21-coherence-report-is-bounded-to-its-own-occurrence
+  (testing "each :ontology/shape-coherence-reported reflects the measure strictly AS OF its own
+             triggering occurrence's durable position, not the store's CURRENT state at processing
+             time — reproduces the scheduling-race finding deterministically: all three occurrence
+             events land in the store as a BACKLOG (no processor registered) before the harvest-
+             check handler processes any of them, then the SAME registered handler-fn is driven
+             directly, once per occurrence, in durable order — exactly a processor that only starts
+             consuming after the backlog already exists, with no async/pubsub timing involved"
+    (with-test-ctx [ctx]
+      (let [class-id (random-uuid)
+            handler-fn (:handler-fn (get @tp/processor-registry* :ontology/on-tree-class-check-harvest))]
+        ;; Mirrors the propagated RR-21 contract test's own fixture exactly:
+        ;; campaign A repairs from a failed shape-x to a winning shape-a,
+        ;; campaign B's bookend would have been a second winning shape-a but
+        ;; the campaign itself fails, campaign C succeeds with a different
+        ;; shape-b.
+        (land-campaign! ctx class-id [["shape-x" :failure] ["shape-a" :success]] :success)
+        (land-campaign! ctx class-id [["shape-a" :success]] :failure)
+        (land-campaign! ctx class-id [["shape-b" :success]] :success)
+        (let [occurrences (->> (into [] (es/read (:event-store ctx)
+                                                 {:tenant-id (:tenant-id ctx)
+                                                  :types #{:ontology/tree-class-occurrence-recorded}}))
+                               (filter #(= class-id (:assigned-tree-id %))))
+              _ (is (= 3 (count occurrences)) "all three occurrence events really landed before any processing")
+              ;; Drive the SAME registered handler directly, once per
+              ;; occurrence, in durable order — no processor/pubsub timing
+              ;; involved at all.
+              _ (doseq [event occurrences] (handler-fn (assoc ctx :event event)))
+              reports (->> (into [] (es/read (:event-store ctx)
+                                             {:tenant-id (:tenant-id ctx)
+                                              :types #{:ontology/shape-coherence-reported}}))
+                           (filter #(= class-id (:tree-class %)))
+                           (sort-by :verdict-occurrences))]
+          (is (= 3 (count reports)) "one durable report per occurrence, even under a backlog")
+          (is (= [1 2 3] (mapv :verdict-occurrences reports))
+              "each report's OWN position — never the backlog's final count of 3 for every report")
+          (is (= [1 1 2] (mapv :successful-campaigns reports))
+              "the first two reports must not see the THIRD campaign's success, which lands after them durably")
+          (is (= [1 1 2] (mapv :successful-shape-observations reports)))
+          (is (= [1 1 2] (mapv :distinct-successful-shapes reports))
+              "shapes A and B never share a report until the third occurrence brings B in")
+          (is (= [1 1 1] (mapv :ratio reports)))
+          (is (= [:rejected :rejected :rejected] (mapv :status reports))
+              "1/1, 1/1 and 2/2 are all > the 0.5 max-shapes-ratio")
+          (is (= (mapv :event/id occurrences) (mapv :source-occurrence-event-id reports))
+              "each report names the exact occurrence event it was bounded to, in durable order"))))))

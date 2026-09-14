@@ -1,14 +1,16 @@
 (ns ai.obney.orc.orc-service.interface.stream-schemas
   "Malli schemas for the live-stream envelope (:orc.stream/* events).
 
-   These describe the EPHEMERAL observation layer delivered by
-   `subscribe-execution` / `execute-stream`. They are intentionally NOT
-   registered as Grain event schemas — stream envelopes are never appended
-   to the event store. Exported for consumer-side validation and codegen.
+   These describe the LIVE observation layer delivered by
+   `subscribe-execution` / `execute-stream`. The envelope itself is never
+   appended to the event store: some envelope kinds project durable Grain
+   events, while finer-grained previews remain ephemeral. Exported for
+   consumer-side validation and codegen.
 
    Loss model: each subscription's :seq is strictly monotonic. A gap means
    the consumer fell behind a sliding buffer and lost events; everything
-   durable is recoverable from the event store by [:tick tick-id] tags.")
+   durable is recoverable from the event store by [:tick tick-id] tags."
+  (:require [ai.obney.orc.orc-service.interface.schemas :as schemas]))
 
 ;; A value that may have been size-capped by the hub (~16KB printed).
 ;; Oversized values are replaced by the truncation marker map; the raw
@@ -115,6 +117,12 @@
     (envelope :rlm-iteration-started
               [:iteration :int]
               [:max-iterations {:optional true} :int])]
+
+   [:rlm-iteration-recorded
+    (envelope :rlm-iteration-recorded
+              [:iteration-index [:and :int [:>= 0]]]
+              [:attempt-ordinal [:and :int [:>= 0]]]
+              [:iteration-record schemas/researcher-iteration-record])]
 
    [:rlm-code-generated
     (envelope :rlm-code-generated

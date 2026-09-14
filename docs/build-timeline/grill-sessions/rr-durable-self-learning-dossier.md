@@ -311,3 +311,25 @@ Fixed by modelling what a campaign actually is, following the `DelegateInvocatio
 The current reconciled model adds a cancellation witness plus separate logical-action and physical-attempt constraints. Its fence obligations include `OneClaimPerLogicalActionIdentityPerEpoch`, `EffectAttemptIdentitiesAreUnique`, `EffectAttemptIdentityMatchesLogicalAction`, `OneIterationRecordPerAttempt`, `ClaimsNeverExceedTheirCampaignsEpoch`, `AbandonedCampaignsRecordNoVerdict`, `CancelledCampaignsRecordCause`, and `SuccessfulIterationsRecordTheirCode`. Failed iterations separately record whether code existed, because provider failure can settle an attempt before code generation.
 
 Result at the historical grill base: total obligations 192 -> 265, a delta of 73. The issue files originally contained 75 obligation references but only 49 distinct IDs; those are separate counts and must not be described as 75 unique campaign obligations. After rebasing onto merged main and reconciling cancellation plus attempt identity, the current ORC-service plan is 275 obligations. Across all twelve specs the baseline is 142 diagnostics (0 errors, 35 warnings, 107 info) and 0 analyse findings. `/propagate` has a real campaign ledger, while prose-only decisions remain explicitly identified rather than implied covered.
+
+## Post-grill RR-11 correction — claims cannot count physical provider retries
+
+RR-11's implementation read falsified one premise in G17 without changing the ratified behavior. `EffectClaim` is the
+ownership fence for one logical campaign action in one epoch: both its CAS and the tended
+`OneClaimPerLogicalActionIdentityPerEpoch` invariant reject a second claim for that action and epoch. The generic LLM
+executor, however, can make multiple physical provider attempts inside one epoch because every retry reaches the real
+provider boundary. Making retry ordinal part of logical action identity would violate G7's content-derived identity
+decision and make replay order part of meaning.
+
+The corrected mechanism keeps the G17 outcome and separates the facts. For a checkpointed campaign, a **provider-call reservation** is appended
+immediately before each physical attempt, is linked to the budget-root execution and the actual invoking node execution,
+and consumes capacity even if a crash occurs before the attempt has a known outcome. The durable reservation count is
+the restart authority; the in-memory count remains only a rebuildable hot cache. `EffectClaim` remains unchanged as the
+logical effect/epoch fence and indeterminacy record. This also closes the generated-child gap exposed during RR-11
+reconnaissance: ordinary LLM leaves in generated executions had no durable pre-dispatch provider fact at all.
+
+The tended model adds 18 RR-11 obligations, taking the ORC-service plan from 275 to 293. Repository-wide check/analyse
+now reports the explicitly accepted 144-diagnostic baseline (0 errors, 35 warnings, 109 information) and zero process
+findings. The two new informational diagnostics are the internal `ProviderInvocationRequested` trigger and the
+`WorkflowExecution.provider_call_reservations` relationship, which is intentionally present before its RR-11 public
+projection consumer lands. The non-checkpointed compatibility path remains event-for-event unchanged until RR-15.

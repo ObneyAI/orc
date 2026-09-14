@@ -5,7 +5,7 @@ Make a campaign survive, describe itself, and feed what it records back into the
 **PRD:** [`docs/prd/rr-durable-self-learning.md`](../../prd/rr-durable-self-learning.md)
 **Grill log:** [`docs/build-timeline/grill-sessions/rr-durable-self-learning-dossier.md`](../../build-timeline/grill-sessions/rr-durable-self-learning-dossier.md) — decisions G1–G19, research findings R1–R8
 **ADRs:** [0004 — campaign effects are at-least-once and attributable](../../adr/0004-campaign-effects-are-at-least-once-and-attributable.md) · [0005 — recursive campaigns are checkpointed by default](../../adr/0005-recursive-campaigns-are-checkpointed-by-default.md)
-**Specs:** `specs/orc-service.allium`, `specs/ontology.allium`, `specs/evaluation.allium` — the current ORC-service plan contains 275 obligations; slice briefs name the exact campaign obligations they own
+**Specs:** `specs/orc-service.allium`, `specs/ontology.allium`, `specs/evaluation.allium` — the current ORC-service plan contains 303 obligations; slice briefs name the exact campaign obligations they own
 **Branch:** `feature/rr-durable-self-learning`, rebased onto merged `main` @ `1b6f95cb`
 
 ## Relationship to PR #36
@@ -18,10 +18,26 @@ fencing, and monotonic trace publication:
 - Checkpointing died on any tree containing inline code, destroying the campaign's entire history (CI **cannot** catch
   this — the regression test went in with the fix).
 
-The merge is complete. The remaining RR defects are now isolated to the opt-in campaign path or its learning consumers,
-which is precisely why **RR-15, the default-on flip, remains the last spine slice**. The moment checkpointing is the
-recursive default, every opt-in-only defect becomes a default-path defect. The flip is the reward for the repairs, not
-the start of them.
+The merge is complete. The remaining RR defects were isolated to the opt-in campaign path or its learning consumers,
+which is precisely why **RR-15, the default-on flip, was kept as the last spine slice**. RR-7 has been re-inspected,
+and the complete RR-8 through RR-26 stack is now implemented and verified locally: recursive researchers checkpoint by default, explicit
+`:checkpointed? false` preserves the legacy path, and the first evidence consumer projects authoritative live
+iteration envelopes from the same immutable records used by restart and self-analysis. Trace reads now retain the
+ordered campaign account, and terminal judges receive those records without racing trace publication. Classification is one durable fact per campaign, and recurrence advances only on a campaign's
+verdict occurrence — never on classification intent, cancellation or abandonment. The worked pattern is keyed on outcome and shape: a class keeps every shape it succeeded with, a failed
+shape never displaces a proven one, and a verdict-corroborated shape is preferred over a bare emitted artefact. Convergence is
+measured over winning shapes — one per successful campaign — and reported durably on every verdict without gating
+promotion until its distribution has been observed. Offered patterns are whole — never truncated — and declare
+the keys they read and write, so adopting one is a mechanical rebind. The loop's hot evidence reads are
+tag-scoped and the tree bookend is addressable by the campaign that produced it, so query cost no longer grows with
+the size of the store. Behaviour mints carry the iteration and attempt that minted them, a replayed iteration
+re-mints nothing and forces no second reindex, and mint identity stays stable. The live code comments and docs
+describe the landed loop — the idempotency key's real purpose, harvest as shipped, recurrence at the verdict,
+coherence report-only, patterns whole, the tree-generated cadence. The whole-spec integration pass tended five
+spec bugs, fixed four code bugs the live proof and the weed found, and proved recovery across a real process
+kill. Its merge gate remains open
+until Grain PR #22 lands and the local composed pins are replaced with that upstream revision; a green local stack is
+not treated as a landed dependency.
 
 ## Slices
 
@@ -48,7 +64,7 @@ Inherited defects. No blockers; all pre-writable.
 | [RR-8](RR-8-lease-wired-recovery-recognises-campaigns-and-the-scan-runs-.md) — Lease wired; recovery recognises campaigns; the scan runs itself | AFK | RR-7 |
 | [RR-9](RR-9-drain-and-every-campaign-operation-bounded.md) — Drain, and every campaign operation bounded | AFK | RR-8 |
 | [RR-10](RR-10-indeterminate-effects-resolved-by-callee-participation.md) — Indeterminate effects resolved by callee participation | AFK | RR-7 |
-| [RR-11](RR-11-call-budget-derived-from-durable-claims-usage-counted-once.md) — Call budget derived from durable claims; usage counted once | AFK | RR-7 |
+| [RR-11](RR-11-call-budget-derived-from-durable-claims-usage-counted-once.md) — Call budget derived from durable reservations; usage counted once | AFK | RR-7 |
 | [RR-12](RR-12-map-each-survivors-are-rejoined-not-re-run.md) — Map-each survivors are rejoined, not re-run | AFK | — |
 | [RR-13](RR-13-blocked-outcomes-are-recorded-and-rejoinable.md) — Blocked outcomes are recorded and rejoinable | AFK | — |
 | [RR-14](RR-14-sandbox-delta-with-periodic-full-snapshots.md) — Sandbox delta with periodic full snapshots | AFK | RR-4 |

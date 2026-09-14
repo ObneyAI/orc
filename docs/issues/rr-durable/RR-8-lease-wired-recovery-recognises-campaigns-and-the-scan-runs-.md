@@ -22,11 +22,45 @@ durability is a property of the system rather than a runbook step.
 
 ## Acceptance criteria
 
-- [ ] A tenant a node does not own has its events skipped, demonstrated with two processor sets
-- [ ] The recovery scan rediscovers a campaign frontier as it does any other unfinished work
-- [ ] A campaign resumes after a restart with no caller resubmitting the workflow and no operator action
-- [ ] Repeated scans and an explicit resume are idempotent — a second scan changes nothing
-- [ ] A campaign whose parent execution has ended is marked abandoned rather than resumed
+- [x] A tenant a node does not own has its events skipped, demonstrated with two processor sets
+- [x] The recovery scan rediscovers a campaign frontier as it does any other unfinished work
+- [x] A campaign resumes after a restart with no caller resubmitting the workflow and no operator action
+- [x] Repeated scans and an explicit resume are idempotent — a second scan changes nothing
+- [x] A campaign whose parent execution has ended is marked abandoned rather than resumed
+
+## Implementation and independent inspection
+
+Reconciliation found that RR-8 was implemented in the local campaign stack but
+its issue and deterministic checklist had never been advanced. Production has
+all three required links: Grain supplies a live tenant ownership predicate; the
+unfinished-node scan recognises `:repl-researcher`; and the periodic
+`:sheet/recovery-scan-triggered` path invokes `resume-in-progress!` at startup
+and on its interval. Resume claims a newer durable frontier epoch, and parent
+terminal projection moves any running or yielded campaign to `:abandoned`
+without a verdict.
+
+Independent ORC verification ran the complete
+`checkpointed-researcher-test` namespace: 36 tests, 315 assertions, zero
+failures or errors. Its witnesses include automatic startup recovery, a real
+SQLite stop/reopen with no resubmission, post-checkpoint recovery,
+concurrent/repeated convergence, running and yielded abandonment, and the
+abandoned-frontier CAS fence. Independent Grain verification ran
+`clojure -M:poly test brick:todo-processor-v2` against PR #22 SHA
+`47073a2820f571b31fe784311886613a9ed3297e`; it completed with exit 0 across all
+consuming projects and exercised the two-processor-set ownership/reassignment
+test. Grain PR #22 is still open, so this is composed local proof rather than a
+claim that the dependency has landed.
+
+The historical RED sequence was not recreated during reconciliation because
+the implementation was already present; no after-the-fact RED is claimed.
+Instead the existing public, restart, concurrency, and projection tests were
+re-read and rerun adversarially. Weed check mode found no divergence between
+the seven named campaign obligations and the production paths. Allium check and
+analyse match the characterized baseline: 12 specs, 115 information
+diagnostics, 35 warnings, 0 errors, and zero findings.
+
+`7 obligations, 7 covered, 0 uncovered`. No generated mock, stub, TODO, or
+skeleton remains.
 
 ## Spec obligations covered
 
@@ -46,15 +80,13 @@ Seam-2 (restart: stop processors, reopen store, restart processors) is the prima
 
 RR-7.
 
-## Handoff plan
+## Handoff record
 
-**Handoff is crafted AFTER RR-7 lands and is inspected — not before.** This slice consumes that slice's real produced API; a brief written against a guessed signature sends a subagent down a path that does not exist.
-
-Signatures to be read from the landed code rather than assumed:
-  - the epoch API, so a resuming worker claims under a newer epoch
-  - the claim read-back used to decide whether a frontier is genuinely abandoned
-
-The orchestrator then runs `/propagate` scoped to the obligations above, confirms RED, and seeds the TDD cycle list.
+The implementation was already present when the stale RR-8 records were
+reconciled, so a retrospective handoff was not invented and no historical RED
+is claimed. The independent inspection above reads the real frontier-epoch,
+campaign-projection, recovery, and live-lease APIs and records the executable
+proof. New slices continue to receive a fresh-context handoff before dispatch.
 
 ## Disciplines (verbatim — do not summarise, do not skip)
 

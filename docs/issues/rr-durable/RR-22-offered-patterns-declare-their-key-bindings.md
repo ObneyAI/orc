@@ -21,14 +21,68 @@ Behaviours stay **advice**. The model authors every tree; nothing here compels i
 
 ## Acceptance criteria
 
-- [ ] A pattern offered to a model contains runnable code, not a placeholder
-- [ ] A pattern declares the keys it reads and writes
-- [ ] A model shown a pattern can adopt it against different keys without re-deriving its logic
-- [ ] Nothing in this slice executes a behaviour on the model's behalf
+- [x] A pattern offered to a model contains runnable code, not a placeholder
+- [x] A pattern is offered WHOLE: the prompt renderer never truncates the pattern text. Ratified during
+  RR-19 close-out — R-Inject's `format-principle-entry` clips every worked example to 1,200 characters, which
+  elides exactly the code `OfferedPatternsAreUsable` requires to be present; the cap is removed, not raised,
+  and no emergency bound is reintroduced without a measured incident and a grill decision
+- [x] A pattern declares the keys it reads and writes
+- [x] A model shown a pattern can adopt it against different keys without re-deriving its logic
+- [x] Nothing in this slice executes a behaviour on the model's behalf
 
 ## Spec obligations covered
 
 None. This slice repairs behaviour that predates the campaign model; its proof is the existing suite plus the acceptance criteria above.
+
+## Verification
+
+An offered pattern is now usable. R-Inject renders a class's worked pattern whole:
+the 1,200-character truncation of `:recommended-pattern` in `format-principle-entry`
+is removed and no emergency bound replaces it (ratified during RR-19 close-out; a
+6,000-character pattern reaches the model verbatim). The pattern's key bindings are
+derived from its exact source by a pure ontology function
+(`pattern-key-bindings`): the keys it reads that no earlier node wrote (its external
+inputs), every key it writes, and the outputs its final names; a source that does
+not parse or whose code was elided declares nothing rather than lying. The assembled
+strength entry carries those bindings additively as `:pattern-reads`,
+`:pattern-writes` and `:pattern-outputs` (absent on entries without a pattern;
+existing fields byte-identical; the reranker's compact allowlist untouched), and the
+rendering names them as advice to rebind, never as a mandate. A public proof through `sheet/execute` shows a default-checkpointed researcher whose scripted provider is shown the whole pattern and its bindings, copies the pattern byte-for-byte (identical shape fingerprint, no re-derivation) and bridges its declared output to the new task's own key with one final call, finishing successfully.
+Nothing executes a behaviour on the model's behalf.
+
+Independent inspection reran the subagent's proof and drove an adversarial probe
+(nested map-each and parallel branches, read-before-write ordering, duplicate keys,
+read-eval refusal, reader-macro code, non-string input, elided code, a 40,000-character
+pattern rendered whole, and weaknesses never receiving a bindings line). Two gaps in the
+binding derivation were found and fixed test-first by the orchestrator: `:from` on
+`:map-each`, `:chunk-document` and `:aggregate` is a read the pattern makes and was not
+declared, and a key listed twice inside one node's `:reads` was declared twice. The
+cycle-5 wording in the brief ("the emitted tree's shape fingerprint equals the offered
+pattern's" after rebinding) was underspecified: a shape fingerprint deliberately keeps
+`:reads`/`:writes` keys (CONTEXT.md: a shape is structure independent of instructions and
+code, not of keys), so a mechanical adoption is a whole-pattern copy plus a bridge at the
+task boundary; the implementer's resolution is ratified as the meaning of "adopt against
+different keys".
+
+Focused results on the final tree: the two contract namespaces plus the live adopt proof and the assembly properties seam 10 tests / 55 assertions, the R-Inject, formatting, seed-validation, reranker-contract and RR-20 seams 50 tests / 565 assertions, the checkpointed researcher namespace 39 / 352, the adversarial probe 2 / 21, all 0 failures. The ontology brick passes in
+both owning project graphs (662 tests / 3786 assertions in each graph, run solo in fresh JVMs — 6 minutes 16 seconds and 6 minutes 2 seconds). The complete two-project `orc-service`
+brick passes with exit 0 in 71 minutes 9 seconds under
+`-J-Djava.awt.headless=true` (123 namespaces and 1044 tests / 5834 assertions in each project graph, 0 failures, 0 errors). Allium remains at the
+characterized twelve-spec baseline of 115 information diagnostics, 35 warnings, 0
+errors and zero analyse findings. The issue names no generated obligation
+(`OfferedPatternsAreUsable` is a contract invariant without a plan entry): coverage is
+`0 obligations, 0 covered, 0 uncovered`; the contract namespaces end at
+4 tests / 23 assertions green from 14 failures at RED (two assertions added by the orchestrator's inspection), with no weakened test and no generated mock, stub, TODO or
+skeleton.
+
+Weed check mode: no RR-22 divergence against `OfferedPatternsAreUsable`. Classified findings:
+`:pattern-reads`/`:pattern-writes`/`:pattern-outputs` and the derivation rules (external
+reads, `:from` as a read, outputs from the final) are implementation-level detail beneath
+the invariant's "what it reads and writes is declared" (intentional gap); the per-item
+key a map-each child reads is declared as an external read because nothing in the pattern
+writes it (intentional — the model rebinds it with the collection); the strength count cap
+in R-Inject (`traits-cap`) limits how many patterns are shown, never a pattern's length
+(intentional).
 
 ## Test seams
 

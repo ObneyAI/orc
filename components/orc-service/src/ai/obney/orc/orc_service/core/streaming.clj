@@ -57,6 +57,7 @@
     :sheet/map-each-progress-updated
     :sheet/tree-tick-completed
     :sheet/tick-cancelled
+    :rlm/researcher-iteration-recorded
     :rlm/tree-generated})
 
 ;; The map-each execution-context keys stamped on event :inputs by
@@ -325,6 +326,14 @@
       :sheet/tick-cancelled
       (merge base {:orc.stream/type :tick-cancelled})
 
+      :rlm/researcher-iteration-recorded
+      (merge base
+             {:orc.stream/type :rlm-iteration-recorded
+              :node-id (:node-id event)
+              :iteration-index (:iteration-index event)
+              :attempt-ordinal (:attempt-ordinal event)
+              :iteration-record (:iteration-record event)})
+
       :rlm/tree-generated
       {:orc.stream/type :rlm-tree-generated
        :tick-id (:execution-id event)
@@ -444,35 +453,35 @@
 ;; =============================================================================
 
 (defn- ensure-tap!
-  "Start (once per pubsub instance) the always-draining tap loops that
-   forward matching durable events into covering subscriptions. Sub-chans
-   are sliding-buffered so a burst can never park async/pub distribution."
+  "Start (once per pubsub instance) the always-draining tap that forwards
+   matching durable events into covering subscriptions. One channel covers
+   every durable event type so their published order cannot be changed by
+   competing tap loops. The channel is sliding-buffered so a burst can never
+   park async/pub distribution."
   [ps]
   (when (and ps (not (contains? @taps ps)))
     (locking taps
       (when-not (contains? @taps ps)
-        (let [chans (doall
-                     (for [event-type tapped-event-types]
-                       (let [ch (async/chan (async/sliding-buffer 1024))]
-                         (pubsub/sub ps {:topic event-type :sub-chan ch})
-                         (async/go-loop []
-                           (when-let [event (async/<! ch)]
-                             ;; A throw here would kill this tap loop for the
-                             ;; whole process — never let one bad registry
-                             ;; entry or event take streaming down.
-                             (try
-                               (doseq [sub (subs-covering
-                                            (if (= :rlm/tree-generated (:event/type event))
-                                              (:execution-id event)
-                                              (:tick-id event)))
-                                       :when (or (nil? (:tenant-id sub))
-                                                 (nil? (:grain/tenant-id event))
-                                                 (= (:tenant-id sub) (:grain/tenant-id event)))]
-                                 (async/put! (:src-chan sub) event))
-                               (catch Exception _ nil))
-                             (recur)))
-                         ch)))]
-          (swap! taps assoc ps chans))))))
+        (let [ch (async/chan (async/sliding-buffer 1024))]
+          (doseq [event-type tapped-event-types]
+            (pubsub/sub ps {:topic event-type :sub-chan ch}))
+          (async/go-loop []
+            (when-let [event (async/<! ch)]
+              ;; A throw here would kill this tap loop for the whole process —
+              ;; never let one bad registry entry or event take streaming down.
+              (try
+                (doseq [sub (subs-covering
+                             (if (= :rlm/tree-generated (:event/type event))
+                               (:execution-id event)
+                               (:tick-id event)))
+                        :when (or (nil? (:tenant-id sub))
+                                  (nil? (:grain/tenant-id event))
+                                  (= (:tenant-id sub) (:grain/tenant-id event)))]
+                  (async/put! (:src-chan sub) event))
+                (catch Exception _ nil))
+              (recur)))
+          ;; Preserve shutdown-taps!' storage shape.
+          (swap! taps assoc ps [ch]))))))
 
 (defn shutdown-taps!
   "Close all tap channels. Test/REPL hygiene only — taps are otherwise
@@ -695,6 +704,7 @@
                                       :command/timestamp (time/now)
                                       :command/name :sheet/cancel-tick
                                       :sheet-id sheet-id
-                                      :tick-id t}))
+                                      :tick-id t
+                                      :reason "cancelled by operator"}))
                              t)))]
         {:cancelled cancelled}))))

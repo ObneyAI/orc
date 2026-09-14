@@ -535,20 +535,32 @@
       ;; We track the peak in-flight count (high-water mark).
       (let [in-flight (atom 0)
             peak (atom 0)
-            call-count (atom 0)]
+            call-count (atom 0)
+            seen-chunks (atom [])]
         (with-redefs [llm/predict
                       (fn [_provider _module inputs _opts]
-                        (swap! call-count inc)
-                        (let [now-in-flight (swap! in-flight inc)]
-                          (swap! peak max now-in-flight))
-                        ;; Hold the call open so concurrency can be observed
-                        (Thread/sleep 200)
-                        (swap! in-flight dec)
-                        {:outputs {:chunk-summary
-                                   (str "Summary of: " (get-in inputs [:chunk :value]))}
-                         :usage {:prompt_tokens 20
-                                 :completion_tokens 10
-                                 :total_tokens 30}})]
+                        (if (contains? inputs :chunk)
+                          (do
+                            (swap! call-count inc)
+                            (swap! seen-chunks conj (:chunk inputs))
+                            (let [now-in-flight (swap! in-flight inc)]
+                              (swap! peak max now-in-flight))
+                            ;; Hold the call open so concurrency can be observed
+                            (Thread/sleep 200)
+                            (swap! in-flight dec)
+                            {:outputs {:chunk-summary
+                                       (str "Summary of: "
+                                            (get-in inputs [:chunk :value]))}
+                             :usage {:prompt_tokens 20
+                                     :completion_tokens 10
+                                     :total_tokens 30}})
+                          ;; Another canceled test context can still have a
+                          ;; queued handler. It is not evidence about this
+                          ;; map-each execution and must not enter its probe.
+                          {:outputs {:summary "canceled prior-context call"}
+                           :usage {:prompt_tokens 0
+                                   :completion_tokens 0
+                                   :total_tokens 0}}))]
           (let [tree (rlm-dsl/rlm-dsl->orc-dsl
                        [:sequence
                         [:map-each {:from :chunks
@@ -571,6 +583,10 @@
                 (str "Expected :success, got: " (:status result) " error: " (:error result)))
             (is (= 6 @call-count)
                 (str "Should have made 6 sub-LLM calls, got: " @call-count))
+            (is (= (frequencies (:chunks blackboard))
+                   (frequencies @seen-chunks))
+                (str "Each map item should be dispatched exactly once, got: "
+                     (pr-str @seen-chunks)))
             ;; THE behavior we care about: peak in-flight > 1.
             ;; Ideally peak >= 3 (matching max-concurrency).
             ;; If the bug exists, peak will be 1.

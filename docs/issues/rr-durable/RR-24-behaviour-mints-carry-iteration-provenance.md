@@ -17,15 +17,60 @@ Minting also forces a full corpus reindex unconditionally on every mint, which a
 
 ## Acceptance criteria
 
-- [ ] A minted behaviour records the iteration and attempt that minted it
-- [ ] Provenance distinguishes a first-attempt mint from a late fallback
-- [ ] A replayed iteration does not force a second reindex
-- [ ] Mint identity remains stable — a repeated mint still resolves to one concept
+- [x] A minted behaviour records the iteration and attempt that minted it
+- [x] Provenance distinguishes a first-attempt mint from a late fallback
+- [x] A replayed iteration does not force a second reindex
+- [x] Mint identity remains stable — a repeated mint still resolves to one concept
 
 ## Spec obligations covered
 
 - `entity-fields.EffectClaim`
 - `entity-fields.CampaignIteration`
+
+## Verification
+
+A behaviour minted from a researcher campaign now carries its iteration provenance
+explicitly. The sandbox's `mint-behavior!` already claimed the effect before acting
+(RR-7) and passed the logical action identity, the attempt identity and the iteration
+index to `:ontology/mint-behavioral-subtree`; the minted event now also records
+`:attempt-ordinal` and `:ownership-epoch`, and a public accessor
+(`ontology/behavior-mint-provenance`, nil for hand-authored, harvested or pre-slice mints) answers the iteration, the attempt, the epoch and whether the mint was a
+first attempt — the evidentiary distinction between a confident first-attempt mint and
+a late fallback. A replayed iteration re-mints nothing: the logical-action CAS and the recovery of the winning mint (RR-7) already yield one minted event, one description and one forced reindex, which the contract test found already green; the one genuine gap — a processor-level re-delivery of the same minted event re-paying the forced ColBERT rebuild — was reproduced RED and closed with a durable at-most-once marker (`:ontology/mint-reindex-forced`, CAS-fenced on the minted event id) that the forced-rebuild processor claims before rebuilding. Mint identity is unchanged: the concept id is
+derived from the name and parent, so every attempt and every replay resolves to the one
+concept.
+
+Independent inspection reran the subagent's seams and drove an adversarial probe: a
+plain sandbox mint without a logical action answers no provenance and an unknown concept
+answers nil; when a later replay with a different attempt and epoch conflicts on the
+logical action, the provenance stays the attempt that actually minted; and two direct
+deliveries of one minted event to the registered forced-rebuild handler produce exactly
+one rebuild. The implementer's mid-cycle regression — attaching the new fields as nil for
+pre-slice callers and failing the optional schema — was root-caused and fixed omit-not-nil
+before any test was touched.
+
+Focused results on the final tree: the contract namespace 5 tests / 30 assertions, the sandbox-mint, effect-claim, reindex, deterministic-ontology and bounded-campaign seams 107 tests / 779 assertions, the adversarial probe 3 / 6, all 0 failures. The ontology brick passes in
+both owning project graphs (668 tests / 3803 assertions in each graph, run solo in fresh JVMs — 6 minutes 20 seconds and 8 minutes 23 seconds). The complete two-project `orc-service`
+brick passes with exit 0 in 69 minutes 25 seconds under
+`-J-Djava.awt.headless=true` (125 namespaces and 1050 tests / 5869 assertions in each project graph, 0 failures, 0 errors). Allium remains at the
+characterized twelve-spec baseline of 115 information diagnostics, 35 warnings, 0
+errors and zero analyse findings. `allium plan specs/orc-service.allium` resolves both
+issue obligations — `entity-fields.EffectClaim` and `entity-fields.CampaignIteration` —
+at the RR-7 claim-event and RR-5 iteration-record schema seams, already green before
+implementation (a finding, kept as guards); coverage is `2 obligations, 2 covered, 0
+uncovered`, the contract namespace ends at 5 tests / 30 assertions green from 4 failures at RED, with no weakened test
+and no generated mock, stub, TODO or skeleton.
+
+Weed check mode: no RR-24 divergence against `EffectClaim`, `CampaignIteration` or `MintNovelBehavior`.
+Classified findings: `:first-attempt?` is defined as attempt ordinal 0 on ownership epoch 1
+(a first try by a new owner after a lease handoff is not a first attempt) — an
+implementation-level reading of "confident first attempt" beneath the issue's wording
+(intentional gap, recorded here); the forced-reindex marker is claimed BEFORE the rebuild,
+so a crash between the marker and the rebuild loses that forced rebuild and the
+threshold-gated description-updated reindex path is the backstop (intentional at-most-once
+trade-off: never re-pay a rebuild on replay, at the cost of a delayed one after a crash);
+`ConceptProvenance` in the spec carries kind, source, creator and trace identity, not the
+iteration (intentional — iteration provenance lives on the minted event, beneath the spec).
 
 ## Test seams
 

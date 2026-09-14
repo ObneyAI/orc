@@ -6,7 +6,9 @@
    - Multimethod projections for sheets, nodes, blackboard, and ticks
    - defreadmodel registrations for L1/L2 caching
    - Helper functions for common queries (via rmp/project)"
-  (:require [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
+  (:require [ai.obney.grain.event-store-v3.interface :as es]
+            [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
+            [ai.obney.orc.orc-service.core.researcher-resume-state :as researcher-resume-state]
             [ai.obney.orc.orc-service.core.trace-time :as trace-time]
             ;; Value SHAPE for the tick blackboard, which caches metadata only.
             ;; profile is deliberately dependency-free so both this namespace
@@ -1683,9 +1685,24 @@
                         :ownership-epoch
                         (max (or (:ownership-epoch campaign) 0)
                              (:ownership-epoch event))
+                        :campaign-started-at-ms
+                        (or (:campaign-started-at-ms campaign)
+                            (:campaign-started-at-ms event))
+                        :campaign-deadline-ms
+                        (or (:campaign-deadline-ms campaign)
+                            (:campaign-deadline-ms event))
                         :started-at (or (:started-at campaign)
+                                        (some-> (:campaign-started-at-ms event)
+                                                long
+                                                java.time.Instant/ofEpochMilli
+                                                str)
                                         (:claimed-at event)
                                         (str (:event/timestamp event)))
+                        :deadline (or (:deadline campaign)
+                                      (some-> (:campaign-deadline-ms event)
+                                              long
+                                              java.time.Instant/ofEpochMilli
+                                              str))
                         :completed-at
                         (when (= :cancelled
                                  (parent-status->campaign-status tick-state))
@@ -1701,8 +1718,8 @@
     (if (terminal-researcher-campaign? campaign)
       state
       (assoc-in state [tick-id :campaigns node-id]
-                (merge campaign
-                       {:sheet-id (:sheet-id event)
+                (cond-> (merge campaign
+                               {:sheet-id (:sheet-id event)
                         :tick-id tick-id
                         :node-id node-id
                         :status
@@ -1713,13 +1730,30 @@
                         :next-iteration-index (:next-iteration resume-state)
                         :started-at
                         (or (:started-at campaign)
-                            (some-> (:campaign-started-at-ms resume-state) str))
+                            (some-> (:campaign-started-at-ms resume-state)
+                                    long
+                                    java.time.Instant/ofEpochMilli
+                                    str))
                         :deadline
-                        (some-> (:campaign-deadline-ms resume-state) str)
+                        (some-> (:campaign-deadline-ms resume-state)
+                                long
+                                java.time.Instant/ofEpochMilli
+                                str)
                         :completed-at
                         (when (= :cancelled
                                  (parent-status->campaign-status tick-state))
-                          (:parent-completed-at tick-state))})))))
+                          (:parent-completed-at tick-state))})
+                  (some? (:observed-quantum-duration-ms resume-state))
+                  (assoc :observed-quantum-duration-ms
+                         (:observed-quantum-duration-ms resume-state))
+
+                  (or (some? (:max-observed-quantum-duration-ms campaign))
+                      (some? (:max-observed-quantum-duration-ms resume-state)))
+                  (assoc :max-observed-quantum-duration-ms
+                         (max (long (or (:max-observed-quantum-duration-ms campaign)
+                                        0))
+                              (long (or (:max-observed-quantum-duration-ms resume-state)
+                                        0)))))))))
 
 (def ^:private node-status->campaign-status
   {:success :success
@@ -1738,7 +1772,22 @@
                 (cond-> (assoc campaign
                                :status terminal-status
                                :completed-at (str (:event/timestamp event)))
-                  (:error event) (assoc :terminal-reason (:error event))))
+                  (:error event) (assoc :terminal-reason (:error event))
+
+                  (= :blocked terminal-status)
+                  (assoc :terminal-reason (:block-payload event))
+
+                  (some? (:observed-quantum-duration-ms event))
+                  (assoc :observed-quantum-duration-ms
+                         (:observed-quantum-duration-ms event))
+
+                  (or (some? (:max-observed-quantum-duration-ms campaign))
+                      (some? (:max-observed-quantum-duration-ms event)))
+                  (assoc :max-observed-quantum-duration-ms
+                         (max (long (or (:max-observed-quantum-duration-ms campaign)
+                                        0))
+                              (long (or (:max-observed-quantum-duration-ms event)
+                                        0))))))
       state)))
 
 (defmethod researcher-campaigns* :sheet/tree-tick-completed
@@ -1793,19 +1842,29 @@
   [state event]
   ;; Partition routing runs against entity state, so retain the partition key
   ;; alongside the public payload, matching the legacy checkpoint projection.
-  (assoc state [(:tick-id event) (:node-id event)]
-         {:sheet-id (:sheet-id event)
-          :resume-state (:resume-state event)}))
+  (let [entity-key [(:tick-id event) (:node-id event)]
+        prior (get-in state [entity-key :resume-state])]
+    (assoc state entity-key
+           {:sheet-id (:sheet-id event)
+            :resume-state (researcher-resume-state/hydrate
+                           prior (:resume-state event))})))
 
 (defreadmodel :sheet researcher-resume-states
-  {:events #{:rlm/researcher-resume-state-saved} :version 1
+  {:events #{:rlm/researcher-resume-state-saved} :version 2
    :partition-fn :sheet-id
    :entity-id-fn (juxt :tick-id :node-id)}
   [state event] (researcher-resume-states* state event))
 
 (defn get-researcher-resume-state [ctx sheet-id tick-id node-id]
-  (get (rmp/project ctx :sheet/researcher-resume-states {:partition-key sheet-id})
-       [tick-id node-id]))
+  (let [facts (->> (es/read (:event-store ctx)
+                            {:tenant-id (:tenant-id ctx)
+                             :types #{:rlm/researcher-resume-state-saved}
+                             :tags #{[:tick tick-id] [:node node-id]}})
+                   (into [])
+                   (mapv :resume-state))]
+    (when (seq facts)
+      {:sheet-id sheet-id
+       :resume-state (researcher-resume-state/hydrate-latest facts)})))
 
 (defmulti researcher-iteration-records* (fn [_state event] (:event/type event)))
 (defmethod researcher-iteration-records* :default [state _event] state)
@@ -1863,10 +1922,17 @@
   (update state [(:tick-id event) (:node-id event) (:attempt-identity event)]
           merge
           (select-keys event [:status :resolved-at :result])))
+(defmethod researcher-effect-claims* :rlm/researcher-effect-indeterminate [state event]
+  (update state [(:tick-id event) (:node-id event) (:attempt-identity event)]
+          merge
+          (select-keys event [:status :resolved-at
+                              :resolved-by-ownership-epoch])))
 
 (defreadmodel :sheet researcher-effect-claims
-  {:events #{:rlm/researcher-effect-claimed :rlm/researcher-effect-completed}
-   :version 1
+  {:events #{:rlm/researcher-effect-claimed
+             :rlm/researcher-effect-completed
+             :rlm/researcher-effect-indeterminate}
+   :version 2
    :partition-fn :sheet-id
    :entity-id-fn (juxt :tick-id :node-id :attempt-identity)}
   [state event] (researcher-effect-claims* state event))
@@ -1878,4 +1944,37 @@
                (when (and (= tick-id event-tick) (= node-id event-node))
                  claim)))
        (sort-by (juxt :ownership-epoch :attempt-ordinal :attempt-identity))
+       vec))
+
+(def provider-call-reservation-fields
+  [:budget-sheet-id :budget-tick-id :sheet-id :tick-id :node-id
+   :campaign-tick-id :campaign-node-id :iteration-index
+   :logical-action-identity :invocation-identity :provider-attempt-ordinal
+   :ownership-epoch :reserved-at])
+
+(defn provider-call-reservations*
+  "Project immutable provider-call reservations by invocation identity."
+  [state event]
+  (if (= :sheet/provider-call-reserved (:event/type event))
+    (assoc state [(:budget-tick-id event) (:invocation-identity event)]
+           (select-keys event provider-call-reservation-fields))
+    state))
+
+(defreadmodel :sheet provider-call-reservations
+  {:events #{:sheet/provider-call-reserved}
+   :version 1
+   :partition-fn :budget-sheet-id
+   :entity-id-fn (juxt :budget-tick-id :invocation-identity)}
+  [state event]
+  (provider-call-reservations* state event))
+
+(defn get-provider-call-reservations
+  "Return the immutable reservation ledger for one durable budget root."
+  [ctx budget-sheet-id budget-tick-id]
+  (->> (rmp/project ctx :sheet/provider-call-reservations
+                    {:partition-key budget-sheet-id})
+       (keep (fn [[[event-budget-tick-id _invocation] reservation]]
+               (when (= budget-tick-id event-budget-tick-id)
+                 reservation)))
+       (sort-by (juxt :provider-attempt-ordinal :invocation-identity))
        vec))

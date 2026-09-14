@@ -22,16 +22,23 @@ with its prerequisites and its collision with the absolute campaign deadline.
 
 ## Acceptance criteria
 
-- [ ] A blocked child's outcome is durably recorded like any other outcome
-- [ ] Re-running a campaign rejoins the blocked child rather than re-executing it
-- [ ] The block reason reaches the iteration record as evidence
-- [ ] Blocking remains terminal; nothing in this slice introduces a waiting state
+- [x] A blocked child's outcome is durably recorded like any other outcome
+- [x] Re-running a campaign rejoins the blocked child rather than re-executing it
+- [x] The block reason reaches the iteration record as evidence
+- [x] Blocking remains terminal; nothing in this slice introduces a waiting state
 
 ## Spec obligations covered
 
+- `entity-fields.Campaign`
+- `entity-fields.CampaignIteration`
 - `rule-success.CampaignBlocks`
 - `rule-failure.CampaignBlocks.1`
 - `transition-edge.Campaign.running.blocked`
+- `when-presence.CampaignIteration.block_reason`
+- `transition-edge.CampaignIteration.running.blocked`
+- `transition-terminal.CampaignIteration.status`
+- `rule-success.CampaignIterationBlocks`
+- `rule-failure.CampaignIterationBlocks.1`
 - `invariant.SettledCampaignsRecordWhenTheySettled`
 
 ## Test seams
@@ -93,3 +100,40 @@ Standing rules for this arc:
 three ORC-specific gates — spec-conformance (`allium check` / `analyse` error-free by **severity count** on touched
 specs), `/weed` check-mode with classified divergences, and the obligation audit (the coverage line above must survive
 into the slice report). Allium's internal verify is the CLAIM; `/inspect-orc` is the falsification.
+
+## Implementation and verification report
+
+The generated-child completion, same-run completed-action cache, and
+compatibility action recorder now admit `:blocked` as a terminal outcome. The
+terminal checkpoint records an immutable blocked iteration and excludes only
+the transient compiled `:generated-tree` marker; its durable raw/source evidence
+remains available. Campaign and replay projections carry the block payload by
+status rather than truthiness, preserving maps, `false`, and present `nil`
+without interpretation.
+
+The public RED ran 1 test and 14 assertions with 8 failures and 0 errors. It
+isolated the missing persistence boundaries: the child and root already blocked,
+but the generated-child claim remained claimed, the action and iteration record
+were absent, and the campaign reason was missing. The crash tracer initially
+made 34 of 35 assertions pass; its remaining expectation incorrectly required a
+CAS conflict even when the command boundary had already canonicalized the stale
+write to an empty-event no-op. The contract was corrected to accept those two
+equivalent fenced outcomes without weakening the no-duplication assertions.
+An added `false` payload tracer then failed at four tick-completion/replay
+boundaries and exposed two truthiness filters; status-based propagation fixed
+the cause. A present-`nil` tracer passed through the same boundaries.
+
+Final focused proof: `blocked_researcher_recovery_test.clj` passed 4 tests and
+57 assertions. The blocked/Phase-2 aggregate passed 39 tests and 230 assertions;
+`checkpointed_researcher_test.clj` passed 36 tests and 311 assertions; and
+`researcher_effect_claim_test.clj` passed 33 tests and 315 assertions. These
+tests use the real Grain command/event/projection and recovery paths with only
+the external LLM response injected. No mock, stub, TODO, or skeleton replaces a
+durable boundary.
+
+`11 obligations, 11 covered, 0 uncovered`. `/weed` found no remaining RR-13
+divergence. The implementation gaps above were code bugs. The new
+`IterationChildBlocks` unreachable-trigger information diagnostic is an
+intentional modeling boundary for an internal processor callback, not an
+unimplemented behavior. A durable human-wait/unblock lifecycle remains the
+ratified aspirational design explicitly outside this slice.

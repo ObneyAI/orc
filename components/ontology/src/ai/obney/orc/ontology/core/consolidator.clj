@@ -836,17 +836,33 @@
    Per LIVING-DESCRIPTIONS.md's decoupled-threshold-and-window safeguard the
    window is BOUNDED — since PR-1 by the token budget (newest-first, ADR
    0030) rather than an event count; aggregate metrics give the LLM the
-   historical baseline to compare against."
+   historical baseline to compare against.
+
+   RR-23: `task-classifieds` is scoped by the `[:description-target
+   target-id]` tag it already carries. Executions, judge scores and
+   iteration records are then read ONCE PER OCCURRENCE (this class's
+   distinct `[source-sheet-id source-tick-id source-node-id]` triples),
+   scoped by `[:source-tick tick-id]` (bookends, per RR-23's new emit-site
+   tag), `[:tick tick-id]` (judge scores), and `[:tick tick-id] [:node
+   node-id]` (iteration records) — replacing four type-wide tenant scans.
+   Cost is now proportional to this class's occurrence count, not the
+   store's total event count. `:source-sheet-id`/`:sheet-id` stay
+   defensive filters (tag narrows, filter decides); legacy bookends
+   written before this slice (no `:source-tick` tag) are invisible to the
+   scoped read, same as the prior `and (:source-sheet-id e) (:source-tick-
+   id e)` guard already excluded bookends missing either field — no
+   caller here needs legacy replay (a live reflection over the current
+   store), so no opt-in fallback is wired."
   [ctx target-id]
   (let [task-classifieds (->> (es/read (:event-store ctx)
                                        {:types #{:ontology/task-classified}
-                                        :tenant-id (:tenant-id ctx)})
+                                        :tenant-id (:tenant-id ctx)
+                                        :tags #{[:description-target target-id]}})
                               (into [])
                               (filter #(= target-id (:assigned-tree-id %))))
-        all-tree-executions (->> (es/read (:event-store ctx)
-                                          {:types #{:sheet/rlm-tree-execution-completed}
-                                           :tenant-id (:tenant-id ctx)})
-                                 (into []))
+        occurrence-keys (->> task-classifieds
+                             (map (juxt :source-sheet-id :source-tick-id :source-node-id))
+                             distinct)
         ;; HP-2: key executions by the bookend's [:source-sheet-id
         ;; :source-tick-id] occurrence pair — the bookend's own :sheet-id is
         ;; the EPHEMERAL Phase-2 sheet, a domain disjoint from the classified
@@ -854,26 +870,65 @@
         ;; the exec lookup nil for EVERY observation (the reflection LLM never
         ;; saw execution evidence for a tree-class). Bookends predating
         ;; :source-tick-id don't participate.
-        executions-by-occurrence (into {}
-                                       (keep (fn [e]
-                                               (when (and (:source-sheet-id e)
-                                                          (:source-tick-id e))
-                                                 [[(:source-sheet-id e) (:source-tick-id e)] e])))
-                                       all-tree-executions)
-        ;; Gap-3: pull all :judge/score-emitted events, group by
-        ;; [sheet-id tick-id] so we can attach per-observation.
-        all-judge-scores (->> (es/read (:event-store ctx)
-                                       {:types #{:judge/score-emitted}
-                                        :tenant-id (:tenant-id ctx)})
-                              (into []))
-        judge-scores-by-sheet-tick (group-by (juxt :sheet-id :tick-id) all-judge-scores)
+        executions-by-occurrence
+        (into {}
+              (keep (fn [[sheet tick _node]]
+                      (when (and sheet tick)
+                        (when-let [exec (->> (es/read (:event-store ctx)
+                                                      {:types #{:sheet/rlm-tree-execution-completed}
+                                                       :tenant-id (:tenant-id ctx)
+                                                       :tags #{[:source-tick tick]}})
+                                             (into [])
+                                             (filter #(and (= sheet (:source-sheet-id %))
+                                                           (= tick (:source-tick-id %))))
+                                             last)]
+                          [[sheet tick] exec]))))
+              occurrence-keys)
+        ;; Gap-3: pull each occurrence's :judge/score-emitted events, scoped
+        ;; by [:tick tick-id].
+        judge-scores-by-sheet-tick
+        (into {}
+              (keep (fn [[sheet tick _node]]
+                      (when (and sheet tick)
+                        (when-let [scores (seq (->> (es/read (:event-store ctx)
+                                                             {:types #{:judge/score-emitted}
+                                                              :tenant-id (:tenant-id ctx)
+                                                              :tags #{[:tick tick]}})
+                                                    (into [])
+                                                    (filter #(= sheet (:sheet-id %)))))]
+                          [[sheet tick] scores]))))
+              occurrence-keys)
+        ;; RR-19: iteration evidence belongs to classification attribution,
+        ;; not recurrence. A cancelled or abandoned campaign therefore stays
+        ;; available to a later class reflection even though it never emits a
+        ;; verdict occurrence or advances a gate.
+        iteration-records-by-campaign
+        (into {}
+              (keep (fn [[sheet tick node :as campaign-key]]
+                      (when (and sheet tick node)
+                        (when-let [records (seq (->> (es/read (:event-store ctx)
+                                                              {:types #{:rlm/researcher-iteration-recorded}
+                                                               :tenant-id (:tenant-id ctx)
+                                                               :tags #{[:tick tick] [:node node]}})
+                                                     (into [])
+                                                     (filter #(= sheet (:sheet-id %)))
+                                                     (sort-by (juxt :iteration-index :attempt-ordinal))
+                                                     (mapv :iteration-record)))]
+                          [campaign-key records]))))
+              occurrence-keys)
         joined (mapv (fn [tc]
                        (let [sheet-id (:source-sheet-id tc)
                              tick-id (:source-tick-id tc)
+                             node-id (:source-node-id tc)
                              exec (get executions-by-occurrence [sheet-id tick-id])
                              judge-events (get judge-scores-by-sheet-tick [sheet-id tick-id])
+                             iteration-records
+                             (get iteration-records-by-campaign
+                                  [sheet-id tick-id node-id])
                              cleaned-tc (clean-event-for-llm tc)]
                          (cond-> cleaned-tc
+                           (seq iteration-records)
+                           (assoc :researcher-iterations iteration-records)
                            exec (assoc :execution
                                        (-> exec
                                            clean-event-for-llm
@@ -971,11 +1026,24 @@
    The LLM compares the recent-window's success rate against this
    baseline to grade whether a trend is consistent + substantial enough
    to update the description, per LIVING-DESCRIPTIONS.md's aggregate-
-   plus-delta safeguard."
+   plus-delta safeguard.
+
+   RR-23: `task-classifieds` is scoped by the `[:description-target
+   target-id]` tag it already carries. Executions and judge scores are
+   then read ONCE PER OCCURRENCE PAIR, scoped by `[:source-tick tick]`
+   (bookends) and `[:tick tick]` (judge scores), instead of two type-wide
+   tenant scans filtered in memory — cost is now proportional to this
+   class's occurrence count. `:source-sheet-id`/`:sheet-id` stay
+   defensive filters (tag narrows, filter decides); a bookend predating
+   RR-23's `:source-tick` tag is invisible to the scoped read, same as it
+   was already excluded by the pre-existing `occurrence-pairs` filter
+   whenever it lacked `:source-sheet-id`/`:source-tick-id` entirely — no
+   caller here needs legacy replay, so no opt-in fallback is wired."
   [ctx target-id]
   (let [task-classifieds (->> (es/read (:event-store ctx)
                                        {:types #{:ontology/task-classified}
-                                        :tenant-id (:tenant-id ctx)})
+                                        :tenant-id (:tenant-id ctx)
+                                        :tags #{[:description-target target-id]}})
                               (into [])
                               (filter #(= target-id (:assigned-tree-id %))))
         ;; HP-2: the class's occurrence identity is the [source-sheet-id
@@ -990,13 +1058,16 @@
         occurrence-pairs (into #{}
                                (map (juxt :source-sheet-id :source-tick-id))
                                task-classifieds)
-        all-tree-executions (->> (es/read (:event-store ctx)
-                                          {:types #{:sheet/rlm-tree-execution-completed}
-                                           :tenant-id (:tenant-id ctx)})
-                                 (into []))
-        relevant-execs (filter #(contains? occurrence-pairs
-                                           [(:source-sheet-id %) (:source-tick-id %)])
-                               all-tree-executions)
+        relevant-execs (into []
+                             (mapcat (fn [[sheet tick]]
+                                       (when (and sheet tick)
+                                         (->> (es/read (:event-store ctx)
+                                                       {:types #{:sheet/rlm-tree-execution-completed}
+                                                        :tenant-id (:tenant-id ctx)
+                                                        :tags #{[:source-tick tick]}})
+                                              (into [])
+                                              (filter #(= sheet (:source-sheet-id %)))))))
+                             occurrence-pairs)
         success-count (count (filter #(= :success (:status %)) relevant-execs))
         failure-count (count (filter #(= :failure (:status %)) relevant-execs))
         distinct-shapes (->> relevant-execs
@@ -1007,12 +1078,16 @@
         ;; tree-class. Judge events carry the HOST sheet-id + the TURN's
         ;; tick-id, so the same occurrence-pair scoping applies (matches the
         ;; SJ-1-fixed tree-class-judge-averages read-model — parity restored).
-        relevant-judge-scores (->> (es/read (:event-store ctx)
-                                            {:types #{:judge/score-emitted}
-                                             :tenant-id (:tenant-id ctx)})
-                                   (into [])
-                                   (filter #(contains? occurrence-pairs
-                                                       [(:sheet-id %) (:tick-id %)])))
+        relevant-judge-scores (into []
+                                    (mapcat (fn [[sheet tick]]
+                                              (when (and sheet tick)
+                                                (->> (es/read (:event-store ctx)
+                                                              {:types #{:judge/score-emitted}
+                                                               :tenant-id (:tenant-id ctx)
+                                                               :tags #{[:tick tick]}})
+                                                     (into [])
+                                                     (filter #(= sheet (:sheet-id %)))))))
+                                    occurrence-pairs)
         judge-averages (when (seq relevant-judge-scores)
                          (into {}
                                (map (fn [[judge-name entries]]
@@ -1865,12 +1940,15 @@
         ;; the store exactly as the retained description path matches it
         ;; (the completion event whose tick-id is this execution's trace-id
         ;; and which carries a :model).
+        ;; RR-23: scoped by the [:tick trace-id] tag :sheet/node-execution-
+        ;; completed already carries, instead of a type-wide tenant scan.
         model-completion (some #(when (and (= (:trace-id exec-result) (:tick-id %))
                                            (:model %))
                                   %)
                                (into [] (es/read (:event-store context)
                                                 {:tenant-id (:tenant-id context)
-                                                 :types #{:sheet/node-execution-completed}})))
+                                                 :types #{:sheet/node-execution-completed}
+                                                 :tags #{[:tick (:trace-id exec-result)]}})))
         model-provenance (when model-completion
                            {:trace-id (:trace-id exec-result)
                             :model (:model model-completion)
@@ -2000,12 +2078,15 @@
                                          :aggregate-metrics aggregate-metrics
                                          :recent-vs-historical-delta recent-vs-historical-delta
                                          :structural-context structural-context})
+        ;; RR-23: scoped by the [:tick trace-id] tag :sheet/node-execution-
+        ;; completed already carries, instead of a type-wide tenant scan.
         model-completion (some #(when (and (= (:trace-id exec-result) (:tick-id %))
                                            (:model %))
                                   %)
                                (into [] (es/read (:event-store context)
                                                 {:tenant-id (:tenant-id context)
-                                                 :types #{:sheet/node-execution-completed}})))
+                                                 :types #{:sheet/node-execution-completed}
+                                                 :tags #{[:tick (:trace-id exec-result)]}})))
         model-provenance (when model-completion
                            {:trace-id (:trace-id exec-result)
                             :model (:model model-completion)

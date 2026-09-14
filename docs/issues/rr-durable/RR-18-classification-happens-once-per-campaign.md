@@ -22,15 +22,60 @@ idempotent on the occurrence key, so no future producer can re-inflate the count
 
 ## Acceptance criteria
 
-- [ ] A campaign classifies once regardless of how many quanta it takes
-- [ ] A resumed campaign reuses the carried classification rather than re-deriving it
-- [ ] The assignment command is idempotent on the occurrence key; a duplicate is a no-op
-- [ ] One campaign contributes exactly one occurrence to every counter that reads it
-- [ ] The run envelope reports the classification the model actually saw, not the latest
+- [x] A campaign classifies once regardless of how many quanta it takes
+- [x] A resumed campaign reuses the carried classification rather than re-deriving it
+- [x] The assignment command is idempotent on the occurrence key; a duplicate is a no-op
+- [x] One campaign contributes exactly one occurrence to every counter that reads it
+- [x] The run envelope reports the classification the model actually saw, not the latest
 
 ## Spec obligations covered
 
-None. This slice repairs behaviour that predates the campaign model; its proof is the existing suite plus the acceptance criteria above.
+- `contract-signature.TaskClassification.classify`
+
+The generated contract-signature obligation is governed by the ratified
+`ClassificationIsOnePerCampaign` invariant in `specs/ontology.allium`: one
+classification decision and its exact classifier payload belong to one
+campaign, resumes reuse that decision, and repeated assignment for the same
+occurrence does not create another occurrence. Allium currently reports the
+contract signature as the machine-generated obligation; the named invariant is
+the acceptance constraint applied when propagating its public integration
+proof.
+
+## Verification
+
+The classification outcome and its exact structural/behavioral context now land
+in the same atomic commit. Every checkpoint carries that context, and a resumed
+quantum rebuilds the model-facing node from the durable fact without invoking
+either classifier again. Recovery also reads the committed classification
+outcome when a process dies after that commit but before the first checkpoint.
+
+The ontology assignment command treats `[source-sheet-id source-tick-id]` as
+the occurrence identity. Sequential duplicates are successful no-ops;
+concurrent contenders are first-writer-wins under an event-store CAS; and a
+different tick on the same sheet remains independent. Counter projections
+therefore observe one assignment. Runtime reports the first durable assignment,
+which is the classification used to prepare the campaign.
+
+The public crash proof runs a real default-checkpointed researcher against
+SQLite, blocks only after the atomic classification append, loses the live
+lease before any provider call or checkpoint, closes the complete runtime and
+store, then reopens with fresh runtime state. Across both processes, each
+classifier is called once, the provider is called once after recovery, one
+assignment exists, and the event and resume state contain the exact same
+classifier context. The focused RR-18 public SQLite and different-tick set
+passes 3 tests and 35 assertions; the full checkpointed researcher namespace
+passes 38 tests and 342 assertions; and the bounded/checkpointed aggregate
+passes 70 tests and 579 assertions. The complete two-project `orc-service`
+brick passes with exit 0 in 58 minutes 42 seconds under
+`-J-Djava.awt.headless=true`. Two preceding non-headless attempts aborted in
+macOS AppKit registration rather than returning a Clojure test failure, so no
+non-headless full-run success is claimed.
+
+Independent inspection found `1 obligations, 1 covered, 0 uncovered`, no
+generated mock, stub, TODO, or skeleton, and no unresolved spec/code
+divergence. The final Allium gates match the characterized twelve-spec baseline:
+115 information diagnostics, 35 warnings, 0 errors, and zero analyse findings.
+RR-19 remains the explicitly separate outcome-time recurrence slice.
 
 ## Test seams
 

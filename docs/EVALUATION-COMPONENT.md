@@ -638,7 +638,7 @@ Adversarial coverage auditor: enumerates the distinct aspects the task required,
 
 Pure-Clojure heuristic that grades the SHAPE of a tree the model produced (via `:generated-tree-raw` in the host's writes). Looks for patterns like declared `:output-schemas`, presence of `:aggregate` for deterministic merges, `:max-concurrency` on `:map-each`, etc. Returns a score reflecting "how well-formed is this tree as a behavior tree?"
 
-This judge is **deterministic** — it keeps its `[0,1]` shape directly (no discrete `Scale`, no LLM call, so `get-tier1-rubric` returns `nil` for it). Fires alongside the 4 LLM judges when Living Description is on. No LLM cost. Also fires per `:rlm/tree-generated` event (each intermediate Phase-1 emit-tree iteration), not just on terminal completion.
+This judge is **deterministic** — it keeps its `[0,1]` shape directly (no discrete `Scale`, no LLM call, so `get-tier1-rubric` returns `nil` for it). Fires alongside the 4 LLM judges when Living Description is on. No LLM cost. Also fires on the campaign's single `:rlm/tree-generated` event — emitted once per campaign at the terminal boundary, carrying the last tree the model produced — in addition to the terminal completion; intermediate trees' shapes live on the iteration records, not on that event.
 
 **Source:** `components/evaluation/src/.../core/heuristic_structural.clj`
 

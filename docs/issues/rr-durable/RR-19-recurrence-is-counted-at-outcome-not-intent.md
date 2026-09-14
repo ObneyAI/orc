@@ -20,12 +20,12 @@ failure is the point.
 
 ## Acceptance criteria
 
-- [ ] Recurrence advances only when a campaign reaches success, failure or timeout
-- [ ] An abandoned campaign advances no gate
-- [ ] An abandoned campaign's iteration records still reach the reflection as descriptive evidence
-- [ ] A cancelled campaign advances neither recurrence nor judging, while its completed iteration evidence remains inspectable
-- [ ] A failed campaign counts for recurrence and against the quality axes
-- [ ] The gate report's occurrence figure matches the number of campaigns that actually reached a verdict
+- [x] Recurrence advances only when a campaign reaches success, failure or timeout
+- [x] An abandoned campaign advances no gate
+- [x] An abandoned campaign's iteration records still reach the reflection as descriptive evidence
+- [x] A cancelled campaign advances neither recurrence nor judging, while its completed iteration evidence remains inspectable
+- [x] A failed campaign counts for recurrence and against the quality axes
+- [x] The gate report's occurrence figure matches the number of campaigns that actually reached a verdict
 
 ## Spec obligations covered
 
@@ -33,6 +33,76 @@ failure is the point.
 - `invariant.CancelledCampaignsRecordCause`
 - `rule-success.CampaignIsAbandoned`
 - `transition-terminal.Campaign.status`
+
+## Verification
+
+Recurrence now advances on one explicit durable fact per classified researcher
+campaign, `:ontology/tree-class-occurrence-recorded`, written by the
+`:ontology/record-tree-class-occurrence` command when the campaign's node reaches
+`:success`, `:failure` or `:timeout`. Classification (`:ontology/task-classified`)
+remains the immutable attribution and reflection source and no longer moves any
+counter, window, trigger or gate. The occurrence command admits only a matching
+durable classification and the campaign's FIRST terminal researcher completion in
+durable order — a blocked, cancelled or abandoned campaign, a yield, a
+non-researcher node, a mismatched class or node, or a later stray completion for a
+node that already settled, all record nothing. Sequential replays are successful
+no-ops; concurrent contenders are first-writer-wins under an event-store CAS; a
+different tick on the same sheet is an independent occurrence.
+
+The consolidation delta counters and the class's recent-occurrence window (read
+models bumped to version 3), harvest's occurrence pairs, ordered occurrence scores
+and trigger, the threshold trigger and the gate report all read verdict
+occurrences. A failed verdict counts for recurrence and carries its low judge
+evidence into the quality window. Reflection joins the durable researcher
+iteration records, so completed evidence from cancelled and abandoned campaigns
+remains inspectable without advancing recurrence. A historical classification-only
+stream replays as attribution and invents no verdict.
+
+Independent inspection reran the subagent's proof and an adversarial probe set
+(non-researcher completion, yield completion, cross-node classification, late
+cancellation after a verdict, classification-only history, triple-delivered
+timeout). One probe exposed a real code bug: a campaign whose node had already
+completed `:blocked` could later gain a `:success` occurrence from a stray second
+completion. It was fixed test-first — the RR-19 namespace's
+`first-terminal-completion-is-the-campaigns-only-verdict` was RED at 4 assertions
+and the admission predicate now treats the node's first terminal completion as the
+only verdict, mirroring the campaign projection and
+`transition-terminal.Campaign.status`; the forced-race fixture now races two
+deliveries of the one completion. Two `orc-service` fixtures that had created "occurrences" from
+classification alone were repaired to model what the spec now requires: the
+CC-23 observability seed and the deterministic ontology E2E `occurrence!`
+helper (DET-E2E-091) each record the classified campaign's terminal researcher
+completion through `:sheet/complete-node-execution` and its verdict occurrence
+through `:ontology/record-tree-class-occurrence`; under outcome-time recurrence
+both had correctly counted zero, which is the semantic change working as
+intended, not a product defect. The first full brick attempt also failed once in
+`det-e2e-205-recovery-while-child-running` (recovery not observed within its
+30-second settle window while three unrelated benchmark JVMs shared the host);
+the namespace then passed solo twice, with the brick's full 35-processor registry
+loaded, with its ten preceding namespaces in brick order (188 tests/1249
+assertions), and inside the second full brick run. It touches no RR-19 code path
+and is recorded as an unreproduced timing failure under host contention, not as
+green by assumption.
+
+Focused results: RR-19 namespace 13 tests / 53 assertions; repaired CC-23 namespace
+7 / 67; probe 7 / 17; all 0 failures. The ontology brick passes in both owning
+project graphs (653 tests/3717 assertions in each graph — the aggregate graph inside the brick invocation and the ontology-only graph in a fresh JVM in 9 minutes 25 seconds, after the combined single-JVM invocation hit the known DJL native-library double-classloader harness error in its second graph rather than a test failure). The complete two-project `orc-service` brick
+passes with exit 0 in 76 minutes 42 seconds under `-J-Djava.awt.headless=true`
+(116 namespaces and 1027 tests/5733 assertions in each project graph, 0 failures, 0 errors). Allium remains at the characterized twelve-spec baseline
+of 115 information diagnostics, 35 warnings, 0 errors and zero analyse findings.
+`allium plan specs/orc-service.allium` (335 obligations) resolves all four issue
+obligations; coverage is `4 obligations, 4 covered, 0 uncovered`, with no weakened
+generated test and no generated mock, stub, TODO or skeleton.
+
+Weed check mode: no RR-19 behavioural divergence. Classified findings: the optional
+`:source-completion-event-id` provenance is an implementation detail absent from
+the behavioural spec (intentional gap); `harvest/distinct-tree-shapes` still counts
+fingerprints over every tree execution while the spec's coherence clause counts
+distinct successful terminal shapes over successful campaigns — pre-existing,
+tracked, owned by RR-20/RR-21 (aspirational until those land); the occurrence
+command answers a rejected false claim with the same silent no-op as a replay
+(intentional for at-least-once delivery, noted for a later slice). The local Grain
+pin remains an explicit integration dependency until its upstream PR is merged.
 
 ## Test seams
 

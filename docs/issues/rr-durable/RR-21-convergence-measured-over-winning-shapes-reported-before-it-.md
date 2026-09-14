@@ -27,18 +27,79 @@ distribution has been observed.
 
 ## Acceptance criteria
 
-- [ ] Convergence counts one winning shape per successful campaign
-- [ ] The reported ratio is distinct successful terminal shapes divided by successful campaigns
-- [ ] Failed, timed-out, cancelled and abandoned campaigns do not enter either side of the ratio
-- [ ] A campaign that repairs is not penalised for the shapes it abandoned
-- [ ] The measure is computed and reported without blocking promotion
-- [ ] The gate report distinguishes 'did not qualify' from 'not yet measurable'
-- [ ] The observed distribution is recorded, so a calibrated threshold can be chosen from data
+- [x] Convergence counts one winning shape per successful campaign
+- [x] The reported ratio is distinct successful terminal shapes divided by successful campaigns
+- [x] Failed, timed-out, cancelled and abandoned campaigns do not enter either side of the ratio
+- [x] A campaign that repairs is not penalised for the shapes it abandoned
+- [x] The measure is computed and reported without blocking promotion
+- [x] The gate report distinguishes 'did not qualify' from 'not yet measurable'
+- [x] The observed distribution is recorded, so a calibrated threshold can be chosen from data
 
 ## Spec obligations covered
 
 - `entity-optional.CampaignIteration.emitted_shape`
 - `rule-success.ReportSuccessfulShapeCoherence`
+
+## Verification
+
+Convergence is now measured over winning shapes. `harvest/winning-shape-coherence`
+joins a class's RR-19 `:success` verdict occurrences to their RR-20 bookends by the
+`[source-sheet-id source-tick-id]` pair and takes, per successful campaign, the
+fingerprint of its last successful Phase-2 execution in durable order — the terminal
+shape that carried it to success. Shapes a campaign abandoned during repair, and every
+bookend of a failed, timed-out, cancelled or abandoned campaign, enter neither side of
+the ratio. The measure reports `successful-campaigns`, `successful-shape-observations`,
+`distinct-successful-shapes`, the ratio (absent when no successful campaign carries a
+shape) and a status that distinguishes `:not-measurable` from `:rejected` and
+`:qualified` against `maximum_shape_ratio`.
+
+The rollout is report-only: `harvest-candidate?` no longer includes a coherence
+clause, `harvest-gate-report` carries the winning-shape measure under `:coherence`
+with its verdict and counts, and the retired all-trees `distinct-tree-shapes`
+measure is gone from harvest (the consolidator's descriptive aggregate is untouched).
+Every verdict occurrence yields one durable `:ontology/shape-coherence-reported`
+fact — the spec's `ShapeCoherenceReported` — carrying the class, the
+verdict-occurrence total, the four counts, the ratio, the status, the configured
+maximum and a timestamp, recorded through the `:ontology/report-shape-coherence`
+command under an event-store CAS so re-delivery of one occurrence records nothing
+twice; the observed distribution can therefore be read back before any threshold
+is made load-bearing.
+
+Independent inspection reran the subagent's proof and drove an adversarial probe
+(a success superseded by a later success, a success followed by a final failed
+bookend, a fingerprintless success, report idempotency under direct re-delivery of
+one occurrence, a cancelled campaign carrying a success bookend, and a twelve-campaign
+class through the gate report). One real defect was found and returned: the durable
+report was computed from the store's state at processing time, so a backlog of
+verdicts made every report carry the final counts (`[3 3 3]` instead of `[1 2 3]`);
+it was fixed test-first by bounding both `verdict-occurrences` and the measure to the
+triggering occurrence's durable position (`:source-occurrence-event-id`, UUIDv7
+order), with a deterministic backlog test that drives the registered handler once
+per occurrence. The propagated namespace's own context fixture also lacked the
+LMDB cache the real completion command needs (the orchestrator's `/propagate`
+mis-step, fixed as fixture plumbing only; no assertion changed).
+
+Focused results on the final tree: the propagated namespace 6 tests / 37 assertions, the combined RR-21/RR-19/RR-20/harvest/consolidator set 126 tests / 576 assertions, the adversarial probe 5 / 12, all 0 failures. The ontology brick passes
+in both owning project graphs (660 tests / 3770 assertions in each graph, run solo in fresh JVMs — 8 minutes 48 seconds and 7 minutes 33 seconds). The complete two-project
+`orc-service` brick passes with exit 0 in 54 minutes 45 seconds under
+`-J-Djava.awt.headless=true` (121 namespaces and 1041 tests / 5816 assertions in each project graph, 0 failures, 0 errors). Allium remains at the
+characterized twelve-spec baseline of 115 information diagnostics, 35 warnings, 0
+errors and zero analyse findings. `allium plan` resolves both issue obligations —
+`rule-success.ReportSuccessfulShapeCoherence` by the durable-report proof and
+`entity-optional.CampaignIteration.emitted_shape` already at the RR-5/RR-6 schema seam
+(a finding, kept as the durable guard); coverage is `2 obligations, 2 covered, 0
+uncovered`, the propagated namespace ends at 6 tests / 37 assertions green from 35 failures at RED, with no weakened
+generated test and no generated mock, stub, TODO or skeleton.
+
+Weed check mode: no RR-21 divergence. Classified findings: `ShapeCoherenceReported`,
+`shape_coherence_report_status` and the three count functions are named in the rule
+but not declared elsewhere in the spec (spec commentary rather than declared
+constructs — intentional gap, the implementation is the declaration); the spec has
+no idempotency clause for the report and the implementation adds one per occurrence
+(intentional implementation detail); the descriptive consolidator aggregate still
+counts every emitted tree for reflection (intentional — description evidence, not the
+gate); a calibrated blocking threshold remains a later, data-driven decision
+(aspirational).
 
 ## Test seams
 

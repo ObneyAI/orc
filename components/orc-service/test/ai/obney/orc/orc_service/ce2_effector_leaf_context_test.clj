@@ -242,7 +242,9 @@
 (defn- capture-rlm-inputs
   "Drive the REAL execute-repl-researcher-rlm one iteration with llm/predict
    redef'd to CAPTURE the (module, inputs) handed to the model, then abort.
-   No real LLM, no ColBERT. Returns the captured inputs map (or nil)."
+   This direct executor seam has no durable frontier, so it explicitly selects
+   the non-checkpointed compatibility path. No real LLM, no ColBERT. Returns
+   the captured inputs map (or nil)."
   [rlm-config]
   (let [captured (atom nil)
         node {:type :repl-researcher
@@ -251,7 +253,7 @@
               :reads [:task-input]
               :writes [:answer]
               :max-iterations 1
-              :rlm rlm-config}
+              :rlm (assoc rlm-config :checkpointed? false)}
         blackboard {:task-input {:key :task-input :value "input-value" :version 0}}]
     (with-test-context [ctx {}]
       (with-redefs [llm/predict (fn [_provider module inputs _opts]

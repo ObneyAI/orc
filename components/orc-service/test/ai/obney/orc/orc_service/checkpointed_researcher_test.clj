@@ -5,12 +5,14 @@
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.core.read-models :as rm]
+            [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
             [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.runtime :as runtime]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.interface.schemas]
             [ai.obney.orc.llm.interface :as llm]
+            [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.event-store-sqlite-v3.interface]
@@ -85,8 +87,13 @@
 
 (deftest det-e2e-235-automatic-recovery-recognises-a-researcher-frontier
   (testing "rebuilt runtimes resume a yielded campaign without execute or resume calls"
-    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
-      (let [calls (atom 0)
+    ;; This tracer owns recovery ordering, not scheduler throughput. Dedicated
+    ;; RR-9 tests advance the same injected clock to prove deadline expiry.
+    (let [now-ms 1000]
+      (h/with-async-test-context
+        [ctx {:context {:llm-provider :test
+                        :campaign-now-ms-fn (constantly now-ms)}}]
+        (let [calls (atom 0)
             definition
             (sheet/workflow "rr8-automatic-researcher-recovery"
               (sheet/blackboard {:summary :string})
@@ -102,7 +109,6 @@
             sheet-id (sheet/build-workflow! ctx definition)
             researcher-id (:id (first (sheet/get-nodes-for-sheet ctx sheet-id)))
             tick-id (random-uuid)
-            now-ms (System/currentTimeMillis)
             resume-state {:version 2
                           :revision 1
                           :ownership-epoch 0
@@ -245,7 +251,7 @@
               (periodic/stop-periodic-triggers! @periodic-triggers))
             (when @rebuilt-processors
               (h/stop-test-processors!
-               (assoc ctx :processors @rebuilt-processors)))))))))
+               (assoc ctx :processors @rebuilt-processors))))))))))
 
 (deftest sqlite-reopen-automatically-recovers-a-researcher-campaign
   (testing "a fresh runtime discovers and resumes a campaign from persistent storage"
@@ -253,13 +259,29 @@
           event-store-conn {:type :sqlite
                             :database-file db-file
                             :maximum-pool-size 2}
+          ;; Keep persistence/reopen semantics independent of machine speed;
+          ;; deadline expiry is exercised by dedicated clock-driven tracers.
+          now-ms 1000
           first-context (atom nil)
           reopened-context (atom nil)
           periodic-triggers (atom nil)
-          calls (atom 0)]
+          calls (atom 0)
+          tree-class-id (random-uuid)
+          classification-context
+          {:tree-id tree-class-id
+           :r05-classifier
+           {:structural {:assigned-tree-id tree-class-id
+                         :confidence 0.9
+                         :was-fresh-mint? false
+                         :reasoning "classified before SQLite restart"
+                         :top-candidates []
+                         :rerank-fallback? false}
+            :behavioral {:behaviors []
+                         :rerank-fallback? false}}}]
       (try
         (let [ctx (h/create-async-test-context
-                   {:context {:llm-provider :test}
+                   {:context {:llm-provider :test
+                              :campaign-now-ms-fn (constantly now-ms)}
                     :event-store-conn event-store-conn})
               _ (reset! first-context ctx)
               definition
@@ -270,6 +292,7 @@
                   :writes [:summary]
                   :max-iterations 3
                   :rlm {:checkpointed? true
+                        :auto-classify? true
                         :quantum {:max-iterations 1}
                         :timeouts {:provider-ms 1000
                                    :iteration-ms 3000
@@ -277,11 +300,11 @@
               sheet-id (sheet/build-workflow! ctx definition)
               researcher-id (:id (first (sheet/get-nodes-for-sheet ctx sheet-id)))
               tick-id (random-uuid)
-              now-ms (System/currentTimeMillis)
               resume-state {:version 2
                             :revision 1
                             :ownership-epoch 0
                             :next-iteration 1
+                            :classification-context classification-context
                             :sandbox-vars {:memo "sqlite-survived-restart"}
                             :var-creation-times {:memo 0}
                             :usage {:prompt-tokens 2
@@ -315,12 +338,31 @@
             :options {:timeout-ms 15000}})
           (h/run-and-apply!
            ctx
+           {:command/id (random-uuid)
+            :command/timestamp (time/now)
+            :command/name :ontology/assign-task-class
+            :source-sheet-id sheet-id
+            :source-tick-id tick-id
+            :source-node-id researcher-id
+            :assigned-tree-id tree-class-id
+            :confidence 0.9
+            :top-candidates []
+            :reasoning "classified before SQLite restart"
+            :was-fresh-mint? false})
+          (h/run-and-apply!
+           ctx
            (iteration-commit-command sheet-id tick-id researcher-id
                                      resume-state iteration-record))
           (h/stop-async-context ctx)
           (reset! first-context nil)
 
-          (with-redefs [llm/predict
+          (with-redefs [ontology/classify-task
+                        (fn [& _]
+                          (throw (ex-info "recovery repeated structural classification" {})))
+                        ontology/classify-behaviors
+                        (fn [& _]
+                          (throw (ex-info "recovery repeated behavioral classification" {})))
+                        llm/predict
                         (fn [& _]
                           (swap! calls inc)
                           {:outputs
@@ -330,7 +372,9 @@
                                    :completion_tokens 1
                                    :total_tokens 3}})]
             (let [reopened (h/create-async-test-context
-                            {:context {:llm-provider :test}
+                            {:context {:llm-provider :test
+                                       :campaign-now-ms-fn
+                                       (constantly now-ms)}
                              :event-store-conn event-store-conn})
                   _ (reset! reopened-context reopened)
                   triggers
@@ -365,6 +409,10 @@
                                   (= tick-id (:tick-id %))
                                   (= researcher-id (:node-id %))
                                   (= 1 (:ownership-epoch %)))
+                            tenant-events)
+                    classifications
+                    (filter #(and (= :ontology/task-classified (:event/type %))
+                                  (= tick-id (:source-tick-id %)))
                             tenant-events)]
                 (is (= :success (:status result)) (pr-str result))
                 (is (= "sqlite-survived-restart"
@@ -378,10 +426,532 @@
                 (is (= 1 (:researcher-ownership-epoch
                           (first recovery-starts))))
                 (is (= 1 (count recovered-frontiers)))
+                (is (= 1 (count classifications))
+                    "fresh runtime reuses the carried classifier payload")
+                (is (= tree-class-id (:assigned-tree-id (first classifications))))
+                (is (= classification-context
+                       (:classification-context
+                        (:resume-state
+                         (rm/get-researcher-resume-state
+                          reopened sheet-id tick-id researcher-id)))))
                 (is (= [0 1]
                        (mapv :iteration-index
                              (rm/get-researcher-iteration-records
                               reopened sheet-id tick-id researcher-id))))))))
+        (finally
+          (when @periodic-triggers
+            (periodic/stop-periodic-triggers! @periodic-triggers))
+          (when @reopened-context
+            (h/stop-async-context @reopened-context))
+          (when @first-context
+            (h/stop-async-context @first-context))
+          (doseq [suffix ["" "-wal" "-shm"]]
+            (io/delete-file (str db-file suffix) true)))))))
+
+(deftest det-e2e-280-sqlite-reopen-before-first-checkpoint-reuses-classification
+  (testing "a fresh runtime rebuilds classifier context from the atomic outcome"
+    (let [db-file (str "/tmp/rr18-pre-checkpoint-reopen-" (random-uuid) ".db")
+          event-store-conn {:type :sqlite
+                            :database-file db-file
+                            :maximum-pool-size 2}
+          first-context (atom nil)
+          reopened-context (atom nil)
+          provider-calls (atom 0)
+          tree-class-id (random-uuid)
+          classification-context
+          {:tree-id tree-class-id
+           :r05-classifier
+           {:structural {:assigned-tree-id tree-class-id
+                         :confidence 0.9
+                         :was-fresh-mint? false
+                         :reasoning "classified before the first checkpoint"
+                         :top-candidates []
+                         :rerank-fallback? false}
+            :behavioral {:behaviors []
+                         :rerank-fallback? false}}}]
+      (try
+        (let [ctx (h/create-async-test-context
+                   {:context {:llm-provider :test
+                              :campaign-now-ms-fn (constantly 1000)}
+                    :event-store-conn event-store-conn})
+              _ (reset! first-context ctx)
+              definition
+              (sheet/workflow "rr18-pre-checkpoint-sqlite-reopen"
+                (sheet/blackboard {:summary :string})
+                (sheet/repl-researcher "researcher"
+                  :instruction "finish after rebuilding classifier context"
+                  :writes [:summary]
+                  :max-iterations 1
+                  :rlm {:checkpointed? true
+                        :auto-classify? true
+                        :timeouts {:provider-ms 1000
+                                   :iteration-ms 3000
+                                   :campaign-ms 15000}}))
+              sheet-id (sheet/build-workflow! ctx definition)
+              researcher-id (:id (first (sheet/get-nodes-for-sheet ctx sheet-id)))
+              tick-id (random-uuid)]
+          ;; Persist exactly the crash boundary: the campaign exists and its
+          ;; classification outcome is committed, but no resume checkpoint is.
+          (h/stop-test-processors! ctx)
+          (h/run-and-apply!
+           ctx
+           {:command/id (random-uuid)
+            :command/timestamp (time/now)
+            :command/name :sheet/tick-tree
+            :sheet-id sheet-id
+            :tick-id tick-id
+            :inputs {}
+            :options {:timeout-ms 15000}})
+          ;; Processors are stopped, so synthesize the exact node-start event
+          ;; emitted by execute-node. There is no public command that starts a
+          ;; composite node directly.
+          (let [append-result
+                (es/append
+                 (:event-store ctx)
+                 {:tenant-id (:tenant-id ctx)
+                  :events
+                  [(es/->event
+                    {:type :sheet/node-execution-started
+                     :tags #{[:sheet sheet-id]
+                             [:node researcher-id]
+                             [:tick tick-id]}
+                     :body {:sheet-id sheet-id
+                            :tick-id tick-id
+                            :node-id researcher-id
+                            :inputs {}}})]})]
+            (is (nil? (::anom/category append-result)) (pr-str append-result)))
+          (h/run-and-apply!
+           ctx
+           {:command/id (random-uuid)
+            :command/timestamp (time/now)
+            :command/name :ontology/assign-task-class
+            :source-sheet-id sheet-id
+            :source-tick-id tick-id
+            :source-node-id researcher-id
+            :assigned-tree-id tree-class-id
+            :confidence 0.9
+            :top-candidates []
+            :reasoning "classified before the first checkpoint"
+            :was-fresh-mint? false
+            :classification-context classification-context})
+          (is (nil? (:resume-state
+                     (rm/get-researcher-resume-state
+                      ctx sheet-id tick-id researcher-id))))
+          (is (= #{researcher-id}
+                 (:nodes-in-progress
+                  (rm/get-execution-context ctx tick-id)))
+              (pr-str (h/read-tick-events ctx tick-id)))
+          (h/stop-async-context ctx)
+          (reset! first-context nil)
+
+          (with-redefs [ontology/classify-task
+                        (fn [& _]
+                          (throw (ex-info "SQLite recovery repeated structural classification" {})))
+                        ontology/classify-behaviors
+                        (fn [& _]
+                          (throw (ex-info "SQLite recovery repeated behavioral classification" {})))
+                        llm/predict
+                        (fn [& _]
+                          (swap! provider-calls inc)
+                          {:outputs {:code "(final! {:summary \"reopened\"})"}
+                           :usage {:prompt_tokens 1
+                                   :completion_tokens 1
+                                   :total_tokens 2}})]
+            (let [reopened (h/create-async-test-context
+                            {:context {:llm-provider :test
+                                       :campaign-now-ms-fn (constantly 1000)}
+                             :event-store-conn event-store-conn})]
+              (reset! reopened-context reopened)
+              (is (= 1 (count (runtime/resume-in-progress! reopened))))
+              (is (h/settle-until!
+                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   :timeout-ms 7000))
+              (let [result (runtime/durable-terminal-result reopened tick-id)
+                    classification-events
+                    (into []
+                          (es/read (:event-store reopened)
+                                   {:tenant-id (:tenant-id reopened)
+                                    :types #{:ontology/task-classified}
+                                    :tags #{[:tick tick-id]}}))]
+                (is (= :success (:status result)) (pr-str result))
+                (is (= "reopened" (get-in result [:outputs :summary])))
+                (is (= 1 @provider-calls))
+                (is (= 1 (count classification-events)))
+                (is (= classification-context
+                       (:classification-context (first classification-events))))
+                (is (= classification-context
+                       (:classification-context
+                        (:resume-state
+                         (rm/get-researcher-resume-state
+                          reopened sheet-id tick-id researcher-id)))))))))
+        (finally
+          (when @reopened-context
+            (h/stop-async-context @reopened-context))
+          (when @first-context
+            (h/stop-async-context @first-context))
+          (doseq [suffix ["" "-wal" "-shm"]]
+            (io/delete-file (str db-file suffix) true)))))))
+
+(deftest det-e2e-280-public-sqlite-crash-before-checkpoint-reuses-classification
+  (testing "a real execution loses its lease after classification commit and a fresh runtime reuses that decision"
+    (let [db-file (str "/tmp/rr18-public-pre-checkpoint-" (random-uuid) ".db")
+          event-store-conn {:type :sqlite :database-file db-file
+                            :maximum-pool-size 2}
+          first-context (atom nil)
+          reopened-context (atom nil)
+          execute-future (atom nil)
+          owned? (atom true)
+          first-worker-finished (promise)
+          classification-committed (promise)
+          hold-after-commit (promise)
+          structural-calls (atom 0)
+          behavioral-calls (atom 0)
+          provider-calls (atom 0)
+          original-process-command cp/process-command
+          tree-class-id (random-uuid)
+          tick-id (random-uuid)
+          classification-context
+          {:tree-id tree-class-id
+           :r05-classifier
+           {:structural {:assigned-tree-id tree-class-id
+                         :confidence 0.9
+                         :was-fresh-mint? false
+                         :reasoning "classified before the first checkpoint"
+                         :top-candidates []
+                         :rerank-fallback? false}
+            :behavioral {:behaviors [] :rerank-fallback? false}}}]
+      (try
+        (with-redefs
+          [ontology/classify-task
+           (fn [& _]
+             (when (> (swap! structural-calls inc) 1)
+               (throw (ex-info "SQLite recovery repeated structural classification" {})))
+             {:assigned-tree-id tree-class-id
+              :confidence 0.9
+              :top-candidates []
+              :ranked-candidates []
+              :reasoning "classified before the first checkpoint"
+              :was-fresh-mint? false
+              :assigned-via :match
+              :outcome :matched})
+           ontology/classify-behaviors
+           (fn [& _]
+             (when (> (swap! behavioral-calls inc) 1)
+               (throw (ex-info "SQLite recovery repeated behavioral classification" {})))
+             {:behaviors [] :rerank-fallback? false :outcome :matched})
+           llm/predict
+           (fn [& _]
+             (swap! provider-calls inc)
+             {:outputs {:code "(final! {:summary \"reopened\"})"}
+              :usage {:prompt_tokens 1 :completion_tokens 1 :total_tokens 2}})
+           cp/process-command
+           (fn [command-context]
+             (if (= :sheet/commit-researcher-classification
+                    (get-in command-context [:command :command/name]))
+               (let [result (original-process-command command-context)]
+                 (deliver classification-committed true)
+                 ;; The lease monitor interrupts this exact post-append,
+                 ;; pre-provider boundary, modelling loss of the old process.
+                 @hold-after-commit
+                 result)
+               (original-process-command command-context)))]
+          (let [ctx
+                (h/create-async-test-context
+                 {:context {:llm-provider :test
+                            :campaign-now-ms-fn (constantly 1000)
+                            :lease-owned? #(true? @owned?)
+                            :researcher-lease-monitor-wait-fn
+                            #(Thread/sleep 10)
+                            :researcher-worker-finished-fn
+                            #(deliver first-worker-finished true)}
+                  :event-store-conn event-store-conn})
+                _ (reset! first-context ctx)
+                definition
+                (sheet/workflow "rr18-public-pre-checkpoint-reopen"
+                  (sheet/blackboard {:summary :string})
+                  (sheet/repl-researcher "researcher"
+                    :instruction "finish after rebuilding classifier context"
+                    :writes [:summary]
+                    :max-iterations 1
+                    :rlm {:checkpointed? true :auto-classify? true
+                          :timeouts {:classification-ms 10000
+                                     :provider-ms 1000
+                                     :iteration-ms 3000
+                                     :campaign-ms 15000}}))
+                sheet-id (sheet/build-workflow! ctx definition)
+                researcher-id (:id (first (sheet/get-nodes-for-sheet ctx sheet-id)))]
+            (reset! execute-future
+                    (future (sheet/execute ctx sheet-id {} :tick-id tick-id
+                                           :timeout-ms 15000)))
+            (is (= true (deref classification-committed 5000 ::not-committed)))
+            (is (nil? (:resume-state
+                       (rm/get-researcher-resume-state
+                        ctx sheet-id tick-id researcher-id))))
+            (reset! owned? false)
+            (is (= true (deref first-worker-finished 5000 ::worker-not-finished)))
+            (future-cancel @execute-future)
+            (h/stop-async-context ctx)
+            (reset! first-context nil)
+
+            (let [reopened
+                  (h/create-async-test-context
+                   {:context {:llm-provider :test
+                              :campaign-now-ms-fn (constantly 1000)
+                              :lease-owned? (constantly true)}
+                    :event-store-conn event-store-conn})]
+              (reset! reopened-context reopened)
+              (let [scan (runtime/resume-in-progress! reopened)]
+                (is (= 1 (count (filter :resumed? scan))) (pr-str scan)))
+              (is (h/settle-until!
+                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   :timeout-ms 7000))
+              (is (h/settle-until!
+                   #(= 1
+                       (count
+                        (into []
+                              (es/read (:event-store reopened)
+                                       {:tenant-id (:tenant-id reopened)
+                                        :types #{:ontology/tree-class-occurrence-recorded}
+                                        :tags #{[:tick tick-id]}}))))
+                   :timeout-ms 5000)
+                  "the recovered public campaign publishes one verdict occurrence")
+              (let [result (runtime/durable-terminal-result reopened tick-id)
+                    events (into [] (es/read (:event-store reopened)
+                                             {:tenant-id (:tenant-id reopened)
+                                              :types #{:ontology/task-classified}
+                                              :tags #{[:tick tick-id]}}))
+                    occurrences
+                    (into [] (es/read (:event-store reopened)
+                                      {:tenant-id (:tenant-id reopened)
+                                       :types #{:ontology/tree-class-occurrence-recorded}
+                                       :tags #{[:tick tick-id]}}))]
+                (is (= :success (:status result)) (pr-str result))
+                (is (= "reopened" (get-in result [:outputs :summary])))
+                (is (= 1 @structural-calls))
+                (is (= 1 @behavioral-calls))
+                (is (= 1 @provider-calls))
+                (is (= 1 (count events)))
+                (is (= [[tree-class-id :success]]
+                       (mapv (juxt :assigned-tree-id :verdict) occurrences)))
+                (is (= classification-context
+                       (:classification-context (first events))))
+                (is (= classification-context
+                       (:classification-context
+                        (:resume-state
+                         (rm/get-researcher-resume-state
+                          reopened sheet-id tick-id researcher-id)))))))))
+        (finally
+          (deliver hold-after-commit true)
+          (when-let [running @execute-future]
+            (future-cancel running))
+          (when @reopened-context
+            (h/stop-async-context @reopened-context))
+          (when @first-context
+            (h/stop-async-context @first-context))
+          (doseq [suffix ["" "-wal" "-shm"]]
+            (io/delete-file (str db-file suffix) true)))))))
+
+(deftest det-e2e-272-sqlite-reopen-settles-an-orphan-before-automatic-recovery
+  (testing "a fresh runtime resolves the prior claim under its recovered frontier"
+    (let [db-file (str "/tmp/rr10-indeterminate-recovery-" (random-uuid) ".db")
+          event-store-conn {:type :sqlite
+                            :database-file db-file
+                            :maximum-pool-size 2}
+          first-context (atom nil)
+          reopened-context (atom nil)
+          periodic-triggers (atom nil)
+          provider-calls (atom 0)
+          tick-id (random-uuid)
+          orphan-logical-id "sha256:rr10-sqlite-orphan"
+          orphan-attempt-id
+          (researcher-effects/attempt-identity orphan-logical-id 1 0)
+          recovery-checkpoint
+          {:version 1
+           :next-iteration 0
+           :history []
+           :sandbox-vars {}
+           :var-creation-times {}
+           :usage {:prompt-tokens 0 :completion-tokens 0 :total-tokens 0}
+           :cumulative-tree-ms 0
+           :campaign-started-at-ms 1000
+           :campaign-deadline-ms 16000}]
+      (try
+        (let [ctx (h/create-async-test-context
+                   {:context {:llm-provider :test
+                              :campaign-now-ms-fn (constantly 1000)}
+                    :event-store-conn event-store-conn})
+              _ (reset! first-context ctx)
+              definition
+              (sheet/workflow "rr10-sqlite-indeterminate-recovery"
+                (sheet/blackboard {:summary :string})
+                (sheet/repl-researcher "researcher"
+                  :instruction "finish after resolving durable uncertainty"
+                  :writes [:summary]
+                  :max-iterations 1
+                  :model "deterministic-model"
+                  :rlm {:checkpointed? true
+                        :recursive? false
+                        :timeouts {:provider-ms 1000
+                                   :iteration-ms 3000
+                                   :campaign-ms 15000}}))
+              sheet-id (sheet/build-workflow! ctx definition)
+              researcher-id
+              (:id (first (filter #(= "researcher" (:name %))
+                                  (sheet/get-nodes-for-sheet ctx sheet-id))))]
+          (h/stop-test-processors! ctx)
+          (h/run-and-apply!
+           ctx
+           {:command/id (random-uuid)
+            :command/timestamp (time/now)
+            :command/name :sheet/tick-tree
+            :sheet-id sheet-id
+            :tick-id tick-id
+            :inputs {}
+            :options {:timeout-ms 15000}})
+          ;; The durable checkpoint command is the public boundary that both
+          ;; saves the continuation and records the active researcher-node
+          ;; start discovered by automatic recovery after reopen.
+          (h/run-and-apply!
+           ctx
+           (checkpoint-command sheet-id tick-id researcher-id
+                               recovery-checkpoint))
+          (h/run-and-apply!
+           ctx
+           {:command/id (random-uuid)
+            :command/timestamp (time/now)
+            :command/name :sheet/claim-researcher-frontier
+            :sheet-id sheet-id
+            :tick-id tick-id
+            :node-id researcher-id
+            :ownership-epoch 1
+            :claimed-at "2030-01-01T00:00:00Z"})
+          (h/run-and-apply!
+           ctx
+           {:command/id (random-uuid)
+            :command/timestamp (time/now)
+            :command/name :sheet/claim-researcher-effect
+            :sheet-id sheet-id
+            :tick-id tick-id
+            :node-id researcher-id
+            :iteration-index 0
+            :logical-action-identity orphan-logical-id
+            :attempt-identity orphan-attempt-id
+            :attempt-ordinal 0
+            :ownership-epoch 1
+            :kind :tool
+            :claimed-at "2030-01-01T00:00:01Z"})
+          (is (= :claimed
+                 (:status
+                  (first (sheet/get-researcher-effect-claims
+                          ctx sheet-id tick-id researcher-id)))))
+          (h/stop-async-context ctx)
+          (reset! first-context nil)
+
+          (with-redefs [llm/predict
+                        (fn [& _]
+                          (swap! provider-calls inc)
+                          {:outputs
+                           {:code "(final! {:summary \"sqlite-recovered\"})"}
+                           :usage {:prompt_tokens 2
+                                   :completion_tokens 1
+                                   :total_tokens 3}})]
+            (let [reopened
+                  (h/create-async-test-context
+                   {:context {:llm-provider :test
+                              :campaign-now-ms-fn (constantly 1000)}
+                    :event-store-conn event-store-conn})
+                  _ (reset! reopened-context reopened)
+                  triggers
+                  (periodic/start-periodic-triggers!
+                   {:append-fn #(es/append (:event-store reopened) %)
+                    :tenant-ids-fn
+                    #(set (keys (es/tenants (:event-store reopened))))})]
+              (reset! periodic-triggers triggers)
+              (is (h/settle-until!
+                   #(some? (runtime/durable-terminal-result reopened tick-id))
+                   :timeout-ms 7000)
+                  "the reopened runtime recovers without an execute or resume call")
+              (let [result (runtime/durable-terminal-result reopened tick-id)
+                    claims (sheet/get-researcher-effect-claims
+                            reopened sheet-id tick-id researcher-id)
+                    events
+                    (into [] (es/read (:event-store reopened)
+                                      {:tenant-id (:tenant-id reopened)}))
+                    orphan-resolution
+                    (first (filter #(and (= :rlm/researcher-effect-indeterminate
+                                            (:event/type %))
+                                         (= orphan-attempt-id
+                                            (:attempt-identity %)))
+                                   events))
+                    recovered-provider-claim
+                    (first (filter #(and (= :rlm/researcher-effect-claimed
+                                            (:event/type %))
+                                         (= :provider (:kind %))
+                                         (= 2 (:ownership-epoch %)))
+                                   events))
+                    duplicate-resolution
+                    (h/run-and-apply!
+                     reopened
+                     {:command/id (random-uuid)
+                      :command/timestamp (time/now)
+                      :command/name :sheet/mark-researcher-effect-indeterminate
+                      :sheet-id sheet-id
+                      :tick-id tick-id
+                      :node-id researcher-id
+                      :logical-action-identity orphan-logical-id
+                      :attempt-identity orphan-attempt-id
+                      :ownership-epoch 2
+                      :resolved-at "2030-01-01T00:00:03Z"})
+                    late-completion
+                    (h/run-and-apply!
+                     reopened
+                     {:command/id (random-uuid)
+                      :command/timestamp (time/now)
+                      :command/name :sheet/complete-researcher-effect
+                      :sheet-id sheet-id
+                      :tick-id tick-id
+                      :node-id researcher-id
+                      :logical-action-identity orphan-logical-id
+                      :attempt-identity orphan-attempt-id
+                      :ownership-epoch 1
+                      :result {:late true}
+                      :resolved-at "2030-01-01T00:00:04Z"})
+                    position
+                    (fn [event-id]
+                      (first (keep-indexed
+                              (fn [index event]
+                                (when (= event-id (:event/id event)) index))
+                              events)))]
+                (is (= :success (:status result)) (pr-str result))
+                (is (= "sqlite-recovered"
+                       (get-in result [:outputs :summary])))
+                (is (= 1 @provider-calls))
+                (is (= {:ownership-epoch 1
+                        :resolved-by-ownership-epoch 2
+                        :status :indeterminate}
+                       (select-keys
+                        (first (filter #(= orphan-attempt-id
+                                           (:attempt-identity %))
+                                       claims))
+                        [:ownership-epoch :resolved-by-ownership-epoch
+                         :status])))
+                (is (some? orphan-resolution) (pr-str events))
+                (is (some? recovered-provider-claim) (pr-str events))
+                (is (and orphan-resolution
+                         recovered-provider-claim
+                         (< (position (:event/id orphan-resolution))
+                            (position (:event/id recovered-provider-claim))))
+                    "the reopened owner settles old uncertainty before new effect work")
+                (is (= ::anom/conflict
+                       (::anom/category duplicate-resolution))
+                    "the reopened indeterminate row is terminal")
+                (is (= ::anom/conflict (::anom/category late-completion))
+                    "the old owner cannot replace the terminal resolution")
+                (is (= [0]
+                       (mapv :iteration-index
+                             (rm/get-researcher-iteration-records
+                              reopened sheet-id tick-id researcher-id)))
+                    "one recovered provider attempt produces one authored iteration")))))
         (finally
           (when @periodic-triggers
             (periodic/stop-periodic-triggers! @periodic-triggers))
@@ -672,15 +1242,103 @@
               (h/stop-test-processors!
                (assoc ctx :processors @rebuilt-processors)))))))))
 
+(deftest public-default-checkpointed-cancellation-records-no-verdict-occurrence
+  (testing "public cancellation keeps classification attribution but contributes no recurrence"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-entered (promise)
+            release-provider (promise)
+            tree-class-id (random-uuid)
+            tick-id (random-uuid)
+            execution (atom nil)]
+        (try
+          (with-redefs [ontology/classify-task
+                        (fn [& _]
+                          {:assigned-tree-id tree-class-id
+                           :confidence 0.9
+                           :top-candidates []
+                           :ranked-candidates []
+                           :reasoning "classified before public cancellation"
+                           :was-fresh-mint? false
+                           :assigned-via :match
+                           :outcome :matched})
+                        ontology/classify-behaviors
+                        (fn [& _]
+                          {:behaviors []
+                           :rerank-fallback? false
+                           :outcome :matched})
+                        llm/predict
+                        (fn [& _]
+                          (deliver provider-entered true)
+                          @release-provider
+                          {:outputs {:code "(final! {:summary \"too-late\"})"}
+                           :usage {:prompt_tokens 1
+                                   :completion_tokens 1
+                                   :total_tokens 2}})]
+            (let [definition
+                  (sheet/workflow "rr19-public-cancelled-campaign"
+                    (sheet/blackboard {:summary :string})
+                    (sheet/repl-researcher "researcher"
+                      :instruction "remain in flight until public cancellation"
+                      :writes [:summary]
+                      :max-iterations 1
+                      :rlm {:checkpointed? true
+                            :auto-classify? true
+                            :timeouts {:classification-ms 10000
+                                       :provider-ms 10000
+                                       :iteration-ms 12000
+                                       :campaign-ms 15000}}))
+                  sheet-id (sheet/build-workflow! ctx definition)
+                  researcher-id (:id (first (sheet/get-nodes-for-sheet
+                                             ctx sheet-id)))]
+              (reset! execution
+                      (future (sheet/execute ctx sheet-id {} :tick-id tick-id
+                                             :timeout-ms 15000)))
+              (is (= true (deref provider-entered 5000 ::provider-not-entered)))
+              (is (= {:cancelled [tick-id]} (sheet/cancel! ctx tick-id)))
+              (is (h/settle-until!
+                   #(= :cancelled
+                       (:status (sheet/get-researcher-campaign
+                                 ctx tick-id researcher-id)))))
+              (deliver release-provider true)
+              (is (not= ::execute-timeout (deref @execution 5000 ::execute-timeout)))
+              (let [events (h/read-tick-events ctx tick-id)]
+                (is (= 1 (count (filter #(= :ontology/task-classified
+                                            (:event/type %))
+                                        events))))
+                (is (not-any? #(= :ontology/tree-class-occurrence-recorded
+                                   (:event/type %))
+                              events)
+                    "public cancellation contributes no verdict occurrence"))))
+          (finally
+            (deliver release-provider true)
+            (when-let [running @execution]
+              (future-cancel running))))))))
+
 (deftest terminal-parent-abandons-an-in-flight-researcher-without-a-verdict
   (testing "a campaign still running when its enclosing execution ends is abandoned"
     (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
       (let [provider-entered (promise)
             release-provider (promise)
-            periodic-triggers (atom nil)]
+            periodic-triggers (atom nil)
+            tree-class-id (random-uuid)]
         (reset! rr8-provider-entered provider-entered)
         (try
-          (with-redefs [llm/predict
+          (with-redefs [ontology/classify-task
+                        (fn [& _]
+                          {:assigned-tree-id tree-class-id
+                           :confidence 0.9
+                           :top-candidates []
+                           :ranked-candidates []
+                           :reasoning "classified before parent abandonment"
+                           :was-fresh-mint? false
+                           :assigned-via :match
+                           :outcome :matched})
+                        ontology/classify-behaviors
+                        (fn [& _]
+                          {:behaviors []
+                           :rerank-fallback? false
+                           :outcome :matched})
+                        llm/predict
                         (fn [& _]
                           (deliver provider-entered true)
                           @release-provider
@@ -699,6 +1357,7 @@
                         :writes [:summary]
                         :max-iterations 2
                         :rlm {:checkpointed? true
+                              :auto-classify? true
                               :quantum {:max-iterations 1}
                               :timeouts {:provider-ms 10000
                                          :iteration-ms 12000
@@ -745,6 +1404,13 @@
                     (filter #(and (= :rlm/researcher-frontier-claimed
                                      (:event/type %))
                                   (= researcher-id (:node-id %)))
+                            events)
+                    classifications
+                    (filter #(= :ontology/task-classified (:event/type %))
+                            events)
+                    occurrences
+                    (filter #(= :ontology/tree-class-occurrence-recorded
+                                (:event/type %))
                             events)]
                 (is (= :abandoned (:status campaign)) (pr-str campaign))
                 (is (map? campaign) (pr-str campaign))
@@ -752,6 +1418,10 @@
                 (is (nil? (:verdict-at campaign)) (pr-str campaign))
                 (is (= [1] (mapv :ownership-epoch frontiers))
                     "the durable ownership evidence remains queryable")
+                (is (= 1 (count classifications))
+                    "the abandoned public campaign retains classification attribution")
+                (is (empty? occurrences)
+                    "parent abandonment contributes no verdict occurrence")
                 (is (empty? recovery-starts)
                     "the periodic scan never resumes a terminal parent's campaign")
                 (is (empty? explicit-scan)
@@ -1432,7 +2102,9 @@
                                        tick-events)))
                   "the completed predecessor is not rerun when the researcher resumes")
               (is (= [1 2] (mapv :iteration (:researcher-iterations trace))))
-              (is (= [:action-completed :checkpoint :yield :resume
+              (is (= [:effect-claimed :effect-completed
+                      :action-completed :checkpoint :yield :resume
+                      :effect-claimed :effect-completed
                       :action-completed :checkpoint]
                      (mapv :type (:researcher-events trace)))))))))))
 
@@ -1480,7 +2152,11 @@
                 legacy-checkpoint-events
                 (filter #(= :rlm/researcher-checkpointed (:event/type %)) tick-events)
                 records (rm/get-researcher-iteration-records
-                         ctx sheet-id trace-id researcher-id)]
+                         ctx sheet-id trace-id researcher-id)
+                projected-state
+                (:resume-state
+                 (rm/get-researcher-resume-state
+                  ctx sheet-id trace-id researcher-id))]
             (is (= :success (:status result)) (pr-str result))
             (is (= "cycle-one-durable" (get-in result [:outputs :summary])))
             (is (= 2 @calls))
@@ -1492,10 +2168,20 @@
             (is (= 2 (count state-events)))
             (is (empty? legacy-checkpoint-events)
                 "new public executions do not retain the quadratic v1 blob")
-            (is (every? #(and (= 2 (get-in % [:resume-state :version]))
+            (is (every? #(and (= 3 (get-in % [:resume-state :version]))
+                              (= :full-snapshot
+                                 (get-in % [:resume-state :sandbox-fact-kind]))
+                              (string? (get-in % [:resume-state
+                                                  :resulting-state-hash]))
                               (not (contains? (:resume-state %) :history))
                               (not (contains? (:resume-state %) :terminal-result)))
-                        state-events))))))))
+                        state-events)
+                "raw persistence uses compact, hash-bearing V3 snapshots")
+            (is (= 2 (:version projected-state)))
+            (is (not (contains? projected-state :history)))
+            (is (not (contains? projected-state :terminal-result)))
+            (is (= "cycle-one-durable"
+                   (get-in projected-state [:sandbox-vars :memo])))))))))
 
 (deftest timed-out-and-successful-attempts-share-an-iteration-without-collapsing
   (testing "attempt identity is distinct from the logical iteration frontier"

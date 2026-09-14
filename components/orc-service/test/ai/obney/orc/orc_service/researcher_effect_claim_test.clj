@@ -28,6 +28,12 @@
           :command/name name}
          body))
 
+(def rr10-generated-child-effects (atom 0))
+
+(defn count-rr10-generated-child-effect
+  [_]
+  {:summary (str "child-effect-" (swap! rr10-generated-child-effects inc))})
+
 (defn- claim-frontier!
   [ctx sheet-id tick-id node-id ownership-epoch]
   (h/run-and-apply!
@@ -68,6 +74,19 @@
              :ownership-epoch ownership-epoch
              :result result
              :resolved-at "2030-01-01T00:00:02Z"})))
+
+(defn- mark-effect-indeterminate!
+  [ctx sheet-id tick-id node-id ownership-epoch logical-id attempt-id]
+  (h/run-and-apply!
+   ctx
+   (command :sheet/mark-researcher-effect-indeterminate
+            {:sheet-id sheet-id
+             :tick-id tick-id
+             :node-id node-id
+             :logical-action-identity logical-id
+             :attempt-identity attempt-id
+             :ownership-epoch ownership-epoch
+             :resolved-at "2030-01-01T00:00:03Z"})))
 
 (defn- resume-state
   [ownership-epoch revision next-iteration]
@@ -223,6 +242,136 @@
                   :resolved-at "2030-01-01T00:00:02Z"
                   :result {:value "current"}}
                  (select-keys (second projected) [:status :resolved-at :result]))))))))
+
+(deftest det-e2e-272-a-new-frontier-resolves-an-orphaned-claim-once
+  (testing "claimed becomes terminal indeterminate under the newer owner"
+    (h/with-async-test-context [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            logical-id "sha256:det-e2e-272-orphaned-action"
+            attempt-id (effects/attempt-identity logical-id 1 0)]
+        (is (nil? (::anom/category
+                   (claim-frontier! ctx sheet-id tick-id node-id 1))))
+        (is (nil? (::anom/category
+                   (claim-effect! ctx sheet-id tick-id node-id 1
+                                  logical-id attempt-id))))
+        (is (nil? (::anom/category
+                   (claim-frontier! ctx sheet-id tick-id node-id 2))))
+        (let [resolution
+              (mark-effect-indeterminate! ctx sheet-id tick-id node-id 2
+                                          logical-id attempt-id)
+              duplicate
+              (mark-effect-indeterminate! ctx sheet-id tick-id node-id 2
+                                          logical-id attempt-id)
+              terminal-completion
+              (complete-effect! ctx sheet-id tick-id node-id 2
+                                logical-id attempt-id {:value "too late"})
+              indeterminate-events
+              (filterv #(and (= :rlm/researcher-effect-indeterminate
+                                 (:event/type %))
+                              (= attempt-id (:attempt-identity %)))
+                       (h/read-all-events ctx))
+              projected
+              (rm/get-researcher-effect-claims ctx sheet-id tick-id node-id)
+              public-query
+              (ns-resolve 'ai.obney.orc.orc-service.interface
+                          'get-researcher-effect-claims)]
+          (is (nil? (::anom/category resolution)) (pr-str resolution))
+          (is (= ::anom/conflict (::anom/category duplicate))
+              (pr-str duplicate))
+          (is (= ::anom/conflict (::anom/category terminal-completion))
+              (pr-str terminal-completion))
+          (is (= 1 (count indeterminate-events))
+              (pr-str indeterminate-events))
+          (is (= 2 (:resolved-by-ownership-epoch
+                    (first indeterminate-events)))
+              (pr-str indeterminate-events))
+          (is (ifn? public-query)
+              "operators can query indeterminate claims through the public interface")
+          (is (= projected
+                 (when public-query
+                   (public-query ctx sheet-id tick-id node-id))))
+          (is (= {:logical-action-identity logical-id
+                  :attempt-identity attempt-id
+                  :ownership-epoch 1
+                  :resolved-by-ownership-epoch 2
+                  :status :indeterminate
+                  :resolved-at "2030-01-01T00:00:03Z"}
+                 (select-keys (first projected)
+                              [:logical-action-identity :attempt-identity
+                               :ownership-epoch :resolved-by-ownership-epoch
+                               :status :resolved-at]))
+              (pr-str projected)))))))
+
+(deftest indeterminate-resolution-requires-a-new-current-frontier-and-unresolved-claim
+  (testing "missing, current, completed, and stale-resolver attempts cannot settle"
+    (h/with-async-test-context [ctx]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            current-logical "sha256:det-e2e-272-current"
+            completed-logical "sha256:det-e2e-272-completed"
+            unresolved-logical "sha256:det-e2e-272-unresolved"
+            missing-logical "sha256:det-e2e-272-missing"
+            current-attempt (effects/attempt-identity current-logical 1 0)
+            completed-attempt (effects/attempt-identity completed-logical 1 0)
+            unresolved-attempt (effects/attempt-identity unresolved-logical 1 0)
+            missing-attempt (effects/attempt-identity missing-logical 1 0)]
+        (is (nil? (::anom/category
+                   (claim-frontier! ctx sheet-id tick-id node-id 1))))
+        (doseq [[logical-id attempt-id]
+                [[current-logical current-attempt]
+                 [completed-logical completed-attempt]
+                 [unresolved-logical unresolved-attempt]]]
+          (is (nil? (::anom/category
+                     (claim-effect! ctx sheet-id tick-id node-id 1
+                                    logical-id attempt-id)))))
+        (is (= ::anom/conflict
+               (::anom/category
+                (mark-effect-indeterminate! ctx sheet-id tick-id node-id 1
+                                            current-logical current-attempt))))
+        (is (nil? (::anom/category
+                   (complete-effect! ctx sheet-id tick-id node-id 1
+                                     completed-logical completed-attempt
+                                     {:value "done"}))))
+        (is (nil? (::anom/category
+                   (claim-frontier! ctx sheet-id tick-id node-id 2))))
+        (is (= ::anom/conflict
+               (::anom/category
+                (mark-effect-indeterminate! ctx sheet-id tick-id node-id 2
+                                            missing-logical missing-attempt))))
+        (is (= ::anom/conflict
+               (::anom/category
+                (mark-effect-indeterminate! ctx sheet-id tick-id node-id 2
+                                            completed-logical completed-attempt))))
+        (is (nil? (::anom/category
+                   (claim-frontier! ctx sheet-id tick-id node-id 3))))
+        (is (= ::anom/conflict
+               (::anom/category
+                (mark-effect-indeterminate! ctx sheet-id tick-id node-id 2
+                                            unresolved-logical
+                                            unresolved-attempt))))
+        (is (nil? (::anom/category
+                   (mark-effect-indeterminate! ctx sheet-id tick-id node-id 3
+                                               unresolved-logical
+                                               unresolved-attempt))))
+        (let [claims (rm/get-researcher-effect-claims
+                      ctx sheet-id tick-id node-id)
+              by-attempt (into {} (map (juxt :attempt-identity identity)) claims)
+              indeterminate-events
+              (filterv #(= :rlm/researcher-effect-indeterminate (:event/type %))
+                       (h/read-all-events ctx))]
+          (is (= 1 (count indeterminate-events))
+              (pr-str indeterminate-events))
+          (is (= :claimed (get-in by-attempt [current-attempt :status])))
+          (is (= :completed (get-in by-attempt [completed-attempt :status])))
+          (is (= {:ownership-epoch 1
+                  :resolved-by-ownership-epoch 3
+                  :status :indeterminate}
+                 (select-keys (get by-attempt unresolved-attempt)
+                              [:ownership-epoch :resolved-by-ownership-epoch
+                               :status]))))))))
 
 (deftest logical-action-identity-is-content-derived-and-canonical
   (testing "replay and reordered evaluation preserve identity while content changes do not"
@@ -561,6 +710,438 @@
           (is (string? (:claimed-at (first projected))))
           (is (string? (:resolved-at (first projected)))))))))
 
+(deftest det-e2e-272-new-frontier-settles-orphan-before-provider-redispatch
+  (testing "a recovered worker settles the prior claim before entering a new effect"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-calls (atom 0)
+            first-provider-entered (promise)
+            release-first-provider (promise)
+            second-provider-entered (promise)
+            prior-settled-at-second-dispatch? (atom false)
+            definition
+            (sheet/workflow "rr10-provider-takeover-resolution"
+              (sheet/blackboard {:summary :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "finish after ownership recovery"
+                :writes [:summary]
+                :max-iterations 1
+                :model "deterministic-model"
+                :rlm {:checkpointed? true
+                      :timeouts {:provider-ms 5000
+                                 :iteration-ms 7000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx definition)
+            node-id (:id (first (filter #(= "researcher" (:name %))
+                                        (sheet/get-nodes-for-sheet ctx sheet-id))))]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (let [call-number (swap! provider-calls inc)]
+                          (if (= 1 call-number)
+                            (do
+                              (deliver first-provider-entered true)
+                              @release-first-provider
+                              {:outputs {:code "(final! {:summary \"old\"})"}
+                               :usage {:prompt_tokens 1
+                                       :completion_tokens 1
+                                       :total_tokens 2}})
+                            (do
+                              (reset! prior-settled-at-second-dispatch?
+                                      (boolean
+                                       (some #(= :rlm/researcher-effect-indeterminate
+                                                 (:event/type %))
+                                             (h/read-all-events ctx))))
+                              (deliver second-provider-entered true)
+                              {:outputs {:code "(final! {:summary \"new\"})"}
+                               :usage {:prompt_tokens 1
+                                       :completion_tokens 1
+                                       :total_tokens 2}}))))]
+          (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                first-entered? (deref first-provider-entered 5000 false)
+                start-event
+                (when first-entered?
+                  (first (filter #(and (= :sheet/node-execution-started
+                                          (:event/type %))
+                                       (= node-id (:node-id %)))
+                                 (h/read-all-events ctx))))
+                recovered-worker
+                (when start-event
+                  (todo/execute-repl-researcher-node
+                   (assoc ctx
+                          :llm-provider :test
+                          :event (assoc start-event
+                                        :researcher-ownership-epoch 2))))
+                second-entered? (deref second-provider-entered 5000 false)]
+            (deliver release-first-provider true)
+            (when recovered-worker
+              (deref recovered-worker 10000 ::timeout))
+            (let [result (deref execution 15000 ::timeout)
+                  claims (rm/get-researcher-effect-claims
+                          ctx sheet-id (:trace-id result) node-id)]
+              (is first-entered? "the first owner reached the provider after its claim")
+              (is (some? start-event))
+              (is second-entered? "the recovered owner reached provider redispatch")
+              (is @prior-settled-at-second-dispatch?
+                  "the old unresolved claim must be durably indeterminate before redispatch")
+              (is (= 2 @provider-calls))
+              (is (= [:indeterminate :completed]
+                     (mapv :status claims))
+                  (pr-str claims)))))))))
+
+(deftest indeterminate-resolution-cas-conflict-stops-the-stale-recovered-worker
+  (testing "a newer frontier that wins during settlement prevents all later work"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-calls (atom 0)
+            first-provider-entered (promise)
+            release-first-provider (promise)
+            resolution-attempted (promise)
+            definition
+            (sheet/workflow "rr10-resolution-ownership-loss"
+              (sheet/blackboard {:summary :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "never dispatch after losing settlement ownership"
+                :writes [:summary]
+                :max-iterations 1
+                :model "deterministic-model"
+                :rlm {:checkpointed? true
+                      :timeouts {:provider-ms 5000
+                                 :iteration-ms 7000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx definition)
+            node-id (:id (first (filter #(= "researcher" (:name %))
+                                        (sheet/get-nodes-for-sheet ctx sheet-id))))
+            real-process-command cp/process-command]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (swap! provider-calls inc)
+                        (deliver first-provider-entered true)
+                        @release-first-provider
+                        {:outputs {:code "(final! {:summary \"old\"})"}
+                         :usage {:prompt_tokens 1
+                                 :completion_tokens 1
+                                 :total_tokens 2}})
+                      cp/process-command
+                      (fn [command-context]
+                        (let [candidate (:command command-context)]
+                          (if (and (= :sheet/mark-researcher-effect-indeterminate
+                                      (:command/name candidate))
+                                   (= 2 (:ownership-epoch candidate)))
+                            (do
+                              ;; This is a real CAS race: frontier 3 commits
+                              ;; after this worker won frontier 2 but before its
+                              ;; resolution command reaches the append boundary.
+                              (real-process-command
+                               (assoc command-context
+                                      :command
+                                      (command
+                                       :sheet/claim-researcher-frontier
+                                       {:sheet-id sheet-id
+                                        :tick-id (:tick-id candidate)
+                                        :node-id node-id
+                                        :ownership-epoch 3
+                                        :claimed-at
+                                        "2030-01-01T00:00:04Z"})))
+                              (let [result
+                                    (real-process-command command-context)]
+                                (deliver resolution-attempted result)
+                                result))
+                            (real-process-command command-context))))]
+          (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                first-entered? (deref first-provider-entered 5000 false)
+                start-event
+                (when first-entered?
+                  (first (filter #(and (= :sheet/node-execution-started
+                                          (:event/type %))
+                                       (= node-id (:node-id %)))
+                                 (h/read-all-events ctx))))
+                recovered-worker
+                (when start-event
+                  (todo/execute-repl-researcher-node
+                   (assoc ctx
+                          :llm-provider :test
+                          :event (assoc start-event
+                                        :researcher-ownership-epoch 2))))
+                recovered-result
+                (when recovered-worker
+                  (deref recovered-worker 7000 ::timeout))
+                conflict-result (deref resolution-attempted 5000 ::timeout)
+                events (h/read-all-events ctx)
+                tick-id (:tick-id start-event)
+                claims (when tick-id
+                         (sheet/get-researcher-effect-claims
+                          ctx sheet-id tick-id node-id))]
+            (try
+              (is first-entered? "the original owner reached its provider")
+              (is (some? start-event))
+              (is (not= ::timeout recovered-result)
+                  "the stale recovered worker terminates instead of hanging")
+              (is (= ::anom/conflict (::anom/category conflict-result))
+                  (pr-str conflict-result))
+              (is (= 1 @provider-calls)
+                  "ownership loss during settlement prevents redispatch")
+              (is (= [1 2 3]
+                     (->> events
+                          (filter #(and (= :rlm/researcher-frontier-claimed
+                                           (:event/type %))
+                                        (= tick-id (:tick-id %))))
+                          (mapv :ownership-epoch)))
+                  (pr-str events))
+              (is (= [:claimed] (mapv :status claims))
+                  "the stale resolver cannot invent an indeterminate outcome")
+              (is (empty?
+                   (filter #(and (= :rlm/researcher-effect-claimed
+                                    (:event/type %))
+                                 (= 2 (:ownership-epoch %)))
+                           events))
+                  "no effect is claimed after settlement ownership is lost")
+              (is (empty?
+                   (filter #(contains? #{:rlm/researcher-resume-state-saved
+                                         :sheet/node-execution-completed}
+                                       (:event/type %))
+                           events))
+                  "the stale worker writes neither a checkpoint nor terminal")
+              (finally
+                (deliver release-first-provider true)
+                (deref execution 3000 ::timeout)))))))))
+
+(deftest indeterminate-resolution-store-error-fails-closed-before-redispatch
+  (testing "a non-conflict settlement anomaly is an observable engine failure"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-calls (atom 0)
+            first-provider-entered (promise)
+            release-first-provider (promise)
+            forced-resolution-error (promise)
+            definition
+            (sheet/workflow "rr10-resolution-store-error"
+              (sheet/blackboard {:summary :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "fail closed when settlement storage fails"
+                :writes [:summary]
+                :max-iterations 1
+                :model "deterministic-model"
+                :rlm {:checkpointed? true
+                      :timeouts {:provider-ms 5000
+                                 :iteration-ms 7000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx definition)
+            node-id (:id (first (filter #(= "researcher" (:name %))
+                                        (sheet/get-nodes-for-sheet ctx sheet-id))))
+            real-process-command cp/process-command]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (swap! provider-calls inc)
+                        (deliver first-provider-entered true)
+                        @release-first-provider
+                        {:outputs {:code "(final! {:summary \"old\"})"}
+                         :usage {:prompt_tokens 1
+                                 :completion_tokens 1
+                                 :total_tokens 2}})
+                      cp/process-command
+                      (fn [command-context]
+                        (let [candidate (:command command-context)]
+                          (if (and (= :sheet/mark-researcher-effect-indeterminate
+                                      (:command/name candidate))
+                                   (= 2 (:ownership-epoch candidate)))
+                            (let [result {::anom/category ::anom/fault
+                                          ::anom/message
+                                          "forced indeterminate store failure"}]
+                              (deliver forced-resolution-error result)
+                              result)
+                            (real-process-command command-context))))]
+          (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                first-entered? (deref first-provider-entered 5000 false)
+                start-event
+                (when first-entered?
+                  (first (filter #(and (= :sheet/node-execution-started
+                                          (:event/type %))
+                                       (= node-id (:node-id %)))
+                                 (h/read-all-events ctx))))
+                recovered-worker
+                (when start-event
+                  (todo/execute-repl-researcher-node
+                   (assoc ctx
+                          :llm-provider :test
+                          :event (assoc start-event
+                                        :researcher-ownership-epoch 2))))
+                recovered-result
+                (when recovered-worker
+                  (deref recovered-worker 7000 ::timeout))
+                anomaly-result (deref forced-resolution-error 5000 ::timeout)
+                result (deref execution 7000 ::timeout)
+                events (h/read-all-events ctx)
+                tick-id (:tick-id start-event)
+                claims (when tick-id
+                         (sheet/get-researcher-effect-claims
+                          ctx sheet-id tick-id node-id))]
+            (try
+              (is first-entered? "the original owner reached its provider")
+              (is (some? start-event))
+              (is (not= ::timeout recovered-result))
+              (is (= ::anom/fault (::anom/category anomaly-result)))
+              (is (= :failure (:status result)) (pr-str result))
+              (is (re-find #"forced indeterminate store failure"
+                           (or (:error result) ""))
+                  (pr-str result))
+              (is (= 1 @provider-calls)
+                  "storage failure prevents a recovered provider dispatch")
+              (is (= [:claimed] (mapv :status claims))
+                  "a failed append cannot manufacture terminal claim state")
+              (is (empty?
+                   (filter #(= :rlm/researcher-resume-state-saved
+                                (:event/type %))
+                           events))
+                  "fail-closed settlement does not checkpoint progress")
+              (is (= 1
+                     (count
+                      (filter #(and (= :sheet/node-execution-completed
+                                        (:event/type %))
+                                    (= :failure (:status %))
+                                    (= 2 (:researcher-ownership-epoch %)))
+                              events)))
+                  "the winning frontier records exactly one fenced failure")
+              (finally
+                (deliver release-first-provider true)))))))))
+
+(deftest det-e2e-272-provider-retry-is-attributable-but-not-model-visible
+  (testing "two physical attempts remain one authored iteration in the next prompt"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-calls (atom 0)
+            prompt-histories (atom [])
+            old-provider-attempt-id (atom nil)
+            old-provider-result-observed (promise)
+            release-old-completion (promise)
+            old-completion-result (promise)
+            first-iteration-code "(store! :memo \"authored-once\")"
+            final-code "(final! {:summary (get-var :memo)})"
+            definition
+            (sheet/workflow "rr10-provider-attempt-history"
+              (sheet/blackboard {:summary :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "record one authored iteration then finish"
+                :writes [:summary]
+                :max-iterations 2
+                :model "deterministic-model"
+                :rlm {:checkpointed? true
+                      :recursive? false
+                      :quantum {:max-iterations 2}
+                      :timeouts {:provider-ms 5000
+                                 :iteration-ms 7000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx definition)
+            node-id (:id (first (filter #(= "researcher" (:name %))
+                                        (sheet/get-nodes-for-sheet ctx sheet-id))))
+            real-process-command cp/process-command]
+        (with-redefs [llm/predict
+                      (fn [_provider _module inputs _options]
+                        (swap! prompt-histories conj (:history inputs))
+                        (let [call-number (swap! provider-calls inc)]
+                          {:outputs {:code (if (= 3 call-number)
+                                             final-code
+                                             first-iteration-code)}
+                           :reasoning (if (= 3 call-number)
+                                        "finish from the authored iteration"
+                                        "record authored work")
+                           :usage {:prompt_tokens 2
+                                   :completion_tokens 1
+                                   :total_tokens 3}}))
+                      cp/process-command
+                      (fn [command-context]
+                        (let [command (:command command-context)
+                              command-name (:command/name command)]
+                          (cond
+                            (and (= :sheet/claim-researcher-effect command-name)
+                                 (= :provider (:kind command))
+                                 (= 0 (:iteration-index command))
+                                 (= 1 (:ownership-epoch command)))
+                            (let [result (real-process-command command-context)]
+                              (when-not (::anom/category result)
+                                (reset! old-provider-attempt-id
+                                        (:attempt-identity command)))
+                              result)
+
+                            (and (= :sheet/complete-researcher-effect command-name)
+                                 (= @old-provider-attempt-id
+                                    (:attempt-identity command))
+                                 (= 1 (:ownership-epoch command)))
+                            (do
+                              (deliver old-provider-result-observed true)
+                              @release-old-completion
+                              (let [result (real-process-command command-context)]
+                                (deliver old-completion-result result)
+                                result))
+
+                            :else
+                            (real-process-command command-context))))]
+          (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                provider-result-observed?
+                (deref old-provider-result-observed 7000 false)
+                start-event
+                (when provider-result-observed?
+                  (first (filter #(and (= :sheet/node-execution-started
+                                          (:event/type %))
+                                       (= node-id (:node-id %)))
+                                 (h/read-all-events ctx))))
+                recovered-worker
+                (when start-event
+                  (todo/execute-repl-researcher-node
+                   (assoc ctx
+                          :llm-provider :test
+                          :event (assoc start-event
+                                        :researcher-ownership-epoch 2))))
+                recovered-result
+                (when recovered-worker
+                  (deref recovered-worker 10000 ::timeout))
+                result (deref execution 15000 ::timeout)
+                tick-id (:trace-id result)
+                provider-claims
+                (filterv #(= :provider (:kind %))
+                         (sheet/get-researcher-effect-claims
+                          ctx sheet-id tick-id node-id))
+                first-logical-id
+                (:logical-action-identity (first provider-claims))
+                first-logical-attempts
+                (filterv #(= first-logical-id
+                             (:logical-action-identity %))
+                         provider-claims)
+                iteration-records
+                (rm/get-researcher-iteration-records
+                 ctx sheet-id tick-id node-id)
+                next-iteration-history (nth @prompt-histories 2 nil)]
+            (try
+              (is provider-result-observed?
+                  "the old provider returned before its outcome append")
+              (is (some? start-event))
+              (is (not= ::timeout recovered-result))
+              (is (= :success (:status result)) (pr-str result))
+              (is (= "authored-once" (get-in result [:outputs :summary])))
+              (is (= 3 @provider-calls)
+                  "one uncertain call, its retry, and the next logical iteration")
+              (is (= ["None" "None"] (vec (take 2 @prompt-histories)))
+                  (pr-str @prompt-histories))
+              (is (re-find #"### Iteration 1" (or next-iteration-history ""))
+                  (pr-str next-iteration-history))
+              (is (re-find #"authored-once" (or next-iteration-history ""))
+                  (pr-str next-iteration-history))
+              (is (not (re-find #"(?i)indeterminate|ownership|CAS failed|process crash"
+                                (or next-iteration-history "")))
+                  (pr-str next-iteration-history))
+              (is (= 3 (count provider-claims)) (pr-str provider-claims))
+              (is (= 2 (count first-logical-attempts))
+                  (pr-str first-logical-attempts))
+              (is (= [:indeterminate :completed]
+                     (mapv :status first-logical-attempts))
+                  (pr-str first-logical-attempts))
+              (is (= [1 2] (mapv :ownership-epoch first-logical-attempts)))
+              (is (= 2 (count (set (map :attempt-identity
+                                         first-logical-attempts)))))
+              (is (= [0 1] (mapv :iteration-index iteration-records))
+                  (pr-str iteration-records))
+              (finally
+                (deliver release-old-completion true)))
+            (is (= ::anom/conflict
+                   (::anom/category
+                    (deref old-completion-result 5000 {})))
+                "the old provider outcome remains rejected after recovery")))))))
+
 (deftest checkpointed-inline-provider-is-claimed-before-dispatch
   (let [provider-calls (atom 0)
         inline-observation (atom nil)
@@ -636,6 +1217,134 @@
                            (:result %))
                       provider-claims)
                 "the inline provider completion stores codec-tagged durable data")))))))
+
+(deftest det-e2e-272-inline-provider-retries-as-a-new-physical-attempt
+  (testing "the inline provider uses the same logical identity under the newer epoch"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-calls (atom 0)
+            epoch-one-provider-claims (atom 0)
+            old-inline-attempt-id (atom nil)
+            old-inline-result-observed (promise)
+            release-old-completion (promise)
+            old-completion-result (promise)
+            source (str "(let [a (llm \"sub\" :instruction \"summarize\" "
+                        ":writes [:detail] :model \"inline-model\")] "
+                        "(final! {:summary (:detail a)}))")
+            inline-result {:outputs {:detail "inline-value"}
+                           :usage {:prompt_tokens 1
+                                   :completion_tokens 1
+                                   :total_tokens 2}}
+            definition
+            (sheet/workflow "rr10-inline-provider-recovery"
+              (sheet/blackboard {:summary :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "recover one inline provider"
+                :writes [:summary]
+                :max-iterations 1
+                :model "deterministic-model"
+                :rlm {:checkpointed? true
+                      :recursive? false
+                      :timeouts {:provider-ms 5000
+                                 :iteration-ms 7000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx definition)
+            node-id (:id (first (filter #(= "researcher" (:name %))
+                                        (sheet/get-nodes-for-sheet ctx sheet-id))))
+            real-process-command cp/process-command]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (if (= 1 (swap! provider-calls inc))
+                          {:outputs {:code source}
+                           :usage {:prompt_tokens 2
+                                   :completion_tokens 1
+                                   :total_tokens 3}}
+                          inline-result))
+                      cp/process-command
+                      (fn [command-context]
+                        (let [command (:command command-context)
+                              command-name (:command/name command)]
+                          (cond
+                            (and (= :sheet/claim-researcher-effect command-name)
+                                 (= :provider (:kind command))
+                                 (= 1 (:ownership-epoch command)))
+                            (let [result (real-process-command command-context)
+                                  claim-number
+                                  (when-not (::anom/category result)
+                                    (swap! epoch-one-provider-claims inc))]
+                              (when (= 2 claim-number)
+                                (reset! old-inline-attempt-id
+                                        (:attempt-identity command)))
+                              result)
+
+                            (and (= :sheet/complete-researcher-effect command-name)
+                                 (= @old-inline-attempt-id
+                                    (:attempt-identity command))
+                                 (= 1 (:ownership-epoch command)))
+                            (do
+                              (deliver old-inline-result-observed true)
+                              @release-old-completion
+                              (let [result (real-process-command command-context)]
+                                (deliver old-completion-result result)
+                                result))
+
+                            :else
+                            (real-process-command command-context))))]
+          (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                inline-result-observed?
+                (deref old-inline-result-observed 7000 false)
+                start-event
+                (when inline-result-observed?
+                  (first (filter #(and (= :sheet/node-execution-started
+                                          (:event/type %))
+                                       (= node-id (:node-id %)))
+                                 (h/read-all-events ctx))))
+                recovered-worker
+                (when start-event
+                  (todo/execute-repl-researcher-node
+                   (assoc ctx
+                          :llm-provider :test
+                          :event (assoc start-event
+                                        :researcher-ownership-epoch 2))))
+                recovered-result
+                (when recovered-worker
+                  (deref recovered-worker 10000 ::timeout))
+                result (deref execution 15000 ::timeout)
+                tick-id (:trace-id result)
+                provider-claims
+                (filterv #(= :provider (:kind %))
+                         (sheet/get-researcher-effect-claims
+                          ctx sheet-id tick-id node-id))
+                inline-logical-id
+                (:logical-action-identity
+                 (first (filter #(= @old-inline-attempt-id
+                                   (:attempt-identity %))
+                                provider-claims)))
+                inline-attempts
+                (filterv #(= inline-logical-id
+                             (:logical-action-identity %))
+                         provider-claims)]
+            (try
+              (is inline-result-observed?
+                  "the old inline provider returned before its outcome append")
+              (is (some? start-event))
+              (is (not= ::timeout recovered-result))
+              (is (= :success (:status result)) (pr-str result))
+              (is (= "inline-value" (get-in result [:outputs :summary])))
+              (is (= 3 @provider-calls)
+                  "outer provider once and inline provider twice")
+              (is (= 3 (count provider-claims)) (pr-str provider-claims))
+              (is (= 2 (count inline-attempts)) (pr-str inline-attempts))
+              (is (= [:indeterminate :completed]
+                     (mapv :status inline-attempts))
+                  (pr-str inline-attempts))
+              (is (= [1 2] (mapv :ownership-epoch inline-attempts)))
+              (is (= 2 (count (set (map :attempt-identity inline-attempts)))))
+              (finally
+                (deliver release-old-completion true)))
+            (is (= ::anom/conflict
+                   (::anom/category
+                    (deref old-completion-result 5000 {})))
+                "the old inline outcome remains fenced")))))))
 
 (deftest rejected-provider-claim-cannot-record-a-legacy-completion
   (let [provider-calls (atom 0)
@@ -1201,6 +1910,146 @@
               (is (= expected-logical (:logical-action-identity tool-claim))
                   "reordered canonical args resolve to the public claim identity"))))))))
 
+(deftest det-e2e-272-checkpoint-safe-tool-owner-deduplicates-an-indeterminate-retry
+  (testing "the recovered worker retries with one stable callee idempotency key"
+    (let [provider-calls (atom 0)
+          tool-invocations (atom 0)
+          external-effects (atom 0)
+          idempotency-keys (atom [])
+          callee-results (atom {})
+          old-tool-attempt-id (atom nil)
+          old-tool-result-observed (promise)
+          release-old-completion (promise)
+          old-completion-result (promise)]
+      (h/with-async-test-context
+        [ctx {:context
+              {:llm-provider :test
+               :call-tool-fn
+               (fn [_tool-name _arguments tool-context]
+                 (swap! tool-invocations inc)
+                 (let [idempotency-key (:orc/idempotency-key tool-context)]
+                   (swap! idempotency-keys conj idempotency-key)
+                   (or (get @callee-results idempotency-key)
+                       (let [result {:hits [(str "external-effect-"
+                                                (swap! external-effects inc))]}]
+                         (swap! callee-results assoc idempotency-key result)
+                         result))))}}]
+        (let [source (str "(do (search {:query \"indeterminate\"}) "
+                          "(final! {:summary \"tool-recovered\"}))")
+              definition
+              (sheet/workflow "rr10-tool-owner-dedup"
+                (sheet/blackboard {:summary :string})
+                (sheet/repl-researcher "researcher"
+                  :instruction "retry one checkpoint-safe tool"
+                  :writes [:summary]
+                  :mcp-tools ["search"]
+                  :tool-contracts
+                  {"search" {:arguments [:map]
+                             :result :any
+                             :checkpoint-safe? true}}
+                  :max-iterations 1
+                  :model "deterministic-model"
+                  :rlm {:checkpointed? true
+                        :recursive? false
+                        :timeouts {:provider-ms 5000
+                                   :iteration-ms 7000
+                                   :campaign-ms 15000}}))
+              sheet-id (sheet/build-workflow! ctx definition)
+              node-id (:id (first (filter #(= "researcher" (:name %))
+                                          (sheet/get-nodes-for-sheet ctx sheet-id))))
+              real-process-command cp/process-command]
+          (with-redefs [llm/predict
+                        (fn [& _]
+                          (swap! provider-calls inc)
+                          {:outputs {:code source}
+                           :usage {:prompt_tokens 2
+                                   :completion_tokens 1
+                                   :total_tokens 3}})
+                        cp/process-command
+                        (fn [command-context]
+                          (let [command (:command command-context)
+                                command-name (:command/name command)]
+                            (cond
+                              (and (= :sheet/claim-researcher-effect command-name)
+                                   (= :tool (:kind command))
+                                   (= 1 (:ownership-epoch command)))
+                              (let [result (real-process-command command-context)]
+                                (when-not (::anom/category result)
+                                  (reset! old-tool-attempt-id
+                                          (:attempt-identity command)))
+                                result)
+
+                              (and (= :sheet/complete-researcher-effect command-name)
+                                   (= @old-tool-attempt-id
+                                      (:attempt-identity command))
+                                   (= 1 (:ownership-epoch command)))
+                              (do
+                                (deliver old-tool-result-observed true)
+                                @release-old-completion
+                                (let [result (real-process-command command-context)]
+                                  (deliver old-completion-result result)
+                                  result))
+
+                              :else
+                              (real-process-command command-context))))]
+            (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                  tool-result-observed?
+                  (deref old-tool-result-observed 7000 false)
+                  start-event
+                  (when tool-result-observed?
+                    (first (filter #(and (= :sheet/node-execution-started
+                                            (:event/type %))
+                                         (= node-id (:node-id %)))
+                                   (h/read-all-events ctx))))
+                  recovered-worker
+                  (when start-event
+                    (todo/execute-repl-researcher-node
+                     (assoc ctx
+                            :llm-provider :test
+                            :event (assoc start-event
+                                          :researcher-ownership-epoch 2))))
+                  recovered-result
+                  (when recovered-worker
+                    (deref recovered-worker 10000 ::timeout))
+                  result (deref execution 15000 ::timeout)
+                  tick-id (:trace-id result)
+                  tool-claims
+                  (filterv #(= :tool (:kind %))
+                           (sheet/get-researcher-effect-claims
+                            ctx sheet-id tick-id node-id))]
+              (try
+                (is tool-result-observed?
+                    "the old tool returned before its parent outcome append")
+                (is (some? start-event))
+                (is (not= ::timeout recovered-result))
+                (is (= :success (:status result)) (pr-str result))
+                (is (= 1 @provider-calls)
+                    "the recovered worker reuses the completed provider claim")
+                (is (= 2 @tool-invocations)
+                    "ORC retries the participating callee")
+                (is (= 1 @external-effects)
+                    "the callee owner deduplicates the external side effect")
+                (is (= 1 (count (set @idempotency-keys)))
+                    (pr-str @idempotency-keys))
+                (is (= 2 (count tool-claims)) (pr-str tool-claims))
+                (is (= [:indeterminate :completed]
+                       (mapv :status tool-claims))
+                    (pr-str tool-claims))
+                (is (apply = (map :logical-action-identity tool-claims)))
+                (is (= 2 (count (set (map :attempt-identity tool-claims)))))
+                (is (= [1 2] (mapv :ownership-epoch tool-claims)))
+                (finally
+                  (deliver release-old-completion true)))
+              (is (= ::anom/conflict
+                     (::anom/category
+                      (deref old-completion-result 5000 {})))
+                  "the old tool outcome cannot replace either terminal row")
+              (is (= [:indeterminate :completed]
+                     (mapv :status
+                           (filter #(= :tool (:kind %))
+                                   (sheet/get-researcher-effect-claims
+                                    ctx sheet-id tick-id node-id))))))))))))
+
 (deftest checkpointed-generated-child-is-claimed-before-stable-dispatch
   (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
     (let [source-tree
@@ -1266,6 +2115,458 @@
           (is (= :completed (:status projected)))
           (is (= (:tick-id child-start)
                  (get-in projected [:result :trace-id]))))))))
+
+(deftest det-e2e-272-indeterminate-generated-child-rejoins-one-stable-tick
+  (testing "a newer parent attempt rejoins the child completed before outcome recording"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [sheet-id (random-uuid)
+            tick-id (random-uuid)
+            node-id (random-uuid)
+            provider-calls (atom 0)
+            child-attempts (atom [])
+            drop-first-child-completion? (atom true)
+            source-tree
+            '[:sequence
+              [:code {:writes [:summary]
+                      :output-schemas {:summary :string}
+                      :fn (fn [_] {:summary "durable-child"})}]
+              [:final {:keys [:summary]}]]
+            code (str "(emit-tree! (quote " (pr-str source-tree) "))")
+            node {:id node-id
+                  :type :repl-researcher
+                  :instruction "rejoin one durable generated child"
+                  :writes [:summary]
+                  :max-iterations 1
+                  :model "deterministic-model"
+                  :rlm {:checkpointed? true
+                        :recursive? false
+                        :timeouts {:provider-ms 2000
+                                   :iteration-ms 5000
+                                   :campaign-ms 15000}}}
+            blackboard {:summary {:key :summary
+                                  :schema :string
+                                  :value nil
+                                  :version 0}}
+            claim!
+            (fn [ownership-epoch]
+              (fn [{:keys [iteration-index logical-action-identity
+                           attempt-identity attempt-ordinal kind]}]
+                (when (= :generated-child kind)
+                  (swap! child-attempts conj attempt-identity))
+                (h/run-and-apply!
+                 ctx
+                 (command :sheet/claim-researcher-effect
+                          {:sheet-id sheet-id
+                           :tick-id tick-id
+                           :node-id node-id
+                           :iteration-index iteration-index
+                           :logical-action-identity logical-action-identity
+                           :attempt-identity attempt-identity
+                           :attempt-ordinal attempt-ordinal
+                           :ownership-epoch ownership-epoch
+                           :kind kind
+                           :claimed-at "2030-01-01T00:00:01Z"}))))
+            complete!
+            (fn [ownership-epoch]
+              (fn [{:keys [logical-action-identity attempt-identity result]}]
+                (if (and (= attempt-identity (first @child-attempts))
+                         (compare-and-set! drop-first-child-completion? true false))
+                  {::anom/category ::anom/unavailable
+                   ::anom/message "simulated crash before parent child-outcome append"}
+                  (h/run-and-apply!
+                   ctx
+                   (command :sheet/complete-researcher-effect
+                            {:sheet-id sheet-id
+                             :tick-id tick-id
+                             :node-id node-id
+                             :logical-action-identity logical-action-identity
+                             :attempt-identity attempt-identity
+                             :ownership-epoch ownership-epoch
+                             :result result
+                             :resolved-at "2030-01-01T00:00:04Z"})))))]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (swap! provider-calls inc)
+                        {:outputs {:code code}
+                         :usage {:prompt_tokens 2
+                                 :completion_tokens 1
+                                 :total_tokens 3}})]
+          (is (nil? (::anom/category
+                     (claim-frontier! ctx sheet-id tick-id node-id 1))))
+          (let [first-result
+                (executor/execute-repl-researcher-rlm
+                 node blackboard :test
+                 (assoc ctx
+                        :sheet-id sheet-id
+                        :tick-id tick-id
+                        :node-id node-id
+                        :researcher-ownership-epoch 1
+                        :researcher-effect-claims []
+                        :claim-researcher-effect! (claim! 1)
+                        :complete-researcher-effect! (complete! 1)))
+                claims-after-crash
+                (rm/get-researcher-effect-claims ctx sheet-id tick-id node-id)
+                old-child
+                (first (filter #(= :generated-child (:kind %))
+                               claims-after-crash))
+                child-starts-after-crash
+                (filterv #(and (= :sheet/tree-tick-started (:event/type %))
+                               (= tick-id (:parent-tick-id %)))
+                         (h/read-all-events ctx))]
+            (is (= :failure (:status first-result)) (pr-str first-result))
+            (is (= :claimed (:status old-child)) (pr-str claims-after-crash))
+            (is (= 1 (count child-starts-after-crash))
+                (pr-str child-starts-after-crash))
+            (is (nil? (::anom/category
+                       (claim-frontier! ctx sheet-id tick-id node-id 2))))
+            (is (nil? (::anom/category
+                       (mark-effect-indeterminate!
+                        ctx sheet-id tick-id node-id 2
+                        (:logical-action-identity old-child)
+                        (:attempt-identity old-child)))))
+            (let [second-result
+                  (executor/execute-repl-researcher-rlm
+                   node blackboard :test
+                   (assoc ctx
+                          :sheet-id sheet-id
+                          :tick-id tick-id
+                          :node-id node-id
+                          :researcher-ownership-epoch 2
+                          :researcher-effect-claims
+                          (rm/get-researcher-effect-claims
+                           ctx sheet-id tick-id node-id)
+                          :claim-researcher-effect! (claim! 2)
+                          :complete-researcher-effect! (complete! 2)))
+                  events (h/read-all-events ctx)
+                  child-starts
+                  (filterv #(and (= :sheet/tree-tick-started (:event/type %))
+                                 (= tick-id (:parent-tick-id %)))
+                           events)
+                  child-claims
+                  (filterv #(= :generated-child (:kind %))
+                           (rm/get-researcher-effect-claims
+                            ctx sheet-id tick-id node-id))]
+              (is (contains? #{:running :success} (:status second-result))
+                  (pr-str second-result))
+              (is (= 1 @provider-calls)
+                  "the completed provider result is replayed on the second parent attempt")
+              (is (= 1 (count child-starts))
+                  "the recovered parent must not start a second child tick")
+              (is (= 1 (count (set (map :tick-id child-starts)))))
+              (is (= 2 (count child-claims)) (pr-str child-claims))
+              (is (= [:indeterminate :completed]
+                     (mapv :status child-claims))
+                  (pr-str child-claims))
+              (is (apply = (map :logical-action-identity child-claims)))
+              (is (= 2 (count (set (map :attempt-identity child-claims)))))
+              (is (= [1 2] (mapv :ownership-epoch child-claims)))
+              (is (= (:tick-id (first child-starts))
+                     (get-in (second child-claims) [:result :trace-id]))))))))))
+
+(deftest det-e2e-272-recovered-generated-child-rejoins-before-old-owner-releases
+  (testing "the real recovered worker rejoins a completed child while the old outcome is paused"
+    (reset! rr10-generated-child-effects 0)
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-calls (atom 0)
+            old-child-attempt-id (atom nil)
+            old-child-result-observed (promise)
+            release-old-completion (promise)
+            old-completion-result (promise)
+            source-tree
+            '[:sequence
+              [:code {:writes [:summary]
+                      :output-schemas {:summary :string}
+                      :fn "ai.obney.orc.orc-service.researcher-effect-claim-test/count-rr10-generated-child-effect"}]
+              [:final {:keys [:summary]}]]
+            code (str "(emit-tree! (quote " (pr-str source-tree) "))")
+            definition
+            (sheet/workflow "rr10-public-generated-child-rejoin"
+              (sheet/blackboard {:summary :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "emit one recoverable generated child"
+                :writes [:summary]
+                :max-iterations 1
+                :model "deterministic-model"
+                :rlm {:checkpointed? true
+                      :recursive? false
+                      :timeouts {:provider-ms 5000
+                                 :iteration-ms 7000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx definition)
+            node-id (:id (first (filter #(= "researcher" (:name %))
+                                        (sheet/get-nodes-for-sheet ctx sheet-id))))
+            real-process-command cp/process-command]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (swap! provider-calls inc)
+                        {:outputs {:code code}
+                         :usage {:prompt_tokens 2
+                                 :completion_tokens 1
+                                 :total_tokens 3}})
+                      cp/process-command
+                      (fn [command-context]
+                        (let [command (:command command-context)
+                              command-name (:command/name command)]
+                          (cond
+                            (and (= :sheet/claim-researcher-effect command-name)
+                                 (= :generated-child (:kind command))
+                                 (= 1 (:ownership-epoch command)))
+                            (let [result (real-process-command command-context)]
+                              (when-not (::anom/category result)
+                                (reset! old-child-attempt-id
+                                        (:attempt-identity command)))
+                              result)
+
+                            (and (= :sheet/complete-researcher-effect command-name)
+                                 (= @old-child-attempt-id
+                                    (:attempt-identity command))
+                                 (= 1 (:ownership-epoch command)))
+                            (do
+                              (deliver old-child-result-observed true)
+                              @release-old-completion
+                              (let [result (real-process-command command-context)]
+                                (deliver old-completion-result result)
+                                result))
+
+                            :else
+                            (real-process-command command-context))))]
+          (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                child-result-observed?
+                (deref old-child-result-observed 7000 false)
+                start-event
+                (when child-result-observed?
+                  (first (filter #(and (= :sheet/node-execution-started
+                                          (:event/type %))
+                                       (= node-id (:node-id %)))
+                                 (h/read-all-events ctx))))
+                recovered-worker
+                (when start-event
+                  (todo/execute-repl-researcher-node
+                   (assoc ctx
+                          :llm-provider :test
+                          :event (assoc start-event
+                                        :researcher-ownership-epoch 2))))
+                recovered-result
+                (when recovered-worker
+                  (deref recovered-worker 10000 ::timeout))
+                result (deref execution 15000 ::timeout)
+                tick-id (:trace-id result)
+                events-before-release (h/read-all-events ctx)
+                child-starts
+                (filterv #(and (= :sheet/tree-tick-started (:event/type %))
+                               (= tick-id (:parent-tick-id %)))
+                         events-before-release)
+                child-claims
+                (filterv #(= :generated-child (:kind %))
+                         (sheet/get-researcher-effect-claims
+                          ctx sheet-id tick-id node-id))
+                indeterminate-event
+                (first (filter #(and (= :rlm/researcher-effect-indeterminate
+                                        (:event/type %))
+                                     (= (:attempt-identity (first child-claims))
+                                        (:attempt-identity %)))
+                               events-before-release))
+                newer-claim-event
+                (first (filter #(and (= :rlm/researcher-effect-claimed
+                                        (:event/type %))
+                                     (= (:attempt-identity (second child-claims))
+                                        (:attempt-identity %)))
+                               events-before-release))
+                event-position
+                (fn [event-id]
+                  (first (keep-indexed
+                          (fn [index event]
+                            (when (= event-id (:event/id event)) index))
+                          events-before-release)))]
+            (try
+              (is child-result-observed?
+                  "the old child completed before its parent outcome append")
+              (is (some? start-event))
+              (is (not= ::timeout recovered-result))
+              (is (= :success (:status result)) (pr-str result))
+              (is (= 1 @provider-calls)
+                  "the recovered owner reuses the completed provider claim")
+              (is (= 1 @rr10-generated-child-effects)
+                  "the child effect is not repeated")
+              (is (= 1 (count child-starts)) (pr-str child-starts))
+              (is (= 2 (count child-claims)) (pr-str child-claims))
+              (is (= [{:ownership-epoch 1
+                       :resolved-by-ownership-epoch 2
+                       :status :indeterminate}
+                      {:ownership-epoch 2
+                       :status :completed}]
+                     (mapv #(select-keys % [:ownership-epoch
+                                            :resolved-by-ownership-epoch
+                                            :status])
+                           child-claims))
+                  (pr-str child-claims))
+              (is (apply = (map :logical-action-identity child-claims)))
+              (is (= 2 (count (set (map :attempt-identity child-claims)))))
+              (is (= (:tick-id (first child-starts))
+                     (get-in (second child-claims) [:result :trace-id])))
+              (is (some? indeterminate-event) (pr-str events-before-release))
+              (is (some? newer-claim-event) (pr-str events-before-release))
+              (is (< (event-position (:event/id indeterminate-event))
+                     (event-position (:event/id newer-claim-event)))
+                  "the old claim settles before the recovered parent claims its retry")
+              (finally
+                (deliver release-old-completion true)))
+            (is (= ::anom/conflict
+                   (::anom/category
+                    (deref old-completion-result 5000 {})))
+                "the old parent's delayed outcome loses the epoch fence")
+            (is (= [:indeterminate :completed]
+                   (mapv :status
+                         (filter #(= :generated-child (:kind %))
+                                 (sheet/get-researcher-effect-claims
+                                  ctx sheet-id tick-id node-id)))))))))))
+
+(deftest det-e2e-272-recovered-generated-child-starts-the-stable-prestart-identity-once
+  (testing "recovery after claim but before child start dispatches one stable child"
+    (reset! rr10-generated-child-effects 0)
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-calls (atom 0)
+            old-child-attempt-id (atom nil)
+            old-child-claim-blocked? (atom false)
+            old-child-claim-persisted (promise)
+            release-old-claim-return (promise)
+            old-completion-result (promise)
+            source-tree
+            '[:sequence
+              [:code {:writes [:summary]
+                      :output-schemas {:summary :string}
+                      :fn "ai.obney.orc.orc-service.researcher-effect-claim-test/count-rr10-generated-child-effect"}]
+              [:final {:keys [:summary]}]]
+            code (str "(emit-tree! (quote " (pr-str source-tree) "))")
+            definition
+            (sheet/workflow "rr10-public-generated-child-prestart-recovery"
+              (sheet/blackboard {:summary :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "start one stable child after parent recovery"
+                :writes [:summary]
+                :max-iterations 1
+                :model "deterministic-model"
+                :rlm {:checkpointed? true
+                      :recursive? false
+                      :timeouts {:provider-ms 5000
+                                 :iteration-ms 7000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx definition)
+            node-id (:id (first (filter #(= "researcher" (:name %))
+                                        (sheet/get-nodes-for-sheet ctx sheet-id))))
+            real-process-command cp/process-command]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (swap! provider-calls inc)
+                        {:outputs {:code code}
+                         :usage {:prompt_tokens 2
+                                 :completion_tokens 1
+                                 :total_tokens 3}})
+                      cp/process-command
+                      (fn [command-context]
+                        (let [candidate (:command command-context)
+                              command-name (:command/name candidate)]
+                          (cond
+                            (and (= :sheet/claim-researcher-effect command-name)
+                                 (= :generated-child (:kind candidate))
+                                 (= 1 (:ownership-epoch candidate))
+                                 (compare-and-set! old-child-claim-blocked?
+                                                   false true))
+                            (let [result (real-process-command command-context)]
+                              (when-not (::anom/category result)
+                                (reset! old-child-attempt-id
+                                        (:attempt-identity candidate))
+                                (deliver old-child-claim-persisted result)
+                                ;; The old parent has durably claimed, but the
+                                ;; executor cannot observe the successful claim
+                                ;; or dispatch the child before recovery begins.
+                                @release-old-claim-return)
+                              result)
+
+                            (and (= :sheet/complete-researcher-effect command-name)
+                                 (= @old-child-attempt-id
+                                    (:attempt-identity candidate)))
+                            (let [result (real-process-command command-context)]
+                              (deliver old-completion-result result)
+                              result)
+
+                            :else
+                            (real-process-command command-context))))]
+          (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                claim-persisted?
+                (not= ::timeout (deref old-child-claim-persisted 7000 ::timeout))
+                events-at-crash (h/read-all-events ctx)
+                start-event
+                (when claim-persisted?
+                  (first (filter #(and (= :sheet/node-execution-started
+                                          (:event/type %))
+                                       (= node-id (:node-id %)))
+                                 events-at-crash)))
+                child-starts-at-crash
+                (filterv #(and (= :sheet/tree-tick-started (:event/type %))
+                               (= (:tick-id start-event) (:parent-tick-id %)))
+                         events-at-crash)
+                recovered-worker
+                (when start-event
+                  (todo/execute-repl-researcher-node
+                   (assoc ctx
+                          :llm-provider :test
+                          :event (assoc start-event
+                                        :researcher-ownership-epoch 2))))
+                recovered-result
+                (when recovered-worker
+                  (deref recovered-worker 10000 ::timeout))
+                result (deref execution 10000 ::timeout)
+                tick-id (:tick-id start-event)
+                events-before-release (h/read-all-events ctx)
+                child-starts
+                (filterv #(and (= :sheet/tree-tick-started (:event/type %))
+                               (= tick-id (:parent-tick-id %)))
+                         events-before-release)
+                child-claims
+                (filterv #(= :generated-child (:kind %))
+                         (sheet/get-researcher-effect-claims
+                          ctx sheet-id tick-id node-id))
+                stable-child-id
+                (when-let [logical-id (:logical-action-identity
+                                       (first child-claims))]
+                  (java.util.UUID/nameUUIDFromBytes
+                   (.getBytes logical-id "UTF-8")))]
+            (try
+              (is claim-persisted?
+                  "the old parent durably claimed its child action")
+              (is (some? start-event))
+              (is (empty? child-starts-at-crash)
+                  "the crash window is before any child tick starts")
+              (is (not= ::timeout recovered-result))
+              (is (= :success (:status result)) (pr-str result))
+              (is (= 1 @provider-calls)
+                  "recovery replays the completed provider outcome")
+              (is (= 1 @rr10-generated-child-effects)
+                  "only the recovered stable child performs work")
+              (is (= 1 (count child-starts)) (pr-str child-starts))
+              (is (= stable-child-id (:tick-id (first child-starts))))
+              (is (= 2 (count child-claims)) (pr-str child-claims))
+              (is (= [:indeterminate :completed]
+                     (mapv :status child-claims))
+                  (pr-str child-claims))
+              (is (apply = (map :logical-action-identity child-claims)))
+              (is (= [1 2] (mapv :ownership-epoch child-claims)))
+              (is (= 2 (count (set (map :attempt-identity child-claims)))))
+              (is (= stable-child-id
+                     (get-in (second child-claims) [:result :trace-id])))
+              (finally
+                (deliver release-old-claim-return true)))
+            (is (= ::anom/conflict
+                   (::anom/category
+                    (deref old-completion-result 5000 {})))
+                "the released old parent rejoins the same child but loses completion CAS")
+            (is (= 1
+                   (count
+                    (filter #(and (= :sheet/tree-tick-started (:event/type %))
+                                  (= tick-id (:parent-tick-id %)))
+                            (h/read-all-events ctx))))
+                "releasing the old parent cannot create a second child")))))))
 
 (deftest checkpointed-behavior-mint-is-claimed-before-ontology-command
   (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
@@ -1400,3 +2701,137 @@
               "only the winning physical attempt reaches the mint audit trail")
           (is (= 1 (count mints)))
           (is (= 1 (count descriptions))))))))
+
+(deftest det-e2e-272-behavior-mint-owner-recovers-an-indeterminate-retry
+  (testing "the recovered mint attempt returns the one target its owner already created"
+    (h/with-async-test-context [ctx {:context {:llm-provider :test}}]
+      (let [provider-calls (atom 0)
+            old-mint-attempt-id (atom nil)
+            old-mint-result-observed (promise)
+            release-old-completion (promise)
+            old-completion-result (promise)
+            mint-body {:capabilities ["retain evidence"]
+                       :strengths []
+                       :weaknesses []
+                       :representative-uses ["durable research"]
+                       :avoid-when ["no evidence exists"]
+                       :summary "Recover one durable behavior mint."
+                       :version 1
+                       :consolidated-from-event-count 0}
+            code (str "(let [target (mint-behavior! \"rr10-recovered-mint\" "
+                      (pr-str mint-body)
+                      ")] (final! {:summary target}))")
+            definition
+            (sheet/workflow "rr10-behavior-mint-recovery"
+              (sheet/blackboard {:summary :string})
+              (sheet/repl-researcher "researcher"
+                :instruction "recover one behavior mint"
+                :writes [:summary]
+                :max-iterations 1
+                :model "deterministic-model"
+                :rlm {:checkpointed? true
+                      :recursive? false
+                      :timeouts {:provider-ms 5000
+                                 :iteration-ms 7000
+                                 :campaign-ms 15000}}))
+            sheet-id (sheet/build-workflow! ctx definition)
+            node-id (:id (first (filter #(= "researcher" (:name %))
+                                        (sheet/get-nodes-for-sheet ctx sheet-id))))
+            real-process-command cp/process-command]
+        (with-redefs [llm/predict
+                      (fn [& _]
+                        (swap! provider-calls inc)
+                        {:outputs {:code code}
+                         :usage {:prompt_tokens 2
+                                 :completion_tokens 1
+                                 :total_tokens 3}})
+                      cp/process-command
+                      (fn [command-context]
+                        (let [command (:command command-context)
+                              command-name (:command/name command)]
+                          (cond
+                            (and (= :sheet/claim-researcher-effect command-name)
+                                 (= :behavior-mint (:kind command))
+                                 (= 1 (:ownership-epoch command)))
+                            (let [result (real-process-command command-context)]
+                              (when-not (::anom/category result)
+                                (reset! old-mint-attempt-id
+                                        (:attempt-identity command)))
+                              result)
+
+                            (and (= :sheet/complete-researcher-effect command-name)
+                                 (= @old-mint-attempt-id
+                                    (:attempt-identity command))
+                                 (= 1 (:ownership-epoch command)))
+                            (do
+                              (deliver old-mint-result-observed true)
+                              @release-old-completion
+                              (let [result (real-process-command command-context)]
+                                (deliver old-completion-result result)
+                                result))
+
+                            :else
+                            (real-process-command command-context))))]
+          (let [execution (future (sheet/execute ctx sheet-id {} :timeout-ms 15000))
+                mint-result-observed?
+                (deref old-mint-result-observed 7000 false)
+                start-event
+                (when mint-result-observed?
+                  (first (filter #(and (= :sheet/node-execution-started
+                                          (:event/type %))
+                                       (= node-id (:node-id %)))
+                                 (h/read-all-events ctx))))
+                recovered-worker
+                (when start-event
+                  (todo/execute-repl-researcher-node
+                   (assoc ctx
+                          :llm-provider :test
+                          :event (assoc start-event
+                                        :researcher-ownership-epoch 2))))
+                recovered-result
+                (when recovered-worker
+                  (deref recovered-worker 10000 ::timeout))
+                result (deref execution 15000 ::timeout)
+                tick-id (:trace-id result)
+                events-before-release (h/read-all-events ctx)
+                mints
+                (filterv #(and (= :ontology/behavioral-subtree-minted
+                                   (:event/type %))
+                               (= "rr10-recovered-mint" (:name %)))
+                         events-before-release)
+                target-id (:target-id (first mints))
+                descriptions
+                (filterv #(and (= :ontology/tree-description-updated
+                                   (:event/type %))
+                               (= target-id (:target-id %)))
+                         events-before-release)
+                mint-claims
+                (filterv #(= :behavior-mint (:kind %))
+                         (sheet/get-researcher-effect-claims
+                          ctx sheet-id tick-id node-id))]
+            (try
+              (is mint-result-observed?
+                  "the old mint returned before its parent outcome append")
+              (is (some? start-event))
+              (is (not= ::timeout recovered-result))
+              (is (= :success (:status result)) (pr-str result))
+              (is (= (str target-id) (get-in result [:outputs :summary]))
+                  (pr-str result))
+              (is (= 1 @provider-calls)
+                  "the recovered worker reuses the completed provider claim")
+              (is (= 1 (count mints)) (pr-str mints))
+              (is (= 1 (count descriptions)) (pr-str descriptions))
+              (is (= 2 (count mint-claims)) (pr-str mint-claims))
+              (is (= [:indeterminate :completed]
+                     (mapv :status mint-claims))
+                  (pr-str mint-claims))
+              (is (apply = (map :logical-action-identity mint-claims)))
+              (is (= 2 (count (set (map :attempt-identity mint-claims)))))
+              (is (= [1 2] (mapv :ownership-epoch mint-claims)))
+              (is (= (str target-id) (:result (second mint-claims))))
+              (finally
+                (deliver release-old-completion true)))
+            (is (= ::anom/conflict
+                   (::anom/category
+                    (deref old-completion-result 5000 {})))
+                "the old mint outcome cannot replace either terminal row")))))))

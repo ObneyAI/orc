@@ -22,14 +22,22 @@ has a hole exactly where a restart happened.
 
 Progress finer than one iteration stays ephemeral — a preview nothing is entitled to rely on.
 
+Reconciliation finding: the terminal aggregate is no longer wholly
+consumer-free. Trace assembly retains it as the compatibility source for an
+explicitly non-checkpointed researcher, because that path does not write
+per-attempt records. "Retire" therefore means stop producing and consuming it
+on checkpointed/default campaigns, and document it as a compatibility-only
+legacy event. Removing it from explicit opt-out would erase trace history and
+contradict RR-15; changing that contract requires a separate ratified migration.
+
 ## Acceptance criteria
 
-- [ ] A subscriber watching a campaign sees iterations derived from durable records
-- [ ] What was watched live matches what is read back afterwards, asserted by comparison
-- [ ] Watching survives a restart
-- [ ] A rejoined child appears in the lineage
-- [ ] The terminal-only iterations event is retired and its documentation corrected
-- [ ] Sub-iteration progress remains ephemeral and is documented as non-authoritative
+- [x] A subscriber watching a campaign sees iterations derived from durable records
+- [x] What was watched live matches what is read back afterwards, asserted by comparison
+- [x] Watching survives a restart
+- [x] A rejoined child appears in the lineage
+- [x] The terminal-only iterations event is retired from checkpointed/default campaigns and documented as compatibility-only for explicit opt-out
+- [x] Sub-iteration progress remains ephemeral and is documented as non-authoritative
 
 ## Spec obligations covered
 
@@ -101,3 +109,73 @@ Standing rules for this arc:
 three ORC-specific gates — spec-conformance (`allium check` / `analyse` error-free by **severity count** on touched
 specs), `/weed` check-mode with classified divergences, and the obligation audit (the coverage line above must survive
 into the slice report). Allium's internal verify is the CLAIM; `/inspect-orc` is the falsification.
+
+## Implementation and verification record
+
+The live hub now tails `:rlm/researcher-iteration-recorded` and exports one
+schema-validated `:rlm-iteration-recorded` envelope carrying the exact durable
+identity and record payload. Grain's durable topics share one sliding tap
+channel and forwarding loop, so a later root terminal publication cannot
+overtake an earlier iteration publication and close the stream first.
+Sub-iteration code, sandbox, Phase-2 and token activity remains ephemeral.
+
+Recovery now relinks a completed generated child from the durable result's
+`:trace-id` before replay returns. Default/checkpointed terminal completion no
+longer writes the redundant `:rlm/researcher-iterations` aggregate; explicit
+`:checkpointed? false` retains it as the trace compatibility source because
+that mode has no per-attempt records.
+
+The propagated cycles established:
+
+- missing durable iteration envelopes, then a missing exported envelope schema,
+  as separate REDs before Cycle 1 became green;
+- a real SQLite close/reopen and fresh pre-resume subscription, green on its
+  first run and classified as already covered by the general durable tap;
+- a missing rejoined-child lineage RED, fixed at the completed Phase-2 replay
+  branch;
+- a checkpointed duplicate-aggregate RED while both checkpointed and explicit
+  opt-out traces already retained iterations `[1 2]`;
+- a deterministic cross-type ordering RED where a later root terminal closed
+  the stream before an earlier delayed child iteration. One shared tap made the
+  durable publication order structural.
+
+Independent focused verification passes 5 tests and 31 assertions. The
+streaming regression aggregate passes 17 tests and 144 assertions, and the
+checkpoint/recovery/effect-claim/trace aggregate passes 95 tests and 845
+assertions. Allium remains at the characterized 12-spec baseline of 115
+information diagnostics, 35 warnings and 0 errors; analyse reports no findings.
+`/weed` found no remaining RR-16 code/spec divergence after clarifying the
+explicit opt-out compatibility scope. Coverage is `2 obligations, 2 covered, 0
+uncovered`. No generated mock, stub, TODO or skeleton remains.
+
+Inspection initially appeared to expose an RR-7 provider-identity defect, but a
+dedicated minimise cycle proved the implementation correct and the replay
+harness unfaithful. The original execution's command registry contributed the
+registered mint contract to the canonical provider module and inputs; the
+manual replay omitted that registry and therefore described a different
+logical action. The lineage test now replays the same command registry and has
+removed the legacy provider-result mirror that masked the mismatch. The
+corrected lineage and real recovered-worker tests are green without a
+production or Allium change.
+
+Harness mistakes are retained in the record: one parent test-var command forced
+exit zero and was discarded; the first ordering harness released at tap entry
+rather than terminal delivery and was corrected before the real RED; one agent
+used a mistyped local SQLite coordinate before rerunning correctly; and one
+combined rerun named a nonexistent namespace and was stopped. None of those
+commands contributes to the green counts above.
+
+The complete `brick:orc-service` verification passed both consuming projects
+with exit 0 in 72 minutes 52 seconds when run with
+`JAVA_TOOL_OPTIONS=-Djava.awt.headless=true`. Two otherwise unmodified macOS
+runs aborted with exit 134 in AppKit registration before Clojure could finish;
+the crash report's faulting main-thread frames were `_RegisterApplication` and
+`JRSAppKitAWT registerAWTAppWithOptions`. The deterministic MCP-tools namespace,
+which loads the PDF/image path that reaches AWT, passed directly and in the
+headless full run with 10 tests and 74 assertions. This distinguishes a local
+GUI-harness abort from a test failure; the ordinary non-headless command is not
+claimed green. Earlier LMDB and terminal-wrapper hypotheses were falsified, and
+a perceived hang was measurement error caused by waiting on command approval
+while the suite continued to advance. The final run included RR-16 itself at 5
+tests and 31 assertions, recursive RLM at 54/234, judges at 18/42, researcher
+effect claims at 33/315, and map-each recovery at 7/77, all green.

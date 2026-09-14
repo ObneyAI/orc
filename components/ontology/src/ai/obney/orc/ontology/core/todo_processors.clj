@@ -15,9 +15,11 @@
   (:require [ai.obney.orc.ontology.core.classifier :as classifier]
             [ai.obney.orc.ontology.core.read-models :as rm]
             [ai.obney.grain.command-processor-v2.interface :as command-processor]
+            [ai.obney.grain.event-store-v3.interface :as event-store]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp]
             [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.time.interface :as time]
+            [cognitect.anomalies :as anom]
             [com.brunobonacci.mulog :as u]))
 
 ;; =============================================================================
@@ -29,6 +31,42 @@
   [context command]
   (command-processor/process-command
     (assoc context :command command)))
+
+(def ^:private recurrence-verdicts #{:success :failure :timeout})
+
+(defn- completion-classification
+  [{:keys [event-store tenant-id]} {:keys [sheet-id tick-id node-id]}]
+  (->> (event-store/read event-store
+                         {:tenant-id tenant-id
+                          :types #{:ontology/task-classified}
+                          :tags #{[:tick tick-id]}})
+       (reduce (fn [_ event]
+                 (when (and (= sheet-id (:source-sheet-id event))
+                            (= tick-id (:source-tick-id event))
+                            (= node-id (:source-node-id event)))
+                   (reduced event)))
+               nil)))
+
+(defprocessor :ontology on-researcher-campaign-terminal
+  {:topics #{:sheet/node-execution-completed}}
+  "RR-19: translate a classified researcher campaign's behavior verdict into
+   its explicit durable recurrence fact. Blocked completions and parent-level
+   cancellation/abandonment are not behavior verdicts and never enter here."
+  [{:keys [event] :as context}]
+  (when (and (= :repl-researcher (:node-type event))
+             (contains? recurrence-verdicts (:status event)))
+    (when-let [classification (completion-classification context event)]
+      (run-command!
+       context
+       {:command/name :ontology/record-tree-class-occurrence
+        :command/id (random-uuid)
+        :command/timestamp (time/now)
+        :source-sheet-id (:source-sheet-id classification)
+        :source-tick-id (:source-tick-id classification)
+        :source-node-id (:source-node-id classification)
+        :source-completion-event-id (:event/id event)
+        :assigned-tree-id (:assigned-tree-id classification)
+        :verdict (:status event)}))))
 
 (defn- transform-evaluation-result
   "Transform evaluation event format to classify-evaluation command format.
@@ -218,9 +256,9 @@
   (when-let [fp (:tree-fingerprint event)]
     (maybe-fire-consolidation! context :tree-fingerprint fp)))
 
-(defn on-task-classified
-  "C-Loop-1 threshold-trigger logic for :ontology/task-classified.
-   The classifier's substrate — one assignment per R-Inject run ticks
+(defn on-tree-class-occurrence-recorded
+  "RR-19 threshold-trigger logic for a verdict-qualified tree-class occurrence.
+   One completed campaign verdict ticks
    the counter under [:tree-class assigned-tree-id]. When the per-
    tree-class threshold crosses, the consolidator updates the
    description body the classifier reads from."
@@ -231,15 +269,16 @@
 (defprocessor :ontology on-execution-completed-check-threshold
   {:topics #{:sheet/node-execution-completed
              :sheet/rlm-tree-execution-completed
-             :ontology/task-classified}}
-  "C-2a-3a + C-Loop-1: after each execution-completion or task-classified
+             :ontology/tree-class-occurrence-recorded}}
+  "C-2a-3a + RR-19: after each execution-completion or verdict occurrence
    event, check whether the affected target's delta-counter has crossed
    its configured threshold; emit :ontology/request-consolidation if so."
   [{:keys [event] :as context}]
   (case (:event/type event)
     :sheet/node-execution-completed     (on-node-execution-completed context)
     :sheet/rlm-tree-execution-completed (on-rlm-tree-execution-completed context)
-    :ontology/task-classified           (on-task-classified context)
+    :ontology/tree-class-occurrence-recorded
+    (on-tree-class-occurrence-recorded context)
     nil))
 
 ;; =============================================================================
@@ -267,82 +306,249 @@
 ;; enrichment would then overwrite the consolidation's assembled body with a
 ;; stale snapshot. The projection's assembly is now the only writer of a
 ;; tree-class body.
+;;
+;; RR-20 (WorkedPatternsAreProvenNotMerelyRecent) — keyed on OUTCOME and SHAPE:
+;; CV-2 as landed wrote ONE claim per class regardless of whether the emitted
+;; tree succeeded or failed, and identified it by a fixed literal trait rather
+;; than by the tree it named — so a repair round's FAILED tree could
+;; crystallize as the class's proven pattern, and a class that genuinely
+;; succeeded with two shapes could only ever remember the most recent one.
+;; RR-20 changes both:
+;;   1. IDENTITY IS PER SHAPE. The claim's `:content` names the emitted tree's
+;;      `:tree-fingerprint`, so a class keeps one claim PER DISTINCT SHAPE
+;;      rather than one claim total. A shape that recurs reinforces its own
+;;      claim; it can never reinforce or overwrite a sibling shape's.
+;;   2. THE OUTCOME DECIDES THE SECTION. A `:success` bookend's shape is a
+;;      `:strength` (a worked pattern harvest may offer); a
+;;      `:failure`/`:timeout`/`:partial` bookend's shape is a `:weakness` (a
+;;      failed shape, recorded with its exact source as evidence, never
+;;      offered as a pattern). `:edit` therefore no longer swaps one shape's
+;;      source for a DIFFERENT shape's — a delta only ever `:edit`s the SAME
+;;      fingerprint's claim (the rare case where two emits share a shape but
+;;      differ in normalized-away content, e.g. a reworded :instruction).
+;;      A bookend with no `:status` (pre-C-2a-2 replay) records nothing new.
+;;   3. RESOLUTION IS BY OCCURRENCE. `get-tree-class-for-occurrence` (SJ-1's
+;;      `:occurrence->class`, keyed on `[source-sheet-id source-tick-id]`)
+;;      replaces `get-tree-class-for-sheet` (keyed on the bare, possibly
+;;      shared, sheet-id) so a bookend can never be attributed to a sibling
+;;      turn's classification on the same static host sheet.
+;;   4. `:evidence-basis :emitted-artifact-outcome` (not `:emitted-artifact`)
+;;      declares the stronger, still-mechanical fact this now rests on: not
+;;      merely that the tree was emitted, but the engine's own deterministic
+;;      execution-outcome recorded with it. See the schema docstring.
+;;   5. THE SELECTOR'S PREFERENCE. `corroborate-worked-patterns-from-occurrence!`
+;;      (below) reacts to RR-19's durable verdict and REINFORCES (never
+;;      creates) the matching shape claim(s) when the campaign's terminal
+;;      verdict is `:success` — a shape corroborated by both its own bookend
+;;      AND the campaign's verdict accumulates more earned support than a
+;;      bookend-only shape, so `harvest/best-recommended-pattern`'s existing
+;;      confidence-ranked sort already prefers it. This keeps `harvest-body`'s
+;;      signature exactly as the propagated RR-20 contract fixes it (`desc`
+;;      + `occurrences`, no ctx/class-id) — no new field on the assembled
+;;      strength entry was needed to make the preference decidable.
 
-(def ^:private emitted-pattern-trait
-  "The `:content` of the ONE claim that carries the post-emit worked-DSL.
+(defn- worked-pattern-trait
+  "RR-20: the `:content` of the SHAPE'S `:strength` claim — a class's worked
+   pattern for the tree identified by `fingerprint`. Identity is now PER
+   SHAPE (`[:strength (worked-pattern-trait fp)]`), not one fixed literal per
+   class: a class that succeeds with two shapes keeps two distinct claims,
+   and a re-success of one can only ever reinforce its own. Phrased as a
+   readable trait (CC-3's `assemble-summary` renders claim content into
+   `:summary`, which ColBERT indexes) rather than as a bare sentinel, while
+   still embedding the fingerprint so the identity is genuinely per-shape."
+  [fingerprint]
+  (str "emits the " fingerprint " worked tree for tasks of this class"))
 
-   It is a stable literal because it is this writer's IDENTITY KEY: a re-emit
-   finds the claim it already wrote by matching `[:strength this-string]` and
-   reinforces or rewords it, instead of appending a rival on every turn. It is
-   phrased as a readable trait rather than as a marker token because CC-3's
-   `assemble-summary` renders claim content into `:summary`, which is what
-   ColBERT indexes — a sentinel string would be indexed noise."
-  "emits this worked tree for tasks of this class")
+(defn- failed-shape-trait
+  "RR-20: the `:content` of the SHAPE'S `:weakness` claim — a class's failed
+   shape for the tree identified by `fingerprint`. Distinct kind AND distinct
+   content from `worked-pattern-trait` at the same fingerprint, so a shape
+   that fails once and later succeeds (a repair) records TWO claims that
+   never touch each other, per `WorkedPatternsAreProvenNotMerelyRecent`."
+  [fingerprint]
+  (str "emitted the " fingerprint " tree for tasks of this class and it failed"))
 
-(defn- emitted-pattern-claim
-  "The claim this writer owns for a target, or nil. Identity is
-   `[:strength emitted-pattern-trait]` — the same key on every turn, which is
-   what makes reinforcement possible at all."
-  [claims]
-  (first (filter #(and (= :strength (:kind %))
-                       (= emitted-pattern-trait (:content %)))
-                 claims)))
+(defn- shape-claim
+  "The claim this writer owns for `kind`+`trait` (one shape, one section), or
+   nil. Identity is `[kind trait]` — the same key every time this exact shape
+   recurs in this exact section, which is what makes reinforcement (rather
+   than a rival entry) possible."
+  [claims kind trait]
+  (first (filter #(and (= kind (:kind %)) (= trait (:content %))) claims)))
 
-(defn- emitted-pattern-delta
-  "The ONE claim operation this emit expresses.
+(defn- shape-delta
+  "The ONE claim operation one shape's bookend expresses, scoped to a single
+   `[kind trait]` identity (one fingerprint, one section — :strength or
+   :weakness). RR-20 narrows what the ADR 0021 ratchet-removal note below
+   still explains: THIS `:edit` can only ever reword the SAME shape's claim,
+   never swap a different shape's source in over it — the class-level 'one
+   slot, last write wins' defect CV-2 originally had is gone because the slot
+   is now per-shape.
 
-   THIS IS THE RATCHET REMOVAL, so it is worth naming what it replaces. The
-   forensic behind ADR 0021 counted 145 rejected consolidations, and 14 of them
-   were the anti-recency valve refusing a body because THIS writer's trait
-   string had not been reproduced verbatim by the reflection LLM. The system was
-   demanding that a model re-type a string the system itself had written.
-   Expressed as operations there is nothing to re-type: the claim keeps its
-   identity and its accumulated support, and the model is free to reword,
-   corroborate or contradict it like any other claim.
+     no claim for THIS shape yet    -> :add
+     same source as recorded        -> :support   (a repeat emit is
+                                                    CORROBORATION that this
+                                                    is the class's worked/
+                                                    failed shape)
+     different source, SAME shape   -> :edit       (rare: the fingerprint
+                                                    normalizes away :fn/
+                                                    :instruction content, so
+                                                    two emits can share a
+                                                    shape while differing in
+                                                    exact source text —
+                                                    reinforces AND rewords
+                                                    in place)
 
-     no claim yet          -> :add
-     same DSL as recorded  -> :support   (a repeat emit is CORROBORATION that
-                                          this is the class's worked pattern —
-                                          exactly what harvest wants to know)
-     different DSL         -> :edit      (reinforces AND rewords in place, so a
-                                          revision does not leave two rival
-                                          patterns for harvest to choose between)
-
-   `:evidence-basis :emitted-artifact` declares what this rests on: the engine
-   recorded the tree it emitted. That is a fact about what happened, not a
-   judgement about whether it was good — and it names NO occurrence, so CC-7
-   can never validate the claim and CC-9's gate can never let it enforce. It is
-   visible, and it earns authority only if the reflection later corroborates it
-   from occurrences a judge actually scored."
-  [existing dsl-str]
-  (let [base {:kind :strength
-              :content emitted-pattern-trait
+   `evidence-basis` (RR-20) declares what this rests on and DIFFERS by
+   caller: the bookend writer (`enrich-tree-class-with-emitted-dsl!`) always
+   passes `:emitted-artifact-outcome` — the engine's own deterministic
+   execution outcome (the bookend's `:status`) recorded together with the
+   artifact it produced. The occurrence-corroboration writer
+   (`corroborate-worked-patterns-from-occurrence!`) always passes
+   `:campaign-verdict` — a SEPARATE, LATER mechanical fact (the whole
+   campaign, not just this Phase-2 execution, reached :success) — and ONLY
+   ever reaches the `:support` branch (it reinforces an existing claim, it
+   never creates or rewords one). Neither basis names an occurrence, so
+   CC-7 can never validate the claim and CC-9's gate can never let it
+   enforce from either alone; `:campaign-verdict` support is durable via
+   `read-models/reinforce-claim`'s `:verdict-corroborations` counter, which
+   `harvest/best-recommended-pattern` ranks on ahead of raw support."
+  [existing kind trait source-text evidence-basis]
+  (let [base {:kind kind
+              :content trait
               :context-guard nil
-              :recommendation dsl-str
+              :recommendation source-text
               :episodes []
               :from-legacy-corpus false
-              :evidence-basis :emitted-artifact}]
+              :evidence-basis evidence-basis}]
     (cond
       (nil? existing)
       (assoc base :operation :add)
 
-      (= dsl-str (:recommendation existing))
+      (= source-text (:recommendation existing))
       (assoc base :operation :support :target-claim (:claim-id existing))
 
       :else
       (assoc base :operation :edit :target-claim (:claim-id existing)))))
 
+(def ^:private claim-delta-retry-attempts
+  "RR-20: how many times `record-claim-deltas-with-retry!` re-reads and
+   retries after a `:stale-claim-set` refusal before giving up (each retry
+   is a fresh read, so this bounds worst-case work, not correctness — the
+   loop always converges once writers stop racing)."
+  5)
+
+(defn- claim-delta-write-lost-the-race?
+  "RR-20: true when `record-claim-deltas` needs to be retried against a
+   fresh read, on EITHER of the two distinct ways a concurrent writer can
+   beat this one to `class-id`'s claim set:
+
+     1. `:ontology/refused` — the HANDLER's own pre-check
+        (`recorded-claim-delta-count` vs our `:claim-set-version`) found the
+        version already stale before it even tried to append.
+     2. `::anom/conflict` — the version was current when the handler
+        checked, but a DIFFERENT concurrent append committed between that
+        check and this one's own append; the event-store's CAS predicate
+        (compared at the `dosync` boundary, not the handler's read) is what
+        catches THIS race, and it returns the anomaly directly rather than
+        the handler's `:ontology/refused` map — the handler never runs its
+        own refusal branch for this case, because ITS pre-check passed.
+   Missing either arm silently drops a concurrent writer's delta: this is
+   what RR-20's fail-then-repair scenario (two claim-affecting bookends with
+   no synchronizing sleep) exercises for real, and is the root cause the
+   debug session for this slice traced before landing this function."
+  [result]
+  (or (boolean (:ontology/refused result))
+      (= ::anom/conflict (::anom/category result))))
+
+(defn- record-claim-deltas-with-retry!
+  "RR-20: dispatch `(build-deltas fresh-claims)` against `class-id`'s CURRENT
+   claim set, retrying on either race `claim-delta-write-lost-the-race?`
+   names by re-reading fresh claims + version and rebuilding the deltas from
+   scratch.
+
+   ROOT CAUSE this fixes: `record-claim-deltas` refuses/loses rather than
+   silently races a stale version (CC-4's `RefuseStaleClaimDeltas`), and
+   neither this writer nor its one prior precedent (the consolidator's
+   `record-claim-deltas!`) previously retried on either failure mode — every
+   earlier CV-2/CC-6 test avoided the race only by sleeping between
+   successive emits. RR-20's own propagated test does not: a fail-then-
+   repair within one turn fires two claim-affecting bookends back-to-back
+   with no synchronizing sleep, which is a real shape (a researcher can
+   emit a failing tree and its repair in the same turn), so
+   `WorkedPatternsAreProvenNotMerelyRecent` must hold under that
+   concurrency, not merely when a test fixture happens to serialize it.
+
+   `build-deltas` returns a vector (possibly empty, in which case this is a
+   true no-op — no command dispatched) so both this writer's single shape
+   delta and the occurrence-corroboration writer's batch of reinforcement
+   deltas share one retry path."
+  [context class-id build-deltas]
+  (loop [attempt 0]
+    (let [claims (rm/get-claims context :tree-class class-id)
+          version (rm/get-claim-set-version context :tree-class class-id)
+          deltas (build-deltas claims)]
+      (when (seq deltas)
+        (let [result (run-command! context
+                       {:command/name :ontology/record-claim-deltas
+                        :command/id (random-uuid)
+                        :command/timestamp (time/now)
+                        :granularity :tree-class
+                        :target-identifier class-id
+                        :deltas (vec deltas)
+                        :evidence-event-count 0
+                        :claim-set-version version})]
+          (cond
+            (and (claim-delta-write-lost-the-race? result)
+                 (< attempt claim-delta-retry-attempts))
+            (recur (inc attempt))
+
+            (claim-delta-write-lost-the-race? result)
+            (do (u/log ::claim-delta-retry-exhausted
+                       :class-id class-id
+                       :attempts (inc attempt)
+                       :delta-count (count deltas)
+                       :result result
+                       :note "gave up after the retry budget; this write was LOST — a
+                              concurrent writer kept winning the claim-set-version CAS
+                              on every attempt")
+                result)
+
+            :else result))))))
+
+(defn- emitted-tree-source-text
+  "RR-20 (OfferedPatternsAreUsable): the EXACT text to offer, preferring
+   RR-6's `:generated-tree-source` (the re-emission authority — real
+   production bookends always carry it alongside `:generated-tree`, per
+   `rlm-tree-executor`'s `execute-tree`) and falling back to `(pr-str
+   generated-tree)` only for a bookend that predates that field entirely
+   (replay of pre-RR-6 events). Never prefers `pr-str` when the exact source
+   is available — that was the defect this slice's `a-pattern-is-offered-
+   as-its-exact-recorded-source` test names."
+  [{:keys [generated-tree generated-tree-source]}]
+  (or generated-tree-source (some-> generated-tree pr-str)))
+
 (defn enrich-tree-class-with-emitted-dsl!
-  "CV-2: on a completion event carrying :generated-tree + :source-sheet-id,
-   resolve the tree-class for the source sheet and record ONE claim operation
-   carrying the emitted worked-DSL as the claim's `:recommendation` — which
-   CC-3's assembly surfaces as the `:strengths[].:recommended-pattern` EL-4
-   harvest reads. CC-6: no whole-body write; the projection's assembly is the
-   only writer of a tree-class body.
+  "CV-2/RR-20: on a completion event carrying :generated-tree +
+   :source-sheet-id + :source-tick-id + :status + :tree-fingerprint, resolve
+   the tree-class for the OCCURRENCE (not the bare sheet — see
+   `get-tree-class-for-occurrence`) and record ONE claim operation for the
+   emitted tree's SHAPE, into the section its outcome earns: `:status
+   :success` -> `:strength` (a worked pattern harvest may offer);
+   `:failure`/`:timeout`/`:partial` -> `:weakness` (a failed shape, recorded
+   with its exact source as evidence, never offered as a pattern). CC-3's
+   assembly surfaces a `:strength` shape as `:strengths[].:recommended-pattern`
+   — the content EL-4 harvest reads. CC-6: no whole-body write; the
+   projection's assembly is the only writer of a tree-class body.
 
    No-ops (never crashes) when:
      - the event carries no emitted tree / source sheet (timeout / legacy),
-     - the source sheet was never classified (no class to enrich),
+     - the event carries no :status (pre-C-2a-2 replay) — RR-20: recording
+       a shape's outcome-section requires knowing the outcome,
+     - the event carries no :tree-fingerprint — a shape claim's identity IS
+       the fingerprint; without one there is nothing to key it on,
+     - the occurrence [source-sheet-id source-tick-id] was never classified
+       (no class to enrich),
      - THE TARGET STILL HOLDS ONLY A LEGACY BODY. That last one is not
        defensive tidying. CC-3 re-derives `:current` from the claim set on
        every claim event, so landing one mechanical claim on a class whose
@@ -354,9 +560,13 @@
        this writer's to do, and doing it here would put a third writer on the
        slot the whole slice exists to reduce to one."
   [{:keys [event] :as context}]
-  (let [{:keys [generated-tree source-sheet-id]} event]
-    (when (and (some? generated-tree) (some? source-sheet-id))
-      (when-let [class-id (rm/get-tree-class-for-sheet context source-sheet-id)]
+  (let [{:keys [generated-tree source-sheet-id source-tick-id
+                status tree-fingerprint]} event
+        source-text (emitted-tree-source-text event)]
+    (when (and (some? generated-tree) (some? source-sheet-id) (some? status)
+               (some? tree-fingerprint) (some? source-text))
+      (when-let [class-id (rm/get-tree-class-for-occurrence
+                            context source-sheet-id source-tick-id)]
         (let [claims (rm/get-claims context :tree-class class-id)
               legacy-only? (and (some? (rm/get-description context :tree-class class-id))
                                 (empty? claims))]
@@ -364,30 +574,123 @@
             (u/log ::enrichment-skipped-legacy-body
                    :class-id class-id
                    :note "target still holds a pre-claim body; CC-5/CC-12 convert it")
-            (let [delta (emitted-pattern-delta (emitted-pattern-claim claims)
-                                               (pr-str generated-tree))]
+            (let [kind (if (= :success status) :strength :weakness)
+                  trait (if (= :success status)
+                          (worked-pattern-trait tree-fingerprint)
+                          (failed-shape-trait tree-fingerprint))]
               (u/log ::enriching-tree-class-with-emitted-dsl
                      :class-id class-id :source-sheet-id source-sheet-id
-                     :operation (:operation delta))
-              (run-command! context
-                {:command/name :ontology/record-claim-deltas
-                 :command/id (random-uuid)
-                 :command/timestamp (time/now)
-                 :granularity :tree-class
-                 :target-identifier class-id
-                 :deltas [delta]
-                 :evidence-event-count 0
-                 :claim-set-version (rm/get-claim-set-version
-                                      context :tree-class class-id)}))))))))
+                     :status status :tree-fingerprint tree-fingerprint)
+              (record-claim-deltas-with-retry!
+               context class-id
+               (fn [fresh-claims]
+                 [(shape-delta (shape-claim fresh-claims kind trait)
+                               kind trait source-text
+                               :emitted-artifact-outcome)])))))))))
 
 (defprocessor :ontology on-emit-enrich-tree-class
   {:topics #{:sheet/rlm-tree-execution-completed}}
-  "CV-2: after an RLM emits its tree, record the emitted worked-DSL as the
-   assigned tree-class's :recommended-pattern (additive over CV-1's floor).
-   Separate processor from the threshold-check above so each concern stays
-   independent; both subscribe to the same bookend topic."
+  "CV-2/RR-20: after an RLM emits its tree, record the emitted worked-DSL as
+   a shape claim in the section its outcome earns (additive over CV-1's
+   floor). Separate processor from the threshold-check above so each concern
+   stays independent; both subscribe to the same bookend topic."
   [context]
   (enrich-tree-class-with-emitted-dsl! context))
+
+(defn- success-bookend-fingerprints
+  "RR-20 + RR-23: distinct :tree-fingerprint values among :success Phase-2
+   bookends whose [:source-sheet-id :source-tick-id] matches this
+   occurrence.
+
+   RR-23: the bookend is now ALSO tagged `[:source-tick source-tick-id]` at
+   its emit site (`orc-service/core/commands.clj`'s
+   `record-rlm-tree-execution-completion`) — this occurrence's tick IS a
+   tag to join on, so the read is scoped by it instead of a type-wide scan
+   of every bookend for the tenant. `:source-sheet-id` stays a defensive
+   filter (tag narrows, filter decides). Legacy replay: a bookend written
+   before this slice carries no `:source-tick` tag and is invisible to this
+   scoped read; the sole caller (`corroborate-worked-patterns-from-
+   occurrence!`, fired live off a just-recorded occurrence) never needs a
+   pre-slice bookend, so no opt-in fallback is wired here — a genuine
+   legacy-replay need would be a new, explicit caller decision.
+
+   `(into [] ...)` BEFORE `filter`/`map`: `event-store/read` returns a
+   REDUCIBLE (Grain v3's in-memory store), not a seq — `filter`/`map` calling
+   `seq` on it directly throws `IllegalArgumentException: Don't know how to
+   create ISeq from: ...in_memory$read_single$reify...`. Every other reader
+   in this codebase (harvest.clj's `class-occurrence-pairs`,
+   `distinct-tree-shapes`, `occurrence-scores`; this file's
+   `completion-classification`) already does this; this function's omission
+   was the reproduced FINDING 1 defect — the exception is thrown on the
+   todo-processor's own thread, which swallows it silently, so
+   `corroborate-worked-patterns-from-occurrence!` never reinforced anything
+   in a real processor-full context despite every unit-level check on its
+   pure helpers passing."
+  [{:keys [event-store tenant-id]} source-sheet-id source-tick-id]
+  (->> (into [] (event-store/read event-store
+                                  {:tenant-id tenant-id
+                                   :types #{:sheet/rlm-tree-execution-completed}
+                                   :tags #{[:source-tick source-tick-id]}}))
+       (filter #(and (= source-sheet-id (:source-sheet-id %))
+                     (= source-tick-id (:source-tick-id %))
+                     (= :success (:status %))
+                     (some? (:tree-fingerprint %))))
+       (map :tree-fingerprint)
+       distinct))
+
+(defn corroborate-worked-patterns-from-occurrence!
+  "RR-20 (exact behavioral change 4 — the selector's preference): when a
+   campaign's DURABLE verdict (RR-19's :ontology/tree-class-occurrence-recorded)
+   is :success, REINFORCE (never create) the matching shape claim(s) — one
+   :support delta per distinct :success-bookend fingerprint attributed to this
+   occurrence.
+
+   This is what makes 'prefer success-backed shapes corroborated by verdict
+   occurrences over bare emitted artefacts' concrete WITHOUT touching
+   `harvest/best-recommended-pattern`'s signature or adding a field to the
+   assembled strength entry: a shape corroborated by BOTH its own bookend AND
+   the campaign's terminal verdict accumulates strictly more earned support
+   (hence higher `:confidence`) than a bookend-only shape, so the selector's
+   existing confidence-ranked sort already prefers it. `harvest-body` stays
+   exactly `[desc occurrences]`, as the propagated RR-20 contract fixes it.
+
+   Never creates a claim — `on-emit-enrich-tree-class` (the bookend processor)
+   is the sole creator of a shape claim. If this fires before that write has
+   landed (a genuine race: the campaign's terminal completion could in
+   principle be observed before its own Phase-2 bookend's claim-delta command
+   completes), `shape-claim` finds nothing and this no-ops rather than racing
+   a duplicate `:add`. `:failure`/`:timeout` verdicts reinforce nothing here —
+   the failed-shape claim already carries the evidence the bookend that
+   created it declared; RR-20's contract asks only that success be
+   preferred, not that failure be doubly penalized."
+  [{:keys [event] :as context}]
+  (let [{:keys [verdict assigned-tree-id source-sheet-id source-tick-id]} event]
+    (when (= :success verdict)
+      (let [fingerprints (success-bookend-fingerprints
+                          context source-sheet-id source-tick-id)]
+        (when (seq fingerprints)
+          (u/log ::corroborating-worked-patterns-from-occurrence
+                 :class-id assigned-tree-id :fingerprint-count (count fingerprints))
+          (record-claim-deltas-with-retry!
+           context assigned-tree-id
+           (fn [fresh-claims]
+             (keep (fn [fingerprint]
+                     (let [trait (worked-pattern-trait fingerprint)]
+                       (when-let [existing (shape-claim fresh-claims :strength trait)]
+                         (shape-delta existing :strength trait
+                                      (:recommendation existing)
+                                      :campaign-verdict))))
+                   fingerprints))))))))
+
+(defprocessor :ontology on-campaign-success-corroborate-worked-pattern
+  {:topics #{:ontology/tree-class-occurrence-recorded}}
+  "RR-20: reinforce a shape's worked-pattern claim when the campaign's
+   durable (RR-19) verdict corroborates it — see
+   `corroborate-worked-patterns-from-occurrence!`. Separate processor,
+   separate topic (the campaign's terminal verdict, not the Phase-2 bookend)
+   from `on-emit-enrich-tree-class` above."
+  [context]
+  (corroborate-worked-patterns-from-occurrence! context))
 
 ;; =============================================================================
 ;; C-2b-1 — Re-index processor
@@ -701,9 +1004,30 @@
    that's fine — the index rebuild this processor dispatches sets
    :index-built? true and resets events-since-last-rebuild to 0, so the
    threshold-gated processor's call on the same event is a no-op (the
-   newly-rebuilt corpus already includes the mint)."
-  [context]
-  (force-rebuild! context))
+   newly-rebuilt corpus already includes the mint).
+
+   RR-24: grain's todo-processor-v2 checkpoints a pure-result handler
+   (like this one) AFTER its body runs — the already-checkpointed?
+   replay guard only exists on the :result/effect + :result/checkpoint
+   :after path, which this handler doesn't use. Without a guard of our
+   own, an at-least-once redelivery of the SAME triggering event (a
+   pubsub/catch-up race, or a crash after force-rebuild! ran but before
+   the processor's checkpoint landed) would re-pay the full ColBERT
+   rebuild. Dispatch a durable, event-store-backed CAS marker keyed on
+   the triggering event's id FIRST; only call force-rebuild! when that
+   dispatch is NOT a conflict. A process-local atom would not survive a
+   crash/restart or be shared across nodes, so the marker is a real
+   durable event, not in-memory state."
+  [{:keys [event] :as context}]
+  (let [minted-event-id (:event/id event)
+        mark-result (run-command! context
+                      {:command/id (random-uuid)
+                       :command/timestamp (time/now)
+                       :command/name :ontology/mark-mint-reindex-forced
+                       :minted-event-id minted-event-id})]
+    (if (= :cognitect.anomalies/conflict (:cognitect.anomalies/category mark-result))
+      (u/log ::mint-reindex-already-forced :minted-event-id minted-event-id)
+      (force-rebuild! context))))
 
 ;; =============================================================================
 ;; C-2d-1 — tree-class hierarchy projection processor

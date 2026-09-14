@@ -162,6 +162,7 @@
   [name opts context]
   (let [{:keys [instruction writes model reads]} opts
         {:keys [provider blackboard sandbox-vars usage-tracker reserve-llm-call!
+                reserve-provider-call!
                 durable-source-required? tick-id node-id researcher-iteration
                 generated-code-hash researcher-ownership-epoch
                 effect-attempt-ordinal claim-researcher-effect!
@@ -227,13 +228,6 @@
     (u/trace ::rlm-llm-primitive
       {:name name :writes writes :model model}
       (try
-        (when-let [exceeded (and (nil? completed-effect)
-                                 reserve-llm-call!
-                                 (reserve-llm-call!))]
-          (throw (ex-info
-                  (str "LLM call budget exceeded: "
-                       (:current exceeded) "/" (:budget exceeded))
-                  exceeded)))
         (when (and logical-action-identity (nil? completed-effect))
           (let [claim-result
                 (claim-researcher-effect!
@@ -247,6 +241,19 @@
                               {:claim-result claim-result
                                :logical-action-identity logical-action-identity
                                :attempt-identity attempt-identity})))))
+        (when-let [rejected
+                   (and (nil? completed-effect)
+                        (if reserve-provider-call!
+                          (reserve-provider-call!
+                           {:iteration-index researcher-iteration
+                            :logical-action-identity logical-action-identity
+                            :provider-attempt-ordinal effect-attempt-ordinal})
+                          (and reserve-llm-call! (reserve-llm-call!))))]
+          (throw (ex-info
+                  (or (:cognitect.anomalies/message rejected)
+                      (str "LLM call budget exceeded: "
+                           (:current rejected) "/" (:budget rejected)))
+                  rejected)))
         ;; :with-metadata? true ensures llm returns {:outputs ... :usage ...} instead of just outputs
         (let [result (if completed-effect
                        (:result completed-effect)
@@ -382,6 +389,7 @@
            call-tool-fn mcp-tools browser-tools sandbox-vars usage-tracker
            recursive? event-store tenant-id cache
            sheet-id tick-id command-registry reserve-llm-call!
+           reserve-provider-call!
            durable-source-required? node-id researcher-iteration
            generated-code-hash researcher-ownership-epoch
            effect-attempt-ordinal claim-researcher-effect!
@@ -411,6 +419,7 @@
                       :parent-trace-id parent-trace-id
                       :usage-tracker usage-tracker
                       :reserve-llm-call! reserve-llm-call!
+                      :reserve-provider-call! reserve-provider-call!
                       :durable-source-required? durable-source-required?
                       :tick-id tick-id
                       :node-id node-id
@@ -778,7 +787,39 @@
                                  (assoc :logical-action-identity logical-action-identity
                                         :attempt-identity attempt-identity
                                         :researcher-iteration researcher-iteration)
+                                 ;; RR-24: pass the claim's attempt ordinal +
+                                 ;; ownership epoch through onto the mint
+                                 ;; command so the minted event records the
+                                 ;; explicit attempt provenance, not only the
+                                 ;; hashed :attempt-identity. Omit (not
+                                 ;; assoc-nil) when the sandbox wasn't given
+                                 ;; them — the command schema marks both
+                                 ;; :optional for exactly this caller.
+                                 (some? effect-attempt-ordinal)
+                                 (assoc :attempt-ordinal effect-attempt-ordinal)
+                                 (some? researcher-ownership-epoch)
+                                 (assoc :ownership-epoch researcher-ownership-epoch)
                                  parent-as-uuid (assoc :parent-behavior parent-as-uuid)))))
+                mint-conflict?
+                (= :cognitect.anomalies/conflict
+                   (:cognitect.anomalies/category cmd-result))
+                recovered-minted-event
+                (when (and logical-action-identity mint-conflict?)
+                  ((requiring-resolve
+                    'ai.obney.orc.ontology.interface/get-behavior-mint-by-logical-action)
+                   {:event-store event-store
+                    :tenant-id tenant-id}
+                   logical-action-identity))
+                ;; A CAS conflict is successful callee participation only when
+                ;; durable ontology evidence names this exact logical action.
+                ;; Other anomalies and unverifiable conflicts remain failures.
+                minted-event
+                (when-not completed-effect
+                  (or (->> (:command-result/events cmd-result)
+                           (filter #(= :ontology/behavioral-subtree-minted
+                                       (:event/type %)))
+                           first)
+                      recovered-minted-event))
                 ;; QP-1: surface command-processor anomalies. Grain rejects
                 ;; the command (or its emitted events) by returning a
                 ;; cognitect anomaly — :cognitect.anomalies/category +
@@ -788,8 +829,7 @@
                 ;; <anomaly>) is nil and (str nil) is "". Throw so the
                 ;; sandbox surfaces the error on its next iteration.
                 _ (when (and (nil? completed-effect)
-                             (or (:cognitect.anomalies/category cmd-result)
-                                 (nil? (:command-result/events cmd-result))))
+                             (nil? minted-event))
                     (throw (ex-info
                              (str "mint-behavior! command rejected: "
                                   (or (:cognitect.anomalies/message cmd-result)
@@ -799,15 +839,6 @@
                              {:cmd-result cmd-result
                               :mint-name name
                               :mint-body body})))
-                ;; The mint defcommand emits both events; the audit-trail
-                ;; carries the freshly-generated target-id. The event body
-                ;; fields land at the top level of each event map (Grain
-                ;; flattens them), so :target-id is accessed directly.
-                minted-event (when-not completed-effect
-                               (->> (:command-result/events cmd-result)
-                                    (filter #(= :ontology/behavioral-subtree-minted
-                                                (:event/type %)))
-                                    first))
                 target-id (if completed-effect
                             (:result completed-effect)
                             (:target-id minted-event))

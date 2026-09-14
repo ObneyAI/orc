@@ -103,13 +103,15 @@
 (defn- build-trace-data
   "Build the `trace-data` map the evaluation judges expect:
    `{:inputs <host-input-values> :outputs <host-output-values>
-     :instruction <host-instruction>}`.
+     :instruction <host-instruction>
+     :researcher-iterations <ordered-durable-records, when applicable>}`.
 
    `event` is the `:sheet/node-execution-completed` event body. When
    the event lacks :inputs (the recursive RLM terminal-completion
    case), reach back to the matching :sheet/node-execution-started
    event so the LLM judges' rubric prompts render with the original
-   task inputs."
+   task inputs. Researcher iterations are read from their durable projection
+   rather than racing asynchronous execution-trace publication."
   [ctx event]
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
@@ -118,17 +120,22 @@
         direct-inputs (:inputs event)
         reached-inputs (when (empty? direct-inputs)
                          (find-started-inputs ctx sheet-id tick-id node-id))]
-    {:node-id node-id
-     :inputs (or (not-empty direct-inputs) reached-inputs {})
-     ;; The completion event carries only :write-keys — values live in the
-     ;; tick's :sheet/execution-value-written events. Resolve them by
-     ;; (node-id, exec-context) so judges score against what THIS node
-     ;; execution actually produced. An empty map here would silently
-     ;; degrade every grounding score rather than fail loudly.
-     :outputs (orc/value-log-writes-for
-               (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
-               event)
-     :instruction (or (:instruction node) "")}))
+    (cond->
+     {:node-id node-id
+      :inputs (or (not-empty direct-inputs) reached-inputs {})
+      ;; The completion event carries only :write-keys — values live in the
+      ;; tick's :sheet/execution-value-written events. Resolve them by
+      ;; (node-id, exec-context) so judges score against what THIS node
+      ;; execution actually produced. An empty map here would silently
+      ;; degrade every grounding score rather than fail loudly.
+      :outputs (orc/value-log-writes-for
+                (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
+                event)
+      :instruction (or (:instruction node) "")}
+      (= :repl-researcher (:type node))
+      (assoc :researcher-iterations
+             (orc/get-researcher-iteration-records
+              ctx sheet-id tick-id node-id)))))
 
 ;; =============================================================================
 ;; Judge dispatch
@@ -523,9 +530,9 @@
    attach a CUSTOM judge with :applies-to-completion-kinds on their
    own node — the filter only fires when the field is present.
 
-   The intermediate-tick grading use case (where we'd want
-   heuristic-structural to fire on each :rlm/tree-generated emission
-   rather than waiting for the terminal sum-up) is filed as
+   The tree-event grading use case (where we'd want
+   heuristic-structural to fire on the campaign's :rlm/tree-generated
+   event rather than only on the terminal sum-up) is filed as
    Gap-7b — `docs/issues/c2d-followups/Gap-7b-heuristic-structural-
    subscribes-to-rlm-tree-generated.md`. Gap-7b adds a SEPARATE
    processor subscribed to :rlm/tree-generated; it doesn't change
@@ -802,17 +809,17 @@
                           :exception-class (.getName (class t)))))))})))))
 
 ;; =============================================================================
-;; Gap-7b — per-Phase-1-iteration tree-shape grading
+;; Gap-7b — tree-shape grading on the campaign's :rlm/tree-generated event
 ;; =============================================================================
 ;;
-;; Recursive RLM emits :rlm/tree-generated per Phase 1 emit-tree! call.
-;; The terminal :sheet/node-execution-completed only fires ONCE per run
-;; (when the executor's loop terminates via (final!)), so subscribing
-;; tree-shape judges only to that event means we grade just the last
-;; tree the model produced — losing N-1 intermediate tree designs.
+;; :rlm/tree-generated fires ONCE per campaign, at the campaign's terminal
+;; boundary, carrying the LAST tree the model emitted — it is not a
+;; per-emit or per-iteration event. Every intermediate tree's shape is
+;; durable on its own :rlm/researcher-iteration-recorded record (the
+;; emitted-tree fingerprint), which is where per-iteration structure lives.
 ;;
-;; This processor subscribes to :rlm/tree-generated to grade each
-;; intermediate tree as it's emitted. It uses the SAME resolver +
+;; This processor subscribes to :rlm/tree-generated to grade that last
+;; tree's shape once per campaign. It uses the SAME resolver +
 ;; judge dispatch as the terminal processor, but filters to judges
 ;; that grade tree SHAPE (not output content) via tree-shape-judge-
 ;; types. LLM output judges (grounding/reasoning/etc.) don't run here
@@ -955,13 +962,14 @@
 
 (defprocessor :evaluation on-rlm-tree-generated
   {:topics #{:rlm/tree-generated}}
-  "Gap-7b: per-Phase-1-iteration tree-shape grader. Recursive RLM
-   emits :rlm/tree-generated for each intermediate emit-tree! during
-   Phase 1; this processor grades the tree shape for each so the
-   consolidator sees multiple structural signals per run instead of
-   just the terminal sum-up. Only runs tree-shape judges (currently
-   heuristic-structural) — LLM output judges run on the terminal
-   :sheet/node-execution-completed event where final outputs are
-   available."
+  "Gap-7b: tree-shape grader on :rlm/tree-generated. The event fires
+   once per campaign, at the terminal boundary, carrying the last tree
+   the model emitted; this processor grades that tree's shape once, so
+   the consolidator receives one structural signal per campaign
+   alongside the terminal sum-up. Intermediate trees' shapes are
+   durable on their iteration records, not on this event. Only runs
+   tree-shape judges (currently heuristic-structural) — LLM output
+   judges run on the terminal :sheet/node-execution-completed event
+   where final outputs are available."
   [context]
   (on-rlm-tree-generated context))

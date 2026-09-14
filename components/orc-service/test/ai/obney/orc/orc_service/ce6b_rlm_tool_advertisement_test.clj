@@ -111,7 +111,9 @@
 (defn- capture-rlm-call
   "Drive the REAL execute-repl-researcher-rlm one iteration with
    llm/predict redef'd to CAPTURE the (module, inputs) handed to the
-   model, then abort. Returns {:module ... :inputs ...} (or nil)."
+   model, then abort. This direct executor seam has no durable frontier,
+   so it explicitly uses the non-checkpointed compatibility path. Returns
+   {:module ... :inputs ...} (or nil)."
   [node-extra]
   (let [captured (atom nil)
         node (merge {:type :repl-researcher
@@ -120,7 +122,7 @@
                      :reads []
                      :writes [:answer]
                      :max-iterations 1
-                     :rlm {:recursive? true}}
+                     :rlm {:recursive? true :checkpointed? false}}
                     node-extra)]
     (with-redefs [llm/predict (fn [_provider module inputs _opts]
                                    (reset! captured {:module module :inputs inputs})

@@ -123,7 +123,7 @@
       (live/register-openrouter!)
       (h/with-async-test-context
         [ctx {:context {:llm-provider :openrouter :model live/openrouter-model}}]
-        (let [{:keys [sheet-id]} (live/build-recursive-rlm!
+        (let [{:keys [sheet-id node-id]} (live/build-recursive-rlm!
                                   ctx {:name "det-e2e-105-targeted-recovery"
                                        :instruction targeted-recovery-instruction
                                        :writes [:answer :preserved-value]
@@ -136,9 +136,19 @@
               tick-id (:trace-id result)
               events (root-events ctx tick-id)
               child-ids (child-tick-ids events tick-id)
-              iterations (mapcat :iterations
-                                  (filter #(= :rlm/researcher-iterations
-                                              (:event/type %)) events))
+              ;; The Phase-1 code a campaign actually ran lives on its immutable
+              ;; iteration records. A recursive researcher is CHECKPOINTED by
+              ;; default (RR-15), and the terminal :rlm/researcher-iterations
+              ;; aggregate is emitted ONLY for explicit non-checkpointed
+              ;; compatibility — so reading that event alone silently yields no
+              ;; code here and makes the drill-down assertions below vacuous.
+              ;; Read the authoritative records, keeping the legacy aggregate so
+              ;; this journey stays honest in either execution mode.
+              records (rm/get-researcher-iteration-records ctx sheet-id tick-id node-id)
+              legacy-iterations (mapcat :iterations
+                                        (filter #(= :rlm/researcher-iterations
+                                                    (:event/type %)) events))
+              iterations (concat records legacy-iterations)
               iteration-code (str/join "\n" (keep :code iterations))
               child-completions (filter #(and (= :sheet/node-execution-completed
                                                    (:event/type %))

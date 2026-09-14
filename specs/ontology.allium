@@ -298,6 +298,9 @@ contract CustomOntologyMutation {
     create_concept: (ontology: Ontology, definition: ConceptDefinition) -> Concept
     update_concept: (ontology: Ontology, concept: Concept, changes: ConceptChanges) -> Concept
     create_relationship: (source: Concept, target: Concept, predicate: String, metadata: RelationshipMetadata) -> ConceptRelationship
+    -- Declared because BehavioralMintIdentityIsStable below constrains it: the
+    -- contract could not previously name the operation its own invariant governs.
+    mint_behavioral_subtree: (parent: Concept, name: String, body: DescriptionBody) -> Concept
 
     @invariant TenantScopedMutation
         -- Every mutation resolves ontology and concept identity within the
@@ -309,7 +312,10 @@ contract CustomOntologyMutation {
         -- that worked, and a later attempt does not overwrite an earlier proven
         -- one merely by being later. A class that genuinely succeeds with more
         -- than one shape keeps each of them, so what is offered as proven is
-        -- distinguishable from what was merely most recent.
+        -- distinguishable from what was merely most recent. Proof is graded:
+        -- a shape whose campaign reached a durable success verdict is
+        -- preferred over one that was merely emitted and observed to run,
+        -- however many times the latter was emitted.
 
     @invariant OfferedPatternsAreUsable
         -- A pattern offered to a model as proven can actually be used: the code
@@ -383,9 +389,17 @@ enum ClaimOperation { add | support | contradict | edit }
 -- authored: designer-written corpus knowledge. Authorship is a first-class
 -- basis rather than a fabricated support count, so provenance stays honest
 -- while curated guards keep the strength they were proven at.
+-- emitted_artifact_outcome: a verbatim artifact the engine produced, recorded
+-- together with the outcome the campaign that produced it actually reached. It
+-- is distinct from emitted_artifact, which records only that the artifact was
+-- produced and observed to run.
+-- campaign_verdict: the delta rests on a campaign's durable terminal verdict.
+-- This is the strongest artifact basis: what is offered as proven is something
+-- a campaign SUCCEEDED with, not merely something that was emitted often.
 enum EvidenceBasis {
     judged_occurrences | legacy_corpus | classification_signature
-    | emitted_artifact | authored
+    | emitted_artifact | emitted_artifact_outcome | campaign_verdict
+    | authored
 }
 
 -- Why a proposed delta was refused before it could become a claim. The guard
@@ -584,6 +598,13 @@ entity Claim {
     -- Support is earned: seeded on creation, incremented by support/edit,
     -- decremented by contradict. A claim is removed only at zero.
     support: Integer
+    -- How many distinct campaign verdicts have corroborated this exact claim.
+    -- Support alone cannot express this: an artifact emitted many times
+    -- accrues support without any campaign ever having SUCCEEDED with it. This
+    -- is the graded half of WorkedPatternsAreProvenNotMerelyRecent, and it is
+    -- what ranks a corroborated shape above a merely emitted one. Absent is
+    -- zero, so a claim no verdict has corroborated carries no such count.
+    verdict_corroborations: Integer?
     status: ClaimStatus
     -- Occurrence identity, not event identity: the [source_sheet, source_tick]
     -- pair that identifies one turn. This is what lets a claim be re-pooled if
@@ -939,6 +960,14 @@ rule ReinforceClaim {
     ensures: claim.support = claim.support + 1
     ensures: claim.supporting_episodes = claim.supporting_episodes + delta.episodes
     ensures: claim.updated_at = now
+    -- Corroboration is counted only when THIS delta rests on a campaign's
+    -- durable verdict. An ordinary re-emit of the same artifact earns support
+    -- like any other observation, but it is not a campaign having succeeded,
+    -- so it must not raise the graded half of
+    -- WorkedPatternsAreProvenNotMerelyRecent.
+    ensures:
+        if delta.evidence_basis = campaign_verdict:
+            claim.verdict_corroborations = claim.verdict_corroborations + 1
     -- An edit additionally rewords the claim and may migrate its kind, keeping
     -- the support it earned. Guards and advice are refreshed only when the
     -- delta supplies them: a silent edit must not erase what an earlier one
@@ -1057,7 +1086,9 @@ rule AssembleDescriptionFromClaims {
 -- and nothing about the behavior, so it never advances recurrence; the record
 -- of what it tried remains available for describing the class, but moves no
 -- gate. Failure is not cancellation or abandonment: a campaign that failed has
--- produced a verdict and counts.
+-- produced a verdict and counts. A campaign has exactly one verdict: the first
+-- terminal completion of its node, blocked included, settles it, so a later
+-- completion delivered for the same node is a stray fact and never a verdict.
 rule DescribeRecurringClass {
     when: TreeClassOccurrenceRecorded(tree_class, occurrences)
     requires: occurrences >= description_recurrence_threshold

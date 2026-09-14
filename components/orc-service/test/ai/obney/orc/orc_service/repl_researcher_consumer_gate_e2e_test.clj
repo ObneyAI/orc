@@ -492,6 +492,9 @@
                 :rlm {:recursive? true}
                 :max-iterations 3))
             sheet-id (sheet/build-workflow! ctx definition)
+            researcher-id
+            (:id (first (filter #(= :repl-researcher (:type %))
+                                (sheet/get-nodes-for-sheet ctx sheet-id))))
             calls (atom [])]
         (with-redefs [llm/predict
                       (fn [_ _ inputs _]
@@ -504,10 +507,9 @@
           (let [result (sheet/execute ctx sheet-id {:question "research"}
                                       :timeout-ms 30000)
                 tick-id (:trace-id result)
-                iteration-event (some #(when (and (= :rlm/researcher-iterations
-                                                       (:event/type %))
-                                                    (= tick-id (:execution-id %))) %)
-                                      (events ctx))
+                iteration-records
+                (rm/get-researcher-iteration-records
+                 ctx sheet-id tick-id researcher-id)
                 replayed-tick (get (reduce rm/ticks* {} (events ctx)) tick-id)
                 tick-blackboard (rm/get-tick-blackboard ctx tick-id)
                 replayed-values (value-log/resolve-values
@@ -518,7 +520,8 @@
             (is (str/includes? (str (:history (second @calls)))
                                "LLM did not generate code"))
             (is (= "LLM did not generate code"
-                   (get-in iteration-event [:iterations 0 :error])))
+                   (get-in iteration-records [0 :error-excerpt]))
+                (pr-str iteration-records))
             (is (= {:prompt-tokens 5 :completion-tokens 3 :total-tokens 8}
                    (select-keys (:usage result)
                                 [:prompt-tokens :completion-tokens :total-tokens])))

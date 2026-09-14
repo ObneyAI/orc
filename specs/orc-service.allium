@@ -63,10 +63,14 @@ value ProviderFailureEvidence {
     model: String?
     response_identifier: String?
     finish_reason: String?
-    tool_call_present: Boolean
+    -- Optional because a transport failure never receives a response at all:
+    -- whether a tool call was present, or output truncated, is then genuinely
+    -- unknowable rather than false. Recording "unknown" as false would be the
+    -- one thing this evidence must never do.
+    tool_call_present: Boolean?
     tool_call_name: String?
     usage: Usage?
-    output_truncated: Boolean
+    output_truncated: Boolean?
 }
 
 value StreamEnvelope {
@@ -254,7 +258,7 @@ contract ExecutionEventStream {
         -- the newest observable envelope.
 
     @invariant DurableRecovery
-        -- Every durable fact represented by the ephemeral stream remains
+        -- Every durable fact represented by the live stream remains
         -- recoverable from the execution record and its lineage.
 }
 
@@ -486,6 +490,24 @@ contract CheckpointedResearcherExecution {
         -- it. Exactly-once provider execution is not claimed, because it cannot
         -- be obtained without the provider's participation.
 
+    @invariant LiveOwnershipLossDrainsCheckpointedWork
+        -- When the live owner of a checkpointed campaign loses ownership, or
+        -- continuing ownership cannot be established, that owner stops its
+        -- in-flight quantum cooperatively. Lease loss alone publishes no local
+        -- terminal verdict: completed iteration records and effect evidence stay
+        -- inspectable, while the incomplete durable frontier remains available
+        -- for automatic recovery under a newer ownership epoch. Standalone
+        -- execution without a live ownership source remains compatible, and
+        -- non-checkpointed researchers do not acquire this drain behavior.
+
+    @invariant CooperativeDrainDoesNotGrantExclusivity
+        -- Draining an old owner reduces overlap but does not prove that its work
+        -- stopped. A paused or non-cooperative old worker may continue after a
+        -- newer owner recovers; every checkpoint, effect outcome and terminal
+        -- result is therefore still accepted only under the current durable
+        -- ownership epoch. Releasing a stale result adds no durable fact and
+        -- cannot change the newer owner's campaign account.
+
     @invariant IndeterminateEffectsAreResolvedByCalleeParticipation
         -- An effect that was claimed but has no recorded outcome is resolved
         -- according to who owns the effect. A generated child is rejoined by its
@@ -520,11 +542,14 @@ contract CheckpointedResearcherExecution {
         -- without duplicating the child trace itself.
 
     @invariant OneAccountOfACampaign
-        -- What an observer watches while a campaign runs and what the system
-        -- reads back afterwards are the same account. Live observation is
-        -- derived from the durable iteration record, so it survives restart and
-        -- cannot drift from it. Progress finer than one iteration may be offered
-        -- as a preview that nothing is entitled to rely on.
+        -- For checkpointed campaigns, what an observer watches while a campaign
+        -- runs and what the system reads back afterwards are the same account.
+        -- Live observation is derived from the durable iteration record, so it
+        -- survives restart and cannot drift from it. Progress finer than one
+        -- iteration may be offered as a preview that nothing is entitled to rely
+        -- on. An explicitly non-checkpointed campaign has no per-attempt record
+        -- and retains its terminal aggregate solely as legacy compatibility
+        -- until that opt-out contract is migrated separately.
 
     @invariant CampaignEvidenceIsRetainedByKind
         -- Superseded resume state may be discarded once a later epoch has
@@ -569,7 +594,9 @@ enum CampaignStatus {
     abandoned
 }
 
-enum CampaignIterationStatus { running | success | failure | timeout }
+enum CampaignIterationStatus { running | success | failure | timeout | blocked }
+
+enum CampaignResumeFactKind { full_snapshot | sandbox_delta }
 
 enum EffectKind { provider | tool | generated_child | behavior_mint }
 
@@ -658,6 +685,7 @@ entity WorkflowExecution {
     node_executions: NodeExecution with execution = this
     values: ExecutionValue with execution = this
     child_executions: WorkflowExecution with parent = this
+    provider_call_reservations: ProviderCallReservation with budget_execution = this
 }
 
 entity NodeExecution {
@@ -712,11 +740,12 @@ entity Campaign {
     node_execution: NodeExecution
     ownership_epoch: Integer
     next_iteration_index: Integer
+    sandbox_snapshot_interval: Integer
     status: CampaignStatus
     started_at: Timestamp
     deadline: Timestamp
     completed_at: Timestamp?
-    terminal_reason: String?
+    terminal_reason: Any?
 
     transitions status {
         running -> yielded
@@ -733,6 +762,7 @@ entity Campaign {
     }
 
     iterations: CampaignIteration with campaign = this
+    resume_facts: CampaignResumeFact with campaign = this
     claims: EffectClaim with campaign = this
 }
 
@@ -748,13 +778,33 @@ entity CampaignIteration {
     emitted_tree_recorded: Boolean
     emitted_shape: String?
     error: String?
+    block_reason: Any when status = blocked
 
     transitions status {
         running -> success
         running -> failure
         running -> timeout
-        terminal: success, failure, timeout
+        running -> blocked
+        terminal: success, failure, timeout, blocked
     }
+}
+
+-- Resume facts are the durable encoding of the campaign's supersedable
+-- continuation state. Non-sandbox continuation fields remain complete in each
+-- fact. Only sandbox values alternate between a full snapshot and an exact
+-- value-bearing delta.
+entity CampaignResumeFact {
+    campaign: Campaign
+    revision: Integer
+    next_iteration_index: Integer
+    kind: CampaignResumeFactKind
+    predecessor_revision: Integer? when kind = sandbox_delta
+    predecessor_state_hash: String? when kind = sandbox_delta
+    resulting_state_hash: String
+    sandbox_snapshot: Any? when kind = full_snapshot
+    sandbox_puts: Any? when kind = sandbox_delta
+    sandbox_deletes: Any? when kind = sandbox_delta
+    saved_at: Timestamp
 }
 
 entity EffectClaim {
@@ -774,6 +824,23 @@ entity EffectClaim {
         claimed -> indeterminate
         terminal: completed, indeterminate
     }
+}
+
+-- A provider-call reservation is budget evidence, not an effect-ownership
+-- claim. One logical provider effect may perform multiple physical attempts in
+-- the same ownership epoch; every attempt consumes its own durable reservation.
+-- The reservation remains spent if a crash occurs before an outcome is known.
+entity ProviderCallReservation {
+    budget_execution: WorkflowExecution
+    invoking_execution: WorkflowExecution
+    node_execution: NodeExecution
+    campaign: Campaign
+    iteration: CampaignIteration
+    logical_action_identity: String
+    invocation_identity: String
+    provider_attempt_ordinal: Integer
+    ownership_epoch: Integer
+    reserved_at: Timestamp
 }
 
 entity ExecutionValue {
@@ -989,6 +1056,32 @@ rule NodeFails {
         -- become execution values or blackboard state.
 }
 
+-- A recovered map-each node does not rebuild its pending set from process
+-- memory. Durable child completions are keyed by their complete execution
+-- context, so repeated child node ids and retried deliveries remain distinct.
+rule RecoverMapEachFanOut {
+    when: MapEachExecutionRecovers(
+        map_each_execution,
+        declared_item_execution_contexts
+    )
+    requires: map_each_execution.status = running
+    requires: map_each_execution.node.kind = map_each
+
+    let completed_item_execution_contexts =
+        durable_completed_map_each_execution_contexts(map_each_execution)
+    let pending_item_execution_contexts =
+        declared_item_execution_contexts - completed_item_execution_contexts
+
+    ensures: RejoinCompletedMapEachItems(
+        map_each_execution,
+        completed_item_execution_contexts
+    )
+    ensures: DispatchPendingMapEachItems(
+        map_each_execution,
+        pending_item_execution_contexts
+    )
+}
+
 rule NodePartiallySucceeds {
     when: MapEachPartiallyCompletes(node_execution, aligned_outputs, failure_details)
     requires: node_execution.status = running
@@ -1174,6 +1267,64 @@ rule CampaignYieldsQuantum {
     ensures: campaign.next_iteration_index = next_iteration_index
 }
 
+rule CampaignSavesInitialSandboxSnapshot {
+    when: CampaignResumeStatePersists(campaign, revision, next_iteration_index, sandbox_state)
+    requires: campaign.status = running
+    requires: campaign.sandbox_snapshot_interval > 0
+    requires: not exists CampaignResumeFact{campaign: campaign}
+
+    ensures: CampaignResumeFact.created(
+        campaign: campaign,
+        revision: revision,
+        next_iteration_index: next_iteration_index,
+        kind: full_snapshot,
+        resulting_state_hash: canonical_hash(sandbox_state),
+        sandbox_snapshot: sandbox_state,
+        saved_at: now
+    )
+}
+
+rule CampaignSavesPeriodicSandboxSnapshot {
+    when: CampaignResumeStatePersists(campaign, revision, next_iteration_index, sandbox_state)
+    requires: campaign.status = running
+    requires: exists CampaignResumeFact{campaign: campaign, revision: revision - 1}
+    requires: snapshot_due(revision, campaign.sandbox_snapshot_interval)
+
+    ensures: CampaignResumeFact.created(
+        campaign: campaign,
+        revision: revision,
+        next_iteration_index: next_iteration_index,
+        kind: full_snapshot,
+        resulting_state_hash: canonical_hash(sandbox_state),
+        sandbox_snapshot: sandbox_state,
+        saved_at: now
+    )
+}
+
+rule CampaignSavesSandboxDelta {
+    when: CampaignResumeStatePersists(campaign, revision, next_iteration_index, sandbox_state)
+    requires: campaign.status = running
+    let predecessor = CampaignResumeFact{
+        campaign: campaign,
+        revision: revision - 1
+    }
+    requires: exists predecessor
+    requires: not snapshot_due(revision, campaign.sandbox_snapshot_interval)
+
+    ensures: CampaignResumeFact.created(
+        campaign: campaign,
+        revision: revision,
+        next_iteration_index: next_iteration_index,
+        kind: sandbox_delta,
+        predecessor_revision: predecessor.revision,
+        predecessor_state_hash: predecessor.resulting_state_hash,
+        resulting_state_hash: canonical_hash(sandbox_state),
+        sandbox_puts: sandbox_puts_since(predecessor, sandbox_state),
+        sandbox_deletes: sandbox_deletes_since(predecessor, sandbox_state),
+        saved_at: now
+    )
+}
+
 -- Resuming claims the frontier under an epoch at least as new as the one the
 -- campaign last recorded. A worker holding a superseded epoch cannot resume.
 rule CampaignResumesAtFrontier {
@@ -1266,6 +1417,15 @@ rule CampaignIterationTimesOut {
     ensures: iteration.completed_at = now
 }
 
+rule CampaignIterationBlocks {
+    when: IterationChildBlocks(iteration, reason)
+    requires: iteration.status = running
+
+    ensures: iteration.status = blocked
+    ensures: iteration.completed_at = now
+    ensures: iteration.block_reason = reason
+}
+
 -- The claim precedes the effect. Nothing external happens until this record
 -- exists, so an effect that fired always has a claim naming the epoch that
 -- authorised it.
@@ -1318,6 +1478,59 @@ rule ClaimedEffectBecomesIndeterminate {
     ensures: claim.resolved_at = now
 }
 
+-- Capacity is durably consumed before an actual provider attempt is
+-- authorised. The budget root covers its whole execution trace family, so
+-- provider retries and calls made by descendant generated trees compete for
+-- the same finite set of reservations.
+rule ProviderCallIsReservedBeforeInvocation {
+    when: ProviderInvocationRequested(
+        budget_execution,
+        invoking_execution,
+        node_execution,
+        campaign,
+        iteration,
+        logical_action_identity,
+        invocation_identity,
+        provider_attempt_ordinal,
+        ownership_epoch
+    )
+    requires: budget_execution.options.llm_call_budget != null
+    requires: invoking_execution = budget_execution
+              or execution_is_descendant_of(invoking_execution, budget_execution)
+    requires: node_execution.execution = invoking_execution
+    requires: campaign.node_execution.execution = budget_execution
+              or execution_is_descendant_of(
+                  campaign.node_execution.execution,
+                  budget_execution
+              )
+    requires: iteration.campaign = campaign
+    requires: provider_attempt_ordinal >= 0
+    requires: ownership_epoch = campaign.ownership_epoch
+    requires: not exists ProviderCallReservation{
+        invocation_identity: invocation_identity
+    }
+    requires: provider_call_reservation_count(budget_execution)
+              < budget_execution.options.llm_call_budget
+
+    ensures:
+        let reservation = ProviderCallReservation.created(
+            budget_execution: budget_execution,
+            invoking_execution: invoking_execution,
+            node_execution: node_execution,
+            campaign: campaign,
+            iteration: iteration,
+            logical_action_identity: logical_action_identity,
+            invocation_identity: invocation_identity,
+            provider_attempt_ordinal: provider_attempt_ordinal,
+            ownership_epoch: ownership_epoch,
+            reserved_at: now
+        )
+        InvokeProvider(
+            node_execution: node_execution,
+            reservation: reservation
+        )
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
@@ -1348,6 +1561,34 @@ invariant ExecutionValuesBelongToWorkflow {
 invariant CorrelationIdentifiersAreUUIDs {
     for execution in WorkflowExecutions:
         is_uuid(execution.correlation_identifier)
+}
+
+invariant RecoveredMapEachItemsAreRejoinedOnceByExecutionContext {
+    for execution in NodeExecutions:
+        execution.node.kind = map_each implies
+            rejoined_map_each_execution_contexts(execution)
+            = durable_completed_map_each_execution_contexts(execution).unique
+}
+
+invariant RecoveredMapEachDispatchesOnlyPendingExecutionContexts {
+    for execution in NodeExecutions:
+        execution.node.kind = map_each implies
+            recovery_dispatched_map_each_execution_contexts(execution)
+            = declared_map_each_execution_contexts(execution)
+              - durable_completed_map_each_execution_contexts(execution).unique
+}
+
+invariant RecoveredMapEachOutcomeMatchesDurableItemEvidence {
+    for execution in NodeExecutions:
+        execution.node.kind = map_each implies
+            recovered_map_each_status(execution)
+            = classify_durable_map_each_status(execution)
+            and recovered_map_each_failure_indices(execution)
+                = durable_map_each_failure_indices(execution)
+            and recovered_map_each_failure_reasons(execution)
+                = durable_map_each_failure_reasons(execution)
+            and recovered_map_each_outputs(execution)
+                = durable_map_each_outputs(execution)
 }
 
 invariant DelegateBudgetsArePositiveAndBounded {
@@ -1410,6 +1651,49 @@ invariant ClaimsBelongToTheirIterationsCampaign {
         claim.iteration.campaign = claim.campaign
 }
 
+invariant ProviderCallReservationIdentitiesAreUnique {
+    for a in ProviderCallReservations:
+        for b in ProviderCallReservations:
+            a != b implies a.invocation_identity != b.invocation_identity
+}
+
+invariant ProviderCallReservationsBelongToTheirTraceFamily {
+    for reservation in ProviderCallReservations:
+        reservation.invoking_execution = reservation.budget_execution
+        or execution_is_descendant_of(
+            reservation.invoking_execution,
+            reservation.budget_execution
+        )
+}
+
+invariant ProviderCallReservationsBelongToTheirNodeExecution {
+    for reservation in ProviderCallReservations:
+        reservation.node_execution.execution = reservation.invoking_execution
+}
+
+invariant ProviderCallReservationAttemptsAreNonNegative {
+    for reservation in ProviderCallReservations:
+        reservation.provider_attempt_ordinal >= 0
+}
+
+invariant CampaignProviderCallReservationsAreAttributable {
+    for reservation in ProviderCallReservations:
+        (reservation.campaign.node_execution.execution = reservation.budget_execution
+         or execution_is_descendant_of(
+             reservation.campaign.node_execution.execution,
+             reservation.budget_execution
+         ))
+        and reservation.iteration.campaign = reservation.campaign
+        and reservation.ownership_epoch <= reservation.campaign.ownership_epoch
+}
+
+invariant ProviderCallReservationsNeverExceedBudget {
+    for execution in WorkflowExecutions:
+        execution.options.llm_call_budget != null implies
+            provider_call_reservation_count(execution)
+            <= execution.options.llm_call_budget
+}
+
 invariant AbandonedCampaignsRecordNoVerdict {
     for campaign in Campaigns:
         campaign.status = abandoned implies campaign.completed_at = null
@@ -1419,6 +1703,32 @@ invariant SettledCampaignsRecordWhenTheySettled {
     for campaign in Campaigns:
         campaign.status in {success, failure, timeout, blocked, cancelled}
             implies campaign.completed_at != null
+}
+
+invariant SandboxResumeFactsFormOneVerifiedChain {
+    for fact in CampaignResumeFacts:
+        fact.kind = sandbox_delta implies
+            predecessor_resume_revision(fact) = fact.revision - 1
+            and predecessor_resume_state_hash(fact) = fact.predecessor_state_hash
+            and verified_resulting_sandbox_hash(fact) = fact.resulting_state_hash
+}
+
+invariant SandboxResumeReconstructionIsExact {
+    for fact in CampaignResumeFacts:
+        reconstructed_sandbox_at(fact) = complete_sandbox_at_revision(
+            fact.campaign,
+            fact.revision
+        )
+}
+
+invariant SandboxSnapshotCadenceBoundsReplay {
+    for fact in CampaignResumeFacts:
+        replay_delta_count_at(fact) < fact.campaign.sandbox_snapshot_interval
+}
+
+invariant ResumeStateEncodingRemainsReadCompatible {
+    for campaign in Campaigns:
+        supported_legacy_resume_states_hydrate_identically(campaign)
 }
 
 invariant CancelledCampaignsRecordCause {
@@ -1530,7 +1840,16 @@ surface WorkflowExecutionAccess {
         -- An execution's LLM-call budget counts every provider invocation in
         -- its trace family, including recursive researcher iterations, inline
         -- researcher primitives and descendant generated-tree leaves. Once
-        -- exhausted, no branch can make a further provider call.
+        -- exhausted, no branch can make a further provider call. Every physical
+        -- attempt in a checkpointed campaign first consumes a durable
+        -- provider-call reservation against the budget root. Those reservations,
+        -- rather than logical effect claims or a process-local cache, are the
+        -- authoritative count across restart. Reservations are admitted only
+        -- under the campaign's current ownership epoch. A failed durable read or
+        -- reservation append authorises no provider dispatch; it is never treated
+        -- as a zero count. An explicitly opted-out researcher retains the
+        -- non-checkpointed compatibility behavior and does not acquire the
+        -- durable reservation boundary.
 
     @guarantee PartialTimeoutEvidence
         -- A workflow timeout preserves every independently durable node start and

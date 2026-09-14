@@ -245,25 +245,97 @@ All options accepted by the `repl-researcher` node and the `:rlm` config map.
 | Option | Type | Default | Purpose |
 |---|---|---|---|
 | `:recursive?` | bool | `true` | Non-terminal `emit-tree!` — after each Phase-2 tree completes, control returns to Phase 1 for inspection / follow-up / `(final! ...)`. Defaults to `true` — recursive is the default; pass `:recursive? false` to opt out (deprecated escape hatch). See [Recursive mode](#recursive-mode-rlm-recursive-true). |
-| `:checkpointed?` | bool | `false` | Persist completed iterations and resume the same researcher occurrence after a `:running` yield. Checkpoints contain durable sandbox state, history, usage, timing, retry state, and child lineage. Unsupported JVM-local values are rejected unless the runtime registers an explicit checkpoint codec. |
+| `:checkpointed?` | bool | `true` for recursive mode | Recursive researchers persist completed iterations and resume the same researcher occurrence after a `:running` yield by default. Set `:checkpointed? false` to retain the legacy single-invocation path. Terminal mode (`:recursive? false`) remains non-checkpointed when this key is omitted; an explicit `true` still requests checkpointing. Resume facts contain compact continuation state while immutable attempt evidence remains separately durable. Unsupported JVM-local values are rejected unless the runtime registers an explicit checkpoint codec. |
+| `:sandbox-snapshot-interval` | positive integer | `1` | For checkpointed researchers, write a full sandbox snapshot every K durable resume revisions and value-bearing, hash-chained deltas between them. The compatibility default of one keeps every revision as a full snapshot until representative live-campaign calibration selects a nontrivial default. |
 | `:quantum` | map | `{:max-iterations 1}` | Maximum iterations executed before yielding `:running`. Every completed iteration is checkpointed even when a quantum contains more than one iteration. |
-| `:timeouts` | map | — | Independent `:provider-ms`, `:iteration-ms`, `:phase2-ms`, and `:campaign-ms` deadlines. The effective operation deadline is the earliest applicable deadline; the campaign deadline is absolute and survives restart. |
+| `:timeouts` | map | — | Independent `:classification-ms`, `:provider-ms`, `:iteration-ms`, `:phase2-ms`, and `:campaign-ms` deadlines. Classification defaults to the ontology reranker's 15-minute deadline. The effective operation deadline is the earliest applicable classification, operation, campaign, or enclosing-workflow deadline; the campaign deadline is absolute and survives restart. |
 | `:iteration-retry` | map | `{:max-attempts 3}` | Retry a timed-out iteration from its prior durable checkpoint. Exhaustion returns `:timeout`. |
 | `:auto-classify?` | bool | `false` | Before Phase 1 starts, classify the task against the seed corpus and prepend the top-fitting pattern's body (capabilities + worked-example DSL snippets in `:strengths.:recommended-pattern` + observed weaknesses + representative-uses) to the model's instruction. Pairs naturally with `:recursive? true`. See [Pattern injection via R-Inject](#pattern-injection-via-r-inject-auto-classify) below. |
 | `:debug?` | bool | `false` | Verbose `[DEBUG RLM]` / `[DEBUG Tree]` stderr logging useful during development. Default off for production. |
 | `:available-code-nodes` | string | nil | Markdown catalog of pre-built `:code` fns the model can reference via `[:code {:fn "ns/sym"}]`. Surfaced as an extra input field on the framework's LLM module. See [Pre-built code-node catalog](#pre-built-code-node-catalog-available-code-nodes). |
 | `:sub-model` | string | nil | Alternative location for `:sub-model` — `(:sub-model (:rlm node))` takes precedence over `(:sub-model node)`. Either works. |
 
-Checkpointed researchers may call only tools whose `:tool-contracts` entry
-declares `:checkpoint-safe? true`. ORC supplies a stable
-`:orc/idempotency-key` in the tool context for the logical iteration/action;
-the checkpointed caller must therefore implement the context-aware
+At the inline Phase-1 checkpoint-safe tool boundary, checkpointed researchers
+may call only tools whose `:tool-contracts` entry declares
+`:checkpoint-safe? true`. ORC supplies a stable
+`:orc/idempotency-key` and the positive live `:orc/timeout-ms` remaining in the
+current iteration/campaign/workflow budget in the tool context for the logical
+iteration/action. The timeout is recomputed immediately before each new tool
+claim and dispatch; an exhausted budget produces an iteration timeout without
+claiming or invoking the tool. The checkpointed caller must therefore implement the context-aware
 three-argument contract `(tool-name arguments tool-context)`, and the tool must
-use that key to deduplicate its external effect. A two-argument caller remains
-compatible outside the checkpointed effect boundary, but checkpointed execution
-rejects a missing or incompatible caller before model dispatch, effect claim, or
-tool invocation. ORC durably preserves the identity, while the effect owner
-remains responsible for enforcing idempotency at the external boundary.
+use that key to deduplicate its external effect and apply `:orc/timeout-ms` to
+the transport it owns. A two-argument caller remains compatible outside the
+checkpointed effect boundary, but checkpointed execution rejects a missing or
+incompatible caller before model dispatch, effect claim, or tool invocation.
+ORC durably preserves the identity and supplies the deadline; the effect owner
+remains responsible for enforcing both at its external boundary.
+
+Generated Phase-2 work is bounded and replayed as one generated-child action,
+and that child tick receives the live whole-child timeout. Inside the child,
+generated code-node host-tool calls currently retain the caller's original
+opaque tool context; ORC does not yet recompute and inject a campaign remainder
+into those inner calls. Do not infer an inner Phase-2 transport deadline from
+the Phase-1 `:orc/timeout-ms` contract above.
+
+Checkpointed provider calls use the same live deadline composition. ORC passes
+the shortest provider/iteration/campaign/workflow remainder as `:timeout-ms`;
+the LLM component translates it to LiteLLM's `:timeout`, and the pinned
+OpenRouter adapter supplies that value to Hato's HTTP request timeout.
+
+When a checkpointed campaign has a positive `:llm-call-budget`, every physical
+provider attempt first appends a durable provider-call reservation against the
+budget root. This includes the outer researcher turn, inline `(llm ...)` calls,
+provider retries, and LLM leaves in generated descendant trees. Reservations
+are distinct from logical effect claims: retries keep one logical action identity
+but consume different invocation identities and attempt ordinals. The root-tag
+CAS validates the active campaign epoch, physical node and campaign iteration,
+rejects duplicates, and atomically admits only remaining capacity. A failed
+reservation append or authoritative read enters no provider. The process-local
+count is only a lazily hydrated hot cache; the durable reservation ledger remains
+authoritative across restart. Non-checkpointed execution retains the legacy
+event stream and budget path. Checkpointed cumulative usage is added only at
+terminal completion, so yielding the same campaign across multiple quanta does
+not count earlier iterations again.
+
+Checkpointed campaigns also record the duration of each completed ownership
+quantum with an injected monotonic clock. The interval starts inside the
+registered worker before its frontier claim and optional classification, and
+ends when that worker reaches a yield or terminal decision. It therefore
+includes campaign preparation and the operations performed by the quantum, but
+not queueing before the worker starts or asynchronous projection settlement
+after the boundary fact is assembled. A yielded boundary stores
+`:observed-quantum-duration-ms` and the monotonic
+`:max-observed-quantum-duration-ms` on its resume-state event; a terminal
+boundary stores the same pair on the terminal
+`:sheet/node-execution-completed` event. The campaign projection reads both
+forms, so replay and a reopened persistent store reconstruct the same running
+maximum. Researcher terminal completion is fenced by the active ownership
+epoch and canonicalizes the maximum against live durable resume evidence; a
+stale owner cannot publish a lower terminal maximum or terminal output. These
+measurements are observed history for later reassignment-delay configuration,
+not a prediction that a future quantum cannot run longer. An unexpected
+exception after the frontier claim uses that same epoch-fenced terminal
+boundary. If the monotonic instrumentation itself cannot produce the terminal
+sample, ORC records the fenced failure without duration fields rather than
+inventing a zero-duration observation. A checkpointed worker that fails before
+it attempts a frontier claim has no ownership authority and appends no terminal;
+recovery may retry that unfinished start. If the frontier command itself fails,
+ORC preserves the visible engine-failure contract only through an atomic
+predecessor-epoch check. A newer or ambiguously committed frontier therefore
+rejects the delayed failure instead of allowing an old worker to terminalize the
+campaign.
+
+A generated Phase-2 child that returns `:blocked` remains terminal; checkpointed
+execution does not turn it into a waiting or approval-resume state. The completed
+generated-child claim, compatibility action, immutable iteration record, and
+campaign projection retain the opaque block payload. Recovery of the same
+campaign rejoins that completed child rather than dispatching it again, and a
+stale owner cannot append a second iteration or terminal fact. Payloads are not
+interpreted or filtered for truthiness: maps, `false`, and present `nil` retain
+their exact value and key presence. Applications that require a durable human
+approval frontier need a separate waiting-state protocol; it is not implied by
+this terminal block contract.
 
 Applications may register codecs in the execution context under
 `:researcher-checkpoint-codecs`. Each codec provides a durable `:tag`, a
@@ -350,6 +422,23 @@ This is a common "apples-to-apples" cost pattern: a high-capability main LM for 
 
 The model sees this block *before* it designs its tree, so its first `emit-tree!` response is informed by patterns that have shipped successfully on similar tasks. The prepend is **examples, not mandates** — the model can adopt, adapt, or design from scratch.
 
+For a checkpointed researcher, campaign timing is established and durably
+claimed before automatic classification starts. Structural and behavioral
+classification, convergence capture, corpus-description reads, prompt
+rendering, and the injection record all run inside the same bounded preparation
+operation. `:timeouts {:classification-ms ...}` configures its own ceiling; ORC
+uses the shortest remaining classification, campaign, or enclosing-workflow
+deadline. A preparation timeout settles the campaign as `:timeout` before a
+classification assignment or provider dispatch becomes visible. Checkpointed
+classification publishes convergence capture, injection evidence, and exactly
+one assignment-or-deferral outcome as one atomic batch. That batch and a
+durable classification-expiration fact contend under the active campaign
+epoch; the batch also retains the ontology claim-set version guard, so a stale
+convergence capture rejects the whole classification rather than leaving
+partial facts. The same absolute campaign start and deadline are carried into
+the first V2 resume state, retain their canonical timestamp representation in
+the public campaign projection, and are reused after yield or process recovery.
+
 ### Config shape
 
 ```clojure
@@ -427,6 +516,20 @@ The trace is written to `/tmp/r-inject-trace-<sheet-id>.edn` for every
 auto-classified run — see [Inspecting the classifier](#inspecting-the-classifier)
 in the trace tools section below.
 
+### Patterns are offered whole, with declared key bindings
+
+R-Inject renders a class's worked pattern **whole**, never truncated —
+even a multi-thousand-character pattern reaches the model verbatim, with
+no emergency length cap.
+
+The pattern's key bindings — the keys it reads and writes are declared
+explicitly, plus the outputs its `:final` node names — are derived from
+its exact source, so a source that doesn't parse, or whose code was
+elided, declares nothing rather than lying about what it touches. The
+assembled strength entry carries these as `:pattern-reads`,
+`:pattern-writes` and `:pattern-outputs`, and the rendering names them as
+advice to rebind onto the current task's own keys, never as a mandate.
+
 ### When `:auto-classify?` pairs with `:recursive?`
 
 The two flags are independently useful but most powerful together:
@@ -454,7 +557,8 @@ end-to-end consumer walkthrough.
 > skipped, a novel one accrues evidence on a tree-class identity, and the
 > tree the model emits is itself the candidate. Durable named-behavior
 > creation is the evidence-grounded **harvest** path (the designed terminus
-> of the emergence loop; not yet shipped on this branch). The references
+> of the emergence loop; live today, gated on verdict-occurrence volume —
+> see [`SELF-IMPROVING-LOOP.md`](SELF-IMPROVING-LOOP.md)). The references
 > the corpus prepend surfaces **inform** the design — they do not gate it,
 > and a match clearing threshold is not a reason to suppress them.
 
@@ -909,6 +1013,13 @@ The map-each's `:sheet/node-execution-completed` event body carries a `:partial-
 
 This is the data your judge layer subscribes to. The model in recursive mode sees the same data via `:tree-results`'s `:failure-indices` / `:failure-reasons` fields.
 
+For checkpointed researchers, an interrupted one-level Phase 2 `map-each`
+rejoins those durable item outcomes on the original child tick. Survivors do
+not run again, pending contexts resume or dispatch once, and the reconstructed
+partial summary is identical to uninterrupted execution. Nested `map-each`
+recovery remains outside this guarantee until execution identity can represent
+the full nesting path.
+
 ## Observability events emitted
 
 Per the Grain methodology — every event is monitorable.
@@ -919,31 +1030,35 @@ Per the Grain methodology — every event is monitorable.
 | `:sheet/execution-value-written` | Every blackboard write (canonical) | `:key`, inline `:value` or external `:value-reference`, `:node-id`, `:exec-context` — the last two attribute a value to one node *execution*, so map-each iterations stay distinct |
 | `:sheet/rlm-tree-node-completed` | Per-node inside RLM Phase 2 trees | Structured `:node-path`, `:usage`, `:input-profile` |
 | `:sheet/rlm-tree-execution-completed` | Bookend per Phase 2 tree | `:trajectory` (full per-event log), `:total-usage`, `:generated-tree`, `:generated-tree-source` (exact pre-compilation EDN), `:task-fingerprint` placeholder |
-| `:rlm/tree-generated` | When the researcher emitted a tree (Phase-2 will execute) | `:tree-id`, `:execution-id`, `:raw-dsl`, `:source-edn` (exact quoted source captured before compilation), `:generated-at` |
+| `:rlm/tree-generated` | Once at campaign terminal when at least one tree was emitted; carries the last tree | `:tree-id`, `:execution-id`, `:raw-dsl`, `:source-edn` (exact quoted source captured before compilation), `:generated-at` |
+| `:rlm/researcher-iteration-recorded` | Each checkpointed/default iteration attempt commits atomically with its resume fact | `:sheet-id`, `:tick-id`, `:node-id`, `:iteration-index`, `:attempt-ordinal`, `:iteration-record`, `:recorded-at` |
+| `:rlm/researcher-iterations` | Explicit non-checkpointed compatibility only; emitted once at terminal when the researcher ran at least one iteration | `:execution-id`, `:iterations`, `:iteration-count`, `:emitted-at` |
+| `:sheet/tick-cancelled` | When Phase 2 budget cancellation fires mid-flight | `:sheet-id`, `:tick-id` |
 
 These are the **durable** event bodies. Resolve values from them with
 `ai.obney.orc.orc-service.core.value-log` (`writes-for`, `latest-values`) — see
 [Event Store Patterns](EVENT-STORE-PATTERNS.md#single-write-discipline-values-live-in-exactly-one-event-type).
 External references are transparently rehydrated; see [Value Storage](VALUE-STORAGE.md).
-The ephemeral live-stream envelopes described below are unaffected: they still
-deliver `:writes` on `:node-completed`, resolved from the blackboard.
-| `:rlm/researcher-iterations` | Whenever the researcher ran ≥1 Phase-1 iteration, regardless of mode | `:execution-id`, `:iterations` (vector of `{:code :result :stdout :error :vars-created}`), `:iteration-count`, `:emitted-at` |
-| `:sheet/tick-cancelled` | When Phase 2 budget cancellation fires mid-flight | `:sheet-id`, `:tick-id` |
+Live subscriptions project `:rlm/researcher-iteration-recorded` as the
+authoritative `:rlm-iteration-recorded` envelope. They still deliver `:writes`
+on `:node-completed`, resolved from the blackboard.
 
 Judges in future work can subscribe to any of these for granular signal.
 
-### Live streaming (ephemeral)
+### Live streaming projections and previews
 
-In addition to the durable events above, a live subscription
+In addition to durable projections, a live subscription
 (`orc/subscribe-execution` / `orc/execute-stream`, see
-[`docs/STREAMING.md`](STREAMING.md)) receives **ephemeral** RLM events that
-are never persisted: `:rlm-iteration-started`, `:rlm-code-generated`
+[`docs/STREAMING.md`](STREAMING.md)) receives ephemeral previews that are
+never persisted: `:rlm-iteration-started`, `:rlm-code-generated`
 (capped), `:rlm-sandbox-completed` per Phase 1 iteration, and
 `:rlm-phase2-started` / `:rlm-phase2-completed` around each Phase 2 child
 tick. Phase 2 child ticks carry `:parent-tick-id` lineage on their
 `:sheet/tree-tick-started` events, and the subscription automatically
 covers the whole child-tick cascade. `orc/cancel!` cancels a tick plus its
-known children (best-effort; in-flight LLM calls complete).
+known children. Registered checkpointed researcher work is interrupted
+best-effort; legacy non-checkpointed work is not, and interruption does not
+guarantee that an already-dispatched provider transport aborts.
 
 ## Result shape
 
@@ -1027,7 +1142,10 @@ Consumers can override defaults by explicitly calling `:sheet/set-node-judges` o
           :enabled? true}))
 ```
 
-After that, every repl-researcher terminal `:sheet/node-execution-completed` event produces 5 `:judge/score-emitted` events (plus 1 per intermediate `:rlm/tree-generated` for `heuristic-structural`, which has its own processor for per-Phase-1-iteration grading).
+After that, every repl-researcher terminal `:sheet/node-execution-completed`
+event produces 5 `:judge/score-emitted` events. A campaign that emitted a tree
+also produces one terminal `:rlm/tree-generated` event for its last tree; the
+`heuristic-structural` processor grades that event once.
 
 ### The data flow back to the model's next run
 
@@ -1035,7 +1153,7 @@ This is what makes judge signal RLM-specific (vs. retrospective batch evaluation
 
 ```
 host repl-researcher fires :sheet/node-execution-completed (terminal) +
-                            :rlm/tree-generated (per emit-tree iter)
+                            :rlm/tree-generated (once, carrying the last tree)
    ↓
 per-event evaluator processors (judge_runtime)
    ↓ (for each attached judge, in parallel via futures)
@@ -1060,6 +1178,17 @@ model designs a tree informed by what judges saw last time
 A consumer who attaches a hallucination-risk LLM judge to their repl-researcher (via the general attach flow in `ORC-SERVICE-GUIDE.md`) will see the consolidator's body integrate "vulnerability to hallucinations when ..." weaknesses across cycles, feeding back into the model's tree design via R-Inject. This is the foundation for prebuilt-tree structural evolution via judge feedback — a stronger primitive than GEPA-on-prompts alone because the judge signal is per-execution and structured.
 
 The same mechanism applies to custom judges attached to repl-researcher nodes: their scores flow into `:judge-averages` and the consolidator's reflection input identically to defaults.
+
+Judges score the campaign rather than only its final answer. For a
+`:repl-researcher` completion, the runtime reads the ordered immutable
+iteration records directly from the durable projection and includes them as
+`:researcher-iterations`; it does not wait for asynchronous execution-trace
+publication. Public raw and extracted evaluation traces also preserve those
+records plus bounded claim/completion/checkpoint/yield/resume evidence as
+`:researcher-events`. Effect results are deliberately excluded from that
+lifecycle evidence. One score remains authoritative per
+`[sheet-id node-id tick-id judge-name]`, enforced atomically under duplicate
+delivery.
 
 ## Related guides
 

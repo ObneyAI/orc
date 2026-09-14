@@ -20,16 +20,50 @@ every iteration separately would let work that took many attempts outvote work t
 
 ## Acceptance criteria
 
-- [ ] The trace API surfaces the iteration record and the campaign's claim/yield/resume evidence
-- [ ] Judges receive the iterations of the work they score
-- [ ] A judge's feedback names what went wrong in a specific iteration, demonstrated on a multi-iteration campaign
-- [ ] Exactly one verdict per completion per judge is still recorded
-- [ ] The duplicate-score check is scoped by tag rather than scanning the whole score history
+- [x] The trace API surfaces the iteration record and the campaign's claim/yield/resume evidence
+- [x] Judges receive the iterations of the work they score
+- [x] A judge's feedback names what went wrong in a specific iteration, demonstrated on a multi-iteration campaign
+- [x] Exactly one verdict per completion per judge is still recorded
+- [x] The duplicate-score check is scoped by tag rather than scanning the whole score history
 
 ## Spec obligations covered
 
-- `entity-fields.CampaignIteration`
-- `entity-optional.CampaignIteration.error`
+- `contract-signature.CheckpointedResearcherExecution.inspect_iterations`
+- `value-equality.TraceEvidence`
+- `entity-fields.TraceEvidence`
+- `contract-signature.TraceJudge.evaluate`
+- `invariant.OneJudgeScorePerCompletion`
+
+The tag-scoped duplicate-score read is a tested implementation constraint from
+G19. It is intentionally not modeled as domain behavior because
+`evaluation.allium` excludes Grain storage and processor mechanics.
+
+## Verification
+
+`rr17_trace_judge_evidence_test.clj` drives a public default-checkpointed
+two-iteration researcher and proves ordered immutable records plus bounded
+claim/completion/checkpoint/yield/resume evidence. Effect results are absent;
+stable logical and attempt identities remain. A separate terminal-runtime test
+reads the durable iteration projection before asynchronous trace publication,
+and the reasoning judge's typed `iteration_evidence` identifies the failed
+first iteration before its repair.
+
+Adversarial inspection forced two duplicate score commands to complete their
+tag-scoped pre-read before either append. That exposed a real read-before-write
+race: the sequential idempotency proof could append two verdicts under
+concurrency. The command now retains the bounded pre-read and supplies an
+atomic event-store CAS over the full
+`[sheet-id node-id tick-id judge-name]` identity. The focused RR-17 namespace
+passes 7 tests and 21 assertions; the broadened trace/evaluation aggregate
+passes 129 tests and 679 assertions; the checkpointed researcher namespace
+passes 36 tests and 315 assertions. The standalone `orc-evaluation`-compatible
+subset passes 37 tests and 208 assertions with the repository's required LMDB
+module opens.
+
+Coverage: `5 obligations, 5 covered, 0 uncovered`. No generated mock, stub,
+TODO, or skeleton remains. The deterministic model substitute is an injected
+provider capability, not a generated test double. Full changed-brick and
+Allium/weed results are recorded in `specs/COVERAGE.md`.
 
 ## Test seams
 

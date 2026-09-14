@@ -22,16 +22,20 @@ the same pattern already established one level up for rejoining a completed chil
 
 ## Acceptance criteria
 
-- [ ] A restart mid-fan-out rejoins completed items rather than re-running them
-- [ ] Pending items are derived from what durably completed, not from process memory
-- [ ] Reconstruction dedupes on the item's execution context, so a retried item does not create a second slot
-- [ ] Failure indices and reasons survive the restart, so the next iteration's repair logic still has its input
-- [ ] A partial outcome after a restart is indistinguishable from one without a restart
+- [x] A restart mid-fan-out rejoins completed items rather than re-running them
+- [x] Pending items are derived from what durably completed, not from process memory
+- [x] Reconstruction dedupes on the item's execution context, so a retried item does not create a second slot
+- [x] Failure indices and reasons survive the restart, so the next iteration's repair logic still has its input
+- [x] A partial outcome after a restart is indistinguishable from one without a restart
 
 ## Spec obligations covered
 
-- `rule-success.CampaignIterationSucceeds`
-- `invariant.OneIterationRecordPerAttempt`
+- `rule-success.RecoverMapEachFanOut`
+- `rule-failure.RecoverMapEachFanOut.1`
+- `rule-failure.RecoverMapEachFanOut.2`
+- `invariant.RecoveredMapEachItemsAreRejoinedOnceByExecutionContext`
+- `invariant.RecoveredMapEachDispatchesOnlyPendingExecutionContexts`
+- `invariant.RecoveredMapEachOutcomeMatchesDurableItemEvidence`
 
 ## Test seams
 
@@ -40,6 +44,16 @@ Seam-2 (restart: stop processors, reopen store, restart processors) is the prima
 ## Blocked by
 
 None — can start immediately.
+
+## Scope boundary
+
+RR-12 preserves the one-level map-item identity already present in durable
+events: workflow execution/tick, map-each parent node, direct child node, and
+item index. Nested map-each is not silently added here. The current flat
+execution context cannot represent an inner and outer map occurrence at once,
+and the process-local coordinator key would collide when one inner map node is
+visited by multiple outer items. That is a separately classifiable design gap,
+not permission to widen this recovery slice.
 
 ## Handoff plan
 

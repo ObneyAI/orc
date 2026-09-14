@@ -30,21 +30,68 @@ under-prediction is fixed with new anchors and never a bigger constant.
 
 ## Acceptance criteria
 
-- [ ] Full `/weed` clean across all three specs, every divergence classified
-- [ ] Two racing workers produce one claim; the loser fires no effect
-- [ ] A real process kill mid-campaign resumes automatically and completes without repeating a succeeded child
-- [ ] Duplicate provider spend across the kill is attributable to a specific epoch transition
-- [ ] All five measurements recorded and written into the specs as config
-- [ ] The convergence gate's threshold is chosen from observed data, and only then allowed to block
-- [ ] No blocking open questions remain in the touched area
+- [x] Full `/weed` clean across all three specs, every divergence classified
+- [x] Two racing workers produce one claim; the loser fires no effect
+- [x] A real process kill mid-campaign resumes automatically and completes without repeating a succeeded child
+- [x] Duplicate provider spend across the kill is attributable to a specific epoch transition
+- [ ] All five measurements recorded and written into the specs as config — three measured deterministically (sweep recorded in the ledger); evidence density and the coherence distribution need live campaigns; `orc-service.allium` has no config block yet (user decision)
+- [ ] The convergence gate's threshold is chosen from observed data, and only then allowed to block — stays report-only until the live distribution is observed (user decision)
+- [ ] No blocking open questions remain in the touched area — five design questions raised for the user, none blocking the landed behaviour
 
 ## Spec obligations covered
 
-- `invariant.OneClaimPerActionIdentityPerEpoch`
+- `invariant.OneClaimPerLogicalActionIdentityPerEpoch`
 - `invariant.ClaimsNeverExceedTheirCampaignsEpoch`
 - `transition-terminal.Campaign.status`
 - `transition-terminal.EffectClaim.status`
 - `contract-signature.CheckpointedResearcherExecution.inspect_iterations`
+
+## Verification
+The whole-spec integration slice closed the arc against the three specs and the live system rather
+than against the slices' own claims. `/weed` ran in check mode over `orc-service`, `ontology` and
+`evaluation`; every divergence was re-verified by the orchestrator against the spec line and the code
+line and classified — five spec bugs tended (the two landed evidence bases, the claim's verdict
+corroboration count with the rule that increments it, the mint operation the mutation contract's own
+invariant governs, the trace-evidence field names the engine actually threads, and the two
+provider-failure fields a transport failure cannot know), four code bugs reproduced RED and fixed, six
+intentional gaps recorded, and five design questions raised for the user rather than patched. Allium
+re-derived after the tends stays at the characterized baseline of 115 information diagnostics, 35
+warnings, 0 errors and 0 analyse findings.
+
+The five obligations map to covering tests already green in the gate — `OneClaimPerLogicalActionIdentityPerEpoch`
+(the same-frontier race and the new two-worker race), `ClaimsNeverExceedTheirCampaignsEpoch` (the
+frontier fence, the v2-checkpoint fence, the non-cooperative stale owner and the two-worker late write),
+`transition-terminal.Campaign.status` (abandon, cancel, terminal-parent, terminal fences, the first-terminal
+verdict), `transition-terminal.EffectClaim.status` (indeterminate resolution and the mint callee's retry
+rejection) and `inspect_iterations` (the verbatim trace history and the public two-iteration reconstruction);
+coverage `5 obligations, 5 covered, 0 uncovered`.
+
+Seam-7 is a new deterministic test: a second execution worker subscribed to the same store and pubsub
+receives the one recovery start, both workers reach the frontier claim under a barrier, exactly one epoch
+is claimed, the loser dispatches no provider call, checkpoints nothing and completes nothing, and a late
+write carrying the epoch it failed to claim is fenced. Seam-8 ran live against the pinned real model with
+a SIGKILL rather than a graceful stop; automatic recovery in a clean process finished the campaign from the
+same SQLite store with no resubmission (DET-E2E-255). A constrained live deadline (DET-E2E-256) found a real
+defect — two deadlines derived from one remainder classified a provider timeout two different ways, and the
+transport's exception reaches the engine with its cause flattened to a string — fixed by making the engine's
+own deadline fire strictly first while the transport keeps the exact outer bound, proven red→green→live.
+The gated live journeys `det-e2e-105/106/252` pass; `det-e2e-105` had read Phase-1 code from an event the
+default-on flip stopped emitting and now reads the durable records.
+
+Measurements: iteration records are constant-size (linear volume); full resume snapshots grow with the
+working set so total resume bytes grow quadratically (1.55 MB at 100 iterations); a snapshot interval of ten
+cuts that 3.8× but raises quantum p95 from 28 ms to 162 ms — recorded with the fixture, not yet written as
+config: `specs/orc-service.allium` has no config block, and the coherence threshold and the evidence-density
+constant still need live campaigns, so the config decisions are recorded as open for the user.
+
+Gates on the final tree: the complete two-project `orc-service` brick passes with exit 0 in 59 minutes 29 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (129 namespaces, 1060 tests / 5925 assertions per graph, 0 failures, 0 errors); the ontology brick passes in both owning graphs (77 namespaces, 668 tests / 3803 assertions each); the evaluation brick passes (9 namespaces, 116 tests / 480 assertions); Grain's control-plane and todo-processor-v2 brick tests and the SQLite project's tests pass on the recovered Grain tree. Zero orphan JVMs after every run.
+
+Incident: between Sept 11 and Sept 14 macOS's /tmp cleaner deleted the worktree's git link, 38 tracked
+files, the pinned Grain checkout and 13 untracked arc files; all were recovered (tracked files from HEAD,
+three source files exactly from two agreeing transcripts, ten test namespaces reconstructed from Codex
+patch transcripts and validated at exactly the Sept 11 counts, 104 tests / 731 assertions, and the pinned
+Grain checkout's unpushed control-plane work replayed onto PR #22's head). The arc's real Grain dependency
+is that recovered working tree, which must be committed to the PR #22 branch.
 
 ## Test seams
 

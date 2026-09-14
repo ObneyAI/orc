@@ -124,7 +124,7 @@ Defects in the inherited branch that are not themselves design decisions, but mu
 - **Every campaign operation falls inside a deadline**, including the classification work done before the first iteration, which today runs outside the campaign clock (G15).
 - **Transport-level timeouts** exist so cancellation is not purely advisory (G15).
 - **Worst-case quantum duration becomes a recorded quantity** so the reassignment delay has something to be sized against (G15).
-- **The LLM-call budget is derived from durable claims** with an in-memory cache, because the budget spans a trace family that no single checkpoint covers (G17).
+- **A checkpointed campaign's LLM-call budget is derived from durable provider-call reservations** with an in-memory cache, because the budget spans a trace family that no single checkpoint covers (G17). A reservation is distinct from an effect claim: every physical provider attempt, including a same-epoch retry, consumes one reservation before dispatch, while a claim continues to identify one logical campaign effect per ownership epoch. The non-checkpointed compatibility path remains unchanged until the default flips.
 - **Usage accrues once per completed iteration**, not once per yield (G17, D4).
 
 ### Evidence and the self-learning loop

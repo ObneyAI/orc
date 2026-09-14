@@ -1,9 +1,12 @@
 {:paths []
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
 
-        obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
-                               :git/sha "47073a2820f571b31fe784311886613a9ed3297e"
-                               :deps/root "projects/grain-core-v2"}
+        ;; RR-9/RR-14 verification consumes the locally recovered Grain APIs
+        ;; until their upstream PR is merged. Keep this project aligned with
+        ;; projects/orc so Poly tests the brick against one dependency graph.
+        cat/schema-util {:local/root "/Users/darylroberts/Desktop/Code/grain-rr-durable-pin/components/schema-util"}
+
+        obneyai/grain-core-v2 {:local/root "/Users/darylroberts/Desktop/Code/grain-rr-durable-pin/projects/grain-core-v2"}
 
         ;; The ORC engine — behavior-tree DSL, runtime, event-sourced execution,
         ;; streaming, RLM (repl-researcher). This is the Layer-0 base every other
@@ -27,4 +30,6 @@
                                orc/mcp-sheet-builder {:local/root "../../components/mcp-sheet-builder"}
                                orc/predict-rlm-pdf {:local/root "../../components/predict-rlm-pdf"}
                                orc/predict-rlm-redaction-tools {:local/root "../../components/predict-rlm-redaction-tools"}
-                               orc/predict-rlm-invoice-tools {:local/root "../../components/predict-rlm-invoice-tools"}}}}}
+                               orc/predict-rlm-invoice-tools {:local/root "../../components/predict-rlm-invoice-tools"}
+                               obneyai/grain-control-plane
+                               {:local/root "/Users/darylroberts/Desktop/Code/grain-rr-durable-pin/projects/grain-control-plane"}}}}}

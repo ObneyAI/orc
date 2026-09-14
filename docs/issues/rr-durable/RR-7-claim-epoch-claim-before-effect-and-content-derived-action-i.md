@@ -39,6 +39,26 @@ Extends identity to the two effects that have none today: the inline provider pr
 - [x] Inline provider calls and behavior mints each carry a logical action identity and are claimed
 - [x] Generated children, participating checkpoint-safe tools and mints are exactly-once; provider calls are at-least-once and every indeterminate one is attributable
 
+## Resolved inspection finding
+
+The RR-16 combined-load failure was reproduced and minimised, but it was not a
+production identity defect. The original public execution supplied a command
+registry, which caused the registered `mint-behavior!` contract to become part
+of the provider module and inputs. The hand-built replay context omitted that
+registry. Because RR-7 deliberately hashes canonical module and inputs, the two
+materially different provider requests correctly received different logical
+identities and the replay dispatched again.
+
+Removing the legacy completed-provider mirror exposed the mismatch in five of
+five runs. Capturing both identity preimages reduced their difference to the
+missing mint contract. Restoring only the original command registry made five
+of five runs pass; the corrected public lineage test and the independent
+focused rerun are green, and the real recovered-worker replay passed ten of ten
+runs. The test now replays the faithful command registry and no longer hides the
+outer-provider contract behind `:researcher-actions`. No production or Allium
+change was required. This finding is classified as a **test-harness bug** and
+is closed.
+
 The targeted contract decision is ratified and proven: a checkpoint-safe
 effectful tool participates through the context-aware three-argument caller and
 receives the stable logical idempotency key. A two-argument caller remains

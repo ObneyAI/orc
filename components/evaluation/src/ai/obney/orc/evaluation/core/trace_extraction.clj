@@ -112,23 +112,30 @@
       :instruction string - the instruction/prompt used
       :model string - the model used
       :duration-ms int
-      :status keyword}"
+      :status keyword
+      :researcher-iterations vector - ordered durable records, when present
+      :researcher-events vector - bounded campaign evidence, when present}"
   [sheet-trace node-trace node-metadata io]
-  {:trace-id (:trace-id sheet-trace)
-   :sheet-id (:sheet-id sheet-trace)
-   :node-id (:node-id node-trace)
-   :node-name (or (:node-name node-trace) (:name node-metadata) "unknown")
-   ;; Values are rehydrated from the tick's events (see tick-node-io): the
-   ;; trace stores only the shape of each node's I/O. Judges need the real
-   ;; values for grounding, so an empty map here would silently degrade
-   ;; every grounding score rather than fail loudly.
-   :inputs (or (:inputs io) {})
-   :outputs (or (:outputs io) {})
-   :instruction (or (:instruction node-trace) (:instruction node-metadata) "")
-   :model (or (:model node-trace) (:model node-metadata))
-   :duration-ms (:duration-ms node-trace)
-   :status (:status node-trace)
-   :executed-at (:started-at sheet-trace)})
+  (cond->
+   {:trace-id (:trace-id sheet-trace)
+    :sheet-id (:sheet-id sheet-trace)
+    :node-id (:node-id node-trace)
+    :node-name (or (:node-name node-trace) (:name node-metadata) "unknown")
+    ;; Values are rehydrated from the tick's events (see tick-node-io): the
+    ;; trace stores only the shape of each node's I/O. Judges need the real
+    ;; values for grounding, so an empty map here would silently degrade
+    ;; every grounding score rather than fail loudly.
+    :inputs (or (:inputs io) {})
+    :outputs (or (:outputs io) {})
+    :instruction (or (:instruction node-trace) (:instruction node-metadata) "")
+    :model (or (:model node-trace) (:model node-metadata))
+    :duration-ms (:duration-ms node-trace)
+    :status (:status node-trace)
+    :executed-at (:started-at sheet-trace)}
+    (seq (:researcher-iterations sheet-trace))
+    (assoc :researcher-iterations (:researcher-iterations sheet-trace))
+    (seq (:researcher-events sheet-trace))
+    (assoc :researcher-events (:researcher-events sheet-trace))))
 
 (defn tick-node-io
   "Rehydrate per-node input/output VALUES for one trace.
@@ -219,6 +226,8 @@
                         :input-snapshot (:input-snapshot event)
                         :output-snapshot (:output-snapshot event)
                         :node-traces (:node-traces event)
+                        :researcher-iterations (:researcher-iterations event)
+                        :researcher-events (:researcher-events event)
                         :error (:error event)})
                      events)]
     (if limit

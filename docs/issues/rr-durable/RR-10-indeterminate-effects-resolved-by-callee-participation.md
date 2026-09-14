@@ -20,11 +20,11 @@ about its own work.
 
 ## Acceptance criteria
 
-- [ ] A child with an unresolved claim is rejoined, not re-run
-- [ ] A tool or mint is re-attempted under the same identity and its owner deduplicates
-- [ ] A provider call is re-attempted as a new attempt under a newer epoch, with the prior claim left indeterminate
-- [ ] The model's prompt history shows one iteration; the durable record shows both attempts
-- [ ] Every indeterminate call is queryable and attributable to the epoch that made it
+- [x] A child with an unresolved claim is rejoined, not re-run
+- [x] A tool or mint is re-attempted under the same identity and its owner deduplicates
+- [x] A provider call is re-attempted as a new attempt under a newer epoch, with the prior claim left indeterminate
+- [x] The model's prompt history shows one iteration; the durable record shows both attempts
+- [x] Every indeterminate call is queryable and attributable to the epoch that made it
 
 ## Spec obligations covered
 

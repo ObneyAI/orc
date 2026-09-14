@@ -69,7 +69,8 @@
         (pos? (:total-tokens usage 0))
         (assoc :usage (cond-> usage (seq by-node) (assoc :by-node by-node)))
         (:error completion) (assoc :error (:error completion))
-        (:block-payload completion) (assoc :block-payload (:block-payload completion)))))))
+        (= :blocked root-status)
+        (assoc :block-payload (:block-payload completion)))))))
 
 (defn- await-existing-tick
   [context tick-id timeout-ms]
@@ -751,12 +752,31 @@
           tool-context (:tool-context context)
           correlation-id (:orc/correlation-id context)
           llm-call-budget (get-in context [:tick-options :llm-call-budget])
+          durable-budget? (and (integer? llm-call-budget)
+                               (pos? llm-call-budget))
           llm-budget-root-tick-id
-          (or (get-in context [:tick-options :llm-budget-root-tick-id])
-              parent-tick-id)
+          (when durable-budget?
+            (or (get-in context [:tick-options :llm-budget-root-tick-id])
+                parent-tick-id))
           llm-budget-root-sheet-id
-          (or (get-in context [:tick-options :llm-budget-root-sheet-id])
+          (when durable-budget?
+            (or (get-in context [:tick-options :llm-budget-root-sheet-id])
+                (:sheet-id context)))
+          campaign-sheet-id
+          (or (get-in context [:tick-options :researcher-campaign-sheet-id])
               (:sheet-id context))
+          campaign-tick-id
+          (or (get-in context [:tick-options :researcher-campaign-tick-id])
+              (:tick-id context))
+          campaign-node-id
+          (or (get-in context [:tick-options :researcher-campaign-node-id])
+              (:node-id context))
+          campaign-iteration-index
+          (or (get-in context [:tick-options :researcher-iteration-index])
+              (:researcher-iteration context))
+          campaign-ownership-epoch
+          (or (get-in context [:tick-options :researcher-ownership-epoch])
+              (:researcher-ownership-epoch context))
           tick-cmd-result (cp/process-command
                             (assoc context :command
                                    (cond-> {:command/id (random-uuid)
@@ -773,13 +793,19 @@
                                                           (remove (comp nil? val))
                                                           (merge blackboard sandbox-vars))
                                             :options (cond-> {:timeout-ms timeout-ms}
-                                                       llm-call-budget
+                                                       durable-budget?
                                                        (assoc :llm-call-budget llm-call-budget)
-                                                       llm-budget-root-tick-id
-                                                       (assoc :llm-budget-root-tick-id
-                                                              llm-budget-root-tick-id)
-                                                       llm-budget-root-sheet-id
-                                                       (assoc :llm-budget-root-sheet-id
+                                                       campaign-ownership-epoch
+                                                       (assoc :researcher-campaign-sheet-id campaign-sheet-id
+                                                              :researcher-campaign-tick-id campaign-tick-id
+                                                              :researcher-campaign-node-id campaign-node-id
+                                                              :researcher-iteration-index campaign-iteration-index
+                                                              :researcher-ownership-epoch campaign-ownership-epoch)
+                                                       durable-budget?
+                                                       (assoc :checkpointed-campaign? true
+                                                              :llm-budget-root-tick-id
+                                                              llm-budget-root-tick-id
+                                                              :llm-budget-root-sheet-id
                                                               llm-budget-root-sheet-id))}
                                      parent-tick-id (assoc :parent-tick-id parent-tick-id)
                                      correlation-id (assoc :correlation-id correlation-id)

@@ -3,6 +3,7 @@
             [ai.obney.orc.orc-service.core.executor :as executor]
             [ai.obney.orc.orc-service.interface :as sheet]
             [ai.obney.orc.orc-service.test-helpers :as h]
+            [clojure.core.async :as async]
             [clojure.test :refer [deftest is testing]]
             [ai.obney.orc.llm.interface :as llm]))
 
@@ -118,6 +119,45 @@
           (is (every? #(<= 1 (:timeout-ms %) 1000) @captured-options))
           (is (every? #(not (contains? % :execution-deadline-ms)) @captured-options))
           (is (every? #(not (contains? % :reserve-llm-call!)) @captured-options)))))))
+
+(deftest execute-ai-reserves-before-entering-the-streaming-provider
+  (testing "the streaming provider boundary uses the same per-attempt durable gate"
+    (let [tick-id (random-uuid)
+          node-id (random-uuid)
+          reservation (atom nil)
+          reserved-at-entry? (atom nil)
+          node {:id node-id
+                :type :leaf
+                :executor :ai
+                :instruction "Answer the question."
+                :reads [:question]
+                :writes [:answer]}]
+      (with-redefs [llm/predict-stream-v2
+                    (fn [& _]
+                      (reset! reserved-at-entry? (some? @reservation))
+                      (async/to-chan!
+                       [{:orc/event :final
+                         :outputs {:answer "streamed"}}]))]
+        (let [result
+              (executor/execute-leaf
+               node test-blackboard :openrouter
+               :options {:max-retries 0
+                         :tick-id tick-id
+                         :reserve-provider-attempt!
+                         #(do (reset! reservation %) nil)
+                         :provider-reservation-context
+                         {:tick-id tick-id
+                          :node-id node-id
+                          :iteration-index 0}}
+               :stream {:tick-id tick-id
+                        :sheet-id (random-uuid)
+                        :node-id node-id
+                        :fields? true})]
+          (is (= :success (:status result)))
+          (is (= "streamed" (get-in result [:outputs :answer])))
+          (is (true? @reserved-at-entry?))
+          (is (= 0 (:provider-attempt-ordinal @reservation)))
+          (is (string? (:logical-action-identity @reservation))))))))
 
 (deftest execute-ai-does-not-start-after-execution-deadline
   (testing "an exhausted deadline prevents the first provider invocation"

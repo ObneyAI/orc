@@ -10,6 +10,7 @@
 (def frontier-event-type :rlm/researcher-frontier-claimed)
 (def claim-event-type :rlm/researcher-effect-claimed)
 (def completion-event-type :rlm/researcher-effect-completed)
+(def indeterminate-event-type :rlm/researcher-effect-indeterminate)
 
 (defn campaign-tag-id
   "Stable event-store tag UUID for one researcher campaign occurrence."
@@ -158,7 +159,8 @@
    campaign frontier, and only once."
   [campaign-tag candidate-epoch logical-action-identity attempt-identity]
   {:tags #{campaign-tag}
-   :types #{frontier-event-type claim-event-type completion-event-type}
+   :types #{frontier-event-type claim-event-type completion-event-type
+            indeterminate-event-type}
    :predicate-fn
    (fn [events]
      (let [{:keys [frontier-epoch matching-claim? resolved?]}
@@ -181,9 +183,58 @@
                   (assoc state :resolved? true)
                   state)
 
+                :rlm/researcher-effect-indeterminate
+                (if (= attempt-identity (:attempt-identity event))
+                  (assoc state :resolved? true)
+                  state)
+
                 state))
             {:frontier-epoch 0 :matching-claim? false :resolved? false}
             events)]
        (and (= candidate-epoch frontier-epoch)
             matching-claim?
+            (not resolved?))))})
+
+(defn indeterminate-cas
+  "CAS that settles one unresolved claim after a newer frontier takes over.
+
+   The candidate epoch names the resolving owner, while the matched claim keeps
+   the older epoch that authorised the uncertain effect.  Current-epoch claims
+   and claims with either terminal resolution are rejected."
+  [campaign-tag candidate-epoch logical-action-identity attempt-identity]
+  {:tags #{campaign-tag}
+   :types #{frontier-event-type claim-event-type completion-event-type
+            indeterminate-event-type}
+   :predicate-fn
+   (fn [events]
+     (let [{:keys [frontier-epoch claim-epoch resolved?]}
+           (reduce
+            (fn [state event]
+              (case (:event/type event)
+                :rlm/researcher-frontier-claimed
+                (update state :frontier-epoch max (:ownership-epoch event))
+
+                :rlm/researcher-effect-claimed
+                (if (and (= logical-action-identity
+                            (:logical-action-identity event))
+                         (= attempt-identity (:attempt-identity event)))
+                  (assoc state :claim-epoch (:ownership-epoch event))
+                  state)
+
+                :rlm/researcher-effect-completed
+                (if (= attempt-identity (:attempt-identity event))
+                  (assoc state :resolved? true)
+                  state)
+
+                :rlm/researcher-effect-indeterminate
+                (if (= attempt-identity (:attempt-identity event))
+                  (assoc state :resolved? true)
+                  state)
+
+                state))
+            {:frontier-epoch 0 :claim-epoch nil :resolved? false}
+            events)]
+       (and (= candidate-epoch frontier-epoch)
+            (some? claim-epoch)
+            (< claim-epoch candidate-epoch)
             (not resolved?))))})

@@ -32,6 +32,14 @@ value TraceEvidence {
     inputs: Any
     outputs: Any
     execution_trace: Any?
+    -- The campaign's own ordered immutable iteration records, read straight from
+    -- the durable projection rather than waiting on asynchronous trace
+    -- publication. Named as the engine names them, so a reader can find them.
+    researcher_iterations: List<Any>?
+    -- Bounded claim/completion/checkpoint/yield/resume evidence for the campaign,
+    -- in DURABLE order. Effect results are deliberately excluded: this is the
+    -- account of what the campaign DID, not what its effects returned.
+    researcher_events: List<Any>?
     completion_kind: String?
 }
 

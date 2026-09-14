@@ -37,7 +37,7 @@
 ;; Real-grain context (todo processors started — the real async pipeline)
 ;; =============================================================================
 
-(defn- create-context []
+(defn- create-context [excluded-processors]
   (let [ps (pubsub/start {:type :core-async :topic-fn :event/type})
         event-store (es/start {:conn {:type :in-memory} :event-pubsub ps :logger nil})
         cache-dir (str "/tmp/rr1-placement-" (random-uuid))
@@ -50,9 +50,11 @@
                   :query-registry (qp/global-query-registry)}
         processors (reduce-kv
                      (fn [acc proc-name {:keys [handler-fn topics]}]
-                       (assoc acc proc-name
-                              (gtp/start {:event-pubsub ps :topics topics
-                                          :handler-fn handler-fn :context base-ctx})))
+                       (if (contains? excluded-processors proc-name)
+                         acc
+                         (assoc acc proc-name
+                                (gtp/start {:event-pubsub ps :topics topics
+                                            :handler-fn handler-fn :context base-ctx}))))
                      {} @gtp/processor-registry*)]
     (assoc base-ctx :event-pubsub ps :processors processors ::cache-dir cache-dir)))
 
@@ -67,8 +69,8 @@
         (doseq [c (.listFiles f)] (.delete c))
         (.delete f)))))
 
-(defmacro with-test-ctx [[sym] & body]
-  `(let [~sym (create-context)]
+(defmacro with-test-ctx [[sym & [excluded-processors]] & body]
+  `(let [~sym (create-context ~(or excluded-processors #{}))]
      (try ~@body (finally (stop-context ~sym)))))
 
 ;; =============================================================================
@@ -80,10 +82,8 @@
         sheet-id (-> sheet-result :command-result/events first :sheet-id)]
     (doseq [k [:question :answer]]
       (h/run-and-apply! ctx (h/make-declare-key-command sheet-id k :string)))
-    (let [seq-result (h/run-and-apply! ctx (h/make-create-node-command sheet-id :sequence))
-          seq-id (-> seq-result :command-result/events first :node-id)
-          node-result (h/run-and-apply! ctx (h/make-create-node-command
-                                              sheet-id :repl-researcher :parent-id seq-id))
+    (let [node-result (h/run-and-apply! ctx (h/make-create-node-command
+                                              sheet-id :repl-researcher))
           node-id (-> node-result :command-result/events first :node-id)]
       (h/run-and-apply! ctx (h/make-set-repl-researcher-config-command
                               sheet-id node-id "Design a tree for the task" [:question] [:answer] []
@@ -149,15 +149,16 @@
 
 (deftest slow-classify-does-not-block-the-dispatch-thread
   (testing "execute-repl-researcher-node returns to its caller (the todo-processor dispatch thread) immediately even when classify is slow — the wedge runs inside the future"
-    (with-test-ctx [ctx]
+    ;; Keep start-tree-tick live so the event under test comes from the real
+    ;; pipeline, but leave its generic node consumer unsubscribed. This gives
+    ;; the timing probe a fresh, never-classified campaign occurrence.
+    (with-test-ctx [ctx #{:sheet/execute-leaf-node}]
       (let [{:keys [sheet-id node-id]} (setup-auto-classify-sheet! ctx)
             classify-ran (promise)]
-        ;; Phase 1 — drive the REAL pipeline with a FAST classify so a real
-        ;; :sheet/node-execution-started event lands in the store.
-        (with-redefs [ontology/classify-task (fn [_ _] fast-structural)
-                      ontology/classify-behaviors (fn [_ _] fast-behavioral)]
-          (dispatch-tick! ctx sheet-id)
-          (let [started (await-started-event ctx node-id 10000)]
+        ;; Phase 1 — drive the real tree-start pipeline only. The resulting
+        ;; node start has not already consumed RR-18's one classification.
+        (dispatch-tick! ctx sheet-id)
+        (let [started (await-started-event ctx node-id 10000)]
             (is (some? started)
                 "Sanity: the real pipeline emitted a :sheet/node-execution-started event for the repl-researcher node")
             (Thread/sleep 500)
@@ -175,7 +176,7 @@
                     (str "the dispatch thread was released in " elapsed "ms; a classify stall of "
                          induced-classify-delay-ms "ms must NOT be on it"))
                 (is (deref classify-ran (+ induced-classify-delay-ms 10000) false)
-                    "the slow classify still RAN (inside the future) — the work moved, it was not skipped")))))))))
+                    "the slow classify still RAN (inside the future) — the work moved, it was not skipped"))))))))
 
 ;; =============================================================================
 ;; RED #7 — R-Inject surfaces a caution for a :timeout-fallback candidate

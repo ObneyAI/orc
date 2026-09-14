@@ -1168,7 +1168,7 @@
           node {:type :repl-researcher
                 :instruction "repair a timed-out child"
                 :writes [:summary]
-                :rlm {:recursive? true}
+                :rlm {:recursive? true :checkpointed? false}
                 :max-iterations 3}]
       (with-redefs [llm/predict
                     (fn [& _]
@@ -1623,7 +1623,7 @@
                       :instruction "Summarize then wrap up"
                       :reads [:document]
                       :writes [:summary :iteration-count]
-                      :rlm {:recursive? true}
+                      :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 5}
                 blackboard {:document {:key :document
                                        :schema :string
@@ -1668,7 +1668,7 @@
                       :instruction "Loop test"
                       :reads [:document]
                       :writes [:summary]
-                      :rlm {:recursive? true}
+                      :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 3}  ;; small for fast test
                 blackboard {:document {:key :document :schema :string :value "x" :version 1}}
                 result (executor/execute-repl-researcher-rlm
@@ -1702,7 +1702,7 @@
                       :instruction "Go"
                       :reads [:document]
                       :writes [:summary]
-                      :rlm {:recursive? true}
+                      :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 5}
                 blackboard {:document {:key :document :schema :string :value "x" :version 1}}
                 result (executor/execute-repl-researcher-rlm
@@ -1764,7 +1764,7 @@
                       :reads [:document]
                       :writes [:summary :detail-status :node-count
                                :trajectory-count :failure-count]
-                      :rlm {:recursive? true}
+                      :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 5}
                 blackboard {:document {:key :document :schema :string
                                        :value "doc text" :version 1}}
@@ -1847,7 +1847,7 @@
                       :reads []
                       :writes [:tr-count :tr-status :tr-failed-leaf-count
                                :tr-failed-leaf-error :tr-failed-leaf-has-node-id?]
-                      :rlm {:recursive? true}
+                      :rlm {:recursive? true :checkpointed? false}
                       :max-iterations 5}
                 blackboard {}
                 result (executor/execute-repl-researcher-rlm

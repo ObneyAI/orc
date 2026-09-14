@@ -127,3 +127,7 @@ _Avoid_: version, generation, term
 **Indeterminate effect**:
 An effect that was claimed but has no recorded outcome — it may or may not have happened. Always durably visible, never silently assumed either way.
 _Avoid_: failed call, lost call
+
+**Provider-call reservation**:
+A durable campaign-budget slot written immediately before one provider attempt. It belongs to the budget root, campaign iteration, ownership epoch, and node execution that requested the call. It remains spent even when a crash leaves the provider outcome unknown.
+_Avoid_: provider claim (a claim fences one logical campaign effect per ownership epoch; a reservation counts one physical provider attempt)

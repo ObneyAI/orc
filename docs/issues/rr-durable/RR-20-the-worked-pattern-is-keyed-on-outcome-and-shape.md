@@ -22,16 +22,78 @@ success. Key the claim per shape rather than one per class, so a class that genu
 
 ## Acceptance criteria
 
-- [ ] A pattern is recorded as proven only when a campaign succeeded with it
-- [ ] A failed shape is recorded as failed and never displaces a successful one
-- [ ] A class that succeeds with two shapes retains both
-- [ ] The selector prefers success-backed, occurrence-corroborated claims over bare emitted artefacts
-- [ ] A campaign that fails then repairs records the repair as proven and the first attempt as failed
+- [x] A pattern is recorded as proven only when a campaign succeeded with it
+- [x] A failed shape is recorded as failed and never displaces a successful one
+- [x] A class that succeeds with two shapes retains both
+- [x] The selector prefers success-backed, occurrence-corroborated claims over bare emitted artefacts
+- [x] A campaign that fails then repairs records the repair as proven and the first attempt as failed
 
 ## Spec obligations covered
 
 - `entity-optional.CampaignIteration.emitted_shape`
 - `invariant.RecordedTreesCarryTheirShape`
+
+## Verification
+
+The worked pattern is now recorded per shape and by outcome. The post-emit
+enrichment writer (`on-emit-enrich-tree-class`) resolves the class by the
+`[source-sheet-id source-tick-id]` occurrence rather than the shared host
+sheet, reads the bookend's `:status`, and writes ONE claim operation keyed on
+the tree's `:tree-fingerprint`: a `:success` bookend records or reinforces the
+shape's `:strength` claim carrying the exact `:generated-tree-source` text; any
+other outcome records the shape as a `:weakness` with the same exact source and
+never touches a success-backed claim. A class that succeeds with two shapes
+keeps two claims; a re-success reinforces only its own shape; a later failure
+never displaces an earlier proven shape; an `:edit` can only reword the same
+shape. Both writers declare what they rest on through two new mechanical
+evidence bases, `:emitted-artifact-outcome` (the bookend's deterministic
+outcome) and `:campaign-verdict` (the RR-19 verdict), admitted without judge
+episodes and therefore never able to validate or enforce on their own.
+
+Proof is graded. When a campaign's durable RR-19 verdict is `:success`, the
+new `on-campaign-success-corroborate-worked-pattern` processor reinforces the
+success-bookend shapes of that occurrence with a `:campaign-verdict` support
+delta, which the claim fold counts durably as `:verdict-corroborations`; the
+assembled strength entry carries that count additively when positive, and
+`best-recommended-pattern` ranks it first, then earned confidence, then
+recency, so a verdict-corroborated shape outranks a bare emitted artefact
+however often the latter was re-emitted, and a failed-only class offers
+nothing and cannot harvest. Concurrent claim writes lost at the event store's
+CAS boundary are retried against a fresh read and logged when exhausted.
+
+Independent inspection reran the subagent's proof and drove an adversarial
+probe through the registered processors. Two defects were found and sent back:
+the corroboration writer applied `filter` to the event store's reducible and
+threw silently inside the processor thread (code bug, fixed by materialising
+the read, with two durable processor-level tests added), and support-only
+ranking let a bare artefact re-emitted three times outrank a shape corroborated
+once (acceptance criterion unmet; fixed with the durable
+`:verdict-corroborations` count and the explicit primary sort key, with a
+durable ranking test for that exact scenario). The public lifecycle proof then drove the whole mechanism through `sheet/execute`: a default-checkpointed researcher with a scripted provider emitted a quoted tree whose Phase-2 execution genuinely failed, then a structurally repaired tree that succeeded and finalized the campaign; the two bookends, both iteration records with their shapes, the single success verdict occurrence, the repaired shape's `:strength` claim (exact source, `:verdict-corroborations` 1), the first shape's `:weakness` claim, `harvest-body` and the assembled strength entry were all read back from the store (1 test / 34 assertions).
+
+Focused results on the final tree: the propagated namespace 6 tests / 23 assertions, the four sibling RR-20 namespaces, the CV-2/CC-6 seams and the ontology claim/harvest/reranker seams 108 tests / 451 assertions, the public lifecycle proof 1 / 34, the checkpointed researcher namespace 39 / 352, all 0 failures. The ontology brick
+passes in both owning project graphs (653 tests / 3717 assertions in each graph, run solo in fresh JVMs — 8 minutes 15 seconds and 6 minutes 14 seconds — because the combined single-JVM invocation hits the known DJL native-library double-classloader harness error in its second graph). The complete two-project
+`orc-service` brick passes with exit 0 in 69 minutes 28 seconds under
+`-J-Djava.awt.headless=true` (121 namespaces and 1041 tests / 5816 assertions in each project graph, 0 failures, 0 errors). Allium remains at the
+characterized twelve-spec baseline of 115 information diagnostics, 35 warnings,
+0 errors and zero analyse findings after tending the graded-proof preference
+into `WorkedPatternsAreProvenNotMerelyRecent`. `allium plan
+specs/orc-service.allium` resolves both issue obligations at the RR-5/RR-6
+iteration-record schema seam, already green before implementation (a finding,
+kept as the durable guard); coverage is `2 obligations, 2 covered, 0
+uncovered`, the propagated behavioural bridge ends at
+6 tests / 23 assertions green from 15 failures at RED, with no weakened generated test and no generated mock,
+stub, TODO or skeleton.
+
+Weed check mode: no RR-20 divergence. Classified findings: `:campaign-verdict`
+and `:verdict-corroborations` are implementation-level claim accounting absent
+from the behavioural spec (intentional gap; the spec names the preference, not
+the counter); a verdict corroborates every success bookend of its campaign
+rather than only the terminal winning shape — RR-21 defines the winning shape
+and owns that narrowing (aspirational until RR-21); R-Inject still clips an
+offered pattern to 1,200 characters (code bug, ratified for RR-22, untouched
+here). The pre-existing CV-2/CC-6 assertions that encoded one-slot,
+last-emit-wins were changed deliberately and are listed in the handoff report.
 
 ## Test seams
 

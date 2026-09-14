@@ -36,6 +36,7 @@
             [ai.obney.orc.orc-service.core.rlm-sandbox :as rlm-sandbox]
             [ai.obney.orc.orc-service.core.rlm-fingerprint :as rlm-fingerprint]
             [ai.obney.orc.orc-service.core.researcher-effects :as researcher-effects]
+            [ai.obney.orc.orc-service.core.researcher-mode :as researcher-mode]
             [ai.obney.orc.orc-service.core.rlm-tree-executor :as tree-executor]
             [ai.obney.orc.orc-service.core.rlm-drill-down :as drill]
             [ai.obney.orc.orc-service.core.streaming :as streaming]
@@ -155,20 +156,99 @@
                   :else v)))]
       (decode* value))))
 
+(def ^:private transport-timeout-classes
+  "Exception types that mean exactly one thing: the call did not complete within
+   its deadline. A checkpointed provider call races TWO timers set from the same
+   live remainder — ORC's own `bounded-call` deadline and the request timeout ORC
+   hands the transport — so either can fire first. Both must classify the same
+   way, or which timer wins decides whether the campaign retries or dies.
+
+   Classified by TYPE and cause chain, never by message text.
+   `HttpConnectTimeoutException` is a subtype of `HttpTimeoutException`."
+  #{java.net.http.HttpTimeoutException
+    java.net.SocketTimeoutException
+    java.util.concurrent.TimeoutException})
+
+(def provider-classification-lead-ms
+  "How much EARLIER than the transport's deadline ORC's own provider deadline fires.
+
+   ORC bounds every provider call twice: its own `bounded-call` deadline, and the
+   request timeout it hands the transport through the LLM component. Both were the
+   SAME value, so which fired first was a coin flip — and they classify
+   differently. ORC's timer yields `:timeout-kind :provider`, which retries the
+   iteration from its checkpoint (`TimedOutIterationRetriesFromCheckpoint`). The
+   transport's timer raises an exception that reaches us with its cause chain
+   already flattened to a string by the provider library, so nothing structural
+   survives to identify it as a deadline expiry rather than a genuine provider
+   error — and it terminated the campaign with the retry budget unspent.
+
+   Measured on a live pinned-model campaign: consecutive attempts on ONE campaign
+   were classified `:timeout` at 1,226 ms and `:failure` at 1,213 ms.
+
+   The fix shortens OUR timer rather than lengthening the transport's: the
+   transport must never be handed more than the enclosing workflow's live
+   remainder (`EveryCampaignOperationIsBounded`), so the outer bound is the one
+   that has to stay exact."
+  250)
+
+(defn provider-classification-deadline-ms
+  "ORC's own deadline for a provider call: strictly earlier than the deadline the
+   transport gets, so ORC's timer is the one that classifies a deadline expiry.
+
+   The lead is capped at a tenth of the budget so a deliberately tiny deadline
+   shrinks proportionally instead of collapsing to nothing, and the result is
+   never less than 1 ms while the budget itself is positive."
+  [provider-timeout-ms]
+  (if (pos? provider-timeout-ms)
+    (max 1 (- provider-timeout-ms
+              (min provider-classification-lead-ms
+                   (quot provider-timeout-ms 10))))
+    provider-timeout-ms))
+
+(defn transport-timeout?
+  "True when `throwable`, or anything in its cause chain, is a transport-level
+   deadline expiry. The chain walk is cycle-guarded: a self-referencing cause
+   must not hang the classifier."
+  [throwable]
+  (loop [e throwable
+         seen #{}]
+    (cond
+      (nil? e) false
+      (contains? seen e) false
+      (some #(instance? % e) transport-timeout-classes) true
+      :else (recur (.getCause ^Throwable e) (conj seen e)))))
+
 (defn bounded-call
   "Invoke f within timeout-ms. Returns a tagged result and interrupts the worker
    on timeout. Kept small so deadline composition can be tested deterministically."
-  [timeout-ms f]
-  (if (and (number? timeout-ms) (<= timeout-ms 0))
-    {:timeout? true}
-    (let [worker (future (try {:value (f)}
-                              (catch Throwable t {:throwable t})))
-          result (if (number? timeout-ms)
-                   (deref worker timeout-ms ::timeout)
-                   @worker)]
-      (if (= ::timeout result)
-        (do (future-cancel worker) {:timeout? true})
-        result))))
+  ([timeout-ms f]
+   (bounded-call timeout-ms f nil))
+  ([timeout-ms f on-timeout!]
+   (if (and (number? timeout-ms) (<= timeout-ms 0))
+     (do
+       (when on-timeout! (on-timeout!))
+       {:timeout? true})
+     (let [worker (future (try {:value (f)}
+                               (catch Throwable t {:throwable t})))]
+       (try
+         (let [result (if (number? timeout-ms)
+                        (deref worker timeout-ms ::timeout)
+                        @worker)]
+           (if (= ::timeout result)
+             (do
+               ;; Invalidate any effect fence before interrupting: an effect
+               ;; implementation may catch or ignore interruption.
+               (when on-timeout! (on-timeout!))
+               (future-cancel worker)
+               {:timeout? true})
+             result))
+         (catch InterruptedException interrupted
+           ;; Cancelling the campaign interrupts this waiting thread. Propagate
+           ;; the same cancellation to the nested provider/tool worker instead
+           ;; of leaving that effect alive after its campaign has drained.
+           (when on-timeout! (on-timeout!))
+           (future-cancel worker)
+           (throw interrupted)))))))
 
 ;; =============================================================================
 ;; D-003: resolve-phase2-budget — pure deep module
@@ -179,6 +259,30 @@
    node and no :timeout-ms is set in the parent tick options. Preserves the
    pre-D-003 behavior of a generous 15-minute ceiling for Phase 2."
   900000)
+
+(defn resolve-researcher-campaign-timing
+  "Establish the immutable absolute timing facts for one researcher campaign.
+
+   The same resolver is used before checkpointed classification and inside the
+   executor so preparation cannot live outside a second, later-created clock.
+   A durable checkpoint always wins; otherwise the existing campaign timeout
+   precedence is preserved exactly.  The enclosing workflow deadline remains
+   independent and is composed at each operation boundary rather than folded
+   into the campaign fact."
+  [{:keys [node checkpoint started-at-ms parent-timeout-ms]}]
+  (let [timeout-config (or (get-in node [:rlm :timeouts]) {})
+        campaign-started-at-ms (or (:campaign-started-at-ms checkpoint)
+                                   started-at-ms)
+        campaign-timeout-ms (or (:campaign-ms timeout-config)
+                                (:timeout-ms node)
+                                parent-timeout-ms
+                                phase2-default-budget-ms)
+        campaign-deadline-ms (or (:campaign-deadline-ms checkpoint)
+                                 (+ campaign-started-at-ms
+                                    campaign-timeout-ms))]
+    {:campaign-started-at-ms campaign-started-at-ms
+     :campaign-deadline-ms campaign-deadline-ms
+     :campaign-timeout-ms campaign-timeout-ms}))
 
 (defn resolve-phase2-budget
   "Resolve the budget that Phase 2 (tree execution) should be allowed to consume,
@@ -1329,6 +1433,7 @@
         ;; The node's :model rides through as a per-request override —
         ;; litellm-clj's router honors :model in the request options.
         internal-option-keys #{:execution-deadline-ms :reserve-llm-call!
+                               :reserve-provider-attempt! :provider-reservation-context
                                :tick-id :node-attempt :max-node-attempts
                                :exec-context
                                :max-retries :retry-delay-ms :validate?}
@@ -1423,14 +1528,36 @@
         tick-id (:tick-id options)
         node-attempt (or (:node-attempt options) 1)
         max-node-attempts (or (:max-node-attempts options) 1)
+        reserve-provider-attempt! (:reserve-provider-attempt! options)
+        provider-reservation-context (:provider-reservation-context options)
+        provider-action-id
+        (when reserve-provider-attempt!
+          (researcher-effects/provider-logical-action-identity
+           {:tick-id (:tick-id provider-reservation-context)
+            :node-id (:node-id provider-reservation-context)
+            :iteration-index (:iteration-index provider-reservation-context)
+            :provider provider
+            :model (:model node)
+            :module llm-module
+            :inputs inputs
+            :options llm-options}))
         prepare-attempt
         (fn [attempt]
-          (let [remaining (execution-budget/remaining-ms deadline-ms)]
+          (let [remaining (execution-budget/remaining-ms deadline-ms)
+                physical-ordinal (+ (* (dec node-attempt) (inc max-retries))
+                                    attempt)]
             (cond
               (and remaining (not (pos? remaining)))
               {:timeout-error "Execution deadline exhausted before provider attempt"}
 
-              (and reserve-call! (reserve-call!))
+              (and reserve-provider-attempt!
+                   (reserve-provider-attempt!
+                    {:logical-action-identity provider-action-id
+                     :provider-attempt-ordinal physical-ordinal}))
+              {:timeout-error "Durable provider-call reservation rejected before provider attempt"}
+
+              (and (nil? reserve-provider-attempt!)
+                   reserve-call! (reserve-call!))
               {:timeout-error "LLM call budget exhausted before provider attempt"}
 
               :else
@@ -2976,10 +3103,12 @@
 
    This separates variable space (sandbox memory) from token space (LLM context).
 
-   Options:
+  Options:
    - :debug? - Enable verbose debug output for troubleshooting (default: false)"
   [node blackboard provider context & {:keys [options] :or {options {}}}]
-  (let [start-time (System/currentTimeMillis)
+  (let [campaign-now-ms-fn (or (:campaign-now-ms-fn context)
+                               #(System/currentTimeMillis))
+        start-time (long (campaign-now-ms-fn))
         max-iterations (or (:max-iterations node) 10)
         mcp-tools (or (:mcp-tools node) [])
         browser-tools (or (:browser-tools node) [])
@@ -3011,12 +3140,13 @@
         checkpoint (if resume-state
                      (assoc resume-state :history (vec iteration-records))
                      legacy-checkpoint)
-        ;; Attempt evidence has a dedicated injectable time seam. Keep the
-        ;; engine's wall-clock deadlines on System/currentTimeMillis: a test
-        ;; clock must not change admission, provider, or campaign timing.
+        ;; Attempt evidence and campaign deadlines are separate injected
+        ;; capabilities. Production defaults both to the real clock; tests can
+        ;; deterministically advance campaign admission and deadline checks
+        ;; without changing attempt-evidence timestamps.
         researcher-now-ms-fn (or (:researcher-now-ms-fn context)
                                  #(System/currentTimeMillis))
-        checkpointed? (true? (:checkpointed? rlm-config))
+        checkpointed? (boolean (researcher-mode/checkpointed? node))
         ownership-epoch (or (:researcher-ownership-epoch context)
                             (:ownership-epoch checkpoint)
                             0)
@@ -3032,8 +3162,28 @@
         checkpoint-revision (atom (or (:revision checkpoint) 0))
         iteration-attempts (or (:iteration-attempts checkpoint) {})
         max-iteration-attempts (max 1 (or (get-in rlm-config [:iteration-retry :max-attempts]) 3))
+        researcher-monotonic-ms-fn
+        (when checkpointed?
+          (or (:researcher-monotonic-ms-fn context)
+              #(quot (System/nanoTime) 1000000)))
+        researcher-quantum-started-monotonic-ms
+        (when checkpointed?
+          (long (or (:researcher-quantum-started-monotonic-ms context)
+                    (researcher-monotonic-ms-fn))))
+        max-observed-quantum-duration-ms
+        (long (or (:max-observed-quantum-duration-ms checkpoint) 0))
+        with-completed-quantum-observation
+        (fn [checkpoint]
+          (let [observed-ms
+                (max 0 (- (long (researcher-monotonic-ms-fn))
+                          researcher-quantum-started-monotonic-ms))]
+            (assoc checkpoint
+                   :observed-quantum-duration-ms observed-ms
+                   :max-observed-quantum-duration-ms
+                   (max max-observed-quantum-duration-ms observed-ms))))
         current-iteration (atom initial-iteration)
         action-ordinal (atom 0)
+        current-iteration-deadline-ms (atom nil)
         current-generated-code-hash (atom nil)
         legacy-completed-actions
         (reduce-kv (fn [acc action-id action]
@@ -3061,6 +3211,7 @@
                                        effect-claim-completions))
         persist-action! (:persist-researcher-action! context)
         checkpoint-tool-violation (atom nil)
+        checkpoint-tool-timeout (atom nil)
         unsafe-checkpoint-tool
         (when checkpointed?
           (some (fn [tool-name]
@@ -3103,14 +3254,36 @@
                          @current-iteration "/tool/" ordinal)
                     attempt-id (researcher-effects/attempt-identity
                                 action-id ownership-epoch attempt-ordinal)
+                    tool-timeout-ms
+                    (when-let [deadline-ms @current-iteration-deadline-ms]
+                      (max 0 (- (long deadline-ms)
+                                (long (campaign-now-ms-fn)))))
+                    ;; :orc/idempotency-key is meaningful only at OUR own
+                    ;; boundary and at a participating callee: it recognises
+                    ;; an already-dispatched call on resume so a
+                    ;; checkpoint-safe tool can deduplicate its own external
+                    ;; effect. No LLM provider reads or honours this key
+                    ;; (ADR 0004): it is ours, not the provider's.
                     tool-context (assoc (or (:tool-context context) {})
                                         :orc/idempotency-key action-id
                                         :orc/researcher-iteration @current-iteration
-                                        :orc/action-ordinal ordinal)]
+                                        :orc/action-ordinal ordinal
+                                        :orc/timeout-ms tool-timeout-ms)]
                 (if-let [completed (or (get @completed-actions action-id)
                                        (get @completed-actions legacy-action-id))]
                   (:result completed)
-                  (let [claim-result
+                  (let [_ (when-not (and (integer? tool-timeout-ms)
+                                         (pos? tool-timeout-ms))
+                            (reset! checkpoint-tool-timeout
+                                    {:tool tool-name
+                                     :timeout-ms tool-timeout-ms})
+                            (throw
+                             (ex-info
+                              "Researcher tool deadline exceeded before dispatch"
+                              {:timeout-kind :iteration
+                               :tool tool-name
+                               :timeout-ms tool-timeout-ms})))
+                        claim-result
                         (when-let [claim! (:claim-researcher-effect! context)]
                           (claim! {:iteration-index @current-iteration
                                    :logical-action-identity action-id
@@ -3149,13 +3322,25 @@
                     result))))))
           (phase1-call-tool-fn (assoc context :call-tool-fn raw-call-tool-fn)))
         timeout-config (or (:timeouts rlm-config) {})
-        campaign-started-at-ms (or (:campaign-started-at-ms checkpoint) start-time)
-        campaign-timeout-ms (or (:campaign-ms timeout-config)
-                                (:timeout-ms node)
-                                (:parent-timeout-ms context)
-                                phase2-default-budget-ms)
-        campaign-deadline-ms (or (:campaign-deadline-ms checkpoint)
-                                 (+ campaign-started-at-ms campaign-timeout-ms))
+        pre-classification-timing (:researcher-campaign-timing context)
+        campaign-timing
+        (resolve-researcher-campaign-timing
+         {:node node
+          ;; A durable resume state is authoritative over the timing facts
+          ;; carried by the current dispatch.  On the first quantum the latter
+          ;; supplies the clock established before classification.
+          :checkpoint (merge pre-classification-timing checkpoint)
+          :started-at-ms (or (:campaign-started-at-ms
+                              pre-classification-timing)
+                             start-time)
+          :parent-timeout-ms (:parent-timeout-ms context)})
+        campaign-started-at-ms (:campaign-started-at-ms campaign-timing)
+        campaign-timeout-ms (:campaign-timeout-ms campaign-timing)
+        campaign-deadline-ms (:campaign-deadline-ms campaign-timing)
+        classification-context
+        (or (:classification-context checkpoint)
+            (:researcher-classification-context context))
+        workflow-deadline-ms (:workflow-deadline-ms context)
         phase-budget-deadline-ms
         (+ campaign-started-at-ms
            (:total-budget-ms
@@ -3188,7 +3373,7 @@
         ;; to recursive.
         recursive-mode? (not= false (get-in node [:rlm :recursive?]))
         iteration-record
-        (fn [iteration status history-entry attempt-start-ms]
+        (fn [iteration status history-entry attempt-start-ms terminal-result]
           (let [history-entry (or history-entry {})
                 raw-attempt-completed-ms (long (researcher-now-ms-fn))
                 ;; Preserve a coherent lifecycle pair if the wall clock moves
@@ -3243,6 +3428,9 @@
                      :variable-delta {:created-keys created-keys
                                       :updated-keys updated-keys
                                       :removed-keys removed-keys}}
+              (= :blocked status)
+              (assoc :block-reason (:block-payload terminal-result))
+
               (contains? history-entry :code)
               (assoc :code (:code history-entry))
 
@@ -3271,7 +3459,10 @@
             (let [completed-iteration (dec next-iteration)
                   history-entry (last history)
                   record-status (if (:error history-entry) :failure :success)
-                  checkpoint {:version 1
+                  quantum-complete?
+                  (>= (- next-iteration initial-iteration)
+                      quantum-max-iterations)
+                  checkpoint (cond-> {:version 1
                               :revision (swap! checkpoint-revision inc)
                               :ownership-epoch ownership-epoch
                               :next-iteration next-iteration
@@ -3287,7 +3478,13 @@
                               (iteration-record completed-iteration
                                                 record-status
                                                 history-entry
-                                                attempt-start-ms)}
+                                                attempt-start-ms
+                                                nil)}
+                               classification-context
+                               (assoc :classification-context
+                                      classification-context)
+                               quantum-complete?
+                               with-completed-quantum-observation)
                   ;; encode-checkpoint-value THROWS on a value it cannot make
                   ;; durable. Uncaught, that throw escapes to the outer handler
                   ;; and the campaign dies with NO :iterations — every completed
@@ -3301,14 +3498,13 @@
               (if-let [encode-error (:encode-error encoded)]
                 {:status :failure
                  :iterations history
-                 :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                 :duration-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
                  :usage @total-usage
                  :error (str "Researcher checkpoint contains a non-durable sandbox value; "
                              "use EDN data or a registered durable codec (" encode-error ")")}
               (let [durable-checkpoint (:checkpoint encoded)]
               (if (checkpoint-durable-value? durable-checkpoint)
-                (if (>= (- next-iteration initial-iteration)
-                        quantum-max-iterations)
+                (if quantum-complete?
                   {:status :running
                    :iterations history
                    :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
@@ -3327,12 +3523,16 @@
         (fn [iteration history terminal-result attempt-start-ms]
           (if-not checkpointed?
             terminal-result
-            (let [checkpoint {:version 1
+            (let [checkpoint (cond-> {:version 1
                               :revision (swap! checkpoint-revision inc)
                               :ownership-epoch ownership-epoch
                               :next-iteration (inc iteration)
                               :history history
-                              :sandbox-vars @sandbox-vars
+                              ;; The compiled generated tree can contain runtime
+                              ;; functions. A terminal checkpoint has no work to
+                              ;; resume, so retain its durable raw/source evidence
+                              ;; but exclude the transient compiled marker.
+                              :sandbox-vars (dissoc @sandbox-vars :generated-tree)
                               :var-creation-times @var-creation-times
                               :usage @total-usage
                               :cumulative-tree-ms @cumulative-tree-ms
@@ -3344,7 +3544,11 @@
                               (iteration-record iteration
                                                 (:status terminal-result)
                                                 (last history)
-                                                attempt-start-ms)}
+                                                attempt-start-ms
+                                                terminal-result)}
+                               classification-context
+                               (assoc :classification-context
+                                      classification-context))
                   durable-checkpoint (encode-checkpoint-value checkpoint-codecs checkpoint)]
               (when-let [persist! (:persist-researcher-checkpoint! context)]
                 (persist! durable-checkpoint))
@@ -3352,11 +3556,13 @@
         retry-result
         (fn [iteration history timeout-kind error attempt-start-ms]
           (let [attempt (inc (get iteration-attempts iteration 0))
+                retrying? (and checkpointed?
+                               (< attempt max-iteration-attempts))
                 durable-checkpoint
                 (when checkpointed?
                   (encode-checkpoint-value
                    checkpoint-codecs
-                   {:version 1
+                   (cond-> {:version 1
                     :revision (swap! checkpoint-revision inc)
                     :ownership-epoch ownership-epoch
                     ;; A timed-out attempt does not advance the logical
@@ -3375,8 +3581,13 @@
                     (iteration-record iteration :timeout
                                       {:error error
                                        :timeout-kind timeout-kind}
-                                      attempt-start-ms)}))]
-            (if (and checkpointed? (< attempt max-iteration-attempts))
+                                      attempt-start-ms
+                                      nil)}
+                     classification-context
+                     (assoc :classification-context
+                            classification-context)
+                     retrying? with-completed-quantum-observation)))]
+            (if retrying?
               {:status :running
                :iterations history
                :duration-ms (- (System/currentTimeMillis) campaign-started-at-ms)
@@ -3442,7 +3653,7 @@
            :usage @total-usage}
 
           (>= iteration max-iterations)
-          (let [total-elapsed (- (System/currentTimeMillis) campaign-started-at-ms)
+          (let [total-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
                 ;; Surface what survived even on failure so bench reports +
                 ;; downstream consumers can inspect what the model produced.
                 final-sandbox @sandbox-vars
@@ -3467,7 +3678,7 @@
               (seq iteration-reasonings) (assoc :iteration-reasonings
                                                 (vec iteration-reasonings))))
 
-          (and (>= (System/currentTimeMillis) campaign-deadline-ms)
+          (and (>= (long (campaign-now-ms-fn)) campaign-deadline-ms)
                (not= :phase-budget campaign-deadline-source))
           {:status :timeout
            :timeout-kind :campaign
@@ -3484,13 +3695,13 @@
           ;; the next budget check ran. Check at the TOP of every iteration
           ;; so any iteration that pushes elapsed past total-budget bails
           ;; out fast instead of making another long-running LLM call.
-          (let [phase1-elapsed (- (System/currentTimeMillis) campaign-started-at-ms)
+          (let [phase1-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
                 budget (resolve-phase2-budget
                         {:node node
                          :parent-timeout-ms (:parent-timeout-ms context)
                          :phase1-elapsed-ms phase1-elapsed})]
             (:exhausted? budget))
-          (let [phase1-elapsed (- (System/currentTimeMillis) campaign-started-at-ms)
+          (let [phase1-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
                 budget (resolve-phase2-budget
                         {:node node
                          :parent-timeout-ms (:parent-timeout-ms context)
@@ -3520,15 +3731,19 @@
           ;; and the transport cannot disagree about the output contract.
           (let [_ (reset! current-iteration iteration)
                 _ (reset! action-ordinal 0)
-                iteration-start-ms (System/currentTimeMillis)
+                iteration-start-ms (long (campaign-now-ms-fn))
                 attempt-start-ms (when checkpointed?
                                    (long (researcher-now-ms-fn)))
                 sandbox-before-iteration @sandbox-vars
                 creation-times-before-iteration @var-creation-times
-                iteration-deadline-ms (min campaign-deadline-ms
-                                           (+ iteration-start-ms
-                                              (or (:iteration-ms timeout-config)
-                                                  campaign-timeout-ms)))
+                iteration-deadline-ms (apply min
+                                             (remove nil?
+                                                     [campaign-deadline-ms
+                                                      workflow-deadline-ms
+                                                      (+ iteration-start-ms
+                                                         (or (:iteration-ms timeout-config)
+                                                             campaign-timeout-ms))]))
+                _ (reset! current-iteration-deadline-ms iteration-deadline-ms)
                 function-calling? (boolean (:use-function-calling?
                                             (merge {:use-function-calling? false}
                                                    options)))
@@ -3586,11 +3801,13 @@
                 _ (dbg "calling llm/predict...")
                 provider-timeout-ms (max 0
                                          (min (or (:provider-ms timeout-config)
-                                                  campaign-timeout-ms)
+                                              campaign-timeout-ms)
                                               (- iteration-deadline-ms
-                                                 (System/currentTimeMillis))))
-                provider-start-ms (System/currentTimeMillis)
+                                                 (long (campaign-now-ms-fn)))))
+                provider-start-ms (long (campaign-now-ms-fn))
                 provider-request-options
+                ;; The transport receives the EXACT live remainder: it is the
+                ;; outer bound and must never outlive the enclosing workflow.
                 (assoc llm-options :timeout-ms provider-timeout-ms)
                 provider-action-id
                 (researcher-effects/provider-logical-action-identity
@@ -3601,6 +3818,10 @@
                   :model (encode-effect-value (:model node))
                   :module (encode-effect-value module)
                   :inputs (encode-effect-value inputs)
+                  ;; The resolved transport timeout shrinks with elapsed wall
+                  ;; time and is therefore not part of the logical request.
+                  ;; Hash only stable caller/node options so replay can find
+                  ;; the completed provider claim under load.
                   :options (encode-effect-value provider-request-options)})
                 legacy-provider-action-id
                 (str (:tick-id context) "/" (:node-id context) "/"
@@ -3620,12 +3841,28 @@
                   completed-provider-envelope)
                 invoke-provider
                 #(do
-                   (when-let [exceeded (and (:reserve-llm-call! context)
-                                            ((:reserve-llm-call! context)))]
+                   (when-let [exceeded
+                              (if (and checkpointed?
+                                       (:reserve-provider-call! context))
+                                ((:reserve-provider-call! context)
+                                 {:iteration-index iteration
+                                  :logical-action-identity provider-action-id
+                                  :provider-attempt-ordinal
+                                  provider-attempt-ordinal})
+                                (and (:reserve-llm-call! context)
+                                     ((:reserve-llm-call! context))))]
                      (throw (ex-info
-                             (str "LLM call budget exceeded: "
-                                  (:current exceeded) "/" (:budget exceeded))
+                             (or (:cognitect.anomalies/message exceeded)
+                                 (str "LLM call budget exceeded: "
+                                      (:current exceeded) "/" (:budget exceeded)))
                              exceeded)))
+                   ;; :orc/idempotency-key here recognises an already-
+                   ;; dispatched call on resume at OUR boundary (the claim
+                   ;; and :completed-actions lookup above); it is not read or
+                   ;; honoured by any LLM provider (ADR 0004). Provider calls
+                   ;; remain at-least-once and are durably attributed to the
+                   ;; ownership epoch that produced them, never surfaced to
+                   ;; the model as a failure.
                    (llm/predict provider module inputs
                                 (cond-> provider-request-options
                                   checkpointed?
@@ -3633,6 +3870,7 @@
                 provider-claim-result
                 (when (and checkpointed?
                            (nil? completed-provider-action)
+                           (pos? provider-timeout-ms)
                            (:claim-researcher-effect! context))
                   ((:claim-researcher-effect! context)
                    {:iteration-index iteration
@@ -3643,20 +3881,33 @@
                 provider-call (if completed-provider-action
                                 {:value completed-provider-result
                                  :replayed? true}
-                                (if (:cognitect.anomalies/category
-                                     provider-claim-result)
+                                (cond
+                                  (not (pos? provider-timeout-ms))
+                                  {:timeout? true}
+
+                                  (:cognitect.anomalies/category
+                                   provider-claim-result)
                                   {:claim-conflict? true
                                    :claim-result provider-claim-result}
-                                  (if (or checkpointed? (seq timeout-config))
-                                  (bounded-call provider-timeout-ms invoke-provider)
+
+                                  (or checkpointed? (seq timeout-config))
+                                  ;; Strictly earlier than the transport's own
+                                  ;; deadline, so THIS timer classifies. See
+                                  ;; `provider-classification-lead-ms`.
+                                  (bounded-call
+                                   (provider-classification-deadline-ms
+                                    provider-timeout-ms)
+                                   invoke-provider)
+
+                                  :else
                                   (try {:value (invoke-provider)}
-                                       (catch Throwable t {:throwable t})))))
+                                       (catch Throwable t {:throwable t}))))
                 provider-latency-ms
                 (or (when (and (map? completed-provider-envelope)
                                (contains? completed-provider-envelope
                                           :provider-latency-ms))
                       (:provider-latency-ms completed-provider-envelope))
-                    (- (System/currentTimeMillis) provider-start-ms))
+                    (- (long (campaign-now-ms-fn)) provider-start-ms))
                 llm-result (cond
                              (:claim-conflict? provider-call)
                              {:code nil
@@ -3671,7 +3922,14 @@
                              (:throwable provider-call)
                              (let [e (:throwable provider-call)]
                                (dbg "llm/predict EXCEPTION:" (.getMessage e))
-                               {:code nil :error (.getMessage e)})
+                               ;; A transport-detected deadline expiry is the SAME
+                               ;; condition as our own bounded-call deadline, so it
+                               ;; takes the same retry-from-checkpoint path
+                               ;; (`TimedOutIterationRetriesFromCheckpoint`). Any
+                               ;; other provider error stays a terminal failure.
+                               (cond-> {:code nil :error (.getMessage e)}
+                                 (transport-timeout? e)
+                                 (assoc :timeout-kind :provider)))
 
                              :else (:value provider-call))
                 durable-provider-envelope
@@ -3804,7 +4062,7 @@
                             {:status :failure
                              :error terminal-error
                              :iterations history
-                             :duration-ms (- (System/currentTimeMillis)
+                             :duration-ms (- (long (campaign-now-ms-fn))
                                              campaign-started-at-ms)
                              :usage @total-usage}]
                         (persist-terminal-result iteration failure-history
@@ -3813,7 +4071,7 @@
                       {:status :failure
                        :error terminal-error
                        :iterations history
-                       :duration-ms (- (System/currentTimeMillis)
+                       :duration-ms (- (long (campaign-now-ms-fn))
                                        campaign-started-at-ms)
                        :usage @total-usage}))
                   (let [next-history (conj history
@@ -3874,14 +4132,19 @@
                              (:complete-researcher-effect! context)
                              :completed-researcher-effects completed-actions
                              :reserve-llm-call! (:reserve-llm-call! context)
+                             :reserve-provider-call!
+                             (:reserve-provider-call! context)
                              :durable-source-required? checkpointed?})
                     sandbox-call (if bounded-iteration?
                                    (bounded-call
                                     (max 0 (- iteration-deadline-ms
-                                              (System/currentTimeMillis)))
+                                              (long (campaign-now-ms-fn))))
                                     #(rlm-sandbox/execute-rlm-code rlm-ctx code))
                                    {:value (rlm-sandbox/execute-rlm-code rlm-ctx code)})
                     exec-result (cond
+                                  @checkpoint-tool-timeout
+                                  {:error "Researcher tool deadline exceeded before dispatch"
+                                   :timeout-kind :iteration}
                                   @checkpoint-tool-violation
                                   {:error (str "Tool " @checkpoint-tool-violation
                                                " is not declared :checkpoint-safe? for resumable execution")}
@@ -3961,7 +4224,7 @@
                                 attempt-start-ms)
 
                   (and bounded-iteration?
-                       (>= (System/currentTimeMillis) iteration-deadline-ms))
+                       (>= (long (campaign-now-ms-fn)) iteration-deadline-ms))
                   (retry-result iteration history :iteration
                                 "Researcher iteration deadline exceeded"
                                 attempt-start-ms)
@@ -4046,7 +4309,7 @@
 
                   ;; final! was called - return the validated output
                   final-output
-                  (let [total-elapsed (- (System/currentTimeMillis) campaign-started-at-ms)
+                  (let [total-elapsed (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
                         ;; When the model called emit-tree! before final!,
                         ;; the designed tree lives in sandbox-vars. Propagate
                         ;; it to the return so downstream consumers (bench
@@ -4114,7 +4377,7 @@
                             (clojure.pprint/pprint generated-tree))
                         ;; D-003: resolve Phase 2 budget from node :timeout-ms,
                         ;; parent tick :timeout-ms (passed via context), or hardcoded fallback.
-                        phase1-elapsed-ms (- (System/currentTimeMillis) campaign-started-at-ms)
+                        phase1-elapsed-ms (- (long (campaign-now-ms-fn)) campaign-started-at-ms)
                         base-budget (resolve-phase2-budget
                                      {:node node
                                       :parent-timeout-ms (:parent-timeout-ms context)
@@ -4122,8 +4385,8 @@
                         phase2-remaining-ms
                         (max 0 (min (:remaining-ms base-budget)
                                     (or (:phase2-ms timeout-config) Long/MAX_VALUE)
-                                    (- iteration-deadline-ms (System/currentTimeMillis))
-                                    (- campaign-deadline-ms (System/currentTimeMillis))))
+                                    (- iteration-deadline-ms (long (campaign-now-ms-fn)))
+                                    (- campaign-deadline-ms (long (campaign-now-ms-fn)))))
                         budget (assoc base-budget
                                       :remaining-ms phase2-remaining-ms
                                       :exhausted? (zero? phase2-remaining-ms)
@@ -4199,7 +4462,12 @@
                                                  :logical-action-identity phase2-action-id
                                                  :attempt-identity phase2-attempt-id})))
                             phase2-result (if completed-phase2-action
-                                            (:result completed-phase2-action)
+                                            (let [result (:result completed-phase2-action)]
+                                              (when-let [parent-tick-id (:tick-id context)]
+                                                (when-let [child-tick-id (:trace-id result)]
+                                                  (streaming/link-child! parent-tick-id
+                                                                         child-tick-id)))
+                                              result)
                                             (try
                                             (when-let [required-keys
                                                        (seq (:preflight-required-schema-keys
@@ -4219,7 +4487,8 @@
                                                           {:blackboard-keys still-missing})))))
                                             (tree-executor/execute-tree
                                               generated-tree
-                                              context
+                                              (assoc context
+                                                     :researcher-iteration iteration)
                                               {:sandbox-vars phase2-vars
                                                ;; CV-2 (ADR 0017 decision 3):
                                                ;; hand the emitted raw S-expr to
@@ -4269,7 +4538,7 @@
                             phase2-completion-result
                             (when (and checkpointed?
                                        (nil? completed-phase2-action)
-                                       (contains? #{:success :partial :failure}
+                                       (contains? #{:success :partial :failure :blocked}
                                                   (:status phase2-result))
                                        (:complete-researcher-effect! context))
                               ((:complete-researcher-effect! context)
@@ -4287,14 +4556,14 @@
                                                  :attempt-identity phase2-attempt-id})))
                             _ (when (and checkpointed?
                                          (nil? completed-phase2-action)
-                                         (contains? #{:success :partial :failure}
+                                         (contains? #{:success :partial :failure :blocked}
                                                     (:status phase2-result)))
                                 (swap! completed-actions assoc phase2-action-id
                                        {:status :completed
                                         :result durable-phase2-result}))
                             _ (when (and checkpointed?
                                          (nil? completed-phase2-action)
-                                         (contains? #{:success :partial :failure}
+                                         (contains? #{:success :partial :failure :blocked}
                                                     (:status phase2-result))
                                          persist-action!)
                                 (persist-action! {:action-id phase2-action-id
@@ -4372,15 +4641,20 @@
                                :phase2-tick-id (:trace-id phase2-result)))
 
                       (= :blocked (:status phase2-result))
-                      {:status :blocked
-                       :block-payload (:block-payload phase2-result)
-                       :outputs (:outputs phase2-result)
-                       :generated-tree-raw generated-tree-raw
-                       :generated-tree-source generated-tree-source
-                       :iterations new-history
-                       :duration-ms (+ phase1-elapsed-ms (or (:duration-ms phase2-result) 0))
-                       :usage @total-usage
-                       :phase2-tick-id (:trace-id phase2-result)}
+                      (persist-terminal-result
+                       iteration
+                       new-history
+                       {:status :blocked
+                        :block-payload (:block-payload phase2-result)
+                        :outputs (:outputs phase2-result)
+                        :generated-tree-raw generated-tree-raw
+                        :generated-tree-source generated-tree-source
+                        :iterations new-history
+                        :duration-ms (+ phase1-elapsed-ms
+                                        (or (:duration-ms phase2-result) 0))
+                        :usage @total-usage
+                        :phase2-tick-id (:trace-id phase2-result)}
+                       attempt-start-ms)
                     ;; R-1: When :recursive? true, DON'T return Phase 2's result —
                     ;; instead merge outputs into sandbox-vars, append a summary entry
                     ;; to :tree-results, clear :generated-tree, and recur to give the

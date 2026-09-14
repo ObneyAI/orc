@@ -24,13 +24,13 @@ sized against.
 
 ## Acceptance criteria
 
-- [ ] Campaign work is registered and is cancelled on lease loss
-- [ ] Parent or operator cancellation records one terminal cancelled campaign with a cause; completed iterations and claims remain inspectable and no recovery path resumes it
-- [ ] Reassignment is delayed by a configured interval sized against measured worst-case quantum duration
-- [ ] Classification work falls inside the campaign clock and has its own deadline
-- [ ] A provider or tool call is bounded at the transport, not only by an advisory interrupt
-- [ ] Worst-case quantum duration is measured and recorded, not estimated
-- [ ] The drain path is documented in-code as probability reduction, never as a guarantee
+- [x] Campaign work is registered and is cancelled on lease loss
+- [x] Parent or operator cancellation records one terminal cancelled campaign with a cause; completed iterations and claims remain inspectable and no recovery path resumes it
+- [x] Reassignment is delayed by a configured interval sized against measured worst-case quantum duration
+- [x] Classification work falls inside the campaign clock and has its own deadline
+- [x] A provider or tool call is bounded at the transport, not only by an advisory interrupt
+- [x] Worst-case quantum duration is measured and recorded, not estimated
+- [x] The drain path is documented in-code as probability reduction, never as a guarantee
 
 ## Spec obligations covered
 

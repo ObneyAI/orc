@@ -17,6 +17,9 @@
             [ai.obney.orc.ontology.core.embedding :as embedding]
             [ai.obney.orc.ontology.core.discovery :as discovery]
             [ai.obney.orc.ontology.core.rule-extraction :as rule-extraction]
+            ;; RR-21: the winning-shape coherence measure the
+            ;; report-shape-coherence command records durably.
+            [ai.obney.orc.ontology.core.harvest :as harvest]
             [ai.obney.grain.event-store-v3.interface :as es :refer [->event]]
             [ai.obney.grain.command-processor-v2.interface :refer [defcommand]]
             [ai.obney.grain.time.interface :as time]
@@ -874,6 +877,14 @@
   [v]
   (java.util.UUID/nameUUIDFromBytes (.getBytes (str v) "UTF-8")))
 
+(defn researcher-logical-action-tag
+  "Stable event-store tag for one researcher-owned ontology action."
+  [logical-action-identity]
+  [:researcher-logical-action
+   (stable-uuid-from
+    (str "researcher-logical-action:" logical-action-identity))])
+
+
 (defcommand :ontology record-node-type-description
   "Record (or update) the description for a node-type — a cross-sheet
    aggregation across every node of this :type. Emits the
@@ -1410,13 +1421,79 @@
 ;; lets the runtime cheaply query "what was this tick's classification?"
 ;; when constructing the run-result envelope.
 
+(defn- active-researcher-classification-cas
+  "Fence a checkpointed classification fact to its active campaign frontier."
+  [source-tick-id source-node-id ownership-epoch]
+  {:types #{:rlm/researcher-frontier-claimed
+            :sheet/node-execution-completed
+            :sheet/tick-cancelled
+            :sheet/tree-tick-completed}
+   :tags #{[:tick source-tick-id]}
+   :predicate-fn
+   (fn [existing]
+     (let [events (into [] existing)
+           frontier-epochs
+           (keep (fn [event]
+                   (when (and (= :rlm/researcher-frontier-claimed
+                                  (:event/type event))
+                              (= source-node-id (:node-id event)))
+                     (:ownership-epoch event)))
+                 events)
+           terminal?
+           (some (fn [event]
+                   (or (= :sheet/tick-cancelled (:event/type event))
+                       (and (= :sheet/tree-tick-completed (:event/type event))
+                            (not= :running (:root-status event)))
+                       (and (= :sheet/node-execution-completed
+                               (:event/type event))
+                            (= source-node-id (:node-id event))
+                            (= :terminal (:completion-kind event)))))
+                 events)]
+       (and (not terminal?)
+            (= ownership-epoch
+               (when (seq frontier-epochs)
+                 (apply max frontier-epochs))))))})
+
+(defn- classification-assigned-for-occurrence?
+  "True when the durable stream already contains an assignment for one
+   campaign occurrence.  Command ids are deliberately not part of this
+   identity: retries may carry a fresh command id after recovery."
+  [events source-sheet-id source-tick-id]
+  (reduce (fn [_ event]
+            (if (and (= :ontology/task-classified (:event/type event))
+                     (= source-sheet-id (:source-sheet-id event))
+                     (= source-tick-id (:source-tick-id event)))
+              (reduced true)
+              false))
+          false
+          events))
+
+(defn- task-classification-occurrence-cas
+  "First-writer-wins guard for [source-sheet-id source-tick-id].  When the
+   assignment belongs to a checkpointed researcher campaign, evaluate the
+   existing live-epoch fence against the same append-time snapshot."
+  [source-sheet-id source-tick-id source-node-id ownership-epoch]
+  (let [active-cas (when (some? ownership-epoch)
+                     (active-researcher-classification-cas
+                      source-tick-id source-node-id ownership-epoch))]
+    {:types (cond-> #{:ontology/task-classified}
+              active-cas (into (:types active-cas)))
+     :tags #{[:tick source-tick-id]}
+     :predicate-fn
+     (fn [existing]
+       (let [events (into [] existing)]
+         (and (not (classification-assigned-for-occurrence?
+                    events source-sheet-id source-tick-id))
+              (or (nil? active-cas)
+                  ((:predicate-fn active-cas) events)))))}))
+
 (defcommand :ontology assign-task-class
   "C-2c-2 + C-2d-2: record an auto-classification decision. Takes the
    result of `ontology/classify-task` plus the (source-sheet-id,
    source-tick-id, source-node-id) provenance triple and emits
-   :ontology/task-classified. Stateless beyond the event itself; the
-   classification machinery (classify-task) is pure and runs upstream
-   in the executor wedge.
+   :ontology/task-classified once per (source-sheet-id, source-tick-id)
+   occurrence. The classification machinery (classify-task) is pure and
+   runs upstream in the executor wedge.
 
    C-2d-2 — optional :parent-tree-id forwarded from the walk-down
    classifier when the result is a deep match or fresh-mint under a
@@ -1425,37 +1502,284 @@
   [{{:keys [source-sheet-id source-tick-id source-node-id
             assigned-tree-id confidence top-candidates reasoning
             was-fresh-mint? parent-tree-id rerank-failed?
-            behavioral-subtrees ranked-candidates assigned-via]} :command}]
-  {:command-result/events
-   [(->event
-     {:type :ontology/task-classified
-      :tags #{[:tick source-tick-id]
-              [:description-target assigned-tree-id]}
-      :body (cond-> {:source-sheet-id source-sheet-id
-                     :source-tick-id source-tick-id
-                     :source-node-id source-node-id
-                     :assigned-tree-id assigned-tree-id
-                     :confidence confidence
-                     :top-candidates top-candidates
-                     :reasoning reasoning
-                     :classified-at (now-str)
-                     :was-fresh-mint? was-fresh-mint?}
-              parent-tree-id (assoc :parent-tree-id parent-tree-id)
-              ;; R01: forward reranker-failure flag when present.
-              (some? rerank-failed?) (assoc :rerank-failed? rerank-failed?)
-              ;; R05b: forward behavioral-subtree classification when
-              ;; the wedge called classify-behaviors after classify-task.
-              ;; Omit when absent so legacy events stay unchanged.
-              (some? behavioral-subtrees)
-              (assoc :behavioral-subtrees behavioral-subtrees)
-              ;; CC-23 (DecidedRankingIsRecorded): forward the pre-gate
-              ;; ranking + assignment provenance when the caller supplied
-              ;; them. Omit-not-nil, so pre-CC-23 callers' events stay
-              ;; byte-shaped exactly as before.
-              (some? ranked-candidates)
-              (assoc :ranked-candidates ranked-candidates)
-              (some? assigned-via)
-              (assoc :assigned-via assigned-via))})]})
+            behavioral-subtrees ranked-candidates assigned-via
+            researcher-ownership-epoch classification-context]} :command
+    :keys [event-store tenant-id]}]
+  (let [existing (es/read event-store
+                          {:tenant-id tenant-id
+                           :types #{:ontology/task-classified}
+                           :tags #{[:tick source-tick-id]}})]
+    (if (classification-assigned-for-occurrence?
+         existing source-sheet-id source-tick-id)
+      {:command-result/events []}
+      {:command-result/events
+       [(->event
+         {:type :ontology/task-classified
+          :tags #{[:tick source-tick-id]
+                  [:description-target assigned-tree-id]}
+          :body (cond-> {:source-sheet-id source-sheet-id
+                         :source-tick-id source-tick-id
+                         :source-node-id source-node-id
+                         :assigned-tree-id assigned-tree-id
+                         :confidence confidence
+                         :top-candidates top-candidates
+                         :reasoning reasoning
+                         :classified-at (now-str)
+                         :was-fresh-mint? was-fresh-mint?}
+                  (some? researcher-ownership-epoch)
+                  (assoc :researcher-ownership-epoch researcher-ownership-epoch)
+                  (some? classification-context)
+                  (assoc :classification-context classification-context)
+                  parent-tree-id (assoc :parent-tree-id parent-tree-id)
+                  ;; R01: forward reranker-failure flag when present.
+                  (some? rerank-failed?) (assoc :rerank-failed? rerank-failed?)
+                  ;; R05b: forward behavioral-subtree classification when
+                  ;; the wedge called classify-behaviors after classify-task.
+                  ;; Omit when absent so legacy events stay unchanged.
+                  (some? behavioral-subtrees)
+                  (assoc :behavioral-subtrees behavioral-subtrees)
+                  ;; CC-23 (DecidedRankingIsRecorded): forward the pre-gate
+                  ;; ranking + assignment provenance when the caller supplied
+                  ;; them. Omit-not-nil, so pre-CC-23 callers' events stay
+                  ;; byte-shaped exactly as before.
+                  (some? ranked-candidates)
+                  (assoc :ranked-candidates ranked-candidates)
+                  (some? assigned-via)
+                  (assoc :assigned-via assigned-via))})]
+       :command-result/cas
+       (task-classification-occurrence-cas
+        source-sheet-id source-tick-id source-node-id
+        researcher-ownership-epoch)})))
+
+(defn- tree-class-occurrence-recorded?
+  [events source-sheet-id source-tick-id]
+  (reduce (fn [_ event]
+            (if (and (= :ontology/tree-class-occurrence-recorded
+                        (:event/type event))
+                     (= source-sheet-id (:source-sheet-id event))
+                     (= source-tick-id (:source-tick-id event)))
+              (reduced true)
+              false))
+          false
+          events))
+
+(defn- infrastructure-terminal-event?
+  [event source-sheet-id source-tick-id]
+  (and (= source-sheet-id (:sheet-id event))
+       (= source-tick-id (:tick-id event))
+       (or (= :sheet/tick-cancelled (:event/type event))
+           (and (= :sheet/tree-tick-completed (:event/type event))
+                (not= :running (:root-status event))))))
+
+(defn- matching-classification?
+  [events source-sheet-id source-tick-id source-node-id assigned-tree-id]
+  (reduce (fn [_ event]
+            (if (and (= :ontology/task-classified (:event/type event))
+                     (= source-sheet-id (:source-sheet-id event))
+                     (= source-tick-id (:source-tick-id event))
+                     (= source-node-id (:source-node-id event))
+                     (= assigned-tree-id (:assigned-tree-id event)))
+              (reduced true)
+              false))
+          false
+          events))
+
+(defn- terminal-researcher-completion?
+  "A terminal completion of THIS researcher campaign's node, whatever its
+   status. The campaign's status has no outbound transition once terminal, so
+   the first such completion in durable order is the campaign's only verdict
+   (blocked included); any later completion for the same node is a stray fact,
+   never a verdict."
+  [event source-sheet-id source-tick-id source-node-id]
+  (and (= :sheet/node-execution-completed (:event/type event))
+       (= source-sheet-id (:sheet-id event))
+       (= source-tick-id (:tick-id event))
+       (= source-node-id (:node-id event))
+       (= :repl-researcher (:node-type event))
+       (= :terminal (:completion-kind event))))
+
+(defn- matching-terminal-completion?
+  [event source-completion-event-id verdict]
+  (and (= source-completion-event-id (:event/id event))
+       (= verdict (:status event))))
+
+(defn- valid-completion-before-infrastructure-ending?
+  "True only when the named completion is the campaign's FIRST terminal
+   completion in durable order and no cancellation or parent termination
+   precedes it. An earlier terminal completion for the node — any status —
+   settles the campaign, so the named later one is not admissible."
+  [events source-sheet-id source-tick-id source-node-id
+   source-completion-event-id verdict]
+  (reduce (fn [_ event]
+            (cond
+              (infrastructure-terminal-event?
+               event source-sheet-id source-tick-id)
+              (reduced false)
+
+              (terminal-researcher-completion?
+               event source-sheet-id source-tick-id source-node-id)
+              (reduced (matching-terminal-completion?
+                        event source-completion-event-id verdict))
+
+              :else false))
+          false
+          events))
+
+(defn- occurrence-admissible?
+  [events source-sheet-id source-tick-id source-node-id
+   source-completion-event-id assigned-tree-id verdict]
+  (and (not (tree-class-occurrence-recorded?
+             events source-sheet-id source-tick-id))
+       (matching-classification?
+        events source-sheet-id source-tick-id source-node-id assigned-tree-id)
+       (valid-completion-before-infrastructure-ending?
+        events source-sheet-id source-tick-id source-node-id
+        source-completion-event-id verdict)))
+
+(defn- tree-class-occurrence-cas
+  [source-sheet-id source-tick-id source-node-id
+   source-completion-event-id assigned-tree-id verdict]
+  {:types #{:ontology/tree-class-occurrence-recorded
+            :ontology/task-classified
+            :sheet/tick-cancelled
+            :sheet/tree-tick-completed
+            :sheet/node-execution-completed}
+   :tags #{[:tick source-tick-id]}
+   :predicate-fn
+   (fn [existing]
+     (occurrence-admissible?
+      existing source-sheet-id source-tick-id source-node-id
+      source-completion-event-id assigned-tree-id verdict))})
+
+(defcommand :ontology record-tree-class-occurrence
+  "RR-19: record the one recurrence fact for a classified researcher
+   campaign after it reaches success, failure, or timeout. The closed schema
+   excludes blocked, cancelled, and abandoned endings. Campaign identity is
+   [source-sheet-id source-tick-id]; retries with fresh command ids are
+   successful no-ops, and append-time CAS makes concurrent contenders
+   first-writer-wins. The handler accepts only a matching durable
+   classification and exact terminal researcher completion; callers cannot
+   manufacture recurrence by naming an unverified verdict."
+  [{{:keys [source-sheet-id source-tick-id source-node-id
+            source-completion-event-id
+            assigned-tree-id verdict]} :command
+    :keys [event-store tenant-id]}]
+  (let [existing (into []
+                       (es/read event-store
+                                {:tenant-id tenant-id
+                                 :types #{:ontology/tree-class-occurrence-recorded
+                                          :ontology/task-classified
+                                          :sheet/tick-cancelled
+                                          :sheet/tree-tick-completed
+                                          :sheet/node-execution-completed}
+                                 :tags #{[:tick source-tick-id]}}))]
+    (if-not (occurrence-admissible?
+             existing source-sheet-id source-tick-id source-node-id
+             source-completion-event-id assigned-tree-id verdict)
+      {:command-result/events []}
+      {:command-result/events
+       [(->event
+         {:type :ontology/tree-class-occurrence-recorded
+          :tags #{[:tick source-tick-id]
+                  [:node source-node-id]
+                  [:description-target assigned-tree-id]}
+          :body {:source-sheet-id source-sheet-id
+                 :source-tick-id source-tick-id
+                 :source-node-id source-node-id
+                 :source-completion-event-id source-completion-event-id
+                 :assigned-tree-id assigned-tree-id
+                 :verdict verdict
+                 :recorded-at (now-str)}})]
+       :command-result/cas
+       (tree-class-occurrence-cas
+        source-sheet-id source-tick-id source-node-id
+        source-completion-event-id assigned-tree-id verdict)})))
+
+;; =============================================================================
+;; RR-21 — the winning-shape coherence report (rule ReportSuccessfulShapeCoherence)
+;; =============================================================================
+
+(defn- shape-coherence-reported?
+  [events tree-class source-sheet-id source-tick-id]
+  (reduce (fn [_ event]
+            (if (and (= :ontology/shape-coherence-reported (:event/type event))
+                     (= tree-class (:tree-class event))
+                     (= source-sheet-id (:source-sheet-id event))
+                     (= source-tick-id (:source-tick-id event)))
+              (reduced true)
+              false))
+          false
+          events))
+
+(defn- shape-coherence-report-cas
+  [tree-class source-sheet-id source-tick-id]
+  {:types #{:ontology/shape-coherence-reported}
+   :tags #{[:tick source-tick-id]}
+   :predicate-fn
+   (fn [existing]
+     (not (shape-coherence-reported? existing tree-class source-sheet-id source-tick-id)))})
+
+(defcommand :ontology report-shape-coherence
+  "RR-21 (rule ReportSuccessfulShapeCoherence): after EVERY
+   :ontology/tree-class-occurrence-recorded verdict (no threshold — this is
+   not the harvest gate), record the class's winning-shape coherence measure
+   durably: distinct successful terminal shapes divided by successful
+   campaigns, one winning shape per successful campaign (the LAST
+   `:status :success` Phase-2 bookend in durable order; see
+   `harvest/winning-shape-coherence`). Report-only rollout (ADR 0029 dossier
+   G11): this axis has never been witnessed, so it is computed and reported
+   without ever gating promotion — see `harvest/harvest-candidate?`.
+
+   INSPECTION FINDING (reproduced, fixed): both `:verdict-occurrences` and the
+   coherence measure are bounded to `source-occurrence-event-id` — the
+   triggering occurrence event's OWN `:event/id` (UUIDv7, durably time-
+   ordered) — via `harvest/class-occurrences-through` /
+   `harvest/winning-shape-coherence`'s 4-arity. Computing either number from
+   the event store's CURRENT state at PROCESSING time is a scheduling-
+   dependent race, not a measure of the occurrence being reported on: a
+   backlog (several verdicts landing before the handler processes any of
+   them, or delivered out of the handler's own pace) made every report read
+   back the FINAL count/ratio instead of its own durable position. Both
+   numbers are derived from the SAME bounded snapshot, so they can never
+   disagree with each other about 'as of when'.
+
+   Idempotent per occurrence — [tree-class source-sheet-id source-tick-id]:
+   retries with fresh command ids are successful no-ops, and append-time CAS
+   makes concurrent contenders first-writer-wins, mirroring RR-19's
+   `record-tree-class-occurrence`."
+  [{{:keys [tree-class source-sheet-id source-tick-id source-occurrence-event-id]} :command
+    :keys [event-store tenant-id] :as ctx}]
+  (let [existing (into []
+                       (es/read event-store
+                                {:tenant-id tenant-id
+                                 :types #{:ontology/shape-coherence-reported}
+                                 :tags #{[:tick source-tick-id]}}))]
+    (if (shape-coherence-reported? existing tree-class source-sheet-id source-tick-id)
+      {:command-result/events []}
+      (let [verdict-occurrences (count (harvest/class-occurrences-through
+                                         ctx tree-class source-occurrence-event-id))
+            {:keys [successful-campaigns successful-shape-observations
+                    distinct-successful-shapes ratio status]}
+            (harvest/winning-shape-coherence
+             ctx tree-class harvest/default-harvest-config source-occurrence-event-id)]
+        {:command-result/events
+         [(->event
+           {:type :ontology/shape-coherence-reported
+            :tags #{[:tick source-tick-id] [:description-target tree-class]}
+            :body {:tree-class tree-class
+                   :source-sheet-id source-sheet-id
+                   :source-tick-id source-tick-id
+                   :source-occurrence-event-id source-occurrence-event-id
+                   :verdict-occurrences verdict-occurrences
+                   :successful-campaigns successful-campaigns
+                   :successful-shape-observations successful-shape-observations
+                   :distinct-successful-shapes distinct-successful-shapes
+                   :ratio ratio
+                   :status status
+                   :maximum-shape-ratio (:max-shapes-ratio harvest/default-harvest-config)
+                   :recorded-at (now-str)}})]
+         :command-result/cas
+         (shape-coherence-report-cas tree-class source-sheet-id source-tick-id)}))))
 
 ;; =============================================================================
 ;; CC-23 (contract TaskClassification) — deferral is a positive fact
@@ -1477,18 +1801,28 @@
    The [:tick source-tick-id] tag mirrors :ontology/task-classified so a
    tick's outcome — assigned OR deferred — is one tag-query away."
   [{{:keys [source-sheet-id source-tick-id source-node-id
-            fallback-source ranked-candidates reasoning]} :command}]
-  {:command-result/events
-   [(->event
+            fallback-source ranked-candidates reasoning
+            researcher-ownership-epoch classification-context]} :command}]
+  (cond->
+   {:command-result/events
+    [(->event
      {:type :ontology/task-classification-deferred
       :tags #{[:tick source-tick-id]}
-      :body {:source-sheet-id source-sheet-id
-             :source-tick-id source-tick-id
-             :source-node-id source-node-id
-             :fallback-source fallback-source
-             :ranked-candidates ranked-candidates
-             :reasoning reasoning
-             :deferred-at (now-str)}})]})
+      :body (cond-> {:source-sheet-id source-sheet-id
+                     :source-tick-id source-tick-id
+                     :source-node-id source-node-id
+                     :fallback-source fallback-source
+                     :ranked-candidates ranked-candidates
+                     :reasoning reasoning
+                     :deferred-at (now-str)}
+              (some? researcher-ownership-epoch)
+              (assoc :researcher-ownership-epoch researcher-ownership-epoch)
+              (some? classification-context)
+              (assoc :classification-context classification-context))})]}
+   (some? researcher-ownership-epoch)
+   (assoc :command-result/cas
+          (active-researcher-classification-cas
+           source-tick-id source-node-id researcher-ownership-epoch))))
 
 ;; =============================================================================
 ;; R05c — Mint a new behavioral-subtree concept
@@ -1521,7 +1855,8 @@
   [{{:keys [name body parent-behavior provenance
             minted-by-sheet-id minted-by-tick-id
             harvested-from-tree-class logical-action-identity
-            attempt-identity researcher-iteration]} :command}]
+            attempt-identity researcher-iteration
+            attempt-ordinal ownership-epoch]} :command}]
   (when (and harvested-from-tree-class logical-action-identity)
     (throw (ex-info
             (str "mint-behavioral-subtree cannot combine the harvested "
@@ -1557,13 +1892,14 @@
         ;; keep their append-always semantics (their idempotency is the
         ;; stable derived target-id + latest-wins description projection).
         harvest-crossing (when harvested-from-tree-class
-                           (stable-uuid-from
-                             (str "harvested-tree-class:" harvested-from-tree-class)))
+                           ;; RR-23: the tag VALUE, derived through the
+                           ;; same public helper (read-models.clj) that
+                           ;; `already-harvested?` reads with (harvest.clj)
+                           ;; — one derivation, not two.
+                           (second (rm/harvested-tree-class-tag harvested-from-tree-class)))
         logical-action-tag
         (when logical-action-identity
-          [:researcher-logical-action
-           (stable-uuid-from
-            (str "researcher-logical-action:" logical-action-identity))])]
+          (researcher-logical-action-tag logical-action-identity))]
     (cond->
      {:command-result/events
        [(->event
@@ -1582,6 +1918,15 @@
                    (assoc :logical-action-identity logical-action-identity
                           :attempt-identity attempt-identity
                           :researcher-iteration researcher-iteration)
+                   ;; RR-24: explicit attempt-ordinal + ownership-epoch so a
+                   ;; reader distinguishes a first-attempt mint from a late
+                   ;; fallback without re-hashing :attempt-identity. Omit
+                   ;; (not assoc-nil) when absent — omit-not-nil keeps a
+                   ;; caller that predates these fields (or dispatches the
+                   ;; command directly without them) schema-valid; the
+                   ;; schema marks both :optional for exactly this reason.
+                   (some? attempt-ordinal) (assoc :attempt-ordinal attempt-ordinal)
+                   (some? ownership-epoch) (assoc :ownership-epoch ownership-epoch)
                    harvested-from-tree-class (assoc :harvested-from-tree-class
                                                     harvested-from-tree-class))})
         (->event
@@ -1602,6 +1947,52 @@
             {:types #{:ontology/behavioral-subtree-minted}
              :tags #{logical-action-tag}
              :predicate-fn no-events?}))))
+
+;; =============================================================================
+;; RR-24 — forced-reindex idempotency marker
+;; =============================================================================
+;; Grain's todo-processor-v2 checkpoints a pure-result handler AFTER its body
+;; runs — the already-checkpointed? replay guard only exists on the
+;; :result/effect + :result/checkpoint :after path. The mint-triggered
+;; force-rebuild processor calls force-rebuild! directly as a plain side
+;; effect, so an at-least-once redelivery of the SAME
+;; :ontology/behavioral-subtree-minted event (a pubsub/catch-up race, or a
+;; crash after the reindex ran but before the processor's own checkpoint
+;; landed) would re-pay the full ColBERT rebuild. This is unrelated to RR-7's
+;; replayed-mint CAS (which already stops a SECOND logical mint from ever
+;; emitting a second minted event) — here the SAME already-emitted event is
+;; delivered to the processor twice.
+;;
+;; Fix: a durable, event-store-backed CAS marker keyed on the triggering
+;; minted event's id (NOT a process-local atom, which wouldn't survive a
+;; crash/restart and wouldn't be shared across nodes). The processor
+;; dispatches this command before calling force-rebuild!; a CAS conflict
+;; means this exact minted event already forced a rebuild, so the caller
+;; skips it instead of re-paying the cost.
+
+(defn mint-reindex-forced-tag
+  "Stable event-store tag guarding at-most-once forced reindex per minted
+   event id."
+  [minted-event-id]
+  [:mint-reindex-forced
+   (stable-uuid-from (str "mint-reindex-forced:" minted-event-id))])
+
+(defcommand :ontology mark-mint-reindex-forced
+  "RR-24: durable at-most-once marker recording that the forced ColBERT
+   reindex triggered by one specific :ontology/behavioral-subtree-minted
+   event id has already run. CAS'd on that event id so a redelivered
+   trigger conflicts and the caller skips the (expensive) rebuild instead
+   of re-paying it."
+  [{{:keys [minted-event-id]} :command}]
+  {:command-result/events
+   [(->event
+     {:type :ontology/mint-reindex-forced
+      :tags #{(mint-reindex-forced-tag minted-event-id)}
+      :body {:minted-event-id minted-event-id :forced-at (now-str)}})]
+   :command-result/cas
+   {:types #{:ontology/mint-reindex-forced}
+    :tags #{(mint-reindex-forced-tag minted-event-id)}
+    :predicate-fn no-events?}})
 
 ;; =============================================================================
 ;; Site Registry Commands (Generic Site Pattern Learning)
