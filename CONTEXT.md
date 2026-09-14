@@ -68,6 +68,14 @@ _Avoid_: cursor, position
 One campaign observed as one unit of evidence by the self-learning loop, identified by the execution it ran in. Counting rule: one campaign is one occurrence, however many quanta, resumes, or restarts it took.
 _Avoid_: run, assignment, event (an occurrence is not an event count)
 
+**Lifetime occurrences**:
+How many occurrences a class has ever accrued. The quantity promotion and the coherence report read; it only grows.
+_Avoid_: occurrences (unqualified), total, count
+
+**Occurrences since last description**:
+How many occurrences a class has accrued since its description was last consolidated. The quantity description consolidation reads; it resets each time a consolidation fires.
+_Avoid_: delta, occurrences (unqualified), recent occurrences
+
 **Classification**:
 The corpus match decided for a campaign's task before it designs anything, and the patterns prepended to the model from that match. A per-campaign fact, decided once.
 _Avoid_: categorization, tagging, routing

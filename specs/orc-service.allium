@@ -591,7 +591,7 @@ enum ExecutionStatus {
 }
 
 enum NodeExecutionStatus {
-    running | success | failure | partial | timeout | blocked | skipped
+    running | success | failure | partial | timeout | blocked
 }
 
 enum DelegateInvocationStatus { running | success | failure | timeout | cancelled }
@@ -716,8 +716,7 @@ entity NodeExecution {
         running -> partial
         running -> timeout
         running -> blocked
-        running -> skipped
-        terminal: success, failure, partial, timeout, blocked, skipped
+        terminal: success, failure, partial, timeout, blocked
     }
 
     writes: ExecutionValue with node_execution = this
@@ -1116,13 +1115,6 @@ rule NodeBlocks {
     ensures: ExecutionBlocked(execution: node_execution.execution, payload: opaque_payload)
 }
 
-rule NodeSkipped {
-    when: ControlFlowSkipsNode(node_execution)
-    requires: node_execution.status = running
-
-    ensures: node_execution.status = skipped
-    ensures: node_execution.completed_at = now
-}
 
 rule WorkflowSucceeds {
     when: WorkflowTreeCompletes(execution, outputs)
@@ -1185,12 +1177,6 @@ rule CancelWorkflowExecution {
             CancelWorkflowExecution(consumer: consumer, execution: child)
 }
 
-rule ResumeWorkflowExecution {
-    when: ResumeWorkflowExecution(consumer, execution)
-    requires: execution.status = running
-
-    ensures: RecoveryFrontierReconstructed(execution: execution)
-}
 
 rule RetickRunningWorkflowFrontier {
     when: NodeRemainsRunning(node_execution)
@@ -1805,7 +1791,6 @@ surface WorkflowExecutionAccess {
     provides:
         RunWorkflow(consumer, workflow, inputs, options)
         CancelWorkflowExecution(consumer, execution)
-        ResumeWorkflowExecution(consumer, execution)
 
     contracts:
         fulfils ExecutionEventStream

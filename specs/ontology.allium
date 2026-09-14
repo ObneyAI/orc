@@ -1089,9 +1089,17 @@ rule AssembleDescriptionFromClaims {
 -- produced a verdict and counts. A campaign has exactly one verdict: the first
 -- terminal completion of its node, blocked included, settles it, so a later
 -- completion delivered for the same node is a stray fact and never a verdict.
+-- The occurrence event carries only the class. The rules below read two DIFFERENT
+-- occurrence quantities, and each names the one it reads (the precedent set for
+-- ClassificationOutcome's nominal parameters): a class is DESCRIBED roughly every
+-- description_recurrence_threshold verdicts forever, because that counter resets
+-- each time a description consolidation fires; it is PROMOTED once, when its
+-- LIFETIME verdict count reaches promotion_occurrence_threshold and the other
+-- gates hold. Both thresholds are ten today; the schedules are not the same.
 rule DescribeRecurringClass {
-    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
-    requires: occurrences >= description_recurrence_threshold
+    when: TreeClassOccurrenceRecorded(tree_class)
+    let occurrences_since_last_description = occurrences_since_last_description(tree_class)
+    requires: occurrences_since_last_description >= description_recurrence_threshold
 
     ensures: DescriptionConsolidationRequested(
         target_type: tree_class_target,
@@ -1100,9 +1108,10 @@ rule DescribeRecurringClass {
 }
 
 rule PromoteWellScoredClass {
-    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    when: TreeClassOccurrenceRecorded(tree_class)
+    let lifetime_occurrences = lifetime_occurrence_count(tree_class)
     let quality = dimension_scores(tree_class)
-    requires: occurrences >= promotion_occurrence_threshold
+    requires: lifetime_occurrences >= promotion_occurrence_threshold
     requires: not already_harvested(tree_class)
     -- Per-dimension floors: one catastrophic dimension vetoes promotion, and
     -- cannot be compensated for by strength elsewhere.
@@ -1144,7 +1153,8 @@ rule PromoteWellScoredClass {
 }
 
 rule ReportSuccessfulShapeCoherence {
-    when: TreeClassOccurrenceRecorded(tree_class, occurrences)
+    when: TreeClassOccurrenceRecorded(tree_class)
+    let lifetime_occurrences = lifetime_occurrence_count(tree_class)
     let successful_campaigns = successful_campaign_count(tree_class)
     let successful_shapes = successful_terminal_shape_count(tree_class)
     let distinct_shapes = distinct_successful_terminal_shape_count(tree_class)
@@ -1159,7 +1169,7 @@ rule ReportSuccessfulShapeCoherence {
 
     ensures: ShapeCoherenceReported(
         tree_class: tree_class,
-        verdict_occurrences: occurrences,
+        verdict_occurrences: lifetime_occurrences,
         successful_campaigns: successful_campaigns,
         successful_shape_observations: successful_shapes,
         distinct_successful_shapes: distinct_shapes,
