@@ -24,7 +24,6 @@
             [ai.obney.orc.ontology.core.embedding :as embedding]
             [ai.obney.orc.ontology.core.field-analyzer :as field-analyzer]
             [ai.obney.orc.ontology.core.field-analyzer-workflow :as fa-workflow]
-            [ai.obney.orc.ontology.core.discovery :as discovery]
             [ai.obney.orc.ontology.core.rule-extraction :as rule-extraction]
             [ai.obney.orc.ontology.core.commands :as commands] ;; Register defcommand handlers for tree profiles
             [ai.obney.orc.ontology.core.evolutionary-commands] ;; Register defcommand handlers for evolutionary builder
@@ -1962,60 +1961,6 @@
     {:embedding emb
      :fields-used fields
      :method (:method analysis)}))
-
-;; =============================================================================
-;; Pattern Discovery
-;; =============================================================================
-
-(defn get-low-scoring-evaluations
-  "Get evaluation events with low aggregate scores.
-
-   Reads :evaluation/trace-evaluated events from the event store and
-   filters to those below the score threshold.
-
-   Args:
-   - event-store: Grain event store
-   - sheet-id: UUID of the sheet to analyze
-   - options:
-     - :threshold - Score threshold (default 0.6)
-     - :limit - Max evaluations to return (default 100)
-
-   Returns vector of evaluation event bodies."
-  ([ctx sheet-id]
-   (discovery/get-low-scoring-evaluations ctx sheet-id {}))
-  ([ctx sheet-id options]
-   (discovery/get-low-scoring-evaluations ctx sheet-id options)))
-
-(defn build-discovery-workflow!
-  "Build the pattern discovery workflow. Returns sheet-id.
-
-   This is idempotent - calling multiple times with the same definition
-   will return the same sheet-id."
-  [ctx]
-  (discovery/build-discovery-workflow! ctx))
-
-(defn discover-patterns
-  "High-level API to run pattern discovery on a sheet's evaluations.
-
-   Analyzes low-scoring evaluation feedback from the evaluation component
-   to identify recurring failure patterns not covered by the current ontology.
-
-   Args:
-   - ctx: Context with event-store
-   - sheet-id: Sheet to analyze
-   - options:
-     - :min-traces - Minimum traces required to run (default 20)
-     - :score-threshold - Analyze traces below this score (default 0.6)
-
-   Returns map with:
-   - :discovered - count of new subtypes
-   - :analyzed-traces - count of traces analyzed
-   - :subtypes - vector of discovered subtype maps (with :parent-uri :proposed-uri :label :description :indicators :evidence-count)
-   - :skipped - true if insufficient traces (with :reason :found :required)"
-  ([ctx sheet-id]
-   (discovery/discover-patterns ctx sheet-id {}))
-  ([ctx sheet-id options]
-   (discovery/discover-patterns ctx sheet-id options)))
 
 ;; =============================================================================
 ;; Cache Preloading (Warm Startup)

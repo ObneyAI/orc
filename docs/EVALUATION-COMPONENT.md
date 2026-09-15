@@ -25,6 +25,19 @@ finished, as a side effect of the event log. Your `:execute` call returns
 exactly what it returned before; the score lands in the event store a moment
 later.
 
+**What a judge is actually told** (this is the contract the runtime keeps, so
+you can predict a score): its `source`/`inputs` are the values of the node's
+declared `:reads`, resolved from the durable value log for that exact execution
+— not the raw event payload, which carries only execution context. Its
+`response` is the node's declared output fields as one JSON object, one value
+per field, and the judge is told that the field set was fixed by your typed
+blackboard, so it grades the values and never the object shape. Its task is the
+node's `:instruction` when it has one; a node without one (a `code` node, for
+example) is judged against the judge's declared `:criteria`, or, failing that,
+against a sentence naming its declared `:writes` — never an empty task. And a
+`:criteria` string you declare in `sheet/judges` replaces the built-in judge's
+"what to evaluate" verbatim; the stance and scoring scale stay the built-in ones.
+
 The rest of this section walks you from the tree you already have, in the
 smallest possible steps, to a tree whose every interesting node is being graded
 — and whose scores feed ORC's automatic-improvement machinery.
@@ -409,6 +422,12 @@ Judges are defined at the workflow level using `sheet/judges`, paralleling how `
 | **Discoverability** | Easy to see all evaluation standards for a workflow |
 
 ### Writing Effective Criteria
+
+A declared `:criteria` does two things on the live path: it replaces the
+built-in judge's "WHAT TO EVALUATE" section verbatim (stance and scale are
+unchanged), and for a node that has no `:instruction` it is also the task the
+judge is told the producer had. Write it as the standard you would hand a
+reviewer, not as a description of the judge.
 
 **Be specific and measurable:**
 ```clojure

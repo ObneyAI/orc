@@ -15,7 +15,6 @@
             [ai.obney.orc.ontology.core.static-ontology :as static]
             [ai.obney.orc.ontology.core.classifier :as classifier]
             [ai.obney.orc.ontology.core.embedding :as embedding]
-            [ai.obney.orc.ontology.core.discovery :as discovery]
             [ai.obney.orc.ontology.core.rule-extraction :as rule-extraction]
             ;; RR-21: the winning-shape coherence measure the
             ;; report-shape-coherence command records durably.
@@ -755,53 +754,6 @@
                :failure-uri failure-uri
                :model-id embedding/default-model-id
                :embedded-at now}})]}))
-
-;; =============================================================================
-;; Pattern Discovery Commands
-;; =============================================================================
-
-(defcommand :ontology run-pattern-discovery
-  "Analyze low-scoring evaluation feedback to discover new failure subtypes.
-
-   Reads :evaluation/trace-evaluated events for the specified sheet,
-   filters to those below the score threshold, and uses an LLM to identify
-   recurring failure patterns not covered by the current ontology.
-
-   Args:
-   - sheet-id: The sheet to analyze evaluations for
-   - min-traces: Minimum traces required to run (default 20)
-   - score-threshold: Only analyze traces below this score (default 0.6)
-
-   Returns:
-   - If insufficient traces: {:skipped true :reason ... :found N :required M}
-   - Otherwise: {:discovered N :analyzed-traces M :subtypes [...]}
-
-   Emits :ontology/failure-subtype-discovered events for each new pattern."
-  [{{:keys [sheet-id min-traces score-threshold]} :command
-    :keys [event-store] :as ctx}]
-  (let [result (discovery/discover-patterns ctx sheet-id
-                 {:min-traces (or min-traces 20)
-                  :score-threshold (or score-threshold 0.6)})]
-
-    (if (:skipped result)
-      ;; Not enough traces - return data only, no events
-      {:command-result/data result}
-
-      ;; Emit events for each discovered subtype
-      (let [now (now-str)
-            events (mapv (fn [subtype]
-                           (->event
-                             {:type :ontology/failure-subtype-discovered
-                              :tags #{[:discovery (generate-uuid)]
-                                      [:sheet sheet-id]}
-                              :body (merge subtype
-                                      {:discovery-id (generate-uuid)
-                                       :status :proposed
-                                       :discovered-at now})}))
-                         (:subtypes result))]
-
-        {:command-result/data (dissoc result :subtypes)
-         :command-result/events events}))))
 
 ;; =============================================================================
 ;; Rule Extraction Commands (Self-Learning)

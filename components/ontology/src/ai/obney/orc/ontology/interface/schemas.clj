@@ -1766,14 +1766,6 @@
     [:feedback :string]
     [:failure-uri {:optional true} :string]]
 
-   ;; Discovery Commands
-
-   :ontology/run-pattern-discovery
-   [:map
-    [:sheet-id :uuid]
-    [:min-traces {:optional true} :int]
-    [:score-threshold {:optional true} :double]]
-
    ;; -------------------------------------------------------------------------
    ;; Evolutionary Builder Commands (CQRS wrappers)
    ;; -------------------------------------------------------------------------
