@@ -620,6 +620,17 @@
 ;; Aggregation Executor
 ;; =============================================================================
 
+(def default-judge-dimension-names
+  "The one vocabulary for the four default LLM judges' dimension names. Each
+   is the judge's tier-1 rubric name, and each is a name the ontology
+   classifier maps to a failure concept (its dictionary is case-sensitive).
+   Used by the synchronous aggregate below and by the live runtime's
+   per-judge dimension projection, so the two paths cannot drift apart."
+  {:grounding             (:name rubrics/GROUNDING_TIER1)
+   :instruction-following (:name rubrics/INSTRUCTION_FOLLOWING_TIER1)
+   :reasoning             (:name rubrics/REASONING_TIER1)
+   :completeness          (:name rubrics/COMPLETENESS_TIER1)})
+
 (defn aggregate-dimensions
   "Aggregate multiple dimension results into a single score.
 
@@ -640,19 +651,19 @@
         completeness (:completeness-result inputs)
 
         dimensions [(feedback/->metric-dimension
-                     "Source Grounding" 0.35
+                     (default-judge-dimension-names :grounding) 0.35
                      (or (:score grounding) 0.5)
                      (or (:feedback grounding) "No feedback"))
                     (feedback/->metric-dimension
-                     "Instruction Following" 0.25
+                     (default-judge-dimension-names :instruction-following) 0.25
                      (or (:score instruction) 0.5)
                      (or (:feedback instruction) "No feedback"))
                     (feedback/->metric-dimension
-                     "Reasoning Quality" 0.20
+                     (default-judge-dimension-names :reasoning) 0.20
                      (or (:score reasoning) 0.5)
                      (or (:feedback reasoning) "No feedback"))
                     (feedback/->metric-dimension
-                     "Completeness" 0.20
+                     (default-judge-dimension-names :completeness) 0.20
                      (or (:score completeness) 0.5)
                      (or (:feedback completeness) "No feedback"))]
 

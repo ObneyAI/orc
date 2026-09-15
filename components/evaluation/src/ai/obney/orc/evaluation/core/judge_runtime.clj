@@ -16,7 +16,8 @@
    `:judge/score-emitted` shape. The consolidator (under Gap-3) will
    consume these events alongside raw execution evidence to update
    Living Description bodies."
-  (:require [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
+  (:require [clojure.string :as str]
+            [ai.obney.grain.todo-processor-v2.interface :refer [defprocessor]]
             [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.grain.command-processor-v2.interface :as cp]
             [ai.obney.grain.read-model-processor-v2.interface :as rmp :refer [defreadmodel]]
@@ -141,6 +142,56 @@
 ;; Judge dispatch
 ;; =============================================================================
 
+(defn- summarize-evidence
+  "Render one dimension's feedback from a pair of evidence lists (cited vs
+   omitted), in the judge's own vocabulary. Empty lists still yield a
+   dimension — the feedback says nothing was cited/omitted rather than
+   silently dropping the dimension (RR-30 acceptance criterion)."
+  [cited-label cited-items omitted-label omitted-items]
+  (str cited-label ": "
+       (if (seq cited-items) (str/join "; " cited-items) "nothing cited")
+       ". " omitted-label ": "
+       (if (seq omitted-items) (str/join "; " omitted-items) "none")
+       "."))
+
+(defn- project-dimensions
+  "RR-30: project a default LLM judge's own evidence lists (already present
+   on `inner`, its result map) into named DimensionScore entries. One
+   dimension per evidence pair — a single-dimension judge — carrying the
+   judge's own :score and a weight of 1.0, named with the judge's rubric
+   name from `judges/default-judge-dimension-names` (the ontology
+   classifier's dictionary is case-sensitive; a name it does not know
+   yields a failure with no URI). Pure: no new model call, no
+   change to score/feedback/model-provenance. Judge types not yet projected
+   fall through to []."
+  [judge-type inner score]
+  (case judge-type
+    :grounding
+    [{:name (judges/default-judge-dimension-names :grounding)
+      :weight 1.0
+      :score score
+      :feedback (summarize-evidence "Grounded claims" (:grounded-claims inner)
+                                    "Ungrounded claims" (:ungrounded-claims inner))}]
+    :reasoning
+    [{:name (judges/default-judge-dimension-names :reasoning)
+      :weight 1.0
+      :score score
+      :feedback (summarize-evidence "Strengths" (:reasoning-strengths inner)
+                                    "Weaknesses" (:reasoning-weaknesses inner))}]
+    :completeness
+    [{:name (judges/default-judge-dimension-names :completeness)
+      :weight 1.0
+      :score score
+      :feedback (summarize-evidence "Aspects covered" (:aspects-covered inner)
+                                    "Aspects missing" (:aspects-missing inner))}]
+    :instruction-following
+    [{:name (judges/default-judge-dimension-names :instruction-following)
+      :weight 1.0
+      :score score
+      :feedback (summarize-evidence "Requirements met" (:requirements-met inner)
+                                    "Requirements missed" (:requirements-missed inner))}]
+    []))
+
 (defn- invoke-llm-judge
   "Dispatch on judge-type to the matching public judge function. Returns
    the canonical {:score :feedback :dimensions} shape if the judge
@@ -162,10 +213,11 @@
         inner (when (and judge-output result-key)
                 (get judge-output result-key))]
     (when (and inner (:score inner))
-      {:score (double (:score inner))
-       :feedback (or (:feedback inner) "")
-       :dimensions []
-       :model-provenance (:model-provenance inner)})))
+      (let [score (double (:score inner))]
+        {:score score
+         :feedback (or (:feedback inner) "")
+         :dimensions (project-dimensions judge-type inner score)
+         :model-provenance (:model-provenance inner)}))))
 
 (def ^:private llm-judge-types
   "Set of judge types that route to evaluation/core/judges functions."

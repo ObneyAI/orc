@@ -810,6 +810,13 @@ never-dispatched schema declarations — with its hardcoded low-score gate; the 
 (`TraceJudge.evaluate`) and the event-driven runtime are the evaluation surface. Coverage `2 obligations,
 2 covered, 0 uncovered` and `3 obligations, 3 covered, 0 uncovered` respectively. On the final tree the complete two-project `orc-service` brick passes with exit 0 in 58 minutes 15 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes (10 namespaces, 119 tests / 487 assertions). Allium holds at 114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
 
+## Default judges carry dimension-specific feedback
+
+RR-30 honours the `ActionableFeedback` guarantee on the live path: each default LLM judge's evidence lists are projected
+into one named dimension (the tier-1 rubric name, shared with the synchronous aggregate and known to the ontology
+classifier) carrying the judge's score; scores, feedback and provenance are unchanged. Coverage `3 obligations, 3 covered,
+0 uncovered`. On the final tree the complete two-project `orc-service` brick passes with exit 0 in 57 minutes 49 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes in both of its projects, `orc` and `orc-evaluation` (11 namespaces, 126 tests / 531 assertions per project, 5 minutes 45 seconds) — the first time the `orc-evaluation` project has resolved and run, after its `cat/schema-util` pin was aligned with the other projects.
+
 ## Automatic campaign recovery
 
 RR-8's production path is present end to end. The periodic recovery trigger
