@@ -415,6 +415,13 @@
                    (get-in ctx [:event-store :config :event-pubsub]))
             child-tap-entered (promise)
             release-child-tap (promise)
+            ;; The tap loop now forwards on its own dedicated thread (RR-27),
+            ;; not a shared core.async dispatch thread, but an unbounded
+            ;; deref here is still a latent hazard for whichever thread runs
+            ;; it — bound it and record the outcome so a wrong
+            ;; synchronization fails this test in seconds instead of
+            ;; wedging a full gate (.rr-durable-notes/WEDGE-ROOT-CAUSE.md §5).
+            release-child-tap-result (atom nil)
             subs-covering-var
             (ns-resolve 'ai.obney.orc.orc-service.core.streaming
                         'subs-covering)
@@ -426,7 +433,8 @@
                (= child-tick-id tick-id)
                (do
                  (deliver child-tap-entered true)
-                 @release-child-tap)
+                 (reset! release-child-tap-result
+                         (deref release-child-tap 5000 ::release-timed-out)))
                :else nil)
              (real-subs-covering tick-id))}
           (fn []
@@ -475,4 +483,6 @@
                            (not (neg? terminal-position))
                            (< iteration-position terminal-position))
                       (pr-str {:root-overtook-child? root-overtook-child?
-                               :types types})))))))))))
+                               :types types}))
+                  (is (not= ::release-timed-out @release-child-tap-result)
+                      "the tap's own wait on release-child-tap must not itself time out"))))))))))

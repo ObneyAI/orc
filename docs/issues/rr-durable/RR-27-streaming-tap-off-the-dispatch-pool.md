@@ -21,12 +21,12 @@ one test that blocks inside the tap so a wrong synchronisation fails fast and lo
 
 ## Acceptance criteria
 
-- [ ] No durable-event forwarding work runs on a dispatch-pool thread: while the tap is blocked inside its
+- [x] No durable-event forwarding work runs on a dispatch-pool thread: while the tap is blocked inside its
       subscription path, every `async-dispatch-*` thread is free of `ensure-tap!` frames
-- [ ] A blocked tap path delays no engine work: a workflow executes to completion while the tap is held blocked
-- [ ] Ordering, sliding-buffer, one-tap-per-pubsub and `shutdown-taps!` behaviour are unchanged (existing
+- [x] A blocked tap path delays no engine work: a workflow executes to completion while the tap is held blocked
+- [x] Ordering, sliding-buffer, one-tap-per-pubsub and `shutdown-taps!` behaviour are unchanged (existing
       streaming suites green, including `det-e2e-278-durable-order-precedes-root-stream-closure`)
-- [ ] `durable_iteration_stream_test` never derefs an unbounded promise on a shared thread: the wait is bounded and
+- [x] `durable_iteration_stream_test` never derefs an unbounded promise on a shared thread: the wait is bounded and
       a timeout is an assertion failure, not a hang
 
 ## Spec obligations covered
@@ -37,6 +37,34 @@ covered by the slice's own tests, not by a generated one. The contract's planned
 (`contract-signature.ExecutionEventStream.subscribe`, `.next_envelope`, `.close`) are already covered by the
 existing streaming suites and must stay green. Coverage line to report: `3 obligations, 3 covered, 0 uncovered`,
 plus the prose invariant named explicitly.
+
+## Verification
+
+The streaming tap now forwards every durable event from its own dedicated thread, never from the fixed
+core.async dispatch pool that workflow execution and pubsub distribution share — the discipline the router
+beside it already applied, and the one the Sept 11 gate wedge showed was missing. The change is confined to
+where the loop runs: the sliding buffer, the one-tap-per-pubsub guard, the per-event try/catch, the forwarding
+logic and the shutdown shape are byte-for-byte what they were, and closing the tap channel still ends the
+loop. The one test that deliberately blocks inside the tap now bounds that wait and asserts it did not time
+out, so a wrong synchronisation fails in seconds instead of parking a brick run for half an hour.
+
+Two red-first tests pin the invariant. The first records the thread the forwarding work runs on and asserts
+it is not a dispatch-pool thread — RED under the old loop (`async-dispatch-8`), GREEN after. The second holds
+the tap blocked on a promise the test controls and, while it is held, enumerates every live thread and asserts
+no dispatch-pool thread carries a tap frame — RED under the old loop, which was caught mid-frame on
+`async-dispatch-2`, the wedge's mechanism reproduced on demand — then executes a workflow to completion while
+the tap is still held, releases it, and receives the held envelope. The workflow-completes half of that test
+was already true under the old loop: one held thread is not pool exhaustion, consistent with the root-cause
+report's finding that the wedge was a specific hazard rather than steady-state starvation.
+
+Independent inspection re-read the production diff against the brief line by line, confirmed no `.allium`
+file was touched by the implementer, and re-ran the RR-27 namespace with the durable-iteration and both
+streaming suites: 28 tests / 224 assertions, 0 failures. On the final tree the complete two-project `orc-service` brick passes with exit 0 in 88 minutes 34 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1062 tests / 5933 assertions per graph, 0 failures, 0 errors). Allium holds at the
+current baseline (114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings) after the
+orchestrator's tend of `ExecutionEventStream.StreamingNeverOccupiesTheEngineDispatchPool`. Coverage:
+`3 obligations, 3 covered, 0 uncovered` — the contract's three planned signatures stay green in the existing
+suites; the prose invariant, which `allium plan` does not emit, is covered by the two RR-27 tests. No generated
+mock, stub, TODO or skeleton; no weakened test; no divergence.
 
 ## Test seams
 

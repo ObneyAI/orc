@@ -465,21 +465,32 @@
         (let [ch (async/chan (async/sliding-buffer 1024))]
           (doseq [event-type tapped-event-types]
             (pubsub/sub ps {:topic event-type :sub-chan ch}))
-          (async/go-loop []
-            (when-let [event (async/<! ch)]
-              ;; A throw here would kill this tap loop for the whole process —
-              ;; never let one bad registry entry or event take streaming down.
-              (try
-                (doseq [sub (subs-covering
-                             (if (= :rlm/tree-generated (:event/type event))
-                               (:execution-id event)
-                               (:tick-id event)))
-                        :when (or (nil? (:tenant-id sub))
-                                  (nil? (:grain/tenant-id event))
-                                  (= (:tenant-id sub) (:grain/tenant-id event)))]
-                  (async/put! (:src-chan sub) event))
-                (catch Exception _ nil))
-              (recur)))
+          ;; Runs on a dedicated thread (async/thread) + async/<!!, NOT a
+          ;; go-loop — matching start-router!'s rationale (streaming.clj
+          ;; 382-386) and the spec invariant
+          ;; ExecutionEventStream.StreamingNeverOccupiesTheEngineDispatchPool
+          ;; (specs/orc-service.allium): subs-covering and each sub's
+          ;; src-chan put are arbitrary, effectively-unbounded call graph —
+          ;; blocking work that must never occupy the fixed core.async
+          ;; dispatch pool workflow execution and pubsub distribution share.
+          ;; Closing ch still ends the loop (<!! returns nil on a closed,
+          ;; drained channel).
+          (async/thread
+            (loop []
+              (when-let [event (async/<!! ch)]
+                ;; A throw here would kill this tap loop for the whole process —
+                ;; never let one bad registry entry or event take streaming down.
+                (try
+                  (doseq [sub (subs-covering
+                               (if (= :rlm/tree-generated (:event/type event))
+                                 (:execution-id event)
+                                 (:tick-id event)))
+                          :when (or (nil? (:tenant-id sub))
+                                    (nil? (:grain/tenant-id event))
+                                    (= (:tenant-id sub) (:grain/tenant-id event)))]
+                    (async/put! (:src-chan sub) event))
+                  (catch Exception _ nil))
+                (recur))))
           ;; Preserve shutdown-taps!' storage shape.
           (swap! taps assoc ps [ch]))))))
 

@@ -792,6 +792,14 @@ DET-E2E-256 (a constrained live deadline, which found the race) are ticked with 
 Allium after the tends: 115 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
 The complete two-project `orc-service` brick passes with exit 0 in 59 minutes 29 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (129 namespaces, 1060 tests / 5925 assertions per graph, 0 failures, 0 errors); the ontology brick passes in both owning graphs (77 namespaces, 668 tests / 3803 assertions each); the evaluation brick passes (9 namespaces, 116 tests / 480 assertions); Grain's control-plane and todo-processor-v2 brick tests and the SQLite project's tests pass on the recovered Grain tree.
 
+## Streaming forwarding stays off the engine's dispatch pool
+
+RR-27 moved the streaming tap's forwarding loop onto its own thread, matching the router's stated rationale
+and the tended invariant `ExecutionEventStream.StreamingNeverOccupiesTheEngineDispatchPool`. DET-E2E-289 pins
+it with two red-first tests (forwarding-thread identity; no dispatch thread carries a tap frame while the
+tap is held blocked and a workflow still completes) and hardens the ordering test that once wedged a full
+gate. Coverage `3 obligations, 3 covered, 0 uncovered` plus the prose invariant; the complete two-project `orc-service` brick passes with exit 0 in 88 minutes 34 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1062 tests / 5933 assertions per graph, 0 failures, 0 errors).
+
 ## Automatic campaign recovery
 
 RR-8's production path is present end to end. The periodic recovery trigger
