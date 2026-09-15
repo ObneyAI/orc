@@ -70,6 +70,25 @@ parameter and annotate it. No ADR (an ambiguity, not a trade-off).
 
 The single-trace synchronous sibling `evaluate_all` also has no non-test caller. With the user's assent it is retired from `TraceJudge` in the same session (tended; `ScoreWithFeedback` stays because `evaluate` and `gate_output` still return it). The code deletion is RR-29.
 
+## D6 — the automatic tree-profile feeder: retired
+
+Ontology carries two "strengths and weaknesses" stores. Living descriptions are written by the consolidator from
+live `:judge/score-emitted` events and are what R-Inject's prompt prepend reads (the Gap-3 design from the
+judge-unification grill). Tree profiles are the older manual store (`record-tree-strength` / `record-tree-weakness`,
+documented in PATTERN-RECORDING.md) with retrieval queries and learned-rule extraction that nothing on the researcher
+path calls. The one automatic producer into tree profiles, the `on-trace-evaluated` processor, subscribes to
+`:evaluation/trace-evaluated` — an event no producer has ever emitted and whose last schema declaration RR-29 deleted;
+it also hardcodes 0.8 / 0.85 thresholds. The discovery reader and `run-pattern-discovery` read the same dead event.
+The spec (since the ontology distill) declared `ClassifyEvaluationFailure` and `RecordSuccessfulPattern` on triggers
+nothing produces; the RR-26 weed flagged both. Alongside: `classify-evaluation` emits a failure with a nil URI for any
+dimension name outside its case-sensitive dictionary (found live by RR-30's first run), and `static_ontology` carries a
+narrower duplicate of that dictionary. Decision (option A): retire the feeder, the discovery reader and its command,
+and the two spec rules (tended this session); make the classifier skip unknown dimension names and collapse the
+duplicate dictionary; keep `TreeProfile`, its manual commands, queries, rule extraction and their docs untouched.
+Rejected alternatives: B, rewire the feeder to live judge scores (a second learning store beside living descriptions,
+contradicting unification, with no reader on the researcher path); C, retire the whole tree-profile subsystem (larger,
+removes a public API without evidence it is unused elsewhere — revisit with evidence). No glossary change; no ADR.
+
 ## Slices
 
-D1 → RR-28, D3 → RR-29, D4 → RR-30 (all AFK, independent). D2 and D5 were spec-only and are complete.
+D1 → RR-28, D3 → RR-29, D4 → RR-30 (all AFK, independent). D2 and D5 were spec-only and are complete. D6 → RR-32 (AFK; spec tended, code slice pending).

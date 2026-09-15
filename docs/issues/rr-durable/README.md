@@ -99,6 +99,7 @@ The harvest / living-description / recursion upgrades. Each reads what the spine
 | [RR-29](RR-29-delete-the-dead-synchronous-evaluation-path.md) — Delete the dead synchronous evaluation path | AFK | — |
 | [RR-30](RR-30-default-judges-carry-dimension-specific-feedback.md) — Default judges carry dimension-specific feedback | AFK | — |
 | [RR-31](RR-31-judges-see-resolved-reads-and-declared-criteria.md) — Judges see the node's resolved reads and their declared criteria | AFK | RR-30 |
+| [RR-32](RR-32-retire-the-automatic-tree-profile-feeder.md) — Retire the automatic tree-profile feeder; close the classifier's unknown-dimension hole | AFK | — |
 
 ## Handoff and prototype cycle
 

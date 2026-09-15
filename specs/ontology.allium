@@ -770,28 +770,12 @@ rule LinkConcepts {
     )
 }
 
-rule ClassifyEvaluationFailure {
-    when: EvaluationClassified(trace, failure_uri, severity, triggers)
-
-    ensures: TreeWeaknessRecorded(
-        tree_id: trace.tree_id,
-        failure_uri: failure_uri,
-        severity: severity,
-        triggers: triggers
-    )
-}
-
-rule RecordSuccessfulPattern {
-    when: SuccessfulTreeOutcomeObserved(trace, pattern_uri, confidence, context, action)
-
-    ensures: TreeStrengthRecorded(
-        tree_id: trace.tree_id,
-        pattern_uri: pattern_uri,
-        confidence: confidence,
-        context: context,
-        action: action
-    )
-}
+-- Tree profiles are fed only by the consumer-facing strength and weakness
+-- recording commands. The automatic feeder that once classified a judged
+-- trace into a weakness and a high score into a strength was retired: it was
+-- triggered by an evaluation event that no producer ever emitted, and judge
+-- feedback reaches the loop through the consolidator's living descriptions
+-- instead (grill decision D6).
 
 rule ExtractLearnedRules {
     when: LearnedRuleExtractionRequested(tree_profile, minimum_confidence)
