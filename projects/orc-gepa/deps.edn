@@ -7,11 +7,11 @@
 
         ;; with projects/orc-service).
 
-        cat/schema-util {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "ba57602781cf081605bb56bdc3c4eebfe0317579" :deps/root "components/schema-util"}
+        cat/schema-util {:git/url "https://github.com/ObneyAI/grain.git" :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5" :deps/root "components/schema-util"}
 
 
         obneyai/grain-core-v2 {:git/url "https://github.com/ObneyAI/grain.git"
-                               :git/sha "ba57602781cf081605bb56bdc3c4eebfe0317579"
+                               :git/sha "dbf5b5229aad09785e40f71e96adf65c90f971d5"
                                :deps/root "projects/grain-core-v2"}
 
         ;; The optimization stack — explicitly self-describing:

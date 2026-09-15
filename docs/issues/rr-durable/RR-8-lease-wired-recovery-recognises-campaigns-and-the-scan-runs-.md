@@ -28,6 +28,15 @@ durability is a property of the system rather than a runbook step.
 - [x] Repeated scans and an explicit resume are idempotent — a second scan changes nothing
 - [x] A campaign whose parent execution has ended is marked abandoned rather than resumed
 
+
+**2026-09-15 — the platform side was dropped.** Grain PR #22 (the poller-supplied live ownership predicate, the handler
+callback and the reassignment interval) was not merged: its maintainer judged it speculative and accepts that "work
+will get duplicated or run a little longer" when leases change ownership. ORC's executor keeps the injectable
+ownership capability as its own context seam (nothing supplies it in production), the recovery scan and automatic
+resume are unchanged, and the campaign frontier epoch remains the correctness fence. The first acceptance criterion
+above therefore holds only at ORC's seam, not at the platform; Grain's `control-plane.allium` CP6 still states an
+exclusivity the coalesced poller does not enforce — a documentation question for Grain, raised with its maintainer.
+
 ## Implementation and independent inspection
 
 Reconciliation found that RR-8 was implemented in the local campaign stack but

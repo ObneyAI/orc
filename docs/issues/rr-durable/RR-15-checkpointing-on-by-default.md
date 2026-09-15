@@ -156,3 +156,9 @@ test runner and failed before executing tests; the corrected `clojure.test`
 invocation passed. DET-E2E-243 remains open for the separate production latency
 qualification, live-lease portability remains outside this slice, and
 RR-26 still owns representative snapshot-cadence calibration.
+
+## Merge gate — closed 2026-09-15 (RR-34)
+
+Grain PR #22 was dropped by its maintainer rather than merged. Every pin now points at Grain `main`; the gate this slice
+kept open no longer waits on anything upstream. See RR-34 for what was retired with the PR and why ORC's correctness
+never depended on it.

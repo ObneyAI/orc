@@ -37,9 +37,10 @@ coherence report-only, patterns whole, the tree-generated cadence. The whole-spe
 spec bugs, fixed four code bugs the live proof and the weed found, and proved recovery across a real process
 kill. The streaming tap forwards from its own thread, so a blocked subscriber path can no longer hold engine
 capacity. The retired skipped status and the caller-less synchronous evaluation path are gone from the code. Default judges carry dimension-specific feedback the ontology can classify. Judges see the node's resolved reads and their declared criteria. The automatic tree-profile feeder that listened for an event nothing emitted is gone, and the classifier never emits a failure without a URI. Judges are told the producer's contract: the declared output fields, and a task that is never empty.
-Its merge gate remains open
-until Grain PR #22 lands and the local composed pins are replaced with that upstream revision; a green local stack is
-not treated as a landed dependency.
+Its merge gate is closed: Grain PR #22 was dropped by its maintainer (handover overlap is accepted as bounded
+duplicate work; the campaign frontier epoch is the correctness fence), every Grain pin now points at Grain `main`
+(`dbf5b522`), the two tests that existed only to exercise the dropped options were deleted (DET-E2E-271 retired,
+DET-E2E-270 re-scoped to ORC's own context seam), and the full gate set was re-run on that tree.
 
 ## Slices
 
@@ -101,6 +102,7 @@ The harvest / living-description / recursion upgrades. Each reads what the spine
 | [RR-31](RR-31-judges-see-resolved-reads-and-declared-criteria.md) — Judges see the node's resolved reads and their declared criteria | AFK | RR-30 |
 | [RR-32](RR-32-retire-the-automatic-tree-profile-feeder.md) — Retire the automatic tree-profile feeder; close the classifier's unknown-dimension hole | AFK | — |
 | [RR-33](RR-33-judges-told-the-producer-contract.md) — Judges are told the producer's contract: declared output fields and a never-empty task | AFK | RR-31 |
+| [RR-34](RR-34-grain-pr-22-dropped-pin-to-main.md) — Grain PR #22 dropped: pin to Grain main and retire the proofs only it could pass | solo | — |
 
 ## Handoff and prototype cycle
 

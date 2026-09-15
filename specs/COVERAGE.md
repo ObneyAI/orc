@@ -839,6 +839,15 @@ workflow fixed, and composes the task from the instruction, else the declared cr
 judge no longer docks a node for the engine's own output shape or reports an empty task. Coverage `2 obligations,
 2 covered, 0 uncovered`. On the final tree (RR-32 and RR-33 together, nothing else in flight) the complete two-project `orc-service` brick passes with exit 0 in 67 minutes 28 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors); the evaluation brick passes in both of its projects (143 tests / 573 assertions per project); and the ontology brick passes in each owning project graph run as its own JVM (78 namespaces, 675 tests / 3823 assertions each, 0 failures).
 
+## Grain pins at main; PR #22 dropped
+
+RR-34: Grain PR #22 (poller-supplied live ownership predicate, handler callback, reassignment interval) was dropped by
+its maintainer as speculative. ORC never relied on it for correctness — the campaign frontier epoch is the fence (ADR
+0004, G7). Every Grain pin now resolves to Grain `main`; the two tests that only the PR's options could satisfy were
+deleted (DET-E2E-271 retired, DET-E2E-270 re-scoped to ORC's own context seam); the executor's injectable ownership
+capability remains as an inert seam. The earlier "stack portability gate" and "PR #22 remains open" statements in this
+file are historical. On the repinned tree (every Grain dependency at Grain main `dbf5b522`, no PR #22 code on the classpath): the focused handover suites pass (88 tests / 693 assertions), the evaluation brick passes in both projects (286 / 1146), the complete two-project `orc-service` brick passes with exit 0 in 74 minutes 4 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1058 tests / 5884 assertions per graph — two tests and 80 assertions fewer than before, exactly the two deleted PR-only tests), and the ontology brick passes in each owning project graph run as its own JVM (78 namespaces, 675 / 3823 each); 0 failures, 0 orphan JVMs.
+
 ## Automatic campaign recovery
 
 RR-8's production path is present end to end. The periodic recovery trigger
