@@ -271,10 +271,20 @@
         inner (when (and judge-output result-key)
                 (get judge-output result-key))]
     (when (and inner (:score inner))
-      (let [score (double (:score inner))]
+      (let [score (double (:score inner))
+            dimensions (project-dimensions judge-type inner score)
+            model-feedback (:feedback inner)]
         {:score score
-         :feedback (or (:feedback inner) "")
-         :dimensions (project-dimensions judge-type inner score)
+         ;; ActionableFeedback: a successful score never carries blank
+         ;; feedback. A live model can return "" beside a valid banded
+         ;; verdict (seen on CI with Gemini 2.5 Flash); the judge's own
+         ;; projected dimension feedback then stands in — the same
+         ;; evidence, never an invented sentence.
+         :feedback (if (and (string? model-feedback) (not (str/blank? model-feedback)))
+                     model-feedback
+                     (or (some->> dimensions (map :feedback) (remove str/blank?) seq (str/join " "))
+                         ""))
+         :dimensions dimensions
          :model-provenance (:model-provenance inner)}))))
 
 (def ^:private llm-judge-types

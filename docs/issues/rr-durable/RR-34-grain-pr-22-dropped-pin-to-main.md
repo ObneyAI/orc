@@ -53,6 +53,14 @@ Proven mechanically (the root binding was not restored after the budget suite; a
 installing and removing the stub on the test thread and asserting the crashed run returned first, and re-proven in
 CI's namespace order. The instrumented assertions stay: a failed execute now reports why.
 
+
+**Second CI finding — a live judge can return blank feedback.** On the pull request's live-LLM job, Gemini 2.5 Flash
+returned `""` as `:feedback` beside a valid banded verdict, the runtime passed it through, and the end-to-end test's
+assertion that every emitted score carries non-blank feedback (RR-29's rewrite) caught it. That is a runtime gap
+against `ActionableFeedback`, not a test problem: the emitted score's feedback now falls back to the judge's own
+projected dimension feedback when the model's is blank (red-first in `rr30_default_judge_dimensions_test.clj`; the
+same evidence, never an invented sentence). The assertion stays as written.
+
 ## Test seams
 
 The existing handover suites on ORC's context seam; the full brick gates.

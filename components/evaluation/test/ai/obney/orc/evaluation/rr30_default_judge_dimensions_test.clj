@@ -482,3 +482,32 @@
             (is (and (string? (:uri failure)) (str/starts-with? (:uri failure) "failure:"))
                 (str judge-type " dimension " (pr-str (:name (first dims)))
                      " must map to a failure concept URI, got " (pr-str (:uri failure))))))))))
+
+;; =============================================================================
+;; Blank model feedback — found live on CI (Gemini 2.5 Flash returned "" as
+;; :feedback for a valid banded verdict). ActionableFeedback: every successful
+;; score carries dimension-specific feedback. The emitted score's :feedback
+;; must never be blank: when the model's is, the projected dimension feedback
+;; stands in for it.
+;; =============================================================================
+
+(deftest rr30-blank-model-feedback-falls-back-to-dimension-feedback
+  (testing "a valid verdict whose model feedback is blank still emits non-blank feedback, taken from its dimension"
+    (with-test-ctx [ctx]
+      (let [event (run-default-judge!
+                    ctx
+                    {:judge-type :completeness
+                     :judge-name "completeness"
+                     :fake-llm-outputs {:level 5
+                                        :reasoning "Every required section is present."
+                                        :aspects-covered ["urgency" "sentiment" "category"]
+                                        :aspects-missing []
+                                        :feedback ""}
+                     :host-writes {:answer "urgency, sentiment and category are all present."}})]
+        (is (some? event) "a :judge/score-emitted event must land")
+        (when event
+          (validate-score-emitted! event)
+          (is (and (string? (:feedback event)) (not (str/blank? (:feedback event))))
+              (str "the emitted feedback must not be blank when the model's is. Got: " (pr-str (:feedback event))))
+          (is (= (:feedback (first (:dimensions event))) (:feedback event))
+              "the fallback is the dimension's own feedback, not an invented sentence"))))))
