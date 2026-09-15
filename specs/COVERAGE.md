@@ -800,6 +800,16 @@ it with two red-first tests (forwarding-thread identity; no dispatch thread carr
 tap is held blocked and a workflow still completes) and hardens the ordering test that once wedged a full
 gate. Coverage `3 obligations, 3 covered, 0 uncovered` plus the prose invariant; the complete two-project `orc-service` brick passes with exit 0 in 88 minutes 34 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1062 tests / 5933 assertions per graph, 0 failures, 0 errors).
 
+## Retired stages and dead paths are gone from the code
+
+RR-28 removed the retired `skipped` node status from the node-trace schema and the trace-summary query
+(red-first: a skipped record is rejected; the node-stats result carries no skip count), so the code declares
+exactly the lifecycle the spec declares. RR-29 deleted the caller-less synchronous evaluation path — the
+single-trace and batch evaluators, the all-judges aggregate behind the retired `evaluate_all`, and their
+never-dispatched schema declarations — with its hardcoded low-score gate; the per-judge `evaluate-single`
+(`TraceJudge.evaluate`) and the event-driven runtime are the evaluation surface. Coverage `2 obligations,
+2 covered, 0 uncovered` and `3 obligations, 3 covered, 0 uncovered` respectively. On the final tree the complete two-project `orc-service` brick passes with exit 0 in 58 minutes 15 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes (10 namespaces, 119 tests / 487 assertions). Allium holds at 114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
+
 ## Automatic campaign recovery
 
 RR-8's production path is present end to end. The periodic recovery trigger

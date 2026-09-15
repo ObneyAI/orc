@@ -407,7 +407,7 @@
     [:exec-context {:optional true} :map]
     ;; :blocked belongs here as much as it does on the enclosing tick's own
     ;; status: a blocked node is durable, rejoinable evidence, not an absence.
-    [:status [:enum :success :failure :running :skipped :partial :timeout :blocked]]
+    [:status [:enum :success :failure :running :partial :timeout :blocked]]
     [:started-at :any]
     [:completed-at {:optional true} :any]
     [:duration-ms {:optional true} :int]
@@ -2399,7 +2399,6 @@
                       [:execution-count :int]
                       [:success-count :int]
                       [:failure-count :int]
-                      [:skip-count :int]
                       [:success-rate :double]
                       [:avg-duration-ms {:optional true} :double]
                       [:p50-duration-ms {:optional true} :int]

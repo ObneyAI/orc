@@ -338,5 +338,17 @@
 
 ;; =============================================================================
 ;; Phase 6: Node Statistics
-;; NOTE: Node stats tests are pending Phase 3 of async migration (trace assembly).
 ;; =============================================================================
+
+(deftest node-stats-result-carries-no-skip-count-test
+  (testing "the node-stats query result carries no :skip-count key (RR-28 — retired status, dead tally)"
+    (h/with-async-test-context [ctx]
+      (let [{:keys [sheet-id]} (create-simple-workflow! ctx)
+            result (sheet/execute ctx sheet-id {:test-key "hello" :other-key "world"})
+            _ (wait-for-trace ctx (:trace-id result))
+            stats-result (h/run-query ctx (h/make-node-stats-query sheet-id))]
+        (is (not (h/is-anomaly? stats-result)))
+        (let [{:keys [stats]} (:query/result stats-result)]
+          (is (pos? (count stats)) "expected at least one node's stats")
+          (is (every? #(not (contains? % :skip-count)) stats)
+              (pr-str stats)))))))

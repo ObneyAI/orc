@@ -537,7 +537,7 @@ behavior with `with-mock-llm`:
                                          Version 3 adds mandatory arbitration clause."}
              :instruction "Survey the structure and key provisions of both contracts."}]
   (judges/with-mock-llm
-    (prn (eval/evaluate-trace trace))))
+    (prn (eval/evaluate-single :grounding trace))))
 ```
 
 **Real captured output** (run with `judges/with-mock-llm`; mock assigns level 4

@@ -851,8 +851,8 @@ Create deterministic executors for testing:
 (require '[ai.obney.orc.evaluation.core.judges :as judges])
 
 (binding [judges/*use-mock-llm* true]
-  ;; Evaluation calls will use mock responses
-  (eval/evaluate-trace trace-data {:judges [:grounding]}))
+  ;; Judge calls will use mock responses
+  (eval/evaluate-single :grounding trace-data))
 ```
 
 ---

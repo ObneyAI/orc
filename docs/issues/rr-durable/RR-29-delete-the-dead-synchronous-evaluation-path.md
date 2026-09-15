@@ -15,16 +15,42 @@ evaluation path — the event-driven judge runtime — and no hardcoded quality 
 
 ## Acceptance criteria
 
-- [ ] The batch and single-trace synchronous evaluators and their command/event schema declarations are gone
-- [ ] No hardcoded score threshold remains in the evaluation component (a repo-wide search finds none)
-- [ ] `TraceJudge.evaluate` (the per-judge signature) and the live judge runtime are untouched and green
-- [ ] Every existing evaluation suite is green unchanged; tests that only existed to exercise the deleted path are
+- [x] The batch and single-trace synchronous evaluators and their command/event schema declarations are gone
+- [x] No hardcoded score threshold remains in the evaluation component (a repo-wide search finds none)
+- [x] `TraceJudge.evaluate` (the per-judge signature) and the live judge runtime are untouched and green
+- [x] Every existing evaluation suite is green unchanged; tests that only existed to exercise the deleted path are
       removed with it and listed in the report, never rewritten to keep a dead path alive
 
 ## Spec obligations covered
 
 - `contract-signature.TraceJudge.evaluate` (must stay covered and green)
 - `invariant.OneJudgeScorePerCompletion`, `invariant.JudgeScoresAreBounded` (untouched; must stay green)
+
+## Verification
+
+The evaluation component now exposes one evaluation path — the event-driven judge runtime — plus the
+per-judge `evaluate-single` the spec's `TraceJudge.evaluate` names. The synchronous single-trace and batch
+evaluators, the all-judges aggregate (`evaluate-all`, the code behind the spec's retired `evaluate_all`),
+and the four command and event schema declarations no processor ever dispatched or emitted are deleted;
+the batch evaluator's hardcoded 0.7 low-score gate went with it, and a repo-wide search finds no comparison
+against a hardcoded score constant that gates, filters or suppresses a result anywhere in the component.
+An existence test pins the absence of every deleted var and schema type, RED before each deletion.
+
+Two findings surfaced and were resolved rather than worked around. First, the brief's caller search had
+excluded tests, and two orc-service integration suites called the deleted evaluator: three tests that
+exercised only the dead synchronous aggregate with mock judges were deleted, and the gated real-model
+end-to-end test's judging phase was rewritten to the live path — enabling the living-description opt-in for
+its own tenant, executing the triage workflow, and reading back the emitted score events. Second, the
+`trace-evaluated` event the deleted evaluator declared has a dormant consumer in the ontology component
+(a processor and a discovery reader for an event nothing has ever emitted on this branch); that is a design
+question, raised to the user as a grill item rather than deleted quietly. Every live guide that documented
+the synchronous API was rewritten by the orchestrator to the per-judge call and the live path.
+
+Independent inspection re-read every diff, confirmed no `.allium` file was touched and no test was
+weakened, and re-ran the GEPA-integration and end-to-end suites with all ten evaluation namespaces:
+130 tests / 541 assertions, 0 failures. Coverage `3 obligations, 3 covered, 0 uncovered`
+(`contract-signature.TraceJudge.evaluate`, `invariant.OneJudgeScorePerCompletion`,
+`invariant.JudgeScoresAreBounded`, all already covered and still green). On the final tree the complete two-project `orc-service` brick passes with exit 0 in 58 minutes 15 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes (10 namespaces, 119 tests / 487 assertions). Allium holds at 114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
 
 ## Test seams
 

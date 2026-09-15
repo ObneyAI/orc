@@ -15,10 +15,10 @@ read the tally stops receiving a field that could never move.
 
 ## Acceptance criteria
 
-- [ ] The node-trace status enum admits exactly the statuses the spec's `NodeExecutionStatus` declares
-- [ ] No query result carries a skip count and no read model computes one
-- [ ] Every existing node-trace, query and streaming suite is green unchanged (no assertion weakened)
-- [ ] A repo-wide search for the retired status in `components/*/src` finds nothing
+- [x] The node-trace status enum admits exactly the statuses the spec's `NodeExecutionStatus` declares
+- [x] No query result carries a skip count and no read model computes one
+- [x] Every existing node-trace, query and streaming suite is green unchanged (no assertion weakened)
+- [x] A repo-wide search for the retired status in `components/*/src` finds nothing
 
 ## Spec obligations covered
 
@@ -26,6 +26,24 @@ read the tally stops receiving a field that could never move.
 - `transition-terminal.NodeExecution.status`
 Both are already covered by existing suites; a generated test green before the change is the expected finding, not
 success — report it as such.
+
+## Verification
+
+The code now declares exactly the node lifecycle the spec declares. The node-trace record schema no
+longer admits a `skipped` status, the trace-summary query result no longer carries a skip count, and the
+tally that could only ever read zero is gone. Both changes were driven red-first: the RR-26 node-trace
+test now asserts a `skipped` record is rejected (RED while the enum still admitted it), and a new query
+test drives the real node-stats query through a real workflow execution and asserts the result carries
+no skip count (RED while the tally still wrote one). The implementer also found and replaced a stale
+"pending Phase 3" placeholder comment in the GEPA primitives suite with that real test.
+
+Independent inspection re-read the diff (three removals, two test updates, nothing else), confirmed no
+`.allium` file was touched, and re-ran the node-trace, GEPA-primitives, RR-27, durable-iteration and
+streaming suites: 34 tests / 225 assertions, 0 failures. The remaining `:skipped` occurrences in the
+ontology component are a different concept (an insufficient-traces result flag and embedding batch
+counts) and were left alone. Coverage `2 obligations, 2 covered, 0 uncovered`
+(`enum-comparable.NodeExecutionStatus`, `transition-terminal.NodeExecution.status`, both already covered
+— the expected finding for a retirement). On the final tree the complete two-project `orc-service` brick passes with exit 0 in 58 minutes 15 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes (10 namespaces, 119 tests / 487 assertions). Allium holds at 114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
 
 ## Test seams
 

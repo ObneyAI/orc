@@ -686,37 +686,6 @@
                    :completeness completeness-judge)]
     (judge-fn {:inputs {:trace-data trace-data}})))
 
-(defn evaluate-all
-  "Evaluate a trace with all judges and aggregate.
-
-   Args:
-     trace-data: Map with :inputs, :outputs/:response, :instruction
-
-   Returns:
-     Map with:
-       :aggregate-score - Float 0.0-1.0
-       :feedback-summary - Combined feedback
-       :dimensions - Per-dimension results
-       :raw-results - Individual judge results"
-  [trace-data]
-  (let [grounding-res (grounding-judge {:inputs {:trace-data trace-data}})
-        instruction-res (instruction-following-judge {:inputs {:trace-data trace-data}})
-        reasoning-res (reasoning-judge {:inputs {:trace-data trace-data}})
-        completeness-res (completeness-judge {:inputs {:trace-data trace-data}})
-
-        ;; Combine all results for aggregation
-        combined-inputs (merge grounding-res instruction-res reasoning-res completeness-res)
-
-        agg-result (aggregate-dimensions {:inputs combined-inputs})]
-
-    {:aggregate-score (:aggregate-score agg-result)
-     :feedback-summary (:feedback-summary agg-result)
-     :dimensions (:dimensions agg-result)
-     :raw-results {:grounding (:grounding-result grounding-res)
-                   :instruction-following (:instruction-result instruction-res)
-                   :reasoning (:reasoning-result reasoning-res)
-                   :completeness (:completeness-result completeness-res)}}))
-
 ;; =============================================================================
 ;; Judge Registry
 ;; =============================================================================
@@ -749,7 +718,7 @@
 
    Example:
      (with-judge-config {:provider :anthropic :model \"claude-3-haiku-20240307\"}
-       (evaluate-all trace-data))"
+       (evaluate-single :grounding trace-data))"
   [{:keys [provider model mock?]} & body]
   `(binding [*judge-provider* (or ~provider *judge-provider*)
              *judge-model* (or ~model *judge-model*)

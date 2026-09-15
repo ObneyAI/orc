@@ -108,11 +108,6 @@
    See judges/evaluate-single for full documentation."
   judges/evaluate-single)
 
-(def evaluate-all
-  "Evaluate a trace with all judges and aggregate.
-   See judges/evaluate-all for full documentation."
-  judges/evaluate-all)
-
 ;; Note: with-mock-llm and with-judge-config are macros.
 ;; Use them directly from the core namespace:
 ;;   (require '[ai.obney.orc.evaluation.core.judges :as judges])
@@ -217,70 +212,3 @@
 (def completeness-judge-sheet
   "Single completeness judge sheet."
   sheets/completeness-judge-sheet)
-
-;; =============================================================================
-;; High-Level API
-;; =============================================================================
-
-(defn evaluate-trace
-  "Evaluate a single trace using the specified judges.
-
-   Args:
-     trace-data: Map with :inputs, :outputs, :instruction
-     options: Map with optional keys:
-       :judges - Vector of judge keys to run (default: all)
-       :weights - Map of judge-key to weight (default: from rubrics)
-
-   Returns:
-     ScoreWithFeedback with aggregate score and combined feedback
-
-   Example:
-     (evaluate-trace
-       {:inputs {:question \"What is 2+2?\"}
-        :outputs {:answer \"4\"}
-        :instruction \"Answer math questions\"}
-       {:judges [:grounding :reasoning]})"
-  ([trace-data]
-   (evaluate-trace trace-data {}))
-  ([trace-data {:keys [judges] :or {judges [:grounding :instruction-following
-                                            :reasoning :completeness]}}]
-   (let [executor-context {:inputs {:trace-data trace-data}}
-         results (reduce
-                  (fn [acc judge-key]
-                    (let [judge-fn (get-judge judge-key)
-                          result (judge-fn executor-context)]
-                      (merge acc result)))
-                  {}
-                  judges)
-         agg-result (aggregate-dimensions {:inputs results})]
-     (->score-with-feedback
-      (:aggregate-score agg-result)
-      (:feedback-summary agg-result)
-      (:dimensions agg-result)))))
-
-(defn evaluate-traces
-  "Evaluate multiple traces and return aggregated statistics.
-
-   Args:
-     traces: Sequence of trace-data maps
-     options: Same as evaluate-trace options
-
-   Returns:
-     Map with:
-       :results - Vector of individual ScoreWithFeedback results
-       :avg-score - Average score across all traces
-       :min-score - Minimum score
-       :max-score - Maximum score
-       :low-scoring - Traces with score below 0.7"
-  ([traces]
-   (evaluate-traces traces {}))
-  ([traces options]
-   (let [results (mapv #(evaluate-trace % options) traces)
-         scores (mapv :score results)]
-     {:results results
-      :avg-score (if (seq scores)
-                   (/ (reduce + scores) (count scores))
-                   0.0)
-      :min-score (if (seq scores) (apply min scores) 0.0)
-      :max-score (if (seq scores) (apply max scores) 0.0)
-      :low-scoring (filterv #(< (:score %) 0.7) results)})))

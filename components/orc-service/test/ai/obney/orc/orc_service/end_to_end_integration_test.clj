@@ -15,11 +15,17 @@
             [clojure.pprint :as pprint]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.evaluation.interface :as eval]
+            ;; RR-29: no `eval/...` call sites remain (the caller-less
+            ;; synchronous evaluate-trace API was deleted) — this require is
+            ;; kept only for its load-time side effect, registering the live
+            ;; judge-runtime processor and its command handlers (Phase 6
+            ;; reads back the :judge/score-emitted events they write).
+            [ai.obney.orc.evaluation.interface]
             [ai.obney.orc.ontology.interface :as ontology]
             [ai.obney.orc.gepa.interface :as gepa]
             [ai.obney.orc.gepa.interface.schemas]
             [ai.obney.grain.time.interface :as time]
+            [ai.obney.grain.event-store-v3.interface :as es]
             [ai.obney.orc.llm.interface :as llm]))
 
 ;; =============================================================================
@@ -545,39 +551,77 @@
                          :version-exec-error (:error result-v1)}))))
 
                 ;; =============================================================
-                ;; Phase 6: Evaluation Judges (real LLM)
+                ;; Phase 6: Evaluation Judges (live event-driven judge runtime)
                 ;; =============================================================
-                (testing "Phase 6: Evaluate execution with LLM judges"
-                  (let [trace-data {:inputs {:ticket-message "URGENT: billing error on my account. Also my password reset isn't working."}
-                                    :outputs outputs
-                                    :instruction "Triage customer support tickets by classifying urgency, category, sentiment, and routing to appropriate team."}
-                        [eval-result eval-ms] (timed (eval/evaluate-trace trace-data))]
+                ;; RR-29 deleted the caller-less synchronous evaluate-trace API
+                ;; this phase used to call directly against a hand-built trace.
+                ;; The live path is event-driven: `triage-workflow` already
+                ;; attaches judges to three nodes via `sheet/judges` /
+                ;; `:judges [...]` (llm-classify, sentiment-analysis,
+                ;; build-routing). Those judges only fire once the Living
+                ;; Description opt-in flag is on (see
+                ;; judge_async_command_test's set-living-description-enabled!
+                ;; pattern) — enable it, run one dedicated execution, and read
+                ;; back the :judge/score-emitted events the live runtime wrote
+                ;; for that tick, tagged [:tick tick-id] by
+                ;; evaluation.core.commands' record-judge-score handler.
+                (testing "Phase 6: Evaluate execution via the live judge runtime"
+                  (h/run-and-apply! ctx
+                    {:command/name :ontology/set-living-description-enabled
+                     :command/id (random-uuid)
+                     :command/timestamp (time/now)
+                     :enabled? true})
+                  (Thread/sleep 100)
 
-                    (is (some? eval-result) "Should return evaluation result")
-                    (when eval-result
-                      (is (number? (:score eval-result)) "Score should be a number")
-                      (is (<= 0.0 (:score eval-result) 1.0) "Score should be 0-1")
-                      (is (string? (:feedback eval-result)) "Should have feedback")
-                      (is (not (str/blank? (:feedback eval-result))) "Feedback should not be blank")
-                      (is (vector? (:dimensions eval-result)) "Should have dimensions")
-                      (is (pos? (count (:dimensions eval-result))) "Should have at least one dimension")
+                  (let [eval-input {:ticket-message "URGENT: billing error on my account. Also my password reset isn't working."}
+                        [eval-exec-result eval-ms] (timed (sheet/execute ctx sheet-id eval-input :timeout-ms 120000))
+                        eval-tick-id (:trace-id eval-exec-result)]
 
-                      (record-phase! :evaluation
-                        {:elapsed-ms eval-ms
-                         :score (:score eval-result)
-                         :feedback (:feedback eval-result)
-                         :dimensions (:dimensions eval-result)
-                         :trace-data trace-data})
+                    (is (= :success (:status eval-exec-result))
+                        (str "judged execution should succeed, got: " (:status eval-exec-result)
+                             (when (:error eval-exec-result) (str " error: " (:error eval-exec-result)))))
 
-                      ;; =========================================================
-                      ;; Phase 7: Ontology Classification
-                      ;; =========================================================
-                      (testing "Phase 7: Classify evaluation into failure taxonomy"
-                        (let [classification (ontology/classify-evaluation
-                                               {:score (:score eval-result)
-                                                :dimensions (:dimensions eval-result)})]
+                    (let [score-events (loop [attempts 0]
+                                          (let [evts (into [] (es/read (:event-store ctx)
+                                                               {:types #{:judge/score-emitted}
+                                                                :tags #{[:tick eval-tick-id]}
+                                                                :tenant-id (:tenant-id ctx)}))]
+                                            (cond
+                                              (>= (count evts) 3) evts
 
-                          (is (map? classification) "Should return classification map")
+                                              (< attempts 30)
+                                              (do (Thread/sleep 500) (recur (inc attempts)))
+
+                                              :else evts)))]
+
+                      (is (pos? (count score-events))
+                          "the live judge runtime should emit at least one score for the judged nodes (llm-classify, sentiment-analysis, build-routing)")
+
+                      (when (seq score-events)
+                        (is (every? #(and (number? (:score %)) (<= 0.0 (:score %) 1.0)) score-events)
+                            "every emitted score must be a number in [0,1]")
+                        (is (every? #(and (string? (:feedback %)) (not (str/blank? (:feedback %)))) score-events)
+                            "every emitted score must carry non-blank feedback")
+
+                        (let [overall-score (/ (reduce + (map :score score-events)) (count score-events))
+                              dimensions (vec (mapcat :dimensions score-events))]
+
+                          (record-phase! :evaluation
+                            {:elapsed-ms eval-ms
+                             :score overall-score
+                             :feedback (str/join " | " (map :feedback score-events))
+                             :dimensions dimensions
+                             :judge-names (mapv :judge-name score-events)})
+
+                          ;; =========================================================
+                          ;; Phase 7: Ontology Classification
+                          ;; =========================================================
+                          (testing "Phase 7: Classify evaluation into failure taxonomy"
+                            (let [classification (ontology/classify-evaluation
+                                                   {:score overall-score
+                                                    :dimensions dimensions})]
+
+                              (is (map? classification) "Should return classification map")
                           (is (vector? (:failures classification)) "Should have failures vector")
                           (is (number? (:overall-score classification)) "Should have overall-score")
                           (doseq [failure (:failures classification)]
@@ -621,7 +665,7 @@
                                  :synthetic-eval-score 0.25
                                  :synthetic-failure-count (count (:failures bad-classification))
                                  :synthetic-failures (:failures bad-classification)
-                                 :synthetic-failure-uris failure-uris}))))))))
+                                 :synthetic-failure-uris failure-uris}))))))))))
 
                 ;; =============================================================
                 ;; Phase 8: GEPA Optimization (real LLM loop)

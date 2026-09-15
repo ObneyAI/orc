@@ -27,8 +27,11 @@
     (is (m/validate node-trace (trace-record :blocked))
         (pr-str (m/explain node-trace (trace-record :blocked)))))
   (testing "the statuses that already validated still do"
-    (doseq [status [:success :failure :running :partial :timeout :skipped]]
+    (doseq [status [:success :failure :running :partial :timeout]]
       (is (m/validate node-trace (trace-record status))
           (str status " " (pr-str (m/explain node-trace (trace-record status)))))))
   (testing "an invented status is still rejected"
-    (is (not (m/validate node-trace (trace-record :not-a-real-status))))))
+    (is (not (m/validate node-trace (trace-record :not-a-real-status)))))
+  (testing "the retired :skipped status is rejected (grill decision D1 — no producer ever existed)"
+    (is (not (m/validate node-trace (trace-record :skipped)))
+        (pr-str (m/explain node-trace (trace-record :skipped))))))

@@ -3,16 +3,16 @@
 
    These tests verify:
    - GEPA-compatible workflow creation (dynamic instructions)
-   - evaluate-candidate function with mock judges
-   - manual-evaluation-loop aggregation
    - Event store integration during execution
    - Instruction override via inputs
-   - Judge score aggregation"
+
+   Judge scoring for GEPA-executed traces is covered by the event-driven
+   judge runtime suites (components/evaluation/test), not here — RR-29
+   deleted the caller-less synchronous evaluate-trace/evaluate-traces API
+   this file used to exercise via mock judges."
   (:require [clojure.test :refer [deftest testing is use-fixtures]]
             [ai.obney.orc.orc-service.test-helpers :as h]
             [ai.obney.orc.orc-service.interface :as sheet]
-            [ai.obney.orc.evaluation.interface :as eval]
-            [ai.obney.orc.evaluation.core.judges :as judges]
             [ai.obney.grain.event-store-v3.interface :as es]))
 
 ;; =============================================================================
@@ -275,44 +275,7 @@
           (is (contains? event-types :sheet/tree-tick-completed)))))))
 
 ;; =============================================================================
-;; Test 4: Judge Score Aggregation (with mock LLM)
-;; =============================================================================
-
-(deftest judge-aggregation-test
-  (testing "multiple judges aggregate to weighted score"
-    ;; Use mock LLM to avoid real API calls
-    (binding [judges/*use-mock-llm* true]
-      (let [trace-data {:inputs {:question "What is 2+2?"}
-                        :outputs {:answer "4"}
-                        :instruction "Answer math questions accurately."}
-
-            ;; Evaluate with all judges
-            result (eval/evaluate-trace trace-data)]
-
-        ;; Should return ScoreWithFeedback
-        (is (number? (:score result)))
-        (is (<= 0.0 (:score result) 1.0))
-        (is (string? (:feedback result)))
-
-        ;; Should have dimension details
-        (is (vector? (:dimensions result)))
-        (is (>= (count (:dimensions result)) 1))))))
-
-(deftest judge-subset-test
-  (testing "can evaluate with subset of judges"
-    (binding [judges/*use-mock-llm* true]
-      (let [trace-data {:inputs {:question "What is 2+2?"}
-                        :outputs {:answer "4"}
-                        :instruction "Answer accurately."}
-
-            ;; Evaluate with only grounding judge
-            result (eval/evaluate-trace trace-data {:judges [:grounding]})]
-
-        (is (number? (:score result)))
-        (is (string? (:feedback result)))))))
-
-;; =============================================================================
-;; Test 5: Read Model Queries
+;; Test 4: Read Model Queries
 ;; =============================================================================
 
 (deftest read-model-queries-test
@@ -336,50 +299,7 @@
           (is (= :string (get-in bb [:question :schema]))))))))
 
 ;; =============================================================================
-;; Test 6: Manual Evaluation Loop Pattern
-;; =============================================================================
-
-(deftest manual-evaluation-pattern-test
-  (testing "manual evaluation loop pattern works with mock judges"
-    (h/with-async-test-context [ctx]
-      (binding [judges/*use-mock-llm* true]
-        (let [{:keys [sheet-id]} (create-gepa-workflow! ctx)
-
-              ;; Define trainset
-              trainset [{:inputs {:question "What is 2+2?"}}
-                        {:inputs {:question "What is the capital of France?"}}]
-
-              ;; Run evaluations manually (simulating GEPA's evaluate loop)
-              results (mapv (fn [example]
-                              (let [inputs (assoc (:inputs example)
-                                                  :instruction "Answer the question.")
-                                    exec-result (sheet/execute ctx sheet-id inputs)]
-                                (when (= :success (:status exec-result))
-                                  (let [trace-data {:inputs (:inputs example)
-                                                    :outputs (:outputs exec-result)
-                                                    :instruction "Answer the question."}]
-                                    (eval/evaluate-trace trace-data
-                                      {:judges [:grounding :instruction-following]})))))
-                            trainset)
-
-              ;; Calculate statistics
-              scores (keep :score results)
-              avg-score (when (seq scores)
-                          (/ (reduce + scores) (count scores)))]
-
-          ;; All executions should succeed
-          (is (= 2 (count results)))
-          (is (every? some? results))
-
-          ;; All should have scores
-          (is (= 2 (count scores)))
-
-          ;; Average should be valid
-          (is (number? avg-score))
-          (is (<= 0.0 avg-score 1.0)))))))
-
-;; =============================================================================
-;; Test 7: Execution Duration Tracking
+;; Test 5: Execution Duration Tracking
 ;; =============================================================================
 
 (deftest execution-duration-test
@@ -394,7 +314,7 @@
         (is (pos? (:duration-ms result)))))))
 
 ;; =============================================================================
-;; Test 8: Multiple Executions Don't Interfere
+;; Test 6: Multiple Executions Don't Interfere
 ;; =============================================================================
 
 (deftest execution-isolation-test
@@ -417,7 +337,7 @@
           (is (= 3 (count (distinct answers)))))))))
 
 ;; =============================================================================
-;; Test 9: Trace Storage for GEPA Training Data
+;; Test 7: Trace Storage for GEPA Training Data
 ;; =============================================================================
 
 (deftest trace-storage-for-training-test
@@ -446,7 +366,7 @@
             (is (>= (count traces) 0))))))))
 
 ;; =============================================================================
-;; Test 10: Node Rolling Metrics
+;; Test 8: Node Rolling Metrics
 ;; =============================================================================
 
 (deftest rolling-metrics-test
