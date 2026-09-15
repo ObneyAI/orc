@@ -43,7 +43,7 @@ streaming suites: 34 tests / 225 assertions, 0 failures. The remaining `:skipped
 ontology component are a different concept (an insufficient-traces result flag and embedding batch
 counts) and were left alone. Coverage `2 obligations, 2 covered, 0 uncovered`
 (`enum-comparable.NodeExecutionStatus`, `transition-terminal.NodeExecution.status`, both already covered
-— the expected finding for a retirement). On the final tree the complete two-project `orc-service` brick passes with exit 0 in 58 minutes 15 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes (10 namespaces, 119 tests / 487 assertions). Allium holds at 114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
+— the expected finding for a retirement). Registered as DET-E2E-290. On the final tree the complete two-project `orc-service` brick passes with exit 0 in 58 minutes 15 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes (10 namespaces, 119 tests / 487 assertions). Allium holds at 114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
 
 ## Test seams
 

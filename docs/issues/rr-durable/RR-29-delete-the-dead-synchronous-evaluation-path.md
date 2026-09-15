@@ -50,7 +50,7 @@ Independent inspection re-read every diff, confirmed no `.allium` file was touch
 weakened, and re-ran the GEPA-integration and end-to-end suites with all ten evaluation namespaces:
 130 tests / 541 assertions, 0 failures. Coverage `3 obligations, 3 covered, 0 uncovered`
 (`contract-signature.TraceJudge.evaluate`, `invariant.OneJudgeScorePerCompletion`,
-`invariant.JudgeScoresAreBounded`, all already covered and still green). On the final tree the complete two-project `orc-service` brick passes with exit 0 in 58 minutes 15 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes (10 namespaces, 119 tests / 487 assertions). Allium holds at 114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
+`invariant.JudgeScoresAreBounded`, all already covered and still green). Registered as DET-E2E-291; the rewritten judging phase was run live once against OpenRouter after the rewrite (1 test / 60 assertions, exit 0). On the final tree the complete two-project `orc-service` brick passes with exit 0 in 58 minutes 15 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes (10 namespaces, 119 tests / 487 assertions). Allium holds at 114 information diagnostics, 35 warnings, 0 errors, 0 analyse findings.
 
 ## Test seams
 
