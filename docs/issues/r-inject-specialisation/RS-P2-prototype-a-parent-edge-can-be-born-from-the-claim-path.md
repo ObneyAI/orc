@@ -10,8 +10,35 @@ A feasibility gate, not a slice. D3 assumes that recording a description slot ca
 
 ## Acceptance criteria
 
-- [ ] A recorded probe against the real store showing whether a claim-path write with a parent yields the SKOS edge
-- [ ] If it does not, the exact existing command that does, and a written verdict on how RS-3 records the edge without a second body writer
+- [x] A recorded probe against the real store showing whether a claim-path write with a parent yields the SKOS edge
+- [x] If it does not, the exact existing command that does, and a written verdict on how RS-3 records the edge without a second body writer
+
+## Verdict (probe `development/src/rs_p2_parent_edge_probe.clj`, run against the real in-memory store)
+
+**No — the claim path cannot carry a parent, and the description projector would not act on it if it did.** The
+claim command (`record-claim-deltas`) has no parent field and emits `claim-deltas-recorded`, which no projector reads
+for hierarchy. The only hierarchy projector listens for `tree-description-updated` events whose body carries
+`:parent-tree-id` **and** whose target type is `:tree-fingerprint`; the tree-class-scoped description command emits
+`:target-type :tree-class`, which that projector ignores, and writing a body from the wedge would be the second body
+writer CC-6 forbids.
+
+**Yes — the command path works without any description.** Ensuring both concepts (the same lazy-create the projector
+uses) and dispatching `create-relationship` with `skos:broader` from child to parent produced the edge: the parent's
+narrower set contained the child immediately (Q-b). This is how RS-3 records the edge: a single ontology command that
+ensures the two tree-class concepts and emits the relationship — either a new `record-domain-child-mint` command or
+`assign-task-class` emitting it when the provenance is the domain-child mint — dispatched by the wedge beside the
+signature claim it already records. One writer of the edge, no body written.
+
+**Finding for RS-3 and RS-5 (code bug, C-2d-2 predates the scope split):** a child whose only description comes from a
+`:tree-class` claim — the CV-1 signature route — is readable at `:tree-class` scope and absent at `:tree-fingerprint`
+scope, and walk-down's child lookup reads `:tree-fingerprint`, so it returned no children for a parent that has the
+edge (Q-c). Runtime-emergent classes describe themselves under `:tree-class` (C-Loop-1); the walk-down lookup must read
+that scope (falling back to `:tree-fingerprint` for the seeded instances) or every domain child is invisible to the
+walk that is supposed to reach it. RS-3 owns the lookup fix because reachability is its acceptance criterion; RS-5
+proves it on synthesised recurrence.
+
+**Untested here:** the seeded projector path (Q-a) was invoked with a hand-built event shape and produced nothing; it is
+covered by the existing seeds suite and is not the path RS-3 uses, so it was not chased.
 
 ## Spec obligations covered
 
