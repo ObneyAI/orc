@@ -65,6 +65,36 @@ data the runtime emits — typed reranker fields, event bodies, identities, grap
 injected — never on regex or phrase matches over model prose. Rejected: deterministic only; the sweep as a threshold
 gate (biased corpus, live model — ADR 0029's "never fired vs never will").
 
+## Q7 — POSED, NOT YET ANSWERED (verbatim, so it survives compaction)
+
+RS-P1 (`development/bench/ood-stress-results/rs-p1-coverage-probe/FINDINGS.md`) held mechanically (225/225 valid
+verdicts, sanity checks covered and stable) and failed on calibration: over 19 off-domain tasks the top match was judged
+`uncovered` 2 then 0 times, `partial` 7 then 9, the mint decision flipped between passes for 4, and labels agreed
+exactly on 5 of 21 while being semantically stable (`jvm-oom-diagnosis` / `jvm-oom-diagnostics`). The model treats
+"a sequence of transformation passes" as a domain; it puts genuine drift in `partial`.
+
+**Q7. How do the mint rule and the identity converge, given what the reranker actually says?**
+
+- **A. Mint on partial too, canonicalise by judged choice, converge by walk-down.** Mint a domain child on a leaf
+  match judged `partial` or `uncovered`; `covered` stays on the leaf. Show the reranker the parent's existing children
+  labels and require `domain_label` to be one of them when one fits, or a new one otherwise (a judged choice, not a
+  string rule). Make convergence independent of the verdict repeating: a matched leaf that has domain children always
+  considers them, so walk-down descends into the child the second time regardless of the specificity gate; EL-1b
+  bundling remains the backstop. Tighten `covered`'s definition to subject matter, material and output kind. Cost:
+  over-minting on `partial` — cheap, children are identities not bodies, and the retrieval gate hides one-offs.
+- **B. Keep "uncovered only" and recalibrate the instruction.** Leaves the flip and label problems untouched; wording
+  calibration of a live model is the fragile path.
+- **C. Mint on partial, derive identity from a rule-canonicalised label.** Rejected on the standing rule: string rules
+  over model prose.
+
+**Recommendation: A**, verified by RS-P1b before RS-1 is briefed: re-run pass two with pass one's labels supplied as
+the parent's existing children and measure how often the model reuses them. Spec consequence if agreed:
+`rule MintDomainChild` requires `coverage in {partial, uncovered}`, and `DomainChildIdentityIsStable` states that the
+label is chosen among the parent's existing children before a new one is coined.
+
+**Status:** awaiting the user's answer. Work paused on 2026-09-15 to assess Grain PR #22 (see
+`.rr-durable-notes/PR22-ASSESSMENT.md` in the arc worktree and the memory note `rr-durable-open-grill-q6-q7`).
+
 ## Slices
 
 To be cut by /to-issues from the PRD (`docs/prd/r-inject-specialisation.md`).
