@@ -10,9 +10,18 @@ A feasibility gate, not a slice. D4 assumes the reranker, asked for a discrete d
 
 ## Acceptance criteria
 
-- [ ] Two live passes over the 21-task corpus with the extended reranker instruction, envelopes persisted
-- [ ] Verdict presence and validity rate, per-task verdict on the top match, and label agreement between passes recorded in a findings file
-- [ ] A written verdict on whether D4's assumption holds, and if not, what changes in RS-1 / RS-2
+- [x] Two live passes over the 21-task corpus with the extended reranker instruction, envelopes persisted
+- [x] Verdict presence and validity rate, per-task verdict on the top match, and label agreement between passes recorded in a findings file
+- [x] A written verdict on whether D4's assumption holds, and if not, what changes in RS-1 / RS-2
+
+## Verdict
+
+See `development/bench/ood-stress-results/rs-p1-coverage-probe/FINDINGS.md`. Mechanism holds (225/225 valid verdicts,
+sanity checks covered and stable). Calibration does not: `uncovered` fired on 2 of 19 off-domain tasks, most genuine
+drift landed in `partial`, verdicts flipped between passes for 4 of 19, and labels agreed exactly on only 5 of 21 while
+being semantically stable. Consequences posed as grill Q7 (mint on partial too; judged label canonicalisation among the
+parent's existing children; convergence via walk-down into domain children independent of the specificity gate;
+tighten `covered`; re-probe with sibling labels as RS-P1b before RS-1 is briefed).
 
 ## Spec obligations covered
 
