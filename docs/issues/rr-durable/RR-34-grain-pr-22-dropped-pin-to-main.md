@@ -70,6 +70,12 @@ that read the exhaustion state and then act — the read-check-act shape that mu
 todo-processor-v2 — so a real model's timing can let two evaluations pass the check together. Recorded here as a
 follow-up for the GEPA component, not fixed in this arc; the live job was re-run.
 
+
+**Fourth CI finding — the hosted runner needs more than 60 minutes for the aggregate suite.** With the provider-stub
+leak fixed, the ORC job ran 218 namespaces with 0 failures and was cancelled by the workflow's 60-minute job limit
+(the same command takes 42 minutes on a developer machine; the arc added about thirty deterministic end-to-end
+namespaces). The limit is raised to 120 minutes for that job only.
+
 ## Test seams
 
 The existing handover suites on ORC's context seam; the full brick gates.

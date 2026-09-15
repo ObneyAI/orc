@@ -18,7 +18,11 @@ jobs:
   deterministic-tests:
     name: ORC test suites
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The aggregate single-JVM run takes ~42 minutes on a fast developer
+    # machine and was cancelled by the previous 60-minute limit on the
+    # two-core hosted runner after 218 of ~260 namespaces with 0 failures
+    # (the RR-durable arc added ~30 deterministic end-to-end namespaces).
+    timeout-minutes: 120
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
