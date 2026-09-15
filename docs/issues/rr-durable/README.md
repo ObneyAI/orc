@@ -100,6 +100,7 @@ The harvest / living-description / recursion upgrades. Each reads what the spine
 | [RR-30](RR-30-default-judges-carry-dimension-specific-feedback.md) — Default judges carry dimension-specific feedback | AFK | — |
 | [RR-31](RR-31-judges-see-resolved-reads-and-declared-criteria.md) — Judges see the node's resolved reads and their declared criteria | AFK | RR-30 |
 | [RR-32](RR-32-retire-the-automatic-tree-profile-feeder.md) — Retire the automatic tree-profile feeder; close the classifier's unknown-dimension hole | AFK | — |
+| [RR-33](RR-33-judges-told-the-producer-contract.md) — Judges are told the producer's contract: declared output fields and a never-empty task | AFK | RR-31 |
 
 ## Handoff and prototype cycle
 

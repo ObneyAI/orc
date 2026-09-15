@@ -89,6 +89,22 @@ Rejected alternatives: B, rewire the feeder to live judge scores (a second learn
 contradicting unification, with no reader on the researcher path); C, retire the whole tree-profile subsystem (larger,
 removes a public API without evidence it is unused elsewhere — revisit with evidence). No glossary change; no ADR.
 
+## D7 — what a judge is told the producer's response and task are: tell it the contract
+
+Every LLM judge receives `response` described as "the producer's output" with the JSON of the node's whole write map as
+its value, and `instruction` described as "the task", which is an empty string for code nodes (the DSL's `code` takes
+no instruction), so the "No instruction provided" fallback never fires. Three live runs after RR-31 show the same two
+harness complaints: the instruction-following judge docks a sentiment node for "returning a JSON object, not a single
+word" (the engine's own shape), and the completeness judge on an instruction-less code node reported an empty task.
+The spec pins neither framing (`TraceEvidence.instruction: String`, `outputs: Any`); the judges module's own design
+note says the typed blackboard owns the output shape, not the prompt. Decision (option A): describe the response to
+the judge as the producer's declared output fields, one value per field, whose field set the workflow fixed; and when
+a node has no instruction, present the task as the judge's declared criteria if present, else a sentence naming the
+node's declared writes — never an empty string. Prompt descriptions and one fallback; no data reshaping, no spec
+change. Rejected alternatives: B, unwrap single-value writes (the response's shape would depend on the write count,
+which the judge is not told); C, leave it and rely on authors writing the shape into `:criteria`. No glossary change;
+no ADR.
+
 ## Slices
 
-D1 → RR-28, D3 → RR-29, D4 → RR-30 (all AFK, independent). D2 and D5 were spec-only and are complete. D6 → RR-32 (AFK; spec tended, code slice pending).
+D1 → RR-28, D3 → RR-29, D4 → RR-30 (all AFK, independent). D2 and D5 were spec-only and are complete. D6 → RR-32 (AFK; spec tended, code slice pending). D7 → RR-33 (AFK, evaluation only).
