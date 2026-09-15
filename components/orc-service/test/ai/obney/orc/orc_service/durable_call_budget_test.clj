@@ -648,27 +648,43 @@
               nodes-ready? (h/settle-until!
                             #(seq (sheet/get-nodes-for-sheet ctx sheet-id))
                             :timeout-ms 5000)
-              original-run
-              (future
-                (with-redefs [llm/predict
-                              (fn [& _]
-                                (swap! provider-entries inc)
-                                (deliver first-provider-entered true)
-                                (deref release-crashed-provider 5000 nil)
-                                (throw (ex-info "simulated process crash after reservation" {})))]
-                  (sheet/execute ctx sheet-id {}
-                                 :tick-id tick-id
-                                 :timeout-ms 12000
-                                 :llm-call-budget 1)))]
-          (is nodes-ready?)
-          (is (true? (deref first-provider-entered 5000 false)))
-          (is (= 1 (count (sheet/get-provider-call-reservations
-                           ctx sheet-id tick-id))))
-          (h/stop-async-context ctx)
-          (reset! first-context nil)
-          (todo/clear-llm-count! tick-id)
-          (deliver release-crashed-provider true)
-          (deref original-run 1000 nil)
+              crashed-provider
+              (fn [& _]
+                (swap! provider-entries inc)
+                (deliver first-provider-entered true)
+                (deref release-crashed-provider 5000 nil)
+                (throw (ex-info "simulated process crash after reservation" {})))]
+          ;; The crash stub is installed on THIS thread and removed on this
+          ;; thread, only after the crashed run's future has returned. A
+          ;; `with-redefs` inside the future restored the root binding from
+          ;; the future's thread whenever it finished — which on a slow runner
+          ;; was AFTER the second `with-redefs` below had captured the stub as
+          ;; the value to restore, leaving the crash stub as the permanent root
+          ;; binding of `llm/predict` for every later namespace in the JVM
+          ;; (CI: 26 failures in deterministic-value-storage-e2e-test).
+          (with-redefs [llm/predict crashed-provider]
+            (let [original-run (future
+                                 (sheet/execute ctx sheet-id {}
+                                                :tick-id tick-id
+                                                :timeout-ms 12000
+                                                :llm-call-budget 1))]
+              (is nodes-ready?)
+              (is (true? (deref first-provider-entered 5000 false)))
+              (is (= 1 (count (sheet/get-provider-call-reservations
+                               ctx sheet-id tick-id))))
+              (h/stop-async-context ctx)
+              (reset! first-context nil)
+              (todo/clear-llm-count! tick-id)
+              (deliver release-crashed-provider true)
+              ;; The run's own outcome is irrelevant here (its context was
+              ;; stopped underneath it, so it may return a result or throw a
+              ;; closed-pool exception); what matters is that it has RETURNED
+              ;; before the stub is removed.
+              (is (not= ::still-running
+                        (try (deref original-run 20000 ::still-running)
+                             (catch java.util.concurrent.ExecutionException e
+                               (or (ex-cause e) e))))
+                  "the crashed run returns before the crash stub is removed")))
 
           (with-redefs [llm/predict
                         (fn [& _]

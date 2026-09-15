@@ -39,6 +39,20 @@ are unchanged and green, which is the proof that mattered: a stale node's late r
 frontier epoch with nothing supplied by Grain. The executor's injectable ownership capability remains as an inert seam
 and is stated as such in DET-E2E-270 and RR-8. On the repinned tree (every Grain dependency at Grain main `dbf5b522`, no PR #22 code on the classpath): the focused handover suites pass (88 tests / 693 assertions), the evaluation brick passes in both projects (286 / 1146), the complete two-project `orc-service` brick passes with exit 0 in 74 minutes 4 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1058 tests / 5884 assertions per graph — two tests and 80 assertions fewer than before, exactly the two deleted PR-only tests), and the ontology brick passes in each owning project graph run as its own JVM (78 namespaces, 675 / 3823 each); 0 failures, 0 orphan JVMs.
 
+
+**CI finding (the one thing the local gates could not see).** The pull request's CI job failed twice, identically, on
+26 assertions in `deterministic-value-storage-e2e-test`, a namespace untouched by the arc that passed in every local
+run including CI's exact aggregate command. Instrumenting the assertions to carry the run's error showed the LLM leaf
+failing with "simulated process crash after reservation" — a fault injected by the RR-11 test
+`sqlite-reopen-keeps-a-pre-return-reservation-spent`, which installed its crash stub with `with-redefs` inside a
+future and waited one second for that future. On the slower CI runner the future outlived the wait, the test's second
+`with-redefs` then unwound in the wrong order, and the crash stub became the permanent root binding of `llm/predict`
+for the rest of the JVM: exactly the three tests that stub the router beneath `llm/predict` failed, every other test
+was unaffected, and local runs never hit it only because their namespace order ran the victim before the culprit.
+Proven mechanically (the root binding was not restored after the budget suite; after the fix it is), fixed by
+installing and removing the stub on the test thread and asserting the crashed run returned first, and re-proven in
+CI's namespace order. The instrumented assertions stay: a failed execute now reports why.
+
 ## Test seams
 
 The existing handover suites on ORC's context seam; the full brick gates.
