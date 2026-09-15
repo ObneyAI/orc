@@ -381,10 +381,17 @@
    Returns the raw parsed output map (with :reasoning, :grounded-claims,
    :ungrounded-claims, :level, :feedback) — gating + level→score mapping is
    the caller's job (grounding-judge), so the no-run-through gate sees the
-   raw model output."
-  [trace-data & {:keys [provider model] :or {provider *judge-provider*
-                                             model *judge-model*}}]
-  (let [rubric (rubrics/get-tier1-rubric :grounding)
+   raw model output.
+
+   RR-31: `:criteria`, when a non-blank string, OVERRIDES the rubric's
+   built-in criteria before the instruction is composed — the workflow's
+   declared \"what to evaluate\" for this judge. Absent :criteria leaves the
+   rubric untouched: the instruction is byte-identical to today's."
+  [trace-data & {:keys [provider model criteria] :or {provider *judge-provider*
+                                                       model *judge-model*}}]
+  (let [rubric (cond-> (rubrics/get-tier1-rubric :grounding)
+                 (and (string? criteria) (not (str/blank? criteria)))
+                 (assoc :criteria criteria))
         instruction (build-grounding-instruction rubric)
         module (build-grounding-module instruction)
         response (cond
@@ -413,11 +420,18 @@
    :level, :feedback) — gating + level->score mapping is the caller's job, so
    the no-run-through gate sees the raw model output.
 
-   `output-fields` is the dimension's reason-before-score field vector."
-  [rubric-key output-fields trace-data & {:keys [provider model]
+   `output-fields` is the dimension's reason-before-score field vector.
+
+   RR-31: `:criteria`, when a non-blank string, OVERRIDES the rubric's
+   built-in criteria before the instruction is composed — the workflow's
+   declared \"what to evaluate\" for this judge. Absent :criteria leaves the
+   rubric untouched: the instruction is byte-identical to today's."
+  [rubric-key output-fields trace-data & {:keys [provider model criteria]
                                           :or {provider *judge-provider*
                                                model *judge-model*}}]
-  (let [rubric (rubrics/get-tier1-rubric rubric-key)
+  (let [rubric (cond-> (rubrics/get-tier1-rubric rubric-key)
+                 (and (string? criteria) (not (str/blank? criteria)))
+                 (assoc :criteria criteria))
         iteration-evidence (not-empty (:researcher-iterations trace-data))
         instruction (build-tier1-instruction rubric (boolean iteration-evidence))
         module (build-tier1-module instruction output-fields
@@ -508,10 +522,11 @@
    regression."
   [{:keys [inputs] :as _executor-context}]
   (let [trace-data (:trace-data inputs)
+        criteria (:criteria inputs)
         the-scale (:scale (rubrics/get-tier1-rubric :grounding))
         raw (if *use-mock-llm*
               (mock-grounding-result)
-              (call-grounding-judge-llm trace-data))
+              (call-grounding-judge-llm trace-data :criteria criteria))
         ;; no-run-through gate: empty/missing-level output throws; otherwise
         ;; enriches with a deterministic :score from the discrete :level.
         gated (scale/gate-banded-output the-scale raw)]
@@ -542,12 +557,14 @@
    model output."
   [{:keys [inputs] :as _executor-context}]
   (let [trace-data (:trace-data inputs)
+        criteria (:criteria inputs)
         the-scale (:scale (rubrics/get-tier1-rubric :instruction-following))
         raw (if *use-mock-llm*
               (mock-instruction-following-result)
               (call-tier1-judge-llm :instruction-following
                                     (instruction-following-output-fields)
-                                    trace-data))
+                                    trace-data
+                                    :criteria criteria))
         gated (scale/gate-banded-output the-scale raw)]
     {:instruction-result
      {:score (:score gated)
@@ -571,12 +588,14 @@
        :reasoning-weaknesses :feedback} PLUS {:level :reasoning}."
   [{:keys [inputs] :as _executor-context}]
   (let [trace-data (:trace-data inputs)
+        criteria (:criteria inputs)
         the-scale (:scale (rubrics/get-tier1-rubric :reasoning))
         raw (if *use-mock-llm*
               (mock-reasoning-result)
               (call-tier1-judge-llm :reasoning
                                     (reasoning-output-fields)
-                                    trace-data))
+                                    trace-data
+                                    :criteria criteria))
         gated (scale/gate-banded-output the-scale raw)]
     {:reasoning-result
      {:score (:score gated)
@@ -600,12 +619,14 @@
        :aspects-missing :feedback} PLUS {:level :reasoning}."
   [{:keys [inputs] :as _executor-context}]
   (let [trace-data (:trace-data inputs)
+        criteria (:criteria inputs)
         the-scale (:scale (rubrics/get-tier1-rubric :completeness))
         raw (if *use-mock-llm*
               (mock-completeness-result)
               (call-tier1-judge-llm :completeness
                                     (completeness-output-fields)
-                                    trace-data))
+                                    trace-data
+                                    :criteria criteria))
         gated (scale/gate-banded-output the-scale raw)]
     {:completeness-result
      {:score (:score gated)

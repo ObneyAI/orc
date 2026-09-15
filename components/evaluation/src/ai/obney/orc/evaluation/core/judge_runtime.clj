@@ -60,12 +60,20 @@
    completions get empty inputs context, the rubric prompt renders
    `{inputs}` as `{}`, OpenRouter responses lack a valid :score, and
    judges silently nil. Returns nil if no matching started event is
-   found."
+   found.
+
+   RR-31: the query is scoped to this tick (`:tags #{[:tick tick-id]}`)
+   rather than scanning every :sheet/node-execution-started event the
+   tenant has ever emitted — the same O(store)-per-judged-completion shape
+   as the survey-hang root cause. The in-memory filter below already
+   narrowed to this tick-id; this just stops fetching every other tick's
+   events to do it."
   [ctx sheet-id tick-id node-id]
   (when (and (:event-store ctx) sheet-id tick-id node-id)
     (let [started-events (into [] (es/read (:event-store ctx)
                                             {:types #{:sheet/node-execution-started}
-                                             :tenant-id (:tenant-id ctx)}))
+                                             :tenant-id (:tenant-id ctx)
+                                             :tags #{[:tick tick-id]}}))
           matching (first (filter #(and (= sheet-id (:sheet-id %))
                                          (= tick-id (:tick-id %))
                                          (= node-id (:node-id %)))
@@ -101,29 +109,59 @@
          :node-id (:node-id matching)
          :inputs (or (:inputs matching) {})}))))
 
+(defn- resolved-reads-inputs
+  "RR-31: the node's :inputs, resolved from its recorded reads via the value
+   log. `event` is the `:sheet/node-execution-completed` body — it carries
+   :read-keys (what the node declared it reads) and :read-sources (where
+   each key's value came from); `orc/value-log-resolve-reads` walks those
+   pointers back to the actual values the node read, the same way
+   build-trace-data's :outputs already resolves the node's writes.
+
+   Any non-empty direct :inputs on the event (execution context / map-each
+   item overrides — the only thing `:inputs` carries since the value-log
+   merge, per todo_processors.clj's root-start emit) is layered OVER the
+   resolved reads: those are overrides the caller has already computed, not
+   a substitute for the reads. When there is no direct :inputs, the resolved
+   reads stand alone."
+  [ctx tick-id event]
+  (let [resolved (or (orc/value-log-resolve-reads (:event-store ctx) (:tenant-id ctx)
+                                                  tick-id event)
+                     {})
+        direct-inputs (not-empty (:inputs event))]
+    (merge resolved direct-inputs)))
+
 (defn- build-trace-data
   "Build the `trace-data` map the evaluation judges expect:
    `{:inputs <host-input-values> :outputs <host-output-values>
      :instruction <host-instruction>
      :researcher-iterations <ordered-durable-records, when applicable>}`.
 
-   `event` is the `:sheet/node-execution-completed` event body. When
-   the event lacks :inputs (the recursive RLM terminal-completion
-   case), reach back to the matching :sheet/node-execution-started
-   event so the LLM judges' rubric prompts render with the original
-   task inputs. Researcher iterations are read from their durable projection
-   rather than racing asynchronous execution-trace publication."
+   `event` is the `:sheet/node-execution-completed` event body.
+
+   RR-31: when the completion records :read-keys, :inputs is resolved from
+   the value log (`resolved-reads-inputs`) — the node's ACTUAL recorded
+   reads, not the execution-context leftovers the event itself carries.
+   Completions that record no :read-keys (direct-tick / researcher-terminal
+   completions, which never went through the read-key bookkeeping) keep the
+   pre-RR-31 behavior: direct :inputs on the event, else a reach-back to the
+   matching :sheet/node-execution-started event. Researcher iterations are
+   read from their durable projection rather than racing asynchronous
+   execution-trace publication."
   [ctx event]
   (let [sheet-id (:sheet-id event)
         tick-id (:tick-id event)
         node-id (:node-id event)
         node (when (and sheet-id node-id) (orc/get-node ctx sheet-id node-id))
+        read-keys (:read-keys event)
         direct-inputs (:inputs event)
-        reached-inputs (when (empty? direct-inputs)
-                         (find-started-inputs ctx sheet-id tick-id node-id))]
+        inputs (if (seq read-keys)
+                 (resolved-reads-inputs ctx tick-id event)
+                 (or (not-empty direct-inputs)
+                    (find-started-inputs ctx sheet-id tick-id node-id)
+                    {}))]
     (cond->
      {:node-id node-id
-      :inputs (or (not-empty direct-inputs) reached-inputs {})
+      :inputs inputs
       ;; The completion event carries only :write-keys — values live in the
       ;; tick's :sheet/execution-value-written events. Resolve them by
       ;; (node-id, exec-context) so judges score against what THIS node
@@ -198,7 +236,10 @@
    produced a score, otherwise nil. Each judge function resolves its
    var on every call so with-redefs / mock bindings take effect."
   [judge-type judge-config trace-data]
-  (let [executor-ctx {:inputs {:trace-data trace-data}}
+  (let [criteria (:criteria judge-config)
+        executor-ctx {:inputs (cond-> {:trace-data trace-data}
+                                (and (string? criteria) (not (str/blank? criteria)))
+                                (assoc :criteria criteria))}
         [judge-output result-key]
         (binding [judges/*judge-provider* (or (:provider judge-config)
                                               judges/*judge-provider*)

@@ -25,20 +25,45 @@ only what the judge is shown.
 
 ## Acceptance criteria
 
-- [ ] A judge attached to a workflow node that declares reads receives those reads' resolved values as its inputs,
+- [x] A judge attached to a workflow node that declares reads receives those reads' resolved values as its inputs,
       verified through a real executed workflow on the live processor path (not a hand-built event)
-- [ ] A judge attached to a direct-tick node or a researcher terminal completion still receives the inputs it receives
+- [x] A judge attached to a direct-tick node or a researcher terminal completion still receives the inputs it receives
       today (no regression on the reach-back path)
-- [ ] An LLM judge whose configuration carries `:criteria` is invoked with an instruction containing that criteria
+- [x] An LLM judge whose configuration carries `:criteria` is invoked with an instruction containing that criteria
       verbatim; one without `:criteria` is invoked exactly as today
-- [ ] The reach-back for started events is scoped to the tick (no tenant-wide scan per judged completion)
-- [ ] Every existing evaluation and consolidator suite is green unchanged (no assertion weakened)
+- [x] The reach-back for started events is scoped to the tick (no tenant-wide scan per judged completion)
+- [x] Every existing evaluation and consolidator suite is green unchanged (no assertion weakened)
 
 ## Spec obligations covered
 
 - `entity-fields.TraceEvidence` / `contract-signature.TraceJudge.evaluate` (must stay green); the invariant
   `JudgesSeeTheWorkNotOnlyItsResult` is contract prose (`allium plan` emits no obligation for it) and is covered by the
   slice's own executed-workflow test.
+
+## Verification
+
+A judge attached to an ordinary workflow node now sees the values the node actually read. The judge-input builder
+resolves `:inputs` from the completion's recorded read keys and read sources through the value log — the same way it
+already resolved the node's writes — with any execution-context inputs the event carries layered over them; completions
+that record no reads (direct ticks, researcher terminals) keep the direct-inputs and started-event reach-back, and that
+reach-back now reads only the tick's events instead of every started event the tenant ever emitted. A judge
+configuration's declared `:criteria` now reaches all four LLM judges: it replaces the rubric's built-in "what to
+evaluate" before the instruction is composed, and an absent criteria composes an instruction byte-identical to before.
+
+Every behaviour was driven red-first: the executed-workflow test (a real sequence with an LLM node that reads the
+ticket, the provider stubbed, the judge invocation captured) was RED with empty inputs and GREEN with the resolved
+read; the tick-scoped reach-back was RED on a query without the tick tag; each judge's criteria test was RED with the
+rubric's built-in criteria in the instruction. The implementer ran the orchestrator's probe before changing anything
+and again after: all three default-judge nodes of the triage workflow now see their resolved reads.
+
+Independent inspection re-read every diff, confirmed the two Gap-7 reach-back tests are untouched and green, no
+`.allium` file changed and no assertion was weakened, and re-ran the RR-31 suite with the runtime, async, RR-30,
+RR-17, tier-1, grounding, orc-service judges and consolidator suites: 147 tests / 500 assertions, 0 failures.
+The gated real-model end-to-end test was run live once after the change (1 test / 64 assertions, exit 0): the grounding judge now cites the ticket's own content ("The ticket mentions a billing error; … a password reset issue") where it previously reported an empty source. Coverage `2 obligations, 2 covered, 0 uncovered` (`entity-fields.TraceEvidence`,
+`contract-signature.TraceJudge.evaluate`; the invariant `JudgesSeeTheWorkNotOnlyItsResult` is contract prose, now
+evidenced for ordinary nodes by the executed-workflow test). On the final tree the complete two-project `orc-service` brick passes with exit 0 in 71 minutes 34 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes in both of its projects (135 tests / 549 assertions per project, 0 failures). Allium holds at 114 information diagnostics, 35
+warnings, 0 errors, 0 analyse findings. Registered as DET-E2E-293. The response framing and the empty-instruction
+sentinel remain grill Q7.
 
 ## Test seams
 

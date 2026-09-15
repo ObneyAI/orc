@@ -817,6 +817,13 @@ into one named dimension (the tier-1 rubric name, shared with the synchronous ag
 classifier) carrying the judge's score; scores, feedback and provenance are unchanged. Coverage `3 obligations, 3 covered,
 0 uncovered`. On the final tree the complete two-project `orc-service` brick passes with exit 0 in 57 minutes 49 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes in both of its projects, `orc` and `orc-evaluation` (11 namespaces, 126 tests / 531 assertions per project, 5 minutes 45 seconds) — the first time the `orc-evaluation` project has resolved and run, after its `cat/schema-util` pin was aligned with the other projects.
 
+## Judges see the node's resolved reads and its declared criteria
+
+RR-31 makes `TraceEvidence.inputs` true for ordinary workflow nodes: the judge-input builder resolves the completion's
+recorded reads through the value log (as it already resolved writes), keeps the direct-inputs and tick-scoped
+started-event reach-back for completions without reads, and threads a judge configuration's declared `:criteria` into
+the four LLM judges' instructions. Coverage `2 obligations, 2 covered, 0 uncovered`. On the final tree the complete two-project `orc-service` brick passes with exit 0 in 71 minutes 34 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors), and the evaluation brick passes in both of its projects (135 tests / 549 assertions per project, 0 failures).
+
 ## Automatic campaign recovery
 
 RR-8's production path is present end to end. The periodic recovery trigger
