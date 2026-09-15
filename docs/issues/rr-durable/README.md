@@ -98,6 +98,7 @@ The harvest / living-description / recursion upgrades. Each reads what the spine
 | [RR-28](RR-28-remove-the-retired-skipped-status-from-code.md) — Remove the retired `skipped` status from code | AFK | — |
 | [RR-29](RR-29-delete-the-dead-synchronous-evaluation-path.md) — Delete the dead synchronous evaluation path | AFK | — |
 | [RR-30](RR-30-default-judges-carry-dimension-specific-feedback.md) — Default judges carry dimension-specific feedback | AFK | — |
+| [RR-31](RR-31-judges-see-resolved-reads-and-declared-criteria.md) — Judges see the node's resolved reads and their declared criteria | AFK | RR-30 |
 
 ## Handoff and prototype cycle
 
