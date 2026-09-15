@@ -61,6 +61,15 @@ against `ActionableFeedback`, not a test problem: the emitted score's feedback n
 projected dimension feedback when the model's is blank (red-first in `rr30_default_judge_dimensions_test.clj`; the
 same evidence, never an invented sentence). The assertion stays as written.
 
+
+**Third CI finding — pre-existing, outside the arc: GEPA's metric-call budget can overrun under live variance.** On
+one live-LLM job `det-e2e-111-real-llm-gepa-failure-and-resumability-boundary` finished with 22 metric calls against a
+budget of 20; the same test passed on the two previous live runs of this pull request. The test and every GEPA source
+file are byte-identical to `main`, and GEPA is explicitly out of the arc's scope. The budget is enforced by processors
+that read the exhaustion state and then act — the read-check-act shape that multi-fires under bursts on
+todo-processor-v2 — so a real model's timing can let two evaluations pass the check together. Recorded here as a
+follow-up for the GEPA component, not fixed in this arc; the live job was re-run.
+
 ## Test seams
 
 The existing handover suites on ORC's context seam; the full brick gates.
