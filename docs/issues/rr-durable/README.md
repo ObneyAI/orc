@@ -20,7 +20,7 @@ fencing, and monotonic trace publication:
 
 The merge is complete. The remaining RR defects were isolated to the opt-in campaign path or its learning consumers,
 which is precisely why **RR-15, the default-on flip, was kept as the last spine slice**. RR-7 has been re-inspected,
-and the complete RR-8 through RR-32 stack is now implemented and verified locally: recursive researchers checkpoint by default, explicit
+and the complete RR-8 through RR-33 stack is now implemented and verified locally: recursive researchers checkpoint by default, explicit
 `:checkpointed? false` preserves the legacy path, and the first evidence consumer projects authoritative live
 iteration envelopes from the same immutable records used by restart and self-analysis. Trace reads now retain the
 ordered campaign account, and terminal judges receive those records without racing trace publication. Classification is one durable fact per campaign, and recurrence advances only on a campaign's
@@ -36,7 +36,7 @@ describe the landed loop — the idempotency key's real purpose, harvest as ship
 coherence report-only, patterns whole, the tree-generated cadence. The whole-spec integration pass tended five
 spec bugs, fixed four code bugs the live proof and the weed found, and proved recovery across a real process
 kill. The streaming tap forwards from its own thread, so a blocked subscriber path can no longer hold engine
-capacity. The retired skipped status and the caller-less synchronous evaluation path are gone from the code. Default judges carry dimension-specific feedback the ontology can classify. Judges see the node's resolved reads and their declared criteria. The automatic tree-profile feeder that listened for an event nothing emitted is gone, and the classifier never emits a failure without a URI.
+capacity. The retired skipped status and the caller-less synchronous evaluation path are gone from the code. Default judges carry dimension-specific feedback the ontology can classify. Judges see the node's resolved reads and their declared criteria. The automatic tree-profile feeder that listened for an event nothing emitted is gone, and the classifier never emits a failure without a URI. Judges are told the producer's contract: the declared output fields, and a task that is never empty.
 Its merge gate remains open
 until Grain PR #22 lands and the local composed pins are replaced with that upstream revision; a green local stack is
 not treated as a landed dependency.

@@ -182,9 +182,11 @@
   (str stance "\n\n"
        "WHAT TO EVALUATE:\n" criteria "\n\n"
        "You are given three inputs: `source` (the context the producer had), "
-       "`response` (what the producer wrote), and `producer_instruction` "
-       "(the task the producer was given). Compare the response against the "
-       "source ONLY.\n\n"
+       "`response` (the producer's declared output fields, one value per "
+       "field, as a JSON object — the field set is fixed by the workflow's "
+       "typed blackboard, not chosen by the producer; judge the values, not "
+       "the object shape), and `producer_instruction` (the task the producer "
+       "was given). Compare the response against the source ONLY.\n\n"
        "SCORING BANDS (choose exactly one level for the `level` field):\n"
        (scale/render-bands scale) "\n\n"
        "Fill `reasoning` first (adversarial analysis grounded in the source), "
@@ -211,7 +213,10 @@
              :description "The source context the producer was given (ground truth to check against)."}
             {:name :response
              :spec :string
-             :description "The producer's output to evaluate for grounding."}
+             :description (str "The producer's declared output fields, one value per "
+                               "field, as a JSON object. The field set is fixed by the "
+                               "workflow's typed blackboard, not chosen by the producer. "
+                               "Judge the values, not the object shape.")}
             {:name :producer_instruction
              :spec :string
              :description "The instruction the producer was given (for context only; do not grade against it)."}]
@@ -314,9 +319,12 @@
    (str stance "\n\n"
         "WHAT TO EVALUATE:\n" criteria "\n\n"
         "You are given three inputs: `instruction` (the task the producer was "
-        "given), `response` (what the producer wrote), and `inputs` (the "
-        "context/material the producer had). Evaluate the response against the "
-        "instruction (and the inputs where relevant)."
+        "given), `response` (the producer's declared output fields, one value "
+        "per field, as a JSON object — the field set is fixed by the "
+        "workflow's typed blackboard, not chosen by the producer; judge the "
+        "values, not the object shape), and `inputs` (the context/material "
+        "the producer had). Evaluate the response against the instruction "
+        "(and the inputs where relevant)."
         (when iteration-evidence?
           (str " You are also given `iteration_evidence`, a bounded durable "
                "record of the research attempts. Use it to explain why the "
@@ -337,7 +345,10 @@
                      :description "The instruction the producer was given (the task to evaluate compliance/coverage against)."}
                     {:name :response
                      :spec :string
-                     :description "The producer's output to evaluate."}
+                     :description (str "The producer's declared output fields, one value per "
+                                       "field, as a JSON object. The field set is fixed by the "
+                                       "workflow's typed blackboard, not chosen by the producer. "
+                                       "Judge the values, not the object shape.")}
                     {:name :inputs
                      :spec :string
                      :description "The context/material the producer had (for relevance checks)."}]
@@ -375,6 +386,32 @@
                               :model (or (:model result) model)
                               :usage (:usage result)})))
 
+(defn- compose-task
+  "RR-33: compose the task string a judge is told, in priority order: the
+   node's own instruction when non-blank; else the judge's declared
+   :criteria when non-blank; else a synthesized task naming the node's
+   declared write keys (never blank when writes are known — a code node's
+   task is never the empty string just because the DSL's `code` takes no
+   instruction); else the existing 'No instruction provided' sentinel,
+   reached only when nothing at all is known about the task. Same rule for
+   both call-grounding-judge-llm and call-tier1-judge-llm."
+  [trace-data criteria]
+  (let [instruction (:instruction trace-data)
+        write-keys (:write-keys trace-data)]
+    (cond
+      (and (string? instruction) (not (str/blank? instruction)))
+      instruction
+
+      (and (string? criteria) (not (str/blank? criteria)))
+      criteria
+
+      (seq write-keys)
+      (str "Produce the declared output fields: "
+           (str/join ", " (map name write-keys)))
+
+      :else
+      "No instruction provided")))
+
 (defn call-grounding-judge-llm
   "PA-3 tier-1 grounding LLM call. Sends the trace data as typed INPUT fields
    (source / response / producer_instruction) and the decoupled instruction.
@@ -401,7 +438,7 @@
                    :else "")
         inputs {:source (coerce-source-string (:inputs trace-data))
                 :response (str response)
-                :producer_instruction (or (:instruction trace-data) "No instruction provided")}
+                :producer_instruction (compose-task trace-data criteria)}
         result (llm/predict provider module inputs
                                {:with-metadata? true
                                 :validate? false
@@ -442,7 +479,7 @@
                    (:outputs trace-data) (json/generate-string (:outputs trace-data) {:pretty true})
                    :else "")
         inputs (cond->
-                {:instruction (or (:instruction trace-data) "No instruction provided")
+                {:instruction (compose-task trace-data criteria)
                  :response (str response)
                  :inputs (coerce-source-string (:inputs trace-data))}
                  iteration-evidence

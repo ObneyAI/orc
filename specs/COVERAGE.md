@@ -832,6 +832,13 @@ dimension names instead of emitting a URI-less failure, and unified the two dime
 fed by the consumer-facing recording commands; judge feedback reaches the loop through living descriptions. Coverage
 `4 obligations, 4 covered, 0 uncovered`. On the final tree (RR-32 and RR-33 together, nothing else in flight) the complete two-project `orc-service` brick passes with exit 0 in 67 minutes 28 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors); the evaluation brick passes in both of its projects (143 tests / 573 assertions per project); and the ontology brick passes in each owning project graph run as its own JVM (78 namespaces, 675 tests / 3823 assertions each, 0 failures).
 
+## Judges are told the producer's contract
+
+RR-33 (grill D7) describes the response to every default LLM judge as the producer's declared output fields whose set the
+workflow fixed, and composes the task from the instruction, else the declared criteria, else the declared writes, so a
+judge no longer docks a node for the engine's own output shape or reports an empty task. Coverage `2 obligations,
+2 covered, 0 uncovered`. On the final tree (RR-32 and RR-33 together, nothing else in flight) the complete two-project `orc-service` brick passes with exit 0 in 67 minutes 28 seconds under `-J-Djava.awt.headless=true` with a 3 GB heap cap (130 namespaces, 1060 tests / 5924 assertions per graph, 0 failures, 0 errors); the evaluation brick passes in both of its projects (143 tests / 573 assertions per project); and the ontology brick passes in each owning project graph run as its own JVM (78 namespaces, 675 tests / 3823 assertions each, 0 failures).
+
 ## Automatic campaign recovery
 
 RR-8's production path is present end to end. The periodic recovery trigger

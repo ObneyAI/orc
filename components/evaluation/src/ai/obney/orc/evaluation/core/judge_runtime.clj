@@ -158,19 +158,36 @@
                  (resolved-reads-inputs ctx tick-id event)
                  (or (not-empty direct-inputs)
                     (find-started-inputs ctx sheet-id tick-id node-id)
-                    {}))]
+                    {}))
+        ;; The completion event carries only :write-keys — values live in the
+        ;; tick's :sheet/execution-value-written events. Resolve them by
+        ;; (node-id, exec-context) so judges score against what THIS node
+        ;; execution actually produced. An empty map here would silently
+        ;; degrade every grounding score rather than fail loudly.
+        outputs (orc/value-log-writes-for
+                 (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
+                 event)
+        ;; RR-33: the node's declared writes, for judges that need to name
+        ;; the task when the node has no instruction (e.g. a `code` node,
+        ;; whose DSL takes no instruction). Prefer the completion event's
+        ;; own :write-keys (the shape it recorded at completion time); fall
+        ;; back to the resolved outputs' keys so this is never empty when
+        ;; the node in fact wrote something.
+        write-keys (or (not-empty (:write-keys event))
+                       (vec (keys outputs)))]
     (cond->
      {:node-id node-id
       :inputs inputs
-      ;; The completion event carries only :write-keys — values live in the
-      ;; tick's :sheet/execution-value-written events. Resolve them by
-      ;; (node-id, exec-context) so judges score against what THIS node
-      ;; execution actually produced. An empty map here would silently
-      ;; degrade every grounding score rather than fail loudly.
-      :outputs (orc/value-log-writes-for
-                (orc/value-log-read-tick-events (:event-store ctx) (:tenant-id ctx) tick-id)
-                event)
-      :instruction (or (:instruction node) "")}
+      :outputs outputs
+      :write-keys write-keys
+      ;; RR-33: pass the node's instruction through as nil (not "") when
+      ;; absent — an empty string is truthy under `or`, so the pre-RR-33
+      ;; `(or (:instruction node) "")` here silently defeated every
+      ;; downstream "No instruction provided" fallback. nil lets
+      ;; compose-task (judges.clj) tell "no instruction" from "instruction
+      ;; is the empty string" and fall through to :criteria / declared
+      ;; write keys.
+      :instruction (:instruction node)}
       (= :repl-researcher (:type node))
       (assoc :researcher-iterations
              (orc/get-researcher-iteration-records
