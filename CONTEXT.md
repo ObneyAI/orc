@@ -124,6 +124,14 @@ _Avoid_: template, playbook, macro
 The four moves available to a model shown a reference behavior: use its pattern as-is; modify it for this task; mint a child of it that pins a narrower domain; or mint a fresh behavior for a genuinely novel task.
 _Avoid_: reuse, fork, inherit
 
+**Domain child**:
+A class minted under a shape class when a task matched that shape but the shape's declared domain does not cover the task's. It keeps the parent's proven shape, pins the task's domain, carries one stable identity derived from the parent and its domain label, and is the identity the task's recurrence, consolidation and harvest accrue under.
+_Avoid_: subclass, variant, specialised seed (a seed is authored; a domain child is minted from a judged verdict)
+
+**Domain coverage**:
+The reranker's discrete verdict on whether a candidate's declared domain — its representative uses and guards — covers the task's domain: covered, partial, uncovered, or unknown. A verdict with its reasons, never a number; distinct from fitness, which is shape-and-intent fit.
+_Avoid_: domain score, domain similarity, coverage confidence
+
 **Claim**:
 A campaign's durable assertion of ownership over one effect before that effect happens, carrying the epoch that made it. The same record that makes an effect's outcome knowable afterwards.
 _Avoid_: lock, lease (a lease is granted by the platform; a claim is asserted by the campaign)

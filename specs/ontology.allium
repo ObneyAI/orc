@@ -244,8 +244,18 @@ contract ParentInferenceQuery {
 -- events — the 22 silent ticks (12.4%) could only be INFERRED. A system that
 -- cannot report when its ranker fell back cannot be trusted to report that
 -- it did not.
+-- R-Inject specialisation grill D4: what the reranker says about a candidate's
+-- DOMAIN, beside its fitness. Reason before verdict; the reasoning names the
+-- representative use or guard matched, or the gap found.
+value DomainVerdict {
+    coverage: DomainCoverage
+    domain_label: String
+    reasoning: String
+}
+
 contract TaskClassification {
     classify: (task_signature: String) -> ClassificationOutcome
+    judge_domain_coverage: (task_signature: String, candidate: Concept) -> DomainVerdict
 
     @invariant DeferralIsVisible
         -- A classification that defers — the semantic reranker fell back on
@@ -277,6 +287,27 @@ contract TaskClassification {
         -- evidence payload). The gated surfaced view rides alongside for its
         -- consumers, and the assigned identity's provenance — match, bundle,
         -- walk-down, or mint — is explicit on the event.
+
+    @invariant DomainCoverageIsJudgedNotInferred
+        -- Whether a matched class covers the task's DOMAIN is a discrete verdict
+        -- the reranker gives alongside fitness, with its reasoning naming the
+        -- representative use or guard it matched or the gap it found — never a
+        -- threshold over a similarity score, and never read off the fitness
+        -- number, which keeps meaning shape-and-intent fit. An unknown, missing
+        -- or malformed verdict defers on the domain axis: the shape class is
+        -- assigned, no child is minted, and the deferral is recorded naming the
+        -- domain axis.
+
+    @invariant DomainChildIdentityIsStable
+        -- A domain child minted under a shape class resolves to one identity
+        -- derived from that parent and the canonical domain label, so the same
+        -- domain under the same parent lands on the same class whether or not
+        -- retrieval found it — the rule BehavioralMintIdentityIsStable states
+        -- for the behavioral layer, applied to the identity layer. Its parent
+        -- edge exists in the concept graph from the moment it is minted, and it
+        -- describes itself from birth with its label and the signature that
+        -- minted it, so the walk-down can reach it and the next occurrence can
+        -- converge on it.
 }
 
 contract OntologyExtraction {
@@ -355,6 +386,12 @@ enum ConceptScope {
 -- never an assignment). Contract return types here are NOMINAL — the code
 -- returns richer maps carrying these outcomes, not bare enum values.
 enum ClassificationOutcome { matched | bundled | walked_down | minted | uncertain }
+-- R-Inject specialisation grill D4: the reranker's DISCRETE verdict on whether
+-- the candidate's declared domain (its representative uses and guards) covers
+-- the task's domain. A verdict, never a number: fitness keeps meaning
+-- shape-and-intent fit. unknown (or a missing / malformed verdict) defers on
+-- the domain axis exactly as a reranker fallback defers on the fitness axis.
+enum DomainCoverage { covered | partial | uncovered | unknown }
 
 enum SourceType { csv | json | sql | rdf | text }
 enum BuildMode { batch | incremental }
@@ -793,6 +830,37 @@ rule SeedBaselineDescriptions {
     ensures: BaselineDescriptionsRecorded(
         scopes: { node_type, tree_class, behavioral_subtree },
         preserve_history: true
+    )
+}
+
+-- R-Inject specialisation grill D2/D3/D4: the waterfall's missing step. A task
+-- that matches a LEAF shape class on fitness but whose domain that class does
+-- not cover gets its own identity under that leaf, so recurrence, consolidation
+-- and harvest accrue per domain instead of blurring the shape class. Partial
+-- coverage assigns the leaf and records the label as a claim on it; unknown
+-- defers (see DomainCoverageIsJudgedNotInferred). Walk-down's own mint (a fresh
+-- leaf under the deepest matched ancestor when children exist and none fits)
+-- is unchanged; this rule covers the case walk-down cannot reach: a direct
+-- leaf match.
+rule MintDomainChild {
+    when: TaskClassified(occurrence, outcome, assigned_class, coverage, domain_label)
+    requires: outcome = matched
+    requires: assigned_class.children.count = 0
+    requires: coverage = uncovered
+    let child_identity = stable_domain_child_identity(assigned_class, domain_label)
+
+    ensures: DomainChildMinted(
+        parent: assigned_class,
+        label: domain_label,
+        identity: child_identity,
+        minted_by: occurrence
+    )
+    ensures: ConceptRelationship.created(
+        source: child_identity,
+        target: assigned_class,
+        predicate: "skos:broader",
+        metadata: {},
+        created_at: now
     )
 }
 
