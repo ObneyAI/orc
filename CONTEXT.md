@@ -125,7 +125,7 @@ The four moves available to a model shown a reference behavior: use its pattern 
 _Avoid_: reuse, fork, inherit
 
 **Domain child**:
-A class minted under a shape class when a task matched that shape but the shape's declared domain does not cover the task's. It keeps the parent's proven shape, pins the task's domain, carries one stable identity derived from the parent and its domain label, and is the identity the task's recurrence, consolidation and harvest accrue under.
+A class minted under a shape class when a task matched that shape but the shape's declared domain covers the task's only partly or not at all. It keeps the parent's proven shape, pins the task's domain, carries one stable identity derived from the parent and its domain label, and is the identity the task's recurrence, consolidation and harvest accrue under.
 _Avoid_: subclass, variant, specialised seed (a seed is authored; a domain child is minted from a judged verdict)
 
 **Domain coverage**:

@@ -65,7 +65,7 @@ data the runtime emits — typed reranker fields, event bodies, identities, grap
 injected — never on regex or phrase matches over model prose. Rejected: deterministic only; the sweep as a threshold
 gate (biased corpus, live model — ADR 0029's "never fired vs never will").
 
-## Q7 — POSED, NOT YET ANSWERED (verbatim, so it survives compaction)
+## D7 — mint on partial too; labels chosen among siblings; convergence by walk-down (Q7, DECIDED: A + RS-P1b)
 
 RS-P1 (`development/bench/ood-stress-results/rs-p1-coverage-probe/FINDINGS.md`) held mechanically (225/225 valid
 verdicts, sanity checks covered and stable) and failed on calibration: over 19 off-domain tasks the top match was judged
@@ -92,9 +92,11 @@ the parent's existing children and measure how often the model reuses them. Spec
 `rule MintDomainChild` requires `coverage in {partial, uncovered}`, and `DomainChildIdentityIsStable` states that the
 label is chosen among the parent's existing children before a new one is coined.
 
-**Status:** awaiting the user's answer. Work paused on 2026-09-15 to assess Grain PR #22 (see
-`.rr-durable-notes/PR22-ASSESSMENT.md` in the arc worktree and the memory note `rr-durable-open-grill-q6-q7`).
+**Decided 2026-09-16: A**, with RS-P1b as the re-probe. Spec tended: `rule MintDomainChild` requires `coverage in
+{partial, uncovered}`; `DomainChildIdentityIsStable` states the label is chosen among the parent's existing children;
+new `DomainChildrenAreAlwaysConsidered` (a matched class with domain children is not a leaf for the walk-down).
+Glossary: **Domain child** covers partial. (The Grain PR #22 pause is over: the RR arc merged to main as d1f9ae76.)
 
 ## Slices
 
-To be cut by /to-issues from the PRD (`docs/prd/r-inject-specialisation.md`).
+RS-P1, RS-P2, RS-1…RS-6 in `docs/issues/r-inject-specialisation/`; RS-P1b (sibling-label reuse probe) added after D7.

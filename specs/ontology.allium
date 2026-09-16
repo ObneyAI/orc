@@ -303,11 +303,21 @@ contract TaskClassification {
         -- derived from that parent and the canonical domain label, so the same
         -- domain under the same parent lands on the same class whether or not
         -- retrieval found it — the rule BehavioralMintIdentityIsStable states
-        -- for the behavioral layer, applied to the identity layer. Its parent
-        -- edge exists in the concept graph from the moment it is minted, and it
-        -- describes itself from birth with its label and the signature that
-        -- minted it, so the walk-down can reach it and the next occurrence can
-        -- converge on it.
+        -- for the behavioral layer, applied to the identity layer. The label is
+        -- canonical because it is CHOSEN: the reranker is shown the parent's
+        -- existing domain children and reuses one when it fits, coining a new
+        -- label only when none does (a judged choice, never a string rule;
+        -- grill D7). Its parent edge exists in the concept graph from the moment
+        -- it is minted, and it describes itself from birth with its label and
+        -- the signature that minted it, so the walk-down can reach it and the
+        -- next occurrence can converge on it.
+
+    @invariant DomainChildrenAreAlwaysConsidered
+        -- A matched shape class that has domain children is not treated as a
+        -- leaf: the walk-down considers its children whatever the top match's
+        -- fitness, so a repeat of a domain lands on its child even when the
+        -- coverage verdict does not repeat. Convergence never depends on the
+        -- reranker giving the same verdict twice (grill D7).
 }
 
 contract OntologyExtraction {
@@ -842,11 +852,16 @@ rule SeedBaselineDescriptions {
 -- leaf under the deepest matched ancestor when children exist and none fits)
 -- is unchanged; this rule covers the case walk-down cannot reach: a direct
 -- leaf match.
+-- Grill D7 (RS-P1 evidence): the reranker puts genuine domain drift in
+-- `partial` and says `uncovered` rarely, so a child is minted on either.
+-- `covered` stays on the leaf. The label is chosen among the leaf's EXISTING
+-- domain children before a new one is coined (a judged choice, never a
+-- string rule), and the identity derives from parent + that canonical label.
 rule MintDomainChild {
     when: TaskClassified(occurrence, outcome, assigned_class, coverage, domain_label)
     requires: outcome = matched
     requires: assigned_class.children.count = 0
-    requires: coverage = uncovered
+    requires: coverage in {partial, uncovered}
     let child_identity = stable_domain_child_identity(assigned_class, domain_label)
 
     ensures: DomainChildMinted(

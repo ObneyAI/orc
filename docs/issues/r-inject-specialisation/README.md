@@ -16,7 +16,8 @@ reranker judges uncovered gets its own stable class under that shape, and the lo
 |---|---|---|
 | [RS-P1](RS-P1-prototype-the-reranker-answers-the-separated-question.md) — *Prototype:* the reranker answers the separated question | HITL | — |
 | [RS-P2](RS-P2-prototype-a-parent-edge-can-be-born-from-the-claim-path.md) — *Prototype:* a parent edge can be born from the claim path | HITL | — |
-| [RS-1](RS-1-the-reranker-gives-a-domain-verdict-beside-fitness.md) — The reranker gives a domain verdict beside fitness | AFK | RS-P1 |
+| [RS-P1b](RS-P1b-prototype-the-reranker-reuses-a-sibling-label.md) — *Prototype:* the reranker reuses a sibling's domain label when one fits | HITL | RS-P1 |
+| [RS-1](RS-1-the-reranker-gives-a-domain-verdict-beside-fitness.md) — The reranker gives a domain verdict beside fitness | AFK | RS-P1, RS-P1b |
 | [RS-2](RS-2-the-classifier-mints-a-domain-child-from-an-uncovered-leaf-match.md) — The classifier mints a domain child from an uncovered leaf match | AFK | RS-1 |
 | [RS-3](RS-3-the-domain-child-exists-durably-from-birth.md) — The domain child exists durably from birth | AFK | RS-2, RS-P2 |
 | [RS-4](RS-4-r-inject-renders-the-waterfall-top-down.md) — R-Inject renders the waterfall top down | AFK | RS-3 |
